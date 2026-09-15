@@ -29,7 +29,14 @@ import { parseTopLevelFunctions, stripComments } from './reachability.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
-const SCAN_FILES = ['graph_commands.ts', 'read_commands.ts', 'text_commands.ts']
+const SCAN_FILES = [
+  'graph_commands.ts',
+  'graph_traversal.ts',
+  'graph_inspection.ts',
+  'graph_analysis.ts',
+  'read_commands.ts',
+  'text_commands.ts',
+]
 
 interface CommandSite {
   readonly file: string
@@ -103,49 +110,49 @@ const CLASSIFICATION: ReadonlyMap<string, { bucket: Bucket; reason: string }> = 
     },
   ],
   [
-    'graph_commands.ts::runDead',
+    'graph_inspection.ts::runDead',
     {
       bucket: 'metadata-only-output-no-body-content-rendered',
       reason: 'reports symbols with zero live references as file:line/symbol-name entries only, no body content.',
     },
   ],
   [
-    'graph_commands.ts::runSimilar',
+    'graph_analysis.ts::runSimilar',
     {
       bucket: 'metadata-only-output-no-body-content-rendered',
       reason: 'emits name/kind/file/line for FTS-matched symbols only; never reads or renders body text.',
     },
   ],
   [
-    'graph_commands.ts::runContextFor',
+    'graph_analysis.ts::runContextFor',
     {
       bucket: 'metadata-only-output-no-body-content-rendered',
       reason: 'uses hit.body only internally, to estimate a token budget (estimateTokens(h.body ?? \'\')) -- the emitted entries carry only file/symbol/kind/line/readCmd, never the body text itself.',
     },
   ],
   [
-    'graph_commands.ts::runTestFor',
+    'graph_analysis.ts::runTestFor',
     {
       bucket: 'metadata-only-output-no-body-content-rendered',
       reason: 'emits candidate test file paths/symbol names only, no body content.',
     },
   ],
   [
-    'graph_commands.ts::runCoverageGaps',
+    'graph_analysis.ts::runCoverageGaps',
     {
       bucket: 'metadata-only-output-no-body-content-rendered',
       reason: 'reports symbols with no covering test as file:line/symbol-name entries only, no body content.',
     },
   ],
   [
-    'graph_commands.ts::resolveCallers',
+    'graph_traversal.ts::resolveCallers',
     {
       bucket: 'metadata-only-output-no-body-content-rendered',
       reason: 'internal helper used to resolve a symbol\'s callers by name/file; queries refs for name resolution only, never reads or renders body text.',
     },
   ],
   [
-    'graph_commands.ts::hasAncestorDispatchRef',
+    'graph_traversal.ts::hasAncestorDispatchRef',
     {
       bucket: 'metadata-only-output-no-body-content-rendered',
       reason: 'internal boolean predicate over queryRefs results (does an ancestor method have a dispatch ref); never reads or renders body text.',

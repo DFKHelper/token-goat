@@ -1,17 +1,3 @@
-import { randomBytes } from 'node:crypto'
-/**
- * CLI entrypoint (`token-goat ...`).
- *
- * Wires the surgical-read commands (symbol / read / section / skeleton /
- * outline / map / semantic), the hook relay, and the install / worker
- * lifecycle subcommands onto a Commander program. Every command resolves to a
- * small text payload on stdout and an exit code: 0 on success, 1 on a handled
- * error (missing symbol, unreadable file). Unexpected throws also map to 1.
- *
- * This is the TS analogue of `cli.py::main`; it targets the subset of commands
- * exercised by the TS port rather than the full Python surface.
- */
-
 import { Command } from 'commander'
 import { attemptedCommandName, suggestForUnknownCommand } from './command_intent.js'
 import * as fs from 'fs'
@@ -22,8 +8,8 @@ import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
-import { formatLocalTimestamp, recordStat, savedTokensFromBytes, _useRichStats } from './stats.js'
-import { fenceUntrustedContent, fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { recordStat, savedTokensFromBytes, _useRichStats } from './stats.js'
+import { fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
 import { fenceUntrusted, scanAndRecord, injectionFencingEnabled } from './untrusted_fence.js'
 import { redactSecrets } from './secret_redact.js'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -36,13 +22,12 @@ import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
-import { fingerprintFile, fingerprintContent } from './fingerprint.js'
+import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { displaySafePath, displaySafeText, resolveIndexPath, displaySafeJson } from './paths.js'
 import { resolveProjectRoot } from './project.js'
-import { enqueueDirtyPathSafe } from './hooks_index.js'
 import {
   installHooks,
   isInstalled,
@@ -87,7 +72,6 @@ import {
   runBrief,
   runSection,
   runListSections,
-  didYouMean,
   runRefs,
   runSkeleton,
   runOutline,
@@ -101,62 +85,25 @@ import {
   runImports,
   runFind,
   runGrep,
-  runCsvProfile,
-  runCsvQuery,
-  runJsonOutline,
-  runJsonQuery,
-  runYamlOutline,
-  runYamlQuery,
-  runXmlOutline,
-  runXmlQuery,
-  runHtmlOutline,
-  runHtmlQuery,
-  runHtmlLint,
-  runOpenApiOutline,
-  runOpenApiOp,
-  runZipList,
-  runZipRead,
   runPrSlice,
   runSqliteTables,
   runSqliteSchema,
   runSqliteQuery,
-  guardJsonRows,
   runCoverageReportGaps,
   runConflicts,
-
-  runPdfExtractText,
-  runPdfLocate,
-  runPdfMeta,
-  runPdfOutline,
   runImageMeta,
   runImageText,
-
   runScreenshot,
   extractTranscriptText,
   extractSection,
-  findSpecSeparator,
   runSemantic,
-  healStaleIndex,
   runNoteGet,
   runNoteList,
-  rankSimilarNames,
-  filterSimilarHeadings,
-  AMBIGUOUS_HEADING_LIMIT,
 } from './read_commands.js'
 import { redactIfDotenv } from './dotenv_redact.js'
-import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeFileFingerprint, upsertNote } from './notes.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus, installVerificationNotice } from './bridges_status.js'
 import type { HarnessName } from './bridges/types.js'
 import { buildCommandManifest, filterCommandManifest, formatCommandManifest } from './cli_commands.js'
-import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet, xlsxColumns, formatXlsxColumns } from './xlsx_extract.js'
-import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
-import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
-import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
-import { parseShareUrl, resolveLocalPath } from './sharepoint_resolve.js'
-import { extractVideoChapters } from './video_chapters.js'
-
-
-import { buildTranscriptOutline, formatCues, formatTimestamp, parseSliceOptions, readTranscript, sliceTranscript } from './transcript_extract.js'
 import {
   runCallers,
   runCallChain,
@@ -175,10 +122,8 @@ import {
 } from './graph_commands.js'
 import { DEFAULT_AFFECTED_DEPTH, runAffected } from './affected.js'
 import { DEFAULT_RECONCILE_BUDGET_MS, runReconcile } from './reconcile.js'
-import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
-import { buildLineDiff } from './hooks_read.js'
-import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureDirSync, ensureNewline, extractErrorMessage, redactUrlQuery, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource, stripLower } from './util.js'
+import { contentHash, extractCompactFromMarker, skillOutputsDir, storeCompact } from './skill_cache.js'
+import { isWindows, ensureDirSync, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, isUnderBlockedRoot, countNoun, decodeSource } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
@@ -223,6 +168,61 @@ import { runMcpAuditCommand } from './cli_mcp_audit.js'
 import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
 import { runBenchCommand } from './cli_bench.js'
+import {
+  cmdSkillBody,
+  cmdSkillCompact,
+  cmdSkillDiff,
+  cmdSkillHistory,
+  cmdSkillList,
+  cmdSkillSection,
+  cmdSkillSize,
+} from './cli_skills.js'
+import {
+  cmdInsertSection,
+  cmdNoteAdd,
+  cmdReplace,
+  cmdWriteFile,
+} from './cli_file_ops.js'
+import {
+  cmdDocxOutline,
+  cmdDocxTables,
+  cmdDocxText,
+  cmdPdfExtract,
+  cmdPdfLocate,
+  cmdPdfMeta,
+  cmdPdfOutline,
+  cmdPptxNotes,
+  cmdPptxOutline,
+  cmdPptxSlide,
+  cmdPptxText,
+  cmdSharepointResolve,
+  cmdTranscript,
+  cmdTranscriptOutline,
+  cmdVideoChapters,
+  cmdXlsxColumns,
+  cmdXlsxHead,
+  cmdXlsxQuery,
+  cmdXlsxRange,
+  cmdXlsxSheets,
+  fileSizeOrZero,
+} from './cli_office.js'
+import {
+  cmdCsvProfile,
+  cmdCsvQuery,
+  cmdHtmlLint,
+  cmdHtmlOutline,
+  cmdHtmlQuery,
+  cmdJsonOutline,
+  cmdJsonQuery,
+  cmdOpenApiOp,
+  cmdOpenApiOutline,
+  cmdXmlOutline,
+  cmdXmlQuery,
+  cmdYamlOutline,
+  cmdYamlQuery,
+  cmdZipList,
+  cmdZipRead,
+} from './cli_structured.js'
 import { runHintStatsCommand } from './cli_hint_stats.js'
 import { isHintCategory } from './hint_stats.js'
 import { runStatuslineCommand } from './cli_statusline.js'
@@ -230,14 +230,14 @@ import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_
 import { clipLongMatchLine } from './tool_filters/helpers.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
-class CliError extends Error {}
+export class CliError extends Error {}
 
-function out(text: string): void {
+export function out(text: string): void {
   const payload = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(payload))
 }
 
-function err(text: string): void {
+export function err(text: string): void {
   process.stderr.write(ensureNewline(text))
 }
 
@@ -316,7 +316,7 @@ function requireInt(flag: string, raw: string): number {
 }
 
 // Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit" (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected.
-function requireNonNegativeInt(flag: string, raw: string): number {
+export function requireNonNegativeInt(flag: string, raw: string): number {
   const n = requireInt(flag, raw)
   if (n < 0) {
     throw new CliError(`${flag} must be a non-negative number, got: "${raw}"`)
@@ -324,7 +324,7 @@ function requireNonNegativeInt(flag: string, raw: string): number {
   return n
 }
 
-function requirePositiveInt(flag: string, raw: string): number {
+export function requirePositiveInt(flag: string, raw: string): number {
   const n = requireInt(flag, raw)
   if (n <= 0) {
     throw new CliError(`${flag} must be a positive number, got: "${raw}"`)
@@ -1379,7 +1379,7 @@ function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: s
   })
 }
 
-function _applyFiltersAndPrint(
+export function _applyFiltersAndPrint(
   content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean },
   fenceByProvenance = false,
@@ -1500,57 +1500,7 @@ function _applyFiltersAndPrint(
   return emit(result.join('\n'))
 }
 
-/**
- * Scan-and-fence for the local document extractors (pdf/docx/pptx/xlsx). A path named on the
- * command line is not the same thing as content authored by the person who ran the command: an
- * emailed invoice, a downloaded report, a contract someone else drafted are all third-party text
- * that happens to live in a local file. Mirrors the inlined scan in `cmdGdriveSections` and
- * `fenceGithubTextIfMatched` in `read_commands.ts` -- those commands can't reuse
- * `_applyFiltersAndPrint`'s `emit()` closure either, for the same reason: some of these commands
- * have no head/tail-elision opts shape to route through, and some need to fence one field of a
- * `--json` payload rather than the whole printed string.
- *
- * Unconditional: the fence follows the provenance, not the scan result. Use this for a document's
- * body text, where the wrapper is one fixed ~125 bytes against a payload of hundreds to thousands
- * -- see {@link fenceFileFieldIfMatched} for the per-field `--json` case, where that same wrapper
- * is paid once per field and the arithmetic is not the same.
- */
-function fenceFileText(text: string): string {
-  // A local file the caller only named (a PDF, DOCX, PPTX, XLSX) is third-party content the same way a fetched page is -- redact before fencing so a credential embedded in the document does not reach the model raw, matching the fenceByProvenance branch of _applyFiltersAndPrint.
-  return fenceUntrusted(redactSecrets(text).text, UNTRUSTED_FILE_TAG)
-}
-
-/**
- * Per-field variant for the `--json` envelopes (a sheet name, a slide title, an outline heading, a
- * `pdf-find` snippet). Still gated on a scan hit, unlike every other fence in this file.
- *
- * This is a deliberate, documented exception, not an oversight. Fencing each field unconditionally
- * costs a fixed ~125-byte wrapper per field against values that are routinely 10-40 bytes, and
- * these commands emit one per sheet/slide/heading/match -- an order-of-magnitude inflation of
- * exactly the listings that exist to be cheap. Fencing the whole envelope once instead would be
- * O(1) and provenance-correct, but `--json` output is parsed by callers, and a fence wrapped
- * around the JSON is no longer JSON. Per-field fencing keeps the envelope parseable, which is why
- * it was written this way; the cost is what makes it unsuitable for the unconditional form.
- *
- * Resolving this needs a wire-format decision (a single sibling `untrusted` field on the envelope
- * instead of N wrappers), which is a breaking change for `--json` consumers and out of scope here.
- */
-function fenceFileFieldIfMatched(text: string): string {
-  const redacted = redactSecrets(text).text
-  const matches = scanAndRecord(redacted)
-  // The gate above is INJECTION_PATTERNS: eight prose matchers ('ignore previous instructions', 'you are now a ...'). None of them matches `[tg]` or `[token-goat`, so the zero-match path returned the one payload wearing token-goat's own authority straight into JSON.stringify, which escapes quotes and control characters but not a bracket. Neutralizing instead of fencing keeps the cost argument this function's comment makes: a few bytes per field rather than the ~125 a wrapper costs, and the value stays a plain JSON string rather than a fence that is no longer JSON.
-  if (matches.length === 0) return displaySafeText(redacted)
-  return fenceUntrustedContent(redacted, matches, UNTRUSTED_FILE_TAG)
-}
-
-/** Best-effort on-disk size of a file; 0 if it can't be stat'd (never blocks stat recording). */
-function fileSizeOrZero(filePath: string): number {
-  try {
-    return fs.statSync(filePath).size
-  } catch {
-    return 0
-  }
-}
+export { fenceFileText, fenceFileFieldIfMatched, fileSizeOrZero } from './cli_office.js'
 
 function cmdBashOutput(
   id: string | undefined,
@@ -1626,117 +1576,7 @@ function cmdMcpOutput(
   _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG)
 }
 
-async function cmdPdfExtract(
-  file: string,
-  opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean },
-) {
-  const text = await runPdfExtractText(file, opts.pages, opts.layout === true)
-  const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
-  // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `pdf-extract`/`pdf_extract` entry
-  // and nothing ever called recordStat for this command -- the dashboard bucket was permanently
-  // zero regardless of real usage, the same class of gap already fixed for
-  // map_lookup/changed_lookup/csv_query/gdrive_sections (see project_runchanged_missing_stat
-  // memory). "Full source" is the on-disk PDF size; "emitted" is the text actually printed
-  // after --pages/--head/--tail/--grep filtering, mirroring recordReadStat's convention.
-  const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
-  recordStat('pdf_extract', bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-async function cmdPdfLocate(
-  file: string,
-  pattern: string,
-  opts: { ignoreCase?: boolean; maxMatches?: string; context?: string; pages?: string; json?: boolean },
-) {
-  // Build the options object without setting keys to undefined -- exactOptionalPropertyTypes
-  // is on, so an explicit `undefined` is not assignable to an optional-but-not-undefined field.
-  const locateOpts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string } = {
-    ignoreCase: opts.ignoreCase === true,
-  }
-  if (opts.maxMatches !== undefined) locateOpts.maxMatches = requirePositiveInt('--max-matches', opts.maxMatches)
-  if (opts.context !== undefined) locateOpts.context = requirePositiveInt('--context', opts.context)
-  if (opts.pages !== undefined) locateOpts.pages = opts.pages
-  const { matches, truncated } = await runPdfLocate(file, pattern, locateOpts)
-
-  // Each snippet is text pulled straight out of the PDF -- fence it the same as pdf-extract's
-  // body text. The printed form takes one unconditional fence around the whole match list: a
-  // snippet defaults to 80 characters (--context), so a per-snippet wrapper would cost more than
-  // the content it wraps, once per match. The --json form keeps the per-field match-gated fence
-  // so the envelope stays valid JSON (matching fenceGithubTextIfMatched's per-field approach in
-  // read_commands.ts's pr-slice diff/comments --json branches).
-  const pages = matches.map((m) => m.page)
-  let printed: string
-  if (opts.json === true) {
-    const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet) }))
-    printed = displaySafeJson({ file, pattern, matchCount: fencedMatches.length, truncated, pages, matches: fencedMatches })
-    out(printed)
-  } else if (matches.length === 0) {
-    // A clean "found nothing", not an error -- the caller asked where a term is and the answer is "nowhere".
-    // Nothing from the document is echoed here, so there is no third-party text to fence.
-    printed = '(no matches)'
-    out(printed)
-  } else {
-    const lines = matches.map((m) => `p${m.page}: ${m.snippet}`)
-    // The scan stops per-page on --max-matches, so a hit count that stopped early cannot be printed as an exact total (the same "cannot print a total the code has no way to know" rule as the grep-line cap a few hundred lines up in this file): print it as a floor and name the escape hatch instead.
-    const summary = truncated
-      ? `at least ${countNoun(matches.length, 'match', 'matches')} across at least ${countNoun(pages.length, 'page')}; scan stopped at --max-matches, raise it for more`
-      : `${countNoun(matches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`
-    printed = fenceFileText(`${lines.join('\n')}\n\n${summary}`)
-    out(printed)
-  }
-  // Same registry/producer desync guarded against as cmdPdfExtract above -- see the comment there.
-  // "Full source" is the on-disk PDF size; "emitted" is the page list + snippets actually printed,
-  // which is what a locate-then-extract caller pays instead of pulling whole pages.
-  const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
-  recordStat('pdf_locate', bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
-  const entries = await runPdfOutline(file)
-  if (entries.length === 0) {
-    if (opts.json === true) {
-      out(displaySafeJson([]))
-    } else {
-      out('no bookmarks in this PDF; try pdf-extract')
-    }
-    return
-  }
-  // A PDF bookmark title is authored by whoever produced the PDF, not the caller who named the
-  // local path -- fence it the same as pdf-extract's body text. The printed form is fenced once
-  // around the whole listing (unconditional, one wrapper); the `--json` form keeps the per-field
-  // match-gated fence so the envelope stays parseable -- see fenceFileFieldIfMatched above.
-  const text =
-    opts.json === true
-      ? displaySafeJson(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title) })))
-      : fenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'))
-  out(text)
-  // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
-  const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
-  recordStat('pdf_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
-  const meta = await runPdfMeta(file)
-  // The Info dictionary is author-chosen text, so it is third-party content the same way the page bodies are: redact and neutralize it rather than trusting it because it is short. Kept null-preserving because the --json branch's contract is that it carries the nulls as themselves.
-  const safeField = (v: string | null): string | null => (v === null ? null : fenceFileFieldIfMatched(v))
-  const lines = [
-    `Pages: ${meta.pageCount}`,
-    `Title: ${safeField(meta.title) ?? '(none)'}`,
-    `Author: ${safeField(meta.author) ?? '(none)'}`,
-    `Text layer: ${meta.hasTextLayer ? 'yes' : 'no (likely scanned/image-only; pdf-extract will return little or no text)'}`,
-  ]
-  // The text form cannot be parsed back reliably: `Title: (none)` is indistinguishable from a PDF whose title is literally "(none)", a title or author containing a newline or a colon breaks the line-oriented `key: value` shape outright, and hasTextLayer -- the one field a caller acts on, since it decides whether pdf-extract is worth running -- is buried in a prose sentence that has to be substring-matched. JSON carries the nulls and the boolean as themselves.
-  const text = opts.json === true
-    ? displaySafeJson({ pageCount: meta.pageCount, title: safeField(meta.title), author: safeField(meta.author), hasTextLayer: meta.hasTextLayer })
-    : lines.join('\n')
-  out(text)
-  // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
-  const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
-  recordStat('pdf_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
-}
+export { cmdPdfExtract, cmdPdfLocate, cmdPdfOutline, cmdPdfMeta } from './cli_office.js'
 
 async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
   const meta = await runImageMeta(file)
@@ -1832,390 +1672,41 @@ async function cmdImageText(file: string, opts: { json?: boolean; lang?: string 
   recordStat('image_text', bytesSaved, visionTokensSavedByText(null, null, Buffer.byteLength(text, 'utf8'), loadConfig().image_shrink.vision_tier))
 }
 
-function cmdVideoChapters(file: string) {
-  const { chapters, subtitleStreams } = extractVideoChapters(file)
-  const lines: string[] = []
-  if (chapters.length === 0) {
-    lines.push('(no chapter markers found)')
-  } else {
-    for (const c of chapters) {
-      // A chapter title is wholly attacker-chosen with no length or charset constraint, and running video-chapters on a downloaded clip is the command's documented purpose.
-      const title = displaySafeText(c.title ?? `Chapter ${c.index}`)
-      lines.push(`${formatVideoTimestamp(c.startSeconds)} - ${formatVideoTimestamp(c.endSeconds)}  ${title}`)
-    }
-  }
-  if (subtitleStreams.length > 0) {
-    lines.push('')
-    lines.push('Subtitle/caption streams:')
-    for (const s of subtitleStreams) {
-      const parts = [s.codec ?? 'unknown codec', s.language ?? 'unknown language', s.title ?? null].filter((p) => p !== null).map((p) => displaySafeText(p))
-      lines.push(`  stream #${s.index}: ${parts.join(', ')}`)
-    }
-    lines.push('(extract a subtitle stream to .vtt/.srt with ffmpeg, then use transcript/transcript-outline on it)')
-  }
-  const text = lines.join('\n')
-  out(text)
-  // Same registry/producer desync as cmdPdfMeta/recordXlsxStat/recordDocStat above -- video-chapters
-  // never called recordStat, so its dashboard bucket in `token-goat stats --full` stayed
-  // permanently zero regardless of real usage (see project_runchanged_missing_stat memory).
-  const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
-  recordStat('video_chapters', bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-function formatVideoTimestamp(totalSeconds: number): string {
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = Math.floor(totalSeconds % 60)
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
-}
-
-function cmdSharepointResolve(url: string) {
-  const parsed = parseShareUrl(url)
-  const result = resolveLocalPath(parsed)
-  if (result.resolvedPath !== null) {
-    out(result.resolvedPath)
-    return
-  }
-  const lines = [
-    // A SharePoint sharing link carries access material (tokens/signatures) in its query string. sharepoint_resolve.ts states that contract for its own throws and honours it everywhere; this caller was discarding it and printing the argv url whole, on what is the command's ORDINARY outcome rather than an exotic one. Redact the query here too, and neutralize the markers the surviving origin+path can still carry.
-    `could not resolve a local synced copy for: ${displaySafeText(redactUrlQuery(url))}`,
-    `tried:`,
-    ...result.triedPaths.map((p) => `  ${displaySafePath(p)}`),
-    result.triedPaths.length === 0
-      ? '  (no OneDrive sync root found -- OneDrive may not be installed/signed in on this machine)'
-      : '',
-  ].filter((l) => l !== '')
-  out(lines.join('\n'))
-}
-
-// stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `xlsx-*`/`xlsx_*` entries and nothing
-// ever called recordStat for this family -- the dashboard buckets were permanently zero
-// regardless of real usage, the same class of gap already fixed for
-// map_lookup/changed_lookup/csv_query/gdrive_sections (see project_runchanged_missing_stat
-// memory). "Full source" is the on-disk workbook size, mirroring recordReadStat's convention.
-function recordXlsxStat(kind: string, file: string, emitted: string): void {
-  const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(emitted, 'utf8'))
-  recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}) {
-  const sheets = await xlsxListSheets(file)
-  // A sheet name is authored by whoever built the spreadsheet -- fence it the same as the cell
-  // data xlsx-head/range/query return below. Printed form: one unconditional fence around the
-  // whole listing. `--json` form: per-field and match-gated, to keep the envelope parseable.
-  // Three sibling commands (xlsx-head, xlsx-range, xlsx-query) take a --sheet whose help text says "see xlsx-sheets", so this output exists to be fed straight back -- but the sheet name had to be copied out of a padded prose line that also carries the range and the dimensions. --json hands over the same {name, ref, rows, cols} the extractor already returns.
-  const text = opts.json === true ? displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols }))) : fenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'))
-  out(text)
-  recordXlsxStat('xlsx_sheets', file, text)
-}
-
-async function cmdXlsxHead(file: string, opts: { sheet?: string; rows?: string; columns?: string }) {
-  const rows = opts.rows !== undefined ? requireNonNegativeInt('--rows', opts.rows) : 20
-  const columns = opts.columns
-    ? opts.columns.split(',').map((c) => c.trim()).filter(Boolean)
-    : undefined
-  const text = fenceFileText(await xlsxHeadSheet(file, opts.sheet, rows, columns))
-  out(text)
-  recordXlsxStat('xlsx_head', file, text)
-}
-
-async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?: string; json?: boolean } = {}) {
-  const maxRows = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 100
-  const result = await xlsxColumns(file, opts.sheet, maxRows)
-  if (opts.json === true) {
-    // A column header and every sample value under it are spreadsheet text, so they get the same per-field, match-gated treatment xlsx-sheets and docx-outline already give theirs -- see fenceFileFieldIfMatched. Without it this branch was the only route by which the redaction its own printed form applies was skipped: measured, `--json` emitted an `sk-ant-api03-` key and an `AKIA` key verbatim out of cells the printed form had already masked.
-    const text = displaySafeJson({
-      ...result,
-      sheetName: fenceFileFieldIfMatched(result.sheetName),
-      columns: result.columns.map((c) => ({ ...c, name: fenceFileFieldIfMatched(c.name), sampleValues: c.sampleValues.map(fenceFileFieldIfMatched) })),
-    })
-    out(text)
-    recordXlsxStat('xlsx_columns', file, text)
-  } else {
-    const text = fenceFileText(formatXlsxColumns(result))
-    out(text)
-    recordXlsxStat('xlsx_columns', file, text)
-  }
-}
-
-async function cmdXlsxRange(file: string, opts: { sheet?: string; range: string; formulas?: boolean }) {
-  const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
-  const text = fenceFileText(formatXlsxRange(result))
-  out(text)
-  recordXlsxStat('xlsx_range', file, text)
-}
-
-async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns?: string; where?: string[]; head?: string; json?: boolean }) {
-  const columns = opts.columns
-    ? opts.columns
-        .split(',')
-        .map((c) => c.trim())
-        .filter(Boolean)
-    : undefined
-  const wheres = parseWhereSpecs(opts.where)
-  const result = await xlsxQuerySheet(file, opts.sheet, {
-    ...(columns !== undefined ? { columns } : {}),
-    ...(wheres !== undefined ? { wheres } : {}),
-    ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
-  })
-  if (opts.json === true) {
-    // Every cell is spreadsheet text, treated the same way xlsx-sheets treats a sheet name: match-gated per field, so the envelope stays parseable and a value the printed form would have masked is not handed over whole. See fenceFileFieldIfMatched. Values only, not the header names they key: a key that came back as a 125-byte fence would not be usable as a key by any caller, and displaySafeJson already neutralizes token-goat's own markers in it.
-    const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, fenceFileFieldIfMatched(r[i] ?? '')])))
-    const headTruncated = result.rows.length < result.totalRows
-    const capped = guardJsonRows(rowsJson)
-    const text = displaySafeJson(
-      {
-        items: capped.items,
-        truncated: capped.truncated || headTruncated,
-        totalCount: result.totalRows,
-        ...(result.totalRows === 0 && result.preFilterRows > 0 ? { filteredFromRows: result.preFilterRows } : {}),
-      },
-      0,
-    )
-    out(text)
-    recordXlsxStat('xlsx_query', file, text)
-  } else {
-    const text = fenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
-    out(text)
-    recordXlsxStat('xlsx_query', file, text)
-  }
-}
-
-// Same registry/producer desync as recordXlsxStat above, for the pptx-*/docx-*/transcript*
-// families -- see that function's comment.
-function recordDocStat(kind: string, file: string, emitted: string): void {
-  const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(emitted, 'utf8'))
-  recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
-  const slides = await pptxOutline(file)
-  // A slide title is authored by whoever built the deck -- fence it the same as pptx-text/slide/
-  // notes below. Printed form: one unconditional fence around the whole listing. `--json` form:
-  // per-field and match-gated, to keep the envelope parseable.
-  const text =
-    opts.json === true
-      ? displaySafeJson(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title) })))
-      : fenceFileText(
-          slides
-            .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
-            .join('\n'),
-        )
-  out(text)
-  recordDocStat('pptx_outline', file, text)
-}
-
-async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean }) {
-  const n = requireNonNegativeInt('--slide', opts.slide)
-  const text = fenceFileText(await pptxSlideText(file, n, opts.notes === true))
-  out(text)
-  recordDocStat('pptx_slide', file, text)
-}
-
-async function cmdPptxNotes(file: string, opts: { slide?: string }) {
-  const n = opts.slide !== undefined ? requireNonNegativeInt('--slide', opts.slide) : undefined
-  const text = await pptxNotesText(file, n)
-  const printed = text.length > 0 ? fenceFileText(text) : 'no speaker notes found'
-  out(printed)
-  recordDocStat('pptx_notes', file, printed)
-}
-
-async function cmdPptxText(file: string, opts: { grep: string }) {
-  const matches = await pptxTextGrep(file, opts.grep)
-  if (matches.length === 0) {
-    out('no matches')
-    return
-  }
-  const text = fenceFileText(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'))
-  out(text)
-  recordDocStat('pptx_text', file, text)
-}
-
-async function cmdDocxOutline(file: string, opts: { json?: boolean }) {
-  const headings = await docxOutline(file)
-  if (headings.length === 0) {
-    if (opts.json === true) {
-      out(displaySafeJson([]))
-    } else {
-      out('no headings found (try docx-text for full body text)')
-    }
-    return
-  }
-  // A heading is authored by whoever wrote the document -- fence it the same as docx-text's body
-  // text. Printed form: one unconditional fence around the whole listing. `--json` form: per-field
-  // and match-gated, to keep the envelope parseable.
-  const text =
-    opts.json === true
-      ? displaySafeJson(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text) })))
-      : fenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'))
-  out(text)
-  recordDocStat('docx_outline', file, text)
-}
-
-async function cmdDocxTables(file: string, opts: { table?: string; json?: boolean }) {
-  const tableIdx = opts.table !== undefined ? parseInt(opts.table, 10) : undefined
-  if (tableIdx !== undefined && (Number.isNaN(tableIdx) || tableIdx < 1)) {
-    throw new CliError(`--table must be a positive integer, got: ${opts.table}`)
-  }
-  const tables = await docxTables(file)
-  if (tables.length === 0) {
-    if (opts.json === true) {
-      out(displaySafeJson([]))
-    } else {
-      out('no tables found in document')
-    }
-    return
-  }
-
-  const selected = tableIdx !== undefined
-    ? tables.filter((t) => t.tableIndex === tableIdx)
-    : tables
-
-  if (selected.length === 0) {
-    throw new CliError(`table ${tableIdx} not found (document has ${tables.length} table${tables.length === 1 ? '' : 's'})`)
-  }
-
-  if (opts.json === true) {
-    // Every cell is document text, fenced per field and match-gated the same way docx-outline fences a heading -- see fenceFileFieldIfMatched. Without it this branch was the only route by which the redaction its own printed form applies was skipped: measured, `--json` emitted an `sk-ant-api03-` key verbatim out of a cell the printed form had already masked.
-    const fenced = selected.map((t) => ({ ...t, rows: t.rows.map((r) => r.map(fenceFileFieldIfMatched)) }))
-    const text = displaySafeJson(tableIdx !== undefined ? fenced[0] : fenced)
-    out(text)
-    recordDocStat('docx_tables', file, text)
-    return
-  }
-
-  const text = fenceFileText(formatDocxTables(tables, tableIdx !== undefined ? { tableIndex: tableIdx } : undefined))
-  out(text)
-  recordDocStat('docx_tables', file, text)
-}
-
-async function cmdDocxText(
-  file: string,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
-) {
-  const text = await docxText(file)
-  const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
-  recordDocStat('docx_text', file, printed)
-}
-
-function cmdTranscriptOutline(file: string, opts: { json?: boolean }) {
-  const cues = readTranscript(file)
-  if (cues.length === 0) {
-    if (opts.json === true) {
-      out(displaySafeJson({ durationSeconds: 0, speakers: [], markers: [] }))
-    } else {
-      out('no cues found (not a valid .vtt/.srt file?)')
-    }
-    return
-  }
-  const outline = buildTranscriptOutline(cues)
-  let text: string
-  if (opts.json === true) {
-    text = displaySafeJson(outline)
-  } else {
-    const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
-    if (outline.speakers.length > 0) {
-      // Speaker labels come out of the transcript being read, so they are document text.
-      lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${displaySafeText(s.name)}  (${s.cueCount} cues)`))
-    }
-    // Same reasoning as the speaker labels one line above, which were already escaped: the preview is the first 60 characters of a cue, so it is transcript text, and .vtt/.srt files routinely arrive from somewhere else.
-    lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${displaySafeText(m.preview)}`))
-    text = lines.join('\n')
-  }
-  out(text)
-  recordDocStat('transcript_outline', file, text)
-}
-
-function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to?: string; grep?: string }) {
-  const cues = readTranscript(file)
-  const sliceOpts = parseSliceOptions(opts)
-  const sliced = sliceTranscript(cues, sliceOpts)
-  if (sliced.length === 0) {
-    out('no cues match')
-    return
-  }
-  // formatCues wraps cue bytes in token-goat's own `[timestamp] speaker:` framing, and unlike the outline's 60-character previews this is the whole transcript: unbounded text, and the one document command that reached the model neither fenced nor redacted. fenceFileText is the convention every sibling already follows.
-  const text = fenceFileText(formatCues(sliced))
-  out(text)
-  recordDocStat('transcript', file, text)
-}
-
-function cmdCsvQuery(
-  file: string,
-  opts: { columns?: string; where?: string[]; head?: string; json?: boolean; delimiter?: string; header?: boolean },
-) {
-  const { header, ...rest } = opts
-  process.exitCode = runCsvQuery({ file, ...rest, ...(header === false ? { noHeader: true } : {}) })
-}
-
-function cmdCsvProfile(file: string, opts: { delimiter?: string; header?: boolean }) {
-  const { header, ...rest } = opts
-  process.exitCode = runCsvProfile({ file, ...rest, ...(header === false ? { noHeader: true } : {}) })
-}
-
-function cmdJsonOutline(file: string, opts: { json?: boolean }) {
-  process.exitCode = runJsonOutline({ file, ...opts })
-}
-
-function cmdJsonQuery(file: string, jsonPath: string, opts: { head?: string; json?: boolean }) {
-  process.exitCode = runJsonQuery({ file, path: jsonPath, ...opts })
-}
-
-function cmdYamlOutline(file: string, opts: { json?: boolean }) {
-  process.exitCode = runYamlOutline({ file, ...opts })
-}
-
-function cmdYamlQuery(file: string, yamlPath: string, opts: { head?: string; json?: boolean }) {
-  process.exitCode = runYamlQuery({ file, path: yamlPath, ...opts })
-}
-
-function cmdXmlOutline(file: string, opts: { json?: boolean; maxDepth?: string }) {
-  process.exitCode = runXmlOutline({
-    file,
-    ...(opts.json === true ? { json: true } : {}),
-    ...(opts.maxDepth !== undefined ? { maxDepth: requireNonNegativeInt('--max-depth', opts.maxDepth) } : {}),
-  })
-}
-
-function cmdXmlQuery(file: string, xmlPath: string, opts: { head?: string; json?: boolean }) {
-  process.exitCode = runXmlQuery({ file, path: xmlPath, ...opts })
-}
-
-function cmdHtmlOutline(file: string, opts: { json?: boolean }) {
-  process.exitCode = runHtmlOutline({ file, ...opts })
-}
-
-function cmdHtmlQuery(
-  file: string,
-  selector: string,
-  opts: { head?: string; json?: boolean; text?: boolean; attr?: string },
-) {
-  process.exitCode = runHtmlQuery({ file, selector, ...opts })
-}
-
-function cmdHtmlLint(file: string, opts: { json?: boolean; strict?: boolean }) {
-  process.exitCode = runHtmlLint({ file, ...opts })
-}
-
-function cmdOpenApiOutline(file: string, opts: { json?: boolean }) {
-  process.exitCode = runOpenApiOutline({ file, ...opts })
-}
-
-function cmdOpenApiOp(file: string, operation: string, opts: { json?: boolean }) {
-  process.exitCode = runOpenApiOp({ file, operation, ...opts })
-}
-
-async function cmdZipList(file: string, opts: { json?: boolean }) {
-  process.exitCode = await runZipList({ file, ...opts })
-}
-
-async function cmdZipRead(file: string, entry: string, opts: { json?: boolean }) {
-  process.exitCode = await runZipRead({ file, entry, ...opts })
-}
+export {
+  cmdDocxOutline,
+  cmdDocxTables,
+  cmdDocxText,
+  cmdPptxNotes,
+  cmdPptxOutline,
+  cmdPptxSlide,
+  cmdPptxText,
+  cmdSharepointResolve,
+  cmdTranscript,
+  cmdTranscriptOutline,
+  cmdVideoChapters,
+  cmdXlsxColumns,
+  cmdXlsxHead,
+  cmdXlsxQuery,
+  cmdXlsxRange,
+  cmdXlsxSheets,
+} from './cli_office.js'
+export {
+  cmdCsvProfile,
+  cmdCsvQuery,
+  cmdHtmlLint,
+  cmdHtmlOutline,
+  cmdHtmlQuery,
+  cmdJsonOutline,
+  cmdJsonQuery,
+  cmdOpenApiOp,
+  cmdOpenApiOutline,
+  cmdXmlOutline,
+  cmdXmlQuery,
+  cmdYamlOutline,
+  cmdYamlQuery,
+  cmdZipList,
+  cmdZipRead,
+} from './cli_structured.js'
 
 function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boolean }) {
   process.exitCode = runPrSlice({ pr, slice, ...opts })
@@ -2394,1113 +1885,8 @@ function parseTimeout(raw: string | undefined, fallbackSeconds: number): number 
   return Number.isFinite(sec) && sec > 0 ? sec : fallbackSeconds
 }
 
-async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
-  const filePath = await getSkillFilePath(name)
-  if (filePath === null) {
-    throw new CliError(`skill '${name}' not found`)
-  }
-
-  const body = decodeSource(fs.readFileSync(filePath))
-  if (opts.compact === true) {
-    const emitted = extractCompactFromMarker(body) ?? body
-    out(emitted)
-    // stats.ts registers the `skill_body:` prefix and its skill_oversized_first_load entry states in so many words that the pointer deny books zero because "the follow-up command does" record the saving -- but this, the follow-up command, recorded nothing, so the whole oversized-skill chain summed to zero however often it fired. Same body-minus-slice counterfactual skill_compact_inlined already uses, measured against the string actually printed.
-    const bytesSaved = Buffer.byteLength(body, 'utf8') - Buffer.byteLength(emitted, 'utf8')
-    if (bytesSaved > 0) recordStat('skill_body:compact', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, name)
-  } else {
-    out(body)
-  }
-  // Increment hit count for skill recall tracking.
-  await incrementSkillHit(name)
-}
-
-async function cmdSkillCompact(name: string | undefined, opts: { path?: string; all?: boolean }): Promise<void> {
-  const sessionId = getSessionId()
-
-  if (opts.all === true) {
-    // Regenerate compacts for all skills, skipping fresh ones.
-    const skills = await listSkills(sessionId)
-    let regenerated = 0
-    let skipped = 0
-    let noMarker = 0
-    let unresolvable = 0
-    for (const skill of skills) {
-      const filePath = await getSkillFilePath(skill.name)
-      if (!filePath) {
-        unresolvable++
-        continue
-      }
-      // getSkillFilePath returns a cached sourcePath without checking it still exists, so a skill whose source file was deleted or renamed used to throw a raw ENOENT here and crash the whole --all pass -- the exact command doctor prints as the compact remediation. A vanished source is the same operator-visible state as an unresolvable name: count it there and keep going.
-      let body: string
-      try {
-        body = decodeSource(fs.readFileSync(filePath))
-      } catch {
-        unresolvable++
-        continue
-      }
-      const compact = extractCompactFromMarker(body)
-      if (compact === null) {
-        noMarker++
-        continue
-      }
-      const sourceSha = contentHash(body)
-      if (skill.compactStale === false) {
-        skipped++
-      } else {
-        await storeCompact(sessionId, skill.name, compact, sourceSha)
-        regenerated++
-      }
-    }
-    // Every skill lands in exactly one bucket and every non-empty bucket is named: the old two-bucket summary silently dropped markerless and unresolvable skills, so "Regenerated 0, skipped 2, total 30" read as complete while the 28 skills that actually need operator action (adding a COMPACT_END marker) vanished from the report -- the one surface the docs and doctor point at for compact remediation.
-    const parts = [`Regenerated ${regenerated}, skipped ${skipped} (fresh)`]
-    if (noMarker > 0) parts.push(`no marker ${noMarker}`)
-    if (unresolvable > 0) parts.push(`unresolvable ${unresolvable}`)
-    out(`${parts.join(', ')}, total ${skills.length}.`)
-    if (noMarker > 0) {
-      out(`${noMarker} cached skill${noMarker === 1 ? ' has' : 's have'} no COMPACT_END marker and cannot be compacted; run \`token-goat skill-size\` for per-skill marker recommendations.`)
-    }
-    return
-  }
-
-  let body: string
-  let cacheName: string
-  let sourcePath: string
-
-  if (opts.path !== undefined && opts.path !== '') {
-    if (!opts.path.trim()) {
-      throw new CliError('--path cannot be empty')
-    }
-    // --path bypasses name resolution: read the body straight from the given file. The cache key is the explicit name when supplied, else the parent directory name (a skill lives in ~/.claude/skills/<name>/SKILL.md, so its parent dir is its name).
-    if (!fs.existsSync(opts.path)) {
-      throw new CliError(`skill file not found: ${opts.path}`)
-    }
-    try {
-      body = fs.readFileSync(opts.path, 'utf-8')
-    } catch (e) {
-      // TOCTOU: the file can vanish between the existsSync check above and this read (race, or a symlink target disappearing). Re-throw as the same friendly CliError the existsSync guard exists to produce, rather than letting a raw ENOENT reach the user.
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new CliError(`skill file not found: ${opts.path}`)
-      }
-      throw new CliError(`failed to read skill file '${opts.path}': ${extractErrorMessage(e)}`)
-    }
-    cacheName = name ?? path.basename(path.dirname(path.resolve(opts.path)))
-    sourcePath = path.resolve(opts.path)
-  } else {
-    if (name === undefined || !name.trim()) {
-      throw new CliError('skill-compact requires a <name> or --path <file>')
-    }
-    const filePath = await getSkillFilePath(name)
-    if (filePath === null) {
-      throw new CliError(`skill '${name}' not found`)
-    }
-    body = fs.readFileSync(filePath, 'utf-8')
-    cacheName = name
-    sourcePath = filePath
-  }
-
-  // Persist the body (writes the meta that skill-list surfaces) and the compact slice, so a skill compacted straight from disk is both listable and recallable cross-session, exactly like one loaded via the Skill hook.
-  await storeOutput(sessionId, cacheName, body, { sourcePath })
-  const compact = extractCompactFromMarker(body)
-  if (compact === null) {
-    out(`Skill '${cacheName}' has no COMPACT_END marker — nothing to compact.`)
-    return
-  }
-  const sourceSha = contentHash(body)
-  await storeCompact(sessionId, cacheName, compact, sourceSha)
-  out(`Cached compact for skill '${cacheName}'.`)
-}
-
-/** How many skills a `--session-id` filter hid, for use when the filtered view came back empty. Reporting a filtered-to-nothing view as "nothing cached" is the same mistake `refs --exclude-tests` made: it turns "you asked the wrong question" into "there is no answer", and the caller stops looking. Returns 0 when no filter was given, and only ever runs the extra directory scan once the filtered result is already empty, so the populated path pays nothing. */
-async function countSkillsHiddenBySession(sessionId: string | undefined): Promise<number> {
-  if (sessionId === undefined) return 0
-  return (await listSkills()).length
-}
-
-async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promise<void> {
-  const skills = await listSkills(opts.sessionId)
-  if (opts.json === true) {
-    const json = skills.map((s) => ({
-      name: s.name,
-      skill_name: s.name,
-      body_bytes: s.bodyLen,
-      compact_bytes: s.compactLen,
-      has_marker: s.hasMarker,
-      compact_stale: s.compactStale,
-      hit_count: s.hitCount,
-      age_ms: s.ageMs,
-    }))
-    out(displaySafeJson(json))
-  } else {
-    // Human table format with columns: name, body, compact, marker, hit count, age, stale/fresh/no-compact.
-    const lines = skills.map((s) => {
-      const bodyKb = (s.bodyLen / 1024).toFixed(1)
-      const compactKb = s.compactLen > 0 ? (s.compactLen / 1024).toFixed(1) : '-'
-      const marker = s.hasMarker ? 'yes' : 'no'
-      const staleStatus = s.compactLen === 0 ? '[no-compact]' : (s.compactStale === true ? '[stale]' : s.compactStale === false ? '[fresh]' : '[unknown]')
-      const age = formatAge(s.ageMs)
-      return `${s.name.padEnd(25)} ${bodyKb.padStart(6)}K  ${compactKb.padStart(6)}K  ${marker}  ${s.hitCount.toString().padStart(3)}  ${age.padStart(3)}  ${staleStatus}`
-    })
-    const header = `${'Name'.padEnd(25)} ${'Body'.padStart(6)}  ${'Compact'.padStart(6)}  Marker  Hits  Age  Status`
-    // A bare header with no rows is indistinguishable from a rendering failure or a lookup against
-    // the wrong cache root. Say the cache is empty, matching how `stats` reports its own empty
-    // store, so the caller knows nothing is wrong and there is simply nothing cached.
-    if (skills.length === 0) {
-      const hidden = await countSkillsHiddenBySession(opts.sessionId)
-      if (hidden > 0) {
-        out(`No skills cached for session '${opts.sessionId}' (${hidden} cached under other sessions).`)
-        return
-      }
-      out('No skills cached yet.')
-      return
-    }
-    out([header, ...lines].join('\n'))
-  }
-}
-
-async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
-  const skills = await listSkills(opts.sessionId)
-  let totalBody = 0
-  let totalCompact = 0
-  for (const skill of skills) {
-    totalBody += skill.bodyLen
-    totalCompact += skill.compactLen
-  }
-  const lines = [
-    `# token-goat skill cache (${skills.length} skills)`,
-    `Body:    ${totalBody} bytes`,
-    `Compact: ${totalCompact} bytes`,
-  ]
-  // A zero-count report under a --session-id filter describes the cache as empty when it is merely filtered, so name what the filter hid. Without a filter this is always 0 and the report is byte-identical to before.
-  const hiddenBySession = skills.length === 0 ? await countSkillsHiddenBySession(opts.sessionId) : 0
-  if (hiddenBySession > 0) {
-    lines.push(`(${hiddenBySession} cached under other sessions, hidden by --session-id ${opts.sessionId})`)
-  }
-
-  // Add per-skill table. Skip the heading entirely when there are no rows: a heading followed by nothing reads as truncated output rather than as an empty cache.
-  if (skills.length > 0) {
-    lines.push('')
-    lines.push('## Per-skill breakdown')
-  }
-  for (const skill of skills) {
-    const bodyKb = (skill.bodyLen / 1024).toFixed(1)
-    const compactKb = skill.compactLen > 0 ? (skill.compactLen / 1024).toFixed(1) : '-'
-    lines.push(`  ${displaySafeText(skill.name).padEnd(25)} body: ${bodyKb.padStart(6)}K  compact: ${compactKb.padStart(6)}K`)
-  }
-
-  // Add recommendations for skills without compacts and over ~1500 tokens (6000 bytes).
-  const noCompactLargeSkills = skills.filter((s) => s.compactLen === 0 && s.bodyLen > 6000)
-  if (noCompactLargeSkills.length > 0) {
-    lines.push('')
-    lines.push('## Recommendations')
-    for (const skill of noCompactLargeSkills) {
-      const estimatedTokens = Math.floor(skill.bodyLen / 4)
-      lines.push(`  ${displaySafeText(skill.name)}: add <!-- COMPACT_END --> marker (body ~${estimatedTokens}tok, no compact slice)`)
-    }
-  }
-
-  out(lines.join('\n'))
-}
-
-async function cmdSkillHistory(opts: { json?: boolean }): Promise<void> {
-  const metas = (await listOutputs())
-    .map((m) => ({ outputId: m.outputId, skillName: m.skillName, bytes: m.bodyBytes, truncated: m.truncated, ts: m.ts }))
-    .sort((a, b) => b.ts - a.ts)
-
-  if (opts.json === true) {
-    const json = metas.map((m) => ({
-      output_id: m.outputId,
-      skill_name: m.skillName,
-      bytes: m.bytes,
-      truncated: m.truncated,
-      timestamp: m.ts,
-    }))
-    out(displaySafeJson(json))
-  } else {
-    const lines = metas.map((m) => {
-      const timeStr = formatLocalTimestamp(new Date(m.ts))
-      const truncMarker = m.truncated ? ' [truncated]' : ''
-      return `${m.outputId.padEnd(40)} ${m.skillName.padEnd(25)} ${m.bytes.toString().padStart(8)} bytes  ${timeStr}${truncMarker}`
-    })
-    const header = `${'Output ID'.padEnd(40)} ${'Skill'.padEnd(25)} ${'Bytes'.padStart(8)}  Timestamp`
-    // A bare header with no rows is indistinguishable from a rendering failure or a lookup against the wrong cache root, the same gap `skill-list` closed above and `skill-diff` closed with its own no-versions message. Say the store is empty.
-    if (metas.length === 0) {
-      out('No cached skill versions yet.')
-      return
-    }
-    out([header, ...lines].join('\n'))
-  }
-}
-
-async function cmdSkillDiff(name: string): Promise<void> {
-  if (!name || !name.trim()) {
-    throw new CliError('skill-diff requires a <name>')
-  }
-  const dir = skillOutputsDir()
-  const versions = (await listOutputs())
-    .filter((m) => m.skillName === name)
-    .sort((a, b) => b.ts - a.ts)
-
-  if (versions.length === 0) {
-    out(`no cached versions of '${name}'`)
-    return
-  }
-  if (versions.length < 2) {
-    out(`only one cached version of '${name}'`)
-    return
-  }
-
-  const newer = versions[0]!
-  const older = versions[1]!
-  const newerBody = await fs.promises.readFile(path.resolve(dir, `${newer.outputId}.txt`), 'utf-8').catch(() => null)
-  const olderBody = await fs.promises.readFile(path.resolve(dir, `${older.outputId}.txt`), 'utf-8').catch(() => null)
-  if (newerBody === null || olderBody === null) {
-    // listOutputs() above genuinely found >=2 versions -- a body read failing here (unlike the
-    // versions.length < 2 case above) means one was evicted by a concurrent storeOutput()/
-    // prune-cache run in the gap between that list and this read (pruneSkillOutputs runs
-    // synchronously on every storeOutput() call and independently via `prune-cache`, neither
-    // coordinated with this read), not that only one version ever existed. Say so distinctly
-    // instead of reusing the "only one cached version" text, which would be actively false here.
-    out(`a cached version of '${name}' was evicted while diffing -- try again`)
-    return
-  }
-  const diff = buildLineDiff(olderBody, newerBody, name)
-  out(diff)
-}
-
-async function cmdSkillSection(nameHeading: string, headingArg?: string): Promise<void> {
-  if (!nameHeading) {
-    throw new CliError('skill-section requires "<name>::<heading>" or <name> <heading>')
-  }
-  let skillName: string
-  let heading: string
-  if (headingArg) {
-    skillName = nameHeading
-    heading = headingArg
-  } else {
-    const sepIdx = findSpecSeparator(nameHeading)
-    if (sepIdx === -1) {
-      throw new CliError('skill-section requires "<name>::<heading>" format or <name> <heading> arguments')
-    }
-    skillName = nameHeading.slice(0, sepIdx)
-    heading = nameHeading.slice(sepIdx + 2)
-  }
-
-  const filePath = await getSkillFilePath(skillName)
-  if (!filePath) {
-    throw new CliError(`skill '${skillName}' not found`)
-  }
-  const body = decodeSource(fs.readFileSync(filePath))
-  const extracted = extractNamedSection(body, heading)
-  if (!extracted) {
-    // A bare exit 1 with nothing on either stream is indistinguishable from a crash, and gave a
-    // caller no way to tell a mistyped heading from a skill that never had one. `section` says
-    // what it looked for and what is near it; say the same here.
-    const allHeadings = listSections(filePath)
-    // extractNamedSection returns null for two different situations -- no such heading, and a heading
-    // whose section is empty -- because it ends on `text || null`. Reporting both as "not found"
-    // produced output that contradicted itself: a heading sitting last in a file with nothing under
-    // it answered "Section 'X' not found" and then "Did you mean: - X", suggesting the exact string
-    // just refused. Separate the two before composing the message, so a present-but-empty section is
-    // named as empty and never draws a did-you-mean pointing at itself.
-    const wanted = stripLower(heading)
-    if (allHeadings.some((h) => stripLower(h) === wanted)) {
-      throw new CliError(`Section '${heading}' in skill '${skillName}' is present but empty`)
-    }
-    const messages = [`Section '${heading}' not found in skill '${skillName}'`]
-    const available = filterSimilarHeadings(allHeadings, heading)
-    if (available.length > 0) messages.push(didYouMean(available))
-    else if (allHeadings.length === 0) messages.push(`skill '${skillName}' has no headings`)
-    else messages.push(`Try: token-goat outline ${filePath}`)
-    throw new CliError(messages.join('\n'))
-  }
-  out(extracted)
-}
-
-function atomicWriteBuffer(dest: string, data: Buffer): void {
-  try {
-    if (fs.statSync(dest).isDirectory()) {
-      const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${dest}'`), { code: 'EISDIR', path: dest }) as NodeJS.ErrnoException
-      throw e
-    }
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
-  }
-  // Place tmp in same directory as dest so rename is always same-device (avoids EXDEV); include random suffix to eliminate PID-reuse collisions.
-  const rnd = randomBytes(4).toString('hex')
-  const tmp = path.join(path.dirname(path.resolve(dest)), `.tmp.${process.pid}.${rnd}`)
-  try {
-    // mode 0o600 applies on POSIX only; on Windows Node.js ignores it and the tmp file inherits the default ACL.
-    fs.writeFileSync(tmp, data, { mode: 0o600 })
-    // Preserve dest's existing file mode (e.g. the exec bit on a committed script) across the rewrite -- see atomicWriteCore in util.ts for the same fix and full rationale. A brand-new dest has no mode to inherit, so the tmp file keeps its 0o600 default.
-    try {
-      const destMode = fs.statSync(dest).mode
-      fs.chmodSync(tmp, destMode)
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
-    }
-    // Retries the rename on the same transient Windows lock errno (EPERM/EBUSY/ETXTBSY) that atomicWriteCore retries, so a briefly-locked destination behaves the same way here as it does for every other atomic write path in the codebase.
-    withRetryOnLock(() => {
-      try {
-        fs.renameSync(tmp, dest)
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
-          // copyFileSync is non-atomic; EXDEV should not occur normally (tmp is same-dir) but can appear on overlay/bind-mount filesystems.
-          fs.copyFileSync(tmp, dest)
-          try { fs.unlinkSync(tmp) } catch (ue) {
-            process.stderr.write(`token-goat write-file: warning: could not remove temp file ${tmp}: ${(ue as NodeJS.ErrnoException).message}\n`)
-          }
-          return
-        }
-        throw e
-      }
-    })
-  } catch (e) {
-    try { fs.unlinkSync(tmp) } catch { /* ignore cleanup failure */ }
-    throw e
-  }
-}
-
-
-function mapFsError(e: unknown, src?: string, dest?: string, srcLabel = 'source'): never {
-  const fe = e as NodeJS.ErrnoException
-  if (fe.code === 'ENOENT') {
-    const errPath = fe.path ?? ''
-    const isSource = src !== undefined && path.resolve(errPath) === path.resolve(src)
-    // Callers pass either a bare noun ('source') or one that already ends in 'file' ('target
-    // file'), and appending unconditionally produced 'target file file not found'.
-    if (isSource) throw new CliError(`${/\bfile$/i.test(srcLabel) ? srcLabel : `${srcLabel} file`} not found: ${src}`)
-    // Always show the destination directory, never the internal .tmp path
-    const destDir = dest ? path.dirname(path.resolve(dest)) : path.dirname(path.resolve(errPath || '.'))
-    throw new CliError(`destination directory does not exist: ${destDir}`)
-  }
-  if (fe.code === 'ENOTDIR') {
-    if (src !== undefined && dest === undefined) {
-      throw new CliError(`source path contains a file where a directory was expected: ${src}`)
-    }
-    throw new CliError(`destination path contains a file where a directory was expected: ${dest ?? fe.path ?? ''}`)
-  }
-  if (fe.code === 'EISDIR') {
-    const errPath = fe.path ?? ''
-    // Windows: readFileSync on a directory yields e.path===undefined (atomicWriteBuffer always sets e.path=dest); empty errPath with a src arg means the source was the directory.
-    const isSource = src !== undefined && (errPath === '' || path.resolve(errPath) === path.resolve(src))
-    if (isSource) throw new CliError(`source is a directory, not a file: ${src}`)
-    throw new CliError(`destination is a directory, not a file: ${dest ?? (errPath || '(unknown)')}`)
-  }
-  if (fe.code === 'EACCES' || fe.code === 'EPERM') {
-    if (src !== undefined && dest === undefined) {
-      throw new CliError(`permission denied reading: ${src}`)
-    }
-    throw new CliError(`permission denied writing to: ${dest ?? fe.path ?? ''}`)
-  }
-  if (fe.code === 'EROFS') {
-    throw new CliError(`filesystem is read-only: ${dest ?? fe.path ?? ''}`)
-  }
-  if (fe.code === 'ENOSPC') {
-    throw new CliError(`no space left on device writing to: ${dest ?? fe.path ?? ''}`)
-  }
-  if (fe.code === 'ELOOP') {
-    throw new CliError(`too many levels of symbolic links resolving: ${dest ?? fe.path ?? ''}`)
-  }
-  if (fe.code === 'ENAMETOOLONG') {
-    throw new CliError(`path is too long: ${dest ?? fe.path ?? ''}`)
-  }
-  if (fe.code === 'EMFILE' || fe.code === 'ENFILE') {
-    throw new CliError(`too many open files; close other processes or raise the file-descriptor limit and retry`)
-  }
-  if (fe.code === 'ETXTBSY') {
-    throw new CliError(`file is in use by a running process: ${dest ?? fe.path ?? ''}`)
-  }
-  if (fe.code === 'EDQUOT') {
-    throw new CliError(`disk quota exceeded writing to: ${dest ?? fe.path ?? ''}`)
-  }
-  throw e
-}
-
-// Windows reserved device names — writes to these are silently discarded or misrouted.
-const WIN_RESERVED = new Set([
-  'CON','PRN','AUX','NUL',
-  'COM0','COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9',
-  'LPT0','LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9',
-  'CONIN$','CONOUT$',
-])
-
-function validateWritablePath(dest: string, label: string): void {
-  if (!dest || !dest.trim()) {
-    throw new CliError(`${label} path cannot be empty`)
-  }
-  if (dest.includes('\0')) {
-    throw new CliError(`${label} path contains a null byte`)
-  }
-  if (isWindows()) {
-    const base = path.basename(dest)
-    const stem = base.replace(/\.[^.]*$/, '').toUpperCase()
-    if (WIN_RESERVED.has(stem)) {
-      throw new CliError(`${label} '${base}' is a reserved Windows device name`)
-    }
-    if (base.endsWith('.') || base.endsWith(' ')) {
-      throw new CliError(`${label} filename '${base}' ends with '${base.slice(-1)}' — Windows NTFS silently strips trailing dots and spaces, which would clobber a different file`)
-    }
-  }
-}
-
-function parseMaxStdinMB(): number {
-  const raw = process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512'
-  const maxMB = parseInt(raw, 10)
-  if (!Number.isFinite(maxMB) || maxMB <= 0) {
-    throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${raw}'`)
-  }
-  return maxMB
-}
-
-/** Shared validation + raw read for readTextFileBounded and cmdReplace's target-file read. Returns the file's exact bytes, unmodified — callers that need text decode it themselves. */
-function readFileBoundedRaw(filePath: string, label: string, allowStdIn = false): Buffer {
-  if (!filePath || !filePath.trim()) {
-    throw new CliError(`${label} path cannot be empty`)
-  }
-  if (filePath.includes('\0')) {
-    throw new CliError(`${label} path contains a null byte`)
-  }
-  if (!allowStdIn && !isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(filePath) && process.stdin.isTTY) {
-    const altLabel = label.endsWith('-from') ? label.replace('-from', '-b64') : 'a regular file path'
-    throw new CliError(`${label} ${filePath} requires piped input; use ${altLabel} for interactive use`)
-  }
-  try {
-    const st = fs.statSync(filePath)
-    if (st.isFIFO() || st.isSocket()) {
-      throw new CliError(`${label} '${filePath}' is a special file (FIFO or socket) — only regular files are supported`)
-    }
-    const maxBytes = parseMaxStdinMB() * 1024 * 1024
-    if (st.size > maxBytes) {
-      throw new CliError(`${label} '${filePath}' exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
-    }
-    return fs.readFileSync(filePath)
-  } catch (e) {
-    if (e instanceof CliError) throw e
-    mapFsError(e, filePath, undefined, label)
-  }
-}
-
-function decodeBase64Buffer(payload: string, label: string): Buffer {
-  const normalized = payload.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
-  if (payload !== '' && normalized === '') {
-    throw new CliError(`${label} payload contains only whitespace — likely a shell expansion error; pass an empty string explicitly for a zero-byte file`)
-  }
-  const maxBytes = parseMaxStdinMB() * 1024 * 1024
-  const decodedSize = Math.floor((normalized.replace(/=+$/, '').length * 3) / 4)
-  if (decodedSize > maxBytes) {
-    throw new CliError(`${label} payload would decode to ${Math.round(decodedSize / 1024 / 1024)} MB which exceeds size limit; set TOKEN_GOAT_MAX_STDIN_MB to override`)
-  }
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
-    throw new CliError(`${label} payload contains non-base64 characters — check for shell expansion of $VAR or backticks`)
-  }
-  if (normalized.replace(/=+$/, '').length % 4 === 1) {
-    throw new CliError(`${label} payload length is invalid (trailing single base64 character cannot decode to any bytes — payload is likely truncated)`)
-  }
-  return Buffer.from(normalized, 'base64')
-}
-
-/**
- * Handles `token-goat note-add <file> [--symbol NAME] --content-from <path>|--content-b64 <b64>`:
- * writes (or overwrites) a free-text architecture note attached to a file, or to one specific
- * indexed symbol within it, alongside a fingerprint of exactly what the note currently
- * describes -- the resolved symbol's body text, or a digest of the file's whole top-level
- * symbol manifest for a file-scoped note. That fingerprint is the staleness anchor
- * `token-goat note-list --stale-only` compares against the live index later (see notes.ts's
- * isNoteStale) -- this command only ever captures the baseline, never decides staleness.
- *
- * A write like insert-section/replace, not a surgical read, so it follows their convention:
- * throw CliError on failure, print a confirmation via out() on success, wired through guard().
- */
-function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: string; contentB64?: string }): void {
-  if (!file || !file.trim()) {
-    throw new CliError('file path cannot be empty')
-  }
-
-  const usingFrom = opts.contentFrom !== undefined
-  const usingB64 = opts.contentB64 !== undefined
-  if (usingFrom && usingB64) {
-    throw new CliError('cannot mix --content-from with --content-b64')
-  }
-  if (!usingFrom && !usingB64) {
-    throw new CliError('must provide either --content-from or --content-b64')
-  }
-  const contentBytes = usingFrom
-    ? readFileBoundedRaw(opts.contentFrom!, '--content-from')
-    : decodeBase64Buffer(opts.contentB64!, '--content-b64')
-  if (contentBytes.length === 0) {
-    throw new CliError('note content cannot be empty')
-  }
-  // Note content is stored/rendered as Markdown text, so a byte sequence that is not valid UTF-8
-  // would silently decode to U+FFFD replacement characters below -- reject it explicitly instead,
-  // same boundary-validation stance section.ts/insert-section take for text content.
-  if (Buffer.compare(Buffer.from(contentBytes.toString('utf8'), 'utf8'), contentBytes) !== 0) {
-    throw new CliError('note content must be valid UTF-8 text')
-  }
-
-  const resolvedPath = resolveIndexPath(file)
-  if (!fs.existsSync(resolvedPath)) {
-    throw new CliError(`File not found: '${resolvedPath}'`)
-  }
-  // Self-heal before resolving/fingerprinting so a note attached moments after an edit
-  // fingerprints the CURRENT code, not a stale pre-edit index snapshot -- same pattern
-  // runSymbol/runSection/runOutline already use via read_commands.ts's own healStaleIndex.
-  healStaleIndex(resolvedPath)
-
-  let symbol = WHOLE_FILE_NOTE_SYMBOL
-  let fingerprint: string
-  if (opts.symbol !== undefined) {
-    const match = resolveSymbolMatch(resolvedPath, opts.symbol)
-    if (match === null) {
-      const messages = [`No symbol named '${opts.symbol}' is indexed in '${file}'`]
-      const allNames = symbolNamesInFile(resolvedPath)
-      // Rank by similarity to the query before suggesting, the same way the read-side miss paths do -- passing the raw list meant a query resembling nothing printed every symbol in the file under "Did you mean", which reads as a guess list rather than a suggestion. When ranking leaves nothing, point at the command that lists them instead, reusing runSection's wording verbatim.
-      const available = rankSimilarNames(allNames, opts.symbol)
-      if (available.length > 0) messages.push(didYouMean(available))
-      else if (allNames.length > 0) messages.push(`Try: token-goat outline ${file}`)
-      throw new CliError(messages.join('\n'))
-    }
-    symbol = opts.symbol
-    fingerprint = fingerprintContent(match.body)
-  } else {
-    fingerprint = computeFileFingerprint(resolvedPath)
-  }
-
-  upsertNote(resolvedPath, symbol, contentBytes.toString('utf8'), fingerprint)
-  const target = opts.symbol !== undefined ? `${file}::${opts.symbol}` : file
-  out(`Note saved: ${target} (fingerprint ${fingerprint.slice(0, 12)})`)
-  recordStat('note_write')
-}
-function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
-  validateWritablePath(dest, 'destination')
-  if (opts.from !== undefined && opts.b64 !== undefined) {
-    throw new CliError('cannot use --from and --b64 together')
-  }
-  if (opts.from !== undefined) {
-    const buf = readFileBoundedRaw(opts.from, '--from')
-    try {
-      atomicWriteBuffer(dest, buf)
-    } catch (e) {
-      mapFsError(e, opts.from, dest)
-    }
-    enqueueDirtyPathSafe(dest)
-    return
-  }
-  if (opts.b64 !== undefined) {
-    const buf = decodeBase64Buffer(opts.b64, '--b64')
-    try {
-      atomicWriteBuffer(dest, buf)
-    } catch (e) {
-      mapFsError(e, undefined, dest)
-    }
-    enqueueDirtyPathSafe(dest)
-    return
-  }
-  if (process.stdin.isTTY) {
-    throw new CliError('stdin mode requires piped input; use --b64 or --from for interactive use')
-  }
-  const maxMB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
-  if (!Number.isFinite(maxMB) || maxMB <= 0) {
-    throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? ''}'`)
-  }
-  const maxBytes = maxMB * 1024 * 1024
-  return new Promise<void>((resolve, reject) => {
-    const chunks: Buffer[] = []
-    let totalBytes = 0
-    let settled = false
-    const onData = (chunk: Buffer) => {
-      totalBytes += chunk.length
-      if (totalBytes > maxBytes) {
-        if (!settled) {
-          settled = true
-          cleanup()
-          process.stdin.destroy()
-          reject(new CliError(`stdin input exceeds size limit (${Math.round(maxBytes / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`))
-        }
-        return
-      }
-      chunks.push(chunk)
-    }
-    const onEnd = () => {
-      if (settled) return
-      settled = true
-      cleanup()
-      try { atomicWriteBuffer(dest, Buffer.concat(chunks)); enqueueDirtyPathSafe(dest); resolve() }
-      catch (e) { try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) } }
-    }
-    const onError = (e: Error) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) }
-    }
-    const cleanup = () => {
-      process.stdin.removeListener('data', onData)
-      process.stdin.removeListener('end', onEnd)
-      process.stdin.removeListener('error', onError)
-    }
-    process.stdin.on('data', onData)
-    process.stdin.on('end', onEnd)
-    process.stdin.on('error', onError)
-    process.stdin.resume()
-  })
-}
-
-/** Diagnoses a zero-match --old-from/--old-b64 lookup for the common near-miss cause: the same content is present in the file but differs from oldText only by a trailing newline or by CRLF-vs-LF line endings. Returns a message suffix to fold into the error, or undefined if no such near match exists. Diagnostic only — it never changes what gets matched or written. */
-function diagnoseNearMiss(targetText: string, oldText: string): string | undefined {
-  // oldText carries a trailing newline the file doesn't have at that exact position (e.g. a snippet file saved with an added final newline).
-  const oldWithoutTrailingNewline = oldText.replace(/\r?\n$/, '')
-  if (oldWithoutTrailingNewline !== oldText && oldWithoutTrailingNewline !== '' && targetText.includes(oldWithoutTrailingNewline)) {
-    return `a near-match exists that differs only by a trailing newline — --old-from/--old-b64 has a trailing newline that is not present at that point in the file; check the exact content`
-  }
-
-  // Whole-snippet CRLF vs LF mismatch — check both directions symmetrically.
-  const normalize = (s: string) => s.replace(/\r\n/g, '\n')
-  const normalizedOld = normalize(oldText)
-  const normalizedTarget = normalize(targetText)
-
-  if (targetText !== oldText && normalizedTarget.includes(normalizedOld) && !targetText.includes(oldText)) {
-    // Determine which direction the mismatch is
-    if (oldText.includes('\r\n') && !targetText.includes('\r\n')) {
-      return `a near-match exists that differs only by line endings — --old-from/--old-b64 uses CRLF but the file uses LF at that location; check the exact content`
-    }
-    if (oldText.includes('\n') && !oldText.includes('\r\n') && targetText.includes('\r\n')) {
-      return `a near-match exists that differs only by line endings — --old-from/--old-b64 uses LF but the file uses CRLF at that location; check the exact content`
-    }
-  }
-
-  return undefined
-}
-
-/** Detects whether `buf` predominantly uses CRLF or LF line endings, by counting each. */
-function detectDominantEol(buf: Buffer): '\r\n' | '\n' {
-  let crlf = 0
-  let lfOnly = 0
-  for (let i = 0; i < buf.length; i++) {
-    if (buf[i] === 0x0a) {
-      if (i > 0 && buf[i - 1] === 0x0d) crlf++
-      else lfOnly++
-    }
-  }
-  return crlf > lfOnly ? '\r\n' : '\n'
-}
-
-/**
- * Converts `source`'s line endings to `eol`. Operates on raw bytes (never decodes to a
- * string): CR (0x0D) and LF (0x0A) can only appear as standalone single-byte characters in
- * valid UTF-8, never as a multi-byte sequence's continuation byte, so rewriting them
- * byte-by-byte is safe even on non-UTF-8 content — preserving the same byte-exactness
- * guarantee as the rest of `cmdReplace`.
- */
-function convertEolTo(source: Buffer, eol: '\r\n' | '\n'): Buffer {
-  const CR = 0x0d
-  const LF = 0x0a
-  const collapsed: number[] = []
-  for (let i = 0; i < source.length; i++) {
-    if (source[i] === CR && source[i + 1] === LF) continue
-    collapsed.push(source[i]!)
-  }
-  if (eol === '\n') return Buffer.from(collapsed)
-  const expanded: number[] = []
-  for (const b of collapsed) {
-    if (b === LF) expanded.push(CR, LF)
-    else expanded.push(b)
-  }
-  return Buffer.from(expanded)
-}
-
-/** Converts `source`'s line endings to match `reference`'s dominant line ending. */
-function normalizeEolToMatch(source: Buffer, reference: Buffer): Buffer {
-  return convertEolTo(source, detectDominantEol(reference))
-}
-
-/**
- * Collapses `buf`'s CRLF sequences down to LF, returning the collapsed bytes alongside a
- * map from each collapsed-byte index back to the original byte offset it came from (plus a
- * trailing sentinel entry at `buf.length`, so a half-open `[origStart[i], origStart[i+len])`
- * range recovers the exact original byte span a collapsed-space match of length `len`
- * starting at `i` corresponds to). Byte-level, not string-level, for the same non-UTF-8
- * safety reason as `convertEolTo`.
- */
-function buildEolCollapsedView(buf: Buffer): { collapsed: Buffer; origStart: number[] } {
-  const CR = 0x0d
-  const LF = 0x0a
-  const bytes: number[] = []
-  const origStart: number[] = []
-  let i = 0
-  while (i < buf.length) {
-    if (buf[i] === CR && buf[i + 1] === LF) {
-      bytes.push(LF)
-      origStart.push(i)
-      i += 2
-    } else {
-      bytes.push(buf[i]!)
-      origStart.push(i)
-      i += 1
-    }
-  }
-  origStart.push(buf.length)
-  return { collapsed: Buffer.from(bytes), origStart }
-}
-
-/**
- * Finds every place `old` occurs in `target` once both are EOL-collapsed (CRLF and LF treated
- * as equivalent), and maps each hit back to the real byte span in `target` — which may be
- * longer or shorter than `old.length` since the matched region can use a different EOL style
- * than `old` itself. This is how `cmdReplace` turns a "differs only by line endings" near-miss
- * into an actual fix instead of just diagnosing it.
- */
-function findEolCollapsedMatches(target: Buffer, old: Buffer): { start: number; end: number }[] {
-  const { collapsed: oldCollapsed } = buildEolCollapsedView(old)
-  if (oldCollapsed.length === 0) return []
-  const { collapsed: targetCollapsed, origStart } = buildEolCollapsedView(target)
-  const spans: { start: number; end: number }[] = []
-  let cursor = 0
-  while ((cursor = targetCollapsed.indexOf(oldCollapsed, cursor)) !== -1) {
-    spans.push({ start: origStart[cursor]!, end: origStart[cursor + oldCollapsed.length]! })
-    cursor += oldCollapsed.length
-  }
-  return spans
-}
-
-/**
- * Detects the EOL style actually used within `span` of `buf` — "at that location" rather than
- * file-wide — so a healed replacement matches its immediate surroundings instead of the file's
- * overall dominant convention. Falls back to `wholeFileFallback`'s dominant EOL when `span`
- * itself contains no line break to judge from (e.g. a single-line match).
- */
-function localEolStyle(buf: Buffer, span: { start: number; end: number }, wholeFileFallback: Buffer): '\r\n' | '\n' {
-  const slice = buf.subarray(span.start, span.end)
-  let crlf = 0
-  let lfOnly = 0
-  for (let i = 0; i < slice.length; i++) {
-    if (slice[i] === 0x0a) {
-      if (i > 0 && slice[i - 1] === 0x0d) crlf++
-      else lfOnly++
-    }
-  }
-  if (crlf === 0 && lfOnly === 0) return detectDominantEol(wholeFileFallback)
-  return crlf > lfOnly ? '\r\n' : '\n'
-}
-
-/**
- * Shared write path for `cmdReplace`'s two success branches (byte-exact and EOL-healed):
- * re-checks the optimistic-concurrency guard, writes atomically, and enqueues the dirty-reindex
- * queue entry. Throws on a concurrent-modification or write failure; the caller prints its own
- * success message afterward since the two branches word it differently.
- */
-function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs.Stats | undefined): void {
-  if (preWriteStat !== undefined) {
-    // Test-only seam: widens the read->re-stat window so a regression test can deterministically force a concurrent modification to land inside it, instead of relying on OS timing jitter. No-op unless a test explicitly sets this env var; never set in normal operation.
-    const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_MS'] ?? '')
-    if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
-      // Deterministic readiness signal for the regression test: emitted right as the delay window opens.
-      process.stderr.write('TOKEN_GOAT_TEST_REPLACE_DELAY_READY\n')
-      // The test names a sentinel path and creates it once its concurrent write has landed, so the window
-      // closes on that event rather than on the clock. A fixed sleep made the window wall-clock bounded:
-      // under full-suite worker contention the test's write could land after the window had already shut,
-      // replace would correctly see an unchanged file, exit 0, and fail an assertion expecting 1 -- a flake
-      // in the test's timing, not in the guard. testDelayMs stays on as the upper bound so a test that
-      // never creates its sentinel still terminates.
-      const until = process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_UNTIL']
-      const deadline = Date.now() + testDelayMs
-      if (until !== undefined && until !== '') {
-        while (Date.now() < deadline && !fs.existsSync(until)) sleepSync(5)
-      } else {
-        sleepSync(testDelayMs)
-      }
-    }
-    let preRenameStat: fs.Stats | undefined
-    try {
-      preRenameStat = fs.statSync(file)
-    } catch {
-      // Vanished between the read and the write -- let atomicWriteBuffer surface the real error.
-    }
-    if (preRenameStat !== undefined && (preRenameStat.mtimeMs !== preWriteStat.mtimeMs || preRenameStat.size !== preWriteStat.size)) {
-      throw new CliError(`${file} changed on disk while replace was running -- the file was modified concurrently, so the replace was NOT applied. Retry the replace.`)
-    }
-  }
-  try {
-    atomicWriteBuffer(file, replacedBuf)
-  } catch (e) {
-    mapFsError(e, undefined, file)
-  }
-  enqueueDirtyPathSafe(file)
-}
-
-// Bounds the cost of the closest-match scan below (worst case targetLines * windowSize
-// comparisons) so a huge file paired with a huge snippet can't turn a failed replace into a
-// multi-second stall -- past this, skip the fallback hint rather than block.
-const MAX_CLOSEST_MATCH_COMPARISONS = 2_000_000
-
-/**
- * Best-effort fallback for `cmdReplace`'s "old string not found" error when it's not a
- * CRLF/trailing-newline near-match either: slides a window the size of `oldText` (in lines)
- * across `targetText` and returns the window with the most exact line matches, so the caller
- * gets a concrete line number and region to diff against instead of a bare "not found" —
- * mirroring the "Did you mean" pattern `section` already has for unresolvable headings.
- * Returns undefined when no informative window exists (e.g. oldText longer than the file) or
- * the scan would exceed the cost bound above.
- */
-function findClosestLineWindow(targetText: string, oldText: string): { lineStart: number; region: string } | undefined {
-  const targetLines = targetText.split('\n')
-  const oldLines = oldText.split('\n')
-  const windowSize = oldLines.length
-  if (windowSize === 0 || windowSize > targetLines.length) return undefined
-  if ((targetLines.length - windowSize + 1) * windowSize > MAX_CLOSEST_MATCH_COMPARISONS) return undefined
-
-  let bestIdx = -1
-  let bestScore = 0
-  for (let i = 0; i <= targetLines.length - windowSize; i++) {
-    let score = 0
-    for (let j = 0; j < windowSize; j++) {
-      if (targetLines[i + j] === oldLines[j]) score++
-    }
-    if (score > bestScore) {
-      bestScore = score
-      bestIdx = i
-    }
-  }
-  if (bestIdx === -1) return undefined
-  return { lineStart: bestIdx + 1, region: targetLines.slice(bestIdx, bestIdx + windowSize).join('\n') }
-}
-
-function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean; normalizeNewlines?: boolean }): void {
-  validateWritablePath(file, 'target file')
-
-  const targetBuf = readFileBoundedRaw(file, 'target file', true)
-  // Optimistic-concurrency guard: the snippet match above only protects the matched region -- a concurrent write to any OTHER part of the file between this read and the final rename would otherwise be silently lost (atomicWriteBuffer rewrites the whole file, last-writer-wins). Best-effort, not a lock: a race between the re-stat below and the rename itself is accepted residual risk, consistent with this codebase's other lock patterns.
-  let preWriteStat: fs.Stats | undefined
-  try {
-    preWriteStat = fs.statSync(file)
-  } catch {
-    // If the file vanished between the read above and now, let the write path surface its own error.
-  }
-  const usingFrom = opts.oldFrom !== undefined || opts.newFrom !== undefined
-  const usingB64 = opts.oldB64 !== undefined || opts.newB64 !== undefined
-
-  if (usingFrom && usingB64) {
-    throw new CliError('cannot mix --old-from/--new-from with --old-b64/--new-b64')
-  }
-  if (!usingFrom && !usingB64) {
-    throw new CliError('must provide either --old-from/--new-from or --old-b64/--new-b64')
-  }
-  if (usingFrom) {
-    if (opts.oldFrom === undefined || opts.newFrom === undefined) {
-      throw new CliError('must pass both --old-from and --new-from together')
-    }
-  } else {
-    if (opts.oldB64 === undefined || opts.newB64 === undefined) {
-      throw new CliError('must pass both --old-b64 and --new-b64 together')
-    }
-  }
-
-  const oldBytes = usingFrom
-    ? readFileBoundedRaw(opts.oldFrom!, '--old-from')
-    : decodeBase64Buffer(opts.oldB64!, '--old-b64')
-  const newBytes = usingFrom
-    ? readFileBoundedRaw(opts.newFrom!, '--new-from')
-    : decodeBase64Buffer(opts.newB64!, '--new-b64')
-
-  // Opt-in: convert the caller-supplied old/new text's line endings to match the target
-  // file's dominant one before matching. Off by default so byte-exact matching (this
-  // command's core guarantee -- see the no-UTF-8-decode note below) never silently changes
-  // what's matched without the caller asking for it; this is purely for the extremely common
-  // case of an agent's intermediate snippet defaulting to CRLF (or LF) while the target file
-  // uses the other, which would otherwise always require a manual round-trip to fix.
-  const normalizedOldBytes = opts.normalizeNewlines === true ? normalizeEolToMatch(oldBytes, targetBuf) : oldBytes
-  const normalizedNewBytes = opts.normalizeNewlines === true ? normalizeEolToMatch(newBytes, targetBuf) : newBytes
-
-  if (normalizedOldBytes.length === 0) {
-    throw new CliError('old string cannot be empty')
-  }
-
-  // Byte-exact match/replace: the target file (and the --old-from/--new-from/--old-b64/--new-b64 inputs themselves) may contain bytes that are not valid UTF-8. Decoding any of them to a string and re-encoding would silently replace every such byte with U+FFFD (ef bf bd) on write. Reading and matching everything as raw Buffers leaves every byte — valid UTF-8 or not — untouched.
-
-  const matches: number[] = []
-  let cursor = 0
-  while ((cursor = targetBuf.indexOf(normalizedOldBytes, cursor)) !== -1) {
-    matches.push(cursor)
-    cursor += normalizedOldBytes.length
-  }
-  const occurrences = matches.length
-
-  if (occurrences === 0) {
-    // Auto-heal: the exact byte match failed, but if a match exists once CRLF/LF differences
-    // are collapsed away — and that match is unique — perform the replacement instead of just
-    // diagnosing it, writing the new text back in the file's EOL style at that location so the
-    // file is never left with mixed endings.
-    const eolMatches = findEolCollapsedMatches(targetBuf, normalizedOldBytes)
-    if (eolMatches.length === 1) {
-      const span = eolMatches[0]!
-      const healedNewBytes = convertEolTo(normalizedNewBytes, localEolStyle(targetBuf, span, targetBuf))
-      const healedBuf = Buffer.concat([targetBuf.subarray(0, span.start), healedNewBytes, targetBuf.subarray(span.end)])
-      writeReplacedBuffer(file, healedBuf, preWriteStat)
-      out(`replaced 1 occurrence in ${file} (line-ending normalized to match the file at that location)`)
-      return
-    }
-    if (eolMatches.length > 1) {
-      throw new CliError(
-        `old string not found in ${file} — ${eolMatches.length} near-matches exist that differ only by line endings; provide a more specific match`,
-      )
-    }
-    // Diagnostic only: decoding lossily here is fine — it only shapes the human-readable near-miss
-    // hint and never feeds back into what gets matched or written.
-    const nearMiss = diagnoseNearMiss(targetBuf.toString('utf8'), normalizedOldBytes.toString('utf8'))
-    if (nearMiss !== undefined) {
-      throw new CliError(`old string not found in ${file} — ${nearMiss}`)
-    }
-    // Neither an exact match nor a CRLF/trailing-newline near-match — fall back to a
-    // best-effort closest-matching-region hint so the caller can self-correct without a
-    // separate re-fetch round-trip, mirroring the "Did you mean" pattern `section` already
-    // has for unresolvable headings.
-    const closest = findClosestLineWindow(targetBuf.toString('utf8'), normalizedOldBytes.toString('utf8'))
-    if (closest !== undefined) {
-      const diff = buildLineDiff(closest.region, normalizedOldBytes.toString('utf8'), file)
-      throw new CliError(
-        `old string not found in ${file} — closest match at line ${closest.lineStart} (showing: what's actually there vs. what --old-from/--old-b64 searched for):\n${diff}`,
-      )
-    }
-    throw new CliError(`old string not found in ${file}`)
-  }
-  if (occurrences > 1 && !opts.all) {
-    throw new CliError(`old string appears ${occurrences} times in ${file} — pass --all to replace every occurrence, or provide a more specific match`)
-  }
-
-  const parts: Buffer[] = []
-  let prevEnd = 0
-  for (const pos of matches) {
-    parts.push(targetBuf.subarray(prevEnd, pos))
-    parts.push(normalizedNewBytes)
-    prevEnd = pos + normalizedOldBytes.length
-  }
-  parts.push(targetBuf.subarray(prevEnd))
-  const replacedBuf = Buffer.concat(parts)
-
-  writeReplacedBuffer(file, replacedBuf, preWriteStat)
-  out(`replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`)
-}
-
-/**
- * Handles `token-goat insert-section <file> --after <heading>`: inserts new content
- * immediately after a matched section's last line, resolved the same way `section`/`replace`
- * resolve headings (exact, normalized, or an unambiguous prefix — see resolveHeaderPos in
- * section_reader.ts). Exists because every real-world use of `replace` for an
- * append-to-a-running-log edit (e.g. adding the next "## Lesson N" to a lessons-learned doc)
- * requires reproducing the *exact current trailing bytes* of the previous entry as the match
- * anchor — which goes stale the moment an earlier edit in the same session already changed
- * that trailing text. Resolving by heading instead of by byte-anchor removes that staleness
- * window entirely.
- *
- * Unlike `replace`, which stays byte-buffer-only so it never has to assume valid UTF-8,
- * `insert-section` inherently requires text/heading matching (like `section` itself already
- * does) — so this command does assume the target is valid UTF-8 text.
- */
-function cmdInsertSection(file: string, opts: { after: string; contentFrom?: string; contentB64?: string }): void {
-  validateWritablePath(file, 'target file')
-
-  const usingFrom = opts.contentFrom !== undefined
-  const usingB64 = opts.contentB64 !== undefined
-  if (usingFrom && usingB64) {
-    throw new CliError('cannot mix --content-from with --content-b64')
-  }
-  if (!usingFrom && !usingB64) {
-    throw new CliError('must provide either --content-from or --content-b64')
-  }
-  const contentBytes = usingFrom
-    ? readFileBoundedRaw(opts.contentFrom!, '--content-from')
-    : decodeBase64Buffer(opts.contentB64!, '--content-b64')
-  if (contentBytes.length === 0) {
-    throw new CliError('content to insert cannot be empty')
-  }
-
-  // Optimistic-concurrency guard, same pattern as cmdReplace: the section-boundary lookup
-  // below only protects the matched region -- a concurrent write elsewhere in the file
-  // between this stat and the final rename would otherwise be silently lost.
-  let preWriteStat: fs.Stats | undefined
-  try {
-    preWriteStat = fs.statSync(file)
-  } catch {
-    // If the file vanished between now and the write below, let the write path surface its own error.
-  }
-
-  const result = readSection(file, opts.after)
-  if (result === null) {
-    const allHeadings = listSections(file)
-    const messages = [`Section '${opts.after}' not found in '${file}'`]
-    // Same reasoning as the note-add miss above: rank before suggesting, and fall through to the listing command when ranking leaves nothing, rather than dumping every heading in the file.
-    const available = filterSimilarHeadings(allHeadings, opts.after)
-    if (available.length > 0) messages.push(didYouMean(available))
-    else if (allHeadings.length > 0) messages.push(`Try: token-goat outline ${file}`)
-    throw new CliError(messages.join('\n'))
-  }
-
-  // `section` refuses an ambiguous heading and names the qualified retries; this write path picked
-  // the first match and reported success naming only the heading, so a caller could not tell which
-  // of two identical headings the text landed under -- and a write to the wrong one is worse than a
-  // read from it. `--after "Heading#2"` already resolves it, so only the gate was missing.
-  if (result.occurrences !== undefined) {
-    const lines = [
-      `Ambiguous heading '${opts.after}' in '${file}': ${countNoun(result.occurrences.length, 'heading')} match. ` +
-        `Retry with one of the qualified forms below to pick one:`,
-    ]
-    for (const [i, line] of result.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).entries()) {
-      lines.push(`  - line ${line}  ->  --after "${opts.after}#${i + 1}"`)
-    }
-    if (result.occurrences.length > AMBIGUOUS_HEADING_LIMIT) {
-      lines.push(`  (${result.occurrences.length - AMBIGUOUS_HEADING_LIMIT} more not shown)`)
-    }
-    throw new CliError(lines.join('\n'))
-  }
-
-  let rawBytes: Buffer
-  try {
-    rawBytes = fs.readFileSync(file)
-  } catch (e) {
-    mapFsError(e, undefined, file)
-  }
-  // Read and write in the file's own encoding. Section resolution above is BOM-aware, so on a
-  // UTF-16 file it now finds the heading it used to miss -- and a plain utf-8 read here would
-  // splice the new content into mojibake and write the whole file back converted, turning a
-  // one-section insert into a silent re-encoding of everything.
-  const sourceEncoding = detectSourceEncoding(rawBytes)
-  const rawText = decodeSource(rawBytes)
-
-  const eol = detectDominantEol(Buffer.from(rawText, 'utf8'))
-  // Collapse to LF-only for splicing (avoids ever joining an already-CRLF-terminated line with
-  // another CRLF, which would double the CR), then re-expand once at the end if needed.
-  // Collapsing/expanding CRLF<->LF changes no line count or position, so result.lineEnd (an
-  // index computed by section_reader.ts against the *un*-collapsed text.split('\n')) still
-  // points at the identical line here.
-  const lfLines = rawText.replace(/\r\n/g, '\n').split('\n')
-  const insertAt = result.lineEnd
-
-  const insertedLines = contentBytes.toString('utf8').replace(/\r\n/g, '\n').split('\n')
-  if (insertedLines.length > 0 && insertedLines[insertedLines.length - 1] === '') insertedLines.pop()
-
-  const mergedLfText = [...lfLines.slice(0, insertAt), ...insertedLines, ...lfLines.slice(insertAt)].join('\n')
-  const mergedText = eol === '\n' ? mergedLfText : mergedLfText.replace(/\n/g, '\r\n')
-
-  if (preWriteStat !== undefined) {
-    let preRenameStat: fs.Stats | undefined
-    try {
-      preRenameStat = fs.statSync(file)
-    } catch {
-      // Vanished between the read and the write -- let atomicWriteBuffer surface the real error.
-    }
-    if (preRenameStat !== undefined && (preRenameStat.mtimeMs !== preWriteStat.mtimeMs || preRenameStat.size !== preWriteStat.size)) {
-      throw new CliError(`${file} changed on disk while insert-section was running -- the file was modified concurrently, so the insert was NOT applied. Retry.`)
-    }
-  }
-
-  try {
-    atomicWriteBuffer(file, encodeSource(mergedText, sourceEncoding))
-  } catch (e) {
-    mapFsError(e, undefined, file)
-  }
-  enqueueDirtyPathSafe(file)
-  const redirectNote = result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
-  out(`inserted after '${result.heading}'${redirectNote} in ${file}`)
-}
+export * from './cli_skills.js'
+export * from './cli_file_ops.js'
 
 async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh?: boolean }): Promise<void> {
   // An organisation that does not use Google Drive can switch the integration off entirely, which

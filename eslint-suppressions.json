@@ -29,7 +29,7 @@
       "count": 1
     }
   },
-  "src/graph_commands.ts": {
+  "src/graph_analysis.ts": {
     "regexp/no-misleading-capturing-group": {
       "count": 1
     },
@@ -105,11 +105,6 @@
   "src/markdown_lines.ts": {
     "regexp/no-super-linear-backtracking": {
       "count": 2
-    }
-  },
-  "src/parser.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 7
     }
   },
   "src/resident_context.ts": {

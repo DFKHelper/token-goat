@@ -359,7 +359,7 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'output it delivers, which is why the fence is the right shape and displaySafeText is not.',
   ],
   [
-    'read_commands.ts:h.text',
+    'read_git.ts:h.text',
     'runDiff joins git diff hunk bodies into its output: these are the payload the reader asked ' +
       'for, and this command delivers file content unfenced by design. The `# name (kind) - path` ' +
       'header glued to them on the line above IS escaped. Note that the guardText() wrapping this ' +
