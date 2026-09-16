@@ -165,8 +165,11 @@ export function extractDart(
         const cname = cm[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-        // A mixin-application class has no body, so pushing a frame for it would never pop.
-        if (!CLASS_ALIAS_RE.test(stripped)) {
+        // A mixin-application class has no body, so pushing a frame for it would never pop -- and an unpopped frame does not lose one symbol, it swallows every top-level declaration after it in the file. CLASS_ALIAS_RE is the precise test and names the alias, but it carries GENERIC_CLAUSE's nesting ceiling, so a bound deeper than that ceiling used to fall through to here and leak a frame. A `class` line that closes with `;` and opens no brace is a complete declaration whatever its type parameters look like, so the shape check is the backstop that keeps a future miss costing one symbol instead of the rest of the file.
+        // Both markers must be read from a string-masked copy of the line: a type parameter may carry metadata (`class C<@Deprecated('semi;') T>`), and a `;` or `{` inside that annotation's string is not the structural one being looked for. Judging the raw line drops the whole body of such a class.
+        const structural = stripStringLiterals(stripped, { tripleQuotes: true })
+        const bracelessDeclaration = !structural.includes('{') && structural.includes(';')
+        if (!CLASS_ALIAS_RE.test(stripped) && !bracelessDeclaration) {
           typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
         }
         matched = true

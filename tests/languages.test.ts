@@ -1671,6 +1671,12 @@ fun <T : Comparable<T>> sortAll(items: List<T>): List<T> = items.sorted()
 
 fun <T : Map<String, List<Int>>> deepBound(x: T) {}
 
+// One level past the depth the shared clause was first built for. deepBound above sits exactly at
+// that ceiling, so it could not tell whether the clause generalised or merely fit its own fixture.
+fun <T : Comparable<Map<String, List<Int>>>> deeperBound(x: T) {}
+
+typealias DeeperCmp<T : Comparable<Map<String, List<Int>>>> = (T, T) -> Int
+
 fun plainTop(x: Int): Int = x
 
 class Sorter {
@@ -1680,7 +1686,7 @@ class Sorter {
     const { symbols } = extractKotlin(content, 'main.kt')
     const names = symbols.map((s) => s.name)
     // The type-parameter clause sits between `fun` and the name, so a flat `<[^>]*>` closing at the `>` inside `Comparable<T>` leaves the name matcher staring at `>` and the whole declaration is dropped. Only the unbounded form was ever exercised.
-    for (const n of ['sortAll', 'deepBound', 'plainTop', 'Sorter', 'memberSort']) expect(names).toContain(n)
+    for (const n of ['sortAll', 'deepBound', 'deeperBound', 'DeeperCmp', 'plainTop', 'Sorter', 'memberSort']) expect(names).toContain(n)
     expect(symbols.find((s) => s.name === 'memberSort')?.parent).toBe('Sorter')
   })
 
@@ -2672,6 +2678,15 @@ func topLevel() {}
 
   it('indexes a declaration with a nested generic constraint', () => {
     const { symbols } = extractSwift('func f<C: Collection<Int>>(_: C) {}\n', 'g.swift')
+    expect(symbols.map((s) => s.name)).toContain('f')
+  })
+
+  // The constraint above is two levels deep, the depth the shared clause was first built for. A
+  // primary associated type whose argument is itself a nested collection reaches four, and the
+  // clause sits between `func` and the name, so overflowing it leaves the name matcher staring at
+  // `>` and drops the declaration entirely rather than just its constraint.
+  it('indexes a declaration whose generic constraint nests four levels deep', () => {
+    const { symbols } = extractSwift('func f<C: Collection<Dictionary<String, Array<Int>>>>(_: C) {}\n', 'g4.swift')
     expect(symbols.map((s) => s.name)).toContain('f')
   })
 
@@ -3862,6 +3877,69 @@ class AfterAlias {
     expect(names).toContain('AfterAlias')
     expect(symbols.find((s) => s.name === 'AfterAlias')?.parent).toBeFalsy()
     expect(symbols.find((s) => s.name === 'afterMember')?.parent).toBe('AfterAlias')
+  })
+
+  // HAND-DERIVED: the bound above is two levels deep, which is exactly the depth GENERIC_CLAUSE was
+  // first built for, so it agreed with that ceiling by construction and said nothing about the
+  // level past it. `Comparable<Map<String, List<int>>>` is four, and reachable Dart -- comparing a
+  // composite value. At that depth the alias and typedef matchers missed, the mixin-application
+  // class leaked a frame that swallowed the rest of the file, and the typedef fell through to
+  // FUNC_RE and filed a phantom top-level symbol literally named `Function`.
+  it('indexes declarations whose bound nests deeper than the clause was first built for', () => {
+    const content = `typedef Cmp<T extends Comparable<Map<String, List<int>>>> = int Function(T a, T b);
+
+class DeepAlias<T extends Comparable<Map<String, List<int>>>> = Object with Mixin;
+
+class AfterDeepAlias {
+  void deepMember() {}
+}
+`
+    const { symbols } = extractDart(content, 'deep.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Cmp')
+    expect(names).not.toContain('Function')
+    expect(names).toContain('DeepAlias')
+    expect(names).toContain('AfterDeepAlias')
+    expect(symbols.find((s) => s.name === 'AfterDeepAlias')?.parent).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'deepMember')?.parent).toBe('AfterDeepAlias')
+  })
+
+  // A regex cannot balance brackets to arbitrary depth, so CLASS_ALIAS_RE will always have a level
+  // past which it misses; this bound is deliberately nested past the current ceiling to sit in that
+  // region. What must not survive there is the blast radius: a missed alias used to leak a type
+  // frame that nothing popped, costing every later declaration in the file rather than just its own
+  // name. The brace-less shape check is what bounds that, and this is the test that holds it -- the
+  // deeper test above passes on the ceiling alone and would not notice the backstop being removed.
+  it('still loses only the alias itself when a class bound nests past any clause ceiling', () => {
+    const content = `class WayDeep<T extends A<B<C<D<E<int>>>>>> = Object with Mixin;
+
+class AfterWayDeep {
+  void wayDeepMember() {}
+}
+`
+    const { symbols } = extractDart(content, 'waydeep.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('AfterWayDeep')
+    expect(symbols.find((s) => s.name === 'AfterWayDeep')?.parent).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'wayDeepMember')?.parent).toBe('AfterWayDeep')
+  })
+
+  // FORMAT-DERIVED: the Dart specification's `typeParameter` production permits metadata before the
+  // identifier, so an annotation argument can put a `;` on a class header line that does open a
+  // body. The brace-less check above has to read structure, not raw text, or it suppresses the
+  // frame for a real class and drops every member of it.
+  it('does not mistake a semicolon inside type-parameter metadata for a brace-less class', () => {
+    const content = `abstract class Marker {}
+
+class Annotated<@Deprecated('semi;') T>
+    implements Marker
+{
+  void annotatedMember() {}
+}
+`
+    const { symbols } = extractDart(content, 'meta.dart')
+    expect(symbols.map((s) => s.name)).toContain('annotatedMember')
+    expect(symbols.find((s) => s.name === 'annotatedMember')?.parent).toBe('Annotated')
   })
 
   it('extracts class and enum declarations', () => {
