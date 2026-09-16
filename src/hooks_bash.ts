@@ -68,6 +68,7 @@ import {
   commandPathIsTouchable,
   extractPowerShellWrappedGetContent,
   extractPowerShellFileMethodRead,
+  extractTerminalXmlParsing,
   extractRgSymbolSearch,
   extractCatJsonPipe,
   extractWslCatFile,
@@ -762,6 +763,17 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     )
   }
 
+  // Terminal XML parsing interception (Select-Xml, [xml], PowerShell XML inspect scripts, Python xml.etree, xmlstarlet)
+  const terminalXml = extractTerminalXmlParsing(cmd)
+  if (terminalXml !== null) {
+    const { filePath, toolOrScript } = terminalXml
+    recordStat('session_hint', 0, 0)
+    const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
+    return contextOutput(
+      `token-goat available for this file type, consider 'token-goat xml-query "${target}" "<xpath>"' or 'token-goat xml-outline "${target}"' first instead of terminal XML parsing (${toolOrScript}).`,
+    )
+  }
+
   // Item 4b: sed line-range extraction — replaced with extractSedRange to provide specific line range
   // A single-command read is preferred; failing that, the compound spellings (echo-separated multi-span reads, formatting-only pipes) are the same read class and get the same per-file treatment.
   const singleLineRangeRead = extractLineRangeRead(cmd)
@@ -805,18 +817,18 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // already orders its own gcTail/tail/gcSelect/head checks ahead of extractCatFile for this identical reason.
   const gcTailResult = extractGetContentTail(cmd)
   if (gcTailResult !== null) {
-    const { filePath, isDoc, isConfig, isSql } = gcTailResult
+    const { filePath, isDoc, isConfig, isSql, isXml } = gcTailResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
+    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
   }
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
   if (gcSelectResult !== null) {
-    const { filePath, isDoc, isConfig, isSql, n } = gcSelectResult
+    const { filePath, isDoc, isConfig, isSql, isXml, n } = gcSelectResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput(leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
+    return contextOutput(leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
   }
 
   const catJsonPipe = extractCatJsonPipe(cmd)
@@ -831,7 +843,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
-    const { filePath, isDoc, isEnv, isConfig, isSql, cmd0, advisoryOnly } = catResult
+    const { filePath, isDoc, isEnv, isConfig, isSql, isXml, cmd0, advisoryOnly } = catResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isSql) {
@@ -839,7 +851,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     // advisoryOnly: a `2>/dev/null`-suffixed read tolerates the file being absent, so it gets guidance rather than a deny (a deny would redirect the agent at a file that may not exist).
     return cdStripped || advisoryOnly ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
   }
@@ -848,15 +860,17 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (catMulti !== null) {
     recordStat('session_hint', 0, 0)
     const cmd0 = catMulti[0]!.cmd0
-    const perPath = catMulti.map(({ filePath, isDoc, isEnv, isConfig, isSql }) => {
+    const perPath = catMulti.map(({ filePath, isDoc, isEnv, isConfig, isSql, isXml }) => {
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-      const how = isSql
-        ? 'token-goat section "' + hintPath + '::table_name"'
-        : isEnv || isConfig
-          ? 'token-goat config-get "' + hintPath + '" KEY_NAME'
-          : isDoc
-            ? 'token-goat section "' + hintPath + '::SectionHeading"'
-            : 'token-goat read "' + hintPath + '::SymbolName"'
+      const how = isXml
+        ? 'token-goat xml-outline "' + hintPath + '" or token-goat xml-query "' + hintPath + '" "<selector>"'
+        : isSql
+          ? 'token-goat section "' + hintPath + '::table_name"'
+          : isEnv || isConfig
+            ? 'token-goat config-get "' + hintPath + '" KEY_NAME'
+            : isDoc
+              ? 'token-goat section "' + hintPath + '::SectionHeading"'
+              : 'token-goat read "' + hintPath + '::SymbolName"'
       return '  ' + hintPath + ' -> `' + how + '`'
     })
     const msg =
@@ -866,7 +880,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const psGetContentResult = extractPowerShellWrappedGetContent(cmd, event)
   if (psGetContentResult !== null) {
-    const { filePath, isDoc, isEnv, isConfig, isSql } = psGetContentResult
+    const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = psGetContentResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
@@ -879,13 +893,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // workflow this hint category was never meant to gate that hard.
       return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
   if (wslCatResult !== null) {
-    const { filePath, isDoc, isEnv, isConfig, isSql } = wslCatResult
+    const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = wslCatResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isSql) {
@@ -893,13 +907,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         '`cat` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     return cdStripped ? contextOutput('`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
-    const { filePath, isDoc, isConfig, isEnv, isSql, isOutputFile } = pyRead
+    const { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile } = pyRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isOutputFile) {
@@ -920,24 +934,24 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         'Python `open()` file reads bypass read hooks. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     return cdStripped ? contextOutput('Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
   }
 
   const tailResult = extractTailFile(cmd)
   if (tailResult !== null) {
-    const { filePath, isDoc, isConfig, isSql } = tailResult
+    const { filePath, isDoc, isConfig, isSql, isXml } = tailResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
+    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
   }
 
   const headResult = extractHeadFile(cmd)
   if (headResult !== null) {
-    const { filePath, isDoc, isConfig, isSql, n } = headResult
+    const { filePath, isDoc, isConfig, isSql, isXml, n } = headResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput(leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
+    return contextOutput(leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
   }
 
   const nodeRead = extractNodeFileRead(cmd)
@@ -971,14 +985,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const psMethodRead = extractPowerShellFileMethodRead(cmd, event)
   if (psMethodRead !== null) {
-    const { filePath, isDoc, isEnv, isConfig, isSql } = psMethodRead
+    const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = psMethodRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     const lead = 'PowerShell `[IO.File]::ReadAllText()` bypasses read hooks. '
     if (isSql) {
       recordStat('session_hint', 0, 0)
       return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     recordStat('session_hint', 0, 0)
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }

@@ -18,14 +18,16 @@ import { getFileLineRanges } from './session.js'
  * SQL-specific hint and lead-in text, then falls through to this for the rest.
  */
 // Every caller passes a hintPath already through displaySafePath, because the path here comes out of the shell command's own arguments and so is whatever a repository named its files, while the hint is delivered on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Sanitizing at the fifteen assignment sites rather than at the thirty interpolations below is what keeps that invariant checkable, and it is the identity function on every path that does not contain a marker or a control character, so the index lookups keyed on the same value are unaffected for any real file.
-export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean): string {
-  return isEnv
-    ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
-    : isConfig
-      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-      : isDoc
-        ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
+export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml = false): string {
+  return isXml
+    ? 'Use `token-goat xml-outline "' + hintPath + '"` to inspect structure, or `token-goat xml-query "' + hintPath + '" "<selector>"` to query specific nodes.'
+    : isEnv
+      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
+      : isConfig
+        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+        : isDoc
+          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
 }
 
 /**
@@ -34,14 +36,16 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
  * surgicalHintFor} covers) can also point at `token-goat skeleton` for the non-doc,
  * non-config case since the caller already knows the file structure is what's wanted.
  */
-export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean, isSql: boolean): string {
-  return isConfig
-    ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-    : isSql
-      ? 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
-      : isDoc
-        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean, isSql: boolean, isXml = false): string {
+  return isXml
+    ? 'Use `token-goat xml-outline "' + filePath + '"` to inspect structure, or `token-goat xml-query "' + filePath + '" "<selector>"` to query specific nodes.'
+    : isConfig
+      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+      : isSql
+        ? 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
+        : isDoc
+          ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+          : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
 }
 
 
@@ -137,37 +141,39 @@ export function extractCatSourceFile(cmd: string): string | null {
  * outright, `extractPowerShellWrappedGetContent` instead size-gates them), so that check
  * stays with each caller.
  */
-export function classifyFileExtensions(filePath: string): { isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
+export function classifyFileExtensions(filePath: string): { isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
-  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|dtsx|ampkg|xaml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
   const isSql = /\.sql$/i.test(filePath)
   const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { isDoc, isEnv, isConfig, isSql }
+  const isXml = /\.(?:xml|dtsx|ampkg|xaml)$/i.test(filePath)
+  return { isDoc, isEnv, isConfig, isSql, isXml }
 }
 
-/** Shared isDoc/isConfig/isSql classification for the tail/head/Get-Content/node-read extractors, mirroring classifyFileExtensions's flags so all of them can point a .sql read at the same `table_name`-based hint. */
-export function classifyDocConfig(filePath: string): { isDoc: boolean; isConfig: boolean; isSql: boolean } {
+/** Shared isDoc/isConfig/isSql/isXml classification for the tail/head/Get-Content/node-read extractors, mirroring classifyFileExtensions's flags so all of them can point a .sql or XML read at the appropriate hint. */
+export function classifyDocConfig(filePath: string): { isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } {
   const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
   const isSql = /\.sql$/i.test(filePath)
-  return { isDoc, isConfig, isSql }
+  const isXml = /\.(?:xml|dtsx|ampkg|xaml)$/i.test(filePath)
+  return { isDoc, isConfig, isSql, isXml }
 }
 
 export function classifyCatPath(
   filePath: string,
   cmd0: string,
-): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
+): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; cmd0: string } | null {
   if (isTempPath(filePath)) return null
   const flags = classifyFileExtensions(filePath)
   if (flags === null) return null
   return { filePath, ...flags, cmd0 }
 }
 
-export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string; advisoryOnly: boolean } | null {
+export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; cmd0: string; advisoryOnly: boolean } | null {
   // Loop-46 census (8,179 real cat-headed commands): 144 qualifying reads spelled the identical read with a trailing `2>&1` or `2>/dev/null` and got no hint at all, so the suffix is accepted like extractSedRange already does. The `2>/dev/null` spelling signals an existence-tolerant read (dominated by memory-recall probes of files that may not exist), so it is admitted advisory-only: denying it would push the agent at a possibly missing file.
   const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*?)?(?:\s+2>(&1|\/dev\/null))?\s*$/i.exec(cmd)
   if (!m) return null
@@ -182,7 +188,7 @@ export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean;
 // Multi-file variant: `cat a.ts b.ts` (2+ path args) slips past the single-path extractCatFile (its `$` anchor rejects a trailing second path), so a multi-file cat used to bypass the deny entirely. Tokenizes every path argument and returns the qualifying ones so the same per-path deny/hint fires. Returns null unless the command is a bare cat/bat/type/Get-Content with 2+ arguments and at least one qualifying path.
 export function extractCatFilesMulti(
   cmd: string,
-): Array<{ filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string }> | null {
+): Array<{ filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; cmd0: string }> | null {
   // Only a bare `cat a b c`: bail on any pipe/redirect/chain/substitution so a piped single read (`cat -n f | jq`, `cat f | grep`) still passes through untouched, the same way the `$`-anchored single-path extractCatFile never matched those.
   if (/[|<>;&`]/.test(cmd) || cmd.includes('$(')) return null
   const m = /^(cat|bat|type|Get-Content|gc)\s+(.+?)\s*$/i.exec(cmd)
@@ -233,7 +239,7 @@ export function commandPathIsTouchable(filePath: string, event: HookEvent | unde
 }
 
 /** Extracts the read path from a `powershell -Command "Get-Content '<path>' -Raw"` (or pwsh/cat/type) wrapper, which otherwise bypasses every Get-Content/cat extractor because the command token is `powershell`. Tolerates a trailing `-Raw`/`-Encoding` that bare extractCatFile rejects. Temp paths are size-gated: a small scratch read stays silent, a large one still earns a recall hint. */
-export function extractPowerShellWrappedGetContent(cmd: string, event?: HookEvent): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractPowerShellWrappedGetContent(cmd: string, event?: HookEvent): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   const w = POWERSHELL_WRAP_RE.exec(cmd)
   if (!w) return null
   const inner = (w[1] ?? w[2] ?? '').trim()
@@ -257,7 +263,7 @@ export function extractPowerShellWrappedGetContent(cmd: string, event?: HookEven
  * `[System.IO.File]::ReadAllText(...)`, `[IO.File]::ReadAllLines(...)`,
  * `[IO.File]::ReadAllBytes(...)`, `[IO.File]::ReadLines(...)`, etc.
  */
-export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   let inner = cmd.trim()
   const w = POWERSHELL_WRAP_RE.exec(inner)
   if (w) {
@@ -273,10 +279,10 @@ export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent):
   }
   const flags = classifyFileExtensions(filePath)
   if (flags === null) {
-    const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-    return { filePath, isDoc, isEnv: false, isConfig, isSql }
+    const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
+    return { filePath, isDoc, isEnv: false, isConfig, isSql, isXml }
   }
-  return { filePath, isDoc: flags.isDoc, isEnv: flags.isEnv, isConfig: flags.isConfig, isSql: flags.isSql }
+  return { filePath, isDoc: flags.isDoc, isEnv: flags.isEnv, isConfig: flags.isConfig, isSql: flags.isSql, isXml: flags.isXml }
 }
 
 /**
@@ -328,7 +334,7 @@ export function extractCatJsonPipe(cmd: string): { filePath: string } | null {
 }
 
 /** Extracts the file path from a WSL-proxied cat command like `wsl bash -c "cat /mnt/c/..."` or `wsl -d Ubuntu bash -c "cat /mnt/c/..."`. Converts /mnt/X/ paths to X:/ and applies the same filtering as extractCatFile. */
-export function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   // Match: wsl [optional -d DISTRO] bash -c "cat [flags] /mnt/X/..."
   const wslMatch = /^wsl(?:\s+-d\s+\S+)?\s+bash\s+-c\s+"cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+\/mnt\/([a-z])\/([^"]*)"/.exec(cmd)
   if (!wslMatch) return null
@@ -520,10 +526,11 @@ export interface PythonFileReadResult {
   isConfig: boolean
   isEnv: boolean
   isSql: boolean
+  isXml?: boolean
   isOutputFile: boolean
 }
 
-export const KNOWN_PYTHON_EXT_STR = 'java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|html|htm|conf|cfg|ini|properties|sql|ps1|psm1|env'
+export const KNOWN_PYTHON_EXT_STR = 'java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|dtsx|ampkg|xaml|html|htm|conf|cfg|ini|properties|sql|ps1|psm1|env'
 export const OPEN_EXT = new RegExp(`\\.(?:${KNOWN_PYTHON_EXT_STR})$`, 'i')
 
 /** Returns the file path and metadata if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
@@ -564,11 +571,11 @@ export function extractPythonFileRead(cmd: string): PythonFileReadResult | null 
   const classifyResult = (filePath: string): PythonFileReadResult => {
     const flags = classifyFileExtensions(filePath)
     if (flags !== null) {
-      return { filePath, isDoc: flags.isDoc, isConfig: flags.isConfig, isEnv: flags.isEnv, isSql: flags.isSql, isOutputFile: false }
+      return { filePath, isDoc: flags.isDoc, isConfig: flags.isConfig, isEnv: flags.isEnv, isSql: flags.isSql, isXml: flags.isXml, isOutputFile: false }
     }
-    const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+    const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
     const isEnv = /\.env(\.\w+)?$/i.test(filePath)
-    return { filePath, isDoc, isConfig, isEnv, isSql, isOutputFile: false }
+    return { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile: false }
   }
 
   // Heredoc form: python3 - << 'PYEOF'\n...\nPYEOF
@@ -623,7 +630,7 @@ export function extractPythonFileRead(cmd: string): PythonFileReadResult | null 
 }
 
 /** Extracts file path from `head -n X <path>` or `head -X <path>` commands. Returns null for unrecognized patterns or temp files. Also checks N < 10 (already surgical). */
-export function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; n: number } | null {
+export function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; n: number } | null {
   const direct = /^head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   // Piped spelling of the same leading-lines read: `cat [flags] FILE [2>&1|2>/dev/null] | head -N`. Loop-46 census (8,179 real cat-headed commands): 284 qualifying reads used this spelling and got no hint, while the direct `head -N FILE` form was already admitted.
   const piped = direct === null ? /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+2>(?:&1|\/dev\/null))?\s*\|\s*head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s*$/.exec(cmd) : null
@@ -633,9 +640,9 @@ export function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean
   const filePath = direct !== null ? (direct[3] ?? direct[4] ?? direct[5]) : (piped![1] ?? piped![2] ?? piped![3])
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
-  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
-  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig, isSql, n }
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|xml|dtsx|ampkg|xaml)$/i.test(filePath)) return null
+  const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql, isXml, n }
 }
 
 export function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
@@ -790,13 +797,13 @@ export function leadingLinesHint(
   hintPath: string,
   start: number,
   end: number,
-  flags: { isConfig: boolean; isDoc: boolean; isSql: boolean },
+  flags: { isConfig: boolean; isDoc: boolean; isSql: boolean; isXml?: boolean },
   preHookCwd: string | null,
 ): string {
   const key = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
   const prior = findRangeOverlap(getFileLineRanges(key), start, end)
   if (prior !== null) return sedOverlapHint(hintPath, prior, start, end)
-  return lead + surgicalHintForConfigDoc(hintPath, flags.isConfig, flags.isDoc, flags.isSql)
+  return lead + surgicalHintForConfigDoc(hintPath, flags.isConfig, flags.isDoc, flags.isSql, flags.isXml ?? false)
 }
 
 export function findRangeOverlap(prior: ReadonlyArray<readonly [number, number]>, start: number, end: number): readonly [number, number] | null {
@@ -851,7 +858,7 @@ export function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boo
 }
 
 /** Extracts file path from `tail -n X <path>` or `tail -X <path>` commands on source files. Excludes -f (follow), -c (byte mode), and +N (offset). */
-export function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   if (/-f\b/.test(cmd)) return null // follow mode — legitimate streaming
   if (/-c\b/.test(cmd)) return null // byte mode
   if (/-n\s*\+/.test(cmd)) return null // tail from line N offset — legitimate
@@ -864,13 +871,13 @@ export function extractTailFile(cmd: string): { filePath: string; isDoc: boolean
   const filePath = direct !== null ? (direct[3] ?? direct[4] ?? direct[5]) : (piped![1] ?? piped![2] ?? piped![3])
   if (!filePath) return null
   if (isTempPath(filePath)) return null
-  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
-  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig, isSql }
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|xml|dtsx|ampkg|xaml)$/i.test(filePath)) return null
+  const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql, isXml }
 }
 
 // Extracts file path from `Get-Content <path> -Tail N` or `Get-Content -Tail N <path>` (PowerShell).
-export function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   // Match: Get-Content <file> -Tail <N> or Get-Content -Tail <N> <file>
   const tailMatch = /-Tail\s+(\d+)/i.exec(cmd)
   if (!tailMatch) return null
@@ -885,13 +892,13 @@ export function extractGetContentTail(cmd: string): { filePath: string; isDoc: b
   const filePath = (beforeTail || afterTail).replace(/^["']|["']$/g, '')
   if (!filePath) return null
   if (isTempPath(filePath)) return null
-  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
-  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig, isSql }
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1|xml|dtsx|ampkg|xaml)$/i.test(filePath)) return null
+  const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql, isXml }
 }
 
 // Extracts file path from `Get-Content <path> | Select-Object -First N` (PowerShell).
-export function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; n: number } | null {
+export function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; n: number } | null {
   const m = /^(Get-Content|gc)\s+([^|]+)\s*\|\s*(Select-Object|select)\s+(-First\s+(\d+))/i.exec(cmd)
   if (!m) return null
   // A `-Path` flag names the very positional argument that follows it (e.g. `Get-Content -Path src/auth.ts | ...`); left unstripped it became a permanent prefix of the extracted path, matching the same fix in extractGetContentTail.
@@ -900,9 +907,9 @@ export function extractGetContentSelectFirst(cmd: string): { filePath: string; i
   if (n <= 10) return null // already surgical -- matches extractGetContentTail's <=10 threshold
   if (!filePath) return null
   if (isTempPath(filePath)) return null
-  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
-  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig, isSql, n }
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1|xml|dtsx|ampkg|xaml)$/i.test(filePath)) return null
+  const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql, isXml, n }
 }
 
 /**
@@ -1454,5 +1461,66 @@ export function isCompressibleSingleCommand(cmd: string): boolean {
   if (hasUnquotedOperator(cmd, ['&&', '||', '|', ';', '<', '>'])) return false
   if (hasBareBackgroundOrNewline(cmd)) return false
   return true
+}
+
+/** Result from terminal XML parsing command detection. */
+export interface TerminalXmlParsingResult {
+  filePath?: string | undefined
+  toolOrScript: string
+}
+
+/**
+ * Detects terminal commands attempting to parse XML via PowerShell (Select-Xml, [xml]),
+ * Python (xml.etree, BeautifulSoup, minidom, lxml), scratch PowerShell inspect scripts (inspect_*.ps1),
+ * or shell XML tools (xmllint, xmlstarlet, xidel).
+ */
+export function extractTerminalXmlParsing(cmd: string): TerminalXmlParsingResult | null {
+  const trimmed = cmd.trim()
+  if (!trimmed) return null
+
+  // 1. PowerShell Select-Xml: `Select-Xml ...`
+  const selectXmlM = /\bSelect-Xml\b(?:\s+(?:-Path\s+)?["']?([^"'\s|;]+(?:\.xml|\.dtsx|\.ampkg|\.xaml))["']?)?/i.exec(trimmed)
+  if (selectXmlM) {
+    const rawPath = selectXmlM[1]
+    const filePath = rawPath && !rawPath.startsWith('-') ? rawPath : undefined
+    return { filePath, toolOrScript: 'Select-Xml' }
+  }
+
+  // 2. PowerShell [xml] cast or XmlDocument
+  const psXmlCastM = /\[(?:xml|System\.Xml\.XmlDocument)\]/i.exec(trimmed)
+  if (psXmlCastM) {
+    const fileM = /["']([^"'\r\n]+\.(?:xml|dtsx|ampkg|xaml))["']/i.exec(trimmed) ||
+                  /(?:Get-Content|gc|ReadAllText)\s+["']?([^"'\s|;)]+\.(?:xml|dtsx|ampkg|xaml))["']?/i.exec(trimmed)
+    const filePath = fileM?.[1]
+    return { filePath, toolOrScript: psXmlCastM[0] }
+  }
+
+  // 3. Scratch inspect scripts (e.g. inspect_exported*.ps1, inspect_*.ps1)
+  const inspectScriptM = /(?:powershell|pwsh|&|\.)?\s*["']?(\.?[/\\]?inspect_[^"'\s|;]+\.ps1)["']/i.exec(trimmed) ||
+                         /\b(inspect_[^"'\s|;]+\.ps1)\b/i.exec(trimmed)
+  if (inspectScriptM) {
+    const fileM = /["']([^"'\r\n]+\.(?:xml|dtsx|ampkg|xaml))["']/i.exec(trimmed)
+    const filePath = fileM?.[1]
+    return { filePath, toolOrScript: inspectScriptM[1] ?? 'inspect script' }
+  }
+
+  // 4. Python XML one-liners: `python ... -c ... (xml.etree|BeautifulSoup|minidom|lxml)`
+  const pyXmlM = /\bpython(?:\d+(?:\.\d+)?)?(?:\.exe)?\b.*-c\s+["'].*?\b(xml\.etree|BeautifulSoup|minidom|lxml)\b/i.exec(trimmed)
+  if (pyXmlM) {
+    const fileM = /["']([^"'\r\n]+\.(?:xml|dtsx|ampkg|xaml))["']/i.exec(trimmed)
+    const filePath = fileM?.[1]
+    return { filePath, toolOrScript: `python ${pyXmlM[1]}` }
+  }
+
+  // 5. Shell XML CLI utilities: xmllint, xmlstarlet, xidel
+  const cliXmlM = /\b(xmllint|xmlstarlet|xidel)\b/i.exec(trimmed)
+  if (cliXmlM) {
+    const fileM = /["']?([^"'\s|;]+\.(?:xml|dtsx|ampkg|xaml))["']?/i.exec(trimmed)
+    const rawPath = fileM?.[1]
+    const filePath = rawPath && !rawPath.startsWith('-') ? rawPath : undefined
+    return { filePath, toolOrScript: cliXmlM[1]! }
+  }
+
+  return null
 }
 
