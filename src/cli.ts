@@ -1454,6 +1454,10 @@ export {
   cmdImageText,
   fenceOcrText,
 } from './cli_cmd_formats.js'
+export {
+  cmdSessionSchema,
+  cmdDescribe,
+} from './session_store_schema.js'
 
 function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boolean }) {
   process.exitCode = runPrSlice({ pr, slice, ...opts })

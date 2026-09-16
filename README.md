@@ -180,6 +180,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Reading poetry.lock or package-lock.json to find a pinned version | `token-goat lockdeps` returns a name/version table of direct dependencies; optional packages and transitive entries excluded |
 | Large SVG / diagram file (≥8 KB) read in full | Coordinate path flooding blocked; extracted layer/group IDs and title shown; redirects to `token-goat xml-outline` and `xml-query` |
 | Broad recursive Glob sweep (`*`, `**/*`) on root directory | Pre-Glob hook warns against tree-dumping and points at `token-goat map --compact` for fast, lightweight structure inspection |
+| Guessing database column names in `session_store_sql` / `sql` and falling back to `SELECT *` | `token-goat session-schema [table]` and `describe <target>` provide instant schema discovery; `post_tool_use_failure` hook intercepts unknown columns and guides the query — ~85–95% smaller than trial-and-error `SELECT *` dumps |
 | Compound test/build pipeline (`npm run build && npm run typecheck && npm test`) | Post-Bash hook routes chained build/test/lint commands to `generic-ci` compression, dropping verbose passing steps and compiler noise |
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
@@ -217,6 +218,7 @@ Numbers below come from synthetic-fixture benchmarks in the test suite, except t
 | MCP tool spill slicing | Narrow-slice queries on cached MCP tool outputs or dumped JSON files with `mcp-output --json-query` | 90–98% smaller than whole-file JSON re-reads | `src/mcp_json_query.ts` |
 | XML package & terminal script interception | Pre-read nudges on `.dtsx`/`.ampkg`/`.xaml` and pre-bash interception of `Select-Xml`/`[xml]`/scratch scripts | 85–95% smaller than scratch script creation and chunk paging | `src/bash_extractors.ts`, `src/hooks_read.ts` |
 | Enhanced XML XPath & embedded AML | Granular XPath expressions, element source line ranges, and decoded embedded XML/AML payloads | 80–95% smaller than reading whole XML packages | `src/xml_query.ts` |
+| Session Store Schema & SQL Error Intercept | Authoritative schema discovery via `session-schema` / `describe`, paired with runtime unknown-column diagnosis in `postToolUseFailureHandler` | 85–95% smaller than trial-and-error `SELECT *` dumps | `src/session_store_schema.ts`, `src/hooks_tool_failure.ts` |
 
 ## Token-savings examples
 

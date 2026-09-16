@@ -398,6 +398,11 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'Scoped to the serializer only. The same property in formatXmlOutline IS escaped, because ' +
       "that line is token-goat's own summary with a child count appended rather than a reproduction.",
   ],
+  [
+    'session_store_schema.ts:result.text',
+    'the output text produced by describeTarget: the payload the reader asked for, composed of ' +
+      'token-goat catalog metadata or formatted SQLite schema text and forwarded to emit/emitErr.',
+  ],
 ])
 
 /**
@@ -482,6 +487,18 @@ const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
     'session_audit.ts:d.kind',
     "token-goat's own dedup-kind enum, assigned when the audit rows are built.",
   ],
+  ...(
+    [
+      ['session_store_schema.ts:table.name', 'table name'],
+      ['session_store_schema.ts:table.description', 'table description'],
+      ['session_store_schema.ts:col.name', 'column name'],
+      ['session_store_schema.ts:col.description', 'column description'],
+    ] as const
+  ).map(([site, what]): [string, string] => [
+    site,
+    `token-goat's own catalog ${what}, a string literal in the session store catalog in this same file. ` +
+      'No file, lockfile, document or git artifact feeds it.',
+  ]),
 ])
 
 /**
