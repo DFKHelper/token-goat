@@ -413,7 +413,8 @@ export interface XmlSelectorStep {
   isRecursive: boolean
   index?: number | undefined
   allIndices?: boolean | undefined
-  attributeFilter?: { name: string; value?: string | undefined; notEqual?: boolean | undefined } | undefined
+  /** One entry per attribute predicate on the step, in source order; all must hold. A segment carries as many bracket clauses as the caller writes (`item[@id='1'][@lang='en'][2]`), so a single slot silently answered from whichever clause a `$`-anchored regex happened to match last. */
+  attributeFilters?: Array<{ name: string; value?: string | undefined; notEqual?: boolean | undefined }> | undefined
   attributeSelect?: string | undefined
 }
 
@@ -491,34 +492,46 @@ export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
       continue
     }
 
-    const indexMatch = /\[(-?\d+)\]$/.exec(s)
-    const wildcardMatch = /\[\*\]$/.exec(s)
-    const attrMatch = /\[@?([a-zA-Z0-9_:.\\-]+)(?:(!?=)\s*["']?([^"'\]]*)["']?)?\]$/.exec(s)
+    // Every bracket clause on the segment, in source order. These used to be matched by three regexes anchored at the END of the whole segment, so `item[@id='1'][2]` matched the index regex on the trailing `[2]`, the if/else chain short-circuited before the attribute regex ever ran, and a greedy `\[.*\]$` strip took the `@id='1'` text off the tag with it. The filter vanished without a trace and the command answered confidently from the positional index alone.
+    const bracketStart = s.indexOf('[')
+    const clauses = bracketStart < 0 ? [] : (s.slice(bracketStart).match(/\[[^\]]*\]/g) ?? [])
+    // An unclosed predicate (`item[@id='1'`) leaves text the clause scan cannot account for. Dropping it would turn a typo into `item`, which matches everything and reports a full element list as the answer to a filtered query. Treat the whole segment as the tag instead, so it matches no tag and the caller is told nothing matched.
+    const wellFormed = bracketStart < 0 || clauses.join('').length === s.length - bracketStart
 
-    let tag = s.replace(/\[.*\]$/, '')
+    let tag = bracketStart < 0 || !wellFormed ? s : s.slice(0, bracketStart)
     if (!tag) tag = '*'
+    if (!wellFormed) {
+      steps.push({ tag, isRecursive })
+      continue
+    }
 
     let index: number | undefined
     let allIndices: boolean | undefined
-    let attributeFilter: XmlSelectorStep['attributeFilter']
+    const attributeFilters: NonNullable<XmlSelectorStep['attributeFilters']> = []
 
-    if (indexMatch) {
-      index = parseInt(indexMatch[1]!, 10)
-    } else if (wildcardMatch) {
-      allIndices = true
-    } else if (attrMatch) {
-      const [, attrName, op, attrVal] = attrMatch
-      attributeFilter = {
-        name: attrName!,
-        ...(attrVal !== undefined ? { value: attrVal } : {}),
-        ...(op === '!=' ? { notEqual: true } : {}),
+    for (const clause of clauses) {
+      const indexMatch = /^\[(-?\d+)\]$/.exec(clause)
+      const wildcardMatch = /^\[\*\]$/.exec(clause)
+      const attrMatch = /^\[@?([a-zA-Z0-9_:.\\-]+)(?:(!?=)\s*["']?([^"'\]]*)["']?)?\]$/.exec(clause)
+
+      if (indexMatch) {
+        index = parseInt(indexMatch[1]!, 10)
+      } else if (wildcardMatch) {
+        allIndices = true
+      } else if (attrMatch) {
+        const [, attrName, op, attrVal] = attrMatch
+        attributeFilters.push({
+          name: attrName!,
+          ...(attrVal !== undefined ? { value: attrVal } : {}),
+          ...(op === '!=' ? { notEqual: true } : {}),
+        })
       }
     }
 
     const step: XmlSelectorStep = { tag, isRecursive }
     if (index !== undefined) step.index = index
     if (allIndices !== undefined) step.allIndices = allIndices
-    if (attributeFilter !== undefined) step.attributeFilter = attributeFilter
+    if (attributeFilters.length > 0) step.attributeFilters = attributeFilters
     steps.push(step)
   }
 
@@ -680,8 +693,7 @@ export function queryXml(xmlText: string, pathStr: string): XmlQueryResult {
 
       let matching = targets.filter((c) => step.tag === '*' || c.tag.toLowerCase() === step.tag.toLowerCase())
 
-      if (step.attributeFilter) {
-        const af = step.attributeFilter
+      for (const af of step.attributeFilters ?? []) {
         matching = matching.filter((c) => {
           // Check attributes first
           const attrVal = c.attributes[af.name]
@@ -705,7 +717,7 @@ export function queryXml(xmlText: string, pathStr: string): XmlQueryResult {
           nextCandidates.push(matching[idx]!)
         }
       } else {
-        if (step.allIndices || matching.length > 1 || step.attributeFilter !== undefined) {
+        if (step.allIndices || matching.length > 1 || step.attributeFilters !== undefined) {
           hasFanned = true
         }
         pushAll(nextCandidates, matching)

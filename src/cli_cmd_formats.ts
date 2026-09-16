@@ -390,7 +390,8 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
       "extract elements or attributes from an XML document by tag path instead of a raw Read\n\n" +
         "path grammar: slash- or dot-separated tag names with optional bracket segments and attribute selectors -- " +
         "[n] index, [*] wildcard, [@attr] or [@attr=value] filter, and trailing @attr to extract attribute value. " +
-        "Examples: root.child, catalog/book[@id=101]/title, /feed/entry[*]/@href",
+        "Bracket clauses stack and apply left to right, so an index after a filter counts within the filtered set. " +
+        "Examples: root.child, catalog/book[@id=101]/title, catalog/book[@genre=Fantasy][0], /feed/entry[*]/@href",
     )
     .option('--head <n>', 'limit a matching result list to the first N items')
     .option('--json', 'emit the result as JSON instead of text')

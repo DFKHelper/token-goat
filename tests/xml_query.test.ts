@@ -150,8 +150,28 @@ describe('parseXmlPath', () => {
   it('parses attribute selectors @attr and attribute filter [@attr=val]', () => {
     expect(parseXmlPath('catalog/book[@genre=Fantasy]/@id')).toEqual([
       { tag: 'catalog', isRecursive: false },
-      { tag: 'book', isRecursive: false, attributeFilter: { name: 'genre', value: 'Fantasy' } },
+      { tag: 'book', isRecursive: false, attributeFilters: [{ name: 'genre', value: 'Fantasy' }] },
       { tag: '', isRecursive: false, attributeSelect: 'id' },
+    ])
+  })
+
+  // FORMAT-DERIVED: predicate stacking is XPath 1.0 §2.4, "a predicate filters a node-set with
+  // respect to an axis to produce a new node-set", applied left to right. Read off the spec, not
+  // off xml_query.ts's own regexes.
+  it('keeps every bracket clause on a segment, not just the last one', () => {
+    // Pre-fix, the three clause regexes were anchored at the end of the whole segment, so the index regex matched the trailing `[2]`, the if/else chain short-circuited before the attribute regex ran, and a greedy `\[.*\]$` strip took `@id='1'` off the tag. The parse came back as a bare positional step and the command answered from it without a word.
+    expect(parseXmlPath("item[@id='1'][2]")).toEqual([
+      { tag: 'item', isRecursive: false, index: 2, attributeFilters: [{ name: 'id', value: '1' }] },
+    ])
+    expect(parseXmlPath("item[@id='1'][@lang='en']")).toEqual([
+      {
+        tag: 'item',
+        isRecursive: false,
+        attributeFilters: [
+          { name: 'id', value: '1' },
+          { name: 'lang', value: 'en' },
+        ],
+      },
     ])
   })
 })
@@ -162,6 +182,20 @@ describe('queryXml', () => {
     expect(res.fanned).toBe(false)
     expect(res.items.length).toBe(1)
     expect(res.items[0]?.text).toBe("XML Developer's Guide")
+  })
+
+  it('indexes into the filtered set, not the raw siblings, when a segment carries both clauses', () => {
+    // Pre-fix this returned book[0], "XML Developer's Guide" -- genre Computer, the one book the filter excludes -- as a single confident answer with no warning.
+    const res = queryXml(SAMPLE_XML, "catalog/book[@genre='Fantasy'][0]")
+    expect(res.items.length).toBe(1)
+    expect(res.items[0]?.children.find((c) => c.tag === 'title')?.text).toBe('Midnight Rain')
+    // The second filter has to hold too: bk101 is a Computer book, so nothing matches both.
+    expect(queryXml(SAMPLE_XML, "catalog/book[@genre='Fantasy'][@id='bk101']").items).toEqual([])
+    // A typo'd predicate must not read as no predicate. Scanning clauses left to right made it easy to drop an unclosed one silently and answer a filtered query with the whole element list.
+    expect(queryXml(SAMPLE_XML, "catalog/book[@genre='Fantasy'").items).toEqual([])
+    expect(
+      queryXml(SAMPLE_XML, "catalog/book[@genre='Fantasy'][@id='bk103']").items[0]?.children.find((c) => c.tag === 'title')?.text,
+    ).toBe('Maeve Ascendant')
   })
 
   it('extracts multiple elements with wildcard or multi-match tags', () => {
