@@ -24,7 +24,7 @@ import { displaySafePath, displaySafeText, normalizePath, toDisplayPath } from '
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges } from './session.js'
 import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
@@ -137,7 +137,7 @@ const DENY_THRESHOLD_TIER_MULTIPLIERS: Record<'cool' | 'warm' | 'hot' | 'critica
 /** First-read deny threshold: files this large are denied even on the first read (too expensive to load), tightened by the current session's context pressure. */
 function largeFileDenyBytes(): number {
   const base = loadConfig().hints.large_read_redirect_bytes
-  const tier = getContextPressure(loadSessionCache(getSessionId()) ?? undefined).tier
+  const tier = getContextPressure(loadSessionCache(getSessionId()) ?? undefined, getTranscriptPath()).tier
   return Math.round(base * DENY_THRESHOLD_TIER_MULTIPLIERS[tier])
 }
 
@@ -412,7 +412,7 @@ function quietContextOutput(context: string): HookOutput {
  */
 function contextPressureAdvisorySuffix(): string {
   if (!loadConfig().hints.context_threshold_advisory) return ''
-  const tier = getContextPressure(loadSessionCache(getSessionId()) ?? undefined).tier
+  const tier = getContextPressure(loadSessionCache(getSessionId()) ?? undefined, getTranscriptPath()).tier
   if (tier === 'hot') {
     return ' Context pressure: hot -- consider wrapping up soon or running /compact.'
   }

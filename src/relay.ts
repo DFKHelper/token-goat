@@ -27,6 +27,7 @@ import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { normalizePayload, type Harness } from './hooks_cli.js'
 import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
+import { setTranscriptPath } from './session.js'
 // Re-exported below: this was defined here until it was split out (see stdin_json.ts's own note).
 import { MAX_STDIN_BYTES, readStdinJson } from './stdin_json.js'
 import { shouldSuppressDuplicateVscodeHook } from './vscode_duplicate.js'
@@ -202,6 +203,11 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually.
     if (!process.env['CLAUDE_CODE_SESSION_ID'] && event.sessionId) {
       process.env['CLAUDE_CODE_SESSION_ID'] = event.sessionId
+    }
+    // Record the transcript path so getContextPressure() can measure real prompt size from it (compact.ts::measurePromptTokens) instead of estimating. Paired with the wire session id, deliberately not the env var seeded just above: that one latches to the first session a process sees, so in a bridge that module-caches this function a second session's event would pair its own transcript with the first session's id and the pairing check would pass on a mismatch. Measured: two relayInProcess calls in one process report session `sess-A` with `sess-B`'s transcript before this line read event.sessionId. See session.ts::setTranscriptPath.
+    const rawTranscriptPath = event.raw['transcript_path']
+    if (typeof rawTranscriptPath === 'string' && rawTranscriptPath !== '') {
+      setTranscriptPath(rawTranscriptPath, event.sessionId ?? '')
     }
     // Propagate W3C trace context to environment if delivered on the payload wire, so child subprocesses/tools can correlate spans.
     if (!process.env['TRACEPARENT'] && event.traceparent) {

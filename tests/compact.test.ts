@@ -42,6 +42,7 @@ import {
   inferSessionGoal,
   isNoisePath,
   loadSessionCache,
+  measurePromptTokens,
   normalizeForCache,
   tierForFraction,
   type SessionCacheObject,
@@ -130,39 +131,44 @@ describe('compact', () => {
       expect(pressure.tier).toBe('cool')
     })
 
-    it('computes pressure from measured tokens', () => {
-      const cache = {
-        loadedSkillTotalTokens: 100,
-        observedToolTokens: 500_000,
-        pressureBaselineTokens: 0,
-      }
-      const pressure = getContextPressure(cache)
-      const expected = (100 + CATALOG_TOKENS + 500_000) / CONTEXT_AUTOCOMPACT_TOKENS
-      expect(pressure.fillFraction).toBeCloseTo(expected, 5)
-      expect(pressure.tier).toBe('hot')
-    })
-
-    it('subtracts baseline from raw total', () => {
-      const cache = {
-        loadedSkillTotalTokens: 100,
-        observedToolTokens: 100_000,
-        pressureBaselineTokens: 50_000,
-      }
-      const pressure = getContextPressure(cache)
-      const expected = (100 + CATALOG_TOKENS + 100_000 - 50_000) / CONTEXT_AUTOCOMPACT_TOKENS
-      expect(pressure.fillFraction).toBeCloseTo(expected, 5)
-    })
-
-    it('falls back to legacy proxies when observed tokens is 0', () => {
+    it('computes pressure from the fabricated estimate when no transcript measurement is available', () => {
       const cache: SessionCacheObject = {
         loadedSkillTotalTokens: 0,
-        observedToolTokens: 0,
-        pressureBaselineTokens: 0,
         bashOutputs: [['cmd1', 'out1'], ['cmd2', 'out2']],
         webFetches: [['url1', 'out1']],
         files: [fileEntry('a.ts'), fileEntry('b.ts'), fileEntry('c.ts')],
       }
       const pressure = getContextPressure(cache)
+      const expected =
+        (CATALOG_TOKENS + 2 * 500 + 1 * 1_000 + 3 * 200) / CONTEXT_AUTOCOMPACT_TOKENS
+      expect(pressure.fillFraction).toBeCloseTo(expected, 5)
+    })
+
+    // Real transcript JSONL lines captured from Claude Code 2.1.270 (tests/fixtures/transcript_usage_capture.jsonl, PROVENANCE: CAPTURE). Regression for the defect this fix closes: pressureRawTotal used to fabricate a total from cumulative tool-call counts that only grows and never reflects a real compaction. This drives the real measurePromptTokens -> getContextPressure path against that fixture and asserts the result is NOT what the fabricated estimate would have produced for the same cache -- the assertion that would have caught the defect.
+    it('prefers the transcript measurement over the fabricated estimate, and the two disagree', () => {
+      const transcriptPath = path.join(__dirname, 'fixtures', 'transcript_usage_capture.jsonl')
+      const cache: SessionCacheObject = {
+        loadedSkillTotalTokens: 0,
+        bashOutputs: [['cmd1', 'out1'], ['cmd2', 'out2']],
+        webFetches: [['url1', 'out1']],
+        files: [fileEntry('a.ts'), fileEntry('b.ts'), fileEntry('c.ts')],
+      }
+      const measured = getContextPressure(cache, transcriptPath)
+      const estimated = getContextPressure(cache)
+      // Last usage record in the fixture: input_tokens 2 + cache_creation_input_tokens 1338 + cache_read_input_tokens 119046 + output_tokens 333 = 120719.
+      const expectedMeasuredTotal = 120719
+      expect(measured.fillFraction).toBeCloseTo(expectedMeasuredTotal / CONTEXT_AUTOCOMPACT_TOKENS, 5)
+      expect(measured.fillFraction).not.toBeCloseTo(estimated.fillFraction, 5)
+    })
+
+    it('falls back to the estimate when the transcript path does not resolve to a file', () => {
+      const cache: SessionCacheObject = {
+        loadedSkillTotalTokens: 0,
+        bashOutputs: [['cmd1', 'out1'], ['cmd2', 'out2']],
+        webFetches: [['url1', 'out1']],
+        files: [fileEntry('a.ts'), fileEntry('b.ts'), fileEntry('c.ts')],
+      }
+      const pressure = getContextPressure(cache, path.join(__dirname, 'fixtures', 'does-not-exist.jsonl'))
       const expected =
         (CATALOG_TOKENS + 2 * 500 + 1 * 1_000 + 3 * 200) / CONTEXT_AUTOCOMPACT_TOKENS
       expect(pressure.fillFraction).toBeCloseTo(expected, 5)
@@ -213,11 +219,9 @@ describe('compact', () => {
       process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'gemini'
       const cache = {
         loadedSkillTotalTokens: 100,
-        observedToolTokens: 500_000,
-        pressureBaselineTokens: 0,
       }
       const pressure = getContextPressure(cache)
-      const expected = (100 + CATALOG_TOKENS + 500_000) / (CONTEXT_AUTOCOMPACT_TOKENS * 3.0)
+      const expected = (100 + CATALOG_TOKENS) / (CONTEXT_AUTOCOMPACT_TOKENS * 3.0)
       expect(pressure.fillFraction).toBeCloseTo(expected, 5)
     })
 
@@ -244,12 +248,10 @@ auto_trigger_multiplier = 2.0
       try {
         const cache = {
           loadedSkillTotalTokens: 100,
-          observedToolTokens: 500_000,
-          pressureBaselineTokens: 0,
         }
         const pressure = getContextPressure(cache)
         // Explicit 2.0 must win over gemini's 3.0 harness default.
-        const expected = (100 + CATALOG_TOKENS + 500_000) / (CONTEXT_AUTOCOMPACT_TOKENS * 2.0)
+        const expected = (100 + CATALOG_TOKENS) / (CONTEXT_AUTOCOMPACT_TOKENS * 2.0)
         expect(pressure.fillFraction).toBeCloseTo(expected, 5)
       } finally {
         invalidateConfigCache()
@@ -286,12 +288,10 @@ auto_trigger_multiplier = 2.0
       try {
         const cache = {
           loadedSkillTotalTokens: 100,
-          observedToolTokens: 500_000,
-          pressureBaselineTokens: 0,
         }
         const pressure = getContextPressure(cache)
         // Explicit 2.0 (from the project override) must win over gemini's 3.0 harness default.
-        const expected = (100 + CATALOG_TOKENS + 500_000) / (CONTEXT_AUTOCOMPACT_TOKENS * 2.0)
+        const expected = (100 + CATALOG_TOKENS) / (CONTEXT_AUTOCOMPACT_TOKENS * 2.0)
         expect(pressure.fillFraction).toBeCloseTo(expected, 5)
       } finally {
         invalidateConfigCache()
@@ -855,6 +855,40 @@ auto_trigger_multiplier = 2.0
       const editedLines = (m: string): number =>
         (m.split('## Edited files')[1]?.split('##')[0]?.match(/^- /gm) ?? []).length
       expect(editedLines(matureManifest)).toBeGreaterThan(editedLines(youngManifest))
+    })
+  })
+
+  describe('measurePromptTokens', () => {
+    const fixturePath = path.join(__dirname, 'fixtures', 'transcript_usage_capture.jsonl')
+
+    // tests/fixtures/transcript_usage_capture.jsonl: 3 real transcript lines captured from Claude Code 2.1.270 (PROVENANCE: CAPTURE). Session, request and message identifiers were replaced with placeholders and the message content blocks with one text block, since neither is what this measures; every field name, nesting depth and usage number is as the harness wrote it, which is the part the reader depends on. Their usage totals, in file order, are 110979, 111210, 120719 -- distinct and non-monotonic-by-position-coincidence, so a reader that returned the *first* parseable record instead of the *last* would report 110979, not 120719, and this assertion would catch it.
+    it('returns the sum from the last usage record in the file, not the first', () => {
+      expect(measurePromptTokens(fixturePath)).toBe(120719)
+    })
+
+    it('returns null for a missing file', () => {
+      expect(measurePromptTokens(path.join(__dirname, 'fixtures', 'does-not-exist.jsonl'))).toBeNull()
+    })
+
+    it('returns null for an empty file', () => {
+      const tmp = path.join(os.tmpdir(), `tg-transcript-empty-${Date.now()}.jsonl`)
+      fs.writeFileSync(tmp, '', 'utf8')
+      try {
+        expect(measurePromptTokens(tmp)).toBeNull()
+      } finally {
+        fs.unlinkSync(tmp)
+      }
+    })
+
+    // The lines below are HAND-DERIVED (a plain user-turn line and a malformed line), not captured wire output: they exist only to prove the parser skips a record with no `usage` and a line that fails JSON.parse, not to assert anything about a real transcript's shape.
+    it('returns null for a file with no usage record', () => {
+      const tmp = path.join(os.tmpdir(), `tg-transcript-no-usage-${Date.now()}.jsonl`)
+      fs.writeFileSync(tmp, '{"type":"user","message":{"role":"user","content":"hi"}}\nnot json at all\n', 'utf8')
+      try {
+        expect(measurePromptTokens(tmp)).toBeNull()
+      } finally {
+        fs.unlinkSync(tmp)
+      }
     })
   })
 })

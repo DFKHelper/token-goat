@@ -10,7 +10,7 @@ import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { registerHook } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { buildEvent, readStdinJson, relay } from '../src/relay.js'
-import { getSessionId } from '../src/session.js'
+import { getSessionId, getTranscriptPath } from '../src/session.js'
 
 /**
  * Replace process.stdin with a fake emitter and capture process.stdout writes.
@@ -597,6 +597,39 @@ describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Cla
     await relay('pre_tool_use')
 
     expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe('preexisting-session')
+  })
+
+  // The env var seeded above latches to the first session a process sees, and the bridges in src/bridges/ module-cache relayInProcess, so one long-lived bridge process can relay two sessions' events. Pairing the transcript path with that latched id would have paired session B's transcript with session A's id and passed the check, handing getContextPressure a measurement of the wrong conversation -- worse than the estimate it replaced, since a measured number reads as fact. Pairing with the wire id instead makes the mismatch visible and falls back to the estimate.
+  it('does not serve a second session\'s transcript path to the first session', async () => {
+    io.emit(
+      JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/transcript-pairing-a.ts' },
+        session_id: 'transcript-session-a',
+        transcript_path: '/tmp/transcript-a.jsonl',
+      }),
+    )
+    await relay('pre_tool_use')
+
+    expect(getSessionId()).toBe('transcript-session-a')
+    expect(getTranscriptPath()).toBe('/tmp/transcript-a.jsonl')
+
+    io.restore()
+    io = withFakeIo()
+
+    io.emit(
+      JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/transcript-pairing-b.ts' },
+        session_id: 'transcript-session-b',
+        transcript_path: '/tmp/transcript-b.jsonl',
+      }),
+    )
+    await relay('pre_tool_use')
+
+    // The env latch means this process still answers as session A; B's transcript must therefore be withheld rather than measured for A.
+    expect(getSessionId()).toBe('transcript-session-a')
+    expect(getTranscriptPath()).toBeUndefined()
   })
 
   it('propagates wire traceparent and tracestate to process.env', async () => {

@@ -20,6 +20,7 @@ import {
   getSessionFileEntry,
   getSessionFiles,
   getSessionId,
+  getTranscriptPath,
   getWebFetchCacheId,
   importSessionState,
   markFileTruncated,
@@ -35,6 +36,7 @@ import {
   recordOutstandingAgentSpawn,
   recordSymbolRead,
   recordWebFetch,
+  setTranscriptPath,
   removeOutstandingAgentSpawn,
   wasFileReadThisSession,
   wasHintShown,
@@ -386,6 +388,39 @@ describe('session id', () => {
     const id = getSessionId()
     expect(id.length).toBeGreaterThan(0)
     expect(id).not.toBe('test-session-abc123')
+  })
+})
+
+describe('transcript path', () => {
+  const ORIG_ENV = process.env['CLAUDE_CODE_SESSION_ID']
+
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  afterEach(() => {
+    if (ORIG_ENV === undefined) delete process.env['CLAUDE_CODE_SESSION_ID']
+    else process.env['CLAUDE_CODE_SESSION_ID'] = ORIG_ENV
+  })
+
+  it('serves the path back for the session it was recorded under', () => {
+    process.env['CLAUDE_CODE_SESSION_ID'] = 'sess-A'
+    setTranscriptPath('C:/tmp/A.jsonl', 'sess-A')
+    expect(getTranscriptPath()).toBe('C:/tmp/A.jsonl')
+  })
+
+  // The bridges in src/bridges/ module-cache relayInProcess, so one process can serve two sessions, and relay.ts seeds CLAUDE_CODE_SESSION_ID only once -- getSessionId() therefore still answers with the first session after the second one's event arrives. A transcript recorded under the second session must not be measured for the first: an estimate that is wrong by a known amount is recoverable, a measurement of someone else's conversation reads as fact.
+  it('withholds a path recorded under a different session', () => {
+    process.env['CLAUDE_CODE_SESSION_ID'] = 'sess-A'
+    expect(getSessionId()).toBe('sess-A')
+    setTranscriptPath('C:/tmp/B.jsonl', 'sess-B')
+    expect(getTranscriptPath()).toBeUndefined()
+  })
+
+  it('withholds a path that arrived with no session id', () => {
+    process.env['CLAUDE_CODE_SESSION_ID'] = 'sess-A'
+    setTranscriptPath('C:/tmp/B.jsonl', '')
+    expect(getTranscriptPath()).toBeUndefined()
   })
 })
 

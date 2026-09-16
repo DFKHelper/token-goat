@@ -865,10 +865,7 @@ content here` },
 
     function fillContextToHotTier(): void {
       const sessionId = getSessionId()
-      // pressureRawTotal (src/compact.ts) = CATALOG_TOKENS (10,800) + bashCount * 500 when no
-      // observedToolTokens are set. 1000 entries -> 510,800 tokens -> 0.774 fill fraction under
-      // the 'generic' harness's 1.0 multiplier (660,000 * 1.0 window) -- squarely in the 'hot'
-      // band (>= 0.70, < 0.85) without crossing into 'critical'.
+      // pressureRawTotal (src/compact.ts) = CATALOG_TOKENS (10,800) + bashCount * 500, used when no transcript measurement is available (no transcript_path seeded in this test process). 1000 entries -> 510,800 tokens -> 0.774 fill fraction under the 'generic' harness's 1.0 multiplier (660,000 * 1.0 window) -- squarely in the 'hot' band (>= 0.70, < 0.85) without crossing into 'critical'.
       const bashOutputs: Array<[string, string]> = Array.from({ length: 1000 }, (_, i) => [
         `cmd${i}`,
         `output${i}`,

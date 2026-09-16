@@ -141,6 +141,9 @@ let _pendingLargeFileHintsAtLoad = new Map<string, number>()
 // Resolved once per process: env-provided session id or a generated one.
 let _sessionId: string | null = null
 
+// Set by relay.ts from the hook payload's `transcript_path`, paired with the session it arrived for. Unset (null) when the harness never sends one (e.g. a non-Claude-Code bridge), in which case getContextPressure falls back to its estimate.
+let _transcriptPath: { path: string; sessionId: string } | null = null
+
 /**
  * Best-effort file size in bytes, or 0 when the file cannot be stat'd.
  *
@@ -776,6 +779,18 @@ export function getSessionId(): string {
   return _sessionId
 }
 
+/** Record the transcript path from the hook payload, paired with the session it belongs to. Under Claude Code each hook invocation is its own short-lived process, but the bridges in `src/bridges/` module-cache `relayInProcess` and can serve more than one session from one process, so a bare latch-once would let session B measure session A's transcript -- worse than the estimate it replaced, because a wrong number reads as a real one. The pairing is what {@link getTranscriptPath} checks; a later call for the same session is a harmless no-op, and one for a different session replaces it. */
+export function setTranscriptPath(path: string, sessionId: string): void {
+  if (path === '') return
+  _transcriptPath = { path, sessionId }
+}
+
+/** The current session's transcript path, if the harness sent one on the hook payload (see {@link setTranscriptPath}); undefined when none was sent or the one on record belongs to a different session. */
+export function getTranscriptPath(): string | undefined {
+  if (_transcriptPath === null) return undefined
+  return _transcriptPath.sessionId === getSessionId() ? _transcriptPath.path : undefined
+}
+
 /**
  * The serializable snapshot of session state.
  *
@@ -895,4 +910,5 @@ registerReset(() => {
   _seenImageHashes = []
   _compactedAt = 0
   _sessionId = null
+  _transcriptPath = null
 })

@@ -17,7 +17,7 @@ import { WEB_FETCH_KEY_SEP, getSessionFiles, getSessionWebFetches, getSessionBas
 import type { FileEntry } from './session.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { contextOutput, passOutput, getCwd } from './hooks_common.js'
+import { contextOutput, passOutput, getCwd, getTranscriptPath } from './hooks_common.js'
 import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB, runGit } from './util.js'
 import type { HookOutput } from './types.js'
@@ -129,7 +129,7 @@ function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): Fil
  * rows exactly as written -- the most persistent place in the tool where an unescaped `[tg]`
  * marker could sit, since it survives compaction into the next context.
  */
-export function buildManifest(sessionId?: string, cwd?: string): string {
+export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?: string): string {
   const ownFiles = [...getSessionFiles().values()]
   const siblingFiles = sessionId !== undefined ? listSiblingSessionStates(sessionId).flatMap((s) => s.files) : []
   const files = siblingFiles.length > 0 ? mergeManifestFiles(ownFiles, siblingFiles) : ownFiles
@@ -168,7 +168,7 @@ export function buildManifest(sessionId?: string, cwd?: string): string {
   lines.push(...buildSafeToDiscardSection(files))
   lines.push(...buildMemEpochSection())
 
-  return capManifestChars(lines.join('\n'), sessionId, cwd)
+  return capManifestChars(lines.join('\n'), sessionId, cwd, transcriptPath)
 }
 
 /**
@@ -221,11 +221,11 @@ function gitDirtySignals(cwd: string): { hasPendingDiff: boolean; hasUncommitted
  * No-op (returns 0) when `cwd` is unavailable (harness didn't send one) -- fails soft rather
  * than guessing a working directory for the git spawns.
  */
-function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefined): number {
+function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefined, transcriptPath: string | undefined): number {
   if (!cwd) return 0
   const cache = loadSessionCache(sessionId ?? '') ?? {}
   const ageSecs = cache.created_ts !== undefined ? Math.max(0, Date.now() / 1000 - cache.created_ts) : 0
-  const contextPressure = getContextPressure(cache)
+  const contextPressure = getContextPressure(cache, transcriptPath)
   const { hasPendingDiff, hasUncommittedChanges } = gitDirtySignals(cwd)
   if (!hasPendingDiff && !hasUncommittedChanges) return 0
 
@@ -249,11 +249,11 @@ function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefine
  * skipped entirely rather than paid on every compaction regardless of whether truncation could
  * ever happen.
  */
-function capManifestChars(manifest: string, sessionId?: string, cwd?: string): string {
+function capManifestChars(manifest: string, sessionId?: string, cwd?: string, transcriptPath?: string): string {
   const cap = loadConfig().compact_assist.max_manifest_chars
   if (cap <= 0) return manifest
   if (manifest.length <= cap) return manifest
-  const effectiveCap = cap + adaptiveCharBonus(sessionId, cwd)
+  const effectiveCap = cap + adaptiveCharBonus(sessionId, cwd, transcriptPath)
   if (manifest.length <= effectiveCap) return manifest
   const omitted = manifest.length - effectiveCap
   return manifest.slice(0, effectiveCap) + `\n...(manifest truncated at ${effectiveCap} chars; ${omitted} chars omitted)`
@@ -429,7 +429,7 @@ export function preCompactHandler(event: HookEvent): HookOutput {
   // Order is load-bearing: buildManifest reads getSessionFiles(), and markCompacted stamps the epoch that makes every one of those reads count as no-longer-in-context. Stamping first would not corrupt the manifest today (it reads readCount/wasEdited directly rather than going through wasFileReadThisSession), but the dependency is real -- any future manifest input that asks "is this still in context" would silently render empty. Build first, stamp second.
   // The stamp is NOT gated on compact_assist.enabled: compaction happens whether or not we inject a manifest, so the read ledger must be invalidated either way. Gating it would leave hooks_read.ts serving diffs and "unchanged" denials against content the model can no longer see, for every user who turned the manifest off.
   const out = loadConfig().compact_assist.enabled
-    ? contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(loadConfig().compact_assist.summary_budget_chars)}\n\n${buildManifest(event.sessionId, getCwd(event))}`)
+    ? contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(loadConfig().compact_assist.summary_budget_chars)}\n\n${buildManifest(event.sessionId, getCwd(event), getTranscriptPath(event))}`)
     : passOutput()
   markCompacted()
   return out

@@ -33,6 +33,12 @@ export function getCwd(event: HookEvent): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
+/** Extract the hook payload's `transcript_path` field, when present and non-empty. Prefer this over `session.ts::getTranscriptPath()`'s module-level accessor when an event is already in hand (see hooks_compact.ts). */
+export function getTranscriptPath(event: HookEvent): string | undefined {
+  const value = event.raw && typeof event.raw === 'object' ? event.raw['transcript_path'] : undefined
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
 /** Extract a string body from a raw hook event's `tool_response`, trying `keys` in order and returning the first string value found. `tool_response` shapes vary by tool and harness (`output`, `body`, `text`, `content` are all used by different tools) -- callers pass their own priority order rather than this helper guessing one, since a shared default order could silently change which field wins for a caller that genuinely depends on its own priority. A present-but-EMPTY string does not win. Claude Code always sends both `stdout` and `stderr` for Bash, so a command that wrote only to stderr arrives as `{stdout: '', stderr: '...'}`; stopping at the empty `stdout` returned '' and every output-gated post-Bash path did nothing. Measured on recorded harness traffic: 24 of 186,335 real Bash results. Empty means "this field carried no output", which is exactly the case a later key should be allowed to answer. */
 export function extractToolResponseField(raw: Record<string, unknown>, keys: readonly string[]): string {
   const resp = raw['tool_response']

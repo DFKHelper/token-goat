@@ -12,6 +12,7 @@ import { isInstalled } from './install.js'
 import { cleanupStaleDownloads } from './webfetch.js'
 import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
+import { resolveSessionTranscript } from './session_read.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
 import { ensureNewline, pad, requireNonNegativeStrictInt, countNoun } from './util.js'
@@ -390,7 +391,8 @@ export async function cmdResume(opts: { sessionId: string; json?: boolean }): Pr
 export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; json?: boolean }): void {
   const sessionId = opts.sessionId ?? findLatestSessionId()
   const cache = sessionId !== null ? loadSessionCache(sessionId) : null
-  const pressure = getContextPressure(cache ?? undefined)
+  const transcriptPath = sessionId !== null ? resolveSessionTranscript(sessionId) : null
+  const pressure = getContextPressure(cache ?? undefined, transcriptPath ?? undefined)
   const [manifest, eventCount] = sessionId !== null ? buildManifestWithCount(sessionId) : (['', 0] as [string, number])
   const manifestTokens = estimateTokens(manifest)
   const pct = (pressure.fillFraction * 100).toFixed(1)

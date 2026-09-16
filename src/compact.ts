@@ -16,6 +16,7 @@ import { displaySafeText } from './paths.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import { WEB_FETCH_KEY_SEP } from './session.js'
 import type { FileEntry } from './session.js'
+import { readTranscriptTail } from './resident_context.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -98,8 +99,6 @@ export interface ContextPressure {
 
 export interface SessionCacheObject {
   loadedSkillTotalTokens?: number
-  observedToolTokens?: number
-  pressureBaselineTokens?: number
   /**
    * Matches the real on-disk shape session_store.ts::SerializedSession
    * actually produces — an array of `[key, id]` pairs (see session.ts's
@@ -177,15 +176,9 @@ export function tierForFraction(fill: number): 'cool' | 'warm' | 'hot' | 'critic
   return 'cool'
 }
 
-/**
- * Return the raw (pre-baseline-subtraction) context pressure total for a cache.
- */
+/** Return the estimated (never-measured) context pressure total for a cache. Used only when no real transcript measurement is available (see {@link measurePromptTokens}) -- e.g. a non-Claude-Code harness that never delivers a `transcript_path`, or a transcript that is missing/unreadable/carries no `usage` record yet. */
 function pressureRawTotal(cache: SessionCacheObject): number {
   const skillTokens = cache.loadedSkillTotalTokens ?? 0
-  const observed = cache.observedToolTokens ?? 0
-  if (observed > 0) {
-    return skillTokens + CATALOG_TOKENS + observed
-  }
   const bashCount = (cache.bashOutputs ?? []).length
   const webCount = (cache.webFetches ?? []).length
   const files = cache.files ?? []
@@ -197,6 +190,59 @@ function pressureRawTotal(cache: SessionCacheObject): number {
     webCount * 1_000 +
     readCount * 200
   )
+}
+
+/** Tail window read for {@link measurePromptTokens}. Sized against a live 445 MB transcript on this machine: 275,377 records, largest single record 792,353 bytes, 11 records over 256 KB. A 256 KB window could therefore land entirely inside one record and find nothing, falling back to the fabricated estimate; 1 MiB clears the observed maximum with room to spare and still costs about half a millisecond per call, measured. It stays a bounded tail read, never a whole-file read. */
+const PROMPT_MEASURE_TAIL_BYTES = 1_048_576
+
+/** Pull the `usage` object out of one parsed transcript JSONL record, if present. Claude Code assistant records nest it at `message.usage` (verified against real transcript output from Claude Code 2.1.270 -- see `tests/fixtures/transcript_usage_capture.jsonl`), not at the record's top level. */
+function extractUsageTotal(record: unknown): number | null {
+  if (record === null || typeof record !== 'object') return null
+  // Name the record being measured rather than taking any record that happens to carry a usage object. Scanned all 275,377 records of a live 445 MB transcript: every usage-bearing record is `type: "assistant"` and none is a sidechain. Re-checked on a second live transcript from a session that spawned many subagents: 59,883 usage records, still zero carrying `isSidechain`, so a subagent's usage does not land in its parent's transcript and no lane selector is needed here.
+  if ((record as Record<string, unknown>)['type'] !== 'assistant') return null
+  const message = (record as Record<string, unknown>)['message']
+  if (message === null || typeof message !== 'object') return null
+  const usage = (message as Record<string, unknown>)['usage']
+  if (usage === null || typeof usage !== 'object') return null
+  const u = usage as Record<string, unknown>
+  const input = u['input_tokens']
+  const cacheCreation = u['cache_creation_input_tokens']
+  const cacheRead = u['cache_read_input_tokens']
+  const output = u['output_tokens']
+  if (
+    typeof input !== 'number' ||
+    typeof cacheCreation !== 'number' ||
+    typeof cacheRead !== 'number' ||
+    typeof output !== 'number'
+  ) {
+    return null
+  }
+  // The three input fields describe the prompt of the request that *produced* this record; the reply it produced is resident in the next one. `output_tokens` is required alongside them rather than defaulted to zero: it is present on all 59,900 usage records of a live transcript, so a record missing it is a shape this reader has never seen and should decline rather than silently under-report. Measured across 31,758 consecutive record pairs of a live transcript: 31,430 (99.0%) have the next total at or above this total plus this record's output, and the 328 below it are compactions and branch resets, where the whole total drops. Omitting output therefore reports a prompt one reply short of the real one -- typically 424 tokens, but up to 20,276 observed, which is 3% of the auto-compact window at the moment the tier matters most.
+  return input + cacheCreation + cacheRead + output
+}
+
+/** Measure the current prompt size (in tokens) from the harness's own transcript, rather than fabricating it from cumulative tool-call counts (see {@link pressureRawTotal}). Reads a bounded tail of `transcriptPath` (see {@link PROMPT_MEASURE_TAIL_BYTES}) and returns the sum of `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens` from the *last* parseable `usage` record found there -- that sum already reflects every compaction that has happened in the session, so no baseline subtraction is needed on top of it. Returns null (never throws) when the file is missing, empty, unreadable, or carries no usage record in the tail window. */
+export function measurePromptTokens(transcriptPath: string): number | null {
+  try {
+    const lines = readTranscriptTail(transcriptPath, PROMPT_MEASURE_TAIL_BYTES)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]
+      if (line === undefined) continue
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(trimmed)
+      } catch {
+        continue
+      }
+      const total = extractUsageTotal(parsed)
+      if (total !== null) return total
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -217,15 +263,21 @@ function getEffectiveAutoTriggerWindow(): number {
   return CONTEXT_AUTOCOMPACT_TOKENS * multiplier
 }
 
-export function getContextPressure(cache?: SessionCacheObject): ContextPressure {
+export function getContextPressure(cache?: SessionCacheObject, transcriptPath?: string): ContextPressure {
   try {
+    const window = getEffectiveAutoTriggerWindow()
+    // A real measurement from the harness's own transcript IS the total: it already reflects every compaction and every loaded skill/catalog, so nothing is added or subtracted on top of it. Only fall back to the fabricated estimate below when no measurement is available at all (no transcript path given, file unreadable, no usage record in the tail window) -- that keeps non-Claude-Code harnesses and cache-only unit tests working.
+    if (transcriptPath) {
+      const measured = measurePromptTokens(transcriptPath)
+      if (measured !== null) {
+        const fill = measured / window
+        return { fillFraction: fill, tier: tierForFraction(fill) }
+      }
+    }
     if (!cache) {
       return { fillFraction: 0.0, tier: 'cool' }
     }
-    const rawTotal = pressureRawTotal(cache)
-    const baseline = cache.pressureBaselineTokens ?? 0
-    const total = Math.max(0, rawTotal - baseline)
-    const window = getEffectiveAutoTriggerWindow()
+    const total = pressureRawTotal(cache)
     const fill = total / window
     return {
       fillFraction: fill,
