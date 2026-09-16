@@ -1,7 +1,7 @@
 /** Word (.docx) narrow-slice reader. Body text lives at `word/document.xml`, a `w:document > w:body` tree of paragraphs (`w:p`), each holding runs (`w:r`) of text (`w:t`). A paragraph is a heading when its `w:pPr.w:pStyle.@_w:val` matches `HeadingN`/`Heading N`/`Title` (the exact style ID Word writes depends on the template, so both forms are checked). */
 
 import { displaySafeText } from './paths.js'
-import { collectElements, collectTextRuns, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
+import { collectElements, collectParagraphTexts, collectTextRuns, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
 
 interface ParagraphLike {
   'w:pPr'?: { 'w:pStyle'?: { '@_w:val'?: string } }
@@ -59,7 +59,8 @@ export async function docxText(filePath: string): Promise<string> {
 
 export async function docxTables(filePath: string): Promise<DocxTable[]> {
   const parsed = await loadDocumentBody(filePath)
-  const tbls = collectElements(parsed, 'w:tbl')
+  // A table nested in a cell is a table in its own right: without includeNested it is never reported, and its rows are only visible as the text they leak into the parent cell.
+  const tbls = collectElements(parsed, 'w:tbl', { includeNested: true })
   const out: DocxTable[] = []
 
   for (let i = 0; i < tbls.length; i++) {
@@ -72,7 +73,11 @@ export async function docxTables(filePath: string): Promise<DocxTable[]> {
       const tcElements = collectElements(tr, 'w:tc')
       const rowCells: string[] = []
       for (const tc of tcElements) {
-        const cellText = collectTextRuns(tc, 'w:t').join('').replace(/\r?\n/g, ' ').trim()
+        // Paragraph-aware, and blind to a nested table: the nested rows are reported as their own table instead of being flattened into this cell.
+        const cellText = collectParagraphTexts(tc, 'w:p', 'w:t', ['w:tbl'], 'w:br')
+          .map((t) => t.replace(/\r?\n/g, ' ').trim())
+          .filter((t) => t.length > 0)
+          .join(' ')
         rowCells.push(cellText)
       }
       if (rowCells.length > maxCols) maxCols = rowCells.length

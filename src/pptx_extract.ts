@@ -1,6 +1,6 @@
 /** PowerPoint (.pptx) narrow-slice reader. Slide XML lives at `ppt/slides/slideN.xml`, one file per slide, each a `p:sld > p:cSld > p:spTree` tree of shapes (`p:sp`); each shape has an optional `p:txBody` of paragraphs (`a:p`) of runs (`a:r`) of text (`a:t`). A slide's title placeholder is the shape whose `p:nvSpPr.p:nvPr.p:ph.@_type` is `title`/`ctrTitle`. Speaker notes live in a sibling `ppt/notesSlides/notesSlideN.xml` part, in the shape whose `p:ph.@_type` is `body` (the other notes-slide shape is a non-text slide-image placeholder). */
 
-import { assertOoxmlWithinDeadline, collectElements, collectTextRuns, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip, sortNumberedParts, type OoxmlPartBudget } from './ooxml_extract.js'
+import { assertOoxmlWithinDeadline, collectElements, collectParagraphTexts, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip, sortNumberedParts, type OoxmlPartBudget } from './ooxml_extract.js'
 import { compileGuardedRegex } from './regex_guard.js'
 
 export interface SlideOutlineEntry {
@@ -23,8 +23,16 @@ function slideShapes(parsedSlide: unknown): unknown[] {
   return collectElements(parsedSlide, 'p:sp')
 }
 
+/** Every paragraph under `node`, joined with a single space. Joining the raw `a:t` runs instead fabricates a space at every formatting boundary, so a title whose second half is bold reads as two words and no longer matches a search for the word it actually is. */
+function flatSlideText(node: unknown): string {
+  return collectParagraphTexts(node, 'a:p', 'a:t', [], 'a:br')
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
+    .join(' ')
+}
+
 function shapeText(shape: unknown): string {
-  return collectTextRuns(shape, 'a:t').join(' ').trim()
+  return flatSlideText(shape)
 }
 
 /** Text blocks from every table on a slide, one block per row (cells joined with ` | `). A PowerPoint table (`p:graphicFrame` > `a:graphic` > `a:graphicData` > `a:tbl` > `a:tr` > `a:tc`) never uses `p:sp` at all -- slideShapes()'s p:sp-only collection silently drops every table's cell text, even though pptxOutline's bodyChars and pptxTextGrep both already see it (they scan the whole parsed slide tree via collectTextRuns, not slideShapes()). Without this, a real, common slide shape (comparison tables, data grids) is completely absent from pptxSlideText's output -- the one command whose job is showing a slide's actual text -- even though pptx-text-grep can find a match inside it. */
@@ -32,7 +40,7 @@ function tableRowBlocks(parsedSlide: unknown): string[] {
   const blocks: string[] = []
   for (const tbl of collectElements(parsedSlide, 'a:tbl')) {
     for (const row of collectElements(tbl, 'a:tr')) {
-      const cellTexts = collectElements(row, 'a:tc').map((cell) => collectTextRuns(cell, 'a:t').join(' ').trim())
+      const cellTexts = collectElements(row, 'a:tc').map((cell) => flatSlideText(cell))
       const rowText = cellTexts.join(' | ').trim()
       if (rowText.length > 0) blocks.push(rowText)
     }
@@ -140,7 +148,7 @@ async function notesTextFor(entries: Record<string, Uint8Array>, notesPath: stri
   const parsed = await parseOoxmlPart(xml)
   const shapes = collectElements(parsed, 'p:sp')
   const bodyShape = shapes.find((s) => shapePlaceholderType(s) === 'body')
-  return bodyShape !== undefined ? shapeText(bodyShape) : collectTextRuns(parsed, 'a:t').join(' ').trim()
+  return bodyShape !== undefined ? shapeText(bodyShape) : flatSlideText(parsed)
 }
 
 export async function pptxOutline(filePath: string, deadline: number = ooxmlWorkDeadline()): Promise<SlideOutlineEntry[]> {
@@ -156,7 +164,7 @@ export async function pptxOutline(filePath: string, deadline: number = ooxmlWork
       return t === 'title' || t === 'ctrTitle'
     })
     const title = titleShape !== undefined ? shapeText(titleShape) : ''
-    const allText = collectTextRuns(parsed, 'a:t').join(' ')
+    const allText = flatSlideText(parsed)
     const bodyChars = Math.max(0, allText.length - title.length)
     const hasNotes = (await notesTextFor(entries, await notesPathFor(entries, path, budget), budget)).length > 0
     out.push({ slide: i + 1, title, bodyChars, hasNotes })
@@ -225,7 +233,7 @@ export async function pptxTextGrep(filePath: string, pattern: string, deadline: 
   for (let i = 0; i < slidePaths.length; i++) {
     assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific slides with pptx-slide, or use a smaller deck.')
     const parsed = await parseSlide(entries, slidePaths[i] as string, budget)
-    const text = collectTextRuns(parsed, 'a:t').join(' ')
+    const text = flatSlideText(parsed)
     if (re.test(text)) {
       const idx = text.search(re)
       const snippet = text.slice(Math.max(0, idx - 40), idx + 80).trim()

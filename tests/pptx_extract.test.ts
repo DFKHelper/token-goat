@@ -297,3 +297,51 @@ describe('pptxOutline / pptxNotesText / pptxTextGrep refuse past their deadline 
     expect(matches).toHaveLength(1)
   })
 })
+
+describe('a word split across runs at a formatting boundary', () => {
+  // Provenance: CAPTURE. `ppt/slides/slide1.xml` of a .pptx written by python-pptx 1.0.2, where the title reads "TokenGoat" with only the second half bold. PowerPoint stores that as two `<a:r>` runs in one `<a:p>`, which is how it stores every mid-word formatting change. Trimmed to the shapes the extractor reads; the run splitting is verbatim. Every cell and title `buildPptxFixture` writes is a single run, so no existing fixture can show a run boundary at all.
+  const SPLIT_RUN_SLIDE =
+    '<?xml version="1.0"?><p:sld><p:cSld><p:spTree>' +
+    '<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody>' +
+    '<a:p><a:r><a:t>Token</a:t></a:r><a:r><a:rPr b="1"/><a:t>Goat</a:t></a:r></a:p>' +
+    '</p:txBody></p:sp>' +
+    '<p:graphicFrame><a:graphic><a:graphicData><a:tbl><a:tr>' +
+    '<a:tc><a:txBody><a:p><a:r><a:t>Cell</a:t></a:r></a:p></a:txBody></a:tc>' +
+    '<a:tc><a:txBody><a:p><a:r><a:t>Alpha</a:t></a:r></a:p><a:p><a:r><a:t>Beta</a:t></a:r></a:p></a:txBody></a:tc>' +
+    '</a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>' +
+    '</p:spTree></p:cSld></p:sld>'
+
+  let splitFile: string
+  beforeAll(() => {
+    splitFile = path.join(dir, 'split-runs.pptx')
+    fs.writeFileSync(splitFile, zipSync({ 'ppt/slides/slide1.xml': strToU8(SPLIT_RUN_SLIDE) }))
+  })
+
+  it('stays one word in the outline title', async () => {
+    const slides = await pptxOutline(splitFile)
+    expect(slides[0]?.title).toBe('TokenGoat')
+  })
+
+  it('is still findable by the word it actually is', async () => {
+    expect(await pptxTextGrep(splitFile, 'TokenGoat')).toHaveLength(1)
+  })
+
+  it('keeps a table cell that holds two paragraphs separated', async () => {
+    expect(await pptxSlideText(splitFile, 1, false)).toContain('Cell | Alpha Beta')
+  })
+})
+
+describe('an explicit line break inside a slide paragraph', () => {
+  // Provenance: HAND-DERIVED from ECMA-376 part 1 section 21.1.2.2.1 (`a:br`). Concatenating the runs on either side of a break turns two lines into one word; the parse folds same-name siblings, so the break's position within the paragraph is not recoverable and the space goes in per paragraph.
+  it('separates the runs it sits between', async () => {
+    const brFile = path.join(dir, 'line-break.pptx')
+    const xml =
+      '<?xml version="1.0"?><p:sld><p:cSld><p:spTree>' +
+      '<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody>' +
+      '<a:p><a:r><a:t>Alpha</a:t></a:r><a:br/><a:r><a:t>Beta</a:t></a:r></a:p>' +
+      '</p:txBody></p:sp></p:spTree></p:cSld></p:sld>'
+    fs.writeFileSync(brFile, zipSync({ 'ppt/slides/slide1.xml': strToU8(xml) }))
+    const slides = await pptxOutline(brFile)
+    expect(slides[0]?.title).toBe('Alpha Beta')
+  })
+})

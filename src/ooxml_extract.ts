@@ -143,7 +143,7 @@ function pushTextValue(runs: string[], val: unknown): void {
 }
 
 /** Collects every text-run value under `tag` (e.g. `a:t` for pptx, `w:t` for docx) anywhere in the parsed XML tree, in document order. Handles both a single run (`{tag: "text"}`) and repeated sibling runs (`{tag: ["a", "b"]}`, how fast-xml-parser folds consecutive same-name elements) since OOXML text is split across many short runs by most editors/exporters. */
-export function collectTextRuns(node: unknown, tag: string): string[] {
+export function collectTextRuns(node: unknown, tag: string, skipInside: readonly string[] = []): string[] {
   const runs: string[] = []
   function walk(n: unknown): void {
     if (Array.isArray(n)) {
@@ -153,6 +153,7 @@ export function collectTextRuns(node: unknown, tag: string): string[] {
     if (n !== null && typeof n === 'object') {
       const obj = n as Record<string, unknown>
       for (const [key, val] of Object.entries(obj)) {
+        if (skipInside.includes(key)) continue
         if (key === tag) {
           pushTextValue(runs, val)
         } else if (val !== null && typeof val === 'object') {
@@ -165,8 +166,15 @@ export function collectTextRuns(node: unknown, tag: string): string[] {
   return runs
 }
 
-/** Collects every element named `tag` anywhere in the parsed XML tree, in document order, without descending further into a match's own subtree search for the same tag (OOXML paragraph/run elements never nest inside themselves, so this is safe and avoids the complexity of a full generic tree-diff). */
-export function collectElements(node: unknown, tag: string): unknown[] {
+/** Options for `collectElements`. `skipInside` names tags whose subtree belongs to a different block and must not be searched at all -- `w:tbl` when gathering the paragraphs of a Word cell, so a table nested in that cell does not donate its own paragraphs to the parent. `includeNested` keeps searching a match's own subtree for further matches, which only `w:tbl` needs: it is the one OOXML element here that legitimately nests inside itself. */
+export interface CollectElementsOptions {
+  skipInside?: readonly string[]
+  includeNested?: boolean
+}
+
+/** Collects every element named `tag` anywhere in the parsed XML tree, in document order. By default it does not descend into a match's own subtree looking for the same tag: OOXML paragraph, row and run elements never nest inside themselves, so a second hit there would be the same element counted twice. A nested match is reported directly after the match containing it, not after all of its siblings. */
+export function collectElements(node: unknown, tag: string, opts: CollectElementsOptions = {}): unknown[] {
+  const skip = opts.skipInside
   const out: unknown[] = []
   function walk(n: unknown): void {
     if (Array.isArray(n)) {
@@ -176,9 +184,17 @@ export function collectElements(node: unknown, tag: string): unknown[] {
     if (n !== null && typeof n === 'object') {
       const obj = n as Record<string, unknown>
       for (const [key, val] of Object.entries(obj)) {
+        if (skip !== undefined && skip.includes(key)) continue
         if (key === tag) {
-          if (Array.isArray(val)) pushAll(out, val)
-          else out.push(val)
+          if (opts.includeNested !== true) {
+            if (Array.isArray(val)) pushAll(out, val)
+            else out.push(val)
+            continue
+          }
+          for (const item of Array.isArray(val) ? val : [val]) {
+            out.push(item)
+            if (item !== null && typeof item === 'object') walk(item)
+          }
         } else if (val !== null && typeof val === 'object') {
           walk(val)
         }
@@ -187,6 +203,22 @@ export function collectElements(node: unknown, tag: string): unknown[] {
   }
   walk(node)
   return out
+}
+
+/** Collects the text of `node` one string per paragraph. Runs inside a paragraph are concatenated with no separator, because OOXML splits a single word across runs at every formatting boundary -- a bolded second half of a word is two `<w:t>`/`<a:t>` elements, and any separator inserted between them fabricates a space that is not in the document. Paragraphs come back separately so each caller can join them with whatever its own output shape allows; a markdown table cell cannot hold a newline, a text dump can. `skipInside` is passed through to `collectElements`, and to the no-paragraph fallback as well: a Word cell whose only child is a nested table has no paragraph of its own, and a fallback that ignored the skip would pull the nested cells' text back into the parent while they are also reported as their own table. `breakTag` (`w:br`/`a:br`) names the explicit line break: a paragraph containing one joins its runs with a space instead, because two runs separated by a line break are two lines and gluing them makes one word out of two. The break's exact position is not recoverable here -- the parse folds same-name siblings into one array per name, so `<a:r>A</a:r><a:br/><a:r>B</a:r>` arrives as `{'a:r': [A, B], 'a:br': ['']}` with the interleaving gone -- so the choice is per paragraph, not per gap. */
+export function collectParagraphTexts(node: unknown, paragraphTag: string, runTag: string, skipInside: readonly string[] = [], breakTag?: string): string[] {
+  const paragraphs = collectElements(node, paragraphTag, { skipInside })
+  if (paragraphs.length === 0) {
+    const whole = joinParagraphRuns(node, runTag, skipInside, breakTag)
+    return whole.length > 0 ? [whole] : []
+  }
+  return paragraphs.map((p) => joinParagraphRuns(p, runTag, skipInside, breakTag))
+}
+
+function joinParagraphRuns(node: unknown, runTag: string, skipInside: readonly string[], breakTag: string | undefined): string {
+  const runs = collectTextRuns(node, runTag, skipInside)
+  const broken = breakTag !== undefined && collectElements(node, breakTag, { skipInside }).length > 0
+  return runs.join(broken ? ' ' : '')
 }
 
 /** Sorts ZIP entry paths matching a numbered-part pattern (e.g. `ppt/slides/slideN.xml`) by N. */
