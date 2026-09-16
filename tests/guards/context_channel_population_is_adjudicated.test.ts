@@ -57,7 +57,7 @@ const CONTEXT_CALL = 'contextOutput('
  */
 const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_bash.ts::preBashHandlerInner':
-    'The surgical-read hints quote the path out of the shell command, which a repository names. All fifteen sites that build that path wrap it in displaySafePath, which is why the escaping is checkable in one grep rather than at the thirty places that print it. Widening this to a sixteenth unwrapped assignment reopens it.',
+    'The surgical-read hints quote the path out of the shell command, which a repository names. Sixteen sites build that path: fifteen assign `hintPath = displaySafePath(cdStripped ? ...)`, and a sixteenth, extractToolResultsFile\'s tool-results recall hint, only validated the trailing `tool-results/<safe-id>.txt` suffix and interpolated the arbitrary parent directory raw -- found by adversarial review, now wrapped the same way as `outPath = displaySafePath(toolResults.path)`. All sixteen now wrap in displaySafePath, which is why the escaping is checkable in one grep rather than at the thirty places that print it. Adding another unwrapped path assignment reopens it.',
   'hooks_grep.ts::preGrepHandler':
     'The structural-search hint quotes the Grep path, also repository-chosen, and it is escaped. Unreachable today for a different reason: extractGrepStructuralSearch refuses any path containing a bracket, which every spoken marker needs, though it refuses it as a glob character rather than for this. tests/hooks_grep.test.ts pins that refusal.',
   'hooks_glob.ts::preGlobHandler':
@@ -83,7 +83,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_read.ts::quietContextOutput':
     'A pure wrapper over contextOutput, the same class as the exempted emitRewriteIfChanged in the sibling guard. Interpolates nothing.',
   'hooks_read.ts::preReadHandlerInner':
-    'The densest set of hints in the codebase. `shown` was already displaySafePath(normalized) everywhere. `basename` was not, and it is live: isManifestFile matches manifest extensions as well as fixed names, so the manifest re-read hint quotes an arbitrary repository-chosen file name. Escaped at its derivation, which also covers the tsconfig branch beside it. The skill directory name out of detectSkillFile is escaped too but is not reachable today, gated upstream by safeSkillName; see the note there.',
+    'The densest set of hints in the codebase. `shown` was already displaySafePath(normalized) everywhere. `basename` was not, and it is live: isManifestFile matches manifest extensions as well as fixed names, so the manifest re-read hint quotes an arbitrary repository-chosen file name. Escaped at its derivation, which also covers the tsconfig branch beside it. The skill directory name out of detectSkillFile is escaped too but is not reachable today, gated upstream by safeSkillName; see the note there. The surgicalHint helper it calls also interpolates repository-chosen text -- markdown heading names and indexed symbol names, from querySymbols or the file\'s own content -- and now routes every one of them through its local escapeHintName, which is drop-then-escape rather than escape-only: it first escapes `\\`/`"` for the quoted suggested command, then if displaySafeText would still change the result (a spoken marker or a control character survived), the name is dropped entirely rather than emitted escaped, because an escaped `&#91;tg]` name would still land in a `token-goat section`/`token-goat read` suggestion that section_reader.ts/read_spec.ts cannot resolve (they compare names literally, without HTML-decoding) -- a dropped name falls back to the branch\'s generic `::HeadingName`/`SymbolName` placeholder, and displaySafeText is still applied to whatever survives as a defence-in-depth backstop; this reaches quietContextOutput on the large-file-redirect path (LARGE_FILE_BYTES to largeFileDenyBytes()), which is a context-channel sink like the rest of this entry.',
   'hooks_read.ts::postReadHandlerInner':
     'One site, reached through quietContextOutput. Its path comes through the same displaySafePath-derived `shown` the pre-read hints use.',
   'hooks_agent_spawn.ts::postAgentHandler':
@@ -184,6 +184,7 @@ describe('every function on the context channel has been adjudicated', () => {
       ['hooks_read.ts', 'displaySafePath(match[1]!)'],
       ['hooks_common.ts', "displaySafeText(typeof toolInput['pattern']"],
       ['hooks_glob.ts', 'displaySafeText(pattern)'],
+      ['hooks_bash.ts', 'displaySafePath(toolResults.path)'],
     ] as const) {
       expect(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'), `${file} no longer contains ${call}`).toContain(call)
     }

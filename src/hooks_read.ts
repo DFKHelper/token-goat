@@ -20,7 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
-import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
+import { displaySafePath, displaySafeText, normalizePath, toDisplayPath } from './paths.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
@@ -251,14 +251,20 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
 
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
   const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
-  const escapeHintName = (name: string): string =>
-    name.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ').trim()
+  // Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely (the caller's `::HeadingName`/`SymbolName` fallback covers it), keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
+  const escapeHintName = (name: string): string => {
+    const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    const safe = displaySafeText(quoted)
+    return safe !== quoted ? '' : safe.trim()
+  }
 
   if (isDocFile) {
     if (fileContent !== undefined && /\.(md|mdx)$/i.test(basename)) {
-      const headings = extractMarkdownHeadings(fileContent)
-      if (headings.length > 0) {
-        const top = headings.slice(0, 3).map((h) => h.text.trim())
+      const top = extractMarkdownHeadings(fileContent)
+        .map((h) => escapeHintName(h.text.trim()))
+        .filter((name) => name !== '')
+        .slice(0, 3)
+      if (top.length > 0) {
         return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
       }
     }
@@ -279,7 +285,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     return `Use \`token-goat section "${filePath}::name"\` to extract a part.`
   } else {
     const samples = fileContent !== undefined
-      ? extractQuickSymbolSamples(fileContent)
+      ? extractQuickSymbolSamples(fileContent).map(escapeHintName).filter((name) => name !== '')
       : (() => {
           try {
             return querySymbols({ filePath, limit: 3 })

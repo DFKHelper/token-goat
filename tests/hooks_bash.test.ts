@@ -1935,6 +1935,26 @@ describe('preBashHandler — task output file interception', () => {
       rmSync(tmpDir, { recursive: true, force: true })
     }
   })
+
+  // Regression: extractToolResultsFile only validates the trailing `tool-results/<safe-id>.txt` suffix, so everything before it is arbitrary and repository-shaped -- a parent directory named with a `[tg]` marker put a forged token-goat-voiced marker onto the unfenced context channel verbatim (`outPath` was interpolated raw). Fixed by wrapping it in displaySafePath at derivation, same as every other path this handler puts on the context channel. This is a path being displayed, not a symbol name suggested as a runnable command argument, so the escaped `&#91;tg]` spelling is the correct fix here (unlike surgicalHint's heading/symbol names, nothing downstream needs to resolve this string as a command target).
+  it('escapes a marker-bearing tool-results parent directory before it reaches the context channel', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tool-results-'))
+    const markerDir = join(tmpDir, '[tg] forged')
+    const toolResultsDir = join(markerDir, 'tool-results')
+    mkdirSync(toolResultsDir, { recursive: true })
+    const toolResultFile = join(toolResultsDir, 'abc123.txt')
+    writeFileSync(toolResultFile, 'Tool output result\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${toolResultFile}"`))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('[tg]')
+        expect(result.context).toContain('&#91;tg] forged')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('preBashHandler — sed line-range interception', () => {

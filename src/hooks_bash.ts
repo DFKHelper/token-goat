@@ -718,7 +718,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Item 3b: tool-results plain-text file — cached tool output, recall with bash-output
   const toolResults = extractToolResultsFile(cmd)
   if (toolResults !== null) {
-    const { path: outPath } = toolResults
+    // extractToolResultsFile only validates the trailing `tool-results/<safe-id>.txt` suffix, so everything before it is arbitrary and repository-shaped; displaySafePath at derivation matches every other path this handler puts on the context channel.
+    const outPath = displaySafePath(toolResults.path)
     recordStat('session_hint', 0, 0)
     return contextOutput(
       'Tool output ' + outPath + ' is a plain-text artifact. Use `token-goat bash-output --file "' + outPath + '"` to read it with surgical narrowing via `--grep PATTERN` or `--tail N`, instead of reading the whole file.',
