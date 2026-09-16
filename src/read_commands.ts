@@ -57,7 +57,7 @@ import {
   formatDescriptionSlice,
 } from './pr_slice.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, readPdfFileWithinBounds, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
-import { isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
+import { canShrinkFormat, isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -2047,6 +2047,8 @@ export interface ImageMeta {
   bytes: number
   /** Whether token-goat's image engine could read this file's header at all. Named for the fact, not for a library: nothing here is optional any more. */
   decodable: boolean
+  /** Whether the engine has a decoder for this format, i.e. whether a shrink was even attemptable. A header probe reads more formats than the re-encoder handles, so `decodable: true, shrinkable: false` is an ordinary webp or tiff -- and reporting that as "no benefit" states a capability limit as a measurement. */
+  shrinkable: boolean
   wouldShrink: boolean
   shrunkBytes: number | null
 }
@@ -2073,15 +2075,17 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
     throw e
   }
   if (probe === null) {
-    return { width: 0, height: 0, format: null, bytes, decodable: false, wouldShrink: false, shrunkBytes: null }
+    return { width: 0, height: 0, format: null, bytes, decodable: false, shrinkable: false, wouldShrink: false, shrunkBytes: null }
   }
-  const shrink = await shrinkImage(data, { sizeThresholdBytes: 0 })
+  const shrinkable = canShrinkFormat(probe.format)
+  const shrink = shrinkable ? await shrinkImage(data, { sizeThresholdBytes: 0 }) : null
   return {
     width: probe.width,
     height: probe.height,
     format: probe.format,
     bytes,
     decodable: true,
+    shrinkable,
     wouldShrink: shrink !== null,
     shrunkBytes: shrink !== null ? shrink.shrunkBytes : null,
   }

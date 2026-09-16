@@ -179,6 +179,28 @@ export function visionTokensSavedByText(width: number | null, height: number | n
 /** Below this byte count an image is left untouched (encode CPU > savings). */
 const DEFAULT_SIZE_THRESHOLD_BYTES = 512 * 1024
 
+/**
+ * Every format the engine can decode to RGBA, and how. `probeImageMeta` reads headers for more
+ * formats than this -- webp, tiff and friends -- so the two lists must be asked separately: a probe
+ * that succeeds says only that the dimensions are known, never that a re-encode is possible.
+ *
+ * Callers derive {@link canShrinkFormat} from these keys rather than listing the formats again.
+ * When the dispatch was an if/else chain, `image-meta` answered "Shrink: no benefit (already
+ * small/optimal)" for a 3000x3000 webp, reporting a missing decoder as a measured verdict.
+ */
+const SINGLE_FRAME_DECODERS = new Map<string, (input: Buffer) => Buffer | null>([
+  ['png', (input) => decodePng(input).data],
+  ['jpeg', (input) => decodeJpeg(input).data],
+  ['bmp', (input) => decodeBmp(input).data],
+  // The still-image path wants frame 0 and nothing else. Decoding the whole animation to index into it costs a full canvas per frame for frames that are then dropped, and a file can declare far more of them than it contains pixels.
+  ['gif', (input) => decodeGif(input, { maxFrames: 1 }).frames[0]?.data ?? null],
+])
+
+/** Whether the engine has a decoder for `format`, i.e. whether a shrink is even attemptable. A `false` here is a capability limit, not a measurement: it must never be reported as "no benefit". A Map rather than an object literal, so a format spelled `constructor` or `toString` answers no instead of resolving off Object.prototype and handing a Function to the decode call. */
+export function canShrinkFormat(format: string | null | undefined): boolean {
+  return format != null && SINGLE_FRAME_DECODERS.has(format)
+}
+
 /** Telemetry returned for a successful shrink. */
 export interface ShrinkResult {
   /** Re-encoded image bytes. */
@@ -244,11 +266,12 @@ export async function probeImageMeta(input: Buffer): Promise<{ width: number; he
  * pixel dimensions exceed {@link DEFAULT_MAX_DIMENSION} on their longest edge.
  */
 export async function imageQualifiesForShrink(input: Buffer): Promise<boolean> {
-  if (input.length >= DEFAULT_SIZE_THRESHOLD_BYTES) return true
-
   try {
     const meta = await probeImageMeta(input)
     if (meta === null) return false
+    // Size alone used to be enough to qualify, which certified a candidate the re-encode could never accept: a large webp or tiff probes fine, has no decoder, and came back as a declined shrink. That put a permanent capability limit into image_shrink_skipped, whose whole job is to say whether the thresholds are tuned right.
+    if (!canShrinkFormat(meta.format)) return false
+    if (input.length >= DEFAULT_SIZE_THRESHOLD_BYTES) return true
     return Math.max(meta.width, meta.height) > DEFAULT_MAX_DIMENSION
   } catch {
     return false
@@ -331,23 +354,10 @@ export async function shrinkImage(
     }
 
     // Single-frame image handling
-    let srcRgba: Buffer
-    if (inputMeta.format === 'png') {
-      srcRgba = decodePng(input).data
-    } else if (inputMeta.format === 'jpeg') {
-      srcRgba = decodeJpeg(input).data
-    } else if (inputMeta.format === 'bmp') {
-      srcRgba = decodeBmp(input).data
-    } else if (inputMeta.format === 'gif') {
-      // This branch is the still-image path, so it wants frame 0 and nothing else. Decoding the
-      // whole animation to index into it costs a full canvas per frame for frames that are then
-      // dropped, and a file can declare far more of them than it contains pixels.
-      const firstFrame = decodeGif(input, { maxFrames: 1 }).frames[0]
-      if (!firstFrame) return null
-      srcRgba = firstFrame.data
-    } else {
-      return null
-    }
+    const decode = SINGLE_FRAME_DECODERS.get(inputMeta.format ?? '')
+    if (!decode) return null
+    const srcRgba = decode(input)
+    if (srcRgba === null) return null
 
     const dstRgba = resizeRgba(srcRgba, inputMeta.width, inputMeta.height, targetW, targetH)
 

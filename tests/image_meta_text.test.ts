@@ -55,6 +55,44 @@ describe('runImageMeta', () => {
     expect(meta.bytes).toBe(png.length)
   })
 
+  it('reports a format it has no decoder for as not attempted, not as no benefit', async () => {
+    // A webp at 3000x3000 probes fine -- the header reader knows the format and the dimensions -- but the re-encoder has decoders for png, jpeg, bmp and gif only, so the shrink was never attempted. Folding that into wouldShrink:false printed "Shrink: no benefit (already small/optimal)" about an image nothing had looked inside, which is a capability limit stated as a measurement.
+    const webp = await sharp({ create: { width: 3000, height: 3000, channels: 3, background: { r: 120, g: 120, b: 120 } } })
+      .webp()
+      .toBuffer()
+    const file = path.join(TMP, 'big.webp')
+    fs.writeFileSync(file, webp)
+
+    const meta = await runImageMeta(file)
+    expect(meta.decodable).toBe(true)
+    expect(meta.format).toBe('webp')
+    expect(meta.width).toBe(3000)
+    expect(meta.shrinkable).toBe(false)
+
+    const output = await captureStdout(() => run(['node', 'token-goat', 'image-meta', file]))
+    expect(output).toContain('Shrink: not attempted')
+    expect(output).toContain('webp')
+    expect(output).not.toContain('no benefit')
+  })
+
+  it('still reports a genuine no-benefit verdict for a format it can decode', async () => {
+    // The counterpart the case above must not swallow: a png the re-encode was applied to and honestly could not beat. 16x16 of noise resists both encoders at a size where there is nothing to downscale, so min(jpeg, png) comes out no smaller than sharp's original.
+    const side = 16
+    const noise = Buffer.allocUnsafe(side * side * 3)
+    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256)
+    const png = await sharp(noise, { raw: { width: side, height: side, channels: 3 } })
+      .png()
+      .toBuffer()
+    const file = path.join(TMP, 'tiny.png')
+    fs.writeFileSync(file, png)
+
+    const meta = await runImageMeta(file)
+    expect(meta.shrinkable).toBe(true)
+    expect(meta.wouldShrink).toBe(false)
+    const output = await captureStdout(() => run(['node', 'token-goat', 'image-meta', file]))
+    expect(output).toContain('Shrink: no benefit')
+  })
+
   it('rejects a nonexistent file with the same wording as the pdf family', async () => {
     await expect(runImageMeta(path.join(TMP, 'nope.png'))).rejects.toThrow(`Could not read: ${path.join(TMP, 'nope.png')}`)
   })

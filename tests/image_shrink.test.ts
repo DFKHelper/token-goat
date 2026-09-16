@@ -338,12 +338,16 @@ describe('preReadImageHandler', () => {
   })
 
   it('records an image_shrink_skipped stat row through the real global stats DB when a qualifying image cannot be shrunk (regression: image_shrink_skipped was registered in KIND_TO_SOURCE and _KIND_GROUPS but no recordStat call site ever existed anywhere in src/, so the kind was permanently empty in `token-goat stats --full` -- this drives the real production hook path, not a unit test of shrinkImage in isolation)', async () => {
-    // Over DEFAULT_SIZE_THRESHOLD_BYTES so the handler skips the dimension probe and goes
-    // straight to shrinkImage -- undecodable bytes make sharp's metadata() throw inside
-    // shrinkImage's try/catch, which returns null (the "declined" branch under test), not the
-    // earlier fail-open passes exercised by the small-corrupt-file and missing-file tests above.
-    const bigCorruptPath = path.join(TMP, 'big-corrupt.png')
-    fs.writeFileSync(bigCorruptPath, Buffer.alloc(600 * 1024, 7))
+    // A real JPEG header, so the probe reads its format and dimensions and the file qualifies, over
+    // a body corrupted past recognition, so the decode throws inside shrinkImage's try/catch and it
+    // returns null. That is the "declined" branch under test, not the earlier fail-open passes the
+    // small-corrupt-file and missing-file tests above exercise. Bytes with no readable header at all
+    // no longer reach it: qualification probes the format first, because a format the engine has no
+    // decoder for can never be shrunk and does not belong in a counter that measures threshold tuning.
+    const bigCorruptPath = path.join(TMP, 'big-corrupt.jpg')
+    const corrupt = Buffer.from(largeJpeg)
+    corrupt.fill(7, 256)
+    fs.writeFileSync(bigCorruptPath, corrupt)
 
     const before = summarize(30).by_kind['image_shrink_skipped']
     const beforeEvents = before?.events ?? 0
