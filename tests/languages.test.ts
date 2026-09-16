@@ -3782,7 +3782,10 @@ typedef FromRawString = int;
 // typedef FromComment = int;
 typedef IntList = List<int>;
 typedef Compare<T> = int Function(T a, T b);
+typedef Comparator<T extends Comparable<T>> = int Function(T a, T b);
+typedef Deep<T extends Map<String, List<int>>> = void Function(T t);
 typedef int LegacyCompare(Object a, Object b);
+typedef int LegacyBounded<T extends Comparable<T>>(T a, T b);
 class Wrapper {
   void go() {}
 }
@@ -3794,13 +3797,12 @@ void topLevel() {}
     expect(names).toContain('Wrapper')
     expect(names).toContain('go')
     expect(names).toContain('topLevel')
-    // The three aliases, all kind 'type'.
-    for (const n of ['IntList', 'Compare', 'LegacyCompare']) {
+    // Every alias, all kind 'type'. Comparator and Deep carry a type parameter whose bound is itself generic -- the shape `dart:core`'s own Comparator uses -- which a non-nesting `<[^>]*>` group closes at the inner `>`, leaving the `=` anchor unmatched and the line falling through to FUNC_RE to fabricate `Function` again.
+    for (const n of ['IntList', 'Compare', 'Comparator', 'Deep', 'LegacyCompare', 'LegacyBounded']) {
       expect(names).toContain(n)
       expect(symbols.find((s) => s.name === n)?.kind).toBe('type')
     }
-    // Must not appear: pre-fix, FUNC_RE read `int Function(T a, T b)` as a declaration and filed
-    // a phantom top-level function literally named `Function`.
+    // Must not appear: pre-fix, FUNC_RE read `int Function(T a, T b)` as a declaration and filed a phantom top-level function literally named `Function`.
     expect(names).not.toContain('Function')
     // Must not appear: an alias written inside a raw string or a comment is not a declaration.
     expect(names).not.toContain('FromRawString')

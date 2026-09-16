@@ -94,11 +94,11 @@ const FIELD_START_RE = /^(?:(?:static|covariant|late|external)\s+)*(?:final|var|
 // never popped, so the next top-level declaration was silently attributed to it and lost.
 const CLASS_ALIAS_RE = /^(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\s*=/
 
-// `typedef IntList = List<int>;` and `typedef Compare<T> = int Function(T a, T b);`, the generalised type alias of Dart 2.13 (Dart language specification, "Type aliases" / dart.dev language tour, "Typedefs"). A type alias is a top-level declaration only. The non-function form (`= List<int>`) has no parens at all and matched nothing, so the alias never reached the index; the function form did reach FUNC_RE, which read `int Function(` as a declaration and filed a phantom top-level symbol literally named `Function` -- the same phantom FIELD_START_RE above exists to suppress for fields.
-const TYPEDEF_RE = /^typedef\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>]*>)?\s*=/
+// `typedef IntList = List<int>;` and `typedef Compare<T> = int Function(T a, T b);`, the generalised type alias of Dart 2.13 (Dart language specification, "Type aliases" / dart.dev language tour, "Typedefs"). A type alias is a top-level declaration only. The non-function form (`= List<int>`) has no parens at all and matched nothing, so the alias never reached the index; the function form did reach FUNC_RE, which read `int Function(` as a declaration and filed a phantom top-level symbol literally named `Function` -- the same phantom FIELD_START_RE above exists to suppress for fields. The type-parameter group is `<.+>` rather than `<[^>]*>` because a bounded parameter whose constraint is itself generic, `typedef Comparator<T extends Comparable<T>> = int Function(T a, T b);` (the shape `dart:core`'s own Comparator uses), closes a non-nesting group at the inner `>`, after which the `=` anchor cannot match and the line falls through to FUNC_RE and fabricates `Function` all over again. Greedy with a following `=` anchor backtracks to the right `>` at any nesting depth, and the anchor is what keeps it from running into the right-hand side.
+const TYPEDEF_RE = /^typedef\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<.+>)?\s*=/
 
 // The pre-2.13 function-type alias, `typedef int Compare(Object a, Object b);`, where the name follows the return type rather than the `typedef` keyword. Still legal Dart and common in older sources. The return-type class excludes whitespace so it cannot overlap the `\s+` that follows it.
-const TYPEDEF_LEGACY_RE = /^typedef\s+[A-Za-z_][A-Za-z0-9_<>,?]*\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>]*>)?\s*\(/
+const TYPEDEF_LEGACY_RE = /^typedef\s+[A-Za-z_][A-Za-z0-9_<>,?]*\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<.+>)?\s*\(/
 
 // Variable declarations not extracted at this time — would need complex parsing of
 // multi-variable declarations on a single line (e.g., `var x = 1, y = 2;`)
