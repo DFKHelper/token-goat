@@ -729,6 +729,8 @@ For private questions, commercial licensing, or anything you'd rather not post p
 
 Token-Goat runs on your machine and touches your files. The software is provided as-is, without warranty of any kind. DFK Helper LLC is not liable for any damages arising from use. Full terms, including the No Liability clause, are in the LICENSE file.
 
+All product names, logos, brands, trademarks, and registered trademarks mentioned are property of their respective owners. All company, product, and service names used in this project are for identification and compatibility purposes only; their use does not imply any affiliation, sponsorship, or endorsement.
+
 ## License
 
 Token-Goat is licensed under the PolyForm Noncommercial License 1.0.0. See the LICENSE file for the full terms.
