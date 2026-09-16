@@ -2276,3 +2276,16 @@ export function lastContentLine(rawLines: readonly string[]): number {
   while (n > 0 && rawLines[n - 1]!.trim() === '') n--
   return Math.max(1, n)
 }
+
+/**
+ * Source text of a generic/type-parameter clause (`<...>`), nesting-aware to two levels and NOT
+ * wrapped in a `?` -- callers decide whether the clause is optional.
+ *
+ * A flat `<[^>]*>` closes at the first `>` it meets, so the moment a type parameter carries a
+ * generic bound (`<T extends Comparable<T>>`, `<T : Comparable<T>>`, `<C: Collection<Int>>`) the
+ * group ends at the inner `>` and whatever anchor follows -- `=`, `(`, `on` -- no longer lines up.
+ * The declaration then matches nothing and is dropped from the index outright, or worse, falls
+ * through to a looser matcher. Two levels covers the bounds real code writes, including a bound
+ * that is itself parameterised (`<T : Map<String, List<Int>>>`).
+ */
+export const GENERIC_CLAUSE = '<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>'

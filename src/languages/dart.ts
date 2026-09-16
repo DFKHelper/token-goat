@@ -7,6 +7,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
+  GENERIC_CLAUSE,
   stripBlockCommentSpan,
   stripLineComment,
   stripMultilineStringSpan,
@@ -44,7 +45,7 @@ const MIXIN_RE = /^(?:base\s+)?mixin\s+([A-Za-z_][A-Za-z0-9_]*)/
 // before it, so requiring `name` and `on` to be separated by whitespace alone rejected every
 // generic extension -- and because no frame was pushed for it, every member inside its body was
 // dropped from the index too, not just the extension itself.
-const EXTENSION_RE = /^extension\s+(?:([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s+)?on\s+/
+const EXTENSION_RE = new RegExp('^extension\\s+(?:([A-Za-z_][A-Za-z0-9_]*)\\s*(?:' + GENERIC_CLAUSE + ')?\\s+)?on\\s+')
 
 // `extension type Meters(int value)`, Dart 3.3's extension type declaration -- a zero-cost
 // wrapper over a representation type. It shares the `extension` keyword prefix with EXTENSION_RE
@@ -58,7 +59,7 @@ const EXTENSION_TYPE_RE = /^extension\s+type\s+([A-Za-z_][A-Za-z0-9_]*)/
 
 // `void foo()`, `int bar()`, `String baz()` — requires either `void` keyword or an explicit return type.
 // This guards against matching function calls like `print("text")` as function declarations.
-const FUNC_RE = /(?:^|\s)(?:static\s+)?(?:(?:void|Future|Stream|async|external)\s+|[A-Za-z_][A-Za-z0-9_<>]*(?:\s*\?)?\s+)([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(/
+const FUNC_RE = new RegExp('(?:^|\\s)(?:static\\s+)?(?:(?:void|Future|Stream|async|external)\\s+|[A-Za-z_][A-Za-z0-9_<>]*(?:\\s*\\?)?\\s+)([A-Za-z_][A-Za-z0-9_]*)\\s*(?:' + GENERIC_CLAUSE + ')?\\s*\\(')
 
 // `int get value => 1;`, `String get name { ... }`, `static bool get ok => true`. A getter has no
 // parameter list, so FUNC_RE (which anchors on the opening paren) never matched one, while the
@@ -92,13 +93,13 @@ const FIELD_START_RE = /^(?:(?:static|covariant|late|external)\s+)*(?:final|var|
 // `class A = Object with M;`, a mixin-application class: a complete declaration with no body. It
 // was pushed onto the type stack like any other class, and with no braces to close it the frame
 // never popped, so the next top-level declaration was silently attributed to it and lost.
-const CLASS_ALIAS_RE = /^(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\s*=/
+const CLASS_ALIAS_RE = new RegExp('^(?:(?:abstract|base|interface|final|sealed|mixin)\\s+)*class\\s+[A-Za-z_][A-Za-z0-9_]*(?:' + GENERIC_CLAUSE + ')?\\s*=')
 
-// `typedef IntList = List<int>;` and `typedef Compare<T> = int Function(T a, T b);`, the generalised type alias of Dart 2.13 (Dart language specification, "Type aliases" / dart.dev language tour, "Typedefs"). A type alias is a top-level declaration only. The non-function form (`= List<int>`) has no parens at all and matched nothing, so the alias never reached the index; the function form did reach FUNC_RE, which read `int Function(` as a declaration and filed a phantom top-level symbol literally named `Function` -- the same phantom FIELD_START_RE above exists to suppress for fields. The type-parameter group is `<.+>` rather than `<[^>]*>` because a bounded parameter whose constraint is itself generic, `typedef Comparator<T extends Comparable<T>> = int Function(T a, T b);` (the shape `dart:core`'s own Comparator uses), closes a non-nesting group at the inner `>`, after which the `=` anchor cannot match and the line falls through to FUNC_RE and fabricates `Function` all over again. Greedy with a following `=` anchor backtracks to the right `>` at any nesting depth, and the anchor is what keeps it from running into the right-hand side.
-const TYPEDEF_RE = /^typedef\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<.+>)?\s*=/
+// `typedef IntList = List<int>;` and `typedef Compare<T> = int Function(T a, T b);`, the generalised type alias of Dart 2.13 (Dart language specification, "Type aliases" / dart.dev language tour, "Typedefs"). A type alias is a top-level declaration only. The non-function form (`= List<int>`) has no parens at all and matched nothing, so the alias never reached the index; the function form did reach FUNC_RE, which read `int Function(` as a declaration and filed a phantom top-level symbol literally named `Function` -- the same phantom FIELD_START_RE above exists to suppress for fields. The type-parameter group is the nesting-aware GENERIC_CLAUSE rather than a flat `<[^>]*>` because a bounded parameter whose constraint is itself generic, `typedef Comparator<T extends Comparable<T>> = int Function(T a, T b);` (the shape `dart:core`'s own Comparator uses), closes a non-nesting group at the inner `>`, after which the `=` anchor cannot match and the line falls through to FUNC_RE and fabricates `Function` all over again.
+const TYPEDEF_RE = new RegExp('^typedef\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*' + GENERIC_CLAUSE + ')?\\s*=')
 
 // The pre-2.13 function-type alias, `typedef int Compare(Object a, Object b);`, where the name follows the return type rather than the `typedef` keyword. Still legal Dart and common in older sources. The return-type class excludes whitespace so it cannot overlap the `\s+` that follows it.
-const TYPEDEF_LEGACY_RE = /^typedef\s+[A-Za-z_][A-Za-z0-9_<>,?]*\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<.+>)?\s*\(/
+const TYPEDEF_LEGACY_RE = new RegExp('^typedef\\s+[A-Za-z_][A-Za-z0-9_<>,?]*\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*' + GENERIC_CLAUSE + ')?\\s*\\(')
 
 // Variable declarations not extracted at this time — would need complex parsing of
 // multi-variable declarations on a single line (e.g., `var x = 1, y = 2;`)

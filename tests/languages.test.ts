@@ -1633,6 +1633,8 @@ typealias FromRawString = Int
 typealias NodeSet = Set<Node>
 internal typealias Handler = (Int) -> Unit
 typealias Pairing<A, B> = Map<A, B>
+typealias NodeComparator<T : Comparable<T>> = Comparator<T>
+typealias DeepBound<T : Map<String, List<Int>>> = Set<T>
 class Holder {
   typealias NestedNotLegal = Int
   fun go() {
@@ -1645,7 +1647,8 @@ class Holder {
     // Loss direction: every symbol the pre-fix extractor produced is still here.
     expect(names).toContain('Holder')
     expect(names).toContain('go')
-    for (const n of ['NodeSet', 'Handler', 'Pairing']) {
+    // NodeComparator and DeepBound carry a type parameter whose bound is itself generic, which a non-nesting `<[^>]*>` group closes at the inner `>`, leaving the `=` anchor unmatched so the alias never reached the index at all.
+    for (const n of ['NodeSet', 'Handler', 'Pairing', 'NodeComparator', 'DeepBound']) {
       expect(names).toContain(n)
       expect(symbols.find((s) => s.name === n)?.kind).toBe('type')
     }
@@ -1656,6 +1659,29 @@ class Holder {
     // Must not appear: an alias written inside a raw string or a comment is not a declaration.
     expect(names).not.toContain('FromRawString')
     expect(names).not.toContain('FromComment')
+  })
+
+  // FORMAT-DERIVED: the generic-function forms come from the Kotlin language reference, "Generics"
+  // (`fun <T : Comparable<T>> sort(list: List<T>)` is the reference's own example) and the grammar's
+  // `functionDeclaration: modifiers? 'fun' typeParameters? ...` production. Not read off kotlin.ts.
+  it('extracts a top-level and a member function whose type parameter carries a generic bound', () => {
+    const content = `package demo
+
+fun <T : Comparable<T>> sortAll(items: List<T>): List<T> = items.sorted()
+
+fun <T : Map<String, List<Int>>> deepBound(x: T) {}
+
+fun plainTop(x: Int): Int = x
+
+class Sorter {
+  fun <T : Comparable<T>> memberSort(items: List<T>): List<T> = items.sorted()
+}
+`
+    const { symbols } = extractKotlin(content, 'main.kt')
+    const names = symbols.map((s) => s.name)
+    // The type-parameter clause sits between `fun` and the name, so a flat `<[^>]*>` closing at the `>` inside `Comparable<T>` leaves the name matcher staring at `>` and the whole declaration is dropped. Only the unbounded form was ever exercised.
+    for (const n of ['sortAll', 'deepBound', 'plainTop', 'Sorter', 'memberSort']) expect(names).toContain(n)
+    expect(symbols.find((s) => s.name === 'memberSort')?.parent).toBe('Sorter')
   })
 
   it('extracts class, method, top-level function, and import', () => {
@@ -3807,6 +3833,35 @@ void topLevel() {}
     // Must not appear: an alias written inside a raw string or a comment is not a declaration.
     expect(names).not.toContain('FromRawString')
     expect(names).not.toContain('FromComment')
+  })
+
+  // FORMAT-DERIVED: shapes taken from the Dart language specification -- "Generics" (bounded type
+  // parameters, `T extends Comparable<T>`), "Extensions", and "Mixins" (the mixin-application
+  // class `class A<T> = B with C;`). Not written from dart.ts's own regexes.
+  it('indexes a function, an extension and a mixin-application class whose type parameter carries a generic bound', () => {
+    const content = `int boundedFunc<T extends Comparable<T>>(T a, T b) => 0;
+
+int plainFunc<T>(T a) => 0;
+
+extension BoundedExt<T extends Comparable<T>> on List<T> {
+  void boundedMember() {}
+}
+
+class BoundedAlias<T extends Comparable<T>> = Object with Mixin;
+
+class AfterAlias {
+  void afterMember() {}
+}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    const names = symbols.map((s) => s.name)
+    // A flat `<[^>]*>` closes at the `>` inside `Comparable<T>`, so FUNC_RE's `(` anchor and EXTENSION_RE's `on` anchor never line up and the declaration is dropped outright -- taking the extension's members with it, since no frame is pushed for a body nobody opened.
+    for (const n of ['boundedFunc', 'plainFunc', 'BoundedExt', 'boundedMember']) expect(names).toContain(n)
+    // CLASS_ALIAS_RE is the check that a mixin-application class has no brace body and so must not push a type frame. When it misses, the frame never pops and every later top-level declaration in the file is swallowed: AfterAlias disappeared entirely and afterMember was attributed to BoundedAlias.
+    expect(names).toContain('BoundedAlias')
+    expect(names).toContain('AfterAlias')
+    expect(symbols.find((s) => s.name === 'AfterAlias')?.parent).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'afterMember')?.parent).toBe('AfterAlias')
   })
 
   it('extracts class and enum declarations', () => {

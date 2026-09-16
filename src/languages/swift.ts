@@ -8,6 +8,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
+  GENERIC_CLAUSE,
   stripLineComment,
   stripMultilineStringSpan,
   stripNestedBlockCommentSpan,
@@ -38,10 +39,8 @@ function unquoteIdent(name: string): string {
   return name.startsWith('`') && name.endsWith('`') ? name.slice(1, -1) : name
 }
 
-// A generic clause with one level of nesting. Swift 5.7's primary associated types put a generic
-// inside a generic constraint routinely (`func f<C: Collection<Int>>(...)`), and a flat `<[^>]*>`
-// stops at the inner `>` and then fails to reach the parameter list, dropping the declaration.
-const GENERIC = '(?:<(?:[^<>]|<[^<>]*>)*>)?'
+// An optional generic clause. Swift 5.7's primary associated types put a generic inside a generic constraint routinely (`func f<C: Collection<Int>>(...)`), and a flat `<[^>]*>` stops at the inner `>` and then fails to reach the parameter list, dropping the declaration. GENERIC_CLAUSE is the shared nesting-aware form; this file's own copy of it, capped at one level, is what the other regex adapters were missing entirely.
+const GENERIC = '(?:' + GENERIC_CLAUSE + ')?'
 
 // Attributes may appear inline before a declaration. The argument list gets one level of nesting
 // for the same reason as GENERIC: `@available(*, deprecated, renamed: "replacement()")` is ordinary

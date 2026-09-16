@@ -9,6 +9,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
+  GENERIC_CLAUSE,
   stripBlockCommentSpan,
   stripLineComment,
   stripMultilineStringSpan,
@@ -61,7 +62,7 @@ function unquoteName(name: string): string {
 const FUN_RE = new RegExp(
   '^\\s*(?:(?:public|internal|protected|private|open|override|abstract|' +
   'suspend|inline|infix|operator|external|actual|expect|final|sealed|tailrec)\\s+)*' +
-  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
+  'fun\\s+(?:' + GENERIC_CLAUSE + '\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
 )
 
 const CONST_RE = new RegExp(
@@ -98,13 +99,13 @@ const COMPANION_RE = new RegExp(
 // `typealias NodeSet = Set<Network.Node>`, `typealias Handler = (Int) -> Unit`, and their visibility/multiplatform-modifier forms (Kotlin language reference, "Type aliases"; grammar `typeAlias: modifiers? 'typealias' simpleIdentifier typeParameters? '=' type`). A type alias may be declared only at the top level, which is why this is checked on the non-indented branch alone. The declaration has no brace body, so no class frame is pushed for it.
 const TYPEALIAS_RE = new RegExp(
   '^(?:(?:public|internal|private|actual|expect)\\s+)*' +
-  'typealias\\s+(' + NAME_RE + ')(?:\\s*<[^>]*>)?\\s*=',
+  'typealias\\s+(' + NAME_RE + ')(?:\\s*' + GENERIC_CLAUSE + ')?\\s*=',
 )
 
 const TOP_FUN_RE = new RegExp(
   '^(?:(?:public|internal|private|suspend|inline|infix|operator|' +
   'external|actual|expect|tailrec)\\s+)*' +
-  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
+  'fun\\s+(?:' + GENERIC_CLAUSE + '\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
 )
 
 export function extractKotlin(
