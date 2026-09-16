@@ -91,6 +91,24 @@ describe('DockerFilter', () => {
   it('matches podman', () => expect(f.matches(['podman', 'build', '.'])).toBe(true))
   it('does not match kubectl', () => expect(f.matches(['kubectl', 'get', 'pods'])).toBe(false))
 
+  // HAND-DERIVED: the split is read off this filter's own drop rules, every one of which targets image transfer or build noise, and checked against the subcommands `docker --help` lists. Claiming the rest was not harmless: dispatch stops at the first match, so a filter with no rule for the output still consumed the command and handed back the input minus one blank line, in place of the generic compressor that folds repeated lines.
+  it.each([['images'], ['ps'], ['logs'], ['inspect'], ['exec'], ['stats'], ['version']])(
+    'releases `docker %s`, whose output it has no rule for, to the generic path',
+    (sub) => expect(f.matches(['docker', sub])).toBe(false),
+  )
+  it.each([['build'], ['buildx'], ['pull'], ['push'], ['run'], ['load'], ['create']])(
+    'still claims `docker %s`, which emits the transfer and build noise it drops',
+    (sub) => expect(f.matches(['docker', sub])).toBe(true),
+  )
+
+  // FORMAT-DERIVED from `docker --help`: every one of these pulls an image or a plugin, so each emits the `<12-hex>: Pull complete` / `Download complete` lines the filter drops at _DOCKER_PULL_LAYER_RE. The layer IDs are all distinct, so the generic compressor folds none of them -- releasing these would hand the noise straight through.
+  it.each([
+    [['docker', 'container', 'create', 'nginx']],
+    [['docker', 'image', 'pull', 'nginx']],
+    [['docker', 'plugin', 'install', 'vieux/sshfs']],
+    [['docker', 'plugin', 'upgrade', 'vieux/sshfs']],
+  ])('claims the management-command spelling %j', (argv) => expect(f.matches(argv)).toBe(true))
+
   it('drops digest and progress lines, keeps step header', () => {
     // Ported from Python test_drops_digest_and_progress
     const text = [

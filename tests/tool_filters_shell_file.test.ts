@@ -234,6 +234,15 @@ describe('RgFilter dispatch', () => {
     expect(f.matches(['rg', 'foo', '.'])).toBe(false)
     expect(f.matches(['grep', '-rn', 'TODO', '.'])).toBe(false)
   })
+
+  // FORMAT-DERIVED from `rg --help` (`--field-context-separator`, `--field-match-separator`), which let a search choose either separator freely. The filter tells a match from a context line by the character after the line number, so under `--field-match-separator=-` a real match arrives as `12-text` and is indistinguishable from the context it drops. Releasing the command is the only honest answer; compressing it would delete matches and then report them as suppressed context.
+  it.each([
+    ['--field-match-separator', '-'],
+    ['--field-context-separator', ':'],
+  ])('releases a context search that redefines %s', (flag, value) => {
+    expect(f.matches(['rg', '-C', '3', `${flag}=${value}`, 'foo', 'a.ts'])).toBe(false)
+    expect(f.matches(['rg', '-C', '3', flag, value, 'foo', 'a.ts'])).toBe(false)
+  })
 })
 
 describe('RgFilter compression', () => {

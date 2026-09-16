@@ -758,9 +758,15 @@ describe('GenericCIFilter dispatch', () => {
     expect(chosen?.name).toBe('rg')
     const viaChosen = compressOutput(chosen!, raw, '', 0, argv)
     const viaCi = compressOutput(f, raw, '', 0, argv)
-    // Must-not-drop: both bodies are shorter than the input, so size alone cannot tell them apart. What the CI filter cannot produce is the line that says what it removed and how to get it back, because it does not know it is looking at a search. Pinned by name so a future change that trims harder still has to keep it.
+    // What the CI filter cannot produce is the line that says what it removed and how to get it back, because it does not know it is looking at a search. Pinned by name so a future change that trims harder still has to keep it.
     expect(viaChosen.text).toMatch(/context lines suppressed/)
     expect(viaCi.text).not.toMatch(/context lines suppressed/)
+    // The note has to be true, and this comment used to claim "both bodies are shorter than the input" without asserting it. They were not: ripgrep omits the path prefix when the search names a single file, so every context line here arrives as a bare `12-text`, matched nothing, and survived -- the filter removed only the `--` separators and then announced 62 suppressed context lines, growing the output. Count what is actually gone and compare it against what the note claims.
+    const bareContext = (s: string): number => s.split('\n').filter((l) => /^\d+-/.test(l)).length
+    expect(bareContext(raw), 'the fixture must carry the single-file context shape this pins').toBeGreaterThan(50)
+    expect(bareContext(viaChosen.text)).toBe(0)
+    expect(viaChosen.text).toContain(`${bareContext(raw)} context lines suppressed`)
+    expect(viaChosen.text.length, 'a compression that grows the output is not one').toBeLessThan(raw.length)
     // And the first match the search found is still there under its own line number.
     const firstMatch = raw.split('\n').find((l) => /^\d+:/.test(l))
     expect(firstMatch).toBeDefined()

@@ -53,6 +53,9 @@ export class DockerFilter extends ToolFilter {
   readonly name = 'docker'
   override readonly binaries = new Set(['docker', 'buildah', 'podman', 'nerdctl'])
 
+  // Every rule below is about image transfer and build noise -- layer digests, pull/push progress, cached step lines, step bodies -- so the filter is declared for exactly the subcommands that emit them, including buildah's `bud` spelling of build, `create` and `plugin install`/`plugin upgrade`, which pull layers and emit the same per-layer status lines as `pull`. The base matcher scans the first three positionals, so the management-command spellings (`docker image pull`, `docker container create`) are covered by the same entries. With no subcommand set it claimed every `docker …` invocation and removed a single blank line from the ones it has no rules for, which matters because dispatch stops at the first match: `docker logs` on a service repeating a heartbeat went 8702 bytes in, 8701 out, where the generic compressor it was displacing returns 6987. On output with nothing repeated (`docker images` here: 15912 bytes) neither saves anything, so the gain is confined to the repetitive case -- but a filter that claims a command it cannot compress blocks whatever could.
+  override readonly subcommands = new Set(['build', 'bud', 'buildx', 'pull', 'push', 'run', 'load', 'create', 'install', 'upgrade'])
+
   // Docker writes progress/errors to stderr; only stdout carries build bodies. Merge with stderr first so errors appear before raw build output.
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     // Note: reversed arg order (stderr, stdout) — docker progress goes to stderr

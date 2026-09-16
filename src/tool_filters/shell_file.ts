@@ -125,8 +125,9 @@ export class RgFilter extends ToolFilter {
   override readonly binaries = new Set(['rg', 'grep'])
 
   private static readonly _SEP = '--'
-  private static readonly _CTX_LINE_RE = /^.+-\d+-/
-  private static readonly _MATCH_LINE_RE = /^.+:\d+:/
+  // The path prefix is optional because ripgrep only prints one when the search covers more than one file: `rg -n -C2 pat one.ts` emits `12-text` and `14:text`, not `one.ts-12-text` and `one.ts:14:text`. Requiring the prefix meant neither regex matched anything on a single-file search -- the ordinary shape of the command -- so no context line was ever suppressed there, and the only thing removed was the cosmetic `--` separator, under a note announcing a compression that had not happened.
+  private static readonly _CTX_LINE_RE = /^(?:.+-)?\d+-/
+  private static readonly _MATCH_LINE_RE = /^(?:.+:)?\d+:/
 
   private static _parseContextDepth(argv: string[]): number {
     let depth = 0
@@ -171,8 +172,15 @@ export class RgFilter extends ToolFilter {
   // RgFilter only handles context-block output (-A/-B/-C/--context); a plain
   // grep/rg with no context flags falls through to GrepFilter's per-file
   // match-count summarizer, which produces dramatically smaller output.
+  // Both line regexes hard-code ripgrep's default field separators (`:` after a match's line number, `-` after a context line's). `--field-match-separator=-` makes a real match read `12-text`, which is exactly the shape this filter drops, so a search that overrides either separator is released to the generic path rather than compressed against an assumption it broke.
+  private static _hasCustomFieldSeparator(argv: string[]): boolean {
+    const flags = ['--field-match-separator', '--field-context-separator']
+    return argv.some((a) => flags.some((f) => a === f || a.startsWith(f + '=')))
+  }
+
   override matches(argv: string[]): boolean {
     if (!super.matches(argv)) return false
+    if (RgFilter._hasCustomFieldSeparator(argv)) return false
     return RgFilter._hasContextFlags(argv)
   }
 
@@ -215,10 +223,9 @@ export class RgFilter extends ToolFilter {
     const kept: string[] = []
     let suppressed = 0
     for (const ln of lines) {
-      if (
-        ln === RgFilter._SEP ||
-        (RgFilter._CTX_LINE_RE.test(ln) && !RgFilter._MATCH_LINE_RE.test(ln))
-      ) {
+      // Separators are dropped but never counted: they are two characters of punctuation, and folding them into the context-line tally both overstates what was removed and lets a run that suppressed no context at all still print the note and grow the output by more than it saved.
+      if (ln === RgFilter._SEP) continue
+      if (RgFilter._CTX_LINE_RE.test(ln) && !RgFilter._MATCH_LINE_RE.test(ln)) {
         suppressed++
       } else {
         kept.push(ln)
