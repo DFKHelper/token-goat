@@ -144,6 +144,9 @@ export function extractDart(
       continue
     }
 
+    // The line with string literals blanked to spaces, for matchers that must read structure rather than text. Every other declaration matcher here is `^`-anchored, so a literal cannot reach one; FUNC_RE is the exception, and it has to be, because a Dart method declaration carries no keyword and is only recognisable as `Type name(`. That shape occurs in ordinary prose, so `String a = ' Foo baz(';` filed a phantom method named `baz`. Blanking preserves offsets and cannot touch a real declaration, which never has a literal before its own `(`.
+    const structural = stripStringLiterals(stripped, { tripleQuotes: true })
+
     const isIndented = line[0] === ' ' || line[0] === '\t'
 
     // class/enum/mixin/extension — recognized at column 0 (top-level), or indented
@@ -166,8 +169,7 @@ export function extractDart(
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         // A mixin-application class has no body, so pushing a frame for it would never pop -- and an unpopped frame does not lose one symbol, it swallows every top-level declaration after it in the file. CLASS_ALIAS_RE is the precise test and names the alias, but it carries GENERIC_CLAUSE's nesting ceiling, so a bound deeper than that ceiling used to fall through to here and leak a frame. A `class` line that closes with `;` and opens no brace is a complete declaration whatever its type parameters look like, so the shape check is the backstop that keeps a future miss costing one symbol instead of the rest of the file.
-        // Both markers must be read from a string-masked copy of the line: a type parameter may carry metadata (`class C<@Deprecated('semi;') T>`), and a `;` or `{` inside that annotation's string is not the structural one being looked for. Judging the raw line drops the whole body of such a class.
-        const structural = stripStringLiterals(stripped, { tripleQuotes: true })
+        // Both markers are read from `structural` because a type parameter may carry metadata (`class C<@Deprecated('semi;') T>`), and a `;` or `{` inside that annotation's string is not the structural one being looked for. Judging the raw line drops the whole body of such a class.
         const bracelessDeclaration = !structural.includes('{') && structural.includes(';')
         if (!CLASS_ALIAS_RE.test(stripped) && !bracelessDeclaration) {
           typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
@@ -258,7 +260,7 @@ export function extractDart(
           member = true
         }
 
-        const fm = !member ? FUNC_RE.exec(stripped) : null
+        const fm = !member ? FUNC_RE.exec(structural) : null
         if (fm) {
           let fname = fm[1] ?? ''
           // Normalize `operator +` to `+`
@@ -278,7 +280,7 @@ export function extractDart(
         symbols.push(makeLineSymbol(filePath, gm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
       }
 
-      const fm = !gm ? FUNC_RE.exec(stripped) : null
+      const fm = !gm ? FUNC_RE.exec(structural) : null
       if (fm) {
         let fname = fm[1] ?? ''
         fname = fname.replace(/^operator\s+/, '')

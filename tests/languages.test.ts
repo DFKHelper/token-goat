@@ -3942,6 +3942,35 @@ class Annotated<@Deprecated('semi;') T>
     expect(symbols.find((s) => s.name === 'annotatedMember')?.parent).toBe('Annotated')
   })
 
+  // HAND-DERIVED: `Type name(` is the only shape a Dart method declaration has -- there is no `fun`
+  // or `func` keyword to anchor on -- so FUNC_RE is the one matcher here that is not `^`-anchored,
+  // and ordinary prose satisfies it. Kotlin, Swift, Go and TypeScript were probed with the same
+  // shape and none fabricates a symbol, because each anchors on a keyword; this is specific to
+  // Dart's grammar. The literal needs whitespace before the fake declaration to satisfy FUNC_RE's
+  // `(?:^|\s)` prefix, which is why `b` below fires and a quote-hugging one would not.
+  it('does not file a method declaration found inside a string literal', () => {
+    const content = `class C {
+  String a = ' Foo baz(';
+  String b = 'run helper(x) then';
+  void realMethod() {}
+  int compute(String s) => 0;
+}
+
+void topLevel(String msg) {}
+`
+    const { symbols } = extractDart(content, 'literal.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('baz')
+    expect(names).not.toContain('helper')
+    // Blanking literals must not cost the real declarations on neighbouring lines, nor one whose own parameter list carries a string default.
+    for (const n of ['C', 'realMethod', 'compute', 'topLevel']) expect(names).toContain(n)
+  })
+
+  it('still indexes a method whose parameter carries a string default', () => {
+    const { symbols } = extractDart("class C {\n  void greet(String who = 'world') {}\n}\n", 'default.dart')
+    expect(symbols.find((s) => s.name === 'greet')?.parent).toBe('C')
+  })
+
   it('extracts class and enum declarations', () => {
     const content = `class Animal {
   String name;
