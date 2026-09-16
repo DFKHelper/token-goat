@@ -851,6 +851,43 @@ describe('PhpStanFilter', () => {
     expect(result.text).toContain('[ERROR]')
   })
 
+  // FORMAT-DERIVED: the identifier continuation line comes from phpstan-src's TableErrorFormatter,
+  // which appends `"\n" . '🪪  ' . $error->getIdentifier()` to the message inside one table cell;
+  // Symfony's Table helper renders that newline as a row with an empty Line column. Read off that
+  // formatter, not off this filter's regexes.
+  it('phpstan: drops the identifier line belonging to a row it just deduplicated', () => {
+    const header = ' Line  src/foo.php'
+    const rows = Array.from({ length: 6 }, (_, i) => [
+      `  ${i + 1}  Call to an undefined method Foo::bar().`,
+      '       🪪  method.notFound',
+    ]).flat()
+    const input = [header, ...rows, ' [ERROR] Found 6 errors'].join('\n')
+    const result = phpstanFilter.apply(input, '', 1, ['phpstan', 'analyse'])
+    const lines = result.text.split('\n')
+    // Three rows survive dedup, so three identifier lines do. Pre-fix all six survived, stacking four identical stamps under the last kept line number -- less readable than the raw output.
+    expect(lines.filter((l) => l.includes('method.notFound'))).toHaveLength(3)
+    // Must not drop: the identifier still has to follow every row that was kept.
+    expect(lines.filter((l) => l.includes('Call to an undefined method'))).toHaveLength(3)
+    expect(result.text).toContain('duplicate error(s) in src/foo.php')
+  })
+
+  it('phpstan: keeps the warnings table that follows a deduplicated last row', () => {
+    const input = [
+      ' Line  src/foo.php',
+      ...Array.from({ length: 4 }, (_, i) => `  ${i + 1}  Same error`),
+      ' ----------------',
+      '        Warning',
+      ' ----------------',
+      '        Configuration is deprecated',
+      ' ----------------',
+      ' [ERROR] Found 4 errors and 1 warning',
+    ].join('\n')
+    const result = phpstanFilter.apply(input, '', 1, ['phpstan', 'analyse'])
+    // PHPStan prints warnings in a table of their own, with no Line column and so no numbered row to re-arm the continuation rule on. The 4th error row is deduped away, so without resetting at the separator the entire warnings table reads as its continuation and disappears -- while the summary keeps counting the warning.
+    expect(result.text).toContain('Configuration is deprecated')
+    expect(result.text).toContain('Found 4 errors and 1 warning')
+  })
+
   it('psalm: drops progress lines', () => {
     const input = [
       'Scanning files...',

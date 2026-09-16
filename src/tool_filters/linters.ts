@@ -1204,6 +1204,8 @@ const _PHPSTAN_SEP_RE = /^\s*-{3,}/
 const _PHPSTAN_FILE_HEADER_RE = /^\s+Line\s+(\S.*\.php)\s*$/
 const _PHPSTAN_ROW_RE = /^\s+(\d+)\s+(.+)$/
 const _PHPSTAN_SUMMARY_RE = /^\s*\[(ERROR|OK|WARNING|NOTE)\]/i
+// An indented line inside a file block that is not a numbered row. PHPStan's table formatter appends the error identifier, and any tip or editor link, into the SAME table cell as the message (`$message .= "\n" . '🪪  ' . $error->getIdentifier()` in TableErrorFormatter), and Symfony's Table helper renders that embedded newline as a continuation row with an empty Line column. Such a line belongs to the row above it and has to share that row's fate.
+const _PHPSTAN_ROW_CONTINUATION_RE = /^\s{2,}\S/
 const _PSALM_ERROR_RE = /^(ERROR|INFO|FATAL): \w+ - .+\.php:\d+/i
 // Progress chatter only. `No errors` and `Found N errors` are deliberately absent: those are the verdict of the run, the one line the reader invoked psalm to see, and routing them here discarded a clean result entirely and replaced a failing one with an anonymous "dropped N progress/info lines" note. `INFO:` is absent for the same reason from the other direction: `_PSALM_ERROR_RE` below lists INFO as a diagnostic severity alongside ERROR and FATAL, so matching a leading `INFO:` here shadowed every INFO diagnostic before the diagnostic branch could dedupe it, and made that branch's INFO alternative unreachable. A genuinely non-diagnostic `INFO:` line fails `_PSALM_ERROR_RE` and falls through to the keep-verbatim branch, which is the safe direction.
 const _PSALM_PROGRESS_RE =
@@ -1230,6 +1232,8 @@ class PhpStanFilter extends ToolFilter {
     let droppedSep = 0
     let droppedInfo = 0
     let currentFile = ''
+    // Whether the most recent numbered row survived dedup, so its continuation lines can follow it. Deduping a row while keeping its identifier line stacked four identical `🪪 method.notFound` stamps under one line number: harder to read than the raw output the filter exists to shrink.
+    let lastRowKept = true
     // file → {msg: count}
     const fileMsgs = new Map<string, Map<string, number>>()
 
@@ -1244,15 +1248,18 @@ class PhpStanFilter extends ToolFilter {
       if (_PHPSTAN_INFO_RE.test(line)) { droppedInfo++; continue }
       if (_PHPSTAN_SUMMARY_RE.test(line)) {
         if (currentFile) { flushFileDedup(currentFile); currentFile = '' }
+        lastRowKept = true
         kept.push(line)
         continue
       }
-      if (_PHPSTAN_SEP_RE.test(line) && !_PHPSTAN_ROW_RE.test(line)) { droppedSep++; continue }
+      // A separator closes the table cell, so nothing after it continues the row before it. Without this reset, a row deduped as the last row of one table made the whole next section -- PHPStan prints warnings in a table of their own, with no Line column and so no numbered row to re-arm on -- read as its continuation and vanish, while the summary went on counting it.
+      if (_PHPSTAN_SEP_RE.test(line) && !_PHPSTAN_ROW_RE.test(line)) { droppedSep++; lastRowKept = true; continue }
       if (_PHPSTAN_FILE_HEADER_RE.test(line)) {
         if (currentFile) flushFileDedup(currentFile)
         const headerMatch = _PHPSTAN_FILE_HEADER_RE.exec(line)
         currentFile = headerMatch?.[1] ? headerMatch[1].trim() : line.trim()
         if (!fileMsgs.has(currentFile)) fileMsgs.set(currentFile, new Map())
+        lastRowKept = true
         kept.push(line)
         continue
       }
@@ -1262,9 +1269,11 @@ class PhpStanFilter extends ToolFilter {
         const counts = fileMsgs.get(currentFile)!
         const count = (counts.get(msg) ?? 0) + 1
         counts.set(msg, count)
-        if (count <= 3) kept.push(line)
+        lastRowKept = count <= 3
+        if (lastRowKept) kept.push(line)
         continue
       }
+      if (currentFile && !lastRowKept && _PHPSTAN_ROW_CONTINUATION_RE.test(line)) continue
       kept.push(line)
     }
     if (currentFile) flushFileDedup(currentFile)
