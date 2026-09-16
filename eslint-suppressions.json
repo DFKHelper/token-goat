@@ -189,10 +189,5 @@
     "regexp/no-super-linear-backtracking": {
       "count": 3
     }
-  },
-  "src/xml_query.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 6
-    }
   }
 }

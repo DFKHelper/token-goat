@@ -1129,10 +1129,33 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     if (closes.length > 0) messages.push(didYouMean(closes))
     // No candidate resembled the query -- point at the command that lists the file's real
     // symbols instead of leaving the miss with no next step.
-    else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
-    else if (fs.existsSync(resolved)) {
-      const gap = symbolExtractorGap(file, resolved)
-      if (gap !== undefined) messages.push(gap)
+    else if (scanned.length > 0) {
+      if (/\.(yaml|yml)$/i.test(file)) {
+        messages.push(`Try: token-goat yaml-outline ${file}\nQuery subtree: token-goat yaml-query ${file} '<path>'`)
+      } else if (/\.xml$/i.test(file)) {
+        messages.push(`Try: token-goat xml-outline ${file}\nQuery subtree: token-goat xml-query ${file} '<path>'`)
+      } else if (/\.json$/i.test(file)) {
+        messages.push(`Try: token-goat json-outline ${file}\nQuery subtree: token-goat json-query ${file} '<path>'`)
+      } else {
+        messages.push(`Try: token-goat outline ${file}`)
+      }
+    } else if (fs.existsSync(resolved)) {
+      if (/\.(yaml|yml)$/i.test(file)) {
+        messages.push(
+          `'${file}' is a YAML file -- YAML keys below top level are not symbols; inspect structure or query values with:\n  token-goat yaml-outline ${file}\n  token-goat yaml-query ${file} '<path>'`,
+        )
+      } else if (/\.xml$/i.test(file)) {
+        messages.push(
+          `'${file}' is an XML file -- inspect structure or query nodes with:\n  token-goat xml-outline ${file}\n  token-goat xml-query ${file} '<path>'`,
+        )
+      } else if (/\.json$/i.test(file)) {
+        messages.push(
+          `'${file}' is a JSON file -- inspect structure or query values with:\n  token-goat json-outline ${file}\n  token-goat json-query ${file} '<path>'`,
+        )
+      } else {
+        const gap = symbolExtractorGap(file, resolved)
+        if (gap !== undefined) messages.push(gap)
+      }
     }
     return { text: messages.join('\n'), code: 1 }
   }

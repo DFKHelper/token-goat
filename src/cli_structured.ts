@@ -46,16 +46,61 @@ export function cmdYamlQuery(file: string, yamlPath: string, opts: { head?: stri
   process.exitCode = runYamlQuery({ file, path: yamlPath, ...opts })
 }
 
-export function cmdXmlOutline(file: string, opts: { json?: boolean; maxDepth?: string }): void {
+export function cmdXmlOutline(file: string, opts: { json?: boolean; maxDepth?: string; depth?: string }): void {
+  const depthStr = opts.depth ?? opts.maxDepth
   process.exitCode = runXmlOutline({
     file,
     ...(opts.json === true ? { json: true } : {}),
-    ...(opts.maxDepth !== undefined ? { maxDepth: requireNonNegativeInt('--max-depth', opts.maxDepth) } : {}),
+    ...(depthStr !== undefined ? { maxDepth: requireNonNegativeInt('--max-depth', depthStr) } : {}),
   })
 }
 
-export function cmdXmlQuery(file: string, xmlPath: string, opts: { head?: string; json?: boolean }): void {
-  process.exitCode = runXmlQuery({ file, path: xmlPath, ...opts })
+export function cmdXmlQuery(
+  file: string,
+  pathOrOpts?:
+    | string
+    | {
+        head?: string
+        json?: boolean
+        xpath?: string
+        withLines?: boolean
+        decodeEmbeddedXml?: boolean
+      },
+  optsMaybe?: {
+    head?: string
+    json?: boolean
+    xpath?: string
+    withLines?: boolean
+    decodeEmbeddedXml?: boolean
+  },
+): void {
+  let xmlPath: string | undefined
+  let opts: {
+    head?: string
+    json?: boolean
+    xpath?: string
+    withLines?: boolean
+    decodeEmbeddedXml?: boolean
+  } = {}
+
+  if (typeof pathOrOpts === 'string') {
+    xmlPath = pathOrOpts
+    opts = optsMaybe ?? {}
+  } else if (typeof pathOrOpts === 'object' && pathOrOpts !== null) {
+    opts = pathOrOpts
+  } else if (typeof optsMaybe === 'object' && optsMaybe !== null) {
+    opts = optsMaybe
+  }
+
+  process.exitCode = runXmlQuery({
+    file,
+    ...(xmlPath !== undefined ? { path: xmlPath } : {}),
+    ...(opts.xpath !== undefined ? { xpath: opts.xpath } : {}),
+    ...(opts.head !== undefined ? { head: opts.head } : {}),
+    ...(opts.json === true ? { json: true } : {}),
+    ...(opts.withLines === true ? { withLines: true } : {}),
+    ...(opts.decodeEmbeddedXml === true ? { decodeEmbeddedXml: true } : {}),
+  })
 }
 
 export function cmdHtmlOutline(file: string, opts: { json?: boolean }): void {
