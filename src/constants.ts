@@ -410,5 +410,5 @@ export const ENV_KEYS = {
 // dropping idx_symbols_oversized_body, or the stored index keeps the old threshold.
 export const SYMBOL_BODY_CHAR_CAP = 128 * 1024
 
-/** Upper bound on the number of symbols fetched in one SQL query for skeleton/outline. */
+/** Upper bound on the number of symbols fetched in one SQL query for skeleton/outline, and on the number listed in one result. */
 export const SKELETON_SYMBOL_CAP = 5000

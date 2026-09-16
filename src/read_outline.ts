@@ -103,21 +103,37 @@ export function prepareSymbolListing(
   } else {
     healStaleIndex(resolved)
   }
-  const fetched = querySymbols({ filePath: resolved, limit: SKELETON_SYMBOL_CAP + 1 })
-  const symbolsTruncated = fetched.length > SKELETON_SYMBOL_CAP
-  const symbols = symbolsTruncated ? fetched.slice(0, SKELETON_SYMBOL_CAP) : fetched
-  const trueSymbolCount = symbolsTruncated ? countSymbols({ filePath: resolved }) : undefined
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const matches = (s: SymbolEntry): boolean =>
+    (opts.minLines === undefined || s.lineEnd - s.lineStart + 1 >= opts.minLines) &&
+    (matchesGrep === undefined || matchesGrep(s.name))
 
-  if (symbols.length === 0) {
+  // Page the scan rather than filtering one capped window: `--grep` compiles to a JS matcher (a guarded regex, or a substring fallback when the pattern is refused), so no SQL clause can express it, and applying it after `LIMIT SKELETON_SYMBOL_CAP` meant a symbol past the 5000th in source order was cut before the predicate ever saw it -- an empty result byte-identical to an honest no-match, under a notice blaming a filter that never ran. The cap now bounds the *matches* and stops the walk as soon as it has that many, so the common case still costs one query. There is deliberately no second cap on how far the walk may go: `isParseSkipEligible` already refuses to index a file larger than `indexing.large_file_skip_kb`, which bounds how many symbols one file can contribute, and peak memory here is one page plus the matches either way, since bodies for non-matching rows are dropped with the page.
+  const filtered: SymbolEntry[] = []
+  let scanned = 0
+  let matchesTruncated = false
+  let totalLines = 0
+  for (let offset = 0; ; offset += SKELETON_SYMBOL_CAP) {
+    const page = querySymbols({ filePath: resolved, limit: SKELETON_SYMBOL_CAP, offset })
+    if (page.length === 0) break
+    scanned += page.length
+    for (const s of page) {
+      // `totalLines` measures the file, not the listing: it is the extent the header names beside the symbol count, and it is taken over every row examined rather than only the ones a cap or filter kept, so a cap no longer shrinks the file's reported size along with the listing.
+      if (s.lineEnd > totalLines) totalLines = s.lineEnd
+      if (!matches(s)) continue
+      if (filtered.length === SKELETON_SYMBOL_CAP) { matchesTruncated = true; break }
+      filtered.push(s)
+    }
+    if (matchesTruncated || page.length < SKELETON_SYMBOL_CAP) break
+  }
+
+  if (scanned === 0) {
     return { kind: 'empty', text: noSymbolsMessage(file, resolved) }
   }
 
-  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  const filtered = symbols.filter(
-    (s) =>
-      (opts.minLines === undefined || s.lineEnd - s.lineStart + 1 >= opts.minLines) &&
-      (matchesGrep === undefined || matchesGrep(s.name)),
-  )
+  // Only a full match list can hide anything now: the walk runs to the end of the file otherwise, so an empty or short listing is a real verdict on every symbol and needs no count to say so.
+  const trueSymbolCount = matchesTruncated ? countSymbols({ filePath: resolved }) : undefined
+  const symbolsTruncated = matchesTruncated
 
   const refCounts =
     opts.stats === true
@@ -125,9 +141,8 @@ export function prepareSymbolListing(
       : undefined
 
   const fullSourceBytes = sumFileSizes([resolved])
-  const totalLines = symbols.length > 0 ? Math.max(...symbols.map((s) => s.lineEnd)) : 0
 
-  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: symbols.length, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines }
+  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: scanned, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines }
 }
 
 export function runPerFileListing(

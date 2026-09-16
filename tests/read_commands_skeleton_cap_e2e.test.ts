@@ -132,4 +132,61 @@ describe('skeleton/outline symbol-cap honesty (real pipeline, no injected callba
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // HAND-DERIVED: the file is generated here and the expected answer is read off the generator, not off the implementation -- `tailOnlyFn` is the last symbol written, so it is past the cap by construction and any correct `--grep tailOnlyFn` must return exactly it. The third instance of the same shape: the two tests above fixed the *count* the cap lied about, but the rows themselves were still sliced to SKELETON_SYMBOL_CAP before `--grep`/`--min-lines` ran, so a symbol past the 5000th was cut before the predicate ever saw it. The result was an empty listing byte-identical to an honest no-match, under a notice blaming a filter that never examined it -- while `token-goat symbol tailOnlyFn`, which goes through a name-indexed lookup rather than this path, found it instantly.
+  it('runOutline --grep finds a symbol that sits past SKELETON_SYMBOL_CAP in source order', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-skelcap-grep-'))
+    try {
+      const file = join(root, 'huge.js')
+      writeFileSync(file, `${makeManyFunctionsSource(5050)}\nfunction tailOnlyFn(a) {\n  return a\n}\n`)
+      indexFileSync(normalizePath(file))
+
+      const { text, code } = runOutline({ file, grep: 'tailOnlyFn', json: true })
+      expect(code).toBe(0)
+      const parsed = JSON.parse(text) as { items: Array<{ name: string }>; truncated: boolean }
+      expect(parsed.items.map((i) => i.name)).toEqual(['tailOnlyFn'])
+      // Nothing was left unexamined, so the result must not be flagged as a partial view: a `truncated: true` here would send the caller looking for rows the scan already proved are not there.
+      expect(parsed.truncated).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // HAND-DERIVED: 20000 symbols is four full pages of the paged scan and still well inside `indexing.large_file_skip_kb` (2048), which is what actually bounds how far this walk can go -- an earlier revision added a second scan cap of its own, and probing the indexer showed no file that reaches it can be indexed at all, so the branch and its notice were unreachable. This pins the property that replaced it: with no filter, a multi-page scan lists the first SKELETON_SYMBOL_CAP symbols and says so, and with a filter it walks every page to the end of the file.
+  it('walks every page of a multi-page file and reports truncation only when the match list is full', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-skelcap-pages-'))
+    try {
+      const file = join(root, 'pages.js')
+      const n = 20000
+      writeFileSync(file, makeManyFunctionsSource(n))
+      indexFileSync(normalizePath(file))
+
+      const unfiltered = JSON.parse(runOutline({ file, json: true }).text) as { truncated: boolean; totalCount: number }
+      expect(unfiltered.truncated).toBe(true)
+      expect(unfiltered.totalCount).toBe(n)
+
+      // The last symbol in the file, four pages past the first: found, and not flagged truncated, because the scan reached the end and nothing was left behind.
+      const filteredOut = JSON.parse(runOutline({ file, grep: `genFn${n - 1}$`, json: true }).text) as { items: Array<{ name: string }>; truncated: boolean }
+      expect(filteredOut.items.map((i) => i.name)).toEqual([`genFn${n - 1}`])
+      expect(filteredOut.truncated).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // The other half of the same change: the no-match notice has to count what the scan actually examined. Pre-fix this said "all 5000 indexed symbols were filtered out" for a 5051-symbol file -- 51 of them were never tested against the pattern, so the notice named a verdict it had not reached and its "widen or drop the filter" advice could not have worked.
+  it('runOutline names the true scanned count when nothing matches', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-skelcap-nomatch-'))
+    try {
+      const file = join(root, 'huge.js')
+      writeFileSync(file, makeManyFunctionsSource(5051))
+      indexFileSync(normalizePath(file))
+
+      const { text } = runOutline({ file, grep: 'noSuchSymbolAnywhere' })
+      expect(text).toContain('all 5051 indexed symbols were filtered out')
+      expect(text).not.toContain('all 5000 indexed symbols')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

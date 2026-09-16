@@ -118,19 +118,21 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
 /** Rows returned when a caller names no `limit`. Exported because a caller that reports whether its scan was complete has to compare its row count against the window it actually got, and an implicit default it cannot see makes that comparison silently wrong. */
 export const DEFAULT_QUERY_LIMIT = 100
 
-/** Query symbols by any combination of name, file, and kind. All filters are optional and AND-combined; an empty `opts` returns every symbol (bounded by `limit`, default 100). Results are ordered by file then starting line for stable output. `rootDir`, when provided, scopes the query to files under that project root via {@link projectScopeClause} -- required whenever a caller means "symbols in the current project", since `dbPath` (typically `global.db`) is a single machine-wide index shared across every project ever indexed (constants.ts). */
+/** Query symbols by any combination of name, file, and kind. All filters are optional and AND-combined; an empty `opts` returns every symbol (bounded by `limit`, default 100). Results are ordered by file then starting line for stable output, so `offset` walks a file's symbols in source order and a caller that has to apply its own predicate (one no SQL clause can express, such as a user-supplied regex) can page until it has enough *matching* rows instead of filtering a window the cap already truncated. `rootDir`, when provided, scopes the query to files under that project root via {@link projectScopeClause} -- required whenever a caller means "symbols in the current project", since `dbPath` (typically `global.db`) is a single machine-wide index shared across every project ever indexed (constants.ts). */
 export function querySymbols(
-  opts: SymbolQueryOpts & { limit?: number } = {},
+  opts: SymbolQueryOpts & { limit?: number; offset?: number } = {},
   dbPath: string = globalDbPath(),
 ): SymbolEntry[] {
   const { clause, params } = buildSymbolWhere(opts)
   const limit = opts.limit ?? DEFAULT_QUERY_LIMIT
+  const offset = opts.offset ?? 0
   const sql =
     `SELECT file_path, name, kind, line_start, line_end, body, docstring, parent ` +
-    `FROM symbols ${clause} ORDER BY file_path, line_start LIMIT ?`
+    // `rowid` is the tie-break, not decoration: two symbols can share a `line_start` (a class and its first method on one line, an overload pair, anything in a minified file), and SQLite's sort is not stable, so without it two `OFFSET` pages of the same query can order a tied group differently and drop or repeat a row across the page boundary. That is invisible in a single unpaged query, which is why it only became a correctness issue once a caller started paging.
+    `FROM symbols ${clause} ORDER BY file_path, line_start, rowid LIMIT ? OFFSET ?`
 
   const db = getDb(dbPath)
-  const rows = db.prepare(sql).all(...params, limit) as SymbolRow[]
+  const rows = db.prepare(sql).all(...params, limit, offset) as SymbolRow[]
   return rows.map(toSymbolEntry)
 }
 
