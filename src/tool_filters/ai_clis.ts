@@ -13,7 +13,7 @@ import { ERROR_SIGNAL_RE, pathStem, pathName, positionalArgs } from './helpers.j
 // ---------------------------------------------------------------------------
 const _GH_COPILOT_SPINNER_RE = /^\s*(?:Asking GitHub Copilot|Generating|Thinking|Fetching)\s*(?:\.{1,3}\s*)?$/i
 const _GH_COPILOT_BANNER_RE = /^\s*(?:Welcome to GitHub Copilot|Using GitHub Copilot|Authenticated as|GitHub Copilot\s+v\d+)/i
-const _GH_COPILOT_DISCLAIMER_RE = /^\s*(?:Disclaimer:|This response was|GitHub Copilot|The commands?\s+(?:above|below)|Please review|Always review|Remember to|Note:|Tip:)/i
+const _GH_COPILOT_DISCLAIMER_RE = /^\s*(?:Disclaimer:|This response was|GitHub Copilot|The commands?\s+(?:above|below)|Please review|Always review|Remember to)/i
 
 // ---------------------------------------------------------------------------
 // Aider
@@ -23,7 +23,7 @@ const _AIDER_TOKENS_RE = /^\s*Tokens:\s+\d[\d,]*\s+sent,\s+\d[\d,]*\s+received/i
 const _AIDER_COST_RE = /^\s*Cost:\s+\$[\d.]+\s+message,\s+\$[\d.]+\s+session/i
 const _AIDER_REPOMAP_RE = /^\s*(?:Repo-map:|Added\s+\S+\s+to\s+the\s+chat|Removed\s+\S+\s+from\s+the\s+chat|Loading\s+repo\s+map|Updating\s+repo\s+map|Scanning\s+repo\s+contents|Using\s+\d+\s+tokens\s+of\s+repo\s+map)/i
 const _AIDER_BANNER_RE = /^\s*aider\s+v\d+\.\d+/i
-const _AIDER_FOOTER_NOISE_RE = /^\s*(?:Use\s+ctrl-c|Run\s+with\s+--help|You\s+can\s+skip\s+this|Tip:|Note:)/i
+const _AIDER_FOOTER_NOISE_RE = /^\s*(?:Use\s+ctrl-c|Run\s+with\s+--help|You\s+can\s+skip\s+this)/i
 
 // ---------------------------------------------------------------------------
 // Copilot (standalone binary)
@@ -38,7 +38,7 @@ const _GEMINI_STARTUP_RE = /^\s*(?:[✓✗►]|>)\s*(?:Model:|Theme:|Tools:|Sand
 const _GEMINI_BANNER_RE = /^\s*Gemini\s+CLI\s+v\d+/i
 const _GEMINI_TOKEN_METER_RE = /^\s*(?:Token\s+usage|Context|Tokens):\s+[\d,]+\s*\/\s*[\d,]+/i
 const _GEMINI_TOOL_SPINNER_RE = /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✓✗►✦]\s+(?:Call(?:ing|ed)|Execut(?:ing|ed)|Running)\s+\S+/
-const _GEMINI_FOOTER_RE = /^\s*(?:Type\s+\/help|Press\s+Ctrl|Use\s+Ctrl|Tip:|Note:)/i
+const _GEMINI_FOOTER_RE = /^\s*(?:Type\s+\/help|Press\s+Ctrl|Use\s+Ctrl)/i
 const _GEMINI_THINKING_RE = /^\s*(?:Thinking|Generating|Processing)\s*(?:\.{1,3}\s*)?$/i
 
 // ---------------------------------------------------------------------------
@@ -47,7 +47,8 @@ const _GEMINI_THINKING_RE = /^\s*(?:Thinking|Generating|Processing)\s*(?:\.{1,3}
 const _CLAUDE_CLI_MODEL_HDR_RE = /^\s*[◆◇►✦]\s+claude-/i
 const _CLAUDE_CLI_STATS_RE = /^\s*[↑↓⇑⇓]\s*\d[\d,]*(?:(?:\s*[↑↓⇑⇓]\s*|\s+)\d[\d,]*)?\s*tokens/i
 const _CLAUDE_CLI_CONTEXT_RE = /^\s*(?:Context(?:\s+window)?|Token\s+limit):\s+[\d,]+\s*\/\s*[\d,]+/i
-const _CLAUDE_CLI_FOOTER_RE = /^\s*(?:Press\s+Ctrl|Enter\s+\/|Type\s+\/|Use\s+Ctrl|Tip:|Note:)/i
+// `Tip:` and `Note:` used to sit in this alternation, and in the three sibling CLI footer rules beside it. They are not interface chrome, they are ordinary English: a real `claude --print` answer that begins a line with either one had that line deleted and counted as noise. Captured on 2026-09-15 from `claude --model haiku --print`, a four-line answer came back three lines shorter with `[token-goat: dropped 2 noise line(s)]` under it -- and the one line in that output that genuinely was startup noise survived, because no rule describes it. The rest of this alternation is keyboard-hint text no model writes as prose.
+const _CLAUDE_CLI_FOOTER_RE = /^\s*(?:Press\s+Ctrl|Enter\s+\/|Type\s+\/|Use\s+Ctrl)/i
 const _CLAUDE_CLI_SPINNER_RE = /^\s*[◎⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+(?:Thinking|Generating|Processing|Running)\s*(?:\.{1,3}\s*)?$/
 const _CLAUDE_CLI_TOOL_LOG_RE = /^\s*(?:>\s+Using\s+tool:|✓\s+Tool\s+result:|◎\s+Tool:)/i
 const _CLAUDE_CLI_SKIP_SUBCMDS = new Set(['install', 'update', 'doctor', 'config', 'login', 'logout'])

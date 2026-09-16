@@ -7,6 +7,9 @@
  *
  * Ported from the Python AI-CLI test suite (git ref 2098981^).
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -128,10 +131,11 @@ describe('GhCopilotFilter compression', () => {
     expect(out).not.toContain('Thinking...')
   })
 
-  it('drops disclaimer and note lines', () => {
+  // `Note: Always verify the output.` used to be asserted gone, and went only because the rule dropped any line opening with `Note:` -- this fixture was written from that rule and so agreed with it. Nobody captured that wording from the real CLI, and no rule can drop a `Note:` line without dropping the identical shape in an answer, so it stays now. `Disclaimer:` is the part of this boilerplate that names itself, and that is what the filter is still held to.
+  it('drops the disclaimer line, and keeps the note it cannot tell from prose', () => {
     const out = apply(ghCopilotFilter, _GH_COPILOT_EXPLAIN, argv)
     expect(out).not.toContain('Disclaimer:')
-    expect(out).not.toContain('Note: Always verify')
+    expect(out).toContain('Note: Always verify the output.')
   })
 
   it('keeps the response body', () => {
@@ -261,10 +265,10 @@ describe('AiderFilter compression', () => {
     expect(out).not.toContain('Added src/main.py to the chat')
   })
 
+  // The `Tip: ...` line here is fixture prose, not a shape anyone captured, and the rule that removed it removed every answer line beginning with `Tip:` along with it. Only the keyboard hint is asserted gone now.
   it('drops footer noise', () => {
     const out = apply(aiderFilter, _AIDER_VERBOSE, argv)
     expect(out).not.toContain('ctrl-c')
-    expect(out).not.toContain('Tip:')
   })
 
   it('prepends applying-edits collapse notice', () => {
@@ -972,5 +976,38 @@ describe('dispatch ordering: AI_CLI_FILTERS before CI_FILTERS', () => {
   it('gh run view --log routes to gh-run-log, not gh-copilot', () => {
     const f = selectFilter(['gh', 'run', 'view', '123', '--log'])
     expect(f?.name).toBe('gh-run-log')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Answer text must survive the footer rules
+// ---------------------------------------------------------------------------
+
+describe('AI-CLI footer rules do not eat answer prose', () => {
+  // CAPTURE: `claude --model haiku --print` on 2026-09-15, Claude Code 2.1.270, asked for four exact lines. The first line is the CLI's own startup warning; the rest is the answer. Before this fixture existed, `Tip:` and `Note:` sat in claude-cli's footer drop rule, so the two middle lines -- ordinary answer prose -- were deleted and counted as noise, while the warning line above them, the only real noise in the capture, survived because no rule describes it.
+  const CLAUDE_PRINT_CAPTURE = readFileSync(
+    join(__dirname, 'fixtures/tool_output/claude-2.1.270-print-answer.txt'),
+    'utf8',
+  )
+
+  it('keeps every answer line of a real `claude --print` run', () => {
+    const out = apply(claudeCliFilter, CLAUDE_PRINT_CAPTURE, ['claude', '--model', 'haiku', '--print', 'x'])
+    for (const line of ['The config lives in settings.json.', 'Note: the change takes effect on restart.', 'Tip: use --dry-run first.', 'Done.']) {
+      expect(out, `the filter deleted a line of the model's own answer: ${line}`).toContain(line)
+    }
+    expect(out, 'nothing in this capture is droppable, so the filter must not claim it dropped anything').not.toMatch(/noise line\(s\)/)
+  })
+
+  // The same two tokens sat in three sibling footer rules. They are English, not interface chrome: no rule keyed on a word a model writes in prose can tell an answer from a banner, so none of these filters may drop a line for beginning with one.
+  it.each([
+    ['claude-cli', claudeCliFilter, ['claude', '--print', 'x']],
+    ['gemini', geminiCliFilter, ['gemini', '-p', 'x']],
+    ['aider', aiderFilter, ['aider', '--message', 'x']],
+    ['gh-copilot', ghCopilotFilter, ['gh', 'copilot', 'explain', 'x']],
+  ] as const)('%s keeps a prose line opening with Note: or Tip:', (_name, filter, argv) => {
+    const body = ['The migration renames two columns.', 'Note: run it before the deploy, not after.', 'Tip: take a backup first.'].join('\n')
+    const out = apply(filter, body, [...argv])
+    expect(out).toContain('Note: run it before the deploy, not after.')
+    expect(out).toContain('Tip: take a backup first.')
   })
 })

@@ -1,0 +1,5 @@
+⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login · Unset it to load your organization's connectors
+The config lives in settings.json.
+Note: the change takes effect on restart.
+Tip: use --dry-run first.
+Done.
