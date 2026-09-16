@@ -789,17 +789,28 @@ describe('GitStatusVerboseFilter short format', () => {
 // ---------------------------------------------------------------------------
 
 describe('GitStatusVerboseFilter verbose format', () => {
-  it('strips advice lines, groups file listing into count', () => {
+  // CAPTURE: real `git status` output from a real scratch repo on this machine (git's own long format, one tracked file modified plus untracked files), pasted verbatim.
+  it('keeps the literal file lines on a small change set, strips only advice and the trailer', () => {
     const text =
-      'On branch main\n' +
+      'On branch master\n' +
       'Changes not staged for commit:\n' +
       '  (use "git add <file>..." to update what will be committed)\n' +
       '  (use "git restore <file>..." to discard changes in working directory)\n' +
-      '\tmodified:   src/foo.py\n\n' +
+      '\tmodified:   tracked.ts\n\n' +
+      'Untracked files:\n' +
+      '  (use "git add <file>..." to include in what will be committed)\n' +
+      '\treal_git_status.txt\n' +
+      '\ts3.sh\n' +
+      '\tuntracked1.txt\n' +
+      '\tuntracked2.txt\n\n' +
       'no changes added to commit (use "git add" and/or "git commit -a")\n'
     const result = apply(gitStatusFilter, text, ['git', 'status'])
-    expect(result).toContain('1 modified')
-    expect(result).not.toContain('src/foo.py')
+    // must-not-drop: the actual paths are the entire point of running `git status` on a small tree
+    expect(result).toContain('modified:   tracked.ts')
+    expect(result).toContain('real_git_status.txt')
+    expect(result).toContain('s3.sh')
+    expect(result).toContain('untracked1.txt')
+    expect(result).toContain('untracked2.txt')
     expect(result).not.toContain('use "git add')
     expect(result).not.toContain('use "git restore')
     expect(result).not.toContain('no changes added to commit')
@@ -812,7 +823,8 @@ describe('GitStatusVerboseFilter verbose format', () => {
     expect(result).toContain('On branch main')
   })
 
-  it('untracked list grouped to count', () => {
+  // HAND-DERIVED: 3 files is well under `_DIFF_STAT_DIR_ROLLUP_THRESHOLD` (20, shared with `_compressGitDiffStat`'s directory-rollup gate), so the literal paths must survive -- a small untracked list is exactly the case that names the files, not just their count.
+  it('small untracked list (3 files) keeps the literal paths', () => {
     const files = Array.from({ length: 3 }, (_, i) => `\t    new_file_${i}.py`).join('\n')
     const text =
       'On branch main\n' +
@@ -821,12 +833,14 @@ describe('GitStatusVerboseFilter verbose format', () => {
       files +
       '\n'
     const result = apply(gitStatusFilter, text, ['git', 'status'])
-    expect(result).toContain('3 untracked')
-    expect(result).not.toContain('new_file_0.py')
+    expect(result).toContain('new_file_0.py')
+    expect(result).toContain('new_file_1.py')
+    expect(result).toContain('new_file_2.py')
   })
 
-  it('large untracked list (15 files) grouped to count', () => {
-    const files = Array.from({ length: 15 }, (_, i) => `\tnew_file_${i}.py`).join('\n')
+  // HAND-DERIVED: 25 files exceeds the same 20-file threshold, so this is the case the collapse-to-count path exists for.
+  it('large untracked list (25 files) grouped to count', () => {
+    const files = Array.from({ length: 25 }, (_, i) => `\tnew_file_${i}.py`).join('\n')
     const text =
       'On branch main\n' +
       'Untracked files:\n' +
@@ -834,9 +848,9 @@ describe('GitStatusVerboseFilter verbose format', () => {
       files +
       '\n'
     const result = apply(gitStatusFilter, text, ['git', 'status'])
-    expect(result).toContain('15 untracked')
+    expect(result).toContain('25 untracked')
     expect(result).not.toContain('new_file_0.py')
-    expect(result).not.toContain('new_file_14.py')
+    expect(result).not.toContain('new_file_24.py')
   })
 })
 

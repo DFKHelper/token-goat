@@ -317,6 +317,56 @@ describe('AwsCliFilter', () => {
     expect(text).not.toContain('upload: ./file-1.js')
   })
 
+  // CAPTURE: the failure line is real `aws s3 cp` output from the aws-cli installed on this machine, pointed at an unreachable endpoint (`aws --endpoint-url http://localhost:1 --no-sign-request s3 cp AGENTS.md s3://bucket/AGENTS.md`), copied verbatim apart from the file and bucket names. Suppressing each stream in turn showed aws writes it to stderr and exits 1, which matters for which path this test has to drive: with the streams separated, `errorPassthrough` hands back the raw output and the compressor never runs, so the only way a failure line reaches `_compressS3Transfer` is with stderr folded into stdout -- `aws s3 sync . s3://b 2>&1`, or any wrapper that merges them -- where `preserveStderrOnError` sees an empty stderr and declines. That is the shape driven here, and it is where the line used to be swallowed as progress noise. The multi-line success/failure interleaving matches the same FAILURE_FORMAT aws-cli's ResultPrinter renders for every transfer type.
+  it('keeps a failed transfer line in full and counts it separately from successes', () => {
+    const text =
+      'upload: ./file1.txt to s3://mybucket/file1.txt\n' +
+      'upload failed: ./secret.txt to s3://mybucket/secret.txt Could not connect to the endpoint URL: "http://localhost:1/mybucket/secret.txt"\n' +
+      'upload: ./file3.txt to s3://mybucket/file3.txt\n'
+    const { text: result } = apply(f, text, '', 1, ['aws', 's3', 'sync', '.', 's3://mybucket'])
+    // must-not-drop: the failure line, verbatim, is the entire point of this output
+    expect(result).toContain('upload failed: ./secret.txt to s3://mybucket/secret.txt Could not connect to the endpoint URL: "http://localhost:1/mybucket/secret.txt"')
+    expect(result).toContain('uploaded 2')
+    // the summary must say a transfer failed rather than only counting the ones that worked -- the success count alone reads as a clean run, and a failure folded into the dropped-progress count read as one too
+    expect(result).toContain('1 transfer(s) failed')
+    expect(result).not.toMatch(/uploaded 3\b/)
+    expect(result).not.toMatch(/dropped 1 progress/)
+  })
+
+  // FORMAT-DERIVED: `copy failed:` is the same FAILURE_FORMAT with a different transfer_type, which `aws s3 cp` between two buckets emits -- aws-cli's `awscli/customizations/s3/results.py` renders one format string for every type, so matching only upload and download left the bucket-to-bucket case counted as nothing at all. The routing for this filter already accepts `cp`.
+  it('counts a bucket-to-bucket copy failure as a failed transfer', () => {
+    const text =
+      'copy: s3://src/a.txt to s3://dst/a.txt\n' +
+      'copy failed: s3://src/b.txt to s3://dst/b.txt An error occurred (AccessDenied) when calling the CopyObject operation: Access Denied\n'
+    const { text: result } = apply(f, text, '', 1, ['aws', 's3', 'cp', '--recursive', 's3://src', 's3://dst'])
+    expect(result).toContain('copy failed: s3://src/b.txt to s3://dst/b.txt An error occurred (AccessDenied) when calling the CopyObject operation: Access Denied')
+    expect(result).toContain('1 transfer(s) failed')
+  })
+
+  // FORMAT-DERIVED: the same FAILURE_FORMAT again, with `delete` as the transfer_type -- the type `aws s3 rm` reports, per the one format string in aws-cli's `awscli/customizations/s3/results.py`. Kept separate from the `copy` case above because `rm` also has to be routed to this compressor at all; matching `delete failed:` while `rm` fell through to the generic path left the pattern unreachable.
+  it('counts a failed delete from `aws s3 rm` as a failed transfer', () => {
+    const text =
+      'delete: s3://mybucket/a.txt\n' +
+      'delete failed: s3://mybucket/b.txt An error occurred (AccessDenied) when calling the DeleteObject operation: Access Denied\n'
+    const { text: result } = apply(f, text, '', 1, ['aws', 's3', 'rm', '--recursive', 's3://mybucket'])
+    expect(result).toContain('delete failed: s3://mybucket/b.txt An error occurred (AccessDenied) when calling the DeleteObject operation: Access Denied')
+    expect(result).toContain('1 transfer(s) failed')
+    // the successful delete is never folded into a count: only upload and download lines are, so routing `rm` here cannot cost it a line it used to keep
+    expect(result).toContain('delete: s3://mybucket/a.txt')
+  })
+
+  // The sibling path the test above deliberately does not drive: with the streams kept apart, aws exits non-zero with the failure on stderr, and `errorPassthrough` returns the raw output before any compression runs. Asserted rather than described, because the comment above depends on it being true -- if this ever started compressing, the fixture above would be testing a path real output no longer takes.
+  it('hands back raw output when the failure arrives on stderr with a non-zero exit', () => {
+    const stderr = 'upload failed: ./secret.txt to s3://mybucket/secret.txt Could not connect to the endpoint URL: "http://localhost:1/mybucket/secret.txt"'
+    // Enough successes that compression would visibly fold them into a count if it ran; a two-line input cannot tell the two paths apart, because the compressor leaves a list that short alone and the mutation looks identical.
+    const stdout = Array.from({ length: 12 }, (_, i) => `upload: ./file${i}.txt to s3://mybucket/file${i}.txt`).join('\n') + '\n'
+    const { text: result } = apply(f, stdout, stderr, 1, ['aws', 's3', 'sync', '.', 's3://mybucket'])
+    expect(result).toContain(stderr)
+    // Only the absence of the success note can show compression never ran: asserting the failure note is absent passes either way, since the failure line rides on stderr, which _compressS3Transfer never sees.
+    expect(result).not.toContain('uploaded 12 file(s)')
+    expect(result).toContain('upload: ./file11.txt to s3://mybucket/file11.txt')
+  })
+
   it('collapses CFN IN_PROGRESS repeated events', () => {
     const events = Array.from({ length: 15 }, (_, i) => ({
       LogicalResourceId: 'MyBucket',

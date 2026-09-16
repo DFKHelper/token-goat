@@ -435,8 +435,9 @@ export const awsFilter = new AwsFilter()
 
 const _AWS_UPLOAD_RE = /^upload:\s+\S+\s+to\s+s3:\/\//i
 const _AWS_DOWNLOAD_RE = /^download:\s+s3:\/\//i
-const _AWS_S3_PROGRESS_RE =
-  /^(?:Completed\s+\d|\d+(?:\.\d+)?\s*(?:KiB|MiB|GiB|B)\/s|Calculating|upload\s+failed:|download\s+failed:)/i
+// Every transfer type aws-cli can report, not just the two the progress regex used to swallow: its ResultPrinter renders one FAILURE_FORMAT of `{transfer_type} failed: ...`, so `aws s3 cp` between two buckets reports `copy failed:` and `rm`/`mv` report `delete failed:`/`move failed:`. Each of those four subcommands is routed to _compressS3Transfer (see isS3Transfer) -- a type matched here but not routed there would be an unreachable alternative, which is what `delete` was until `rm` was added.
+const _AWS_S3_TRANSFER_FAILED_RE = /^(?:upload|download|copy|delete|move)\s+failed:/i
+const _AWS_S3_PROGRESS_RE = /^(?:Completed\s+\d|\d+(?:\.\d+)?\s*(?:KiB|MiB|GiB|B)\/s|Calculating)/i
 
 // AWS CLI's documented global options that take a separate value token (as opposed to a
 // no-value boolean like --debug/--no-verify-ssl, or a `--flag=value` form already handled by
@@ -479,7 +480,8 @@ export class AwsCliFilter extends ToolFilter {
     const isS3Transfer =
       positionals.length >= 2 &&
       positionals[0] === 's3' &&
-      (positionals[1] === 'cp' || positionals[1] === 'sync' || positionals[1] === 'mv')
+      // `rm` belongs here for the failure path, not the volume one: `aws s3 rm --recursive` reports `delete failed:` per object, and routing it anywhere else meant those lines were never counted. Its `delete:` success lines are not folded into a count -- only `upload:`/`download:` are -- so adding it drops nothing that used to survive.
+      (positionals[1] === 'cp' || positionals[1] === 'sync' || positionals[1] === 'mv' || positionals[1] === 'rm')
     const isCfnEvents =
       positionals.length >= 2 &&
       positionals[0] === 'cloudformation' &&
@@ -521,16 +523,19 @@ export class AwsCliFilter extends ToolFilter {
     const kept: string[] = []
     let uploadCount = 0
     let downloadCount = 0
+    let failedCount = 0
     let progressDropped = 0
     for (const line of lines) {
       if (_AWS_UPLOAD_RE.test(line)) { uploadCount++; continue }
       if (_AWS_DOWNLOAD_RE.test(line)) { downloadCount++; continue }
+      if (_AWS_S3_TRANSFER_FAILED_RE.test(line)) { failedCount++; kept.push(line); continue } // a failed transfer is always kept in full, never folded into the progress-line count, and counted in its own note -- the success counts alone read as a clean run, which is what made a dropped `upload failed:` line report the opposite of what happened
       if (_AWS_S3_PROGRESS_RE.test(line)) { progressDropped++; continue }
       kept.push(line)
     }
     const notes: string[] = []
     maybeNote(notes, uploadCount, `uploaded ${uploadCount} file(s)`)
     maybeNote(notes, downloadCount, `downloaded ${downloadCount} file(s)`)
+    maybeNote(notes, failedCount, `${failedCount} transfer(s) failed`)
     maybeNote(notes, progressDropped, `dropped ${progressDropped} progress line(s)`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)

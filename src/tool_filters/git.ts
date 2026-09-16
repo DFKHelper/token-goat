@@ -781,13 +781,20 @@ function _compressGitStatusVerbose(
   const kept: string[] = []
   let section: string | null = null
   let counts: Record<string, number> = {}
+  let fileLines: string[] = []
 
+  // A section's file lines are the whole point of running `git status` -- collapsing them to a bare count on a small working tree throws away the answer the command exists to give. Only fold to counts once the list itself is long enough to be the noise, reusing `_DIFF_STAT_DIR_ROLLUP_THRESHOLD` rather than inventing a second number. The threshold is applied per section, not across the whole status, which is a deliberate difference from `_compressGitDiffStat`'s global count: a section is the unit a reader scans, so a tree with a handful of staged files and a hundred untracked ones should name the staged ones and collapse the untracked list, which a global count would refuse to do.
   function flush(): void {
-    if (section !== null && section !== 'unmerged' && Object.keys(counts).length) {
-      const parts = Object.entries(counts).map(([label, n]) => `${n} ${label}`)
-      kept.push('\t' + parts.join(', '))
+    if (section !== null && section !== 'unmerged' && fileLines.length) {
+      if (fileLines.length > _DIFF_STAT_DIR_ROLLUP_THRESHOLD) {
+        const parts = Object.entries(counts).map(([label, n]) => `${n} ${label}`)
+        kept.push('\t' + parts.join(', '))
+      } else {
+        kept.push(...fileLines)
+      }
     }
     counts = {}
+    fileLines = []
   }
 
   for (const line of lines) {
@@ -805,6 +812,7 @@ function _compressGitStatusVerbose(
       } else {
         const label = _gitStatusFileLabel(line, section)
         counts[label] = (counts[label] ?? 0) + 1
+        fileLines.push(line)
       }
       continue
     }

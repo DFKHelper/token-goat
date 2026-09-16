@@ -292,9 +292,10 @@ function _compressKubectlEvents(text: string): string {
   return kept.join('\n')
 }
 
+// `Last State:` must be listed alongside `State:`: kubectl's describe printer (kubectl/pkg/describe/describe.go, describeContainerStatus) emits both headers for a container that crashed before recovering, and dropping `Last State:` with no else branch left `Reason:`/`Exit Code:`/`Started:`/`Finished:` from the crash record sitting directly under the surviving `State: Running` line with nothing to say they belong to the past, reattributing a resolved crash to the container's current state. `Container ID:` is added for the same reason: without it, `Restart Count: N` has no crash record left to explain it. `Image ID:` is left out on purpose -- it is a long, low-signal digest that duplicates `Image:` (already kept) without adding diagnostic value, unlike `Container ID:`, which is what ties a crash record to a specific container instance.
 const _KEY_PREFIXES = [
-  'Name:', 'Namespace:', 'Status:', 'State:', 'Node:', 'IP:', 'PodIP:',
-  'NodeIP:', 'QoS Class:', 'Priority:', 'Image:', 'Ready:', 'Restart Count:',
+  'Name:', 'Namespace:', 'Status:', 'State:', 'Last State:', 'Node:', 'IP:', 'PodIP:',
+  'NodeIP:', 'QoS Class:', 'Priority:', 'Image:', 'Container ID:', 'Ready:', 'Restart Count:',
   'Started:', 'Finished:', 'Exit Code:', 'Reason:', 'Message:',
   'Replicas:', 'StrategyType:', 'Selector:', 'Type:', 'ClusterIP:',
   'Limits:', 'Requests:', 'cpu:', 'memory:',

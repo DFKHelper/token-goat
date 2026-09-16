@@ -358,6 +358,39 @@ describe('KubectlFilter', () => {
     expect(result).not.toContain('Some other field')
   })
 
+  // FORMAT-DERIVED: the `State:`/`Last State:`/`Container ID:` labels come from kubectl's own describe printer, `kubernetes/kubectl` `pkg/describe/describe.go` (https://github.com/kubernetes/kubectl/blob/master/pkg/describe/describe.go) -- `describeContainerBasicInfo` writes `Container ID:`/`Image ID:`, and the container-state helper (`describeStatus`, called once for the current state and once more for `LastTerminationState` with the label "Last State") writes `State:` and `Last State:` respectively. No live cluster is available on this machine, so this cannot be a CAPTURE.
+  it('describe keeps Last State separate from State so a past crash is not reattributed to the current one', () => {
+    const text = [
+      'Name:         mypod',
+      'Status:       Running',
+      '    Image:         nginx:1.21',
+      '    Container ID:  docker://abc123',
+      '    State:          Running',
+      '      Started:      Mon, 01 Jan 2024 00:00:00 +0000',
+      '    Last State:     Terminated',
+      '      Reason:       Error',
+      '      Exit Code:    1',
+      '      Started:      Sun, 31 Dec 2023 23:00:00 +0000',
+      '      Finished:     Sun, 31 Dec 2023 23:05:00 +0000',
+      '    Ready:          True',
+      '    Restart Count:  7',
+    ].join('\n')
+    const result = apply(f, text, '', 0, ['kubectl', 'describe', 'pod', 'mypod'])
+    // must-not-drop: the Last State header itself, so Reason/Exit Code/the second Started/Finished read as history, not current state
+    expect(result).toContain('Last State:     Terminated')
+    expect(result).toContain('Container ID:  docker://abc123')
+    expect(result).toContain('State:          Running')
+    expect(result).toContain('Reason:       Error')
+    expect(result).toContain('Exit Code:    1')
+    expect(result).toContain('Finished:     Sun, 31 Dec 2023 23:05:00 +0000')
+    expect(result).toContain('Restart Count:  7')
+    // the crash record must appear after its own header, not directly under the still-kept `State:` line
+    const lastStateIdx = result.indexOf('Last State:')
+    const reasonIdx = result.indexOf('Reason:       Error')
+    expect(lastStateIdx).toBeGreaterThan(-1)
+    expect(reasonIdx).toBeGreaterThan(lastStateIdx)
+  })
+
   it('describe preserves Events section, elides older events', () => {
     // Ported from Python test_describe_preserves_events
     let text = [
