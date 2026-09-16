@@ -1225,8 +1225,15 @@ function extractExitCode(raw: Record<string, unknown>): number | null {
 
 // `gh api` endpoints that require an elevated token scope the default lacks.
 const GH_SECURITY_PATHS = ['/security_advisories', '/advisories', 'security_events'] as const
-// Phrases GitHub returns when the token lacks the scope/permission for a call.
-const GH_SCOPE_PHRASES = ['Must have push access', 'Resource not accessible by integration', 'Must be an admin'] as const
+// Phrases GitHub returns when the token lacks the scope/permission for a call. `You are not authorized to perform this operation` is what a real 403 on the dependabot/security endpoints says, captured from a live `gh api repos/nodejs/node/dependabot/alerts`; it was missing here, and the blanket non-zero-exit branch below used to paper over the gap.
+const GH_SCOPE_PHRASES = [
+  'Must have push access',
+  'Resource not accessible by integration',
+  'Must be an admin',
+  'You are not authorized to perform this operation',
+] as const
+// gh prints `gh: <message> (HTTP <code>)` on its own line for every failing call, and the response body carries a `status` field; either form identifies a 404 without depending on the exit code alone. Both are anchored rather than matched as bare substrings, so a successful listing whose body merely quotes `(HTTP 404)` in advisory prose cannot be read as a failure.
+const GH_NOT_FOUND = /^gh: .*\(HTTP 404\)|"status":\s*"404"/m
 
 /**
  * Advisory hints for `gh api` commands: a scope/permission nudge when the call hits a permission
@@ -1242,9 +1249,14 @@ function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): s
   const hints: string[] = []
   const isSecurityPath = GH_SECURITY_PATHS.some((p) => cmd.includes(p))
   const hasScopePhrase = GH_SCOPE_PHRASES.some((p) => stdout.includes(p))
-  const failedSecurityCall = exitCode !== null && exitCode !== 0 && isSecurityPath
-  if (hasScopePhrase || failedSecurityCall) {
+  // Note the asymmetry: extractExitCode is always null on Claude Code (see its comment), so the 404 branch below is dormant there and the phrase list is the whole of this hint on that harness -- which is why a missing phrase cost real coverage rather than being masked. A 404 on a security path is genuinely ambiguous: GitHub answers it identically for a repo that does not exist and for one whose advisories the token cannot see (captured: an owned repo with advisories off and a nonexistent owner/repo returned byte-identical bodies). So say so, rather than asserting a scope problem. Requiring the 404 itself matters -- a non-zero exit alone also covers gh's own `invalid API endpoint` error, a rate limit and a network failure, none of which a token refresh fixes.
+  const ambiguousSecurity404 = exitCode !== null && exitCode !== 0 && isSecurityPath && GH_NOT_FOUND.test(stdout)
+  if (hasScopePhrase) {
     hints.push('[token-goat] GitHub API scope issue: try gh auth refresh -s security_events')
+  } else if (ambiguousSecurity404) {
+    hints.push(
+      '[token-goat] GitHub answers 404 both for a resource that does not exist and for one your token cannot see: check the owner/repo spelling, then gh auth status for the security_events scope.',
+    )
   }
   // Large-response nudge: only a JSON object can carry the 15+ boilerplate fields this targets, so skip the parse entirely unless the body looks like one (avoids parsing huge non-JSON logs).
   const trimmed = stdout.trimStart()

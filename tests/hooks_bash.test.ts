@@ -3466,12 +3466,40 @@ describe('postBashHandler — gh api advisory hints', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('emits a scope hint for a failed security-path call even without a known phrase', async () => {
+  // CAPTURE: `gh api repos/DFKHelper/token-goat/security_advisories` (a repo the token owns, advisories not enabled) and `gh api repos/zzz-no-such-owner-9q4/zzz-no-such-repo-9q4/security_advisories` (owner and repo do not exist) both printed exactly this, byte for byte, under gh 2.x. That identity is the whole point: a 404 here cannot distinguish a scope wall from a typo, so the hint must not claim it does. This test replaces one that asserted the confident `gh auth refresh` line for this payload -- its fixture was written from buildGhApiHint's own branch condition rather than captured, so it agreed with the defect by construction.
+  const NOT_FOUND_404 = '{\n  "message": "Not Found",\n  "documentation_url": "https://docs.github.com/rest",\n  "status": "404"\n}gh: Not Found (HTTP 404)\n'
+
+  it('names the ambiguity on a 404 from a security path instead of blaming the token scope', async () => {
     const result = await postBashHandler(
-      ghEvent('gh api /repos/o/r/security_advisories', { output: '{"message": "Not Found"}', exit_code: 1 }),
+      ghEvent('gh api repos/o/r/security_advisories', { output: NOT_FOUND_404, exit_code: 1 }),
     )
     expectHookType(result, 'context')
+    expect(result.context).toContain('check the owner/repo spelling')
+    expect(result.context).not.toContain('gh auth refresh -s security_events')
+  })
+
+  // CAPTURE: `gh api repos/nodejs/node/dependabot/alerts` with a token holding `repo` but not `security_events`. This is what an actual authorization wall on a security endpoint says, and the phrase list did not carry it. The endpoint is deliberately left as captured: it matches none of GH_SECURITY_PATHS, so the phrase list is the only thing that can fire here and the assertion cannot be satisfied by a re-broadened exit-code branch.
+  it('emits the scope hint for a real authorization failure', async () => {
+    const body =
+      '{"message":"You are not authorized to perform this operation.","documentation_url":"https://docs.github.com/rest/dependabot/alerts#list-dependabot-alerts-for-a-repository","status":"403"}gh: You are not authorized to perform this operation. (HTTP 403)\n'
+    const result = await postBashHandler(ghEvent('gh api repos/o/r/dependabot/alerts', { output: body, exit_code: 1 }))
+    expectHookType(result, 'context')
     expect(result.context).toContain('gh auth refresh -s security_events')
+  })
+
+  // A security-path body can quote an HTTP status in prose -- advisory summaries routinely do. Matching `(HTTP 404)` as a bare substring would then read a successful listing as a failure whenever the surrounding pipeline exits non-zero, so the marker is anchored to gh's own diagnostic line.
+  it('does not read a 404 quoted inside an advisory body as a failed lookup', async () => {
+    const body = '[{"ghsa_id":"GHSA-x","summary":"Handler returns Not Found (HTTP 404) for unknown ids"}]'
+    const result = await postBashHandler(ghEvent('gh api /advisories?per_page=1', { output: body, exit_code: 1 }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  // CAPTURE: running `gh api /repos/o/r/security_advisories` under Git Bash on Windows, where MSYS rewrites the leading-slash endpoint into a filesystem path. gh exits 1 without ever reaching GitHub, so no token change can help -- yet the command string still contains `/security_advisories`.
+  it('stays quiet when a non-zero exit on a security path never reached GitHub', async () => {
+    const body =
+      'invalid API endpoint: "C:/Program Files/Git/repos/o/r/security_advisories". Your shell might be rewriting URL paths as filesystem paths. To avoid this, omit the leading slash from the endpoint argument\n'
+    const result = await postBashHandler(ghEvent('gh api /repos/o/r/security_advisories', { output: body, exit_code: 1 }))
+    expect(result.hookType).toBe('pass')
   })
 
   it('still surfaces the scope hint when the body is not valid JSON', async () => {
