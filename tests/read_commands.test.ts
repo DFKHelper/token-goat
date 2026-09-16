@@ -517,7 +517,12 @@ describe('read_commands', () => {
       expect(stdout).toContain('foo')
     })
 
-    it('does not warn on a broad (file-less) symbol query, since there is no single file to stale-check', () => {
+    // This used to assert getFileEntry was never called on a file-less query, on the reasoning that
+    // there is no single file to stale-check. There is no file the *caller named*, but the query's
+    // own results name several, and skipping them is what let a bare `symbol NAME` answer from a
+    // stale row while `read "file::symbol"` on the same file self-healed. The banner is still never
+    // printed -- a healed row needs no warning -- but the check now happens.
+    it('stale-checks the files its own results came from on a broad (file-less) symbol query', () => {
       const content = 'export function foo() {}\n'
       const f = path.join(tempDir, 'broad-symbol.ts')
       fs.writeFileSync(f, content)
@@ -526,7 +531,7 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runSymbol({ name: 'foo' })
       expect(stdout).not.toContain('STALE')
-      expect(mockGetFileEntry).not.toHaveBeenCalled()
+      expect(mockGetFileEntry).toHaveBeenCalledWith(f)
     })
 
     // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely exists would

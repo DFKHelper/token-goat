@@ -396,6 +396,14 @@ const DELETED_WARNING =
 // '⚠ DELETED' prefix so callers (and tests) have one marker to look for.
 const DELETED_TAG = '⚠ DELETED: file no longer on disk'
 
+// The STALE counterpart of DELETED_TAG, for a result row whose file changed on disk and whose
+// reindex was attempted and failed. A per-row suffix for the same reason DELETED_TAG is one: a
+// bare `symbol NAME` spans every indexed project, so one hit can be current and the next one not.
+const STALE_TAG = '⚠ STALE: file changed on disk and could not be reindexed'
+
+/** Shared empty set for the common path where nothing was left stale, so the ordinary lookup allocates nothing. */
+const EMPTY_PATH_SET: ReadonlySet<string> = new Set<string>()
+
 /**
  * Is `absPath` gone from disk? Used to tag index rows that outlived their file.
  *
@@ -518,6 +526,38 @@ const STALE_CHECK_FILE_CAP = 25
  * ran (mirrors `healStaleIndex`'s own contract: it does not re-fetch anything, so healing here
  * only benefits the *next* call to this command, same as the single-file commands above).
  */
+/**
+ * Heals the index rows behind a result set whose files the caller never named, and reports whether
+ * anything was reindexed so the caller can re-run its query and answer from the fresh rows. This is
+ * the self-healing half of what {@link healStaleIndex} gives a command that resolves one named file
+ * up front: heal, then query. A command that finds its files only by querying has to do it the other
+ * way round, so it has to ask again.
+ *
+ * A file that is gone from disk is skipped rather than healed. Its rows are what the index last saw,
+ * every surface here tags them DELETED per row, and reindexing would delete them -- turning a
+ * labelled answer into no answer at all.
+ */
+export function healStaleResultFiles(filePaths: readonly string[]): { healed: boolean; stillStale: ReadonlySet<string> } {
+  const checked = new Set<string>()
+  const stillStale = new Set<string>()
+  let healed = false
+  for (const raw of filePaths) {
+    if (checked.size >= STALE_CHECK_FILE_CAP) break
+    if (checked.has(raw) || fileIsGone(raw)) continue
+    checked.add(raw)
+    if (staleWarning(raw) === '') continue
+    healStaleIndex(raw)
+    // healStaleIndex is best-effort: a parse error, an unreadable file or a DB error leaves the
+    // stale rows in place and says nothing. A single-file command notices because its trailing
+    // staleWarning() call runs after the heal; this is that same second look. Without it a failed
+    // heal is indistinguishable from a successful one and the caller gets the old body, silently,
+    // which is the exact shape of the defect this whole function exists to close.
+    if (staleWarning(raw) === '') healed = true
+    else stillStale.add(raw)
+  }
+  return { healed, stillStale }
+}
+
 export function warnIfFilesStale(filePaths: readonly string[]): void {
   const checked = new Set<string>()
   let staleCount = 0
@@ -799,7 +839,14 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // searches this project instead of the whole machine.
   if (opts.file === undefined && queryOpts.rootDir === undefined && confinedRoot !== null) queryOpts.rootDir = confinedRoot
 
-  const rawResults = querySymbols(queryOpts)
+  let rawResults = querySymbols(queryOpts)
+  // A bare `symbol NAME` names no file, so the pre-query heal above never ran for it -- and that is the form `symbol --help` documents first. It answered from stale rows with no warning at all, while `read "file::symbol"` against the same file self-healed and returned the current body: the same data, two documented commands, two different answers. Heal whatever the query actually hit, then ask again.
+  let stillStale: ReadonlySet<string> = EMPTY_PATH_SET
+  if (opts.file === undefined) {
+    const heal = healStaleResultFiles(rawResults.map((s) => s.filePath))
+    stillStale = heal.stillStale
+    if (heal.healed) rawResults = querySymbols(queryOpts)
+  }
   const preFilterCount = rawResults.length
   const effectiveLimit = opts.limit ?? 100
   const anyClientFilter = matchesGrep !== undefined || excludeTests
@@ -924,6 +971,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       // Only present when true, so a result set of live files stays byte-identical to what this
       // command has always emitted and only the genuinely-gone rows grow a field.
       ...(fileIsGone(s.filePath) ? { deleted: true } : {}),
+      ...(stillStale.has(s.filePath) ? { stale: true } : {}),
       ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
     }))
     const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
@@ -939,7 +987,8 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // indexed project, so one hit can be a live file and the next one a checkout that was deleted
     // months ago. A single header line would have to lie about one of them.
     const goneTag = fileIsGone(sym.filePath) ? `  ${DELETED_TAG}` : ''
-    const header = `# ${sym.name} (${sym.kind}) — ${formatSymbolLocation(toDisplayPath(symbolDisplayRoot, sym.filePath), sym.lineStart, sym.lineEnd)}${statsStr}${goneTag}`
+    const staleTag = stillStale.has(sym.filePath) ? `  ${STALE_TAG}` : ''
+    const header = `# ${sym.name} (${sym.kind}) — ${formatSymbolLocation(toDisplayPath(symbolDisplayRoot, sym.filePath), sym.lineStart, sym.lineEnd)}${statsStr}${goneTag}${staleTag}`
     const body = resolveBody(sym)
     const bodyLines = body.split(/\r?\n/)
     const preview = bodyLines.slice(0, SYMBOL_PREVIEW_LINES).join('\n')

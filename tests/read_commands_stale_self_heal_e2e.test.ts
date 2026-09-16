@@ -63,6 +63,86 @@ describe('stale-index self-heal (real pipeline, no injected callbacks)', () => {
     }
   })
 
+  // `symbol NAME` with no --file is the form `symbol --help` documents first, and the one that
+  // named no file for runSymbol to heal before querying. The test above passes `file`, which is
+  // the branch that already worked -- so the untested form was the shipped default, and it served
+  // a stale body with no warning while `read "file::symbol"` on the same file self-healed. Same
+  // name on both sides here: a renamed symbol would simply not be found, which is a visibly empty
+  // answer rather than a wrong one.
+  it('runSymbol without --file serves the fresh body too, not just the --file form', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-selfheal-symbol-bare-'))
+    try {
+      const file = join(root, 'c.ts')
+      writeFileSync(file, 'export function bareSelfHealSym4q(): number {\n  return 1\n}\n')
+      indexFileSync(normalizePath(file))
+
+      writeFileSync(file, 'export function bareSelfHealSym4q(): number {\n  return 2\n}\n')
+
+      const { text, code } = runSymbol({ name: 'bareSelfHealSym4q' })
+      expect(code).toBe(0)
+      expect(text).toContain('return 2')
+      expect(text).not.toContain('return 1')
+
+      const resolved = normalizePath(file)
+      expect(getFileEntry(resolved)?.sha).toBe(fingerprintFile(resolved))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // healStaleIndex is best-effort: a parse error, an unreadable file or a DB error leaves the stale
+  // rows in place and says nothing. Serving the old body is then the same outcome as before the
+  // heal existed, but now with the appearance of having been checked, so the failure has to be
+  // visible. The mock makes a real dependency fail; it does not supply one the shipping path omits.
+  it('tags a row whose reindex was attempted and failed, rather than serving the old body silently', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-selfheal-symbol-failed-'))
+    try {
+      const file = join(root, 'e.ts')
+      writeFileSync(file, 'export function failHealSelfHealSym7z(): number {\n  return 1\n}\n')
+      indexFileSync(normalizePath(file))
+      writeFileSync(file, 'export function failHealSelfHealSym7z(): number {\n  return 2\n}\n')
+      vi.spyOn(parserModule, 'indexFileSync').mockImplementation(() => {
+        throw new Error('simulated reparse failure')
+      })
+
+      const { text, code } = runSymbol({ name: 'failHealSelfHealSym7z' })
+      expect(code).toBe(0)
+      expect(text).toContain('STALE')
+      // Still answers, with the last-seen body: a warned stale answer beats no answer.
+      expect(text).toContain('return 1')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // The staleness check is capped at STALE_CHECK_FILE_CAP files, and a bare `symbol NAME` searches
+  // every project ever indexed on the machine -- so a common name accumulates rows from long-dead
+  // scratch checkouts. Those rows can never be healed (their files are gone, and reindexing one
+  // would delete the last-seen body the DELETED tag exists to preserve), so spending cap slots on
+  // them starves the one live file the caller actually wants fresh.
+  it('does not let rows from deleted files eat the staleness-check budget of the live one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-selfheal-symbol-cap-'))
+    try {
+      for (let i = 0; i < 40; i++) {
+        const dead = join(root, `dead${i}.ts`)
+        writeFileSync(dead, 'export function capSelfHealSym4q(): number {\n  return 1\n}\n')
+        indexFileSync(normalizePath(dead))
+        rmSync(dead)
+      }
+      const live = join(root, 'live.ts')
+      writeFileSync(live, 'export function capSelfHealSym4q(): number {\n  return 1\n}\n')
+      indexFileSync(normalizePath(live))
+      writeFileSync(live, 'export function capSelfHealSym4q(): number {\n  return 2\n}\n')
+
+      const { code } = runSymbol({ name: 'capSelfHealSym4q', limit: 100 })
+      expect(code).toBe(0)
+      const resolved = normalizePath(live)
+      expect(getFileEntry(resolved)?.sha).toBe(fingerprintFile(resolved))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('runRead resolves file::symbol to the fresh body after an out-of-band edit', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-selfheal-read-'))
     try {
