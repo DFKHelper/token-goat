@@ -298,6 +298,15 @@ Built-in output compression covers 150+ dev tool CLIs: `pytest`, `jest` / `vites
 
 A failing `pytest` / `jest` / `vitest` / `go test` / `cargo test` run (including bare `npm test`/`npm run test`/`yarn test`/`pnpm test`) also gets a one-line advisory naming the exact `token-goat bash-output <id> | token-goat failures` command to run instead of re-reading the raw dump. Silent on a passing run, a non-test command, or output too small to be worth reducing.
 
+Give the command three ways: as positional arguments (`token-goat compress pytest -v tests/`), as one string with `-c` / `--cmd`, or base64-encoded with `--cmd-b64`. The base64 form preserves quotes, backslashes, and dollar signs that a harness or an intermediate shell would otherwise mangle; it takes precedence when more than one form is supplied. `--native` runs the command through the platform's own shell (`cmd.exe` on Windows) instead of bash, which keeps Windows path backslashes intact for tools that reject the forward-slash form.
+
+`-q` / `--quiet-success` trades a clean run's output for one line. On exit code 0 the full output is stored for recall and only the summary prints; on any other exit code the compressed output is delivered as usual.
+
+```
+$ token-goat compress -q --cmd "npm run lint"
+[tg: ok] npm run lint (22.2s, recall: token-goat bash-output 326d9800e732eb9d)
+```
+
 ### 6. Context pressure
 
 Token-goat tracks how close a session is to the autocompact trigger and tightens its hints as the window fills. Surgical-read suggestions kick in on progressively smaller files as pressure builds (500 lines at cool, down to 50 at critical), so large reads get flagged before they tip the session over. The PreCompact manifest also shrinks: capped at 500 tokens once the window runs hot, 300 once critical, so it stops contributing to the pressure it measures. The denominator is always the fixed 660,000-token autocompact trigger budget, not the model's raw context window, so the same thresholds apply across models. Run `token-goat doctor --context` to see the current footprint.
