@@ -50,6 +50,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
+| [`src/embed_fingerprint.ts`](src/embed_fingerprint.ts) | Exports: `EMBED_FINGERPRINT` |
 | [`src/embed_model.ts`](src/embed_model.ts) | The embedding backend: fetch the pinned model, verify it, run it, pool it. |
 | [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts) | A BERT WordPiece tokenizer for exactly the spec `bge-small-en-v1.5`'s `tokenizer.json` declares: BertNormalizer(clean_text, handle_chinese_chars, strip_accents=null, lowercase=true |
 | [`src/embeddings.ts`](src/embeddings.ts) | [`src/embed_model.ts`](src/embed_model.ts) (pinned `Xenova/bge-small-en-v1.5`, 384 dimensions, over `onnxruntime-node`) and [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts); `chunkFile()` splits source into overlapping windows; `upsertChunks()` writes to `chunks` and `chunk_vectors`; `searchSemantic()` queries `chunk_vectors` via vec0 KNN |
@@ -377,6 +378,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/document_refusal.ts`](src/document_refusal.ts) | How long any one document's extraction may run, whatever format it is. |
 | [`src/docx_extract.ts`](src/docx_extract.ts) | Word (.docx) narrow-slice reader. |
 | [`src/dotenv_redact.ts`](src/dotenv_redact.ts) | Value redaction for dotenv files. |
+| [`src/embedding_boundaries.ts`](src/embedding_boundaries.ts) | Exports: `buildEmbeddingBoundaries` |
 | [`src/encoding.ts`](src/encoding.ts) | Source file character encoding and BOM detection / transcoding. |
 | [`src/evidence_cache.ts`](src/evidence_cache.ts) | Exports: `EvidenceRepresentation`, `EvidenceEntry`, `recordEvidence`, `findVerifiedFileEvidence` |
 | [`src/failures_state.ts`](src/failures_state.ts) | Cross-invocation state for `token-goat failures --delta` -- persists the failure-signature set (test names / summary lines, see `failures.ts::failureSignatures`) from the last `fai |

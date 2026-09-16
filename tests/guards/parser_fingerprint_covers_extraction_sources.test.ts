@@ -7,17 +7,27 @@ import { extractionSources } from '../../scripts/parser-fingerprint.mjs'
 
 const ROOT = process.cwd()
 
-/** Every file under src/ transitively reachable from src/parser.ts by following relative `from './x.js'` / `from '../x.js'` specifiers, with `.js` mapped back to the `.ts` source it was compiled from. Computed fresh every run, independent of extractionSources()'s own file list, or this guard would just be checking the list against itself. */
-function importClosureOf(entry: string): Set<string> {
+interface ClosureResult {
+  closure: Set<string>
+  // Every relative specifier that resolved to a path with no file on disk, keyed by the resolved repo-relative path it named, with the importer that named it. A silently-dropped unresolved edge shrinks the closure without failing anything, so a renamed or typoed import could quietly stop this guard from ever reaching the file it used to cover -- the size floor below could still pass on a smaller, wrong closure. Recording (never silently skipping) it is what makes that loud.
+  unresolved: Map<string, string>
+}
+
+/** Every file under src/ transitively reachable from src/parser.ts by following relative `from './x.js'` / `from '../x.js'` specifiers, with `.js` mapped back to the `.ts` source it was compiled from. Computed fresh every run, independent of extractionSources()'s own file list, or this guard would just be checking the list against itself. Every relative import in this repo's source resolves to a `.ts` file (verified: no relative import here names a `.json`/`.css`/`.wasm`/other non-TS asset), so treating every unresolved specifier as a real failure rather than a legitimately-non-TS import is safe today; if that ever changes, handle the new extension explicitly here rather than reopening the silent-skip this guard exists to close. */
+function importClosureOf(entry: string): ClosureResult {
   const seen = new Set<string>()
-  const queue = [entry]
+  const unresolved = new Map<string, string>()
+  const queue: Array<{ file: string; from: string }> = [{ file: entry, from: '(entry point)' }]
   // Both edge kinds, because the regex language adapters are reached only by the dynamic import at src/parser.ts:514 -- a `from`-only walker would never traverse into src/languages/ and would classify a future extraction helper that lives behind that branch as unreachable rather than unhashed.
   const importRe = /(?:from\s+|import\s*\(\s*)['"](\.[^'"]+)['"]/g
   while (queue.length > 0) {
-    const file = queue.pop() as string
+    const { file, from } = queue.pop() as { file: string; from: string }
     const rel = path.relative(ROOT, file).split(path.sep).join('/')
     if (seen.has(rel)) continue
-    if (!fs.existsSync(file)) continue
+    if (!fs.existsSync(file)) {
+      if (!unresolved.has(rel)) unresolved.set(rel, from)
+      continue
+    }
     seen.add(rel)
     const text = fs.readFileSync(file, 'utf8')
     let match: RegExpExecArray | null
@@ -25,10 +35,10 @@ function importClosureOf(entry: string): Set<string> {
     while ((match = importRe.exec(text)) !== null) {
       let resolved = path.resolve(path.dirname(file), match[1])
       resolved = resolved.endsWith('.js') ? `${resolved.slice(0, -3)}.ts` : `${resolved}.ts`
-      queue.push(resolved)
+      queue.push({ file: resolved, from: rel })
     }
   }
-  return seen
+  return { closure: seen, unresolved }
 }
 
 /** Every closure member that is not in extractionSources(), each with a one-line reason a source edit there cannot change what an unchanged file's next parse extracts. Every reason has to survive on its own: "not directly imported by parser.ts" is not a reason, since the whole point of a transitive closure is that indirect reach still counts. */
@@ -49,6 +59,8 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/dotenv_redact.ts': 'redactIfDotenv is applied inside indexFileEmbeddings (parser.ts line ~1145) before chunking for embeddings, never before indexFileSync\'s symbol/ref extraction',
   'src/embed_model.ts': 'embedding model loading, part of the embed_sha-gated pipeline',
   'src/embed_tokenizer.ts': 'embedding tokenizer, part of the embed_sha-gated pipeline',
+  'src/embed_fingerprint.ts': 'the generated EMBED_FINGERPRINT digest constant, folded into embeddingProvenance() by src/embeddings.ts; a files.embed_sha concern, not files.parser_sha',
+  'src/embedding_boundaries.ts': 'buildEmbeddingBoundaries derives embedding chunk boundaries (files.embed_sha) from already-written symbol/heading rows; reached from parser.ts only via its re-export, never by indexFileSync\'s symbol/ref extraction. Hashed by EMBED_FINGERPRINT instead, see tests/guards/embed_fingerprint_covers_embedding_sources.test.ts',
   'src/embeddings.ts': 'chunk/vector storage for semantic search, gated by files.embed_sha, not files.parser_sha',
   'src/env.ts': 'generic env-var parsing helpers that feed runtime config values, same reasoning as src/config.ts',
   'src/fingerprint.ts': 'computes files.sha (content identity) via a generic SHA-256 utility, orthogonal to what the parser extracts from that content',
@@ -81,12 +93,21 @@ const NOT_EXTRACTION: Record<string, string> = {
 
 describe('the parser fingerprint covers every source that decides extraction', () => {
   it('computes a non-trivial import closure, so this guard cannot pass vacuously', () => {
-    const closure = importClosureOf(path.join(ROOT, 'src', 'parser.ts'))
-    expect(closure.size, 'the transitive import closure of src/parser.ts silently emptied or shrank far below its known size -- fix the closure walk before trusting anything else this test asserts').toBeGreaterThan(50)
+    const { closure } = importClosureOf(path.join(ROOT, 'src', 'parser.ts'))
+    expect(closure.size, 'the transitive import closure of src/parser.ts silently emptied or shrank far below its known size -- fix the closure walk before trusting anything else this test asserts').toBeGreaterThan(100)
+  })
+
+  it('resolves every relative import it follows, so a renamed or typoed edge cannot silently shrink the closure', () => {
+    const { unresolved } = importClosureOf(path.join(ROOT, 'src', 'parser.ts'))
+    const detail = Array.from(unresolved.entries()).map(([target, from]) => `  ${target}  (imported by ${from})`).join('\n')
+    expect(
+      unresolved.size,
+      `these relative imports could not be resolved to a file on disk while walking the extraction closure -- a broken import edge silently shrinks the closure instead of failing loudly, so fix the import or the walker:\n${detail}`,
+    ).toBe(0)
   })
 
   it('classifies every closure member as either hashed by extractionSources() or explicitly exempted with a reason', () => {
-    const closure = importClosureOf(path.join(ROOT, 'src', 'parser.ts'))
+    const { closure } = importClosureOf(path.join(ROOT, 'src', 'parser.ts'))
     const hashed = new Set(extractionSources().map((f: string) => path.relative(ROOT, f).split(path.sep).join('/')))
 
     const unclassified: string[] = []

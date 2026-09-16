@@ -59,7 +59,7 @@ afterEach(() => {
 })
 
 describe('embeddingProvenance()', () => {
-  it('names the model, its pinned revision and the backend, so a change to any one is visible', () => {
+  it('names the model, its pinned revision, the backend, and the embedding fingerprint, so a change to any one is visible', () => {
     const provenance = embeddingProvenance()
     expect(provenance).toContain(DEFAULT_MODEL)
     // The pinned revision, abbreviated. Its presence is the point: bumping PINNED_MODEL_REVISION
@@ -67,8 +67,13 @@ describe('embeddingProvenance()', () => {
     expect(provenance).toMatch(/@[0-9a-f]{12}\//)
     // Major.minor and no patch, deliberately: int8 kernel changes land in minor releases, so those
     // must invalidate, while a patch that cannot move a number must not re-embed every project on
-    // the machine. The `$` is what pins that -- without it a patch-carrying string still passes.
-    expect(provenance).toMatch(/\/onnxruntime-node@\d+\.\d+$/)
+    // the machine. Not `$`-anchored here since EMBED_FINGERPRINT (a chunker/extractor identity,
+    // covered by the dedicated test below) now follows it in the string.
+    expect(provenance).toMatch(/\/onnxruntime-node@\d+\.\d+\//)
+    // EMBED_FINGERPRINT names which chunker/extractor stack produced the chunk text, so a change to
+    // chunkFile or a document extractor is visible here even when the model/revision/backend do not
+    // move. The `$` is what pins that this is the last, not merely present, segment.
+    expect(provenance).toMatch(/\/embed-[0-9a-f]{16}$/)
   })
 
   it('distinguishes a non-default model from the pinned one rather than claiming the same revision', () => {

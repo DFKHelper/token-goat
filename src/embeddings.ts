@@ -15,6 +15,7 @@ import {
 import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
+import { EMBED_FINGERPRINT } from './embed_fingerprint.js'
 
 // Re-exported because the model's identity belongs to the module that fetches and verifies it, and because every existing caller and test reads these three from here.
 export { DEFAULT_DIM, DEFAULT_MODEL, PINNED_MODEL_REVISION }
@@ -978,10 +979,10 @@ export function resetAllEmbeddings(db: SqliteDatabase): number {
   return paths.length
 }
 
-/** A stable identifier for the embedding stack in this process: the model, the exact revision of it that was fetched, and the inference runtime's major.minor version. The runtime version is in here because it changes the numbers. Running the same quantized model through two runtime versions produced final vectors 0.9925-0.9978 cosine apart -- both about equally close to the unquantized model, so neither is wrong, but near-ties reorder between them. Major.minor rather than the full version is a judgement call: int8 kernel changes land in minor releases, and keying on the patch would re-embed every project on the machine for a bug fix that cannot plausibly move a number. It errs toward not re-embedding, so a patch release that DID change a kernel would go unnoticed. */
+/** A stable identifier for the embedding stack in this process: the model, the exact revision of it that was fetched, the inference runtime's major.minor version, and EMBED_FINGERPRINT, a digest of the chunker and document-extraction sources (see embedFingerprintSources() in scripts/parser-fingerprint.mjs). The runtime version is in here because it changes the numbers. Running the same quantized model through two runtime versions produced final vectors 0.9925-0.9978 cosine apart -- both about equally close to the unquantized model, so neither is wrong, but near-ties reorder between them. Major.minor rather than the full version is a judgement call: int8 kernel changes land in minor releases, and keying on the patch would re-embed every project on the machine for a bug fix that cannot plausibly move a number. It errs toward not re-embedding, so a patch release that DID change a kernel would go unnoticed. EMBED_FINGERPRINT is in here because model/revision/backend alone answer "which model produced these numbers" but not "which chunker sliced this file into the text that got embedded" -- without it, a change to chunkFile, buildEmbeddingBoundaries, or a pdf/docx/pptx/xlsx extractor left every already-embedded file's vectors built by the old code indefinitely, since neither embed_sha (content-only) nor the rest of this string moved. */
 export function embeddingProvenance(modelName: string = DEFAULT_MODEL): string {
   const revision = modelName === DEFAULT_MODEL ? PINNED_MODEL_REVISION.slice(0, 12) : 'unpinned'
-  return `${modelName}@${revision}/${backendId()}`
+  return `${modelName}@${revision}/${backendId()}/embed-${EMBED_FINGERPRINT}`
 }
 
 /** Which runtime computes the vectors, at which version -- see the note above on why that is the half of the stamp that moves, and why it is keyed to major.minor. `runtimeVersion()` answers 'unknown' if it cannot find the installed package's manifest, and two installs that both fail that read stamp the same string and are then treated as one stack. That is a real hole and a narrow one: reaching it means the runtime loaded from somewhere with no manifest above it, and every caller is already behind {@link isAvailable}, which only passes once it has loaded. */
@@ -1034,7 +1035,7 @@ export function ensureEmbeddingProvenance(
   if (cleared > 0) {
     console.warn(
       `Embedding stack changed (${stored ?? 'unrecorded'} -> ${current}); discarded ${cleared} ` +
-        `file${cleared === 1 ? '' : 's'} worth of vectors because old and new ones are not comparable. ` +
+        `file${cleared === 1 ? '' : 's'} worth of vectors because they no longer reliably describe this file's current chunks. ` +
         'Run `token-goat index` to rebuild them.',
     )
   }
