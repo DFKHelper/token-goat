@@ -181,6 +181,8 @@ Some content here
       const mismatch = await parse('mismatch.json', '{"bad":[1,2}, "after":3}')
       const bad = mismatch.symbols.find((s) => s.name === 'bad')
       expect(bad).toBeDefined()
+      // The body has to stop at the offending character, not be emptied: an empty body would satisfy the negative assertion below without the parser having done anything right.
+      expect(bad?.body).toContain('[1,2')
       expect(bad?.body).not.toContain('"after"')
 
       // Truncated container and truncated string: bounded, no throw, no hang.

@@ -587,6 +587,9 @@ describe('compressMcpResultWithPacks', () => {
     const compressed = compressMcpResultWithPacks('mcp__plugin_github_github__list_pull_requests', text)
     expect(compressed).not.toBeNull()
     if (compressed === null) return
+    // Must-not-drop first: both negatives below are satisfied by an empty result, so without these the test cannot tell "both packs ran in the right order" from "the whole thing was wiped".
+    expect(compressed).toContain('Fix bug number 1')
+    expect(compressed).toContain('octocat')
     expect(compressed).not.toContain(payload)
     expect(compressed).not.toContain('node_id')
   })

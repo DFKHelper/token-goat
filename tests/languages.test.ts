@@ -1302,13 +1302,14 @@ describe('html adapter', () => {
     expect(sections.some((s) => s.heading === 'Main Title')).toBe(true)
   })
 
-  it('suppresses noisy ids and class names', () => {
-    const content = `<div id="container" class="wrapper row">content</div>`
+  // The fixture used to be one div carrying only noise, which extracts to no symbols at all, so all three negative assertions passed on an empty array and the suppression they named was never exercised. Two meaningful ids are in it now so the empty result is no longer a pass. Class names are not asserted because the extractor never emits them as symbols: only `html_id` rows exist, so a `not.toContain('wrapper')` would be a claim about a kind that cannot appear.
+  it('suppresses noisy ids and keeps meaningful ones', () => {
+    const content = `<div id="container" class="wrapper row">content</div><section id="pricing-table">a</section><nav id="main-nav">b</nav>`
     const { symbols } = extractHtml(content, 'test.html')
     const names = symbols.map((s) => s.name)
+    expect(names).toContain('pricing-table')
+    expect(names).toContain('main-nav')
     expect(names).not.toContain('container')
-    expect(names).not.toContain('wrapper')
-    expect(names).not.toContain('row')
   })
 
   it('returns empty arrays for empty input', () => {
@@ -5074,6 +5075,8 @@ export DB_URL=postgres://localhost/db
 KEY=value
 `
     const symbols = extractEnv(content, '.env')
+    // Without the positive half, an extractor that returned nothing at all would pass this too.
+    expect(symbols.map((s) => s.name)).toContain('KEY')
     expect(symbols.map((s) => s.name)).not.toContain('This')
   })
 
