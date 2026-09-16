@@ -844,6 +844,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     )
   }
 
+  // content.json / tool spill re-read: deny after first read
+  if (basename.toLowerCase() === 'content.json' && wasFileReadThisSession(normalized)) {
+    recordActualRead(event, normalized)
+    recordStat('session_hint', 0, 0)
+    return denyOutput(
+      shown + ' was already read this session. Tool output spill files should not be re-read whole. ' +
+      'Use `token-goat json-query "' + shown + '" \'<path>\'` or `token-goat mcp-output --file "' + shown + '" --json-query \'<path>\'` to extract what you need.',
+    )
+  }
+
   // .env re-read: deny after first read (size thresholds never catch tiny env files)
   if (/^\.env(\.\w+)?$/.test(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)

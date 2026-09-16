@@ -117,6 +117,67 @@ export function compressGithubMcpResult(toolName: string, resultText: string): s
   return finishWithGenericPass(resultText, stripped)
 }
 
+// --- Atlassian (Jira / Confluence) pack ---------------------------------------
+
+/**
+ * Matches Atlassian tool names: Jira and Confluence tools.
+ * Covers both mcp__ prefix and un-prefixed names like:
+ * - mcp__atlassian_mcp_jira_search, mcp__atlassian_mcp_confluence_get_page_children
+ * - mcp__jira__search, mcp__confluence__get_page, etc.
+ */
+const ATLASSIAN_TOOL_RE = /(?:jira|confluence|atlassian)/i
+
+/**
+ * Redundant boilerplate keys in Jira and Confluence JSON responses that add
+ * massive byte overhead without providing actionable context to the model:
+ * - avatarUrls: 4 avatar resolutions (16x16, 24x24, 32x32, 48x48) per user, status, priority, and issue type
+ * - iconUrl / iconUrls / avatarUrl: redundant icon links
+ * - self: REST API endpoint URLs repeated on every entity, user, project, status, transition, version
+ * - expand: schema expansion flag strings
+ * - schema / operations / editmeta: Jira form metadata and UI actions
+ * - names: dictionary mapping field IDs to human names embedded in search responses
+ * - _links / _expandable / extensions: Confluence HAL hypermedia boilerplate
+ * - timeZone: repeated user metadata
+ */
+const ATLASSIAN_STRIP_EXACT_KEYS: ReadonlySet<string> = new Set([
+  'avatarUrls',
+  'avatarUrl',
+  'iconUrl',
+  'iconUrls',
+  'self',
+  'expand',
+  'schema',
+  'operations',
+  'editmeta',
+  'names',
+  '_links',
+  '_expandable',
+  'extensions',
+  'timeZone',
+])
+
+function atlassianShouldStrip(key: string): boolean {
+  return ATLASSIAN_STRIP_EXACT_KEYS.has(key)
+}
+
+/**
+ * Compress an Atlassian (Jira / Confluence) MCP tool result. Returns `null` when
+ * toolName is not an Atlassian-server tool, resultText is not JSON, or the
+ * stripped result does not clear the savings bar -- in every such case the caller
+ * falls through to the generic pass unchanged.
+ */
+export function compressAtlassianMcpResult(toolName: string, resultText: string): string | null {
+  if (!ATLASSIAN_TOOL_RE.test(toolName)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(resultText)
+  } catch {
+    return null
+  }
+  const stripped = deepStrip(parsed, atlassianShouldStrip)
+  return finishWithGenericPass(resultText, stripped)
+}
+
 // --- Browser automation pack -------------------------------------------------
 
 /**
@@ -462,6 +523,7 @@ export function compressMcpResultWithPacks(toolName: string, resultText: string)
   const text = base64Stripped ?? resultText
   return (
     compressGithubMcpResult(toolName, text) ??
+    compressAtlassianMcpResult(toolName, text) ??
     compressBrowserMcpResult(toolName, text) ??
     compressGWorkspaceMcpResult(toolName, text) ??
     base64Stripped

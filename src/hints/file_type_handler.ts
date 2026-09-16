@@ -407,14 +407,22 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.json) return { shouldBlock: false, message: '' }
 
+  const isSpill = /(?:^|[/\\])content\.json$/i.test(filePath) || /[/\\](?:tmp|temp)[/\\]/i.test(filePath)
+  const spillHeader = isSpill
+    ? `This file appears to be an oversized tool output spill (${formatBytes(length)}). Do not read it whole with Read/read_file.`
+    : `Large JSON file (${formatBytes(length)}).`
+
   if (previewUnavailable(content, length)) {
     return {
       shouldBlock: true,
       message: [
-        `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        isSpill
+          ? `This file appears to be an oversized tool output spill (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`
+          : `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
         `See structure: token-goat json-outline "${filePath}"`,
         `Query subtree: token-goat json-query "${filePath}" '<path>'`,
-      ].join('\n'),
+        isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query '<path>'` : '',
+      ].filter(Boolean).join('\n'),
     }
   }
 
@@ -438,10 +446,11 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
   return {
     shouldBlock: true,
     message: [
-      `Large JSON file (${formatBytes(length)}).`,
+      spillHeader,
       summary ? fenceUntrustedFileContent(summary) : '',
       `See structure: token-goat json-outline "${filePath}"`,
       `Query subtree: token-goat json-query "${filePath}" '<path>'`,
+      isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query '<path>'` : '',
     ].filter(Boolean).join('\n'),
   }
 }
