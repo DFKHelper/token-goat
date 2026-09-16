@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **Cross-session read manifests are now filed under the session that did the reading**: `postReadHandler` named each project read manifest with the process-memoized session id instead of the key the state blob is actually persisted under. A bridge process serving two sessions filed the second session's reads over the first session's manifest, and every subagent under one parent overwrote the same file with only its own reads. The manifest is now keyed on `sessionStateKey(event)`, and its filename is spelled with the same agent-id-hashing stem builder the session store already uses, so a long session id can no longer truncate two sibling subagents onto one file.
+
 ## [2.9.14] - 2026-09-16
 
 ### Added

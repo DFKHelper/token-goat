@@ -273,6 +273,75 @@ describe('Cross-session read dedup', () => {
     expect(written.files.some((f: { rel_path: string }) => f.rel_path === 'roundtrip.txt')).toBe(true)
   })
 
+  // Every other test in this file builds its event with `sessionId: getSessionId()`, which makes the event's id and the process-memoized singleton identical by construction -- so none of them can tell which of the two the write path actually reads. These two supply an id that diverges, which is the real shape: the bridges in src/bridges/ serve more than one session from one cached process, and getSessionId() memoizes the first one it sees.
+  it('names the manifest after the session on the event, not the process-memoized session id', () => {
+    process.env.TOKEN_GOAT_CROSS_SESSION_READ_DEDUP = '1'
+
+    const repoDir = makeRepo()
+    const filePath = path.join(repoDir, 'divergent.txt')
+    fs.writeFileSync(filePath, 'content')
+    const project = makeProjectAt(repoDir)
+
+    const wireSessionId = 'wire-session-not-the-process-one'
+    expect(wireSessionId).not.toBe(getSessionId())
+
+    postReadHandler({
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: filePath },
+      sessionId: wireSessionId,
+      agentId: undefined,
+      raw: { cwd: repoDir, output: 'content' },
+    })
+
+    const sessionsDir = path.join(dataDir(), 'projects', project.hash, 'sessions')
+    const written = fs.existsSync(sessionsDir) ? fs.readdirSync(sessionsDir) : []
+    expect(written).toContain(`${wireSessionId}.json`)
+    // The failure this replaces: the second session's reads landed in the first session's manifest, overwriting it, so the first session's reads stopped being discoverable by anyone.
+    expect(written).not.toContain(`${getSessionId()}.json`)
+  })
+
+  it('gives a subagent a manifest of its own rather than overwriting the parent one', () => {
+    process.env.TOKEN_GOAT_CROSS_SESSION_READ_DEDUP = '1'
+
+    const repoDir = makeRepo()
+    const filePath = path.join(repoDir, 'subagent.txt')
+    fs.writeFileSync(filePath, 'content')
+    const project = makeProjectAt(repoDir)
+
+    const parentId = 'parent-session-id'
+    const base = {
+      eventName: 'post_tool_use' as const,
+      toolName: 'Read',
+      toolInput: { file_path: filePath },
+      sessionId: parentId,
+      raw: { cwd: repoDir, output: 'content' },
+    }
+    postReadHandler({ ...base, agentId: undefined })
+    postReadHandler({ ...base, agentId: 'agent-42' })
+
+    const sessionsDir = path.join(dataDir(), 'projects', project.hash, 'sessions')
+    const written = fs.existsSync(sessionsDir) ? fs.readdirSync(sessionsDir) : []
+    // All subagents of one parent share the parent's session_id on the wire, so keying the manifest on that alone let each subagent overwrite the file with only its own reads. sessionStateKey salts with agentId, which is the same key relay.ts persists the exported state blob under.
+    expect(written).toContain(`${parentId}.json`)
+    expect(written.some((f) => f.startsWith(`${parentId}_agent_`))).toBe(true)
+  })
+
+  it('keeps two subagents of a long-session-id parent on separate manifests', () => {
+    const repoDir = makeRepo()
+    const project = makeProjectAt(repoDir)
+    // 60 characters: past the point where a plain slice(0, 64) of `<sessionId>:agent:<agentId>` cuts into the `_agent_` marker itself, so every subagent of this parent used to land on one filename. Session ids come off the wire from whatever harness is driving, and CLAUDE_CODE_SESSION_ID is a plain env var a wrapper can set to any descriptive string.
+    const longId = 'a'.repeat(60)
+    writeSessionManifest(project.hash, `${longId}:agent:agent-one`, { files: [{ rel_path: 'one.txt', hit_count: 1 }] })
+    writeSessionManifest(project.hash, `${longId}:agent:agent-two`, { files: [{ rel_path: 'two.txt', hit_count: 1 }] })
+
+    const sessionsDir = path.join(dataDir(), 'projects', project.hash, 'sessions')
+    const written = fs.readdirSync(sessionsDir)
+    expect(written).toHaveLength(2)
+    const payloads = written.map((f) => JSON.parse(fs.readFileSync(path.join(sessionsDir, f), 'utf8')))
+    expect(payloads.map((p) => p.files[0].rel_path).sort()).toEqual(['one.txt', 'two.txt'])
+  })
+
   it('sanitizes a session id with path-traversal characters instead of escaping the sessions dir', () => {
     const repoDir = makeRepo()
     const project = makeProjectAt(repoDir)

@@ -10,10 +10,10 @@ import { detectHarness } from './bridges/index.js'
 import { isAutoTriggerMultiplierExplicit, loadConfig } from './config.js'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { ensureDirSync, atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
+import { ensureDirSync, atomicWriteText, normalizePathForwardSlash } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { displaySafeText } from './paths.js'
-import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
+import { readSessionStateFile, sessionFileStem, AGENT_SALT_MARKER } from './session_store.js'
 import { WEB_FETCH_KEY_SEP } from './session.js'
 import type { FileEntry } from './session.js'
 import { readTranscriptTail } from './resident_context.js'
@@ -514,7 +514,8 @@ export function writeSessionManifest(
   sessionId: string,
   manifestJson: Record<string, unknown>
 ): void {
-  const safeSessionId = sanitizeIdForFilename(sessionId, 64)
+  // Spell the filename with session_store's stem builder rather than a bare 64-char slice. The key passed in is sessionStateKey(event), so for a subagent it is `<sessionId>:agent:<agentId>`, and slicing that at 64 cuts the agent id -- or, once the session id reaches 58 sanitized characters, the `_agent_` marker itself -- so sibling subagents collapse onto one manifest. sessionFileStem hashes the agent id instead, which is the fix session_store.ts already carries for its own blobs.
+  const safeSessionId = sessionFileStem(sessionId)
   if (!safeSessionId) return
   const sessionsDir = path.join(dataDir(), 'projects', projectHash, 'sessions')
   if (!fs.existsSync(sessionsDir)) {

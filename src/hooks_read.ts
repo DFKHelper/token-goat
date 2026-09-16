@@ -1336,7 +1336,8 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
         }
       }
 
-      writeSessionManifest(project.hash, getSessionId(), { files: mappedFiles })
+      // Name the manifest after the ledger it is a copy of. The blob being written is exportSessionState(), which relay.ts persists under sessionStateKey(event), so any other key here files one agent's reads under another's name. getSessionId() was two keys wrong at once: it is memoized per process, and the bridges in src/bridges/ serve more than one session from one cached process, so a second session's reads overwrote the first session's manifest and the first session's reads stopped being discoverable; and it ignores agentId, so every subagent under one parent overwrote the same file with only its own reads. sanitizeIdForFilename in writeSessionManifest makes the `:` separators path-safe.
+      writeSessionManifest(project.hash, sessionStateKey(event), { files: mappedFiles })
     } catch {
       // Fail-soft: ignore any errors in manifest writing
     }

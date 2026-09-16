@@ -90,7 +90,7 @@ function saltedStemPrefix(sessionId: string): string {
  * Hashing also retires the ~21-char-agent-id-prefix collision this function's previous comment
  * accepted as a known risk: two agent ids sharing a long prefix no longer share a filename.
  */
-function sessionFileStem(sessionId: string): string {
+export function sessionFileStem(sessionId: string): string {
   const sep = sessionId.indexOf(AGENT_SALT_SEPARATOR)
   if (sep < 0) return sanitizeIdForFilename(sessionId, 64)
   const agentId = sessionId.slice(sep + AGENT_SALT_SEPARATOR.length)
