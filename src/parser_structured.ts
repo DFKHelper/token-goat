@@ -95,8 +95,10 @@ function countNewlines(s: string): number {
 export function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
+  const unfenced = Array.from(eachUnfencedLine(lines))
 
-  for (const [i, line] of eachUnfencedLine(lines)) {
+  for (let u = 0; u < unfenced.length; u++) {
+    const [i, line] = unfenced[u]!
     // eslint-disable-next-line regexp/no-super-linear-backtracking
     const atxMatch = /^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/.exec(line)
     if (atxMatch !== null && atxMatch[2] !== undefined) {
@@ -112,6 +114,36 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
           docstring: '',
           parent: '',
         })
+      }
+      continue
+    }
+
+    const trimmed = line.trim()
+    if (
+      trimmed !== '' &&
+      !trimmed.startsWith('#') &&
+      !trimmed.startsWith('|') &&
+      !trimmed.startsWith('```') &&
+      !trimmed.startsWith('~~~') &&
+      !/^([-*+]|\d+\.)\s/.test(trimmed) &&
+      u + 1 < unfenced.length
+    ) {
+      const [nextIdx, nextLine] = unfenced[u + 1]!
+      if (nextIdx === i + 1) {
+        const isUnderline = /^\s*(=+|-+)\s*$/.test(nextLine)
+        if (isUnderline) {
+          out.push({
+            filePath,
+            name: trimmed,
+            kind: 'heading',
+            lineStart: i + 1,
+            lineEnd: i + 2,
+            body: `${trimmed}\n${nextLine.trim()}`,
+            docstring: '',
+            parent: '',
+          })
+          u++
+        }
       }
     }
   }

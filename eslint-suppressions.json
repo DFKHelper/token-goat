@@ -119,7 +119,7 @@
   },
   "src/section_reader.ts": {
     "regexp/no-super-linear-backtracking": {
-      "count": 9
+      "count": 3
     }
   },
   "src/text_trace.ts": {

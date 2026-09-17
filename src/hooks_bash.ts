@@ -493,10 +493,11 @@ async function maybeCompressCompoundOutput(
   exitCode: number | null,
   cwd: string | null,
   cacheMinBytes: number,
+  isUnwrapped = false,
 ): Promise<HookOutput | null> {
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
-  // Single commands are handled by the pre-hook's wrapper; only compound ones reach here unwrapped.
-  if (isCompressibleSingleCommand(cmd)) return null
+  // Single commands were handled by the pre-hook's wrapper if wrapped; unwrapped single commands (e.g. in environments without pre-hook rewriting) reach here and are eligible for compression.
+  if (!isUnwrapped && isCompressibleSingleCommand(cmd)) return null
   // Don't compact a command that reported a non-zero exit: a failing compound pipeline's
   // diagnostics must reach the model in full on its first read, not behind a `--full` recall.
   // An unknown exit (null -- common on harnesses that do not report one) is treated as
@@ -510,8 +511,8 @@ async function maybeCompressCompoundOutput(
   }
   if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
   if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
-  // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; everything else keeps the generic filter this path has always used. A family the user disabled falls back rather than being forced, matching the `disabled_filters` check the generic path makes above.
-  const shaped = pipelineShapeFilter(cmd, cwd)
+  // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used.
+  const shaped = pipelineShapeFilter(cmd, cwd) ?? (isUnwrapped ? detectFromCommand(cmd, cwd ?? undefined)?.filter ?? null : null)
   const filter =
     shaped !== null && !cfg.disabled_filters.includes(shaped.name) ? shaped : filterByName('generic')
   if (filter === null) return null
@@ -1348,6 +1349,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const rawCmdRaw = extractCommand(event)
     if (rawCmdRaw === undefined) return passOutput()
     // If the pre-hook rewrote this into a `token-goat compress` wrapper, recover the original command so the cache keys on it (matching the pre-hook hash).
+    const isUnwrapped = unwrapCompressCommand(rawCmdRaw) === null
     const rawCmd = unwrapCompressCommand(rawCmdRaw) ?? rawCmdRaw
     const cmd = stripCdPrefix(rawCmd)
     const output = extractBashOutput(event.raw)
@@ -1456,6 +1458,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
+    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`) or compound command that ran directly is compressed here on post-hook.
+    if (isUnwrapped) {
+      const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
+      if (unwrappedCompressed !== null) return unwrappedCompressed
+    }
+
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
     // A whole-file dump goes to the file-read branch even when a monitoring pattern also names it, and one does: MONITORING_COMMAND_PATTERNS carries `cat <file>.(ts|py|go|...)`, so every `cat` of a SOURCE file was classified as a monitored command and routed past this branch entirely, while the same `cat` of a document -- which no monitoring pattern names -- fell into it and folded normally. That left the whole first-read fold below unreachable for exactly the files it was written for. The branch still caches the output under the same key the monitoring path would (shortFingerprint(stripOutputPipeline(cmd)), see maybeCollapseIdenticalRead), so recall by id is unaffected; what a source-file read gives up is the cross-run delta summary, in exchange for the stronger identical/contained collapse the same branch already applies to every other file read.
@@ -1470,9 +1478,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       const identical = await maybeCollapseIdenticalRead(cmd, rawCmd, output, exitCode, cwd, cacheMinBytes)
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
-      // for compression) gets its already-captured output compressed here instead. Single
-      // commands were already handled upstream and are skipped inside the helper.
-      const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes)
+      // for compression) or an unwrapped single command gets its already-captured output compressed here.
+      const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
       if (compound !== null) return compound
       // A file read stays out of the generic list entirely, including the two-or-more-file compound shape `pureFileReadPath` itself declines to name (a single `filePath` has nowhere to put a second file): it already has its own per-file served store above, and letting a `sed`/`awk` range read's content leak into the session-wide list here is how a second, unrelated file that happens to share text with the first gets a stretch of itself withheld on the strength of a read of a DIFFERENT file -- exactly what the per-file scoping above exists to prevent.
       if (!isFileRead && extractLineRangeReadsCompound(cmd) === null) {

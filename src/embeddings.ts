@@ -11,6 +11,9 @@ import {
   isRuntimeAvailable,
   runtimeLoadError,
   runtimeVersion,
+  checkEmbeddingPreflight,
+  type EmbeddingPreflightResult,
+  type EmbeddingPreflightStatus,
 } from './embed_model.js'
 import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
@@ -18,7 +21,14 @@ import { registerReset } from './reset.js'
 import { EMBED_FINGERPRINT } from './embed_fingerprint.js'
 
 // Re-exported because the model's identity belongs to the module that fetches and verifies it, and because every existing caller and test reads these three from here.
-export { DEFAULT_DIM, DEFAULT_MODEL, PINNED_MODEL_REVISION }
+export {
+  DEFAULT_DIM,
+  DEFAULT_MODEL,
+  PINNED_MODEL_REVISION,
+  checkEmbeddingPreflight,
+  type EmbeddingPreflightResult,
+  type EmbeddingPreflightStatus,
+}
 
 // BGE's retrieval-tuned checkpoints (bge-small/base/large-en) expect an asymmetric instruction prefix on the QUERY side only -- passages/documents are embedded plain. See https://huggingface.co/BAAI/bge-small-en-v1.5#model-list. Apply this to query text only (never to chunk/document text, which would just add noise) to improve retrieval quality for this model family.
 export const QUERY_INSTRUCTION_PREFIX = 'Represent this sentence for searching relevant passages: '

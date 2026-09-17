@@ -28,6 +28,7 @@ export function extractionSources() {
     path.join(ROOT, 'src', 'language_specs.ts'),
     path.join(ROOT, 'src', 'doc_comment.ts'),
     path.join(ROOT, 'src', 'markdown_lines.ts'),
+    path.join(ROOT, 'src', 'section_reader.ts'),
     path.join(ROOT, 'src', 'encoding.ts'),
     path.join(ROOT, 'src', 'constants.ts'),
     path.join(ROOT, 'src', 'util.ts'),

@@ -165,6 +165,7 @@ function stripLeadingAttributes(text: string): string {
 // `workflow` (Windows PowerShell 3.0-5.1, about_Workflows) and `configuration` (DSC, about_Configurations) declare a named command with the same `keyword Name {` head as function and filter; neither was accepted, so a DSC configuration script's one named entry point was absent from the index.
 const FUNC_RE = new RegExp(`^(?:function|filter|workflow|configuration)\\s+(?:(?:global|local|script|private):)?(${FUNC_IDENT})`, 'i')
 const CLASS_RE = new RegExp(`^(class|enum)\\s+(${IDENT})`, 'i')
+const PESTER_RE = /^(Describe|Context|It)\b(?:\s+-[A-Za-z0-9_-]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s{]+))?)*\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_.-]+))/i
 const METHOD_NAME_RE = new RegExp(
   `^(?!(?:if|elseif|else|while|for|foreach|do|switch|return|throw|try|catch|finally|param|begin|process|end)\\b)(${IDENT})\\s*\\(`,
   'i',
@@ -199,6 +200,14 @@ export function extractPowershell(
   let inBlockComment = false
   let mlState: MultilineStringState | null = null
   let openQuote: '"' | "'" | null = null
+
+  interface OpenBlock {
+    symbolIndex: number
+    kind: 'function' | 'describe' | 'context' | 'test' | 'class' | 'method'
+    braceDepth: number
+    entered: boolean
+  }
+  const openBlocks: OpenBlock[] = []
 
   /** Records the methods declared in a class body fragment that shares a line with its class header. */
   const pushInlineMethods = (body: string, className: string, lineNum: number): void => {
@@ -262,7 +271,30 @@ export function extractPowershell(
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
         if (symbols.length < MAX_SYMBOLS) {
+          const pushIdx = symbols.length
           symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, line.trimEnd().slice(0, 200), undefined, lines, 'hash'))
+          openBlocks.push({ symbolIndex: pushIdx, kind: 'function', braceDepth, entered: false })
+        }
+      }
+    }
+
+    // PESTER TEST BLOCKS: Describe, Context, It (supported across .Tests.ps1 and general PowerShell files)
+    if (currentClass === null) {
+      const pesterTrigger = /^(?:Describe|Context|It)\b/i.exec(stripped)
+      if (pesterTrigger) {
+        const rawLine = sourceLine.trimStart()
+        const pesterMatch = PESTER_RE.exec(rawLine)
+        if (pesterMatch) {
+          const blockType = (pesterMatch[1] ?? '').toLowerCase()
+          const testName = (pesterMatch[2] ?? pesterMatch[3] ?? pesterMatch[4] ?? '').trim()
+          if (testName && symbols.length < MAX_SYMBOLS) {
+            const kind = blockType === 'context' ? 'context' : 'test'
+            const parentBlock = [...openBlocks].reverse().find((b) => b.kind === 'test' || b.kind === 'context')
+            const parentName = parentBlock !== undefined ? symbols[parentBlock.symbolIndex]?.name : undefined
+            const pushIdx = symbols.length
+            symbols.push(makeLineSymbol(filePath, testName, kind, lineNum, sourceLine.trimEnd().slice(0, 200), parentName, lines, 'hash'))
+            openBlocks.push({ symbolIndex: pushIdx, kind, braceDepth, entered: false })
+          }
         }
       }
     }
@@ -289,6 +321,7 @@ export function extractPowershell(
             currentClass = cname
             classBraceDepth = braceDepth
             classBodyEntered = false
+            openBlocks.push({ symbolIndex: symbols.length - 1, kind: 'class', braceDepth, entered: false })
           }
         }
       }
@@ -300,12 +333,39 @@ export function extractPowershell(
       if (mname !== null && symbols.length < MAX_SYMBOLS) {
         const sigEnd = line.indexOf('{')
         const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
+        const pushIdx = symbols.length
         symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), currentClass, lines, 'hash'))
+        openBlocks.push({ symbolIndex: pushIdx, kind: 'method', braceDepth, entered: false })
       }
     }
 
     // Apply brace delta BEFORE scope pop check (critical ordering).
-    braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+    const openBraces = (line.match(/\{/g) ?? []).length
+    const closeBraces = (line.match(/\}/g) ?? []).length
+
+    for (const block of openBlocks) {
+      if (braceDepth + openBraces > block.braceDepth) {
+        block.entered = true
+      }
+    }
+
+    braceDepth += openBraces - closeBraces
+
+    // Widen open function/pester/class blocks to the real body once closing brace is encountered
+    for (let b = openBlocks.length - 1; b >= 0; b--) {
+      const block = openBlocks[b]
+      if (block !== undefined && block.entered && braceDepth <= block.braceDepth) {
+        openBlocks.splice(b, 1)
+        const sym = symbols[block.symbolIndex]
+        if (sym !== undefined && lineNum > sym.lineStart) {
+          symbols[block.symbolIndex] = {
+            ...sym,
+            lineEnd: lineNum,
+            body: lines.slice(sym.lineStart - 1, lineNum).join('\n'),
+          }
+        }
+      }
+    }
 
     if (currentClass !== null && braceDepth > classBraceDepth) {
       classBodyEntered = true

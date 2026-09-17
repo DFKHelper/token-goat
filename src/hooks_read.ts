@@ -51,7 +51,8 @@ import {
 export { readRequestedSliceWindow, isTruncatedReadDelivery, buildLineDiff } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
-import { querySymbols } from './index_reader.js'
+import { querySymbols, getFileEntry } from './index_reader.js'
+import { extractShellBannerHeading } from './section_reader.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {
   extractMarkdownHeadings,
@@ -229,10 +230,47 @@ function isDispatchedFileType(basename: string): boolean {
 /**
  * Extract quick top-level symbol names from source text without heavy parser dependencies.
  */
-function extractQuickSymbolSamples(content: string): string[] {
+export function extractQuickSymbolSamples(content: string, _filePath?: string): string[] {
   const symbols: string[] = []
-  const fnRegex = /(?:(?:export\s+(?:default\s+)?(?:async\s+)?)?(?:function\s+|class\s+|(?:const|let|var)\s+)|def\s+|func(?:\s*\([^)]*\))?\s+|fn\s+)([A-Za-z0-9_$]+)/g
+
+  // Check if content is a shell script (.sh, .bash) or begins with a bash shebang
+  const isShell = _filePath !== undefined
+    ? /\.(sh|bash|zsh|ksh)$/i.test(_filePath)
+    : /^#!\s*\/(?:usr\/)?(?:bin\/|local\/bin\/)?(?:bash|sh|zsh)/.test(content)
+
+  if (isShell) {
+    const lines = content.split(/\r?\n/)
+    for (const line of lines) {
+      const banner = extractShellBannerHeading(line)
+      if (banner !== null && !symbols.includes(banner.heading)) {
+        symbols.push(banner.heading)
+        if (symbols.length >= 3) return symbols
+      }
+    }
+  }
+
+  // Matches Pester Describe, Context, and It blocks in PowerShell test files
+  const pesterRegex = /^\s*(?:Describe|Context|It)\b(?:\s+-[A-Za-z0-9_-]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s{]+))?)*\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_.-]+))/gim
   let match: RegExpExecArray | null
+  while ((match = pesterRegex.exec(content)) !== null) {
+    const name = match[1] ?? match[2] ?? match[3]
+    if (name && !symbols.includes(name)) {
+      symbols.push(name)
+      if (symbols.length >= 3) return symbols
+    }
+  }
+
+  // Matches PowerShell functions with hyphenated names (e.g. Audit-NonInternalPaths) or scope prefixes
+  const psFnRegex = /^\s*(?:function|filter|workflow|configuration)\s+(?:(?:global|local|script|private):)?([A-Za-z0-9_\u00C0-\uFFFF-]+)/gim
+  while ((match = psFnRegex.exec(content)) !== null) {
+    const name = match[1]
+    if (name && !symbols.includes(name)) {
+      symbols.push(name)
+      if (symbols.length >= 3) return symbols
+    }
+  }
+
+  const fnRegex = /(?:(?:export\s+(?:default\s+)?(?:async\s+)?)?(?:function\s+|class\s+|(?:const|let|var)\s+)|def\s+|func(?:\s*\([^)]*\))?\s+|fn\s+)([A-Za-z0-9_$]+)/g
   while ((match = fnRegex.exec(content)) !== null) {
     const name = match[1]
     if (name && !symbols.includes(name)) {
@@ -287,10 +325,17 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   } else if (isSectionFile) {
     return `Use \`token-goat section "${filePath}::name"\` to extract a part.`
   } else {
+    const isShellScript = /\.(sh|bash|zsh|ksh)$/i.test(basename)
     const samples = fileContent !== undefined
-      ? extractQuickSymbolSamples(fileContent).map(escapeHintName).filter((name) => name !== '')
+      ? extractQuickSymbolSamples(fileContent, filePath).map(escapeHintName).filter((name) => name !== '')
       : (() => {
           try {
+            if (isShellScript) {
+              const headings = querySymbols({ filePath, kind: 'heading', limit: 3 })
+                .map((symbol) => escapeHintName(symbol.name))
+                .filter((name) => name !== '')
+              if (headings.length > 0) return headings
+            }
             return querySymbols({ filePath, limit: 3 })
               .map((symbol) => escapeHintName(symbol.name))
               .filter((name) => name !== '')
@@ -300,6 +345,9 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
         })()
     const sym = samples[0] || 'SymbolName'
     const avail = samples.length > 0 ? ` (available: ${samples.join(', ')})` : ''
+    if (isShellScript && samples.length > 0) {
+      return `Use \`token-goat section "${filePath}::${sym}"\`${avail} for a section, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
+    }
     return `Use \`token-goat read "${filePath}::${sym}"\`${avail} for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
   }
 }
@@ -1263,22 +1311,45 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Lightweight pre-tool-call check and runtime nudge for indexed and ranged reads on .xml / .dtsx / .ampkg / .xaml and .md
+  // Lightweight pre-tool-call check and runtime nudge for indexed and ranged reads on .xml / .dtsx / .ampkg / .xaml, .md, PowerShell (.ps1 / .psm1), and any indexed file where a read spans >80%
   const isXmlNudge = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename)
   const isDocNudge = /\.(md|mdx|markdown)$/i.test(basename)
-  if ((isXmlNudge || isDocNudge) && !isWithinQuietHours(config.hints.quiet_hours)) {
-    const reqWindow = readRequestedSliceWindow(event)
-    const lineCount = lineCountForSurgicalHint(normalized)
-    const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
-    if (reqWindow.isExplicitSlice || isSubstantial) {
-      recordActualRead(event, normalized)
-      recordActualSlice(event, normalized)
-      recordStat('session_hint', 0, 0)
-      const nudge = isXmlNudge
-        ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline "${shown}"\` or \`token-goat xml-query "${shown}" "<selector>"\``
-        : `Note: token-goat available for this file type, consider section first: \`token-goat section "${shown}::HeadingName"\``
-      return quietContextOutput(nudge)
+  const isScriptNudge = /\.(ps1|psm1)$/i.test(basename)
+
+  const reqWindow = readRequestedSliceWindow(event)
+  const lineCount = lineCountForSurgicalHint(normalized)
+  const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
+  const isSpanningOver80 = !reqWindow.isExplicitSlice ||
+    (reqWindow.limit !== undefined && lineCount > 0 && reqWindow.limit / lineCount >= 0.8)
+
+  let isIndexedFile = false
+  if (isSpanningOver80 && isSubstantial) {
+    try {
+      isIndexedFile = getFileEntry(normalized) !== null || (filePath !== undefined && getFileEntry(filePath) !== null)
+    } catch {
+      isIndexedFile = false
     }
+  }
+
+  const shouldNudge = (isXmlNudge || isDocNudge || isScriptNudge || isIndexedFile) &&
+    !isWithinQuietHours(config.hints.quiet_hours) &&
+    (reqWindow.isExplicitSlice || isSubstantial)
+
+  if (shouldNudge) {
+    recordActualRead(event, normalized)
+    recordActualSlice(event, normalized)
+    recordStat('session_hint', 0, 0)
+    const isTestFile = /\.(tests|test)\.(ps1|[jt]sx?|py)$/i.test(basename)
+    const nudge = isXmlNudge
+      ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline "${shown}"\` or \`token-goat xml-query "${shown}" "<selector>"\``
+      : isDocNudge
+      ? `Note: token-goat available for this file type, consider section first: \`token-goat section "${shown}::HeadingName"\``
+      : isTestFile
+      ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read "${shown}::DescribeBlockName"\` or \`token-goat skeleton "${shown}"\``
+      : isScriptNudge
+      ? `Note: token-goat available for this PowerShell file, consider surgical read first: \`token-goat read "${shown}::FunctionName"\` or \`token-goat skeleton "${shown}"\``
+      : `Note: token-goat has this file indexed (>80% read), consider surgical read first: ${surgicalHint(normalized, basename, lineCount)}`
+    return quietContextOutput(nudge)
   }
 
   recordActualRead(event, normalized)

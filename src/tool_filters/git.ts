@@ -614,8 +614,8 @@ function _capHunksByDensity(hunks: string[], maxHunksPerFile: number): { hunks: 
 }
 
 function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 10): string {
-  const MAX_HUNK_CHANGED = 50
-  const HUNK_HEAD_KEEP = 20
+  const MAX_HUNK_CHANGED = 25
+  const HUNK_HEAD_KEEP = 15
   const HUNK_TAIL_KEEP = 5
 
   const fileBlocks = splitBlocks(stdout, _GIT_DIFF_FILE_RE)

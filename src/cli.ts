@@ -219,13 +219,18 @@ export function requirePositiveInt(flag: string, raw: string): number {
 // --- Command handlers -------------------------------------------------------
 
 // Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
-async function cmdSemantic(query: string, opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean }): Promise<void> {
+async function cmdSemantic(query: string | undefined, opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean }): Promise<void> {
+  if (!query && !opts.preflight && !opts.warm) {
+    throw new CliError('missing required argument: query')
+  }
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
-  const { text, code } = await runSemantic(query, {
+  const { text, code } = await runSemantic(query ?? '', {
     limit,
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
     ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+    ...(opts.preflight === true ? { preflight: true } : {}),
+    ...(opts.warm === true ? { warm: true } : {}),
   })
   // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only
   // the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
@@ -1238,8 +1243,29 @@ export function _applyFiltersAndPrint(
 
 function cmdBashOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string; maxMatches?: string; transcript?: boolean },
+  opts: {
+    head?: string
+    tail?: string
+    grep?: string
+    section?: string
+    file?: string
+    maxMatches?: string
+    transcript?: boolean
+    verifyLastWrite?: string | boolean
+    strict?: boolean
+  },
 ): void {
+  const parseVerifyThreshold = (optVal: string | boolean | undefined): number | undefined => {
+    if (optVal === undefined || optVal === false) return undefined
+    if (typeof optVal === 'string' && optVal.trim() !== '' && !isNaN(Number(optVal))) {
+      const parsed = Number(optVal)
+      return parsed >= 0 ? parsed : 60
+    }
+    return 60
+  }
+
+  const verifyThresholdSec = parseVerifyThreshold(opts.verifyLastWrite)
+
   if (opts.file !== undefined) {
     if (opts.file.includes('\0')) {
       throw new CliError('--file path contains a null byte')
@@ -1252,6 +1278,16 @@ function cmdBashOutput(
       const st = fs.statSync(opts.file)
       if (st.isFIFO() || st.isSocket()) {
         throw new CliError(`--file '${opts.file}' is a special file (FIFO or socket) — only regular files are supported`)
+      }
+      if (verifyThresholdSec !== undefined) {
+        const ageSec = Math.round((Date.now() - st.mtimeMs) / 1000)
+        if (ageSec > verifyThresholdSec) {
+          const msg = `stale write: '${opts.file}' was modified ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or no-op'd.`
+          if (opts.strict === true) {
+            throw new CliError(msg)
+          }
+          process.stderr.write(`[tg: stale-write] ${msg}\n`)
+        }
       }
       // `bash-output --file` is a general "show me this file's text" recall path, so a caller can
       // point it straight at a .env. Its values are secret by the file's nature; redact them here
@@ -1272,6 +1308,17 @@ function cmdBashOutput(
   const entry = getBashOutput(id)
   if (entry === null) {
     throw new CliError(`no cached bash output for id: ${id}. If this id is from a background task, recall its output file directly with: token-goat bash-output --file <path-to-output-file>`)
+  }
+
+  if (verifyThresholdSec !== undefined) {
+    const ageSec = Math.round((Date.now() - entry.storedAt) / 1000)
+    if (ageSec > verifyThresholdSec) {
+      const msg = `stale write: cached output '${id}' was recorded ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or not re-run.`
+      if (opts.strict === true) {
+        throw new CliError(msg)
+      }
+      process.stderr.write(`[tg: stale-write] ${msg}\n`)
+    }
   }
 
   _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG)
@@ -1763,12 +1810,14 @@ export function buildProgram(): Command {
     )
 
   program
-    .command('semantic <query>')
+    .command('semantic [query]')
     .description('semantic search (falls back to full-text search)')
     .option('-l, --limit <n>', 'max results')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'filter to hits whose file path matches this regex (literal substring if it is not valid regex); matched against the path as rendered')
     .option('--exclude-tests', 'hide hits whose file is a test file (opt-in; default output is unchanged)')
+    .option('--preflight', 'run semantic embedding preflight check and exit')
+    .option('--warm', 'warm up the embedding model session in memory')
     .action(guard(cmdSemantic))
 
   // `skeleton` and `outline` are the same command over the same options (see OutlineOptions, which
@@ -2020,6 +2069,8 @@ export function buildProgram(): Command {
     .option('--full', 'print the entire cached entry with no head/tail elision')
     .option('--file <path>', 'read from raw output file instead of cache')
     .option('--transcript', 'parse the --file as a JSONL agent transcript: keep assistant text blocks in order before filtering')
+    .option('--verify-last-write [seconds]', 'verify the file or cache entry was written within [seconds] (default: 60s) to catch stale/no-op terminal output')
+    .option('--strict', 'exit non-zero when --verify-last-write detects stale output')
     .action(guard(cmdBashOutput))
 
   program

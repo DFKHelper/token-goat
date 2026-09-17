@@ -53,7 +53,8 @@ interface SectionHeader {
 /** Kind of header finder that produced the headers. */
 // 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the current section if it is NOT a strict dotted descendant, matching TOML's real nesting convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end strictly at the next header line regardless of dotted-prefix overlap.
 // 'region' is Visual Basic `#Region "name"` ... `#End Region`, nestable, each header carrying its own endIndex.
-type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python' | 'region'
+// 'banner' is Shell script comment banner headings (e.g. `# -- Section --`, `## Section`, `# [Section]`), ending at the next banner or EOF.
+type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python' | 'region' | 'banner'
 
 /**
  * Split a heading spec into its base text and optional 1-based ordinal.
@@ -123,8 +124,11 @@ function normalizeHeadingStrip(s: string): string {
 // resolveHeaderPos -- below this, short words like "a"/"of" would match almost any heading.
 const MIN_WIDEN_WORD_LEN = 3
 
+// MARKDOWN_HEADER_RE and TABLE_HEADER_RE use non-greedy matching across whitespace boundaries.
+// eslint-disable-next-line regexp/no-super-linear-backtracking
 const MARKDOWN_HEADER_RE = /^(#{1,6})\s+([^\r\n]+?)(?:\s+#+)?\s*$/
 // TOML permits a trailing `# comment` after a table header, and INI files very commonly write `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s) without treating the header line as anything other than a table header. Deliberately NOT fully unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be misread as a table header, which the comment-only relaxation avoids.
+// eslint-disable-next-line regexp/no-super-linear-backtracking
 const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:[#;].*)?$/
 // A Python def/class header. Indentation = nesting; the name is the section key.
 const PYTHON_HEADER_RE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/
@@ -144,12 +148,45 @@ const ENV_KEYVALUE_HEADER_RE = /^(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\
  * (common in shell snippets, e.g. `# install deps`) is not mistaken for a header
  * and does not truncate the enclosing section.
  */
-function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
+export function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
-  for (const [i, line] of eachUnfencedLine(lines)) {
+  const unfenced = Array.from(eachUnfencedLine(lines))
+
+  for (let u = 0; u < unfenced.length; u++) {
+    const [i, line] = unfenced[u]!
     const m = MARKDOWN_HEADER_RE.exec(line)
-    if (m === null || m[1] === undefined || m[2] === undefined) continue
-    headers.push({ heading: m[2].trim(), level: m[1].length, index: i })
+    if (m !== null && m[1] !== undefined && m[2] !== undefined) {
+      headers.push({ heading: m[2].trim(), level: m[1].length, index: i })
+      continue
+    }
+
+    // Setext headings: non-blank text line followed immediately by an underline line (= or -)
+    // Both lines must be unfenced and consecutive in source lines (i + 1).
+    const trimmed = line.trim()
+    if (
+      trimmed !== '' &&
+      !trimmed.startsWith('#') &&
+      !trimmed.startsWith('|') &&
+      !trimmed.startsWith('```') &&
+      !trimmed.startsWith('~~~') &&
+      !/^([-*+]|\d+\.)\s/.test(trimmed) &&
+      u + 1 < unfenced.length
+    ) {
+      const [nextIdx, nextLine] = unfenced[u + 1]!
+      if (nextIdx === i + 1) {
+        const eqMatch = /^\s*(=+)\s*$/.exec(nextLine)
+        const dashMatch = /^\s*(-+)\s*$/.exec(nextLine)
+        if (eqMatch !== null) {
+          headers.push({ heading: trimmed, level: 1, index: i })
+          u++
+          continue
+        } else if (dashMatch !== null) {
+          headers.push({ heading: trimmed, level: 2, index: i })
+          u++
+          continue
+        }
+      }
+    }
   }
   return headers
 }
@@ -224,6 +261,74 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
  */
 const VB_REGION_RE = /^\s*#\s*Region\s+"((?:[^"]|"")*)"/i
 const VB_END_REGION_RE = /^\s*#\s*End\s+Region\b/i
+
+/**
+ * Shell script comment banner patterns:
+ * 1. Markdown-style comment headers: `## Section Name` or `### Sub-section`
+ * 2. Box / rule banners: `# ---------------------------------`, `# -- Section Name --`, `# === Check 1 ===`
+ * 3. Bracketed step banners: `# [1. Check Git Status]`, `# [Setup]`
+ * 4. Region tags: `# REGION: Name`
+ */
+export function extractShellBannerHeading(line: string): { heading: string; level: number } | null {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('#')) return null
+  // Skip shebang lines: `#!/bin/bash`
+  if (trimmed.startsWith('#!')) return null
+
+  // 1. Markdown-style `## Heading` in shell scripts
+  const mdMatch = /^(#{2,6})[^\S\r\n]+(\S(?:.*?\S)?)(?:[^\S\r\n]+#+)?$/.exec(trimmed)
+  if (mdMatch && mdMatch[1] && mdMatch[2]) {
+    const text = mdMatch[2].trim()
+    if (text && !/^[-=]+$/.test(text)) {
+      return { heading: text, level: mdMatch[1].length }
+    }
+  }
+
+  // 2. `# -- Section Name --` or `# === Section Name ===`
+  // eslint-disable-next-line regexp/no-misleading-capturing-group
+  const ruleMatch = /^#\s*[-=]{2,}\s*(\S(?:.*?\S)?)\s*[-=]{2,}$/.exec(trimmed)
+  if (ruleMatch && ruleMatch[1]) {
+    const text = ruleMatch[1].trim()
+    if (text && !/^[-=]+$/.test(text)) {
+      return { heading: text, level: 1 }
+    }
+  }
+
+  // 3. `# [Section Name]`
+  const bracketMatch = /^#\s*\[([a-zA-Z0-9_.\-\s]+)\]$/.exec(trimmed)
+  if (bracketMatch && bracketMatch[1]) {
+    const text = bracketMatch[1].trim()
+    if (text) {
+      return { heading: text, level: 1 }
+    }
+  }
+
+  // 4. `# REGION: Name` or `# SECTION: Name`
+  const regionMatch = /^#\s*(?:REGION|SECTION):\s*(\S.*)$/i.exec(trimmed)
+  if (regionMatch && regionMatch[1]) {
+    const text = regionMatch[1].trim()
+    if (text) {
+      return { heading: text, level: 1 }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Locate shell script heading banners (e.g. `## Section`, `# -- Section --`, `# [Section]`).
+ */
+export function findShellBannerHeaders(lines: readonly string[]): SectionHeader[] {
+  const headers: SectionHeader[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    const banner = extractShellBannerHeading(line)
+    if (banner !== null) {
+      headers.push({ heading: banner.heading, level: banner.level, index: i })
+    }
+  }
+  return headers
+}
 
 /**
  * Visual Basic `#Region "name"` blocks as sections (https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive): nestable, each ending at its own `#End Region` line (included), or at end of file when it never closes. A stray `#End Region` with nothing open is ignored.
@@ -356,6 +461,11 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(text), kind: 'markdown' }
   if (language === 'toml') return { headers: findTableHeaders(lines, true), kind: 'table-toml' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
+  // Bash and shell scripts: recognize procedural heading comment banners (##, # ---, # ===, # [...], # REGION:)
+  if (language === 'bash') {
+    const banners = findShellBannerHeaders(lines)
+    if (banners.length > 0) return { headers: banners, kind: 'banner' }
+  }
   // Visual Basic source: only `#Region` blocks are sections; the markdown/table/key-value sniff below would read code lines as headings.
   if (language === 'vb') return { headers: findVbRegionHeaders(lines), kind: 'region' }
   // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading. Unlike TOML, a `.` in an INI section name is never a nesting operator (see the HeaderKind doc comment above), so this is 'table-flat', not 'table-toml'.

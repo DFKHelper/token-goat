@@ -192,6 +192,7 @@ On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five s
 ```bash
 cd ~/notes                  # or any plain folder of .md files, no .git required
 token-goat index . --walk   # non-git folders need --walk (git repos: plain `token-goat index .`)
+token-goat semantic --preflight   # verify runtime, model weights & project coverage
 token-goat semantic "how long to steep cold brew"
 ```
 
@@ -210,7 +211,7 @@ Numbers below come from synthetic-fixture benchmarks in the test suite, except t
 | DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `src/parser.ts`, `src/db.ts` (index migration) |
 | Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `src/hooks_cli.ts` |
 | Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `src/parser.ts` (TypeScript adapter) |
-| Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `src/parser.ts` (Markdown adapter) |
+| Section extraction | Setext headings, h5/h6, anchor IDs, shell comment banners (`##`, `# ---`, `# ===`, `# [...]`, `# REGION:`), and `__frontmatter__` | `token-goat section` resolves more headings and procedural shell checks without falling back to a full file read | `src/parser.ts` (Markdown & Shell adapters) |
 | Image cache | Repeat Read of an unchanged image serves the stored re-encode, keyed on path + size + mtime, instead of re-encoding it again | Skips the re-encode entirely on a hit; the same bytes reach the model, so the reported saving is identical either way | `src/image_shrink.ts` (`findCachedShrink`) |
 | Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `src/config.ts` defaults |
 | Miss suggestions | `read` / `section` print "Did you mean…?" on a miss; `section` also auto-redirects on an unambiguous heading-prefix match | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `src/read_commands.ts` |

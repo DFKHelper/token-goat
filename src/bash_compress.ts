@@ -244,21 +244,21 @@ export function compressOutput(output: string, opts: CompressOptions = {}): stri
   // Any remaining lone `\r` (rare) is treated as a line break for splitting.
   const rawLines = text.replace(/\r/g, '\n').split('\n')
 
-  // Git diff fast-path: large diffs get per-file truncation instead of head/tail.
+  // Git diff fast-path: multi-file or substantial diffs get per-file truncation instead of head/tail.
   // The per-file cap alone doesn't bound total output when a diff touches many
   // files, so the result still goes through the same per-line-length and overall
   // maxLines truncation as the general path below — no code path may emit
   // unbounded output. If the parser can't recognize the diff format
   // (compressGitDiff returns null), fall through to the general path instead of
   // returning a misleading "0 files changed" summary.
-  if (rawLines.length > 200) {
-    const firstLine = rawLines[0] ?? ''
-    if (firstLine.startsWith('diff --git ') || firstLine.startsWith('--- a/')) {
-      const diffLines = compressGitDiff(rawLines)
-      if (diffLines !== null) {
-        const capped = diffLines.map((l) => truncateLine(l, cfg.maxLineLength))
-        return truncateLines(capped, cfg.maxLines).join('\n')
-      }
+  const firstLine = rawLines[0] ?? ''
+  const isDiffStart = firstLine.startsWith('diff --git ') || firstLine.startsWith('--- a/')
+  const diffFileCount = isDiffStart ? rawLines.filter((l) => l.startsWith('diff --git ')).length : 0
+  if (isDiffStart && (rawLines.length > 50 || (rawLines.length >= 30 && diffFileCount >= 2))) {
+    const diffLines = compressGitDiff(rawLines)
+    if (diffLines !== null) {
+      const capped = diffLines.map((l) => truncateLine(l, cfg.maxLineLength))
+      return truncateLines(capped, cfg.maxLines).join('\n')
     }
   }
 

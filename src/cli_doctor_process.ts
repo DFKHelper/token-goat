@@ -38,13 +38,16 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null):
 
   if (launchers > 2 || orphanedNodeProcesses.length > 0) {
     const details: string[] = []
-    if (chromeLaunchers.length > 1) details.push(`${chromeLaunchers.length} Chrome DevTools MCP launchers`)
-    if (playwrightLaunchers.length > 1) details.push(`${playwrightLaunchers.length} Playwright MCP launchers`)
-    if (orphanedNodeProcesses.length > 0) details.push(`${orphanedNodeProcesses.length} orphaned Node process${orphanedNodeProcesses.length === 1 ? '' : 'es'}`)
+    if (chromeLaunchers.length > 1) details.push(`${chromeLaunchers.length} Chrome DevTools MCP launchers (PIDs: ${chromeLaunchers.map((p) => p.processId).join(', ')})`)
+    if (playwrightLaunchers.length > 1) details.push(`${playwrightLaunchers.length} Playwright MCP launchers (PIDs: ${playwrightLaunchers.map((p) => p.processId).join(', ')})`)
+    if (orphanedNodeProcesses.length > 0) {
+      const pids = orphanedNodeProcesses.map((p) => p.processId).join(', ')
+      details.push(`${orphanedNodeProcesses.length} orphaned Node process${orphanedNodeProcesses.length === 1 ? '' : 'es'} (PIDs: ${pids})`)
+    }
     return {
       name: 'MCP process health',
       status: 'warn',
-      message: `${details.join('; ')} detected. These are host-managed processes; close stale Copilot sessions before terminating a specific confirmed orphan.`,
+      message: `${details.join('; ')} detected. These are host-managed processes left by closed terminal/CLI sessions; close stale sessions or terminate specific confirmed orphan PIDs with Stop-Process -Id <PID>.`,
     }
   }
 

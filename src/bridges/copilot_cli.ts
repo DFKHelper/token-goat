@@ -190,6 +190,27 @@ const TOOL_TO_TG = {
   exit_plan_mode: 'ExitPlanMode',
 }
 
+function foldToolName(name) {
+  return typeof name === 'string' ? name.toLowerCase().replace(/[_-]/g, '') : ''
+}
+
+const FOLDED_TOOL_TO_TG = {}
+for (const [k, v] of Object.entries(TOOL_TO_TG)) {
+  FOLDED_TOOL_TO_TG[foldToolName(k)] = v
+}
+// Also register folded entries for canonical TG tool names directly (e.g. WebSearch -> websearch)
+for (const v of Object.values(TOOL_TO_TG)) {
+  FOLDED_TOOL_TO_TG[foldToolName(v)] = v
+}
+
+function resolveCanonicalToolName(name) {
+  if (!name || typeof name !== 'string') return name
+  const direct = TOOL_TO_TG[name]
+  if (direct !== undefined) return direct
+  const folded = foldToolName(name)
+  return FOLDED_TOOL_TO_TG[folded] || name
+}
+
 // Confirmed via github/copilot-cli#3349 (open, unresolved as of writing): some
 // real Copilot CLI invocations send toolArgs as a JSON-*encoded string*
 // rather than a parsed object, contradicting the documented schema. Left
@@ -260,11 +281,12 @@ function remapToolInput(copilotToolName, input) {
   let out = input
   // Add the canonical key alongside the original rather than renaming it, so nothing that
   // might read the original 'path'/'shellId' key elsewhere (e.g. a future handler) loses it.
-  const pathKey = FILE_PATH_ARG_KEY[copilotToolName]
+  const folded = foldToolName(copilotToolName)
+  const pathKey = FILE_PATH_ARG_KEY[copilotToolName] || (folded === 'view' || folded === 'edit' || folded === 'create' ? 'path' : undefined)
   if (pathKey !== undefined && pathKey in out) {
     out = Object.assign({}, out, { file_path: out[pathKey] })
   }
-  const idKey = POLL_ID_ARG_KEY[copilotToolName]
+  const idKey = POLL_ID_ARG_KEY[copilotToolName] || (folded === 'readbash' || folded === 'readpowershell' ? 'shellId' : undefined)
   if (idKey !== undefined && idKey in out) {
     out = Object.assign({}, out, { bash_id: out[idKey] })
   }
@@ -429,7 +451,7 @@ async function main() {
   let originalToolArgs = {}
   if (toolName) {
     originalToolArgs = parseMaybeJsonObject(payload && payload.toolArgs)
-    canonical.tool_name = TOOL_TO_TG[toolName] || toolName
+    canonical.tool_name = resolveCanonicalToolName(toolName)
     canonical.tool_input = remapToolInput(toolName, originalToolArgs)
   }
 
@@ -538,7 +560,7 @@ function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
       return { modifiedArgs: updated }
     }
     // Image shrink has no context channel on this event (Copilot's preToolUse output schema carries no additionalContext; docs/hook-channel-matrix.md footnote 7) -- translate it into a rewritten view path pointing at a materialized shrunk copy instead, via the same modifiedArgs channel the updatedInput branch above already uses. modifiedArgs REPLACES the tool call's args wholesale (ESr in the 1.0.80 bundle, see this module's header docblock), so the full original toolArgs are spread and only Copilot's own path key is swapped.
-    if (toolName === 'view') {
+    if (toolName === 'view' || foldToolName(toolName) === 'view') {
       const shrunkPath = materializeShrunkImage(extractContext(resp))
       if (shrunkPath) return { modifiedArgs: Object.assign({}, originalToolArgs, { path: shrunkPath }) }
     }
@@ -680,3 +702,65 @@ main()
     process.exitCode = 0
   })
 `
+
+/**
+ * Folds a tool name to lowercase alphanumeric characters (stripping underscores and hyphens)
+ * for case- and separator-insensitive matching.
+ */
+export function foldToolName(name: unknown): string {
+  return typeof name === 'string' ? name.toLowerCase().replace(/[_-]/g, '') : ''
+}
+
+const TOOL_TO_TG_MAPPING: Record<string, string> = {
+  bash: 'Bash',
+  powershell: 'Bash',
+  read_bash: 'BashOutput',
+  read_powershell: 'BashOutput',
+  view: 'Read',
+  create: 'Write',
+  edit: 'Edit',
+  web_fetch: 'WebFetch',
+  web_search: 'WebSearch',
+  grep: 'Grep',
+  glob: 'Glob',
+  skill: 'Skill',
+  exit_plan_mode: 'ExitPlanMode',
+}
+
+const FOLDED_MAPPING: Record<string, string> = {}
+for (const [k, v] of Object.entries(TOOL_TO_TG_MAPPING)) {
+  FOLDED_MAPPING[foldToolName(k)] = v
+  FOLDED_MAPPING[foldToolName(v)] = v
+}
+
+/**
+ * Resolves any case or separator variant of a Copilot CLI tool name to its canonical token-goat name.
+ */
+export function resolveCanonicalToolName(name: string): string {
+  if (!name || typeof name !== 'string') return name
+  const direct = TOOL_TO_TG_MAPPING[name]
+  if (direct !== undefined) return direct
+  const folded = foldToolName(name)
+  return FOLDED_MAPPING[folded] || name
+}
+
+/**
+ * Translates a Copilot hook payload into canonical token-goat form for testing / verification.
+ */
+export function translateCopilotPayload(raw: { event?: string; tool_name?: string; tool_input?: Record<string, unknown> }): { tool_name: string; tool_input: Record<string, unknown> } {
+  const toolName = resolveCanonicalToolName(raw.tool_name || '')
+  const input = { ...(raw.tool_input || {}) }
+  const folded = foldToolName(raw.tool_name || '')
+  if (folded === 'view' || folded === 'edit' || folded === 'create') {
+    if ('path' in input && !('file_path' in input)) {
+      input['file_path'] = input['path']
+    }
+  }
+  if (folded === 'readbash' || folded === 'readpowershell') {
+    if ('shellId' in input && !('id' in input)) {
+      input['id'] = input['shellId']
+    }
+  }
+  return { tool_name: toolName, tool_input: input }
+}
+
