@@ -121,6 +121,12 @@ describe('isImagePath', () => {
     expect(isImagePath('a.ts')).toBe(false)
     expect(isImagePath('a')).toBe(false)
   })
+  // Regression: IMAGE_EXTENSIONS listed .tiff but not .tif, the more common of the two spellings, so a real TIFF (e.g. rgb.tif) missed the image path entirely and hit the large-file text deny in hooks_read.ts instead. .jpg/.jpeg and .heic/.heif, the other common alternate-spelling pairs for formats this set recognises, are both already present in IMAGE_EXTENSIONS.
+  it('recognises the .tif spelling alongside .tiff', () => {
+    expect(isImagePath('a.tif')).toBe(true)
+    expect(isImagePath('a.TIF')).toBe(true)
+    expect(isImagePath('a.tiff')).toBe(true)
+  })
 })
 
 describe('shrinkImage', () => {

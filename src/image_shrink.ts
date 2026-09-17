@@ -59,6 +59,7 @@ const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.gif',
   '.webp',
   '.bmp',
+  '.tif',
   '.tiff',
   '.avif',
   '.heic',
