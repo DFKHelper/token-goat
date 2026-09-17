@@ -21,7 +21,8 @@ export interface TranscriptCue {
 
 const TIMESTAMP_RE = /(\d{1,2}:)?(\d{2}):(\d{2})[.,](\d{1,3})/
 const CUE_LINE_RE = new RegExp(`^\\s*${TIMESTAMP_RE.source}\\s*-->\\s*${TIMESTAMP_RE.source}`)
-const V_TAG_RE = /^<v(?:\.\w+)?\s+([^>]+)>\s*(.*)$/
+// A voice span start tag carries zero or more `.class` names before the speaker annotation (WebVTT spec, "WebVTT cue voice span": `<v.first.loud Esme>`); each class starts with a literal `.` that the class body excludes, so the repetition is unambiguous.
+const V_TAG_RE = /^<v(?:\.[^\s.>]+)*\s+([^>]+)>\s*(.*)$/
 const NAME_PREFIX_RE = /^([A-Za-z][\w .'-]{0,40}):\s+(.*)$/
 
 function parseTimestamp(text: string): number {

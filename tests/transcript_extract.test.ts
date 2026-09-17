@@ -42,6 +42,15 @@ describe('parseTranscript', () => {
     expect(cues[2]?.startSeconds).toBe(300)
   })
 
+  it('reads the speaker from a <v> tag carrying more than one class name', () => {
+    // FORMAT-DERIVED: the W3C WebVTT spec's own voice-span example, https://www.w3.org/TR/webvtt1/#webvtt-cue-voice-span ("<v.first.loud Esme>It's a blue apple tree!" / "<v.second Mary>No way!").
+    const content = `WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n<v.first.loud Esme>It's a blue apple tree!\n\n00:00:02.000 --> 00:00:04.000\n<v.second Mary>No way!\n`
+    const cues = parseTranscript(content)
+    expect(cues).toHaveLength(2)
+    expect(cues[0]).toMatchObject({ speaker: 'Esme', text: "It's a blue apple tree!" })
+    expect(cues[1]).toMatchObject({ speaker: 'Mary', text: 'No way!' })
+  })
+
   it('parses SRT cues with no speaker tag', () => {
     const cues = parseTranscript(SRT)
     expect(cues).toHaveLength(2)
