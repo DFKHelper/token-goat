@@ -5,6 +5,7 @@
 // `swiftlintFilter` is produced by the `makeLinterFilter` factory in families.ts — it shares the simple "per-rule warning dedup + always-keep error" loop with any future filter that fits that model.
 
 import { ToolFilter } from './base.js'
+import type { CompressContext } from './base.js'
 import { makeLinterFilter, plural } from './families.js'
 import { ERROR_SIGNAL_RE, maybeNote, pathStem, positionalArgs, squeezeBlankLines } from './helpers.js'
 
@@ -456,7 +457,7 @@ class ESLintFilter extends ToolFilter {
   readonly name = 'eslint'
   override readonly binaries = new Set(['eslint'])
 
-  override compress(stdout: string, stderr: string, exitCode: number, _argv: string[]): string {
+  override compress(stdout: string, stderr: string, exitCode: number, _argv: string[], ctx: CompressContext = {}): string {
     const merged = this.combineOutput(stdout, stderr)
     const lines = merged.split('\n')
 
@@ -470,7 +471,10 @@ class ESLintFilter extends ToolFilter {
       const summary = lines.find((ln) => _ESLINT_SUMMARY_RE.test(ln.trim()))
       return summary ?? 'ESLint: no errors'
     }
-    const out: string[] = []
+
+    // Every top-level line is either a passthrough (prelude, blank separator between stanzas, or the trailing summary) or a completed file stanza. Recording that structure instead of flattening straight to text lets the renderer below reflow a stanza three different ways -- verbatim, error-capped, or collapsed to one line -- without re-parsing, and lets a file's header survive even when its body doesn't.
+    type _Block = { readonly kind: 'line'; readonly text: string } | { readonly kind: 'file'; readonly header: string; readonly issues: readonly string[] }
+    const blocks: _Block[] = []
     let currentFileHeader: string | null = null
     let currentIssues: string[] = []
     let currentHasIssues = false
@@ -481,31 +485,7 @@ class ESLintFilter extends ToolFilter {
         currentHasIssues = false
         return
       }
-      if (!currentHasIssues) {
-        currentFileHeader = null
-        currentIssues = []
-        currentHasIssues = false
-        return
-      }
-      out.push(currentFileHeader)
-      // Group warnings by rule; errors always kept
-      const warnByRule = new Map<string, string[]>()
-      for (const issue of currentIssues) {
-        const severity = _eslintIssueSeverity(issue)
-        if (severity === 'warning') {
-          const rule = issue.trimEnd().split(/\s+/).pop() ?? '__unknown__'
-          const bucket = warnByRule.get(rule) ?? []
-          bucket.push(issue)
-          warnByRule.set(rule, bucket)
-        } else {
-          out.push(issue)
-        }
-      }
-      // Emit deduplicated warnings
-      for (const [rule, entries] of [...warnByRule.entries()].sort()) {
-        out.push(...entries.slice(0, 3))
-        if (entries.length > 3) out.push(`  [token-goat: +${entries.length - 3} more ${rule} warnings]`)
-      }
+      if (currentHasIssues) blocks.push({ kind: 'file', header: currentFileHeader, issues: currentIssues })
       currentFileHeader = null
       currentIssues = []
       currentHasIssues = false
@@ -514,7 +494,7 @@ class ESLintFilter extends ToolFilter {
     for (const line of lines) {
       if (_ESLINT_SUMMARY_RE.test(line.trim())) {
         flushFile()
-        out.push(line)
+        blocks.push({ kind: 'line', text: line })
         continue
       }
       // --format compact/unix: each violation is a self-contained single line
@@ -544,14 +524,68 @@ class ESLintFilter extends ToolFilter {
         continue
       }
       if (currentFileHeader === null) {
-        out.push(line)
+        blocks.push({ kind: 'line', text: line })
       } else {
         // Non-issue line inside stanza (blank separator, etc.)
         currentIssues.push(line)
       }
     }
     flushFile()
-    return squeezeBlankLines(out.join('\n'))
+
+    // tier 0 renders a stanza exactly as the original flat compress did: errors (and any other non-warning line) verbatim in original order, then warnings grouped 3/rule with a "+N more" marker -- so anything that already fits the cap ships byte-identical. tier 1 additionally caps errors 3/rule/file the same way, for when warnings alone weren't the problem. tier 2 collapses the whole stanza to one line so a run with hundreds of error lines still names every file.
+    const renderFile = (header: string, issues: readonly string[], tier: 0 | 1 | 2): string[] => {
+      if (tier === 2) {
+        const errorsByRule = new Map<string, number>()
+        const warningsByRule = new Map<string, number>()
+        for (const issue of issues) {
+          const severity = _eslintIssueSeverity(issue)
+          const bucket = severity === 'error' ? errorsByRule : severity === 'warning' ? warningsByRule : null
+          if (bucket !== null) {
+            const rule = issue.trimEnd().split(/\s+/).pop() ?? '__unknown__'
+            bucket.set(rule, (bucket.get(rule) ?? 0) + 1)
+          }
+        }
+        const summarize = (byRule: Map<string, number>, noun: string): string | null => {
+          const total = [...byRule.values()].reduce((a, b) => a + b, 0)
+          if (total === 0) return null
+          return `${total} ${noun}${plural(total)}: ${[...byRule.entries()].sort().map(([rule, n]) => `${rule} ×${n}`).join(', ')}`
+        }
+        const parts = [summarize(errorsByRule, 'error'), summarize(warningsByRule, 'warning')].filter((p): p is string => p !== null)
+        return parts.length > 0 ? [`${header}  [token-goat: ${parts.join('; ')}]`] : [header]
+      }
+      const fileOut: string[] = [header]
+      const errorsByRule = new Map<string, string[]>()
+      const warningsByRule = new Map<string, string[]>()
+      for (const issue of issues) {
+        const severity = _eslintIssueSeverity(issue)
+        const byRule = severity === 'warning' ? warningsByRule : tier === 1 && severity === 'error' ? errorsByRule : null
+        if (byRule === null) {
+          fileOut.push(issue)
+          continue
+        }
+        const rule = issue.trimEnd().split(/\s+/).pop() ?? '__unknown__'
+        const bucket = byRule.get(rule) ?? []
+        bucket.push(issue)
+        byRule.set(rule, bucket)
+      }
+      for (const [byRule, noun] of [[errorsByRule, 'error'], [warningsByRule, 'warning']] as const) {
+        for (const [rule, entries] of [...byRule.entries()].sort()) {
+          fileOut.push(...entries.slice(0, 3))
+          if (entries.length > 3) fileOut.push(`  [token-goat: +${entries.length - 3} more ${rule} ${noun}s]`)
+        }
+      }
+      return fileOut
+    }
+
+    const render = (tier: 0 | 1 | 2): string =>
+      squeezeBlankLines(blocks.flatMap((block) => (block.kind === 'line' ? [block.text] : renderFile(block.header, block.issues, tier))).join('\n'))
+
+    let text = render(0)
+    if (ctx.maxLines !== undefined) {
+      if (text.split('\n').length > ctx.maxLines) text = render(1)
+      if (text.split('\n').length > ctx.maxLines) text = render(2)
+    }
+    return text
   }
 }
 

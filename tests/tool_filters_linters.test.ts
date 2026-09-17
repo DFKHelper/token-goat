@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { LINTER_FILTERS, TOOL_FILTERS, detectFromCommand, selectFilter } from '../src/tool_filters/index.js'
+import { compressOutput } from '../src/tool_filters/dispatch.js'
+import { CAPTURE_ESLINT_40_FILES } from './fixtures/eslint_real_captures.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -416,6 +418,68 @@ describe('ESLintFilter', () => {
     expect(result.text).toContain('foo.ts')
     expect(result.text).toContain("'foo' is not defined")
     expect(result.text).toContain("'bar' is defined but never used")
+  })
+})
+
+describe('ESLintFilter under the shipping line cap', () => {
+  // Preconditions on the fixture itself, so this guard cannot go vacuous if a later edit shrinks the capture: the raw (uncapped) render must already exceed the balanced cap, and it must carry 40 distinct file headers.
+  const rawLineCount = eslintFilter.compress(CAPTURE_ESLINT_40_FILES, '', 1, ['eslint', 'src'], {}).split('\n').length
+  const headerCount = (CAPTURE_ESLINT_40_FILES.match(/^\/home\/u\/proj\/src\/mod\d+\.js$/gm) ?? []).length
+
+  it('the fixture is a real over-cap case: 442 raw lines from 40 distinct file headers', () => {
+    expect(rawLineCount).toBeGreaterThan(200)
+    expect(headerCount).toBe(40)
+  })
+
+  it('names every one of the 40 files instead of truncating to a head/tail slice', () => {
+    const result = compressOutput(eslintFilter, CAPTURE_ESLINT_40_FILES, '', 1, ['eslint', 'src'], { compressionProfile: 'balanced' }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    expect(result).not.toContain('lines omitted ---')
+    for (let i = 0; i < 40; i++) expect(result).toContain(`/home/u/proj/src/mod${i}.js`)
+    expect(result).toContain('✖ 360 problems (240 errors, 120 warnings)')
+    expect(result).toContain('no-unused-vars')
+    expect(result).toContain('no-undef')
+    expect(result).toContain('eqeqeq')
+    // Proves the one-line-per-file collapse (tier 2) actually fired rather than the errors-capped-per-rule form (tier 1): a tier-1 file still spans several lines (header, capped error lines, capped warning lines); tier 2 folds each file's whole rule/count breakdown onto the header's own line.
+    expect(result).toMatch(/^\/home\/u\/proj\/src\/mod0\.js {2}\[token-goat: \d+ errors?: [\w-]+ ×\d+; \d+ warnings?: /m)
+  })
+
+  it('a small slice under the cap ships byte-identical to the uncapped render (the collapse never fires)', () => {
+    const makeFile = (i: number): string => {
+      const header = `/home/u/proj/src/small${i}.js`
+      const errs = Array.from({ length: 6 }, (_, j) => `  ${j + 1}:7   error    'v${j}' is assigned a value but never used  no-unused-vars`)
+      const warns = [
+        "  7:5   warning  'a' is not defined                       no-undef",
+        "  7:7   warning  Expected '===' and instead saw '=='      eqeqeq",
+        "  7:15  warning  'console' is not defined                 no-undef",
+      ]
+      return [header, ...errs, ...warns].join('\n')
+    }
+    const threeFileText = [makeFile(0), makeFile(1), makeFile(2)].join('\n\n') + '\n\n✖ 27 problems (18 errors, 9 warnings)\n'
+    const capped = compressOutput(eslintFilter, threeFileText, '', 1, ['eslint', 'src'], { compressionProfile: 'balanced' }).text
+    const uncapped = eslintFilter.apply(threeFileText, '', 1, ['eslint', 'src']).text
+    expect(capped).toBe(uncapped)
+  })
+
+  it('tier 1 alone (errors capped 3/rule/file, still one line per issue) keeps all 4 headers and names the elided count', () => {
+    // FORMAT-DERIVED: hand-built from the stylish shape the capture above already validates (a "<loc> error <msg> <rule>" line and a "<header>" file line), not copied from any real eslint run. 4 files x 70 same-rule errors lands in the tier-1 band: too many lines for tier 0, but small enough (4 headers x ~4 lines) to fit tier 1 without needing the tier-2 collapse.
+    const makeOverErrorFile = (i: number): string => {
+      const header = `/home/u/proj/src/big${i}.js`
+      const errs = Array.from({ length: 70 }, (_, j) => `  ${j + 1}:1   error    'x${j}' is assigned a value but never used  no-unused-vars`)
+      return [header, ...errs].join('\n')
+    }
+    const fourFileText = Array.from({ length: 4 }, (_, i) => makeOverErrorFile(i)).join('\n\n') + '\n\n✖ 280 problems (280 errors, 0 warnings)\n'
+    const result = compressOutput(eslintFilter, fourFileText, '', 1, ['eslint', 'src'], { compressionProfile: 'balanced' }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    for (let i = 0; i < 4; i++) expect(result).toContain(`/home/u/proj/src/big${i}.js`)
+    expect(result).toContain('[token-goat: +67 more no-unused-vars errors]')
+    expect((result.match(/no-unused-vars/g) ?? []).length).toBeGreaterThan(0)
+    // The first three locations of each file's error survive verbatim before the marker takes over.
+    expect(result).toContain("'x0' is assigned a value but never used")
+    expect(result).toContain("'x1' is assigned a value but never used")
+    expect(result).toContain("'x2' is assigned a value but never used")
   })
 })
 
