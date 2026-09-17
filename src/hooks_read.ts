@@ -352,8 +352,15 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   }
 }
 
-function lineCountForSurgicalHint(filePath: string): number {
+function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): number {
   try {
+    if (fileStatSize !== undefined && fileStatSize > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+      return 0
+    }
+    const sz = fileStatSize ?? statSize(filePath)
+    if (sz !== null && sz > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+      return 0
+    }
     return countTextLines(fs.readFileSync(filePath, 'utf8'))
   } catch {
     return 0
@@ -1312,44 +1319,47 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   }
 
   // Lightweight pre-tool-call check and runtime nudge for indexed and ranged reads on .xml / .dtsx / .ampkg / .xaml, .md, PowerShell (.ps1 / .psm1), and any indexed file where a read spans >80%
+  // Exempt dispatched non-code large file types (e.g. CSV, PDF, Office) that are handled by the universal file type handler.
   const isXmlNudge = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename)
   const isDocNudge = /\.(md|mdx|markdown)$/i.test(basename)
   const isScriptNudge = /\.(ps1|psm1)$/i.test(basename)
 
-  const reqWindow = readRequestedSliceWindow(event)
-  const lineCount = lineCountForSurgicalHint(normalized)
-  const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
-  const isSpanningOver80 = !reqWindow.isExplicitSlice ||
-    (reqWindow.limit !== undefined && lineCount > 0 && reqWindow.limit / lineCount >= 0.8)
+  if (!isKnownFileType && !BINARY_FILE_TYPE_EXTS.has(fileTypeExt)) {
+    const reqWindow = readRequestedSliceWindow(event)
+    const lineCount = lineCountForSurgicalHint(normalized, fileStatSize)
+    const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
+    const isSpanningOver80 = !reqWindow.isExplicitSlice ||
+      (reqWindow.limit !== undefined && lineCount > 0 && reqWindow.limit / lineCount >= 0.8)
 
-  let isIndexedFile = false
-  if (isSpanningOver80 && isSubstantial) {
-    try {
-      isIndexedFile = getFileEntry(normalized) !== null || (filePath !== undefined && getFileEntry(filePath) !== null)
-    } catch {
-      isIndexedFile = false
+    let isIndexedFile = false
+    if (isSpanningOver80 && isSubstantial) {
+      try {
+        isIndexedFile = getFileEntry(normalized) !== null || (filePath !== undefined && getFileEntry(filePath) !== null)
+      } catch {
+        isIndexedFile = false
+      }
     }
-  }
 
-  const shouldNudge = (isXmlNudge || isDocNudge || isScriptNudge || isIndexedFile) &&
-    !isWithinQuietHours(config.hints.quiet_hours) &&
-    (reqWindow.isExplicitSlice || isSubstantial)
+    const shouldNudge = (isXmlNudge || isDocNudge || isScriptNudge || isIndexedFile) &&
+      !isWithinQuietHours(config.hints.quiet_hours) &&
+      (reqWindow.isExplicitSlice || isSubstantial)
 
-  if (shouldNudge) {
-    recordActualRead(event, normalized)
-    recordActualSlice(event, normalized)
-    recordStat('session_hint', 0, 0)
-    const isTestFile = /\.(tests|test)\.(ps1|[jt]sx?|py)$/i.test(basename)
-    const nudge = isXmlNudge
-      ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline "${shown}"\` or \`token-goat xml-query "${shown}" "<selector>"\``
-      : isDocNudge
-      ? `Note: token-goat available for this file type, consider section first: \`token-goat section "${shown}::HeadingName"\``
-      : isTestFile
-      ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read "${shown}::DescribeBlockName"\` or \`token-goat skeleton "${shown}"\``
-      : isScriptNudge
-      ? `Note: token-goat available for this PowerShell file, consider surgical read first: \`token-goat read "${shown}::FunctionName"\` or \`token-goat skeleton "${shown}"\``
-      : `Note: token-goat has this file indexed (>80% read), consider surgical read first: ${surgicalHint(normalized, basename, lineCount)}`
-    return quietContextOutput(nudge)
+    if (shouldNudge) {
+      recordActualRead(event, normalized)
+      recordActualSlice(event, normalized)
+      recordStat('session_hint', 0, 0)
+      const isTestFile = /\.(tests|test)\.(ps1|[jt]sx?|py)$/i.test(basename)
+      const nudge = isXmlNudge
+        ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline "${shown}"\` or \`token-goat xml-query "${shown}" "<selector>"\``
+        : isDocNudge
+        ? `Note: token-goat available for this file type, consider section first: \`token-goat section "${shown}::HeadingName"\``
+        : isTestFile
+        ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read "${shown}::DescribeBlockName"\` or \`token-goat skeleton "${shown}"\``
+        : isScriptNudge
+        ? `Note: token-goat available for this PowerShell file, consider surgical read first: \`token-goat read "${shown}::FunctionName"\` or \`token-goat skeleton "${shown}"\``
+        : `Note: token-goat has this file indexed (>80% read), consider surgical read first: ${surgicalHint(normalized, basename, lineCount)}`
+      return quietContextOutput(nudge)
+    }
   }
 
   recordActualRead(event, normalized)
