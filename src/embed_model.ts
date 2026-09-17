@@ -281,31 +281,12 @@ function sha256Of(filePath: string): Promise<string> {
  * temporary name in the same directory first.
  */
 async function download(file: ModelFile, target: string): Promise<void> {
-  const maxRetries = 3
-  let lastErr: unknown
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      await downloadAttempt(file, target)
-      return
-    } catch (e) {
-      lastErr = e
-      if (attempt < maxRetries) {
-        const delay = 200 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 100)
-        await new Promise((resolve) => setTimeout(resolve, delay))
-      }
-    }
-  }
-  throw lastErr
-}
-
-async function downloadAttempt(file: ModelFile, target: string): Promise<void> {
   const url = downloadUrl(file)
   const response = await fetch(url, { redirect: 'follow' })
   if (!response.ok) throw new Error(`GET ${url} returned ${response.status} ${response.statusText}`)
   if (!response.body) throw new Error(`GET ${url} returned no body`)
 
-  const unique = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
-  const temp = `${target}.${unique}.partial`
+  const temp = `${target}.${process.pid}.partial`
   const hash = createHash('sha256')
   let written = 0
   const out = fs.createWriteStream(temp)
