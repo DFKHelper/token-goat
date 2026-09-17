@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { extractCsharp } from '../src/languages/csharp.js'
 import { extractPhp } from '../src/languages/php.js'
+import { ADAPTER_EXTRACTORS } from '../src/languages/registry.js'
 import { extractHtml } from '../src/languages/html.js'
 import { extractLiquid } from '../src/languages/liquid.js'
 import { extractKotlin } from '../src/languages/kotlin.js'
@@ -1272,6 +1273,50 @@ enum num {
     expect(face?.kind).toBe('interface')
     const num = symbols.find((s) => s.name === 'num')
     expect(num?.kind).toBe('enum')
+  })
+
+  // FORMAT-DERIVED: the constructor is the PHP Manual's own example under "Classes and Objects" > "Constructors and Destructors" > "Constructor Promotion" (`protected int $x, protected int $y = 0,` each on its own line, the closing paren and brace on the next); the property and second method around it are ordinary members. Not written from php.ts's own regexes. Run through the registry entry rather than extractPhp alone because the span pass in that entry is where the defect showed.
+  it('spans a constructor whose promoted parameters sit on their own lines, and does not file them as properties', () => {
+    const content = `<?php
+class Point {
+    private int $z = 0;
+
+    public function __construct(
+        protected int $x,
+        protected int $y = 0,
+    ) {
+        $this->z = $x + $y;
+    }
+
+    public function sum(): int {
+        return $this->x + $this->y + $this->z;
+    }
+}
+`
+    const symbols = ADAPTER_EXTRACTORS.php(content, 'point.php')
+    const spans = symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd}`)
+    expect(spans).toEqual(['class Point 2-15', 'var z 3-3', 'method __construct 5-10', 'method sum 12-14'])
+  })
+
+  // FORMAT-DERIVED: the attribute is the PHP Manual's `#[...]` syntax ("Attributes" > "Attribute syntax", arguments in parentheses, named arguments allowed) broken over lines as Symfony's validation constraints are written on promoted parameters. A `#` line was skipped as a comment before the parenthesis count ran, so the opener's `(` went uncounted while the `)]` line still closed one, and the parameter after it passed the property gate again.
+  it('keeps a promoted parameter under a multi-line attribute out of the property list', () => {
+    const content = `<?php
+class Dto {
+    public function __construct(
+        #[Assert\\Length(
+            min: 1,
+            max: 100,
+        )]
+        private string $name,
+    ) {
+    }
+
+    public function ok(): void {}
+}
+`
+    const symbols = ADAPTER_EXTRACTORS.php(content, 'dto.php')
+    const spans = symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd}`)
+    expect(spans).toEqual(['class Dto 2-13', 'method __construct 3-10', 'method ok 12-12'])
   })
 })
 
@@ -3969,6 +4014,44 @@ void topLevel(String msg) {}
   it('still indexes a method whose parameter carries a string default', () => {
     const { symbols } = extractDart("class C {\n  void greet(String who = 'world') {}\n}\n", 'default.dart')
     expect(symbols.find((s) => s.name === 'greet')?.parent).toBe('C')
+  })
+
+  // FORMAT-DERIVED: a nullable type argument is the `List<int?>` shape from dart.dev, "Understanding null safety", section "Nullability in the type system"; the declarations put it in the return positions a null-safe repository interface uses. Not written from dart.ts's own regexes.
+  it('indexes methods and getters whose return type carries a nullable type argument', () => {
+    const content = `abstract class Repo {
+  Future<Invoice?> find(String id);
+  List<String?> names();
+  Map<String, int?> counts();
+  Future<int?> get pending;
+  Future<void> save(Invoice invoice);
+}
+
+class Impl implements Repo {
+  @override
+  Future<Invoice?> find(String id) async {
+    return null;
+  }
+
+  @override
+  Map<String, int?> counts() {
+    return {};
+  }
+}
+
+Future<Invoice?> topLevelFind(String id) async => null;
+
+Stream<int?> ticks() async* {}
+`
+    const { symbols } = extractDart(content, 'nullable.dart')
+    const parentsOf = (name: string) => symbols.filter((s) => s.name === name).map((s) => s.parent)
+    expect(parentsOf('find')).toEqual(['Repo', 'Impl'])
+    expect(parentsOf('counts')).toEqual(['Repo', 'Impl'])
+    expect(parentsOf('names')).toEqual(['Repo'])
+    expect(parentsOf('pending')).toEqual(['Repo'])
+    expect(parentsOf('topLevelFind')).toEqual([''])
+    expect(parentsOf('ticks')).toEqual([''])
+    // The shape that already worked, a type argument with no `?`, must keep working beside them.
+    expect(parentsOf('save')).toEqual(['Repo'])
   })
 
   it('extracts class and enum declarations', () => {

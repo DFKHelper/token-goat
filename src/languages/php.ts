@@ -39,27 +39,16 @@ const CONST_RE = new RegExp(
   'i',
 )
 const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/i
-// `var` is PHP's legacy property-visibility declarator (a full synonym for `public`), still valid
-// syntax in every current PHP version - without it in the alternation, a `var $foo;` property is
-// silently dropped from the index entirely, unlike every other property-declaration style.
-// `public(set)` / `protected(set)` / `private(set)` are PHP 8.4's asymmetric-visibility set-scope declarators, and `abstract` / `final` are the property modifiers the same version's property hooks admit; each alternative still has to be followed by a `$name`, so none of them can match a line that is not a property declaration.
+// `var` is PHP's legacy property-visibility declarator (a full synonym for `public`), still valid syntax in every current PHP version - without it in the alternation, a `var $foo;` property is silently dropped from the index entirely, unlike every other property-declaration style. `public(set)` / `protected(set)` / `private(set)` are PHP 8.4's asymmetric-visibility set-scope declarators, and `abstract` / `final` are the property modifiers the same version's property hooks admit; each alternative still has to be followed by a `$name`, so none of them can match a line that is not a property declaration.
 const PROP_RE = new RegExp(
   '^(?:(?:(?:public|protected|private)\\(set\\)|public|protected|private|static|readonly|abstract|final|var)\\s+)+' +
   `(?:${TYPE_SLOT}\\s+)?` +
   '\\$([A-Za-z_][A-Za-z0-9_]*)',
   'i',
 )
-// `use function Foo\bar;` / `use const Foo\BAR;` -- PHP 7's single-symbol imports for a
-// namespaced function or constant, distinct from the class-import form GROUP_USE_RE's own
-// `function\s+|const\s+` prefix already handles for the brace-group case. Without the same
-// optional prefix here, USE_RE's `([\w\\]+)` captured "function"/"const" as if it were the
-// imported name itself, then failed to match the trailing `;` (real target text follows), so
-// these single-symbol forms were silently dropped entirely rather than merely mis-captured.
+// `use function Foo\bar;` / `use const Foo\BAR;` -- PHP 7's single-symbol imports for a namespaced function or constant, distinct from the class-import form GROUP_USE_RE's own `function\s+|const\s+` prefix already handles for the brace-group case. Without the same optional prefix here, USE_RE's `([\w\\]+)` captured "function"/"const" as if it were the imported name itself, then failed to match the trailing `;` (real target text follows), so these single-symbol forms were silently dropped entirely rather than merely mis-captured.
 const USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+\w+)?\s*;/i
-// `use App\{Foo, Bar};` -- PHP 7's group-use declaration, idiomatic when importing several
-// classes from one namespace -- never matched USE_RE at all: the char class `[\w\\]+` stops at
-// `{`, leaving `{Foo, Bar}` where USE_RE's `(?:\s+as\s+\w+)?\s*;` alternative is anchored, so the
-// whole regex failed to match and the entire line was silently dropped (not merely truncated).
+// `use App\{Foo, Bar};` -- PHP 7's group-use declaration, idiomatic when importing several classes from one namespace -- never matched USE_RE at all: the char class `[\w\\]+` stops at `{`, leaving `{Foo, Bar}` where USE_RE's `(?:\s+as\s+\w+)?\s*;` alternative is anchored, so the whole regex failed to match and the entire line was silently dropped (not merely truncated).
 const GROUP_USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)\\\{([^}]*)\}/i
 const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/i
 
@@ -111,10 +100,10 @@ export function extractPhp(
   const imports: AdapterImport[] = []
   const lines = maskPhpInlineHtml(content).split(/\r?\n/)
 
-  // Stack of (className, braceDepthAtEntry, bodyEntered)
-  // Fourth slot is the declaration's own kind (`class`/`interface`/`trait`/`enum`), lower-cased: the enum-case branch below must fire only inside an `enum` body.
+  // Stack of (className, braceDepthAtEntry, bodyEntered). Fourth slot is the declaration's own kind (`class`/`interface`/`trait`/`enum`), lower-cased: the enum-case branch below must fire only inside an `enum` body.
   const contextStack: Array<[string, number, boolean, string]> = []
   let braceDepth = 0
+  let parenDepth = 0
   let inComment = false
   let mlState: MultilineStringState | null = null
 
@@ -122,10 +111,7 @@ export function extractPhp(
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    // Mask multi-line PHP heredoc/nowdoc string spans first, state carried across lines, so
-    // braces inside one of those can never desync braceDepth. Skipped on lines that start
-    // already inside a block comment (mlState null) to avoid misreading comment prose that
-    // happens to contain opener-shaped text.
+    // Mask multi-line PHP heredoc/nowdoc string spans first, state carried across lines, so braces inside one of those can never desync braceDepth. Skipped on lines that start already inside a block comment (mlState null) to avoid misreading comment prose that happens to contain opener-shaped text.
     let mlLine = rawLine
     if (mlState !== null || !inComment) {
       const masked = stripMultilineStringSpan(rawLine, mlState, 'php')
@@ -139,27 +125,29 @@ export function extractPhp(
     const line = codeLine.trimEnd()
     const stripped = line.trimStart()
 
-    if (!stripped || stripped.startsWith('//') || stripped.startsWith('#')) continue
+    // `#[` opens an attribute, not a comment (PHP 8.0). An attribute whose arguments run over several lines, `#[Assert\Length(` ... `)]` above a promoted parameter, has to stay in the parenthesis count below: skipping the opener as a comment while the closing `)]` line still counted left the depth one short, and the parameter after it read as a property again.
+    const attrOpen = stripped.startsWith('#[')
+    if (!stripped || stripped.startsWith('//') || (stripped.startsWith('#') && !attrOpen)) continue
 
-    // Track brace depth. Apply the net delta (opens minus closes) before the pop check so a class's closing brace pops its context on the same line; checking before subtracting closes would leave the stale class on the stack and mis-parent the next top-level declaration.
-    // Brace-count on a string-stripped copy of the line so a literal brace inside a string
-    // literal is never counted as real nesting.
-    const braceLine = stripStringLiterals(stripLineComment(line, ['//', '#']))
+    // Track brace depth. Apply the net delta (opens minus closes) before the pop check so a class's closing brace pops its context on the same line; checking before subtracting closes would leave the stale class on the stack and mis-parent the next top-level declaration. Brace-count on a string-stripped copy of the line so a literal brace inside a string literal is never counted as real nesting. On an attribute line the comment search starts past the `#[`, so the `#` that opens it is not taken for a comment marker.
+    const commentFrom = attrOpen ? line.indexOf('#[') + 2 : 0
+    const braceLine = stripStringLiterals(line.slice(0, commentFrom) + stripLineComment(line.slice(commentFrom), ['//', '#']))
     const openB = (braceLine.match(/\{/g) ?? []).length
     const closeB = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openB - closeB
+    // Parenthesis depth is tracked the same way so a line inside a parameter list broken across lines is known to be one. A promoted constructor parameter, `private readonly Suit $suit,` on its own line, is spelled exactly like a property declaration, and filing it as one did two things wrong: the phantom property sat on the line after the constructor header, so the brace search that gives a member its span stopped before ever reaching the constructor's `{`, and the last parameter then claimed the constructor body as its own span instead.
+    const preLineParenDepth = parenDepth
+    const openP = (braceLine.match(/\(/g) ?? []).length
+    const closeP = (braceLine.match(/\)/g) ?? []).length
+    parenDepth = Math.max(0, parenDepth + openP - closeP)
 
-    // Mark the current frame's body as entered once brace depth has actually risen above its
-    // start depth, so a header line with zero net braces (e.g. a multi-line `implements`
-    // clause) can't be mistaken for "back down to start" before the class body is ever opened.
+    // Mark the current frame's body as entered once brace depth has actually risen above its start depth, so a header line with zero net braces (e.g. a multi-line `implements` clause) can't be mistaken for "back down to start" before the class body is ever opened.
     const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
     if (topFrame !== undefined && braceDepth > topFrame[1]) {
       topFrame[2] = true
     }
 
-    // Pop context when we close the class brace. Only pop once bodyEntered is true - this
-    // guards multi-line class headers (`class Foo`, `implements Bar, Baz`, `{` each on their
-    // own line), where brace depth still equals the frame's start depth on the header line.
+    // Pop context when we close the class brace. Only pop once bodyEntered is true - this guards multi-line class headers (`class Foo`, `implements Bar, Baz`, `{` each on their own line), where brace depth still equals the frame's start depth on the header line.
     while (contextStack.length > 0) {
       const top = contextStack[contextStack.length - 1]
       if (top !== undefined && top[2] && braceDepth <= top[1]) {
@@ -176,10 +164,7 @@ export function extractPhp(
       continue
     }
 
-    // use import -- only at top level. Inside a class/interface/trait body, `use Trait;`
-    // is a trait-use declaration (mixing a trait's methods into the class), not a namespace
-    // import; every other classifier below already gates on contextStack for this same
-    // top-level-vs-class-body distinction.
+    // use import -- only at top level. Inside a class/interface/trait body, `use Trait;` is a trait-use declaration (mixing a trait's methods into the class), not a namespace import; every other classifier below already gates on contextStack for this same top-level-vs-class-body distinction.
     if (contextStack.length === 0) {
       const groupUseM = GROUP_USE_RE.exec(stripped)
       if (groupUseM) {
@@ -208,13 +193,7 @@ export function extractPhp(
       continue
     }
 
-    // class/interface/trait/enum. Attributed to the enclosing class only when declared directly
-    // in that class's own body (pre-line depth exactly one level past its frame's start) - same
-    // gate as the method/property/const branches below. PHP has no true nested classes: a class
-    // declared inside a method body (a legal idiom for lazy/conditional class definition) is
-    // still a standalone global class, not a member of whatever class the method belongs to.
-    // Without the gate, currentClass() unconditionally returned the top of the stack regardless
-    // of depth, misattributing any function-local class as a real nested member class.
+    // class/interface/trait/enum. Attributed to the enclosing class only when declared directly in that class's own body (pre-line depth exactly one level past its frame's start) - same gate as the method/property/const branches below. PHP has no true nested classes: a class declared inside a method body (a legal idiom for lazy/conditional class definition) is still a standalone global class, not a member of whatever class the method belongs to. Without the gate, currentClass() unconditionally returned the top of the stack regardless of depth, misattributing any function-local class as a real nested member class.
     const clsM = CLASS_RE.exec(stripped)
     if (clsM) {
       // Folded because the capture carries the source's own case: `Interface Repo` would otherwise be filed under the invented kind `Interface`, which no consumer matches on.
@@ -226,9 +205,7 @@ export function extractPhp(
       symbols.push(makeLineSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined, lines, 'c'))
       contextStack.push([name, braceDepth - openB + closeB, false, kind])
       if (openB > 0 && openB === closeB) {
-        // Self-contained one-liner (`class Foo {}`) - body opens and closes on the declaration
-        // line itself, so braceDepth never rises above the frame's start depth and the
-        // bodyEntered-gated pop above would never fire. Pop it immediately instead.
+        // Self-contained one-liner (`class Foo {}`) - body opens and closes on the declaration line itself, so braceDepth never rises above the frame's start depth and the bodyEntered-gated pop above would never fire. Pop it immediately instead.
         contextStack.pop()
       }
       continue
@@ -252,10 +229,7 @@ export function extractPhp(
     const methM = METHOD_RE.exec(stripped)
     if (methM) {
       const name = methM[1] ?? ''
-      // Depth of this line before its own brace delta is applied (matches the "start depth"
-      // convention used when pushing a class frame): a method is directly in the class body
-      // only when that pre-line depth is exactly one level deeper than the class frame's own
-      // entry depth, not merely nested somewhere inside the class at large.
+      // Depth of this line before its own brace delta is applied (matches the "start depth" convention used when pushing a class frame): a method is directly in the class body only when that pre-line depth is exactly one level deeper than the class frame's own entry depth, not merely nested somewhere inside the class at large.
       const preLineDepth = braceDepth - openB + closeB
       const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
       const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : null
@@ -266,27 +240,20 @@ export function extractPhp(
       continue
     }
 
-    // property. Gated on the same "directly inside the class body" pre-line-depth check as the
-    // method branch above - PROP_RE's modifier alternation includes `static`, which also matches
-    // an ordinary function-local `static $var` declaration inside a method body. Without the
-    // gate, that local variable was mistaken for a class property of whatever class happened to
-    // still be on top of the context stack.
+    // property. Gated on the same "directly inside the class body" pre-line-depth check as the method branch above - PROP_RE's modifier alternation includes `static`, which also matches an ordinary function-local `static $var` declaration inside a method body. Without the gate, that local variable was mistaken for a class property of whatever class happened to still be on top of the context stack.
     const propM = PROP_RE.exec(stripped)
     if (propM) {
       const name = propM[1] ?? ''
       const preLineDepth = braceDepth - openB + closeB
       const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
-      if (topFrame !== undefined && preLineDepth === topFrame[1] + 1) {
+      // A line that starts inside an open parenthesis is a parameter, never a property: see the parenDepth comment above.
+      if (topFrame !== undefined && preLineDepth === topFrame[1] + 1 && preLineParenDepth === 0) {
         symbols.push(makeLineSymbol(filePath, name, 'var', lineNum, stripped.slice(0, 200), topFrame[0], lines, 'c'))
       }
       continue
     }
 
-    // class constant. Gated on the same "directly inside the class body" pre-line-depth check as
-    // the method and property branches above - an anonymous class body isn't pushed onto the
-    // context stack (it never matches CLASS_RE), so a const declared inside one sits at a deeper
-    // brace depth while a named outer class frame is still on top of the stack. Without the gate,
-    // that const was mistaken for a constant of the enclosing named class.
+    // class constant. Gated on the same "directly inside the class body" pre-line-depth check as the method and property branches above - an anonymous class body isn't pushed onto the context stack (it never matches CLASS_RE), so a const declared inside one sits at a deeper brace depth while a named outer class frame is still on top of the stack. Without the gate, that const was mistaken for a constant of the enclosing named class.
     const constM = CONST_RE.exec(stripped)
     if (constM) {
       const name = constM[1] ?? ''

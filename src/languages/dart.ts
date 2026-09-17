@@ -23,15 +23,7 @@ interface TypeFrame {
   bodyEntered: boolean
 }
 
-// `class Foo`, `class Foo<T>`, `class Foo extends Base`, `class Foo implements Interface`.
-// A class declaration can carry leading modifiers: the long-standing `abstract`, and Dart 3's
-// `base`/`interface`/`final`/`sealed` class modifiers, plus `mixin class` (a class usable as a
-// mixin), in any legal combination (`abstract base class`, `abstract interface class`, ...).
-// Anchoring on a bare `^class` dropped every one of these -- most importantly the ubiquitous
-// `abstract class Foo` -- from the index entirely (the type AND every member nested in it),
-// the same modifier-alternation gap already fixed for the C# and PHP extractors. `mixin` is
-// included here so `mixin class Foo` resolves as a class; a plain `mixin Foo` has no `class`
-// keyword after it, so it falls through to MIXIN_RE below instead.
+// `class Foo`, `class Foo<T>`, `class Foo extends Base`, `class Foo implements Interface`. A class declaration can carry leading modifiers: the long-standing `abstract`, and Dart 3's `base`/`interface`/`final`/`sealed` class modifiers, plus `mixin class` (a class usable as a mixin), in any legal combination (`abstract base class`, `abstract interface class`, ...). Anchoring on a bare `^class` dropped every one of these -- most importantly the ubiquitous `abstract class Foo` -- from the index entirely (the type AND every member nested in it), the same modifier-alternation gap already fixed for the C# and PHP extractors. `mixin` is included here so `mixin class Foo` resolves as a class; a plain `mixin Foo` has no `class` keyword after it, so it falls through to MIXIN_RE below instead.
 const CLASS_RE = /^(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)/
 
 // `enum Color { red, green, blue }` (Dart enums take no class modifiers, so no prefix here).
@@ -40,59 +32,28 @@ const ENUM_RE = /^enum\s+([A-Za-z_][A-Za-z0-9_]*)/
 // `mixin MyMixin`, `mixin MyMixin on BaseClass`, and Dart 3's `base mixin MyMixin`.
 const MIXIN_RE = /^(?:base\s+)?mixin\s+([A-Za-z_][A-Za-z0-9_]*)/
 
-// `extension MyExtension on Type`, `extension on Type` (unnamed extensions), and the generic form
-// `extension E<T> on List<T>`. The type-parameter list sits between the name and `on` with no space
-// before it, so requiring `name` and `on` to be separated by whitespace alone rejected every
-// generic extension -- and because no frame was pushed for it, every member inside its body was
-// dropped from the index too, not just the extension itself.
+// `extension MyExtension on Type`, `extension on Type` (unnamed extensions), and the generic form `extension E<T> on List<T>`. The type-parameter list sits between the name and `on` with no space before it, so requiring `name` and `on` to be separated by whitespace alone rejected every generic extension -- and because no frame was pushed for it, every member inside its body was dropped from the index too, not just the extension itself.
 const EXTENSION_RE = new RegExp('^extension\\s+(?:([A-Za-z_][A-Za-z0-9_]*)\\s*(?:' + GENERIC_CLAUSE + ')?\\s+)?on\\s+')
 
-// `extension type Meters(int value)`, Dart 3.3's extension type declaration -- a zero-cost
-// wrapper over a representation type. It shares the `extension` keyword prefix with EXTENSION_RE
-// above but takes a literal `type` keyword and a `(repr)` primary-constructor instead of
-// `on Type`, so EXTENSION_RE's `on\s+` requirement never matches it. Left unmatched, the line
-// fell through to FUNC_RE, which misread the representation-type constructor's parens as a
-// function call and mis-indexed the whole declaration as a plain top-level function named after
-// the extension type -- and because no scope frame was pushed for it, every member declared
-// inside the body was silently dropped from the index (real data loss, not just a wrong kind).
+// `extension type Meters(int value)`, Dart 3.3's extension type declaration -- a zero-cost wrapper over a representation type. It shares the `extension` keyword prefix with EXTENSION_RE above but takes a literal `type` keyword and a `(repr)` primary-constructor instead of `on Type`, so EXTENSION_RE's `on\s+` requirement never matches it. Left unmatched, the line fell through to FUNC_RE, which misread the representation-type constructor's parens as a function call and mis-indexed the whole declaration as a plain top-level function named after the extension type -- and because no scope frame was pushed for it, every member declared inside the body was silently dropped from the index (real data loss, not just a wrong kind).
 const EXTENSION_TYPE_RE = /^extension\s+type\s+([A-Za-z_][A-Za-z0-9_]*)/
 
-// `void foo()`, `int bar()`, `String baz()` — requires either `void` keyword or an explicit return type.
-// This guards against matching function calls like `print("text")` as function declarations.
-const FUNC_RE = new RegExp('(?:^|\\s)(?:static\\s+)?(?:(?:void|Future|Stream|async|external)\\s+|[A-Za-z_][A-Za-z0-9_<>]*(?:\\s*\\?)?\\s+)([A-Za-z_][A-Za-z0-9_]*)\\s*(?:' + GENERIC_CLAUSE + ')?\\s*\\(')
+// `void foo()`, `int bar()`, `String baz()` — requires either `void` keyword or an explicit return type. This guards against matching function calls like `print("text")` as function declarations. The return-type class admits `?` so a nullable type argument, `Future<Invoice?> find()`, `List<String?> names()`, `Map<String, int?> counts()`, still reads as a type: with `?` left out the class stopped at the `?`, the trailing-`?` group consumed it, and the whitespace the name needs was a `>` instead, so every method returning a nullable-argument generic was dropped from the index.
+const FUNC_RE = new RegExp('(?:^|\\s)(?:static\\s+)?(?:(?:void|Future|Stream|async|external)\\s+|[A-Za-z_][A-Za-z0-9_<>?]*(?:\\s*\\?)?\\s+)([A-Za-z_][A-Za-z0-9_]*)\\s*(?:' + GENERIC_CLAUSE + ')?\\s*\\(')
 
-// `int get value => 1;`, `String get name { ... }`, `static bool get ok => true`. A getter has no
-// parameter list, so FUNC_RE (which anchors on the opening paren) never matched one, while the
-// matching `set value(int v)` was picked up incidentally -- `set` reads as a return type to
-// FUNC_RE. A class exposing a value through a getter/setter pair therefore indexed the write half
-// and dropped the read half.
-const GETTER_RE = /^(?:(?:static|external|abstract|covariant)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>,\s]*(?:\s*\?)?\s+)?get\s+([A-Za-z_][A-Za-z0-9_]*)/
+// `int get value => 1;`, `String get name { ... }`, `static bool get ok => true`. A getter has no parameter list, so FUNC_RE (which anchors on the opening paren) never matched one, while the matching `set value(int v)` was picked up incidentally -- `set` reads as a return type to FUNC_RE. A class exposing a value through a getter/setter pair therefore indexed the write half and dropped the read half. The return-type class admits `?` for the same reason FUNC_RE's does: `Future<int?> get pending` and `Map<String, int?> get counts` were dropped, while `int? get maybe` survived only because its `?` sits last, where the trailing group reaches it.
+const GETTER_RE = /^(?:(?:static|external|abstract|covariant)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>,?\s]*(?:\s*\?)?\s+)?get\s+([A-Za-z_][A-Za-z0-9_]*)/
 
-// `A.named()`, `const A.from(...)`, `factory A.create() => ...`. The class name is checked against
-// the enclosing frame at the call site rather than baked in here, which is what keeps this from
-// matching an ordinary call: a call sits deeper than one brace inside the type, and a constructor
-// declaration can only appear at exactly that depth. Only the named forms are indexed -- an
-// unnamed `A()` carries no name of its own, and indexing it as `A` would make `read "f.dart::A"`
-// ambiguous against the class declaration one line above it.
+// `A.named()`, `const A.from(...)`, `factory A.create() => ...`. The class name is checked against the enclosing frame at the call site rather than baked in here, which is what keeps this from matching an ordinary call: a call sits deeper than one brace inside the type, and a constructor declaration can only appear at exactly that depth. Only the named forms are indexed -- an unnamed `A()` carries no name of its own, and indexing it as `A` would make `read "f.dart::A"` ambiguous against the class declaration one line above it.
 const NAMED_CTOR_RE = /^(?:(?:const|factory|external)\s+)*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/
 
-// The unnamed form, `A()` / `const A()` / `A(this.x) : super(x)`, matched against the enclosing
-// class name the same way. It is recognised only to be suppressed: FUNC_RE otherwise reads the
-// leading modifier as a return type and files the constructor as a *function* named after the
-// class, so the file ends up with two different symbols spelled `A`, which is exactly the
-// collision skipping the unnamed form was meant to avoid.
+// The unnamed form, `A()` / `const A()` / `A(this.x) : super(x)`, matched against the enclosing class name the same way. It is recognised only to be suppressed: FUNC_RE otherwise reads the leading modifier as a return type and files the constructor as a *function* named after the class, so the file ends up with two different symbols spelled `A`, which is exactly the collision skipping the unnamed form was meant to avoid.
 const UNNAMED_CTOR_RE = /^(?:(?:const|factory|external)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/
 
-// `final void Function() cb = ...`, `var x = compute();`, `const y = f();`. FUNC_RE only requires a
-// word followed by `(`, so an initialiser call or a function-typed field looked exactly like a
-// method declaration and produced a phantom symbol (`Function` for the callback field above). No
-// Dart method declaration can begin with `final`, `var` or `const`, so a line that does is a field
-// and never a method.
+// `final void Function() cb = ...`, `var x = compute();`, `const y = f();`. FUNC_RE only requires a word followed by `(`, so an initialiser call or a function-typed field looked exactly like a method declaration and produced a phantom symbol (`Function` for the callback field above). No Dart method declaration can begin with `final`, `var` or `const`, so a line that does is a field and never a method.
 const FIELD_START_RE = /^(?:(?:static|covariant|late|external)\s+)*(?:final|var|const)\s/
 
-// `class A = Object with M;`, a mixin-application class: a complete declaration with no body. It
-// was pushed onto the type stack like any other class, and with no braces to close it the frame
-// never popped, so the next top-level declaration was silently attributed to it and lost.
+// `class A = Object with M;`, a mixin-application class: a complete declaration with no body. It was pushed onto the type stack like any other class, and with no braces to close it the frame never popped, so the next top-level declaration was silently attributed to it and lost.
 const CLASS_ALIAS_RE = new RegExp('^(?:(?:abstract|base|interface|final|sealed|mixin)\\s+)*class\\s+[A-Za-z_][A-Za-z0-9_]*(?:' + GENERIC_CLAUSE + ')?\\s*=')
 
 // `typedef IntList = List<int>;` and `typedef Compare<T> = int Function(T a, T b);`, the generalised type alias of Dart 2.13 (Dart language specification, "Type aliases" / dart.dev language tour, "Typedefs"). A type alias is a top-level declaration only. The non-function form (`= List<int>`) has no parens at all and matched nothing, so the alias never reached the index; the function form did reach FUNC_RE, which read `int Function(` as a declaration and filed a phantom top-level symbol literally named `Function` -- the same phantom FIELD_START_RE above exists to suppress for fields. The type-parameter group is the nesting-aware GENERIC_CLAUSE rather than a flat `<[^>]*>` because a bounded parameter whose constraint is itself generic, `typedef Comparator<T extends Comparable<T>> = int Function(T a, T b);` (the shape `dart:core`'s own Comparator uses), closes a non-nesting group at the inner `>`, after which the `=` anchor cannot match and the line falls through to FUNC_RE and fabricates `Function` all over again.
@@ -101,9 +62,7 @@ const TYPEDEF_RE = new RegExp('^typedef\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*' + GE
 // The pre-2.13 function-type alias, `typedef int Compare(Object a, Object b);`, where the name follows the return type rather than the `typedef` keyword. Still legal Dart and common in older sources. The return-type class excludes whitespace so it cannot overlap the `\s+` that follows it.
 const TYPEDEF_LEGACY_RE = new RegExp('^typedef\\s+[A-Za-z_][A-Za-z0-9_<>,?]*\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*' + GENERIC_CLAUSE + ')?\\s*\\(')
 
-// Variable declarations not extracted at this time — would need complex parsing of
-// multi-variable declarations on a single line (e.g., `var x = 1, y = 2;`)
-// or destructuring patterns.
+// Variable declarations not extracted at this time — would need complex parsing of multi-variable declarations on a single line (e.g., `var x = 1, y = 2;`) or destructuring patterns.
 
 export function extractDart(
   content: string,
@@ -149,17 +108,12 @@ export function extractDart(
 
     const isIndented = line[0] === ' ' || line[0] === '\t'
 
-    // class/enum/mixin/extension — recognized at column 0 (top-level), or indented
-    // while one brace level inside another type's body (a real nested type member).
+    // class/enum/mixin/extension — recognized at column 0 (top-level), or indented while one brace level inside another type's body (a real nested type member).
     const outerFrame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
     const outerDepthInType = outerFrame !== null ? braceDepth - outerFrame.startDepth : 0
     const typeDetectionGateOk = typeStack.length === 0 || outerDepthInType === 1
 
-    // `matched` tracks classification without an early `continue`, so a same-line opening
-    // `{` (e.g. `class Foo {`) still falls through to the brace-counting block below and can
-    // flip `bodyEntered` -- an early `continue` here would silently drop that brace, leave
-    // `bodyEntered` false forever, and corrupt `typeDetectionGateOk` for every subsequent
-    // top-level declaration in the file (same bug class fixed in scala.ts).
+    // `matched` tracks classification without an early `continue`, so a same-line opening `{` (e.g. `class Foo {`) still falls through to the brace-counting block below and can flip `bodyEntered` -- an early `continue` here would silently drop that brace, leave `bodyEntered` false forever, and corrupt `typeDetectionGateOk` for every subsequent top-level declaration in the file (same bug class fixed in scala.ts).
     let matched = false
 
     if (typeDetectionGateOk && (!isIndented || typeStack.length > 0)) {
@@ -168,8 +122,7 @@ export function extractDart(
         const cname = cm[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-        // A mixin-application class has no body, so pushing a frame for it would never pop -- and an unpopped frame does not lose one symbol, it swallows every top-level declaration after it in the file. CLASS_ALIAS_RE is the precise test and names the alias, but it carries GENERIC_CLAUSE's nesting ceiling, so a bound deeper than that ceiling used to fall through to here and leak a frame. A `class` line that closes with `;` and opens no brace is a complete declaration whatever its type parameters look like, so the shape check is the backstop that keeps a future miss costing one symbol instead of the rest of the file.
-        // Both markers are read from `structural` because a type parameter may carry metadata (`class C<@Deprecated('semi;') T>`), and a `;` or `{` inside that annotation's string is not the structural one being looked for. Judging the raw line drops the whole body of such a class.
+        // A mixin-application class has no body, so pushing a frame for it would never pop -- and an unpopped frame does not lose one symbol, it swallows every top-level declaration after it in the file. CLASS_ALIAS_RE is the precise test and names the alias, but it carries GENERIC_CLAUSE's nesting ceiling, so a bound deeper than that ceiling used to fall through to here and leak a frame. A `class` line that closes with `;` and opens no brace is a complete declaration whatever its type parameters look like, so the shape check is the backstop that keeps a future miss costing one symbol instead of the rest of the file. Both markers are read from `structural` because a type parameter may carry metadata (`class C<@Deprecated('semi;') T>`), and a `;` or `{` inside that annotation's string is not the structural one being looked for. Judging the raw line drops the whole body of such a class.
         const bracelessDeclaration = !structural.includes('{') && structural.includes(';')
         if (!CLASS_ALIAS_RE.test(stripped) && !bracelessDeclaration) {
           typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
@@ -195,10 +148,7 @@ export function extractDart(
         matched = true
       }
 
-      // Extension type checked before the plain `extension ... on` form -- both share the
-      // `extension` keyword prefix, but only the extension-type form has a literal `type`
-      // keyword next, so trying it first avoids relying on EXTENSION_RE's `on\s+` requirement
-      // failing to fall through correctly.
+      // Extension type checked before the plain `extension ... on` form -- both share the `extension` keyword prefix, but only the extension-type form has a literal `type` keyword next, so trying it first avoids relying on EXTENSION_RE's `on\s+` requirement failing to fall through correctly.
       const etm = !matched ? EXTENSION_TYPE_RE.exec(stripped) : null
       if (etm) {
         const etname = etm[1] ?? ''
@@ -232,10 +182,7 @@ export function extractDart(
     if (!matched && frame !== null) {
       const depthInType = braceDepth - frame.startDepth
       if (depthInType === 1) {
-        // Constructor first: `factory A.create() => ...` also satisfies FUNC_RE, which reads
-        // `factory` as a return type and would index the declaration under the class name rather
-        // than the constructor's own name. As with the type block above, each branch sets a flag
-        // instead of `continue`-ing, so a same-line `{` still reaches the brace counter below.
+        // Constructor first: `factory A.create() => ...` also satisfies FUNC_RE, which reads `factory` as a return type and would index the declaration under the class name rather than the constructor's own name. As with the type block above, each branch sets a flag instead of `continue`-ing, so a same-line `{` still reaches the brace counter below.
         const cm = NAMED_CTOR_RE.exec(stripped)
         let member = false
         if (cm && cm[1] === frame.name) {
@@ -268,13 +215,10 @@ export function extractDart(
           symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         }
 
-        // Properties/fields in a class (var/final/etc)
-        // For now, we skip property extraction to keep it simple
-        // (properties would need complex parsing of multiple declarations per line)
+        // Properties/fields in a class (var/final/etc) For now, we skip property extraction to keep it simple (properties would need complex parsing of multiple declarations per line)
       }
     } else if (!matched && frame === null && !isIndented && !FIELD_START_RE.test(stripped)) {
-      // Top-level getter, then top-level function. Dart allows a getter at file scope
-      // (`int get version => 1;`) and it was never looked for outside a class body.
+      // Top-level getter, then top-level function. Dart allows a getter at file scope (`int get version => 1;`) and it was never looked for outside a class body.
       const gm = GETTER_RE.exec(stripped)
       if (gm) {
         symbols.push(makeLineSymbol(filePath, gm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
