@@ -1459,7 +1459,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     }
 
     // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`) or compound command that ran directly is compressed here on post-hook.
-    if (isUnwrapped) {
+    // Pure file reads (e.g. cat/sed/head) are handled in the file read branch below via identical/served collapse rather than generic compression.
+    if (isUnwrapped && pureFileReadPath(cmd) === null) {
       const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
       if (unwrappedCompressed !== null) return unwrappedCompressed
     }
@@ -1479,8 +1480,11 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
       // for compression) or an unwrapped single command gets its already-captured output compressed here.
-      const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
-      if (compound !== null) return compound
+      // File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression.
+      if (!isFileRead) {
+        const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
+        if (compound !== null) return compound
+      }
       // A file read stays out of the generic list entirely, including the two-or-more-file compound shape `pureFileReadPath` itself declines to name (a single `filePath` has nowhere to put a second file): it already has its own per-file served store above, and letting a `sed`/`awk` range read's content leak into the session-wide list here is how a second, unrelated file that happens to share text with the first gets a stretch of itself withheld on the strength of a read of a DIFFERENT file -- exactly what the per-file scoping above exists to prevent.
       if (!isFileRead && extractLineRangeReadsCompound(cmd) === null) {
         const genericElision = await maybeElideServedGenericOutput(cmd, output, exitCode, cwd, cacheMinBytes)

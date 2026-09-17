@@ -8,6 +8,7 @@ import { envBool, envInt, envStr, envStrList, TRUTHY_ENV_VALUES, FALSY_ENV_VALUE
 import { shortFingerprint } from './fingerprint.js'
 import { SUPPORTED_OCR_LANG_CODES, isSupportedOcrLang } from './ocr_languages.js'
 import { atomicWriteText, extractErrorMessage } from './util.js'
+import { registerReset } from './reset.js'
 
 export * from './config_types.js'
 export * from './config_defaults.js'
@@ -590,6 +591,8 @@ export function invalidateConfigCache(): void {
   _cached = null
   resetLastProjectConfigLockedKeys()
 }
+
+registerReset(invalidateConfigCache)
 
 /**
  * Run `fn` with every config-affecting env var (the {@link allEnvKeys} registry, not just the

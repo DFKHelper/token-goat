@@ -636,7 +636,7 @@ export async function checkEmbeddingPreflight(options?: {
     })
   }
 
-  if (!filesPresent && cfg.network.offline) {
+  if (!filesPresent && cfg?.network?.offline) {
     return buildResult({
       status: 'missing_model_files',
       available: false,
