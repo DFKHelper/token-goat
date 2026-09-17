@@ -251,6 +251,18 @@ export const MINIMAL_PDF = '%PDF-1.4\n' +
   '5 0 obj\n<< /Length 44 >>\nstream\nBT /F1 24 Tf 20 100 Td (Hello PDF) Tj ET\nendstream\nendobj\n' +
   'trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n'
 
+// Two-font single-line PDF for the pdf-locate case below: pdfjs 6.3.289 only emits separate text items with no space item between them when adjacent Tj operators switch fonts (same-font runs get merged into one item), so a MINIMAL_PDF-style single-Tj fixture never exercises the item join this smoke test is here to cover.
+export const MIXED_FONTS_PDF = '%PDF-1.4\n' +
+  '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+  '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+  '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /MediaBox [0 0 612 792] /Contents 5 0 R >>\nendobj\n' +
+  '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n' +
+  '5 0 obj\n<< /Length 247 >>\nstream\n' +
+  'BT /F1 12 Tf 72 700 Td (Wagyu Games, LLC.) Tj /F2 12 Tf (, a Kentucky corporation with) Tj 0 -14 Td /F1 12 Tf (1.1 ) Tj /F2 12 Tf (Work Product) Tj /F1 12 Tf (. Any and all code) Tj 0 -14 Td (\\() Tj /F2 12 Tf (Company) Tj /F1 12 Tf (\\), and) Tj ET\n' +
+  'endstream\nendobj\n' +
+  '6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n' +
+  'trailer\n<< /Size 7 /Root 1 0 R >>\n%%EOF\n'
+
 /**
  * One assertion per registered command. Keys MUST equal the registered command
  * set (enforced by the coverage gate in command_matrix_e2e.1.test.ts). Read commands run
@@ -1087,6 +1099,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const payload = JSON.parse(rJson.stdout) as { matchCount: number; pages: number[] }
     expect(payload.matchCount).toBe(1)
     expect(payload.pages).toEqual([1])
+    // Exercises the built bundle's join across a font switch mid-line (regression: a literal-space join at every item boundary inserted a phantom space, e.g. "LLC. ,", so this phrase never matched).
+    const mixedPath = path.join(dir, 'mixed.pdf')
+    fs.writeFileSync(mixedPath, Buffer.from(MIXED_FONTS_PDF, 'latin1'))
+    const rMixed = run(['pdf-locate', mixedPath, 'LLC\\., a Kentucky'])
+    expect(rMixed.status, rMixed.stderr).toBe(0)
+    expect(rMixed.stdout).toContain('1 match across 1 page')
   },
   'pdf-outline': () => {
     const dir = mkIsolated('tg-matrix-pdfo-')

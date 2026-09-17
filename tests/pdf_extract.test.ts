@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractPdfMeta, extractPdfOutline, extractPdfText, parsePageRange } from '../src/pdf_extract.js';
+import { extractPdfMeta, extractPdfOutline, extractPdfText, MAX_PDF_TEXT_BYTES, parsePageRange, readPageTextItems, withPdfDocument } from '../src/pdf_extract.js';
 
 // Minimal hand-authored single-page PDF (Helvetica text object), the standard
 // fixture shape for exercising a PDF parser without a binary test asset.
@@ -139,6 +139,38 @@ function blankFirstPagePdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(BLANK_FIRST_PAGE_PDF, 'latin1'));
 }
 
+// FORMAT-DERIVED: the object/xref-less layout and the BT/Tf/Td/Tj text-showing operators are written from ISO 32000-1 (9.4.3, 7.5), same shape as MINIMAL_PDF above. The font switch between adjacent Tj operators (F1/F2 alternate on every run) is what makes pdfjs 6.3.289 emit separate text items with no space item between them instead of merging adjacent same-font runs into one item -- confirmed by a CAPTURE of page.streamTextContent() items on this exact fixture: 10 items (not the single item every other fixture in this file produces, since every other fixture's adjacent Tj calls share one font and pdfjs merges them), 1 of them the literal string " ", and 2 carrying hasEOL: true -- one of those two lands on an empty-string item pdfjs inserts at the Td line break rather than on the preceding text item, which is why the join walks hasEOL per item instead of assuming it lands on the last visible word.
+const MIXED_FONTS_PDF = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /MediaBox [0 0 612 792] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 247 >>
+stream
+BT /F1 12 Tf 72 700 Td (Wagyu Games, LLC.) Tj /F2 12 Tf (, a Kentucky corporation with) Tj 0 -14 Td /F1 12 Tf (1.1 ) Tj /F2 12 Tf (Work Product) Tj /F1 12 Tf (. Any and all code) Tj 0 -14 Td (\\() Tj /F2 12 Tf (Company) Tj /F1 12 Tf (\\), and) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+trailer
+<< /Size 7 /Root 1 0 R >>
+%%EOF
+`;
+
+function mixedFontsPdfBytes(): Uint8Array {
+  return new Uint8Array(Buffer.from(MIXED_FONTS_PDF, 'latin1'));
+}
+
 describe('parsePageRange', () => {
   it('returns null for an unset spec (all pages)', () => {
     expect(parsePageRange(undefined, 10)).toBeNull();
@@ -201,6 +233,40 @@ describe('extractPdfText', () => {
     const lines = result.text.split('\n');
     expect(lines).toHaveLength(1);
     expect(lines[0]).toBe('A B C D');
+  });
+
+  // Regression: plain-mode extraction used to join every pdfjs text item with a literal space, inserting a space between adjacent word-fragment items pdfjs never separated (turning "LLC." into "LLC. ,") and discarding every line break (turning three lines into one, blowing --head/--grep/--tail page granularity in the CLI). pdfjs already reports inter-word gaps as explicit " " items and line ends as hasEOL: true, so joining on hasEOL alone reproduces the document without adding anything pdfjs did not already say was there.
+  it('reproduces line breaks and honors pdfjs word-gap items instead of inserting a space at every item boundary (regression: plain mode used to glue "LLC." to ", a" with an extra space and flatten every line into one)', async () => {
+    const result = await extractPdfText(mixedFontsPdfBytes());
+    expect(result.text.split('\n')).toEqual(['Wagyu Games, LLC., a Kentucky corporation with', '1.1 Work Product. Any and all code', '(Company), and']);
+    expect(result.text).toContain('LLC., a Kentucky');
+    expect(result.text).toContain('Work Product. Any');
+    expect(result.text).toContain('(Company), and');
+    expect(result.text).not.toContain('LLC. ,');
+    expect(result.text).not.toContain('Product .');
+    expect(result.text).not.toContain('( Company');
+    expect(result.text).not.toMatch(/ {2}/);
+  });
+
+  it('agrees with --layout on a single-column page (plain mode no longer needs --layout just to get real line breaks)', async () => {
+    const plain = await extractPdfText(mixedFontsPdfBytes());
+    const layout = await extractPdfText(mixedFontsPdfBytes(), undefined, true);
+    expect(plain.text).toBe(layout.text);
+  });
+});
+
+describe('pdfjs item shape backing the plain-text join (precondition, independent of the join under test)', () => {
+  it('still splits the mixed-font fixture into separate items with a real word-gap item and two EOL markers', async () => {
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    await withPdfDocument(pdfjs, mixedFontsPdfBytes(), async (doc, deadline) => {
+      const page = await doc.getPage(1);
+      const items = await readPageTextItems(page, MAX_PDF_TEXT_BYTES, deadline);
+      expect(items.length).toBeGreaterThanOrEqual(8);
+      expect(items.some((item) => item.str === ' ')).toBe(true);
+      expect(items.filter((item) => item.hasEOL).length).toBe(2);
+      expect(items.some((item) => item.str === 'Work Product')).toBe(true);
+      return null;
+    });
   });
 });
 

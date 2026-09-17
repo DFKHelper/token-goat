@@ -173,7 +173,7 @@ export async function readPageTextItems(page: pdfjsTypes.PDFPageProxy, budget: n
   for await (const chunk of pageTextItems(page, deadline)) {
     if (Date.now() > deadline) throw pdfWorkTookTooLong()
     if (over) continue
-    // One per item beyond its characters: the caller joins these with a separator, so an item that carries no text still costs a byte in the result, and a page of a million empty items would otherwise be free.
+    // One per item beyond its characters: the caller joins these with at most one separator byte per item (a newline on hasEOL, a space otherwise, or nothing), so an item that carries no text still costs a byte in the result, and a page of a million empty items would otherwise be free.
     for (const item of chunk) spent += item.str.length + 1
     count += chunk.length
     if (spent > budget || count > MAX_PDF_TEXT_ITEMS) {
@@ -205,6 +205,7 @@ export interface LayoutTextItem {
   str: string
   transform: number[]
   width?: number
+  hasEOL?: boolean
 }
 
 const Y_EPSILON = 2
@@ -367,7 +368,7 @@ export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layou
     for (let i = start; i <= end; i++) {
       const page = await getPageWithinDeadline(doc, i, deadline)
       const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES - spent, deadline)
-      const pageText = layout ? reconstructLayout(textItems, deadline) : textItems.map((item) => item.str).join(' ')
+      const pageText = layout ? reconstructLayout(textItems, deadline) : joinTextItems(textItems, '\n')
       spent += pageText.length
       pages.push(pageText.trim())
     }
@@ -417,7 +418,7 @@ export async function locatePdfPages(
     for (; i <= end && matches.length < maxMatches; i++) {
       const page = await getPageWithinDeadline(doc, i, deadline)
       const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES, deadline)
-      const pageText = textItems.map((item) => item.str).join(' ')
+      const pageText = joinTextItems(textItems, ' ')
       // Non-global regex: exec always starts at 0, so reusing `re` across pages carries no lastIndex state.
       const m = re.exec(pageText)
       if (m === null) continue
@@ -427,6 +428,13 @@ export async function locatePdfPages(
     const truncated = matches.length >= maxMatches && i <= end
     return { matches, truncated }
   })
+}
+
+/** Concatenates pdfjs text items, inserting `eol` after each item pdfjs marks `hasEOL` and nothing between items on the same line (pdfjs already reports inter-word gaps as explicit `' '` items, so no separator is added). A loop rather than a spread/join, for the same reason `readPageTextItems` builds its array one item at a time: a page can carry hundreds of thousands of items, past V8's argument-limit for a spread call. */
+function joinTextItems(items: readonly LayoutTextItem[], eol: string): string {
+  let out = ''
+  for (const item of items) out += item.str + (item.hasEOL ? eol : '')
+  return out
 }
 
 /** A single-lined context window of ~`context` characters centred on the match at [index, index+matchLen). Internal whitespace runs collapse to one space so the snippet stays on one line even when the page text spans multiple lines. */

@@ -31,6 +31,23 @@ function threePageBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(THREE_PAGE_PDF, 'latin1'))
 }
 
+// FORMAT-DERIVED: same object/xref-less layout as THREE_PAGE_PDF above, per ISO 32000-1 (9.4.3, 7.5). The font switch on every other Tj (F1/F2 alternate) is what makes pdfjs 6.3.289 emit 10 separate text items for this one line instead of merging same-font runs into one -- confirmed by a CAPTURE of page.streamTextContent() on this exact fixture (10 items, 1 literal " " item, 2 items with hasEOL: true). A single-Tj-per-line fixture like THREE_PAGE_PDF above never exercises the item-join at all, which is why the regression this fixture guards (a space-join bridging a line break, or an EOL-as-newline join breaking a phrase that legitimately wraps) needed its own fixture.
+const MIXED_FONTS_PDF =
+  '%PDF-1.4\n' +
+  '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+  '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+  '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /MediaBox [0 0 612 792] /Contents 5 0 R >>\nendobj\n' +
+  '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n' +
+  '5 0 obj\n<< /Length 247 >>\nstream\n' +
+  'BT /F1 12 Tf 72 700 Td (Wagyu Games, LLC.) Tj /F2 12 Tf (, a Kentucky corporation with) Tj 0 -14 Td /F1 12 Tf (1.1 ) Tj /F2 12 Tf (Work Product) Tj /F1 12 Tf (. Any and all code) Tj 0 -14 Td (\\() Tj /F2 12 Tf (Company) Tj /F1 12 Tf (\\), and) Tj ET\n' +
+  'endstream\nendobj\n' +
+  '6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n' +
+  'trailer\n<< /Size 7 /Root 1 0 R >>\n%%EOF\n'
+
+function mixedFontsBytes(): Uint8Array {
+  return new Uint8Array(Buffer.from(MIXED_FONTS_PDF, 'latin1'))
+}
+
 // The new truncated-scan assertions below are HAND-DERIVED: which pages match "a" and how many
 // pages the fixture has are read off THREE_PAGE_PDF's own text streams above, independently of
 // locatePdfPages's implementation -- not from running the code and pasting its output back.
@@ -96,6 +113,28 @@ describe('locatePdfPages', () => {
     // "a" matches all three pages, but the 2-3 window must exclude page 1.
     const { matches } = await locatePdfPages(threePageBytes(), 'a', { pages: '2-3' })
     expect(matches.map((m) => m.page)).toEqual([2, 3])
+  })
+
+  // Regression: locatePdfPages joined every pdfjs text item with a literal space, which happened to bridge cross-line phrases (a line-wrapped phrase still matched) but also inserted a phantom space between adjacent same-line word-fragment items pdfjs never separated, so a phrase spanning a font switch mid-word (e.g. "LLC." next to ", a") never matched. Joining on pdfjs's own hasEOL flag with a space (not a newline, unlike plain-mode extractPdfText) keeps the cross-line match working while fixing the mid-line one.
+  it('matches a phrase that spans a font switch mid-line, which the old space-at-every-boundary join already produced text for coincidentally', async () => {
+    const { matches } = await locatePdfPages(mixedFontsBytes(), 'LLC\\., a Kentucky', {})
+    expect(matches.map((m) => m.page)).toEqual([1])
+  })
+
+  it('matches a phrase spanning a font switch after a period', async () => {
+    const { matches } = await locatePdfPages(mixedFontsBytes(), 'Work Product\\. Any', {})
+    expect(matches.map((m) => m.page)).toEqual([1])
+  })
+
+  it('matches a parenthesized phrase that spans a font switch', async () => {
+    const { matches } = await locatePdfPages(mixedFontsBytes(), '\\(Company\\)', {})
+    expect(matches.map((m) => m.page)).toEqual([1])
+  })
+
+  // Cross-line regression guard: if the fix ever maps hasEOL to '\n' in locatePdfPages the same way extractPdfText does, a phrase that legitimately wraps across a line break stops matching. locatePdfPages must keep joining on a space so a page is still one searchable line.
+  it('still matches a phrase that wraps across a line break (would regress if EOL were joined as a newline here)', async () => {
+    const { matches } = await locatePdfPages(mixedFontsBytes(), 'corporation with 1\\.1 Work', {})
+    expect(matches.map((m) => m.page)).toEqual([1])
   })
 })
 
