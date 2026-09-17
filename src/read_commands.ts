@@ -22,7 +22,7 @@ import { extractExportNames, extractImports, importsExtensionFor } from './impor
 export { extractExportNames, extractImports, importsExtensionFor }
 import { getDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, type SearchHit } from './embeddings.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, checkEmbeddingPreflight, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection } from './section_reader.js'
 import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, isTestFile } from './util.js'
@@ -1178,10 +1178,33 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     if (closes.length > 0) messages.push(didYouMean(closes))
     // No candidate resembled the query -- point at the command that lists the file's real
     // symbols instead of leaving the miss with no next step.
-    else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
-    else if (fs.existsSync(resolved)) {
-      const gap = symbolExtractorGap(file, resolved)
-      if (gap !== undefined) messages.push(gap)
+    else if (scanned.length > 0) {
+      if (/\.(yaml|yml)$/i.test(file)) {
+        messages.push(`Try: token-goat yaml-outline ${file}\nQuery subtree: token-goat yaml-query ${file} '<path>'`)
+      } else if (/\.xml$/i.test(file)) {
+        messages.push(`Try: token-goat xml-outline ${file}\nQuery subtree: token-goat xml-query ${file} '<path>'`)
+      } else if (/\.json$/i.test(file)) {
+        messages.push(`Try: token-goat json-outline ${file}\nQuery subtree: token-goat json-query ${file} '<path>'`)
+      } else {
+        messages.push(`Try: token-goat outline ${file}`)
+      }
+    } else if (fs.existsSync(resolved)) {
+      if (/\.(yaml|yml)$/i.test(file)) {
+        messages.push(
+          `'${file}' is a YAML file -- YAML keys below top level are not symbols; inspect structure or query values with:\n  token-goat yaml-outline ${file}\n  token-goat yaml-query ${file} '<path>'`,
+        )
+      } else if (/\.xml$/i.test(file)) {
+        messages.push(
+          `'${file}' is an XML file -- inspect structure or query nodes with:\n  token-goat xml-outline ${file}\n  token-goat xml-query ${file} '<path>'`,
+        )
+      } else if (/\.json$/i.test(file)) {
+        messages.push(
+          `'${file}' is a JSON file -- inspect structure or query values with:\n  token-goat json-outline ${file}\n  token-goat json-query ${file} '<path>'`,
+        )
+      } else {
+        const gap = symbolExtractorGap(file, resolved)
+        if (gap !== undefined) messages.push(gap)
+      }
     }
     return { text: messages.join('\n'), code: 1 }
   }
@@ -2540,6 +2563,10 @@ interface SemanticOptions {
    * a hit must satisfy both. Applied before the `--limit` slice in both branches.
    */
   excludeTests?: boolean
+  /** Run semantic embedding preflight check and exit. */
+  preflight?: boolean
+  /** Warm up the embedding model session in memory before query execution. */
+  warm?: boolean
 }
 
 // Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic
@@ -2589,19 +2616,47 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     }
   }
   const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+  let projectCoverage: { indexedFiles: number; embeddedFiles: number } | undefined
+  try {
+    projectCoverage = getEmbeddingCoverage(globalDbPath(), rootDir)
+  } catch {
+    // DB or project root not yet initialized
+  }
+
+  if (opts.preflight === true) {
+    const preflight = await checkEmbeddingPreflight({
+      ...(opts.warm !== undefined ? { warm: opts.warm } : {}),
+      projectRoot: rootDir,
+      ...(projectCoverage !== undefined ? { coverage: projectCoverage } : {}),
+    })
+    if (opts.json === true) {
+      return { text: displaySafeJson(preflight), code: preflight.status === 'ready' ? 0 : 1 }
+    }
+    const lines = [
+      `Semantic embedding status: ${preflight.status.toUpperCase()}`,
+      `  Summary: ${preflight.summary}`,
+      `  Config (indexing.embeddings_enabled): ${preflight.configEnabled ? 'enabled' : 'disabled'}`,
+      `  ONNX runtime (onnxruntime-node): ${preflight.runtimeAvailable ? 'available' : 'missing'}`,
+      `  Model files (~34 MB): ${preflight.modelFilesPresent ? 'present' : 'missing'}`,
+      `  In-memory session: ${preflight.modelWarmed ? 'ready / warmed' : 'not loaded'}`,
+      `  Project coverage: ${preflight.embeddedFiles}/${countNoun(preflight.indexedFiles, 'file')} (${preflight.coveragePercent}%)`,
+    ]
+    if (preflight.actionRequired) {
+      lines.push(`  Action: ${preflight.actionRequired}`)
+    }
+    return { text: lines.join('\n'), code: preflight.status === 'ready' ? 0 : 1 }
+  }
+
+  // Preflight check surfaces broken or degraded embeddings before a query is attempted.
+  const preflight = await checkEmbeddingPreflight({
+    ...(opts.warm !== undefined ? { warm: opts.warm } : {}),
+    projectRoot: rootDir,
+    ...(projectCoverage !== undefined ? { coverage: projectCoverage } : {}),
+  })
 
   // Same flag that gates embedding at index time (parser.ts, worker.ts) must also gate it here at query time, or TOKEN_GOAT_EMBEDDINGS_ENABLED=0 -- read by every other embedding-adjacent path in this codebase, including memory_prune.ts's tryEmbeddingClusters -- does nothing for `semantic`: embeddingModelAvailable() below only checks whether the optional onnxruntime-node runtime is installed, not whether the user opted out, so a disabled-but-installed runtime would still call searchSemantic, which calls embedTexts, which downloads the ~34 MB model on a cold cache regardless of this setting. Checked once here so both the availability warning below and the searchSemantic call are skipped together.
   const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
 
-  // Real embedding-vector similarity search: chunks/chunk_vectors are populated during indexing whenever indexing.embeddings_enabled is on and the optional onnxruntime-node and sqlite-vec dependencies are present -- searchSemantic degrades to an empty array rather than throwing when either is unavailable or nothing has been embedded yet, so this is always safe to try; BM25 (below) is now ALWAYS consulted too, never gated on this returning zero hits, since a single weak dense hit used to make an exact BM25 keyword match unreachable.
-  // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits in the SAME file before truncation, instead of merging an already-capped set of `n` raw hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
-  // Say what the user is actually getting when the embedding model is absent. This is the default
-  // state now: the inference runtime is opt-in rather than something every install receives, so
-  // that a feature most installs never invoke does not put a 34 MB native addon on every machine.
-  // The result is a real degradation that produces no error and no empty result -- BM25 below
-  // still answers -- which is precisely the kind of quiet change nobody discovers. Stated here
-  // rather than inside searchSemantic because only this function knows the keyword pass runs, and
-  // the message there claimed the whole feature was off while printing above genuine keyword hits.
   if (embeddingsEnabled && !embeddingModelAvailable()) {
     console.warn(
       'Matching on meaning is off (onnxruntime-node is not installed); these results come from keyword search alone. ' +
@@ -2610,6 +2665,10 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   } else if (!embeddingsEnabled) {
     console.warn(
       'Matching on meaning is off (indexing.embeddings_enabled / TOKEN_GOAT_EMBEDDINGS_ENABLED is disabled); these results come from keyword search alone.',
+    )
+  } else if (preflight.status !== 'ready') {
+    console.warn(
+      `Matching on meaning is degraded (${preflight.summary}); these results come from keyword search alone.${preflight.actionRequired ? ` Action: ${preflight.actionRequired}` : ''}`,
     )
   }
   const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
@@ -2622,6 +2681,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // it was supposed to degrade to keyword search. Same treatment as the absent package: say what
   // is missing, then carry on with the BM25 pass below, which is the half that still works.
   let rawHits: SearchHit[] = []
+  let searchSemanticError: string | null = null
   if (embeddingsEnabled) {
     try {
       rawHits = await searchSemantic(
@@ -2633,9 +2693,12 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
         rootDir,
       )
     } catch (e) {
-      console.warn(
-        `Matching on meaning is off (${extractErrorMessage(e)}); these results come from keyword search alone.`,
-      )
+      searchSemanticError = extractErrorMessage(e)
+      if (preflight.status === 'ready') {
+        console.warn(
+          `Matching on meaning is off (${searchSemanticError}); these results come from keyword search alone.`,
+        )
+      }
     }
   }
   // The dense half contributing nothing is the moment this search is most misleading, because the
@@ -2643,8 +2706,8 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // moment worth paying for the coverage query, so it is gated here rather than run every call:
   // with hits, the reader has evidence embeddings are working; with none, they have no way to tell
   // "nothing in your code is similar" from "almost none of your code was ever embedded". Warn only
-  // when the model itself is available, since the two branches above already explain that case.
-  if (rawHits.length === 0 && embeddingModelAvailable()) {
+  // when the model itself is available and didn't fail with an error, since those branches already explain that case.
+  if (rawHits.length === 0 && embeddingModelAvailable() && preflight.status === 'ready' && !searchSemanticError) {
     try {
       // Config read and coverage query both inside the try: this whole block is a diagnostic aid,
       // and a diagnostic that can throw is worse than no diagnostic -- it would turn a search that
@@ -2761,7 +2824,25 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       // its bound, so a consumer can tell an exact total from a lower bound instead of being
       // handed a number that quietly means different things on different runs.
       const limitTruncated = hits.length < eligibleCount
-      const text = displaySafeJson({ source, ...capped, truncated: capped.truncated || limitTruncated, totalCount: eligibleCount, ...(candidatesClipped ? { totalCountIsFloor: true } : {}) })
+      const text = displaySafeJson({
+        source,
+        ...capped,
+        truncated: capped.truncated || limitTruncated,
+        totalCount: eligibleCount,
+        ...(candidatesClipped ? { totalCountIsFloor: true } : {}),
+        ...(preflight.status !== 'ready'
+          ? {
+              preflightStatus: preflight.status,
+              warning: preflight.summary,
+              ...(preflight.actionRequired ? { actionRequired: preflight.actionRequired } : {}),
+            }
+          : searchSemanticError !== null
+            ? {
+                preflightStatus: 'degraded',
+                warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.`,
+              }
+            : {}),
+      })
       recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
     }
@@ -2837,14 +2918,55 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   if (opts.json === true) {
     // A dedicated field, never prose folded into an existing string field -- same "add a field, don't rewrite an existing one" convention doctor's own {status, message} shape follows, and consistent with this payload's own {source, items, truncated, totalCount} envelope.
     const payload = indexEmpty
-      ? { source: 'fts', items: [], truncated: false, totalCount: 0, indexEmpty: true, hint: emptyIndexMessage(rootDir) }
-      : { source: 'fts', items: [], truncated: false, totalCount: 0 }
+      ? {
+          source: 'fts',
+          items: [],
+          truncated: false,
+          totalCount: 0,
+          indexEmpty: true,
+          hint: emptyIndexMessage(rootDir),
+          ...(preflight.status !== 'ready'
+            ? {
+                preflightStatus: preflight.status,
+                warning: preflight.summary,
+                ...(preflight.actionRequired ? { actionRequired: preflight.actionRequired } : {}),
+              }
+            : searchSemanticError !== null
+              ? {
+                  preflightStatus: 'degraded',
+                  warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.`,
+                }
+              : {}),
+        }
+      : {
+          source: 'fts',
+          items: [],
+          truncated: false,
+          totalCount: 0,
+          ...(preflight.status !== 'ready'
+            ? {
+                preflightStatus: preflight.status,
+                warning: preflight.summary,
+                ...(preflight.actionRequired ? { actionRequired: preflight.actionRequired } : {}),
+              }
+            : searchSemanticError !== null
+              ? {
+                  preflightStatus: 'degraded',
+                  warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.`,
+                }
+              : {}),
+        }
     const text = displaySafeJson(payload)
     return { text, code: 1 }
   }
-  const text = indexEmpty
+  let text = indexEmpty
     ? `token-goat: no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
     : `token-goat: no matches for '${query}'`
+  if (preflight.status !== 'ready') {
+    text += `\n(note: semantic indexing is degraded [${preflight.status}]: ${preflight.summary}${preflight.actionRequired ? ` — ${preflight.actionRequired}` : ''})`
+  } else if (searchSemanticError !== null) {
+    text += `\n(note: semantic matching degraded: ${searchSemanticError}; results come from keyword search alone)`
+  }
   return { text, code: 1 }
 }
 

@@ -23,6 +23,9 @@ export const FILE_TYPE_THRESHOLDS = {
   log: 10_000,
   svg: 8_000,
   xml: 20_000,
+  dtsx: 20_000,
+  ampkg: 20_000,
+  xaml: 20_000,
   csv: 10_000,
   tsv: 10_000,
   json: 20_000,
@@ -220,16 +223,20 @@ export function handleSvg(filePath: string, content: string, contentLengthHint?:
   }
 }
 
-/** XML handler — blocks when file exceeds threshold (20 KB). */
+/** XML handler — blocks when file exceeds threshold (20 KB). Supports XML, DTSX (SSIS), AMPKG (workflow packages), XAML. */
 export function handleXml(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
-  if (length < FILE_TYPE_THRESHOLDS.xml) return { shouldBlock: false, message: '' }
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? 'xml'
+  const threshold = ext === 'dtsx' || ext === 'ampkg' || ext === 'xaml' ? FILE_TYPE_THRESHOLDS[ext] : FILE_TYPE_THRESHOLDS.xml
+  if (length < threshold) return { shouldBlock: false, message: '' }
+
+  const typeLabel = ext === 'dtsx' ? 'SSIS package XML (.dtsx)' : ext === 'ampkg' ? 'workflow package XML (.ampkg)' : ext === 'xaml' ? 'XAML (.xaml)' : 'XML'
 
   if (previewUnavailable(content, length)) {
     return {
       shouldBlock: true,
       message: [
-        `Large XML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        `Large ${typeLabel} file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
         `Inspect structure: token-goat xml-outline "${filePath}"`,
         `Query nodes: token-goat xml-query "${filePath}" "<selector>"`,
       ].join('\n'),
@@ -239,7 +246,7 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
   return {
     shouldBlock: true,
     message: [
-      `Large XML file (${formatBytes(length)}).`,
+      `Large ${typeLabel} file (${formatBytes(length)}).`,
       `Inspect hierarchy: token-goat xml-outline "${filePath}"`,
       `Query specific elements: token-goat xml-query "${filePath}" "<selector>"`,
     ].join('\n'),
@@ -407,14 +414,22 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.json) return { shouldBlock: false, message: '' }
 
+  const isSpill = /(?:^|[/\\])content\.json$/i.test(filePath) || /[/\\](?:tmp|temp)[/\\]/i.test(filePath)
+  const spillHeader = isSpill
+    ? `This file appears to be an oversized tool output spill (${formatBytes(length)}). Do not read it whole with Read/read_file.`
+    : `Large JSON file (${formatBytes(length)}).`
+
   if (previewUnavailable(content, length)) {
     return {
       shouldBlock: true,
       message: [
-        `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        isSpill
+          ? `This file appears to be an oversized tool output spill (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`
+          : `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
         `See structure: token-goat json-outline "${filePath}"`,
         `Query subtree: token-goat json-query "${filePath}" '<path>'`,
-      ].join('\n'),
+        isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query '<path>'` : '',
+      ].filter(Boolean).join('\n'),
     }
   }
 
@@ -438,10 +453,11 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
   return {
     shouldBlock: true,
     message: [
-      `Large JSON file (${formatBytes(length)}).`,
+      spillHeader,
       summary ? fenceUntrustedFileContent(summary) : '',
       `See structure: token-goat json-outline "${filePath}"`,
       `Query subtree: token-goat json-query "${filePath}" '<path>'`,
+      isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query '<path>'` : '',
     ].filter(Boolean).join('\n'),
   }
 }
@@ -530,7 +546,7 @@ export function dispatchFileTypeHandler(
 
   if (ext === 'pdf') return handlePdf(filePath, effectiveLength)
   if (ext === 'svg') return handleSvg(filePath, content, effectiveLength)
-  if (ext === 'xml') return handleXml(filePath, content, effectiveLength)
+  if (['xml', 'dtsx', 'ampkg', 'xaml'].includes(ext)) return handleXml(filePath, content, effectiveLength)
   if (['html', 'htm', 'xhtml'].includes(ext)) return handleHtml(filePath, content, effectiveLength)
   if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength)
   if (ext === 'xlsx') return handleXlsx(filePath)

@@ -121,8 +121,39 @@ export function runSectionMulti(
   let anyFound = false
   const jsonOut: Record<string, unknown> = {}
   const textBlocks: string[] = []
+  const includedSections: { heading: string; lineStart: number; lineEnd: number }[] = []
 
   for (const heading of headings) {
+    const sectionResult = readSection(resolvedFilePath, heading, readFileText)
+    if (sectionResult !== null) {
+      const parent = includedSections.find(
+        (p) => sectionResult.lineStart >= p.lineStart && sectionResult.lineEnd <= p.lineEnd,
+      )
+      if (parent !== undefined) {
+        anyFound = true
+        const notice = `(already included in section '${parent.heading}', lines ${sectionResult.lineStart}-${sectionResult.lineEnd})`
+        if (opts.json === true) {
+          jsonOut[heading] = {
+            heading: sectionResult.heading,
+            subsumedBy: parent.heading,
+            lineStart: sectionResult.lineStart,
+            lineEnd: sectionResult.lineEnd,
+            notice,
+          }
+          continue
+        }
+        textBlocks.push(
+          `${heading}:\n# ${sectionResult.heading} — ${specFilePath}:${sectionResult.lineStart}-${sectionResult.lineEnd}\n${notice}`,
+        )
+        continue
+      }
+      includedSections.push({
+        heading: sectionResult.heading,
+        lineStart: sectionResult.lineStart,
+        lineEnd: sectionResult.lineEnd,
+      })
+    }
+
     const sub = runSection({ ...opts, spec: `${specFilePath}::${heading}`, suppressStat: true })
     if (sub.code === 0) anyFound = true
     if (opts.json === true) {
@@ -142,24 +173,59 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
   let anyFound = false
   const jsonOut: Record<string, unknown> = {}
   const textBlocks: string[] = []
+  const includedByFile = new Map<string, { heading: string; lineStart: number; lineEnd: number }[]>()
 
   const distinctFiles = new Set(pairs.map((p) => p.file))
   const keyFor = (p: { file: string; symbol: string }): string =>
     distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`
 
+  const resolvePath = (f: string): string =>
+    opts.projectRoot !== undefined && !path.isAbsolute(f) ? path.resolve(opts.projectRoot, f) : f
+
   for (const { file, symbol: heading } of pairs) {
+    const resolved = resolvePath(file)
+    const sectionResult = readSection(resolved, heading, readFileText)
+    const key = keyFor({ file, symbol: heading })
+    const fileIncluded = includedByFile.get(resolved) ?? []
+
+    if (sectionResult !== null) {
+      const parent = fileIncluded.find(
+        (p) => sectionResult.lineStart >= p.lineStart && sectionResult.lineEnd <= p.lineEnd,
+      )
+      if (parent !== undefined) {
+        anyFound = true
+        const notice = `(already included in section '${parent.heading}', lines ${sectionResult.lineStart}-${sectionResult.lineEnd})`
+        if (opts.json === true) {
+          jsonOut[key] = {
+            heading: sectionResult.heading,
+            subsumedBy: parent.heading,
+            lineStart: sectionResult.lineStart,
+            lineEnd: sectionResult.lineEnd,
+            notice,
+          }
+          continue
+        }
+        textBlocks.push(
+          `${key}:\n# ${sectionResult.heading} — ${file}:${sectionResult.lineStart}-${sectionResult.lineEnd}\n${notice}`,
+        )
+        continue
+      }
+      fileIncluded.push({
+        heading: sectionResult.heading,
+        lineStart: sectionResult.lineStart,
+        lineEnd: sectionResult.lineEnd,
+      })
+      includedByFile.set(resolved, fileIncluded)
+    }
+
     const sub = runSection({ ...opts, spec: `${file}::${heading}`, suppressStat: true })
     if (sub.code === 0) anyFound = true
-    const key = keyFor({ file, symbol: heading })
     if (opts.json === true) {
       jsonOut[key] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
       continue
     }
     textBlocks.push(`${key}:\n${sub.text}`)
   }
-
-  const resolvePath = (f: string): string =>
-    opts.projectRoot !== undefined && !path.isAbsolute(f) ? path.resolve(opts.projectRoot, f) : f
 
   const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) {

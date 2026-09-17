@@ -150,7 +150,7 @@ describe('parseXmlPath', () => {
   it('parses attribute selectors @attr and attribute filter [@attr=val]', () => {
     expect(parseXmlPath('catalog/book[@genre=Fantasy]/@id')).toEqual([
       { tag: 'catalog', isRecursive: false },
-      { tag: 'book', isRecursive: false, attributeFilters: [{ name: 'genre', value: 'Fantasy' }] },
+      { tag: 'book', isRecursive: false, attributeFilter: { name: 'genre', value: 'Fantasy' } },
       { tag: '', isRecursive: false, attributeSelect: 'id' },
     ])
   })
@@ -160,18 +160,16 @@ describe('parseXmlPath', () => {
   // off xml_query.ts's own regexes.
   it('keeps every bracket clause on a segment, not just the last one', () => {
     // Pre-fix, the three clause regexes were anchored at the end of the whole segment, so the index regex matched the trailing `[2]`, the if/else chain short-circuited before the attribute regex ran, and a greedy `\[.*\]$` strip took `@id='1'` off the tag. The parse came back as a bare positional step and the command answered from it without a word.
-    expect(parseXmlPath("item[@id='1'][2]")).toEqual([
-      { tag: 'item', isRecursive: false, index: 2, attributeFilters: [{ name: 'id', value: '1' }] },
+    // Asserted on `predicates`, which carries every clause in source order. The singular
+    // `attributeFilter` beside it is a legacy field holding only the last attribute clause, so
+    // reading stacking off it would report `lang` alone and agree with the very bug this covers.
+    expect(parseXmlPath("item[@id='1'][2]")[0]?.predicates).toEqual([
+      { kind: 'attrEquals', name: 'id', value: '1' },
+      { kind: 'index', index: 2 },
     ])
-    expect(parseXmlPath("item[@id='1'][@lang='en']")).toEqual([
-      {
-        tag: 'item',
-        isRecursive: false,
-        attributeFilters: [
-          { name: 'id', value: '1' },
-          { name: 'lang', value: 'en' },
-        ],
-      },
+    expect(parseXmlPath("item[@id='1'][@lang='en']")[0]?.predicates).toEqual([
+      { kind: 'attrEquals', name: 'id', value: '1' },
+      { kind: 'attrEquals', name: 'lang', value: 'en' },
     ])
   })
 })

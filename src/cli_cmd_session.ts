@@ -67,6 +67,10 @@ import {
   runNoteList,
 } from './read_commands.js'
 import {
+  cmdSessionSchema,
+  cmdDescribe,
+} from './session_store_schema.js'
+import {
   runExit,
   runExitText,
   requireNonNegativeInt,
@@ -437,4 +441,17 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
         ...(opts.sentences !== undefined ? { sentences: opts.sentences } : {}),
         ...(opts.show === true ? { show: true } : {}),
       }))())
+
+  program
+    .command('session-schema [table]')
+    .description('authoritative schema discovery for Copilot session_store_sql (DuckDB/SQLite) and session SQLite tables instead of trial-and-error SELECT *')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdSessionSchema))
+
+  program
+    .command('describe [target] [table]')
+    .description('describe columns and structure of a session store table or SQLite database file instead of querying SELECT *')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdDescribe))
 }
+

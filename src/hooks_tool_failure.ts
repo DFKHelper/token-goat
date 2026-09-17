@@ -31,6 +31,7 @@ import { displaySafeText, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { ensureDirSync } from './util.js'
 import { sessionSidecarPath } from './session_store.js'
+import { diagnoseSqlFailure } from './session_store_schema.js'
 import type { HookOutput } from './types.js'
 
 const FAILURE_SUFFIX = '.tool-failures.json'
@@ -238,6 +239,7 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     const priorState = ledger.seen[signature]
 
     const editDiagnostic = diagnoseEditFailure(event, errorText)
+    const sqlDiagnostic = diagnoseSqlFailure(event, errorText)
 
     if (priorState === undefined) {
       // First time this exact failure has been seen: record it.
@@ -257,6 +259,13 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
         return contextOutput(editDiagnostic)
       }
 
+      // If this is an actionable SQL column/table error, advise immediately with valid schema.
+      if (sqlDiagnostic !== null) {
+        ledger.seen[signature] = true
+        writeLedger(target, ledger)
+        return contextOutput(sqlDiagnostic)
+      }
+
       return passOutput()
     }
 
@@ -267,6 +276,10 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
 
     if (editDiagnostic !== null) {
       return contextOutput(editDiagnostic)
+    }
+
+    if (sqlDiagnostic !== null) {
+      return contextOutput(sqlDiagnostic)
     }
 
     return contextOutput(repeatFailureNotice(toolName))

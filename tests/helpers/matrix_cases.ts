@@ -939,6 +939,39 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
     expect(r.stdout).toMatch(/files|diff|comments|description/i)
   },
+  'session-schema': () => {
+    const r = run(['session-schema'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('sessions')
+    expect(r.stdout).toContain('turns')
+    expect(r.stdout).toContain('checkpoints')
+
+    const rTable = run(['session-schema', 'sessions'])
+    expect(rTable.status, rTable.stderr).toBe(0)
+    expect(rTable.stdout).toContain('summary')
+    expect(rTable.stdout).toContain('agent_name')
+
+    const rJson = run(['session-schema', 'sessions', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const parsed = JSON.parse(rJson.stdout)
+    expect(parsed.name).toBe('sessions')
+    expect(Array.isArray(parsed.columns)).toBe(true)
+  },
+  'describe': () => {
+    const r = run(['describe', 'sessions'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('summary')
+    expect(r.stdout).toContain('agent_name')
+
+    const rAll = run(['describe'])
+    expect(rAll.status, rAll.stderr).toBe(0)
+    expect(rAll.stdout).toContain('sessions')
+
+    const rJson = run(['describe', 'sessions', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const parsed = JSON.parse(rJson.stdout)
+    expect(parsed.name).toBe('sessions')
+  },
   'sqlite-schema': () => {
     const dir = mkIsolated('tg-matrix-sqliteschema-')
     const dbPath = path.join(dir, 'fixture.db')

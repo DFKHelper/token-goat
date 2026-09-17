@@ -38,6 +38,7 @@ import {
   outlineXml,
   queryXml,
   serializeXmlNode,
+  tryDecodeEmbeddedXml,
   xmlNodeToJson,
   type XmlOutlineSummary,
 } from './xml_query.js'
@@ -334,15 +335,24 @@ export function runXmlOutline(opts: XmlOutlineCliOptions): number {
 
 export interface XmlQueryCliOptions {
   file: string
-  path: string
+  path?: string
+  xpath?: string
   head?: string
   json?: boolean
+  withLines?: boolean
+  decodeEmbeddedXml?: boolean
 }
 
 export function runXmlQuery(opts: XmlQueryCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
     emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  const queryPath = (opts.xpath ?? opts.path ?? '').trim()
+  if (!queryPath) {
+    emitErr('Must provide a path or --xpath <expression>')
     return 1
   }
 
@@ -355,7 +365,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
   }
 
   try {
-    const result = queryXml(text, opts.path)
+    const result = queryXml(text, queryPath, { ...(opts.xpath !== undefined ? { xpath: opts.xpath } : {}) })
     const fullSourceBytes = sumFileSizes([opts.file])
 
     if (result.attributeValues !== undefined) {
@@ -365,30 +375,92 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           emit(jsonText)
           recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
         } else {
-          emit(`No attributes matched path: '${displaySafeText(opts.path)}'`)
+          emit(`No attributes matched path: '${displaySafeText(queryPath)}'`)
         }
         return 0
       }
 
-      if (!result.fanned) {
-        const val = result.attributeValues[0] ?? ''
-        const outText = opts.json === true ? displaySafeJson(val, 0) : val
+      const totalCount = result.attributeValues.length
+      const limitedNodes =
+        result.attributeNodes !== undefined
+          ? head !== undefined
+            ? result.attributeNodes.slice(0, head)
+            : result.attributeNodes
+          : undefined
+      const limited = head !== undefined ? result.attributeValues.slice(0, head) : result.attributeValues
+      const headTruncated = limited.length < totalCount
+
+      if (!result.fanned && totalCount === 1) {
+        let val = limited[0] ?? ''
+        if (opts.decodeEmbeddedXml) {
+          const decoded = tryDecodeEmbeddedXml(val)
+          if (decoded.decoded) val = decoded.text
+        }
+        let outText = ''
+        if (opts.json === true) {
+          if (opts.withLines && limitedNodes && limitedNodes[0]) {
+            outText = displaySafeJson(
+              { value: val, lineStart: limitedNodes[0].node.line, lineEnd: limitedNodes[0].node.lineEnd },
+              0,
+            )
+          } else {
+            outText = displaySafeJson(val, 0)
+          }
+        } else {
+          if (opts.withLines && limitedNodes && limitedNodes[0]) {
+            outText = `# Line: L${limitedNodes[0].node.line}\n${val}`
+          } else {
+            outText = val
+          }
+        }
         emit(outText)
         recordReadStat('xml_query', fullSourceBytes, outText, opts.file)
         return 0
       }
 
-      const totalCount = result.attributeValues.length
-      const limited = head !== undefined ? result.attributeValues.slice(0, head) : result.attributeValues
-      const headTruncated = limited.length < totalCount
-
       if (opts.json === true) {
-        const capped = guardJsonRows(limited)
-        const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
+        let itemsToSerialize: unknown[] = limited
+        if (opts.withLines && limitedNodes) {
+          itemsToSerialize = limitedNodes.map((an) => {
+            let val = an.value
+            if (opts.decodeEmbeddedXml) {
+              const decoded = tryDecodeEmbeddedXml(val)
+              if (decoded.decoded) val = decoded.text
+            }
+            return {
+              value: val,
+              lineStart: an.node.line,
+              lineEnd: an.node.lineEnd,
+            }
+          })
+        } else if (opts.decodeEmbeddedXml) {
+          itemsToSerialize = limited.map((val) => {
+            const decoded = tryDecodeEmbeddedXml(val)
+            return decoded.decoded ? decoded.text : val
+          })
+        }
+        const capped = guardJsonRows(itemsToSerialize)
+        const jsonText = displaySafeJson(
+          { items: capped.items, truncated: capped.truncated || headTruncated, totalCount },
+          0,
+        )
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
       } else {
-        const lines = limited.map((item) => item)
+        const lines: string[] = []
+        for (let i = 0; i < limited.length; i++) {
+          let val = limited[i] ?? ''
+          if (opts.decodeEmbeddedXml) {
+            const decoded = tryDecodeEmbeddedXml(val)
+            if (decoded.decoded) val = decoded.text
+          }
+          const nodeInfo = limitedNodes ? limitedNodes[i] : undefined
+          if (opts.withLines && nodeInfo) {
+            lines.push(`# Line: L${nodeInfo.node.line}\n${val}`)
+          } else {
+            lines.push(val)
+          }
+        }
         if (headTruncated) {
           lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
         }
@@ -405,20 +477,30 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
       } else {
-        emit(`No elements matched path: '${displaySafeText(opts.path)}'`)
+        emit(`No elements matched path: '${displaySafeText(queryPath)}'`)
       }
       return 0
     }
 
-    if (!result.fanned) {
+    if (!result.fanned && result.items.length === 1) {
       const node = result.items[0]!
       if (opts.json === true) {
-        const jsonVal = xmlNodeToJson(node)
+        const jsonVal = xmlNodeToJson(node, {
+          ...(opts.withLines ? { withLines: true } : {}),
+          ...(opts.decodeEmbeddedXml ? { decodeEmbedded: true } : {}),
+        })
         const jsonText = displaySafeJson(jsonVal)
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
       } else {
-        const xmlText = serializeXmlNode(node)
+        let xmlText = serializeXmlNode(
+          node,
+          0,
+          opts.decodeEmbeddedXml ? { decodeEmbedded: true } : {},
+        )
+        if (opts.withLines) {
+          xmlText = `# Lines: L${node.line}-L${node.lineEnd}\n${xmlText}`
+        }
         emitGuarded(xmlText, 'xml-query')
         recordReadStat('xml_query', fullSourceBytes, xmlText, opts.file)
       }
@@ -430,13 +512,31 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
-      const jsonItems = limited.map(xmlNodeToJson)
+      const jsonItems = limited.map((n) =>
+        xmlNodeToJson(n, {
+          ...(opts.withLines ? { withLines: true } : {}),
+          ...(opts.decodeEmbeddedXml ? { decodeEmbedded: true } : {}),
+        }),
+      )
       const capped = guardJsonRows(jsonItems)
-      const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
+      const jsonText = displaySafeJson(
+        { items: capped.items, truncated: capped.truncated || headTruncated, totalCount },
+        0,
+      )
       emit(jsonText)
       recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
     } else {
-      const blocks = limited.map((node) => serializeXmlNode(node))
+      const blocks = limited.map((node) => {
+        let block = serializeXmlNode(
+          node,
+          0,
+          opts.decodeEmbeddedXml ? { decodeEmbedded: true } : {},
+        )
+        if (opts.withLines) {
+          block = `# Lines: L${node.line}-L${node.lineEnd}\n${block}`
+        }
+        return block
+      })
       if (headTruncated) {
         blocks.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
       }

@@ -138,6 +138,11 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Large MCP tool result (≥2 KB) doesn't table-ify (an object-rooted config dump, a single-resource response, a nested settings tree) but most of its bytes are `null`/`""`/`[]`/`{}` | Deterministic empty-value pruning: recursively drops those four empty shapes to a fixed point (a container left empty by its own dropped children is dropped too) and renders the remainder as compact JSON with a trailing `dropped N empty value(s) (null, "", [], {})` summary line; `0` and `false` are never dropped; only applied when it saves ≥15%. Same full-recovery-by-id guarantee and `TOKEN_GOAT_MCP_COMPRESS=0` opt-out as the table pass |
 | GitHub MCP tool result (`list_pull_requests`, `list_issues`, `search_code`, `get_file_contents`, `pull_request_read`, …) carries dozens of boilerplate fields per object | GitHub compression pack strips `_links`, `node_id`, `gravatar_id`, `site_admin`, and every `*_url` field (`avatar_url`, `html_url`, `events_url`, `gists_url`, `followers_url`, …) except `download_url`/`git_url`/`clone_url`/`ssh_url`, before handing the shrunk JSON to the same table-ifying pass — same `TOKEN_GOAT_MCP_COMPRESS=0` opt-out and full-recovery-by-id guarantee |
 | Browser-automation MCP tool result (claude-in-chrome's `read_console_messages`/`read_network_requests`, chrome-devtools-mcp's `list_console_messages`/`list_network_requests`) carries verbose CDP plumbing per entry | Browser compression pack strips console `stackTrace` frames and network `requestHeaders`/`responseHeaders`/`timing`/`initiator`/`securityDetails`/cookie fields, keeping `url`/`method`/`status`/`resourceType`/`mimeType`/`reqid` and the actual log text, before the same table-ifying pass runs — same opt-out and full-recovery-by-id guarantee |
+| Atlassian MCP tool result (Jira issues, Confluence pages, search results) carries repetitive UI chrome and schemas | Atlassian compression pack strips boilerplate fields (`avatarUrls`, `iconUrl`, `self`, `expand`, `schema`, `operations`, `editmeta`, `names`, `_links`, `timeZone`), reducing payloads by 60–80% before table compression |
+| Oversized MCP tool result (≥25 KB) or dumped JSON tool spill file (e.g. `content.json`) re-read whole into context | Oversized MCP results return an elision preview and recovery ID; pre-read hooks intercept tool spill files, redirecting models to `token-goat mcp-output --json-query '<path>'` or `--file <path>` (~90–98% smaller) |
+| Large XML package (.dtsx, .ampkg, .xaml) read in full or paged with sequential line ranges | Pre-read hook intercepts package reads (20KB threshold) with package-specific hierarchy advice; sequential 3+ range paging is actively denied and redirected to `xml-outline` and `xml-query` |
+| Scratch terminal script or shell command used to inspect XML (`Select-Xml`, `[xml]`, `inspect_*.ps1`, Python `xml.etree`, `xmllint`) | Pre-bash hook intercepts terminal XML parsing commands, recommending `token-goat xml-query --xpath <expr>` or `xml-outline` instead of multi-step script generation (~85–95% smaller) |
+| XML document with deep element hierarchies or entity-encoded XML/AML payloads | `token-goat xml-query <file> --xpath <expr>` extracts targeted elements with exact line ranges (`--with-lines`), and `--decode-embedded-xml` pretty-prints and bounds nested AML payloads (~80–95% smaller) |
 | `curl -v` dumps TLS handshake + all request/response headers | Verbose lines stripped; request line, HTTP status, content-type, and body kept — typically 70–90% smaller |
 | `jest --verbose` / `vitest --verbose` emits one `✓` line per passing test | Consecutive passing-test lines collapsed to a count per file; failures kept verbatim, ~95% smaller on passing suites |
 | `go test -v` emits `--- PASS: TestName (Ns)` for every passing test | PASS lines collapsed to a count per package; FAIL lines and panic output kept, ~90% smaller on clean runs |
@@ -175,6 +180,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Reading poetry.lock or package-lock.json to find a pinned version | `token-goat lockdeps` returns a name/version table of direct dependencies; optional packages and transitive entries excluded |
 | Large SVG / diagram file (≥8 KB) read in full | Coordinate path flooding blocked; extracted layer/group IDs and title shown; redirects to `token-goat xml-outline` and `xml-query` |
 | Broad recursive Glob sweep (`*`, `**/*`) on root directory | Pre-Glob hook warns against tree-dumping and points at `token-goat map --compact` for fast, lightweight structure inspection |
+| Guessing database column names in `session_store_sql` / `sql` and falling back to `SELECT *` | `token-goat session-schema [table]` and `describe <target>` provide instant schema discovery; `post_tool_use_failure` hook intercepts unknown columns and guides the query — ~85–95% smaller than trial-and-error `SELECT *` dumps |
 | Compound test/build pipeline (`npm run build && npm run typecheck && npm test`) | Post-Bash hook routes chained build/test/lint commands to `generic-ci` compression, dropping verbose passing steps and compiler noise |
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
@@ -186,6 +192,7 @@ On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five s
 ```bash
 cd ~/notes                  # or any plain folder of .md files, no .git required
 token-goat index . --walk   # non-git folders need --walk (git repos: plain `token-goat index .`)
+token-goat semantic --preflight   # verify runtime, model weights & project coverage
 token-goat semantic "how long to steep cold brew"
 ```
 
@@ -204,10 +211,15 @@ Numbers below come from synthetic-fixture benchmarks in the test suite, except t
 | DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `src/parser.ts`, `src/db.ts` (index migration) |
 | Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `src/hooks_cli.ts` |
 | Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `src/parser.ts` (TypeScript adapter) |
-| Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `src/parser.ts` (Markdown adapter) |
+| Section extraction | Setext headings, h5/h6, anchor IDs, shell comment banners (`##`, `# ---`, `# ===`, `# [...]`, `# REGION:`), and `__frontmatter__` | `token-goat section` resolves more headings and procedural shell checks without falling back to a full file read | `src/parser.ts` (Markdown & Shell adapters) |
 | Image cache | Repeat Read of an unchanged image serves the stored re-encode, keyed on path + size + mtime, instead of re-encoding it again | Skips the re-encode entirely on a hit; the same bytes reach the model, so the reported saving is identical either way | `src/image_shrink.ts` (`findCachedShrink`) |
 | Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `src/config.ts` defaults |
 | Miss suggestions | `read` / `section` print "Did you mean…?" on a miss; `section` also auto-redirects on an unambiguous heading-prefix match | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `src/read_commands.ts` |
+| Atlassian MCP compression | Strips UI chrome, avatars, operations, and schema links from Jira and Confluence tool responses | 60–80% smaller before generic table compression | `src/mcp_atlassian_compress.ts` |
+| MCP tool spill slicing | Narrow-slice queries on cached MCP tool outputs or dumped JSON files with `mcp-output --json-query` | 90–98% smaller than whole-file JSON re-reads | `src/mcp_json_query.ts` |
+| XML package & terminal script interception | Pre-read nudges on `.dtsx`/`.ampkg`/`.xaml` and pre-bash interception of `Select-Xml`/`[xml]`/scratch scripts | 85–95% smaller than scratch script creation and chunk paging | `src/bash_extractors.ts`, `src/hooks_read.ts` |
+| Enhanced XML XPath & embedded AML | Granular XPath expressions, element source line ranges, and decoded embedded XML/AML payloads | 80–95% smaller than reading whole XML packages | `src/xml_query.ts` |
+| Session Store Schema & SQL Error Intercept | Authoritative schema discovery via `session-schema` / `describe`, paired with runtime unknown-column diagnosis in `postToolUseFailureHandler` | 85–95% smaller than trial-and-error `SELECT *` dumps | `src/session_store_schema.ts`, `src/hooks_tool_failure.ts` |
 
 ## Token-savings examples
 
@@ -719,6 +731,8 @@ For private questions, commercial licensing, or anything you'd rather not post p
 ## Disclaimer
 
 Token-Goat runs on your machine and touches your files. The software is provided as-is, without warranty of any kind. DFK Helper LLC is not liable for any damages arising from use. Full terms, including the No Liability clause, are in the LICENSE file.
+
+All product names, logos, brands, trademarks, and registered trademarks mentioned are property of their respective owners. All company, product, and service names used in this project are for identification and compatibility purposes only; their use does not imply any affiliation, sponsorship, or endorsement.
 
 ## License
 

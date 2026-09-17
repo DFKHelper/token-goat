@@ -19,6 +19,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import { isInsideStringLiteral, stripStringLiterals, makeLineSymbol, matchBashHeredocOpener } from './common.js'
+import { extractShellBannerHeading } from '../section_reader.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
@@ -131,6 +132,7 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
   // -- a `{` in a heredoc is not real nesting, and matching braces naively runs a function's span
   // to end-of-file and swallows every function below it.
   let openFunctionIndex: number | null = null
+  let openHeadingIndex: number | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -143,6 +145,39 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
       // unusual body, never desyncing the rest of the file).
       if (rawLine.trim() === heredocs[0]) heredocs.shift()
       continue
+    }
+
+    // Heading comment banners in shell scripts: recognize procedural section dividers
+    // (## Section, # -- Section --, # [Section], # REGION:) outside functions
+    if (!inFunction && braceDepth === 0) {
+      const banner = extractShellBannerHeading(rawLine)
+      if (banner !== null) {
+        if (openHeadingIndex !== null) {
+          const prev = symbols[openHeadingIndex]
+          if (prev !== undefined && lineNum > prev.lineStart) {
+            symbols[openHeadingIndex] = {
+              ...prev,
+              lineEnd: lineNum - 1,
+              body: lines.slice(prev.lineStart - 1, lineNum - 1).join('\n'),
+            }
+          }
+          openHeadingIndex = null
+        }
+        if (symbols.length < MAX_SYMBOLS) {
+          const pushIdx = symbols.length
+          symbols.push({
+            filePath,
+            name: banner.heading,
+            kind: 'heading',
+            lineStart: lineNum,
+            lineEnd: lineNum,
+            body: rawLine.trim(),
+            docstring: '',
+            parent: '',
+          })
+          openHeadingIndex = pushIdx
+        }
+      }
     }
 
     const noComment = stripBashComment(rawLine)
@@ -162,6 +197,17 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
       const posixMatch = kwMatch === null ? FUNC_POSIX_RE.exec(stripped) : null
       const funcMatch = kwMatch ?? posixMatch
       if (funcMatch) {
+        if (openHeadingIndex !== null) {
+          const prev = symbols[openHeadingIndex]
+          if (prev !== undefined && lineNum > prev.lineStart) {
+            symbols[openHeadingIndex] = {
+              ...prev,
+              lineEnd: lineNum - 1,
+              body: lines.slice(prev.lineStart - 1, lineNum - 1).join('\n'),
+            }
+          }
+          openHeadingIndex = null
+        }
         const fname = funcMatch[1] ?? ''
         let pushedIndex: number | null = null
         if (fname && symbols.length < MAX_SYMBOLS) {
@@ -217,6 +263,18 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
           symbols[openFunctionIndex] = { ...open, lineEnd: lineNum, body: lines.slice(open.lineStart - 1, lineNum).join('\n') }
         }
         openFunctionIndex = null
+      }
+    }
+  }
+
+  // Widen the trailing heading if one remained open through EOF
+  if (openHeadingIndex !== null && lines.length > 0) {
+    const prev = symbols[openHeadingIndex]
+    if (prev !== undefined && lines.length >= prev.lineStart) {
+      symbols[openHeadingIndex] = {
+        ...prev,
+        lineEnd: lines.length,
+        body: lines.slice(prev.lineStart - 1, lines.length).join('\n'),
       }
     }
   }

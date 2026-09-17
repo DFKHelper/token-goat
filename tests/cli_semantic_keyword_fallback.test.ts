@@ -45,6 +45,28 @@ vi.mock('../src/embeddings.js', async (importOriginal) => {
       if (searchFailure !== null) throw searchFailure
       return []
     },
+    checkEmbeddingPreflight: async () => {
+      if (searchFailure !== null) {
+        return {
+          status: 'load_error',
+          available: false,
+          summary: searchFailure.message,
+          message: searchFailure.message,
+          error: searchFailure.message,
+          modelName: 'Xenova/bge-small-en-v1.5',
+          runtimeVersion: '1.0',
+          runtimeAvailable: true,
+          configEnabled: true,
+          modelFilesPresent: false,
+          modelWarmed: false,
+          modelDir: '/tmp/models',
+          indexedFiles: 1,
+          embeddedFiles: 0,
+          coveragePercent: 0,
+        }
+      }
+      return actual.checkEmbeddingPreflight()
+    },
   }
 })
 
@@ -225,7 +247,7 @@ describe('semantic with the runtime installed but its model files unobtainable',
     const { warnings } = await runSemanticCli('refreshCredential')
     const warning = warnings.join('\n')
 
-    expect(warning, 'the same sentence the absent-package case prints').toContain('Matching on meaning is off')
+    expect(warning, 'the user is informed that meaning matching is degraded or off').toMatch(/Matching on meaning is (?:off|degraded)/)
     expect(warning, 'and where the results did come from').toContain('keyword search alone')
     // The reason is the actionable part and it differs every time -- offline, a network failure, a
     // digest mismatch. Swallowing it and printing the install command instead would send a reader

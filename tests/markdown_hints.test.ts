@@ -132,14 +132,16 @@ No headings here`
     expect(headings).toHaveLength(0)
   })
 
-  it('handles .rst-style headings (they should NOT match ATX)', () => {
+  it('handles .rst-style headings (they match as Setext headings with line numbers)', () => {
     const content = `Title
 =====
 
 Subtitle
 --------`
     const headings = extractMarkdownHeadings(content)
-    expect(headings).toHaveLength(0)
+    expect(headings).toHaveLength(2)
+    expect(headings[0]).toEqual({ level: 1, text: 'Title', lineNumber: 1 })
+    expect(headings[1]).toEqual({ level: 2, text: 'Subtitle', lineNumber: 4 })
   })
 })
 

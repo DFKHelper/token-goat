@@ -80,7 +80,9 @@ import {
   extractTranscriptText,
   extractSection,
   runSemantic,
+  guardJsonRows,
 } from './read_commands.js'
+import { queryJson } from './json_query.js'
 import {
   runExit,
   runExitText,
@@ -217,13 +219,18 @@ export function requirePositiveInt(flag: string, raw: string): number {
 // --- Command handlers -------------------------------------------------------
 
 // Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
-async function cmdSemantic(query: string, opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean }): Promise<void> {
+async function cmdSemantic(query: string | undefined, opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean }): Promise<void> {
+  if (!query && !opts.preflight && !opts.warm) {
+    throw new CliError('missing required argument: query')
+  }
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
-  const { text, code } = await runSemantic(query, {
+  const { text, code } = await runSemantic(query ?? '', {
     limit,
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
     ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+    ...(opts.preflight === true ? { preflight: true } : {}),
+    ...(opts.warm === true ? { warm: true } : {}),
   })
   // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only
   // the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
@@ -1236,8 +1243,29 @@ export function _applyFiltersAndPrint(
 
 function cmdBashOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string; maxMatches?: string; transcript?: boolean },
+  opts: {
+    head?: string
+    tail?: string
+    grep?: string
+    section?: string
+    file?: string
+    maxMatches?: string
+    transcript?: boolean
+    verifyLastWrite?: string | boolean
+    strict?: boolean
+  },
 ): void {
+  const parseVerifyThreshold = (optVal: string | boolean | undefined): number | undefined => {
+    if (optVal === undefined || optVal === false) return undefined
+    if (typeof optVal === 'string' && optVal.trim() !== '' && !isNaN(Number(optVal))) {
+      const parsed = Number(optVal)
+      return parsed >= 0 ? parsed : 60
+    }
+    return 60
+  }
+
+  const verifyThresholdSec = parseVerifyThreshold(opts.verifyLastWrite)
+
   if (opts.file !== undefined) {
     if (opts.file.includes('\0')) {
       throw new CliError('--file path contains a null byte')
@@ -1250,6 +1278,16 @@ function cmdBashOutput(
       const st = fs.statSync(opts.file)
       if (st.isFIFO() || st.isSocket()) {
         throw new CliError(`--file '${opts.file}' is a special file (FIFO or socket) — only regular files are supported`)
+      }
+      if (verifyThresholdSec !== undefined) {
+        const ageSec = Math.round((Date.now() - st.mtimeMs) / 1000)
+        if (ageSec > verifyThresholdSec) {
+          const msg = `stale write: '${opts.file}' was modified ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or no-op'd.`
+          if (opts.strict === true) {
+            throw new CliError(msg)
+          }
+          process.stderr.write(`[tg: stale-write] ${msg}\n`)
+        }
       }
       // `bash-output --file` is a general "show me this file's text" recall path, so a caller can
       // point it straight at a .env. Its values are secret by the file's nature; redact them here
@@ -1272,6 +1310,17 @@ function cmdBashOutput(
     throw new CliError(`no cached bash output for id: ${id}. If this id is from a background task, recall its output file directly with: token-goat bash-output --file <path-to-output-file>`)
   }
 
+  if (verifyThresholdSec !== undefined) {
+    const ageSec = Math.round((Date.now() - entry.storedAt) / 1000)
+    if (ageSec > verifyThresholdSec) {
+      const msg = `stale write: cached output '${id}' was recorded ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or not re-run.`
+      if (opts.strict === true) {
+        throw new CliError(msg)
+      }
+      process.stderr.write(`[tg: stale-write] ${msg}\n`)
+    }
+  }
+
   _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG)
 }
 
@@ -1290,22 +1339,121 @@ function cmdWebOutput(
   _applyFiltersAndPrint(content, opts, true)
 }
 
+function extractJsonFromMcpOutput(text: string): unknown {
+  const trimmed = text.trim()
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    const cleaned = trimmed
+      .replace(/^\[token-goat:[^\]]+\]\r?\n?/i, '')
+      .replace(/^<untrusted-tool-output[^>]*>\r?\n?/i, '')
+      .replace(/\r?\n?<\/untrusted-tool-output>$/i, '')
+      .trim()
+    try {
+      return JSON.parse(cleaned)
+    } catch {
+      const blockMatch = /```(?:json)?\r?\n([\s\S]*?)```/.exec(trimmed)
+      if (blockMatch && blockMatch[1]) {
+        try {
+          return JSON.parse(blockMatch[1].trim())
+        } catch {
+          // ignore fallback
+        }
+      }
+      throw new CliError('content is not valid JSON for --json-query')
+    }
+  }
+}
+
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
 function cmdMcpOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+  opts: {
+    head?: string
+    tail?: string
+    grep?: string
+    section?: string
+    maxMatches?: string
+    full?: boolean
+    jsonQuery?: string
+    file?: string
+    json?: boolean
+  },
 ): void {
-  if (id === undefined) {
-    throw new CliError('provide an mcp-output <id>')
+  let content: string
+  if (opts.file !== undefined) {
+    if (opts.file.includes('\0')) {
+      throw new CliError('--file path contains a null byte')
+    }
+    if (!fs.existsSync(opts.file)) {
+      throw new CliError(`file not found: ${opts.file}`)
+    }
+    try {
+      const st = fs.statSync(opts.file)
+      if (st.isFIFO() || st.isSocket()) {
+        throw new CliError(`--file '${opts.file}' is a special file (FIFO or socket) — only regular files are supported`)
+      }
+      content = decodeSource(fs.readFileSync(opts.file))
+    } catch (e) {
+      if (e instanceof CliError) throw e
+      throw new CliError(`cannot read file: ${opts.file}`)
+    }
+  } else if (id !== undefined) {
+    if (!id.startsWith('mcp_')) {
+      throw new CliError(`not an mcp-output id: ${id} (expected an id starting with 'mcp_')`)
+    }
+    const entry = getBashOutput(id)
+    if (entry === null) {
+      throw new CliError(`no cached mcp output for id: ${id}. The cache may have expired; re-run the MCP tool call to repopulate it.`)
+    }
+    content = entry.output
+  } else {
+    throw new CliError('provide an mcp-output <id> or --file <path>')
   }
-  if (!id.startsWith('mcp_')) {
-    throw new CliError(`not an mcp-output id: ${id} (expected an id starting with 'mcp_')`)
+
+  if (opts.jsonQuery !== undefined) {
+    const data = extractJsonFromMcpOutput(content)
+    let head: number | undefined
+    if (opts.head !== undefined) {
+      head = requireNonNegativeInt('--head', opts.head)
+    }
+    const queryResult = queryJson(data, opts.jsonQuery)
+
+    const { head: _omittedHead, ...restOpts } = opts
+    const printOpts = { ...restOpts, full: true }
+
+    if (!queryResult.fanned) {
+      const val = queryResult.items[0]
+      const formatted = opts.json === true ? displaySafeJson(val, 0) : displaySafeJson(val)
+      _applyFiltersAndPrint(formatted, printOpts, true, UNTRUSTED_TOOL_TAG)
+      return
+    }
+
+    const totalCount = queryResult.items.length
+    const limited = head !== undefined ? queryResult.items.slice(0, head) : queryResult.items
+    const headTruncated = limited.length < totalCount
+
+    if (opts.json === true) {
+      const capped = guardJsonRows(limited)
+      const jsonText = displaySafeJson(
+        { items: capped.items, truncated: capped.truncated || headTruncated || queryResult.truncated, totalCount },
+        0,
+      )
+      _applyFiltersAndPrint(jsonText, printOpts, true, UNTRUSTED_TOOL_TAG)
+    } else {
+      const lines = limited.map((item) => displaySafeJson(item, 0))
+      if (headTruncated) {
+        lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+      }
+      if (queryResult.truncated) {
+        lines.push(`...(the search stopped early at this tool's traversal limit; these are not necessarily all the matches. Narrow the path to search less of the document.)`)
+      }
+      _applyFiltersAndPrint(lines.join('\n'), printOpts, true, UNTRUSTED_TOOL_TAG)
+    }
+    return
   }
-  const entry = getBashOutput(id)
-  if (entry === null) {
-    throw new CliError(`no cached mcp output for id: ${id}. The cache may have expired; re-run the MCP tool call to repopulate it.`)
-  }
-  _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG)
+
+  _applyFiltersAndPrint(content, opts, true, UNTRUSTED_TOOL_TAG)
 }
 
 export { fenceFileText, fenceFileFieldIfMatched, fileSizeOrZero } from './cli_office.js'
@@ -1353,6 +1501,10 @@ export {
   cmdImageText,
   fenceOcrText,
 } from './cli_cmd_formats.js'
+export {
+  cmdSessionSchema,
+  cmdDescribe,
+} from './session_store_schema.js'
 
 function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boolean }) {
   process.exitCode = runPrSlice({ pr, slice, ...opts })
@@ -1658,12 +1810,14 @@ export function buildProgram(): Command {
     )
 
   program
-    .command('semantic <query>')
+    .command('semantic [query]')
     .description('semantic search (falls back to full-text search)')
     .option('-l, --limit <n>', 'max results')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'filter to hits whose file path matches this regex (literal substring if it is not valid regex); matched against the path as rendered')
     .option('--exclude-tests', 'hide hits whose file is a test file (opt-in; default output is unchanged)')
+    .option('--preflight', 'run semantic embedding preflight check and exit')
+    .option('--warm', 'warm up the embedding model session in memory')
     .action(guard(cmdSemantic))
 
   // `skeleton` and `outline` are the same command over the same options (see OutlineOptions, which
@@ -1915,6 +2069,8 @@ export function buildProgram(): Command {
     .option('--full', 'print the entire cached entry with no head/tail elision')
     .option('--file <path>', 'read from raw output file instead of cache')
     .option('--transcript', 'parse the --file as a JSONL agent transcript: keep assistant text blocks in order before filtering')
+    .option('--verify-last-write [seconds]', 'verify the file or cache entry was written within [seconds] (default: 60s) to catch stale/no-op terminal output')
+    .option('--strict', 'exit non-zero when --verify-last-write detects stale output')
     .action(guard(cmdBashOutput))
 
   program
@@ -1932,12 +2088,15 @@ export function buildProgram(): Command {
   program
     .command('mcp-output [id]')
     .description('retrieve a cached MCP tool result by ID (the id an MCP post_tool_use hook cached, or a `[token-goat: compressed, full via mcp-output <id>]` label points here)')
-    .option('--head <n>', 'show first N lines')
+    .option('--head <n>', 'show first N lines (or first N items with --json-query)')
     .option('--tail <n>', 'show last N lines')
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the result')
     .option('--full', 'print the entire cached entry with no head/tail elision')
+    .option('--json-query <path>', 'query JSON content using a dot/bracket path expression (e.g. "issues[*].key")')
+    .option('--file <path>', 'read and query an on-disk tool spill file (e.g. content.json) instead of cache')
+    .option('--json', 'emit query results as structured JSON envelope')
     .action(guard(cmdMcpOutput))
 
   program

@@ -28,6 +28,7 @@ import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepExpiredKnownRootMarkers, sweepKnownRoots } from './index_prune.js'
+import { reclaimIndex } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { cleanup_stale } from './snapshots.js'
 import { sweepCacheRoots } from './disk_cache.js'
@@ -1279,6 +1280,11 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
 // How often the worker loop auto-prunes dead file rows across every known project root (see sweepKnownRoots in index_prune.ts). Deliberately much longer than SNAPSHOT_CLEANUP_INTERVAL_MS -- a full existence-check pass over every indexed file under every known root is heavier than the snapshot sweep, and dead-row accumulation is a slow-moving problem that doesn't need a tight cadence to stay bounded.
 const KNOWN_ROOTS_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 
+// How often the worker loop performs automatic off-peak idle vacuuming / space reclamation on global.db.
+// Runs only when the worker has been continuously idle (no dirty items) for at least IDLE_VACUUM_COOLDOWN_MS.
+const IDLE_VACUUM_INTERVAL_MS = 6 * 60 * 60 * 1000
+const IDLE_VACUUM_COOLDOWN_MS = 5 * 60 * 1000
+
 export async function runWorkerLoop(
   dir: string,
   pollIntervalMs: number,
@@ -1289,6 +1295,8 @@ export async function runWorkerLoop(
   // Local to this loop invocation (not module-level) so each call starts its own fresh throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across tests in the same process).
   let lastSnapshotCleanupMs = 0
   let lastKnownRootsSweepMs = 0
+  let lastIdleVacuumMs = 0
+  let lastActiveMs = Date.now()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
   let ownedPidFile = false
   while (!shouldStop()) {
@@ -1318,10 +1326,14 @@ export async function runWorkerLoop(
     const pidOwner = readPidFile(dir)
     if (pidOwner === process.pid) ownedPidFile = true
     else if (ownedPidFile && pidOwner !== null) break
+    let processed = 0
     try {
-      drainOnce(dir)
+      processed = drainOnce(dir)
     } catch {
       // A bad batch must not kill the daemon; skip and retry next cycle.
+    }
+    if (processed > 0) {
+      lastActiveMs = Date.now()
     }
     // Sweep stale session-snapshot directories on the same periodic loop as the dirty-queue drain above, so accumulating session_snapshots/<sessionId>/ dirs get cleaned up on a schedule instead of growing unbounded for the life of the daemon.
     if (Date.now() - lastSnapshotCleanupMs >= SNAPSHOT_CLEANUP_INTERVAL_MS) {
@@ -1358,6 +1370,21 @@ export async function runWorkerLoop(
         // Best-effort housekeeping; a sweep failure must not kill the daemon either.
       }
       lastKnownRootsSweepMs = Date.now()
+    }
+    // Perform off-peak idle space reclamation / vacuum on global.db when the daemon has been continuously idle (no dirty items) for at least IDLE_VACUUM_COOLDOWN_MS and at least IDLE_VACUUM_INTERVAL_MS has elapsed since the last vacuum.
+    const now = Date.now()
+    if (now - lastIdleVacuumMs >= IDLE_VACUUM_INTERVAL_MS && now - lastActiveMs >= IDLE_VACUUM_COOLDOWN_MS) {
+      try {
+        const dbPath = path.join(dir, 'global.db')
+        if (fs.existsSync(dbPath)) {
+          const res = reclaimIndex(dbPath, { rebuild: false })
+          if (!res.vacuumDeferred) {
+            lastIdleVacuumMs = now
+          }
+        }
+      } catch {
+        // Best-effort non-blocking maintenance
+      }
     }
     if (shouldStop()) break
     await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs))

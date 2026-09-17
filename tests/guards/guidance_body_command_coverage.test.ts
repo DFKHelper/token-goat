@@ -99,6 +99,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'handoff-resolve', reason: SESSION_REASON },
   { command: 'compress-text', reason: SESSION_REASON },
   { command: 'compress', reason: SESSION_REASON },
+  { command: 'session-schema', reason: SESSION_REASON },
 
   // Derived analysis
   { command: 'callers', reason: ANALYSIS_REASON },
@@ -131,6 +132,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'conflicts', reason: ANALYSIS_REASON },
 
   // Single-format extractors
+  { command: 'describe', reason: FORMAT_EXTRACT_REASON },
   { command: 'sharepoint-resolve', reason: FORMAT_EXTRACT_REASON },
   { command: 'video-chapters', reason: FORMAT_EXTRACT_REASON },
   { command: 'transcript-outline', reason: FORMAT_EXTRACT_REASON },

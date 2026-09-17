@@ -17,6 +17,7 @@ export interface XmlNode {
   children: XmlNode[]
   text: string
   line: number
+  lineEnd: number
 }
 
 export interface XmlOutlineSummary {
@@ -138,6 +139,7 @@ export function parseXmlTree(xmlText: string): {
 
   // Match DOCTYPE if present
   const doctypeMatch = new RegExp(
+    // eslint-disable-next-line regexp/no-super-linear-backtracking
     `<!DOCTYPE\\s+((?:[^>[\\]"']|"[^"]*"|'[^']*'|\\[[\\s\\S]*?\\])*)\\s*>`,
     'i',
   ).exec(text)
@@ -151,7 +153,7 @@ export function parseXmlTree(xmlText: string): {
     // an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F
     // and the zero-width joiner U+200D as name characters in their own right, and an astral name
     // matches as its two code units. Matching per code unit is the intent, not an oversight.
-    // eslint-disable-next-line no-misleading-character-class
+    // eslint-disable-next-line no-misleading-character-class, regexp/no-super-linear-backtracking
     const attrRegex = new RegExp(`(${XML_NAME})(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+)))?`, 'g')
     let m: RegExpExecArray | null
     while ((m = attrRegex.exec(attrString)) !== null) {
@@ -172,7 +174,7 @@ export function parseXmlTree(xmlText: string): {
   // and the zero-width joiner U+200D as name characters in their own right, and an astral name
   // matches as its two code units. Matching per code unit is the intent, not an oversight.
   const tagRegex = new RegExp(
-    // eslint-disable-next-line no-misleading-character-class
+    // eslint-disable-next-line no-misleading-character-class, regexp/no-super-linear-backtracking
     `<(\\/)?(${XML_NAME})(${XML_ATTR_REGION})(\\/)?>` +
       `|<!--[\\s\\S]*?-->` +
       `|<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>` +
@@ -231,6 +233,14 @@ export function parseXmlTree(xmlText: string): {
     }
     const line = lineOffset + 1
 
+    let endScan = match.index
+    let endLineOffset = lineOffset
+    while (endScan < tagRegex.lastIndex) {
+      if (text.charCodeAt(endScan) === 10) endLineOffset++
+      endScan++
+    }
+    const tagEndLine = endLineOffset + 1
+
     if (isClosing) {
       if (stack.length > 0) {
         let popIdx = stack.length - 1
@@ -239,7 +249,8 @@ export function parseXmlTree(xmlText: string): {
         }
         if (popIdx >= 0) {
           while (stack.length > popIdx) {
-            stack.pop()
+            const popped = stack.pop()!
+            popped.lineEnd = tagEndLine
           }
         }
       }
@@ -252,6 +263,7 @@ export function parseXmlTree(xmlText: string): {
         children: [],
         text: '',
         line,
+        lineEnd: isSelfClosing ? tagEndLine : line,
       }
 
       if (stack.length === 0) {
@@ -266,6 +278,13 @@ export function parseXmlTree(xmlText: string): {
     }
 
     lastIndex = tagRegex.lastIndex
+  }
+
+  while (stack.length > 0) {
+    const unclosed = stack.pop()!
+    if (!unclosed.lineEnd || unclosed.lineEnd < unclosed.line) {
+      unclosed.lineEnd = unclosed.line
+    }
   }
 
   return { root: rootNode, namespaces, doctype, totalElements }
@@ -408,20 +427,255 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
   return lines.join('\n')
 }
 
+export type XmlPredicate =
+  | { kind: 'index'; index: number }
+  | { kind: 'all' }
+  | { kind: 'attrExists'; name: string }
+  | { kind: 'attrEquals'; name: string; value: string; notEqual?: boolean }
+  | { kind: 'attrContains'; name: string; value: string }
+  | { kind: 'attrStartsWith'; name: string; value: string }
+  | { kind: 'textEquals'; value: string; notEqual?: boolean }
+  | { kind: 'textContains'; value: string }
+  | { kind: 'localNameEquals'; value: string; notEqual?: boolean }
+  | { kind: 'childEquals'; tag: string; value: string; notEqual?: boolean }
+  | { kind: 'childExists'; tag: string }
+  | { kind: 'and'; predicates: XmlPredicate[] }
+  | { kind: 'or'; predicates: XmlPredicate[] }
+
 export interface XmlSelectorStep {
   tag: string
   isRecursive: boolean
+  predicates?: XmlPredicate[] | undefined
   index?: number | undefined
   allIndices?: boolean | undefined
-  /** One entry per attribute predicate on the step, in source order; all must hold. A segment carries as many bracket clauses as the caller writes (`item[@id='1'][@lang='en'][2]`), so a single slot silently answered from whichever clause a `$`-anchored regex happened to match last. */
-  attributeFilters?: Array<{ name: string; value?: string | undefined; notEqual?: boolean | undefined }> | undefined
+  attributeFilter?: { name: string; value?: string | undefined; notEqual?: boolean | undefined } | undefined
   attributeSelect?: string | undefined
 }
 
 export interface XmlQueryResult {
   items: XmlNode[]
   attributeValues?: string[]
+  attributeNodes?: Array<{ value: string; node: XmlNode; attrName: string }> | undefined
   fanned: boolean
+}
+
+function getLocalName(tag: string): string {
+  const idx = tag.indexOf(':')
+  return idx === -1 ? tag : tag.slice(idx + 1)
+}
+
+function matchTag(nodeTag: string, targetTag: string): boolean {
+  if (targetTag === '*' || targetTag === '') return true
+  if (nodeTag.toLowerCase() === targetTag.toLowerCase()) return true
+  if (!targetTag.includes(':')) {
+    return getLocalName(nodeTag).toLowerCase() === targetTag.toLowerCase()
+  }
+  return false
+}
+
+function getAttrValue(node: XmlNode, targetAttr: string): string | undefined {
+  const clean = targetAttr.startsWith('@') ? targetAttr.slice(1) : targetAttr
+  if (clean === '*') {
+    const vals = Object.values(node.attributes)
+    return vals.length > 0 ? vals[0] : undefined
+  }
+  if (node.attributes[clean] !== undefined) return node.attributes[clean]
+  const lowerClean = clean.toLowerCase()
+  for (const [k, v] of Object.entries(node.attributes)) {
+    if (k.toLowerCase() === lowerClean) return v
+  }
+  if (!clean.includes(':')) {
+    for (const [k, v] of Object.entries(node.attributes)) {
+      if (getLocalName(k).toLowerCase() === lowerClean) return v
+    }
+  }
+  return undefined
+}
+
+function splitTopLevel(str: string, delimiter: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote: string | null = null
+  let parenDepth = 0
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i]!
+    if (!quote && (ch === '"' || ch === "'")) {
+      quote = ch
+      current += ch
+    } else if (quote && ch === quote) {
+      quote = null
+      current += ch
+    } else if (!quote && ch === '(') {
+      parenDepth++
+      current += ch
+    } else if (!quote && ch === ')') {
+      if (parenDepth > 0) parenDepth--
+      current += ch
+    } else if (!quote && parenDepth === 0 && str.startsWith(delimiter, i)) {
+      parts.push(current.trim())
+      current = ''
+      i += delimiter.length - 1
+    } else {
+      current += ch
+    }
+  }
+  if (current.trim()) parts.push(current.trim())
+  return parts
+}
+
+function parseSinglePredicate(predStr: string): XmlPredicate | null {
+  const s = predStr.trim()
+  if (!s) return null
+
+  const andParts = splitTopLevel(s, ' and ')
+  if (andParts.length > 1) {
+    const predicates = andParts.map(parseSinglePredicate).filter((p): p is XmlPredicate => p !== null)
+    return { kind: 'and', predicates }
+  }
+
+  const orParts = splitTopLevel(s, ' or ')
+  if (orParts.length > 1) {
+    const predicates = orParts.map(parseSinglePredicate).filter((p): p is XmlPredicate => p !== null)
+    return { kind: 'or', predicates }
+  }
+
+  if (/^-?\d+$/.test(s)) {
+    const n = parseInt(s, 10)
+    return { kind: 'index', index: n }
+  }
+
+  if (s === 'last()') {
+    return { kind: 'index', index: -1 }
+  }
+
+  if (s === '*') {
+    return { kind: 'all' }
+  }
+
+  const localMatch = /^local-name\(\)\s*(!?=)\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))\s*$/i.exec(s)
+  if (localMatch) {
+    const val = localMatch[2] !== undefined ? localMatch[2] : localMatch[3] !== undefined ? localMatch[3] : localMatch[4] ?? ''
+    return {
+      kind: 'localNameEquals',
+      value: val,
+      ...(localMatch[1] === '!=' ? { notEqual: true } : {}),
+    }
+  }
+
+  const containsAttrMatch = /^contains\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*["']([^"']*)["']\s*\)$/i.exec(s)
+  if (containsAttrMatch) {
+    const attrName = containsAttrMatch[1]!.replace(/^@/, '')
+    return { kind: 'attrContains', name: attrName, value: containsAttrMatch[2]! }
+  }
+
+  const containsTextMatch = /^contains\(\s*(?:text\(\)|\.)\s*,\s*["']([^"']*)["']\s*\)$/i.exec(s)
+  if (containsTextMatch) {
+    return { kind: 'textContains', value: containsTextMatch[1]! }
+  }
+
+  const startsWithAttrMatch = /^starts-with\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*["']([^"']*)["']\s*\)$/i.exec(s)
+  if (startsWithAttrMatch) {
+    const attrName = startsWithAttrMatch[1]!.replace(/^@/, '')
+    return { kind: 'attrStartsWith', name: attrName, value: startsWithAttrMatch[2]! }
+  }
+
+  const textMatch = /^(?:text\(\)|\.)\s*(!?=)\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))\s*$/i.exec(s)
+  if (textMatch) {
+    const val = textMatch[2] !== undefined ? textMatch[2] : textMatch[3] !== undefined ? textMatch[3] : textMatch[4] ?? ''
+    return {
+      kind: 'textEquals',
+      value: val,
+      ...(textMatch[1] === '!=' ? { notEqual: true } : {}),
+    }
+  }
+
+  const compMatch = /^(@?[a-zA-Z0-9_:.\\-]+)\s*(!?=)\s*(?:["']([^"']*)["']|([^\s\]]+))$/.exec(s)
+  if (compMatch) {
+    const name = compMatch[1]!
+    const op = compMatch[2]!
+    const val = compMatch[3] !== undefined ? compMatch[3] : compMatch[4] ?? ''
+    if (name.startsWith('@')) {
+      return {
+        kind: 'attrEquals',
+        name: name.slice(1),
+        value: val,
+        ...(op === '!=' ? { notEqual: true } : {}),
+      }
+    }
+    return {
+      kind: 'childEquals',
+      tag: name,
+      value: val,
+      ...(op === '!=' ? { notEqual: true } : {}),
+    }
+  }
+
+  if (s.startsWith('@')) {
+    return { kind: 'attrExists', name: s.slice(1) }
+  }
+
+  if (/^[a-zA-Z0-9_:.\\-]+$/.test(s)) {
+    return { kind: 'childExists', tag: s }
+  }
+
+  return null
+}
+
+function evalPredicate(node: XmlNode, pred: XmlPredicate, indexInMatch: number, totalMatching: number): boolean {
+  switch (pred.kind) {
+    case 'index': {
+      const targetIdx = pred.index < 0 ? totalMatching + pred.index : pred.index
+      return indexInMatch === targetIdx
+    }
+    case 'all':
+      return true
+    case 'and':
+      return pred.predicates.every((p) => evalPredicate(node, p, indexInMatch, totalMatching))
+    case 'or':
+      return pred.predicates.some((p) => evalPredicate(node, p, indexInMatch, totalMatching))
+    case 'localNameEquals': {
+      const local = getLocalName(node.tag)
+      const eq = local.toLowerCase() === pred.value.toLowerCase()
+      return pred.notEqual ? !eq : eq
+    }
+    case 'attrExists':
+      return getAttrValue(node, pred.name) !== undefined
+    case 'attrEquals': {
+      const val = getAttrValue(node, pred.name)
+      if (val !== undefined) {
+        return pred.notEqual ? val !== pred.value : val === pred.value
+      }
+      const child = node.children.find((c) => matchTag(c.tag, pred.name))
+      if (child !== undefined) {
+        return pred.notEqual ? child.text.trim() !== pred.value.trim() : child.text.trim() === pred.value.trim()
+      }
+      return pred.notEqual === true
+    }
+    case 'attrContains': {
+      const val = getAttrValue(node, pred.name)
+      if (val === undefined) return false
+      return val.toLowerCase().includes(pred.value.toLowerCase())
+    }
+    case 'attrStartsWith': {
+      const val = getAttrValue(node, pred.name)
+      if (val === undefined) return false
+      return val.toLowerCase().startsWith(pred.value.toLowerCase())
+    }
+    case 'textEquals': {
+      const eq = node.text.trim() === pred.value.trim()
+      return pred.notEqual ? !eq : eq
+    }
+    case 'textContains':
+      return node.text.toLowerCase().includes(pred.value.toLowerCase())
+    case 'childExists':
+      return node.children.some((c) => matchTag(c.tag, pred.tag))
+    case 'childEquals': {
+      const child = node.children.find((c) => matchTag(c.tag, pred.tag))
+      if (!child) return pred.notEqual === true
+      return pred.notEqual ? child.text.trim() !== pred.value.trim() : child.text.trim() === pred.value.trim()
+    }
+  }
 }
 
 /**
@@ -430,6 +684,7 @@ export interface XmlQueryResult {
  *   "catalog/book"
  *   "feed.entry[0]"
  *   "//item[@id='101']"
+ *   "//DTS:Executable[@DTS:ExecutableType='Microsoft.ExecuteSQLTask']"
  *   "items/item[status=active]"
  *   "//entry[title='Example']"
  */
@@ -444,26 +699,32 @@ export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
     normalized = normalized.slice(1)
   }
 
-  // Split by `/` or `.` (outside of bracketed expressions)
+  // Split by `/` or `.` (outside of bracketed expressions and quotes)
   const segments: string[] = []
   let inBracket = false
+  let quoteChar: string | null = null
   let currentSegment = ''
 
   for (let i = 0; i < normalized.length; i++) {
     const ch = normalized[i]!
-    if (ch === '[') {
+    if (!quoteChar && (ch === '"' || ch === "'")) {
+      quoteChar = ch
+      currentSegment += ch
+    } else if (quoteChar && ch === quoteChar) {
+      quoteChar = null
+      currentSegment += ch
+    } else if (!quoteChar && ch === '[') {
       inBracket = true
       currentSegment += ch
-    } else if (ch === ']') {
+    } else if (!quoteChar && ch === ']') {
       inBracket = false
       currentSegment += ch
-    } else if (!inBracket && (ch === '/' || ch === '.')) {
+    } else if (!quoteChar && !inBracket && (ch === '/' || ch === '.')) {
       if (currentSegment) {
         segments.push(currentSegment)
         currentSegment = ''
       }
       if (ch === '/' && normalized[i + 1] === '/') {
-        // Handle intermediate `//` descendant selector
         segments.push('//')
         i++
       }
@@ -492,46 +753,97 @@ export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
       continue
     }
 
-    // Every bracket clause on the segment, in source order. These used to be matched by three regexes anchored at the END of the whole segment, so `item[@id='1'][2]` matched the index regex on the trailing `[2]`, the if/else chain short-circuited before the attribute regex ever ran, and a greedy `\[.*\]$` strip took the `@id='1'` text off the tag with it. The filter vanished without a trace and the command answered confidently from the positional index alone.
-    const bracketStart = s.indexOf('[')
-    const clauses = bracketStart < 0 ? [] : (s.slice(bracketStart).match(/\[[^\]]*\]/g) ?? [])
-    // An unclosed predicate (`item[@id='1'`) leaves text the clause scan cannot account for. Dropping it would turn a typo into `item`, which matches everything and reports a full element list as the answer to a filtered query. Treat the whole segment as the tag instead, so it matches no tag and the caller is told nothing matched.
-    const wellFormed = bracketStart < 0 || clauses.join('').length === s.length - bracketStart
+    // Extract tag and all bracket predicates [...]
+    let tag = ''
+    const rawPredicates: string[] = []
+    let inB = false
+    let qChar: string | null = null
+    let curPred = ''
 
-    let tag = bracketStart < 0 || !wellFormed ? s : s.slice(0, bracketStart)
-    if (!tag) tag = '*'
-    if (!wellFormed) {
-      steps.push({ tag, isRecursive })
-      continue
-    }
-
-    let index: number | undefined
-    let allIndices: boolean | undefined
-    const attributeFilters: NonNullable<XmlSelectorStep['attributeFilters']> = []
-
-    for (const clause of clauses) {
-      const indexMatch = /^\[(-?\d+)\]$/.exec(clause)
-      const wildcardMatch = /^\[\*\]$/.exec(clause)
-      const attrMatch = /^\[@?([a-zA-Z0-9_:.\\-]+)(?:(!?=)\s*["']?([^"'\]]*)["']?)?\]$/.exec(clause)
-
-      if (indexMatch) {
-        index = parseInt(indexMatch[1]!, 10)
-      } else if (wildcardMatch) {
-        allIndices = true
-      } else if (attrMatch) {
-        const [, attrName, op, attrVal] = attrMatch
-        attributeFilters.push({
-          name: attrName!,
-          ...(attrVal !== undefined ? { value: attrVal } : {}),
-          ...(op === '!=' ? { notEqual: true } : {}),
-        })
+    for (let cIdx = 0; cIdx < s.length; cIdx++) {
+      const c = s[cIdx]!
+      if (!qChar && (c === '"' || c === "'")) {
+        qChar = c
+        if (inB) curPred += c
+      } else if (qChar && c === qChar) {
+        qChar = null
+        if (inB) curPred += c
+      } else if (!qChar && c === '[') {
+        if (!inB) {
+          inB = true
+          curPred = ''
+        } else {
+          curPred += c
+        }
+      } else if (!qChar && c === ']') {
+        if (inB) {
+          inB = false
+          rawPredicates.push(curPred.trim())
+          curPred = ''
+        }
+      } else if (!inB) {
+        tag += c
+      } else {
+        curPred += c
       }
     }
 
-    const step: XmlSelectorStep = { tag, isRecursive }
-    if (index !== undefined) step.index = index
-    if (allIndices !== undefined) step.allIndices = allIndices
-    if (attributeFilters.length > 0) step.attributeFilters = attributeFilters
+    tag = tag.trim()
+    if (!tag) tag = '*'
+
+    // An unclosed predicate (`book[@genre='Fantasy'`) or an unterminated quote inside one leaves the scanner mid-clause at the end of the segment, and the half-read clause is discarded. Dropping it silently turns a typo into no predicate at all, so a filtered query answers with every sibling element as a single confident result. Treat the whole segment as the tag instead: it matches no tag, and the caller is told nothing matched rather than being handed the unfiltered list.
+    if (inB || qChar !== null) {
+      steps.push({ tag: s, isRecursive })
+      continue
+    }
+
+    const predicates: XmlPredicate[] = []
+    let legacyIndex: number | undefined
+    let legacyAllIndices: boolean | undefined
+    let legacyAttrFilter: XmlSelectorStep['attributeFilter']
+
+    for (const rawP of rawPredicates) {
+      const parsedP = parseSinglePredicate(rawP)
+      if (parsedP) {
+        predicates.push(parsedP)
+        if (parsedP.kind === 'index') {
+          legacyIndex = parsedP.index
+        } else if (parsedP.kind === 'all') {
+          legacyAllIndices = true
+        } else if (parsedP.kind === 'attrEquals' || parsedP.kind === 'childEquals') {
+          legacyAttrFilter = {
+            name: parsedP.kind === 'attrEquals' ? parsedP.name : parsedP.tag,
+            value: parsedP.value,
+            ...(parsedP.notEqual ? { notEqual: true } : {}),
+          }
+        }
+      }
+    }
+
+    const hasComplexPredicates =
+      rawPredicates.length > 1 ||
+      predicates.some(
+        (p) =>
+          p.kind === 'and' ||
+          p.kind === 'or' ||
+          p.kind === 'localNameEquals' ||
+          p.kind === 'attrContains' ||
+          p.kind === 'textContains' ||
+          p.kind === 'attrStartsWith' ||
+          p.kind === 'textEquals' ||
+          p.kind === 'attrExists' ||
+          p.kind === 'childExists',
+      )
+
+    const step: XmlSelectorStep = {
+      tag,
+      isRecursive,
+      ...(legacyIndex !== undefined ? { index: legacyIndex } : {}),
+      ...(legacyAllIndices !== undefined ? { allIndices: legacyAllIndices } : {}),
+      ...(legacyAttrFilter !== undefined ? { attributeFilter: legacyAttrFilter } : {}),
+      ...(hasComplexPredicates ? { predicates } : {}),
+    }
+
     steps.push(step)
   }
 
@@ -539,31 +851,107 @@ export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
 }
 
 /**
+ * Tries to decode entity-encoded or embedded XML content and format it.
+ */
+export function tryDecodeEmbeddedXml(
+  content: string,
+  opts: { maxLines?: number } = {},
+): { decoded: boolean; text: string } {
+  const maxLines = opts.maxLines ?? 60
+  if (!content || typeof content !== 'string') return { decoded: false, text: content }
+
+  let candidate = content.trim()
+  const hadEntities = candidate.includes('&lt;') && candidate.includes('&gt;')
+  if (hadEntities) {
+    candidate = decodeXmlEntities(candidate).trim()
+  }
+
+  if (!candidate.startsWith('<') || !candidate.endsWith('>')) {
+    return { decoded: false, text: content }
+  }
+
+  try {
+    const { root } = parseXmlTree(candidate)
+    if (!root) return { decoded: false, text: content }
+
+    const formatted = serializeXmlNode(root, 0)
+    const lines = formatted.split('\n')
+    if (lines.length > maxLines) {
+      const bounded = lines.slice(0, maxLines)
+      bounded.push(`... (${lines.length - maxLines} more lines of decoded embedded XML elided; bounded)`)
+      return { decoded: true, text: bounded.join('\n') }
+    }
+    return { decoded: true, text: formatted }
+  } catch {
+    return { decoded: false, text: content }
+  }
+}
+
+/**
  * Serializes an XmlNode back to a formatted XML string.
  */
-export function serializeXmlNode(node: XmlNode, indent = 0): string {
+export function serializeXmlNode(
+  node: XmlNode,
+  indent = 0,
+  opts: { decodeEmbedded?: boolean; maxLines?: number } = {},
+): string {
   const pad = '  '.repeat(indent)
   const attrParts: string[] = []
   for (const [k, v] of Object.entries(node.attributes)) {
+    if (opts.decodeEmbedded) {
+      const decodedAttr = tryDecodeEmbeddedXml(v, { maxLines: 20 })
+      if (decodedAttr.decoded) {
+        attrParts.push(`${k}="[Embedded XML: ${v.length} chars]"`)
+        continue
+      }
+    }
     attrParts.push(`${k}="${escapeXmlAttr(v)}"`)
   }
   const attrStr = attrParts.length > 0 ? ' ' + attrParts.join(' ') : ''
+
+  let textContent = node.text
+  let decodedTextBanner = ''
+  if (opts.decodeEmbedded && textContent) {
+    const decoded = tryDecodeEmbeddedXml(
+      textContent,
+      opts.maxLines !== undefined ? { maxLines: opts.maxLines } : {},
+    )
+    if (decoded.decoded) {
+      textContent = decoded.text
+        .split('\n')
+        .map((l) => `${pad}  ${l}`)
+        .join('\n')
+      decodedTextBanner = `${pad}  <!-- [Decoded Embedded XML] -->\n`
+    } else {
+      textContent = `${pad}  ${escapeXmlText(textContent)}`
+    }
+  } else if (textContent) {
+    textContent = `${pad}  ${escapeXmlText(textContent)}`
+  }
 
   if (node.children.length === 0 && !node.text) {
     return `${pad}<${node.tag}${attrStr}/>`
   }
 
   if (node.children.length === 0) {
+    if (decodedTextBanner) {
+      return `${pad}<${node.tag}${attrStr}>\n${decodedTextBanner}${textContent}\n${pad}</${node.tag}>`
+    }
     return `${pad}<${node.tag}${attrStr}>${escapeXmlText(node.text)}</${node.tag}>`
   }
 
   const lines: string[] = []
   lines.push(`${pad}<${node.tag}${attrStr}>`)
   if (node.text) {
-    lines.push(`${pad}  ${escapeXmlText(node.text)}`)
+    if (decodedTextBanner) {
+      lines.push(decodedTextBanner.trimEnd())
+      lines.push(textContent)
+    } else {
+      lines.push(`${pad}  ${escapeXmlText(node.text)}`)
+    }
   }
   for (const child of node.children) {
-    lines.push(serializeXmlNode(child, indent + 1))
+    lines.push(serializeXmlNode(child, indent + 1, opts))
   }
   lines.push(`${pad}</${node.tag}>`)
   return lines.join('\n')
@@ -584,31 +972,34 @@ function getAllDescendants(node: XmlNode): XmlNode[] {
 /**
  * Converts an XmlNode into a clean JSON-serializable object/value.
  */
-export function xmlNodeToJson(node: XmlNode): unknown {
+export function xmlNodeToJson(
+  node: XmlNode,
+  opts: { withLines?: boolean; decodeEmbedded?: boolean } = {},
+): unknown {
   const hasAttrs = Object.keys(node.attributes).length > 0
   const hasChildren = node.children.length > 0
 
   if (!hasChildren && !hasAttrs) {
+    if (opts.withLines) {
+      return {
+        lineStart: node.line,
+        lineEnd: node.lineEnd,
+        value: node.text,
+      }
+    }
     return node.text
   }
 
-  if (!hasChildren) {
-    const result: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(node.attributes)) {
-      result[`@${k}`] = v
-    }
-    if (node.text) {
-      result['#text'] = node.text
-    }
-    return result
+  const result: Record<string, unknown> = {}
+  if (opts.withLines) {
+    result['lineStart'] = node.line
+    result['lineEnd'] = node.lineEnd
   }
 
-  const result: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(node.attributes)) {
     result[`@${k}`] = v
   }
 
-  // Group children by tag
   const childGroups = new Map<string, XmlNode[]>()
   for (const child of node.children) {
     const existing = childGroups.get(child.tag)
@@ -621,13 +1012,19 @@ export function xmlNodeToJson(node: XmlNode): unknown {
 
   for (const [tag, group] of childGroups) {
     if (group.length === 1) {
-      result[tag] = xmlNodeToJson(group[0]!)
+      result[tag] = xmlNodeToJson(group[0]!, opts)
     } else {
-      result[tag] = group.map(xmlNodeToJson)
+      result[tag] = group.map((c) => xmlNodeToJson(c, opts))
     }
   }
 
   if (node.text) {
+    if (opts.decodeEmbedded) {
+      const decoded = tryDecodeEmbeddedXml(node.text, { maxLines: 50 })
+      if (decoded.decoded) {
+        result['#decodedXml'] = decoded.text
+      }
+    }
     result['#text'] = node.text
   }
 
@@ -635,15 +1032,20 @@ export function xmlNodeToJson(node: XmlNode): unknown {
 }
 
 /**
- * Queries XML nodes matching the path selector.
+ * Queries XML nodes matching the path or XPath selector.
  */
-export function queryXml(xmlText: string, pathStr: string): XmlQueryResult {
+export function queryXml(
+  xmlText: string,
+  pathStr: string,
+  opts: { xpath?: string } = {},
+): XmlQueryResult {
   const { root } = parseXmlTree(xmlText)
   if (!root) {
     throw new Error('No valid XML root element found')
   }
 
-  const steps = parseXmlPath(pathStr)
+  const queryExpression = (opts.xpath ?? pathStr).trim()
+  const steps = parseXmlPath(queryExpression)
   if (steps.length === 0) {
     return { items: [root], fanned: false }
   }
@@ -657,28 +1059,36 @@ export function queryXml(xmlText: string, pathStr: string): XmlQueryResult {
 
     if (step.attributeSelect !== undefined) {
       const attrVals: string[] = []
+      const attrNodes: Array<{ value: string; node: XmlNode; attrName: string }> = []
       const attrName = step.attributeSelect
       for (const cand of currentCandidates) {
         if (attrName === '*') {
-          pushAll(attrVals, Object.values(cand.attributes))
-        } else if (cand.attributes[attrName] !== undefined) {
-          attrVals.push(cand.attributes[attrName]!)
+          for (const [k, v] of Object.entries(cand.attributes)) {
+            attrVals.push(v)
+            attrNodes.push({ value: v, node: cand, attrName: k })
+          }
+        } else {
+          const val = getAttrValue(cand, attrName)
+          if (val !== undefined) {
+            attrVals.push(val)
+            attrNodes.push({ value: val, node: cand, attrName })
+          }
         }
       }
       return {
         items: currentCandidates,
         attributeValues: attrVals,
+        attributeNodes: attrNodes,
         fanned: hasFanned || attrVals.length > 1,
       }
     }
 
     const nextCandidates: XmlNode[] = []
 
-    // If first non-recursive step explicitly targets root (e.g. `catalog` or `*`), evaluate against root itself
     const evaluateOnCurrentNode =
       isAtRootLevel &&
       !step.isRecursive &&
-      (step.tag === '*' || step.tag.toLowerCase() === root.tag.toLowerCase())
+      matchTag(root.tag, step.tag)
     isAtRootLevel = false
 
     for (const cand of currentCandidates) {
@@ -691,37 +1101,52 @@ export function queryXml(xmlText: string, pathStr: string): XmlQueryResult {
         targets = cand.children
       }
 
-      let matching = targets.filter((c) => step.tag === '*' || c.tag.toLowerCase() === step.tag.toLowerCase())
+      let matching = targets.filter((c) => matchTag(c.tag, step.tag))
 
-      for (const af of step.attributeFilters ?? []) {
-        matching = matching.filter((c) => {
-          // Check attributes first
-          const attrVal = c.attributes[af.name]
-          if (attrVal !== undefined) {
-            if (af.value === undefined) return true
-            return af.notEqual ? attrVal !== af.value : attrVal === af.value
-          }
-          // Also check child elements whose tag matches af.name
-          const childElem = c.children.find((child) => child.tag.toLowerCase() === af.name.toLowerCase())
-          if (childElem !== undefined) {
-            if (af.value === undefined) return true
-            return af.notEqual ? childElem.text !== af.value : childElem.text === af.value
-          }
-          return af.notEqual === true
-        })
-      }
+      const preds =
+        step.predicates && step.predicates.length > 0
+          ? step.predicates
+          : step.attributeFilter
+            ? [
+                {
+                  kind: 'attrEquals' as const,
+                  name: step.attributeFilter.name,
+                  value: step.attributeFilter.value ?? '',
+                  ...(step.attributeFilter.notEqual ? { notEqual: true } : {}),
+                },
+              ]
+            : step.index !== undefined
+              ? [{ kind: 'index' as const, index: step.index }]
+              : step.allIndices
+                ? [{ kind: 'all' as const }]
+                : []
 
-      if (step.index !== undefined) {
-        const idx = step.index < 0 ? matching.length + step.index : step.index
-        if (idx >= 0 && idx < matching.length) {
-          nextCandidates.push(matching[idx]!)
-        }
-      } else {
-        if (step.allIndices || matching.length > 1 || step.attributeFilters !== undefined) {
+      for (const pred of preds) {
+        if (pred.kind === 'index') {
+          const total = matching.length
+          const idx = pred.index < 0 ? total + pred.index : pred.index
+          if (idx >= 0 && idx < total) {
+            matching = [matching[idx]!]
+          } else {
+            matching = []
+          }
+        } else if (pred.kind === 'all') {
           hasFanned = true
+        } else {
+          const total = matching.length
+          matching = matching.filter((node, idx) => evalPredicate(node, pred, idx, total))
         }
-        pushAll(nextCandidates, matching)
       }
+
+      if (
+        matching.length > 1 ||
+        step.allIndices ||
+        step.attributeFilter !== undefined ||
+        (step.predicates && step.predicates.length > 0 && step.predicates[0]?.kind !== 'index')
+      ) {
+        hasFanned = true
+      }
+      pushAll(nextCandidates, matching)
     }
 
     currentCandidates = nextCandidates

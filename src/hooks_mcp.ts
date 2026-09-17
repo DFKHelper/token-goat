@@ -24,6 +24,9 @@ import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { clipToDeliveryCap } from './delivery_cap.js'
+
+export const MCP_OVERSIZED_THRESHOLD_BYTES = 25_000
 
 // Defined in hooks_common.ts alongside extractToolResultText, whose output the rule is about, and re-exported here because this module was its only caller for a while.
 export { isMcpErrorResponse } from './hooks_common.js'
@@ -114,12 +117,19 @@ function postMcpHandler(event: HookEvent): HookOutput {
           minNetSavingsBytes: resolveMinNetSavingsBytes(),
         })
         if (worthwhile) {
+          // If the compressed output is still oversized for the harness, clip the preview to avoid tool spill to content.json
+          const bodyBytes = Buffer.byteLength(redactedBody, 'utf-8')
+          let finalBody = redactedBody
+          if (bodyBytes >= MCP_OVERSIZED_THRESHOLD_BYTES) {
+            const preview = clipToDeliveryCap(redactedBody, Buffer.byteLength(notice, 'utf-8') + 500)
+            finalBody = preview.text + (preview.clipped ? '\n\n...[preview truncated by token-goat; use mcp-output above to query full payload]...' : '')
+          }
           // MCP compression shipped for releases without recording anything, so the whole mechanism was invisible in `token-goat stats` even though the `mcp:` prefix was already registered in KIND_TO_SOURCE. Credited through emitRewrite's savings parameter rather than a hand-written recordStat beside the emit, because that parameter measures the emitted string itself -- notice, fence and redaction placeholders included -- which is the only figure that describes what the model was actually spared. A recordStat here would have to re-derive that per branch and would drift the moment either branch changed, which is exactly how the WebFetch over-report happened.
           // Fenced on the same unconditional provenance rule as passOrFence above: a compressed
           // result is still the remote server's text, and a clean scan is not evidence it is safe.
           return preserve(
             emitRewrite(
-              `${notice}${fenceWithMatches(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`,
+              `${notice}${fenceWithMatches(finalBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`,
               'mcp',
               { kind: 'mcp:compress', originalBytes },
             ),
@@ -128,7 +138,36 @@ function postMcpHandler(event: HookEvent): HookOutput {
       }
     }
   }
-  // Reached when compression did not fire or did not pay off. The fence is a security action, not a compression one, so it must not inherit the size floor, the opt-out env var, or the net-benefit gate above -- a short hostile result is exactly the case those would drop.
+  // Reached when compression did not fire or did not pay off.
+  // Oversized MCP result recovery: when a raw result is >= MCP_OVERSIZED_THRESHOLD_BYTES,
+  // Claude Code's internal harness will spill it to disk (e.g. content.json) and recommend
+  // reading it with read_file, bypassing surgical read discipline. Intercept by storing the
+  // full raw payload in the cache and returning a recovery notice with exact mcp-output
+  // query commands plus a clipped preview.
+  const rawBytes = Buffer.byteLength(resultText, 'utf-8')
+  if (rawBytes >= MCP_OVERSIZED_THRESHOLD_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
+    if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
+    if (id !== null) {
+      const notice =
+        `[token-goat: oversized MCP result (${rawBytes} bytes) cached as ${id}]\n` +
+        `The full payload was cached to prevent harness context spill. Slicing commands:\n` +
+        `  token-goat mcp-output ${id} --json-query '<path>' (e.g. 'issues[*].key', 'values[*].id')\n` +
+        `  token-goat mcp-output ${id} --section '<heading>'\n` +
+        `  token-goat mcp-output ${id} --grep '<regex>' --max-matches 20\n` +
+        `  token-goat mcp-output ${id} --head 50\n\n`
+      const preview = clipToDeliveryCap(redactedResult.text, Buffer.byteLength(notice, 'utf-8') + 500)
+      const previewBody = preview.text + (preview.clipped ? '\n\n...[preview truncated by token-goat; use mcp-output above to query full payload]...' : '')
+      return preserve(
+        emitRewrite(
+          `${notice}${fenceWithMatches(previewBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`,
+          'mcp',
+          { kind: 'mcp:oversized', originalBytes: rawBytes },
+        ),
+      )
+    }
+  }
+
+  // The fence is a security action, not a compression one, so it must not inherit the size floor, the opt-out env var, or the net-benefit gate above -- a short hostile result is exactly the case those would drop.
   return passOrFence()
 }
 

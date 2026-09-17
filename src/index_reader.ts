@@ -94,8 +94,14 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
     params.push(opts.name)
   }
   if (opts.filePath !== undefined) {
-    where.push(pathEq('file_path'))
-    params.push(foldPath(opts.filePath))
+    if (opts.filePath.includes('/') || opts.filePath.includes('\\')) {
+      const alt = opts.filePath.includes('/') ? opts.filePath.replace(/\//g, '\\') : opts.filePath.replace(/\\/g, '/')
+      where.push(`(${pathEq('file_path')} OR ${pathEq('file_path')})`)
+      params.push(foldPath(opts.filePath), foldPath(alt))
+    } else {
+      where.push(pathEq('file_path'))
+      params.push(foldPath(opts.filePath))
+    }
   }
   if (opts.kind !== undefined) {
     where.push('kind = ?')
@@ -278,11 +284,20 @@ export function getFileEntry(
   dbPath: string = globalDbPath(),
 ): FileIndexEntry | null {
   const db = getDb(dbPath)
-  const row = db
+  let row = db
     .prepare(
       `SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${pathEq('path')}`,
     )
     .get(foldPath(filePath)) as FileRow | undefined
+
+  if (row === undefined && (filePath.includes('/') || filePath.includes('\\'))) {
+    const altPath = filePath.includes('/') ? filePath.replace(/\//g, '\\') : filePath.replace(/\\/g, '/')
+    row = db
+      .prepare(
+        `SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${pathEq('path')}`,
+      )
+      .get(foldPath(altPath)) as FileRow | undefined
+  }
 
   if (row === undefined) return null
   return {

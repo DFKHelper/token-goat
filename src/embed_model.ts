@@ -336,22 +336,45 @@ async function download(file: ModelFile, target: string): Promise<void> {
   }
 }
 
+let _inFlightModelDownload: Promise<string> | null = null
+
 /**
  * Make sure every model file is present and is the file it claims to be, downloading what is
  * missing. Returns the directory holding them.
+ *
+ * Safe across concurrent calls: multiple callers racing to download the model share a single in-flight
+ * promise instead of initiating duplicate concurrent downloads or clashing on temporary files.
  *
  * Cached files are re-verified on every load rather than trusted for having the right name: hashing
  * 33 MB costs a fraction of what loading the graph costs anyway, and the alternative is a marker
  * file recording that a check once passed, which is a record of the past rather than a check.
  */
-export async function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promise<string> {
+export function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promise<string> {
   if (modelName !== DEFAULT_MODEL) {
-    throw new Error(
-      `Only ${DEFAULT_MODEL} is supported: its files are pinned to a revision and to a sha256 each, ` +
-        `and "${modelName}" has neither, so there would be nothing to check the download against.`,
+    return Promise.reject(
+      new Error(
+        `Only ${DEFAULT_MODEL} is supported: its files are pinned to a revision and to a sha256 each, ` +
+          `and "${modelName}" has neither, so there would be nothing to check the download against.`,
+      ),
     )
   }
 
+  if (_inFlightModelDownload !== null) {
+    return _inFlightModelDownload
+  }
+
+  _inFlightModelDownload = (async () => {
+    try {
+      return await _ensureModelFilesInner(modelName)
+    } finally {
+      _inFlightModelDownload = null
+    }
+  })()
+
+  return _inFlightModelDownload
+}
+
+async function _ensureModelFilesInner(_modelName: string): Promise<string> {
   ensureDataDirPrivate()
   const dir = modelDir()
   const offline = loadConfig().network.offline
@@ -493,8 +516,157 @@ export class EmbeddingModel {
   }
 }
 
+export type EmbeddingPreflightStatus =
+  | 'ready'
+  | 'missing_runtime'
+  | 'missing_model_files'
+  | 'load_error'
+  | 'disabled'
+  | 'no_embeddings'
+
+export interface EmbeddingPreflightResult {
+  readonly status: EmbeddingPreflightStatus
+  readonly available: boolean
+  readonly message: string
+  readonly summary: string
+  readonly modelName: string
+  readonly runtimeVersion: string
+  readonly runtimeAvailable: boolean
+  readonly configEnabled: boolean
+  readonly modelFilesPresent: boolean
+  readonly modelWarmed: boolean
+  readonly modelDir: string
+  readonly suggestion?: string
+  readonly actionRequired?: string
+  readonly indexedFiles: number
+  readonly embeddedFiles: number
+  readonly coveragePercent: number
+  readonly coverage?: { indexedFiles: number; embeddedFiles: number }
+  readonly error?: string
+}
+
+/**
+ * Pre-flight health and readiness check for the semantic embedding model.
+ * Verifies configuration, inference runtime, weight files, and in-memory loadability.
+ * When `warm: true` is passed, initializes and warms the model in memory.
+ */
+export async function checkEmbeddingPreflight(options?: {
+  warm?: boolean
+  projectRoot?: string
+  modelName?: string
+  coverage?: { indexedFiles: number; embeddedFiles: number }
+}): Promise<EmbeddingPreflightResult> {
+  const modelName = options?.modelName ?? DEFAULT_MODEL
+  const cfg = loadConfig()
+  const enabled = cfg.indexing?.embeddings_enabled ?? true
+  const mDir = modelDir()
+  const rtVer = runtimeVersion()
+  const rtAvail = isRuntimeAvailable()
+  const filesPresent = modelFilesPresent()
+  let warmed = false
+
+  const buildResult = (params: {
+    status: EmbeddingPreflightStatus
+    available: boolean
+    message: string
+    suggestion?: string
+    error?: string
+    coverage?: { indexedFiles: number; embeddedFiles: number }
+  }): EmbeddingPreflightResult => {
+    const indexed = params.coverage?.indexedFiles ?? 0
+    const embedded = params.coverage?.embeddedFiles ?? 0
+    const pct = indexed > 0 ? Math.round((embedded / indexed) * 100) : 0
+    return {
+      status: params.status,
+      available: params.available,
+      message: params.message,
+      summary: params.message,
+      modelName,
+      runtimeVersion: rtVer,
+      runtimeAvailable: rtAvail,
+      configEnabled: enabled,
+      modelFilesPresent: filesPresent,
+      modelWarmed: warmed,
+      modelDir: mDir,
+      ...(params.suggestion !== undefined ? { suggestion: params.suggestion, actionRequired: params.suggestion } : {}),
+      ...(params.error !== undefined ? { error: params.error } : {}),
+      indexedFiles: indexed,
+      embeddedFiles: embedded,
+      coveragePercent: pct,
+      ...(params.coverage !== undefined ? { coverage: params.coverage } : {}),
+    }
+  }
+
+  if (!enabled) {
+    return buildResult({
+      status: 'disabled',
+      available: false,
+      message: 'Matching on meaning is off (indexing.embeddings_enabled / TOKEN_GOAT_EMBEDDINGS_ENABLED is disabled)',
+      suggestion: 'Enable in config: set indexing.embeddings_enabled = true or unset TOKEN_GOAT_EMBEDDINGS_ENABLED',
+    })
+  }
+
+  if (!rtAvail) {
+    const err = runtimeLoadError()
+    return buildResult({
+      status: 'missing_runtime',
+      available: false,
+      message: `Inference runtime is not available: ${err?.message ?? 'onnxruntime-node is not installed'}`,
+      suggestion: 'Install it with: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)',
+      ...(err?.message ? { error: err.message } : {}),
+    })
+  }
+
+  if (!filesPresent && cfg?.network?.offline) {
+    return buildResult({
+      status: 'missing_model_files',
+      available: false,
+      message: 'Embedding model files are missing and offline mode (network.offline) prevents downloading them',
+      suggestion: `Download or copy the pinned model files into ${mDir}`,
+    })
+  }
+
+  if (options?.warm === true) {
+    try {
+      await ensureModelFiles(modelName)
+      await EmbeddingModel.load(modelName)
+      warmed = true
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e)
+      return buildResult({
+        status: 'load_error',
+        available: false,
+        message: `Failed to warm/load embedding model: ${err}`,
+        suggestion: "Check model integrity or run 'token-goat doctor'",
+        error: err,
+      })
+    }
+  }
+
+  const coverage = options?.coverage
+  if (coverage && coverage.indexedFiles > 0 && coverage.embeddedFiles === 0) {
+    return buildResult({
+      status: 'no_embeddings',
+      available: false,
+      message: `Embedding model is available, but 0 of ${coverage.indexedFiles} indexed file(s) in this project have embeddings`,
+      suggestion: options?.projectRoot
+        ? `Run 'token-goat index "${options.projectRoot}"' to generate embeddings`
+        : "Run 'token-goat index' to generate embeddings",
+      coverage,
+    })
+  }
+
+  return buildResult({
+    status: 'ready',
+    available: true,
+    message: 'Semantic embedding model is ready and available',
+    ...(coverage !== undefined ? { coverage } : {}),
+  })
+}
+
 registerReset(() => {
   _ort = null
   _ortError = null
   _ortLoadAttempted = false
+  _inFlightModelDownload = null
 })

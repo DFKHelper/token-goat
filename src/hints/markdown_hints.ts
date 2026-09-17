@@ -35,36 +35,59 @@ const MAX_OUTPUT_LINES = 60
 export function extractMarkdownHeadings(content: string, limit: number = MAX_HEADINGS): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
   const lines = content.split('\n')
+  const unfenced = Array.from(eachUnfencedLine(lines))
 
-  for (const [i, line] of eachUnfencedLine(lines)) {
+  for (let u = 0; u < unfenced.length; u++) {
+    const [i, line] = unfenced[u]!
     if (!line) continue
     const match = /^(#+)\s+([^\r\n]+?)(?:\s+#+)?\s*$/.exec(line)
-    if (!match || match.length < 3) continue
+    if (match && match.length >= 3) {
+      const hashes = match[1]!
+      const headingText = match[2]!
 
-    const hashes = match[1]!
-    const headingText = match[2]!
+      const level = hashes.length
+      const maxLevel = limit === Infinity ? 6 : 3
+      if (level <= maxLevel) {
+        const text = headingText.trim()
+        if (text) {
+          headings.push({
+            level,
+            text,
+            lineNumber: i + 1,
+          })
+          if (headings.length >= limit) break
+        }
+      }
+      continue
+    }
 
-    const level = hashes.length
-    // Display hints (finite `limit`, the MAX_HEADINGS default) show only H1-H3 for a readable
-    // outline. A caller passing `limit: Infinity` (parser.ts's buildEmbeddingBoundaries, for
-    // embedding chunk boundaries) needs every real markdown heading level (ATX headings are
-    // valid up to H6) so a doc's H4/H5 subsections still get their own chunk boundary instead of
-    // being silently folded into a coarser parent chunk -- the function's own doc comment already
-    // promises "Pass Infinity ... to capture all headings", which a hardcoded H1-H3-only filter
-    // here was quietly breaking.
-    const maxLevel = limit === Infinity ? 6 : 3
-    if (level > maxLevel) continue
+    const trimmed = line.trim()
+    if (
+      trimmed !== '' &&
+      !trimmed.startsWith('#') &&
+      !trimmed.startsWith('|') &&
+      !trimmed.startsWith('```') &&
+      !trimmed.startsWith('~~~') &&
+      !/^([-*+]|\d+\.)\s/.test(trimmed) &&
+      u + 1 < unfenced.length
+    ) {
+      const [nextIdx, nextLine] = unfenced[u + 1]!
+      if (nextIdx === i + 1) {
+        let setextLevel = 0
+        if (/^\s*(=+)\s*$/.test(nextLine)) setextLevel = 1
+        else if (/^\s*(-+)\s*$/.test(nextLine)) setextLevel = 2
 
-    const text = headingText.trim()
-    if (!text) continue
-
-    headings.push({
-      level,
-      text,
-      lineNumber: i + 1,
-    })
-
-    if (headings.length >= limit) break
+        if (setextLevel > 0) {
+          headings.push({
+            level: setextLevel,
+            text: trimmed,
+            lineNumber: i + 1,
+          })
+          u++
+          if (headings.length >= limit) break
+        }
+      }
+    }
   }
 
   return headings

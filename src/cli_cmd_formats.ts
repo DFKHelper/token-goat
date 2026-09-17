@@ -385,18 +385,22 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .description('structural summary of an XML document (element hierarchy / attribute names / child counts) instead of a raw Read')
     .option('--json', 'emit the outline as JSON instead of text')
     .option('--max-depth <n>', 'max depth of element hierarchy to show')
+    .option('--depth <n>', 'alias for --max-depth')
     .action(guard(cmdXmlOutline))
 
   program
-    .command('xml-query <file> <path>')
+    .command('xml-query <file> [path]')
     .description(
-      "extract elements or attributes from an XML document by tag path instead of a raw Read\n\n" +
+      "extract elements or attributes from an XML document by tag path or XPath expression instead of a raw Read\n\n" +
         "path grammar: slash- or dot-separated tag names with optional bracket segments and attribute selectors -- " +
         "[n] index, [*] wildcard, [@attr] or [@attr=value] filter, and trailing @attr to extract attribute value. " +
         "Bracket clauses stack and apply left to right, so an index after a filter counts within the filtered set. " +
-        "Examples: root.child, catalog/book[@id=101]/title, catalog/book[@genre=Fantasy][0], /feed/entry[*]/@href",
+        "Examples: root.child, catalog/book[@id=101]/title, catalog/book[@genre=Fantasy][0], /feed/entry[*]/@href, //DTS:Executable[@DTS:ExecutableType='...']",
     )
     .option('--head <n>', 'limit a matching result list to the first N items')
+    .option('--xpath <expression>', 'query using an XPath expression')
+    .option('--with-lines', 'show exact source line numbers for matched nodes')
+    .option('--decode-embedded-xml', 'decode and format embedded entity-encoded XML/AML in text and attributes')
     .option('--json', 'emit the result as JSON instead of text')
     .action(guard(cmdXmlQuery))
 

@@ -40,10 +40,10 @@ import {
   CONTENT_MAX_INPUT_CHARS,
 } from './content_store.js'
 import { resolveProjectRoot } from './project.js'
-import { getProjectIndexCounts } from './index_health.js'
+import { getProjectIndexCounts, getEmbeddingCoverage } from './index_health.js'
 import { getDirtyPathsFor, isWorkerRunning } from './worker.js'
 import { getDb } from './db.js'
-import { embeddingsDepsAvailable } from './embeddings.js'
+import { embeddingsDepsAvailable, checkEmbeddingPreflight } from './embeddings.js'
 import { loadConfig } from './config.js'
 import { extractErrorMessage, foldCaseForContainment } from './util.js'
 import { normalizePath, displaySafeJson } from './paths.js'
@@ -530,6 +530,8 @@ export async function createMcpServer(): Promise<McpServer> {
         limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max results (default: 20)'),
         grep: z.string().optional().describe('filter to hits whose file path matches this regex (literal substring if it does not compile as regex); matched against the path as rendered, same convention as refs --grep'),
         excludeTests: z.boolean().optional().describe('hide hits whose file is a test file (opt-in; default output is unchanged)'),
+        preflight: z.boolean().optional().describe('run semantic embedding preflight check and return status'),
+        warm: z.boolean().optional().describe('warm up the embedding model session in memory before query execution'),
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: makeProjectRootField('search'),
       },
@@ -537,13 +539,15 @@ export async function createMcpServer(): Promise<McpServer> {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
-      const { query, limit, grep, excludeTests, json, projectRoot } = args
+      const { query, limit, grep, excludeTests, preflight, warm, json, projectRoot } = args
       const root = resolveToolRoot(projectRoot)
       return toCallToolResult(
         await runSemantic(query, {
           ...(limit !== undefined ? { limit } : {}),
           ...(grep !== undefined ? { grep } : {}),
           ...(excludeTests === true ? { excludeTests: true } : {}),
+          ...(preflight === true ? { preflight: true } : {}),
+          ...(warm === true ? { warm: true } : {}),
           ...(json === true ? { json: true } : {}),
           projectRoot: root,
         }),
@@ -566,7 +570,7 @@ export async function createMcpServer(): Promise<McpServer> {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    (args) => {
+    async (args) => {
       const { projectRoot } = args
       const rootDir = resolveToolRoot(projectRoot)
       const dbPath = globalDbPath()
@@ -590,14 +594,20 @@ export async function createMcpServer(): Promise<McpServer> {
       const workerAlive = isWorkerRunning(resolvedDataDir)
 
       let embeddingsAvailable = false
+      let coverage: { indexedFiles: number; embeddedFiles: number } | undefined
       if (databaseExists && queryError === undefined) {
         try {
           embeddingsAvailable = embeddingsDepsAvailable(getDb(dbPath))
+          coverage = getEmbeddingCoverage(dbPath, rootDir)
         } catch {
           embeddingsAvailable = false
         }
       }
       const embeddingsEnabled = loadConfig(rootDir).indexing?.embeddings_enabled ?? true
+      const preflight = await checkEmbeddingPreflight({
+        projectRoot: rootDir,
+        ...(coverage !== undefined ? { coverage } : {}),
+      })
 
       const status = {
         projectRoot: rootDir,
@@ -610,6 +620,9 @@ export async function createMcpServer(): Promise<McpServer> {
         workerAlive,
         embeddingsEnabled,
         embeddingsAvailable,
+        embeddingPreflight: preflight.status,
+        embeddingPreflightSummary: preflight.summary,
+        ...(preflight.actionRequired !== undefined ? { embeddingPreflightAction: preflight.actionRequired } : {}),
       }
       return toCallToolResult({ text: displaySafeJson(status), code: 0 })
     },

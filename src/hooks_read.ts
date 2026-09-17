@@ -51,7 +51,8 @@ import {
 export { readRequestedSliceWindow, isTruncatedReadDelivery, buildLineDiff } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
-import { querySymbols } from './index_reader.js'
+import { querySymbols, getFileEntry } from './index_reader.js'
+import { extractShellBannerHeading } from './section_reader.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {
   extractMarkdownHeadings,
@@ -219,7 +220,7 @@ function isSourceExtension(basename: string): boolean {
 // both the early large-file-gate exemption below and the universal handler further down.
 const BINARY_FILE_TYPE_EXTS = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp', 'sqlite', 'db', 'sqlite3', 'db3', 'parquet'])
 // svg/xml belong here for the same reason as every other entry: dispatchFileTypeHandler routes them to handlers with their own thresholds (8 KB and 20 KB), and an extension it knows that this list does not is a handler nothing can reach below the 100 KB generic gate, which is past the point where the catch-all would have fired anyway.
-const TEXT_FILE_TYPE_EXTS = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv', 'vtt', 'srt', 'svg', 'xml', 'json', 'yaml', 'yml', 'jsonl'])
+const TEXT_FILE_TYPE_EXTS = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv', 'vtt', 'srt', 'svg', 'xml', 'dtsx', 'ampkg', 'xaml', 'json', 'yaml', 'yml', 'jsonl'])
 const DISPATCHED_FILE_TYPE_EXTS = new Set([...BINARY_FILE_TYPE_EXTS, ...TEXT_FILE_TYPE_EXTS])
 
 function isDispatchedFileType(basename: string): boolean {
@@ -229,10 +230,47 @@ function isDispatchedFileType(basename: string): boolean {
 /**
  * Extract quick top-level symbol names from source text without heavy parser dependencies.
  */
-function extractQuickSymbolSamples(content: string): string[] {
+export function extractQuickSymbolSamples(content: string, _filePath?: string): string[] {
   const symbols: string[] = []
-  const fnRegex = /(?:(?:export\s+(?:default\s+)?(?:async\s+)?)?(?:function\s+|class\s+|(?:const|let|var)\s+)|def\s+|func(?:\s*\([^)]*\))?\s+|fn\s+)([A-Za-z0-9_$]+)/g
+
+  // Check if content is a shell script (.sh, .bash) or begins with a bash shebang
+  const isShell = _filePath !== undefined
+    ? /\.(sh|bash|zsh|ksh)$/i.test(_filePath)
+    : /^#!\s*\/(?:usr\/)?(?:bin\/|local\/bin\/)?(?:bash|sh|zsh)/.test(content)
+
+  if (isShell) {
+    const lines = content.split(/\r?\n/)
+    for (const line of lines) {
+      const banner = extractShellBannerHeading(line)
+      if (banner !== null && !symbols.includes(banner.heading)) {
+        symbols.push(banner.heading)
+        if (symbols.length >= 3) return symbols
+      }
+    }
+  }
+
+  // Matches Pester Describe, Context, and It blocks in PowerShell test files
+  const pesterRegex = /^\s*(?:Describe|Context|It)\b(?:\s+-[A-Za-z0-9_-]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s{]+))?)*\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_.-]+))/gim
   let match: RegExpExecArray | null
+  while ((match = pesterRegex.exec(content)) !== null) {
+    const name = match[1] ?? match[2] ?? match[3]
+    if (name && !symbols.includes(name)) {
+      symbols.push(name)
+      if (symbols.length >= 3) return symbols
+    }
+  }
+
+  // Matches PowerShell functions with hyphenated names (e.g. Audit-NonInternalPaths) or scope prefixes
+  const psFnRegex = /^\s*(?:function|filter|workflow|configuration)\s+(?:(?:global|local|script|private):)?([A-Za-z0-9_\u00C0-\uFFFF-]+)/gim
+  while ((match = psFnRegex.exec(content)) !== null) {
+    const name = match[1]
+    if (name && !symbols.includes(name)) {
+      symbols.push(name)
+      if (symbols.length >= 3) return symbols
+    }
+  }
+
+  const fnRegex = /(?:(?:export\s+(?:default\s+)?(?:async\s+)?)?(?:function\s+|class\s+|(?:const|let|var)\s+)|def\s+|func(?:\s*\([^)]*\))?\s+|fn\s+)([A-Za-z0-9_$]+)/g
   while ((match = fnRegex.exec(content)) !== null) {
     const name = match[1]
     if (name && !symbols.includes(name)) {
@@ -251,6 +289,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
 
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
   const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
+  const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename) && !basename.toLowerCase().endsWith('-meta.xml')
   // Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely (the caller's `::HeadingName`/`SymbolName` fallback covers it), keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
   const escapeHintName = (name: string): string => {
     const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
@@ -258,7 +297,9 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     return safe !== quoted ? '' : safe.trim()
   }
 
-  if (isDocFile) {
+  if (isXmlFile) {
+    return `Use \`token-goat xml-outline "${filePath}"\` for structure or \`token-goat xml-query "${filePath}" "<selector>"\` for nodes.`
+  } else if (isDocFile) {
     if (fileContent !== undefined && /\.(md|mdx)$/i.test(basename)) {
       const top = extractMarkdownHeadings(fileContent)
         .map((h) => escapeHintName(h.text.trim()))
@@ -284,10 +325,17 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   } else if (isSectionFile) {
     return `Use \`token-goat section "${filePath}::name"\` to extract a part.`
   } else {
+    const isShellScript = /\.(sh|bash|zsh|ksh)$/i.test(basename)
     const samples = fileContent !== undefined
-      ? extractQuickSymbolSamples(fileContent).map(escapeHintName).filter((name) => name !== '')
+      ? extractQuickSymbolSamples(fileContent, filePath).map(escapeHintName).filter((name) => name !== '')
       : (() => {
           try {
+            if (isShellScript) {
+              const headings = querySymbols({ filePath, kind: 'heading', limit: 3 })
+                .map((symbol) => escapeHintName(symbol.name))
+                .filter((name) => name !== '')
+              if (headings.length > 0) return headings
+            }
             return querySymbols({ filePath, limit: 3 })
               .map((symbol) => escapeHintName(symbol.name))
               .filter((name) => name !== '')
@@ -297,12 +345,22 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
         })()
     const sym = samples[0] || 'SymbolName'
     const avail = samples.length > 0 ? ` (available: ${samples.join(', ')})` : ''
+    if (isShellScript && samples.length > 0) {
+      return `Use \`token-goat section "${filePath}::${sym}"\`${avail} for a section, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
+    }
     return `Use \`token-goat read "${filePath}::${sym}"\`${avail} for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
   }
 }
 
-function lineCountForSurgicalHint(filePath: string): number {
+function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): number {
   try {
+    if (fileStatSize !== undefined && fileStatSize > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+      return 0
+    }
+    const sz = fileStatSize ?? statSize(filePath)
+    if (sz !== null && sz > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+      return 0
+    }
     return countTextLines(fs.readFileSync(filePath, 'utf8'))
   } catch {
     return 0
@@ -844,6 +902,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     )
   }
 
+  // content.json / tool spill re-read: deny after first read
+  if (basename.toLowerCase() === 'content.json' && wasFileReadThisSession(normalized)) {
+    recordActualRead(event, normalized)
+    recordStat('session_hint', 0, 0)
+    return denyOutput(
+      shown + ' was already read this session. Tool output spill files should not be re-read whole. ' +
+      'Use `token-goat json-query "' + shown + '" \'<path>\'` or `token-goat mcp-output --file "' + shown + '" --json-query \'<path>\'` to extract what you need.',
+    )
+  }
+
   // .env re-read: deny after first read (size thresholds never catch tiny env files)
   if (/^\.env(\.\w+)?$/.test(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
@@ -990,6 +1058,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const entry = getSessionFileEntry(normalized)
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
+    const isSourceExt = isSourceExtension(basename)
 
     // Rank must be computed against session state as of the *last* read, before the read
     // below bumps this file's own lastReadAt -- otherwise every re-read would trivially rank
@@ -1060,6 +1129,18 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           )
         }
       }
+
+      // Item 2.5: sequential line-range paging on source files and docs/XML (3+ slices read so far)
+      const isPagingTracked = isSourceExt || /\.(md|mdx|markdown|rst|xml|dtsx|ampkg|xaml)$/i.test(basename)
+      if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3) {
+        recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' +
+          surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) +
+          ' Inspect structure directly without manual chunk paging.',
+        )
+      }
     }
 
     // session_hint is recorded per-branch below, only where a deny actually returns or the
@@ -1092,19 +1173,6 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
           'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.',
-        )
-      }
-
-      // Item 2.5: sequential line-range paging on source files (3+ slices read so far)
-      const isSourceExt = isSourceExtension(basename)
-      const prevRanges = getFileLineRanges(normalized)
-      if (isSourceExt && window.isExplicitSlice && prevRanges.length >= 3) {
-        recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
-        recordStat('session_hint', 0, 0)
-        return denyOutput(
-          'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' +
-          surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) +
-          ' Inspect structure directly without manual chunk paging.',
         )
       }
 
@@ -1247,6 +1315,68 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // offset/limit; recording the read here would make that retry hit the
       // "already read this session" deny instead, with no way to ever read the file.
       return denyOutput(ftResult.message)
+    }
+  }
+
+  // Lightweight pre-tool-call check and runtime nudge for indexed and ranged reads on .xml / .dtsx / .ampkg / .xaml, .md, PowerShell (.ps1 / .psm1), and any indexed file where a read spans >80%
+  // Exempt dispatched non-code large file types (e.g. CSV, PDF, Office) that are handled by the universal file type handler.
+  const isXmlNudge = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename)
+  const isDocNudge = /\.(md|mdx|markdown)$/i.test(basename)
+  const isScriptNudge = /\.(ps1|psm1)$/i.test(basename)
+
+  // Grep is exempt from pre-read nudges: it performs content searches, not reads.
+  if (event.toolName !== 'Grep' && !BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && (!isKnownFileType || isXmlNudge)) {
+    const reqWindow = readRequestedSliceWindow(event)
+    const lineCount = lineCountForSurgicalHint(normalized, fileStatSize)
+    const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
+    const isSpanningOver80 = !reqWindow.isExplicitSlice ||
+      (reqWindow.limit !== undefined && lineCount > 0 && reqWindow.limit / lineCount >= 0.8)
+
+    let isIndexedFile = false
+    if (isSpanningOver80 && isSubstantial) {
+      try {
+        isIndexedFile = getFileEntry(normalized) !== null || (filePath !== undefined && getFileEntry(filePath) !== null)
+      } catch {
+        isIndexedFile = false
+      }
+    }
+
+    // Markdown files with < 3 headings are allowed to pass through without pre-read nudge unless explicitly paged
+    let isDocEligible = isDocNudge && (reqWindow.isExplicitSlice || lineCount >= 50)
+    if (isDocEligible && !reqWindow.isExplicitSlice) {
+      try {
+        let content = ''
+        if (fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+          content = fs.readFileSync(normalized, 'utf8')
+        }
+        const headings = extractMarkdownHeadings(content)
+        if (headings.length < 3) {
+          isDocEligible = false
+        }
+      } catch {
+        // fail-soft
+      }
+    }
+
+    const shouldNudge = (isXmlNudge || isDocEligible || isScriptNudge || isIndexedFile) &&
+      !isWithinQuietHours(config.hints.quiet_hours) &&
+      (reqWindow.isExplicitSlice || isSubstantial)
+
+    if (shouldNudge) {
+      recordActualRead(event, normalized)
+      recordActualSlice(event, normalized)
+      recordStat('session_hint', 0, 0)
+      const isTestFile = /\.(tests|test)\.(ps1|[jt]sx?|py)$/i.test(basename)
+      const nudge = isXmlNudge
+        ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline "${shown}"\` or \`token-goat xml-query "${shown}" "<selector>"\``
+        : isDocNudge
+        ? `Note: token-goat available for this file type, consider section first: \`token-goat section "${shown}::HeadingName"\``
+        : isTestFile
+        ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read "${shown}::DescribeBlockName"\` or \`token-goat skeleton "${shown}"\``
+        : isScriptNudge
+        ? `Note: token-goat available for this PowerShell file, consider surgical read first: \`token-goat read "${shown}::FunctionName"\` or \`token-goat skeleton "${shown}"\``
+        : `Note: token-goat has this file indexed (>80% read), consider surgical read first: ${surgicalHint(normalized, basename, lineCount)}`
+      return quietContextOutput(nudge)
     }
   }
 
