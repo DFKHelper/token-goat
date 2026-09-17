@@ -899,6 +899,8 @@ function _compressGitBlamePorcelain(lines: string[], stderr: string): string {
   let currentAuthor: string | null = null
   let runCount = 0
   let blockLines: string[] = []
+  // `--porcelain` prints a commit's author/committer/summary metadata only on its FIRST appearance; every later run of that commit is a bare header plus content line. Remember the author per hash so a later run's collapse note can still name it instead of printing `null`.
+  const authorByHash = new Map<string, string>()
 
   function flushBlock(): void {
     if (!blockLines.length) return
@@ -926,7 +928,7 @@ function _compressGitBlamePorcelain(lines: string[], stderr: string): string {
       // New commit: flush previous block
       flushBlock()
       currentHash = commitHash
-      currentAuthor = null
+      currentAuthor = authorByHash.get(commitHash) ?? null
       runCount = 1
       blockLines = [line]
       i++
@@ -934,7 +936,10 @@ function _compressGitBlamePorcelain(lines: string[], stderr: string): string {
       while (i < lines.length && !lines[i]!.startsWith('\t')) {
         const meta = lines[i]!
         const am = _GIT_BLAME_AUTHOR_LINE_RE.exec(meta)
-        if (am) currentAuthor = (am[1] ?? '').trim()
+        if (am) {
+          currentAuthor = (am[1] ?? '').trim()
+          authorByHash.set(commitHash, currentAuthor)
+        }
         blockLines.push(meta)
         i++
       }

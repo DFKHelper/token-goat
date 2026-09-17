@@ -940,6 +940,49 @@ describe('GitBlameFilter porcelain', () => {
     const result = apply(gitBlameFilter, text, ['git', 'blame', '--porcelain'])
     expect(result.split('\n').length).toBeLessThan(text.split('\n').length)
   })
+
+  it('names the author on a collapsed run of a commit whose metadata appeared earlier in the output', () => {
+    // FORMAT-DERIVED from git-blame(1) "The Porcelain Format" (https://git-scm.com/docs/git-blame#_the_porcelain_format): the author/committer/summary/filename block follows a commit's header only the first time that commit appears; every later header for the same commit is bare (`<sha> <orig> <final> [<group-size>]`, then the tab-prefixed content line), and the 2nd..Nth lines of a group carry a 3-field header. Shape confirmed against a CAPTURE of `git blame --porcelain src/hooks_edit.ts` in this repo (a 6-line second-appearance group with no metadata). Author names and hashes here are synthetic.
+    const a = 'a'.repeat(40)
+    const b = 'b'.repeat(40)
+    const text = [
+      `${a} 1 1 1`,
+      'author Alice Example',
+      'author-mail <alice@example.com>',
+      'author-time 1700000000',
+      'author-tz +0000',
+      'committer Alice Example',
+      'committer-mail <alice@example.com>',
+      'committer-time 1700000000',
+      'committer-tz +0000',
+      'summary first commit',
+      'filename src/module.py',
+      '\tline one',
+      `${b} 2 2 1`,
+      'author Bob Example',
+      'author-mail <bob@example.com>',
+      'author-time 1700000100',
+      'author-tz +0000',
+      'committer Bob Example',
+      'committer-mail <bob@example.com>',
+      'committer-time 1700000100',
+      'committer-tz +0000',
+      'summary second commit',
+      'previous ' + a + ' src/module.py',
+      'filename src/module.py',
+      '\tline two',
+      `${a} 2 3 3`,
+      '\tline three',
+      `${a} 3 4`,
+      '\tline four',
+      `${a} 4 5`,
+      '\tline five',
+    ].join('\n')
+    const result = apply(gitBlameFilter, text, ['git', 'blame', '--porcelain'])
+    expect(result).toContain(`[token-goat: 2 more lines by Alice Example (${a.slice(0, 8)})]`)
+    expect(result).not.toContain('by null')
+    expect(result).not.toContain('by Bob Example')
+  })
 })
 
 // ---------------------------------------------------------------------------
