@@ -83,6 +83,20 @@ describe('parseTranscript', () => {
     const cues = parseTranscript(content)
     expect(cues[0]).toMatchObject({ speaker: 'Carol', text: 'see you there' })
   })
+
+  // FORMAT-DERIVED: W3C WebVTT, "WebVTT cue text span" (https://www.w3.org/TR/webvtt1/#webvtt-cue-text-span) defines exactly six escapes (`&amp;`, `&lt;`, `&gt;`, `&lrm;`, `&rlm;`, `&nbsp;`) and requires a literal `&` or `<` in cue text or a voice-span annotation to be written as one, so the escaped form is never the author's text. The parser stripped tags and shipped the escapes verbatim: a `--grep "Tom & Jerry"` slice then missed the cue and the outline listed the speaker as `Tom &amp; Jerry`.
+  it('decodes the six WebVTT cue text escapes in cue text and in the <v> speaker annotation', () => {
+    const content = `WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Tom &amp; Jerry>Tom &amp; Jerry &lt;3 cats &gt; dogs\n\n00:00:03.000 --> 00:00:04.000\nan escaped &lt;i&gt; is text, not a tag\n`
+    const cues = parseTranscript(content)
+    expect(cues[0]).toMatchObject({ speaker: 'Tom & Jerry', text: 'Tom & Jerry <3 cats > dogs' })
+    expect(cues[1]).toMatchObject({ speaker: null, text: 'an escaped <i> is text, not a tag' })
+  })
+
+  // HAND-DERIVED: SRT defines no escape syntax, so an `&amp;` in an SRT cue is the author's literal text and must survive byte-for-byte.
+  it('leaves an ampersand escape in an SRT cue untouched', () => {
+    const cues = parseTranscript(`1\n00:00:01,000 --> 00:00:04,000\nSRT keeps &amp; verbatim\n`)
+    expect(cues[0]?.text).toBe('SRT keeps &amp; verbatim')
+  })
 })
 
 describe('formatTimestamp', () => {

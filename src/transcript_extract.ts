@@ -24,6 +24,14 @@ const CUE_LINE_RE = new RegExp(`^\\s*${TIMESTAMP_RE.source}\\s*-->\\s*${TIMESTAM
 // A voice span start tag carries zero or more `.class` names before the speaker annotation (WebVTT spec, "WebVTT cue voice span": `<v.first.loud Esme>`); each class starts with a literal `.` that the class body excludes, so the repetition is unambiguous.
 const V_TAG_RE = /^<v(?:\.[^\s.>]+)*\s+([^>]+)>\s*(.*)$/
 const NAME_PREFIX_RE = /^([A-Za-z][\w .'-]{0,40}):\s+(.*)$/
+// WebVTT cue text and voice-span annotations carry a literal `&` or `<` only as one of six named escapes (WebVTT spec, "WebVTT cue text span": `&amp;`, `&lt;`, `&gt;`, `&lrm;`, `&rlm;`, `&nbsp;`), so an escaped form is never the author's own text and must be decoded. SRT defines no escape syntax, so the decode is applied only under a `WEBVTT` signature.
+const VTT_SIGNATURE_RE = /^\uFEFF?WEBVTT/
+const VTT_ESCAPE_RE = /&(amp|lt|gt|lrm|rlm|nbsp);/g
+const VTT_ESCAPES: Record<string, string> = { amp: '&', lt: '<', gt: '>', lrm: '\u200E', rlm: '\u200F', nbsp: '\u00A0' }
+
+function decodeVttEscapes(text: string): string {
+  return text.replace(VTT_ESCAPE_RE, (_match, name: string) => VTT_ESCAPES[name] as string)
+}
 
 function parseTimestamp(text: string): number {
   const m = TIMESTAMP_RE.exec(text)
@@ -46,6 +54,7 @@ function extractSpeaker(text: string): { speaker: string | null; text: string } 
 
 export function parseTranscript(content: string): TranscriptCue[] {
   const lines = content.replace(/\r\n/g, '\n').split('\n')
+  const decode = VTT_SIGNATURE_RE.test(content) ? decodeVttEscapes : (text: string): string => text
   const cues: TranscriptCue[] = []
   let index = 0
   let i = 0
@@ -61,15 +70,13 @@ export function parseTranscript(content: string): TranscriptCue[] {
         textLines.push(lines[i] as string)
         i++
       }
-      const rawText = textLines.join(' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      // Escapes are decoded only after the tag strip, so an escaped `&lt;i&gt;` stays as the author's literal `<i>` text rather than becoming a tag the strip removes.
+      const rawText = decode(textLines.join(' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
       const firstLineForSpeaker = textLines[0] ?? ''
-      // Extract the speaker only once. A `<v Name>` tag on the raw first line already resolves the
-      // speaker unambiguously, so the leading-`Name:` prefix heuristic must not run a second time on
-      // rawText in that case -- it would otherwise mistake ordinary dialogue text that happens to
-      // start with "Word:" (e.g. "Bob said: hello") for a redundant speaker label and strip it.
+      // Extract the speaker only once. A `<v Name>` tag on the raw first line already resolves the speaker unambiguously, so the leading-`Name:` prefix heuristic must not run a second time on rawText in that case -- it would otherwise mistake ordinary dialogue text that happens to start with "Word:" (e.g. "Bob said: hello") for a redundant speaker label and strip it.
       const vTagSpeaker = extractSpeaker(firstLineForSpeaker)
       const { speaker, text } = V_TAG_RE.test(firstLineForSpeaker)
-        ? { speaker: vTagSpeaker.speaker, text: rawText }
+        ? { speaker: vTagSpeaker.speaker === null ? null : decode(vTagSpeaker.speaker), text: rawText }
         : extractSpeaker(rawText)
       index++
       cues.push({ index, startSeconds, endSeconds, speaker, text })
