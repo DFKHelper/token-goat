@@ -31,7 +31,7 @@ function threePageBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(THREE_PAGE_PDF, 'latin1'))
 }
 
-// FORMAT-DERIVED: same object/xref-less layout as THREE_PAGE_PDF above, per ISO 32000-1 (9.4.3, 7.5). The font switch on every other Tj (F1/F2 alternate) is what makes pdfjs 6.3.289 emit 10 separate text items for this one line instead of merging same-font runs into one -- confirmed by a CAPTURE of page.streamTextContent() on this exact fixture (10 items, 1 literal " " item, 2 items with hasEOL: true). A single-Tj-per-line fixture like THREE_PAGE_PDF above never exercises the item-join at all, which is why the regression this fixture guards (a space-join bridging a line break, or an EOL-as-newline join breaking a phrase that legitimately wraps) needed its own fixture.
+// FORMAT-DERIVED: same object/xref-less layout as THREE_PAGE_PDF above, per ISO 32000-1 (9.4.3, 7.5). The font switch on every other Tj (F1/F2 alternate) is what makes pdfjs 6.3.289 emit 10 separate text items for this one line instead of merging same-font runs into one -- confirmed by a CAPTURE of page.streamTextContent() on this exact fixture (10 items, 1 literal " " item, 2 items with hasEOL: true -- one of those two lands on an empty-string item pdfjs inserts at the Td line break rather than on the preceding text item). A single-Tj-per-line fixture like THREE_PAGE_PDF above never exercises the item-join at all, which is why the regression this fixture guards (a space-join bridging a line break, or an EOL-as-newline join breaking a phrase that legitimately wraps) needed its own fixture.
 const MIXED_FONTS_PDF =
   '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
