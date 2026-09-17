@@ -55,6 +55,11 @@ beforeAll(async () => {
   // for cellText falling through to `String(cell.value)` and producing "[object Object]").
   const plainErrorRow = ws6.addRow(['direct-error', null])
   plainErrorRow.getCell(2).value = { error: '#N/A' }
+  // CAPTURE: ExcelJS 4.x writes `{ formula }` with no result as `<c r="B5"><f>A1&amp;&quot;x&quot;</f></c>` (no `<v>`), the same shape openpyxl emits for every formula it writes, and `{ formula, result: false }` as `<c t="b"><f>1=2</f><v>0</v></c>`. The first read back as a fabricated `0`, the second as the JS spelling `false` beside plain boolean cells that read `FALSE`.
+  const uncalculatedRow = ws6.addRow(['uncalculated', null])
+  uncalculatedRow.getCell(2).value = { formula: 'A1&"x"' } as unknown as { formula: string; result: undefined }
+  const formulaBoolRow = ws6.addRow(['bool', null])
+  formulaBoolRow.getCell(2).value = { formula: '1=2', result: false }
   // Sheet where the last data row has empty trailing cells, so `row.eachCell` stops earlier
   // than the sheet's actual width (regression test for sheetToCsv producing ragged CSV rows
   // that csv-parse's strict column-count check rejects with "Invalid Record Length").
@@ -189,6 +194,21 @@ describe('headSheet', () => {
     const lines = text.split('\n')
     expect(lines[3]).toBe('direct-error,#N/A')
     expect(lines[3]).not.toContain('[object Object]')
+  })
+
+  it('renders a formula cell with no cached value as empty, not a fabricated 0 or the word null', async () => {
+    const text = await headSheet(file, 'FormulaResults', 10)
+    const lines = text.split('\n')
+    expect(lines[4]).toBe('uncalculated,')
+    // --formulas still shows the formula itself, so the cell is empty of a value but not lost.
+    const ranged = await rangeSheet(file, 'FormulaResults', 'B5:B5', true)
+    expect(ranged.rows[0]?.[0]).toBe('=A1&"x"')
+  })
+
+  it('renders a boolean formula result with the same TRUE/FALSE spelling as a plain boolean cell', async () => {
+    const text = await headSheet(file, 'FormulaResults', 10)
+    const lines = text.split('\n')
+    expect(lines[5]).toBe('bool,FALSE')
   })
 
   it('does not drop a trailing data row that comes after an interior blank row', async () => {

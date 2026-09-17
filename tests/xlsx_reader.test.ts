@@ -110,6 +110,20 @@ describe('cell types ExcelJS never emits', () => {
     expect(ws?.getCell('A1').value).toEqual({ error: '#DIV/0!' })
     expect(ws?.getCell('A1').text).toBe('#DIV/0!')
   })
+
+  // FORMAT-DERIVED: ECMA-376 Part 1, 18.3.1.4 (c, Cell) declares `v` with minOccurs="0", and 18.3.1.40 (f, Formula) says the cached value is what the producer last calculated, so a writer that never calculates (openpyxl and other non-Excel producers) emits `<c><f>…</f></c>` with no `<v>` at all. The B1 shape is a CAPTURE from ExcelJS 4.x writing `{ formula: 'A1&"x"' }` with no result. The reader's numeric path read the absent `<v>` as `Number('')`, which is 0, and reported a value the sheet does not hold.
+  it('reads a formula cell with no cached <v> as an empty value, not a fabricated 0', async () => {
+    const file = buildXlsx({
+      sheets: [{ name: 'S', target: 'worksheets/sheet1.xml', xml: sheetXml('<row r="1"><c r="A1"><v>7</v></c><c r="B1"><f>A1*2</f></c><c r="C1"><f>SUM(A1)</f><v>0</v></c></row>') }],
+    })
+    const ws = (await readXlsxWorkbook(file)).getWorksheet('S')
+    expect(ws?.getCell('B1').value).toEqual({ formula: 'A1*2', result: null })
+    expect(ws?.getCell('B1').text).toBe('')
+    expect(ws?.getCell('B1').formula).toBe('A1*2')
+    // A genuinely cached 0 must still read as 0: the fix keys on the missing element, not on the value being falsy.
+    expect(ws?.getCell('C1').value).toEqual({ formula: 'SUM(A1)', result: 0 })
+    expect(ws?.getCell('C1').text).toBe('0')
+  })
 })
 
 describe('date detection and serial conversion', () => {

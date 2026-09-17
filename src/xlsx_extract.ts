@@ -105,6 +105,9 @@ function cellText(cell: ExcelCell): string {
     // A plain (non-formula) error cell, e.g. #N/A entered directly, is shaped `{ error: '#N/A' }` with no richText/result/text key. Return the error text directly instead of falling through to the generic text/String(value) path below, which would stringify the object itself.
     if (typeof obj.error === 'string') return obj.error
     if (obj.result !== undefined) {
+      // The reader hands a never-calculated formula cell `result: null`, and `String(null)` would print the word "null" as if the sheet held it. A boolean result goes through the same spelling a plain t="b" cell gets, so `=1=2` reads FALSE in the same column where a typed boolean reads FALSE rather than the JS `false`.
+      if (obj.result === null) return ''
+      if (typeof obj.result === 'boolean') return obj.result ? 'TRUE' : 'FALSE'
       if (obj.result instanceof Date) return formatDateCell(obj.result)
       if (typeof obj.result === 'object' && obj.result !== null && typeof (obj.result as { error?: unknown }).error === 'string') {
         return (obj.result as { error: string }).error

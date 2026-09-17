@@ -218,8 +218,10 @@ function buildCell(
     raw = { error: e }
     text = e
   } else {
-    const n = Number(textOf(c['v']))
-    if (!Number.isFinite(n)) {
+    // A formula cell the producer never calculated (`<c><f>A1*2</f></c>`, no `<v>` at all, as openpyxl and other non-Excel writers emit) has no cached number. `Number('')` is 0, so reading it through the numeric path fabricated a literal 0 where the sheet holds no value; report it as empty instead.
+    const vText = textOf(c['v'])
+    const n = Number(vText)
+    if (vText.trim() === '' || !Number.isFinite(n)) {
       raw = null
       text = ''
     } else if (isDateStyle) {
