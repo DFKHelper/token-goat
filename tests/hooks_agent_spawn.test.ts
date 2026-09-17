@@ -150,6 +150,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
       expect(updatedPrompt).toContain('Before your first read of any file')
       expect(updatedPrompt).toContain('instead of a full-file read or wide grep')
       expect(updatedPrompt).toContain('is a violation, not an oversight')
+      expect(updatedPrompt).toContain('token-goat json-query')
       // Report contract: pin by concept (cite evidence by handle, fence only when load-bearing, state unverified claims explicitly), not by exact wording -- brittle-string-coupling lesson from this repo's own hint-text tests.
       expect(updatedPrompt).toContain('Report contract')
       expect(updatedPrompt).toContain('cite evidence')

@@ -322,15 +322,94 @@ export function extractRgSymbolSearch(cmd: string): { filePath: string; identifi
   return { filePath, identifier: pattern }
 }
 
-/** Extracts the file path from `cat <file> | jq` commands restricted to structured config files. Returns null for non-config extensions, temp paths, or non-jq pipes. Emits a CONTEXT hint (not deny) so the jq pipeline still runs if the agent proceeds. */
-export function extractCatJsonPipe(cmd: string): { filePath: string } | null {
+/** Extracts the file path from `cat <file> | jq` or `jq ... <file>` commands restricted to structured config files. Emits a CONTEXT hint (not deny) so the jq pipeline still runs if the agent proceeds. */
+export function extractCatJsonPipe(cmd: string): { filePath: string; isDirectJq?: boolean } | null {
   const m = /^cat\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*\|\s*jq\b/.exec(cmd)
-  if (!m) return null
-  const filePath = m[1] ?? m[2] ?? m[3]
-  if (!filePath) return null
-  if (isTempPath(filePath)) return null
-  if (!/\.(?:json|yaml|yml|toml)$/i.test(filePath)) return null
-  return { filePath }
+  if (m) {
+    const filePath = m[1] ?? m[2] ?? m[3]
+    if (filePath && !isTempPath(filePath) && /\.(?:json|yaml|yml|toml)$/i.test(filePath)) {
+      return { filePath, isDirectJq: false }
+    }
+  }
+  const jqDirect = /^jq(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z0-9-]+(?:=\S+)?))*\s+(?:"[^"]*"|'[^']*'|(?:\.[a-zA-Z0-9_.*[\]]+))\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  if (jqDirect) {
+    const filePath = jqDirect[1] ?? jqDirect[2] ?? jqDirect[3]
+    if (filePath && !isTempPath(filePath) && /\.(?:json|yaml|yml|toml)$/i.test(filePath)) {
+      return { filePath, isDirectJq: true }
+    }
+  }
+  return null
+}
+
+/**
+ * Extracts info when a command involves PowerShell `ConvertFrom-Json`.
+ * Detects pipelines like `Get-Content <file> | ConvertFrom-Json`, `cat <file> | ConvertFrom-Json`,
+ * `[IO.File]::ReadAllText(<file>) | ConvertFrom-Json`, or assignment expressions.
+ */
+export function extractPowerShellJsonPipeline(cmd: string): { filePath: string | null } | null {
+  let inner = cmd.trim()
+  const w = POWERSHELL_WRAP_RE.exec(inner)
+  if (w) {
+    inner = (w[1] ?? w[2] ?? '').trim()
+  }
+
+  if (!/\bConvertFrom-Json\b/i.test(inner)) return null
+
+  const parseTarget = (segment: string): string | null => {
+    const readAll = /\[(?:System\.)?IO\.File\]::ReadAllText\(\s*['"]?([^'")\s]+)['"]?\s*\)/i.exec(segment)
+    if (readAll) {
+      const p = readAll[1]
+      return p && /\.(?:json|txt|log|temp)$/i.test(p) ? p : null
+    }
+
+    const tokens = segment.trim().split(/\s+/)
+    const cmdlets = new Set(['get-content', 'gc', 'cat', 'type'])
+    const idx = tokens.findIndex((t) => cmdlets.has(t.toLowerCase()))
+    if (idx === -1) return null
+
+    let argIdx = idx + 1
+    while (argIdx < tokens.length) {
+      const tok = tokens[argIdx]
+      if (!tok) break
+      if (tok.startsWith('-')) {
+        const flag = tok.toLowerCase()
+        if (flag === '-path' && argIdx + 1 < tokens.length) {
+          const next = tokens[argIdx + 1]
+          if (next && !next.startsWith('-')) {
+            const clean = next.replace(/^['"]|['"]$/g, '')
+            return /\.(?:json|txt|log|temp)$/i.test(clean) ? clean : null
+          }
+        }
+        if ((flag === '-encoding' || flag === '-totalcount') && argIdx + 1 < tokens.length) {
+          argIdx += 2
+          continue
+        }
+        argIdx++
+        continue
+      }
+      const clean = tok.replace(/^['"(]|['")]$/g, '')
+      return /\.(?:json|txt|log|temp)$/i.test(clean) ? clean : null
+    }
+    return null
+  }
+
+  const pipeIdx = inner.search(/\|\s*ConvertFrom-Json\b/i)
+  if (pipeIdx !== -1) {
+    const upstream = inner.slice(0, pipeIdx).trim()
+    return { filePath: parseTarget(upstream) }
+  }
+
+  const parenMatch = /ConvertFrom-Json\s*\(([^)]+)\)/i.exec(inner)
+  if (parenMatch) {
+    const inside = parenMatch[1] ?? ''
+    return { filePath: parseTarget(inside) }
+  }
+
+  if (/ConvertFrom-Json\s*\(/i.test(inner)) {
+    return { filePath: null }
+  }
+
+  return null
 }
 
 /** Extracts the file path from a WSL-proxied cat command like `wsl bash -c "cat /mnt/c/..."` or `wsl -d Ubuntu bash -c "cat /mnt/c/..."`. Converts /mnt/X/ paths to X:/ and applies the same filtering as extractCatFile. */

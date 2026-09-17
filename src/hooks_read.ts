@@ -288,7 +288,10 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   if (lineCount < loadConfig().hints.min_file_lines_for_hint) return ''
 
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
-  const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
+  const isJsonFile = /\.(json|jsonc)$/i.test(basename)
+  const isYamlFile = /\.(yaml|yml)$/i.test(basename)
+  const isHtmlFile = /\.(html|htm)$/i.test(basename)
+  const isSectionFile = /\.(css|scss|sass|less|toml)$/i.test(basename)
   const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename) && !basename.toLowerCase().endsWith('-meta.xml')
   // Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely (the caller's `::HeadingName`/`SymbolName` fallback covers it), keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
   const escapeHintName = (name: string): string => {
@@ -322,6 +325,12 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
       }
     }
     return `Use \`token-goat section "${filePath}::HeadingName"\` to extract a part.`
+  } else if (isJsonFile) {
+    return `Use \`token-goat json-query "${filePath}" "<key>"\` (or \`token-goat json-outline "${filePath}"\`) to slice one value.`
+  } else if (isYamlFile) {
+    return `Use \`token-goat section "${filePath}::name"\` or \`token-goat yaml-query "${filePath}" "<key>"\` to extract a part.`
+  } else if (isHtmlFile) {
+    return `Use \`token-goat section "${filePath}::HeadingName"\` or \`token-goat outline "${filePath}"\` to navigate HTML structure.`
   } else if (isSectionFile) {
     return `Use \`token-goat section "${filePath}::name"\` to extract a part.`
   } else {
@@ -1173,6 +1182,15 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
           'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.',
+        )
+      }
+
+      // Structured re-read denial: .json / .html files >= 8KB already read this session
+      if (!window.isExplicitSlice && /\.(json|jsonc|html|htm)$/i.test(basename) && rereadBytes >= 8192) {
+        const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
+        recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
+        return denyOutput(
+          shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
         )
       }
 

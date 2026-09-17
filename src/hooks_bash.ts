@@ -71,6 +71,7 @@ import {
   extractTerminalXmlParsing,
   extractRgSymbolSearch,
   extractCatJsonPipe,
+  extractPowerShellJsonPipeline,
   extractWslCatFile,
   extractPythonFileRead,
   extractHeadFile,
@@ -834,11 +835,26 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const catJsonPipe = extractCatJsonPipe(cmd)
   if (catJsonPipe !== null) {
-    const { filePath } = catJsonPipe
+    const { filePath, isDirectJq } = catJsonPipe
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
+    const label = isDirectJq ? '`jq`' : '`cat | jq`'
     return contextOutput(
-      '`cat | jq` loads the whole file. Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to slice one value.',
+      label + ' loads the whole file. Use `token-goat json-query "' + hintPath + '" "<key>"` or `token-goat config-get "' + hintPath + '" KEY_NAME` to slice one value.',
+    )
+  }
+
+  const psJsonPipe = extractPowerShellJsonPipeline(cmd)
+  if (psJsonPipe !== null) {
+    recordStat('session_hint', 0, 0)
+    if (psJsonPipe.filePath) {
+      const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, psJsonPipe.filePath, hintCwd) : psJsonPipe.filePath)
+      return contextOutput(
+        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query "' + hintPath + '" "<selector>"` to extract fields directly without shell conversion scripts.',
+      )
+    }
+    return contextOutput(
+      'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query <file> "<selector>"` or `token-goat web-output` to extract fields directly.',
     )
   }
 

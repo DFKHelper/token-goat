@@ -1510,6 +1510,70 @@ describe('preBashHandler — cat | jq pipe interception', () => {
     const result = preBashHandler(makeBashEvent('cat /tmp/output.json | jq .'))
     expect(result.hookType).toBe('pass')
   })
+
+  it('emits context hint for direct jq with long flags', () => {
+    const result = preBashHandler(makeBashEvent('jq --raw-output .name payload.json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('`jq` loads the whole file')
+      expect(result.context).toContain('token-goat json-query "payload.json"')
+    }
+  })
+})
+
+describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits context hint for Get-Content file.json | ConvertFrom-Json', () => {
+    const result = preBashHandler(makeBashEvent('Get-Content data.json | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query "data.json"')
+    }
+  })
+
+  it('emits context hint for Get-Content with -Raw flag', () => {
+    const result = preBashHandler(makeBashEvent('Get-Content -Raw payload.json | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query "payload.json"')
+    }
+  })
+
+  it('emits context hint for powershell wrapped ConvertFrom-Json', () => {
+    const result = preBashHandler(makeBashEvent('powershell -Command "Get-Content \'payload.json\' | ConvertFrom-Json"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query "payload.json"')
+    }
+  })
+
+  it('does not falsely extract json path from unrecognized extensions like .bak', () => {
+    const result = preBashHandler(makeBashEvent('Get-Content payload.json.bak | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat json-query <file>')
+    }
+  })
+
+  it('does not trigger on unrelated commands mentioning ConvertFrom-Json outside pipeline', () => {
+    const result = preBashHandler(makeBashEvent('Write-Output ConvertFrom-Json; echo done'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('emits generic json-query hint when ConvertFrom-Json has no file path', () => {
+    const result = preBashHandler(makeBashEvent('$response | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query <file>')
+    }
+  })
 })
 
 describe('preBashHandler — python read-modify-write exemption', () => {
