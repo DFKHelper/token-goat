@@ -119,7 +119,46 @@ public delegate void Plain();
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Handler')
     expect(names).toContain('Plain')
-    expect(symbols.find((s) => s.name === 'Handler')?.kind).toBe('interface')
+    expect(symbols.find((s) => s.name === 'Handler')?.kind).toBe('type')
+  })
+
+  it('indexes both spellings of an event member, and files a delegate as a type rather than an interface', () => {
+    // FORMAT-DERIVED: the two event forms are the field-like and accessor-block declarations from the C# language reference, "event" keyword page (learn.microsoft.com/dotnet/csharp/language-reference/keywords/event).
+    const content = `namespace App {
+public delegate int Transformer(int x);
+public interface IReal { void Go(); }
+public class Widget {
+    public event EventHandler? Changed;
+    public event EventHandler Renamed { add { Track("widget-get"); } remove { } }
+    public event EventHandler<Foo, Bar> Opened = null, Closed;
+    public unsafe event EventHandler Pinned;
+    public extern event EventHandler Native;
+    public int Size { get; set; }
+    public void Resize(int n) { }
+}
+}
+`
+    const { symbols } = extractCsharp(content, 'Widget.cs')
+    const kindOf = (n: string) => symbols.filter((s) => s.name === n).map((s) => s.kind)
+    // Neither event form had a pattern that reached it, so both were missing from the index entirely while the property and method beside them were indexed.
+    expect(kindOf('Changed')).toEqual(['var'])
+    expect(kindOf('Renamed')).toEqual(['var'])
+    // One declaration, two members. The comma inside the generic argument list is not a declarator separator, so neither Foo nor Bar may appear as a symbol of its own.
+    expect(kindOf('Opened')).toEqual(['var'])
+    expect(kindOf('Closed')).toEqual(['var'])
+    expect(symbols.map((s) => s.name)).not.toContain('Foo')
+    expect(symbols.map((s) => s.name)).not.toContain('Bar')
+    // METHOD_RE already reaches `unsafe`/`extern` methods, so an event carrying either modifier was the one member on its line that vanished.
+    expect(kindOf('Pinned')).toEqual(['var'])
+    expect(kindOf('Native')).toEqual(['var'])
+    // The accessor-block form must not also register as a property or a method: one member, one row. PROPERTY_RE only needs the substring `get` somewhere after the opening brace, which an add accessor's own body can supply.
+    expect(symbols.filter((s) => s.name === 'Renamed')).toHaveLength(1)
+    // A delegate declares a function type. Filing it as 'interface' put it in the same bucket as the real interface declared beside it.
+    expect(kindOf('Transformer')).toEqual(['type'])
+    expect(kindOf('IReal')).toEqual(['interface'])
+    // The members that already worked still do, and keep their kinds.
+    expect(kindOf('Size')).toEqual(['var'])
+    expect(kindOf('Resize')).toEqual(['method'])
   })
 
   it('records the enclosing class name for a delegate nested inside a class, matching how the same-named class/constructor/property/method declarations already carry their parent (regression: DELEGATE_RE\'s makeLineSymbol call never passed a parent argument, unlike class/constructor/property/method above, so a nested delegate\'s docstring -- the field regex-parsed adapters use to store the enclosing class name for read_commands.ts\'s ambiguity-disambiguation logic, per findParentName\'s doc comment -- was always empty; two same-named delegates nested in different classes were then indistinguishable to that scoping logic, which silently fell through to the first candidate regardless of which class was actually requested)', () => {
@@ -133,7 +172,7 @@ public class OtherHolder {
 }
 `
     const { symbols } = extractCsharp(content, 'Handler.cs')
-    const delegates = symbols.filter((s) => s.name === 'MyHandler' && s.kind === 'interface')
+    const delegates = symbols.filter((s) => s.name === 'MyHandler' && s.kind === 'type')
     expect(delegates).toHaveLength(2)
     expect(delegates.map((s) => s.parent).sort()).toEqual(['EventArgsHolder', 'OtherHolder'])
   })
@@ -260,7 +299,7 @@ public delegate void @Handler(int a);
     expect(imports.map((i) => i.target)).toEqual(['System.Text'])
     expect(symbols.find((s) => s.name === 'event')?.kind).toBe('var')
     expect(symbols.find((s) => s.name === 'operator')?.kind).toBe('method')
-    expect(symbols.find((s) => s.name === 'Handler')?.kind).toBe('interface')
+    expect(symbols.find((s) => s.name === 'Handler')?.kind).toBe('type')
     expect(symbols.filter((s) => s.name === 'class').map((s) => s.kind)).toEqual(['class', 'method'])
   })
 

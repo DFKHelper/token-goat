@@ -104,6 +104,28 @@ const PROPERTY_HEADER_RE = new RegExp(
   `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*` +
   `${TYPE_SLOT}\\s+${MEMBER_NAME}\\s*$`,
 )
+// An event is a class member like a property, but no pattern above reaches either of its two spellings: the field-like `public event EventHandler Changed;` has no accessor block for PROPERTY_RE to find, and the accessor-block form `public event EventHandler Renamed { add { } remove { } }` carries `add`/`remove` rather than the `get`/`set` PROPERTY_RE requires. METHOD_RE cannot pick either up either, since neither has a parameter list. Events were therefore the one C# member category missing from the index entirely, while the properties and methods declared beside them were indexed normally.
+// The pattern stops at the `event` keyword and the name is taken separately, rather than spanning the type in one regex the way the property patterns do. Every formulation that spans it puts a whitespace-admitting quantifier (TYPE_SLOT's own class, or a negated class) next to a `\s+`, which lets the two exchange characters and costs polynomial backtracking on a run of spaces -- the gate the repo carries a suppressions ledger for. Splitting the job keeps both halves unambiguous: nothing here can exchange with the literal `event` that follows it, and EVENT_NAME_RE's identifier class shares no character with the `\s*$` after it.
+// `extern` and `unsafe` are here because METHOD_RE already reaches `public static extern int Native(int a)` and `public unsafe void Go()`; without them an event carrying the same modifier was the one member on its line that vanished.
+const EVENT_RE = new RegExp(
+  `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|extern|unsafe)\\s+)*event\\s`,
+)
+// The event's name is the last identifier before the declarator ends, whatever the type in front of it looks like -- a nullable `EventHandler?`, a generic `EventHandler<Foo, Bar>` carrying a space, or a namespace-qualified name.
+const EVENT_NAME_RE = new RegExp(`(${IDENT})\\s*$`)
+// `public event EventHandler Opened, Closed;` declares two members, so a declaration splits into one declarator per top-level comma. Commas inside a generic argument list are not separators, so the split tracks angle-bracket depth; `=` cannot open one here, since the caller has already cut the declaration at its terminator, so there is no `=>` to mistake for a closing bracket.
+function splitEventDeclarators(decl: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < decl.length; i++) {
+    const c = decl[i]
+    if (c === '<') depth++
+    else if (c === '>') { if (depth > 0) depth-- }
+    else if (c === ',' && depth === 0) { parts.push(decl.slice(start, i)); start = i + 1 }
+  }
+  parts.push(decl.slice(start))
+  return parts
+}
 const ALLMAN_ACCESSOR_RE = /^(?:get\s*;\s*set\s*;|set\s*;\s*get\s*;|get\s*;|set\s*;)$/
 // A real (non-shorthand) accessor body opener, e.g. `get { return 1; }` or `set {`. Safe to OR
 // into the shorthand check below: PROPERTY_HEADER_RE already restricts the header line to a bare
@@ -247,7 +269,8 @@ export function extractCsharp(
     const delM = DELEGATE_RE.exec(stripLeadingAttributes(stripped))
     if (delM) {
       const delegateParent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, stripVerbatim(delM[1] ?? ''), 'interface', lineNum, stripped.slice(0, 200), delegateParent, lines, 'c'))
+      // A delegate declares a function type, not an interface. Filing it as 'interface' made `outline` and `symbol` report a C# reader something the language has no such construct for, and put it in the same bucket as the real `interface` declarations beside it. 'type' is what the other adapters use for the closest analog, a type alias naming a function signature.
+      symbols.push(makeLineSymbol(filePath, stripVerbatim(delM[1] ?? ''), 'type', lineNum, stripped.slice(0, 200), delegateParent, lines, 'c'))
     }
 
     // class/struct/interface/enum/record. Always pushes its own frame, even while already
@@ -281,9 +304,20 @@ export function extractCsharp(
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
           symbols.push(makeLineSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
         }
-        // property
+        // event. Checked before the property patterns so the accessor-block spelling is claimed here rather than falling through to the Allman header peek, which would read its `{` and following `add`/`remove` line as a property body.
         let isPropertyLine = false
-        const propM = PROPERTY_RE.exec(lineNoAttr)
+        const eventM = EVENT_RE.exec(lineNoAttr)
+        if (eventM) {
+          isPropertyLine = true
+          // Everything after the keyword up to the terminator is the type and its declarators; the field-like spelling ends at `;`, the accessor-block one at `{`, and an Allman `{` on the next line leaves the whole remainder. A per-declarator initializer is cut at its own `=` rather than with the terminator, because `First = null, Second;` would otherwise end at the `=` and lose `Second`.
+          const decl = lineNoAttr.slice(eventM[0].length).split(/[;{]/)[0] ?? ''
+          for (const part of splitEventDeclarators(decl)) {
+            const declM = EVENT_NAME_RE.exec(part.split('=')[0]?.trim() ?? '')
+            if (declM) symbols.push(makeLineSymbol(filePath, stripVerbatim(declM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          }
+        }
+        // property
+        const propM = isPropertyLine ? null : PROPERTY_RE.exec(lineNoAttr)
         if (propM) {
           isPropertyLine = true
           symbols.push(makeLineSymbol(filePath, stripVerbatim(propM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))

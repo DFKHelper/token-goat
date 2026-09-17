@@ -2,6 +2,14 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **C# `event` members are indexed**: neither spelling had a pattern that reached it. The field-like `public event EventHandler Changed;` has no accessor block for the property matcher to find, and `public event EventHandler Renamed { add { } remove { } }` carries `add`/`remove` where that matcher requires `get`/`set`, so events were the one C# member category missing from the index entirely while the properties and methods declared beside them were indexed normally. A declaration with several declarators, `public event EventHandler<Foo, Bar> Opened = null, Closed;`, contributes one symbol per declarator without mistaking the comma inside the generic argument list for a separator, and an `extern` or `unsafe` event is recognised alongside the `extern` and `unsafe` methods that already were. The accessor-block form is claimed as an event before the property matcher sees it, because that matcher only needs the substring `get` somewhere after the opening brace, which an `add` accessor's own body can supply, and the member would otherwise be indexed twice. Upgrading reindexes.
+
+- **A C# `delegate` is filed as a type rather than an interface**: a delegate declares a function type, so `outline` and `symbol` reported a construct the language does not have, and put delegates in the same bucket as the real `interface` declarations beside them, which made a kind filter over a mixed file useless. They are now `type`, matching what the other language adapters use for the closest analog, a type alias naming a function signature. Upgrading reindexes.
+
 ## [2.9.15] - 2026-09-17
 
 ### Fixed

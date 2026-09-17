@@ -185,7 +185,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/languages/cobol.ts`](src/languages/cobol.ts) | COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and FD/SD file descriptions, `COPY` imports, and `PERFORM`/`GO TO`/`CALL 'x'` references |
 | [`src/languages/common_lisp.ts`](src/languages/common_lisp.ts) | Common Lisp adapter: `defun`, `defmacro`, `defvar`/`defparameter`/`defconstant`, `defclass`, `defgeneric`, `defmethod`, `defstruct`, `defpackage`, `deftype`, `define-condition`, `d |
 | [`src/languages/common.ts`](src/languages/common.ts) | Shared helpers: `buildLineIndex()`, `offsetToLine()`, `makeSymbolEmitter()`, `assignFlatEndLines()`, comment-strip utilities |
-| [`src/languages/csharp.ts`](src/languages/csharp.ts) | C# extractor (`extractCsharp`) — namespace, class, method, property, constructor, delegate |
+| [`src/languages/csharp.ts`](src/languages/csharp.ts) | C# extractor (`extractCsharp`) — namespace, class, method, property, constructor, event, delegate |
 | [`src/languages/dart.ts`](src/languages/dart.ts) | Dart symbol extractor — regex-based (no tree-sitter grammar needed). |
 | [`src/languages/elixir.ts`](src/languages/elixir.ts) | Elixir symbol extractor — regex-based (no tree-sitter grammar needed). |
 | [`src/languages/emacs_lisp.ts`](src/languages/emacs_lisp.ts) | Emacs Lisp adapter: `defun`, `defmacro`, `defvar`, `defcustom`, `defconst`, `defgroup`, `defface`, `define-derived-mode`, `define-minor-mode`, and the `cl-lib` forms `cl-defun`, `c |
