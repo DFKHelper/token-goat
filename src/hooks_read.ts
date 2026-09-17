@@ -289,7 +289,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
 
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
   const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
-  const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename)
+  const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename) && !basename.toLowerCase().endsWith('-meta.xml')
   // Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely (the caller's `::HeadingName`/`SymbolName` fallback covers it), keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
   const escapeHintName = (name: string): string => {
     const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
@@ -1324,7 +1324,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const isDocNudge = /\.(md|mdx|markdown)$/i.test(basename)
   const isScriptNudge = /\.(ps1|psm1)$/i.test(basename)
 
-  if (!isKnownFileType && !BINARY_FILE_TYPE_EXTS.has(fileTypeExt)) {
+  // Grep is exempt from pre-read nudges: it performs content searches, not reads.
+  if (event.toolName !== 'Grep' && !BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && (!isKnownFileType || isXmlNudge)) {
     const reqWindow = readRequestedSliceWindow(event)
     const lineCount = lineCountForSurgicalHint(normalized, fileStatSize)
     const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
@@ -1340,7 +1341,24 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
-    const shouldNudge = (isXmlNudge || isDocNudge || isScriptNudge || isIndexedFile) &&
+    // Markdown files with < 3 headings are allowed to pass through without pre-read nudge unless explicitly paged
+    let isDocEligible = isDocNudge && (reqWindow.isExplicitSlice || lineCount >= 50)
+    if (isDocEligible && !reqWindow.isExplicitSlice) {
+      try {
+        let content = ''
+        if (fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+          content = fs.readFileSync(normalized, 'utf8')
+        }
+        const headings = extractMarkdownHeadings(content)
+        if (headings.length < 3) {
+          isDocEligible = false
+        }
+      } catch {
+        // fail-soft
+      }
+    }
+
+    const shouldNudge = (isXmlNudge || isDocEligible || isScriptNudge || isIndexedFile) &&
       !isWithinQuietHours(config.hints.quiet_hours) &&
       (reqWindow.isExplicitSlice || isSubstantial)
 

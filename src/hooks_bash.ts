@@ -1458,9 +1458,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
-    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`) or compound command that ran directly is compressed here on post-hook.
-    // Pure file reads (e.g. cat/sed/head) are handled in the file read branch below via identical/served collapse rather than generic compression.
-    if (isUnwrapped && pureFileReadPath(cmd) === null) {
+    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`) that ran directly is compressed here on post-hook.
+    if (isUnwrapped && /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd)) {
       const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
       if (unwrappedCompressed !== null) return unwrappedCompressed
     }
@@ -1481,7 +1480,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
       // for compression) or an unwrapped single command gets its already-captured output compressed here.
       // File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression.
-      if (!isFileRead) {
+      // Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
+      if (!isFileRead && (!isUnwrapped || !isCompressibleSingleCommand(cmd))) {
         const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
         if (compound !== null) return compound
       }
