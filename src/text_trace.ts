@@ -45,7 +45,7 @@ function parsePythonBlock(lines: string[], start: number): TraceParseResult | nu
     if (fm !== null) {
       i++
       const peek = lines[i]?.trim()
-      const hasContext = peek !== undefined && !peek.startsWith('File ') && !peek.startsWith('Traceback')
+      const hasContext = peek !== undefined && /^\s/.test(lines[i] ?? '') && !peek.startsWith('File ') && !peek.startsWith('Traceback')
       if (hasContext) i++
       frames.push({ file: fm[1] ?? '', lineNo: Number.parseInt(fm[2] ?? '0', 10), func: fm[3] ?? '', context: hasContext ? (peek ?? '') : '' })
       continue

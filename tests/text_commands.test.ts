@@ -514,6 +514,29 @@ describe('trace command', () => {
     expect(r.stdout).not.toContain('_call_with_frames_removed\n    \n')
   })
 
+  it('keeps the exception line when the innermost frame has no source context (regression: parsePythonBlock decided "the next line is context" by checking only that it was not a File/Traceback line, so an unindented exception line directly after a context-less frame was consumed as that frame\'s context and the block\'s exception came back empty)', async () => {
+    // CAPTURE: `python -c "import importlib; importlib.import_module('nonexistent_mod_xyz')"` on CPython 3.13.1; frozen-module frames carry no source line.
+    const captured = [
+      'Traceback (most recent call last):',
+      '  File "<string>", line 1, in <module>',
+      "    import importlib; importlib.import_module('nonexistent_mod_xyz')",
+      '                      ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^',
+      '  File "C:\\Python313\\Lib\\importlib\\__init__.py", line 88, in import_module',
+      '    return _bootstrap._gcd_import(name[level:], package, level)',
+      '           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^',
+      '  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import',
+      '  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load',
+      '  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked',
+      "ModuleNotFoundError: No module named 'nonexistent_mod_xyz'",
+    ].join('\n')
+    const r = await run(['trace', '--json'], { input: captured, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ context: string }>; exception: string }> }
+    expect(parsed.tracebacks).toHaveLength(1)
+    expect(parsed.tracebacks[0]?.exception).toBe("ModuleNotFoundError: No module named 'nonexistent_mod_xyz'")
+    for (const f of parsed.tracebacks[0]?.frames ?? []) expect(f.context).not.toContain('ModuleNotFoundError')
+  })
+
   it.skipIf(process.platform !== 'win32')(
     'recognizes a WSL-style /mnt/<drive>/... frame path as a project frame when cwd is the native Windows path to the same directory (regression: isProjectFrame did a raw path.resolve + lowercase compare with no WSL/MSYS drive-letter rewrite, so an in-project WSL-mount-path frame was dropped)',
     async () => {
