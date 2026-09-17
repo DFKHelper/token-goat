@@ -307,7 +307,13 @@ function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[],
   }
 
   const isPatch = flags.has('-p') || flags.has('--patch') || flags.has('-u')
-  const isStat = flags.has('--stat') || flags.has('--shortstat') || flags.has('--name-status')
+  const isStat =
+    flags.has('--stat') ||
+    argv.some((a) => a.startsWith('--stat=')) ||
+    flags.has('--shortstat') ||
+    flags.has('--name-status') ||
+    flags.has('--name-only') ||
+    flags.has('--numstat')
 
   if (isOneline) {
     const ONELINE_CAP = 50

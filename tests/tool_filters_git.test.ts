@@ -8,6 +8,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { configPath } from '../src/constants.js'
 import {
+  CAPTURE_NAME_ONLY_12,
+  CAPTURE_NUMSTAT_12,
+  CAPTURE_ONELINE_NAME_ONLY_8,
+} from './fixtures/git_log_real_captures.js'
+import {
   GIT_FILTERS,
   GitBlameFilter,
   GitCommitFilter,
@@ -318,6 +323,86 @@ describe('GitLogFilter stat format', () => {
     const text = makeStatLog(30)
     const result = apply(gitLogFilter, text, ['git', 'log', '--stat'])
     expect(result).toContain('more stat lines omitted')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GitLogFilter — --name-only / --numstat / --stat=<width>
+// ---------------------------------------------------------------------------
+
+// Regression: `_compressGitLogEnhanced`'s isStat set named `--stat`, `--shortstat`, `--name-status`
+// but not `--name-only` or `--numstat`, so both fell through to the full-format collapser (above
+// 10 commits) or the oneline hash-only branch (at any commit count), which discard every line
+// that is neither a commit header nor an indented subject -- a bare file path is neither, so every
+// filename vanished. `--stat=<width>` (a variable-width stat header) also missed the set because
+// it is stored in argv as a single `--stat=200` token, which `flags.has('--stat')` never matches.
+
+describe('GitLogFilter --name-only / --numstat', () => {
+  // CAPTURE: `git log --name-only -12 --no-color` in this repo (token-goat), 2026-09-17, git 2.x.
+  // 12 commits is deliberate: it sits above the `commits.length <= 10` full-format collapse
+  // threshold at which the router used to discard every path, while every other full-format
+  // fixture in this file uses 5. A path line here sits in the exact position a full-format log
+  // puts a body paragraph, so this pins that the router keys off the `--name-only` flag and not
+  // off the shape of the line.
+  it('keeps every filename across a 12-commit --name-only log', () => {
+    const result = apply(gitLogFilter, CAPTURE_NAME_ONLY_12, ['git', 'log', '--name-only', '-12', '--no-color'])
+    expect(result).toContain('src/tool_filters/package_managers.ts')
+    expect(result).toContain('tests/tool_filters_package_managers.test.ts')
+    expect(result).toContain('src/tool_filters/pytest.ts')
+    expect(result).toContain('src/tool_filters/git.ts')
+    expect(result).toContain('src/xlsx_reader.ts')
+    expect(result).toContain('src/transcript_extract.ts')
+    expect(result).toContain('CHANGELOG.md')
+    // Commit 1 and commit 12 (oldest kept commit) subjects, to prove the header survives too.
+    expect(result).toContain("anchor the general deprecation regex to npm's own warning line")
+    expect(result).toContain('index a Groovy generic method whose type-parameter list precedes its return type')
+  })
+
+  // CAPTURE: `git log --oneline --name-only -8 --no-color` in this repo, 2026-09-17, git 2.x.
+  // 8 commits sits below the 10-commit full-format threshold, so this pins that the SECOND
+  // dropper -- the oneline branch's hash-only filter -- was fixed independently of the first:
+  // fixture A alone cannot prove this, since it never enters the oneline branch at all.
+  it('keeps every filename across an 8-commit --oneline --name-only log', () => {
+    const result = apply(gitLogFilter, CAPTURE_ONELINE_NAME_ONLY_8, [
+      'git',
+      'log',
+      '--oneline',
+      '--name-only',
+      '-8',
+      '--no-color',
+    ])
+    expect(result).toContain('src/tool_filters/package_managers.ts')
+    expect(result).toContain('tests/tool_filters_package_managers.test.ts')
+    expect(result).toContain('src/tool_filters/pytest.ts')
+    expect(result).toContain('src/docx_extract.ts')
+    expect(result).not.toContain('more commits')
+  })
+
+  // CAPTURE: `git log --numstat -12 --no-color` in this repo, 2026-09-17, git 2.x. No binary-file
+  // line (`-\t-\tpath`) appeared in this capture, so only the real added/deleted numstat shape is
+  // asserted here.
+  it('keeps real numstat lines (tab-separated added/deleted/path) across a 12-commit log', () => {
+    const result = apply(gitLogFilter, CAPTURE_NUMSTAT_12, ['git', 'log', '--numstat', '-12', '--no-color'])
+    expect(result).toContain('5\t18\tsrc/tool_filters/package_managers.ts')
+    expect(result).toContain('7\t2\tsrc/tool_filters/git.ts')
+  })
+
+  // 12 commits, each with its own stat lines: above the full-format collapser's 10-commit
+  // threshold, so this proves `--stat=200` is routed to the stat compressor and not the
+  // full-format collapser, which would discard every stat line above that threshold.
+  it('--stat=<width> is treated as a stat shape, not the full-format collapser', () => {
+    const commits = Array.from({ length: 12 }, (_, i) =>
+      `commit abc${String(i).padStart(4, '0')}ef1234567890\n` +
+      `Author: Dev User <dev@example.com>\n` +
+      `Date:   Mon Jan ${String(i + 1).padStart(2, '0')} 10:00:00 2025 +0000\n\n` +
+      `    Refactor pass ${i}\n\n` +
+      ` src/wide/commit${i}_file0.py | 5 +++++\n` +
+      ` src/wide/commit${i}_file1.py | 5 +++++\n` +
+      ` 2 files changed, 10 insertions(+)`,
+    ).join('\n\n')
+    const result = apply(gitLogFilter, commits, ['git', 'log', '--stat=200', '-12', '--no-color'])
+    expect(result).toContain('src/wide/commit0_file0.py')
+    expect(result).toContain('src/wide/commit11_file1.py')
   })
 })
 
