@@ -110,6 +110,23 @@ describe('todo command', () => {
     expect(r.stdout).not.toMatch(/:\d+\s+TODO/)
   })
 
+  it('keeps a real marker that follows a rejected occurrence on the same line (regression: the scanner judged a line by its FIRST kind word, so prose "Note that" or a quoted "Note" ahead of a genuine FIXME:/TODO: dropped the whole line)', async () => {
+    const src = path.join(tmpDir, 'marker_after_rejected.ts')
+    // HAND-DERIVED: two line shapes written from the marker rules (upper case or colon = marker; double-quoted = excluded), independent of the scanner's regex. Line 1 has a prose word then a real FIXME; line 2 has a quoted kind word then a real TODO; line 3 has only prose and a quoted word, so it must stay excluded.
+    fs.writeFileSync(
+      src,
+      '// Note that this is a hack; FIXME: replace with the real API\nconst label = "Note" // TODO: localize\nconst other = "TODO: fake" // note the hack here\n',
+      'utf8',
+    )
+    const r = await run(['todo', src, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { items: Array<{ line: number; kind: string; text: string }> }
+    expect(parsed.items.map((i) => [i.line, i.kind, i.text])).toEqual([
+      [1, 'FIXME', 'replace with the real API'],
+      [2, 'TODO', 'localize'],
+    ])
+  })
+
   it('does not match a marker name as a prefix of a longer identifier/word (regression: the marker regex had a leading \\b but no trailing one, so "\\s*:?\\s*" matched zero-width and swallowed the rest of a longer word like "NOTEBOOK" or "TODOLIST" into the captured text)', async () => {
     const src = path.join(tmpDir, 'prefix_word.ts')
     fs.writeFileSync(

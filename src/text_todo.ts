@@ -61,17 +61,23 @@ function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
     return []
   }
   const kindPattern = [...kindSet].map(escapeRegExp).join('|')
-  const re = new RegExp(`\\b(${kindPattern})\\b(\\s*:)?\\s*(.*)`, 'i')
+  const re = new RegExp(`\\b(${kindPattern})\\b(\\s*:)?\\s*(.*)`, 'gi')
   const items: TodoItem[] = []
   const lines = splitLines(text)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
-    const m = re.exec(line)
-    if (m === null) continue
-    if (!isMarkerOccurrence(m[1] ?? '', m[2] !== undefined)) continue
-    const idx = m.index ?? 0
-    if (isInsideStringLiteral(line, idx)) continue
-    items.push({ file: filePath, line: i + 1, kind: m[1]?.toUpperCase() ?? '', text: (m[3] ?? '').trim() })
+    // Every occurrence on the line is a candidate, not just the first: judging the line by its first kind word dropped `// Note that this is a hack; FIXME: replace` (prose "Note" rejected, the FIXME after it never looked at) and `label = "Note" // TODO: localize` (quoted "Note" rejected, same loss). The trailing `(.*)` swallows the rest of the line, so lastIndex is put back just past the word to keep scanning.
+    re.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(line)) !== null) {
+      const word = m[1] ?? ''
+      const idx = m.index
+      re.lastIndex = idx + Math.max(word.length, 1)
+      if (!isMarkerOccurrence(word, m[2] !== undefined)) continue
+      if (isInsideStringLiteral(line, idx)) continue
+      items.push({ file: filePath, line: i + 1, kind: word.toUpperCase(), text: (m[3] ?? '').trim() })
+      break
+    }
   }
   return items
 }
