@@ -166,6 +166,23 @@ export function collectTextRuns(node: unknown, tag: string, skipInside: readonly
   return runs
 }
 
+/** Keeps one branch of every `mc:AlternateContent` element (ISO/IEC 29500-3, Markup Compatibility). A producer writes the same content twice inside it, under `mc:Choice` for consumers that know the newer namespace and again under `mc:Fallback` for those that do not, and a consumer is meant to process exactly one of the two. Word writes every text box this way: the `w:txbxContent` holding its paragraphs sits under the Choice's `w:drawing` and again under the Fallback's `w:pict`, so a walker that reads the whole tree emitted the box's text twice, back to back, with nothing between the copies. The Fallback is deleted wherever a Choice stands beside it; a Fallback on its own is left alone, since it is then the only copy. Mutates the tree in place. */
+export function dropAlternateContentFallbacks(node: unknown): void {
+  if (Array.isArray(node)) {
+    node.forEach(dropAlternateContentFallbacks)
+    return
+  }
+  if (node === null || typeof node !== 'object') return
+  for (const [key, val] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'mc:AlternateContent') {
+      for (const alt of Array.isArray(val) ? val : [val]) {
+        if (alt !== null && typeof alt === 'object' && 'mc:Choice' in alt && 'mc:Fallback' in alt) delete (alt as Record<string, unknown>)['mc:Fallback']
+      }
+    }
+    if (val !== null && typeof val === 'object') dropAlternateContentFallbacks(val)
+  }
+}
+
 /** Options for `collectElements`. `skipInside` names tags whose subtree belongs to a different block and must not be searched at all -- `w:tbl` when gathering the paragraphs of a Word cell, so a table nested in that cell does not donate its own paragraphs to the parent. `includeNested` keeps searching a match's own subtree for further matches, which only `w:tbl` needs: it is the one OOXML element here that legitimately nests inside itself. */
 export interface CollectElementsOptions {
   skipInside?: readonly string[]

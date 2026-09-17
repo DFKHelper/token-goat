@@ -219,3 +219,30 @@ describe('tabs and breaks between runs', () => {
     expect(await docxText(f)).toBe('Before\n\nLine one\nLine two')
   })
 })
+
+describe('a text box written as markup-compatibility alternate content', () => {
+  let dir4: string
+  beforeAll(() => {
+    dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docx4-'))
+  })
+  afterAll(() => {
+    fs.rmSync(dir4, { recursive: true, force: true })
+  })
+
+  function writeDocx(name: string, bodyXml: string): string {
+    const p = path.join(dir4, name)
+    fs.writeFileSync(p, zipSync({ 'word/document.xml': strToU8(`<?xml version="1.0"?><w:document><w:body>${bodyXml}</w:body></w:document>`) }))
+    return p
+  }
+
+  // Provenance: CAPTURE. The paragraph is `word/document.xml` of `tests/test-data/text-box.docx` in the python-mammoth repository (docProps/app.xml `<Application>Microsoft Office Word`, AppVersion 14), with the anchor geometry, shape properties and `v:shapetype` between the two `w:txbxContent` elements left out; element names, nesting, rsids and the `_GoBack` bookmarks are byte-for-byte. Word puts the box's paragraph under `mc:Choice > w:drawing > wps:txbx` and again under `mc:Fallback > w:pict > v:shape > v:textbox`, and docx-text printed `Datum planeDatum plane` for it.
+  it('emits the text of a Word text box once, not once per markup-compatibility branch', async () => {
+    const box = '<w:txbxContent><w:p w:rsidR="00487BF9" w:rsidRDefault="00487BF9"><w:r><w:t>Datum plane</w:t></w:r><w:bookmarkStart w:id="0" w:name="_GoBack"/><w:bookmarkEnd w:id="0"/></w:p></w:txbxContent>'
+    const f = writeDocx('text-box.docx',
+      '<w:p w:rsidR="003872F6" w:rsidRDefault="00487BF9"><w:r><w:rPr><w:noProof/><w:lang w:eastAsia="en-GB"/></w:rPr><mc:AlternateContent>' +
+      `<mc:Choice Requires="wps"><w:drawing><wp:anchor><wp:docPr id="307" name="Text Box 2"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:txbx>${box}</wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice>` +
+      `<mc:Fallback><w:pict><v:shape id="Text Box 2" o:spid="_x0000_s1026" type="#_x0000_t202"><v:textbox style="mso-fit-shape-to-text:t">${box.replace(/w:id="0"/g, 'w:id="1"')}</v:textbox></v:shape></w:pict></mc:Fallback>` +
+      '</mc:AlternateContent></w:r></w:p>')
+    expect(await docxText(f)).toBe('Datum plane')
+  })
+})

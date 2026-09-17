@@ -1,7 +1,7 @@
 /** Word (.docx) narrow-slice reader. Body text lives at `word/document.xml`, a `w:document > w:body` tree of paragraphs (`w:p`), each holding runs (`w:r`) of text (`w:t`). A paragraph is a heading when its `w:pPr.w:pStyle.@_w:val` matches `HeadingN`/`Heading N`/`Title` (the exact style ID Word writes depends on the template, so both forms are checked). */
 
 import { displaySafeText } from './paths.js'
-import { collectElements, collectParagraphTexts, collectTextRuns, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
+import { collectElements, collectParagraphTexts, collectTextRuns, decodeZipEntry, dropAlternateContentFallbacks, NotAnOfficeDocumentError, ooxmlPartBudget, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
 
 interface ParagraphLike {
   'w:pPr'?: { 'w:pStyle'?: { '@_w:val'?: string } }
@@ -39,7 +39,9 @@ async function loadDocumentBody(filePath: string): Promise<unknown> {
   const entries = await readOoxmlZip(filePath, '.docx')
   const xml = decodeZipEntry(entries, 'word/document.xml', ooxmlPartBudget())
   if (xml === null) throw new NotAnOfficeDocumentError(`no word/document.xml found in ${filePath} (not a valid .docx?)`)
-  return parseOoxmlPart(inlineRunSeparators(xml))
+  const parsed = await parseOoxmlPart(inlineRunSeparators(xml))
+  dropAlternateContentFallbacks(parsed)
+  return parsed
 }
 
 export async function docxOutline(filePath: string): Promise<DocxHeading[]> {
