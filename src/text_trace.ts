@@ -146,8 +146,9 @@ function parseRustBlock(lines: string[], start: number): TraceParseResult | null
   return { block: { frames: [panicFrame], exception }, nextIndex: i }
 }
 
-const JVM_HEADER_RE = /^(?:Exception in thread "[^"\r\n]*" )?(?:Caused by: )?((?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*): (.*)$/
-const JVM_FRAME_RE = /^\s+at\s+(\S+)\(([^)]*)\)\s*$/
+// The header's `: message` is absent when the throwable's message is null (the JDK prints only the class name, e.g. `Caused by: java.lang.reflect.InvocationTargetException`); the frame's trailing `~[jar:version]` / `[na:na]` is logback packaging data, which Spring Boot enables by default.
+const JVM_HEADER_RE = /^(?:Exception in thread "[^"\r\n]*" )?(?:Caused by: )?((?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*)(?:: (.*))?$/
+const JVM_FRAME_RE = /^\s+at\s+(\S+)\(([^)]*)\)(?:\s+~?\[[^\]]*\])?\s*$/
 const JVM_MORE_RE = /^\s*\.\.\.\s+\d+\s+more\s*$/
 
 function parseJvmFrameLine(line: string): TraceFrame | null {

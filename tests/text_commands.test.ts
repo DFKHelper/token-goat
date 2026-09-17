@@ -768,6 +768,43 @@ describe('trace command', () => {
     expect(frames.some((f) => f.file === 'MyClass.java' && f.lineNo === 7)).toBe(true)
   })
 
+  it('parses a logback %ex trace whose frames carry packaging data and whose Caused by header has no message (regression: JVM_FRAME_RE anchored `)` to end-of-line, so the very first `~[out/:na]` frame rejected the block and `trace` reported "no traceback found" for every Spring Boot log; JVM_HEADER_RE required `: message`, so a message-less `Caused by: java.lang.reflect.InvocationTargetException` block was dropped too)', async () => {
+    // CAPTURE: stdout of a three-frame demo run under OpenJDK 17.0.19 with logback-classic 1.5.32, <configuration packagingData="true">, ConsoleAppender, pattern `%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n`; the log-line prefix is left in so the fixture starts the way a real log does.
+    const logbackCapture = [
+      '11:10:47.756 ERROR com.example.demo.DemoApplication - Application run failed',
+      'java.lang.IllegalStateException: Failed to load ApplicationContext',
+      '\tat com.example.demo.DemoApplication.run(DemoApplication.java:9) ~[out/:na]',
+      '\tat com.example.demo.DemoApplication.main(DemoApplication.java:11) ~[out/:na]',
+      'Caused by: java.lang.reflect.InvocationTargetException',
+      '\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[na:na]',
+      '\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77) ~[na:na]',
+      '\tat java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) ~[na:na]',
+      '\tat java.base/java.lang.reflect.Method.invoke(Method.java:569) ~[na:na]',
+      '\tat com.example.demo.DemoApplication.loadContext(DemoApplication.java:8) ~[out/:na]',
+      '\t... 2 common frames omitted',
+      'Caused by: java.lang.NullPointerException: bean is null',
+      '\tat com.example.demo.DemoApplication.loadBean(DemoApplication.java:7) ~[out/:na]',
+      '\t... 7 common frames omitted',
+    ].join('\r\n')
+    const r = await run(['trace', '--json'], { input: logbackCapture, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stderr).not.toContain('no traceback found')
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }>; exception: string }> }
+    expect(parsed.tracebacks.map((b) => b.exception)).toEqual([
+      'java.lang.IllegalStateException: Failed to load ApplicationContext',
+      'Caused by: java.lang.reflect.InvocationTargetException',
+      'Caused by: java.lang.NullPointerException: bean is null',
+    ])
+    // Must-not-drop list: every project frame of the real capture, with the packaging suffix stripped from the file rather than glued onto it.
+    expect(parsed.tracebacks[0]?.frames).toEqual([
+      { file: 'DemoApplication.java', lineNo: 9, func: 'com.example.demo.DemoApplication.run' },
+      { file: 'DemoApplication.java', lineNo: 11, func: 'com.example.demo.DemoApplication.main' },
+    ])
+    expect(parsed.tracebacks[1]?.frames).toContainEqual({ file: 'DemoApplication.java', lineNo: 8, func: 'com.example.demo.DemoApplication.loadContext' })
+    expect(parsed.tracebacks[2]?.frames).toEqual([{ file: 'DemoApplication.java', lineNo: 7, func: 'com.example.demo.DemoApplication.loadBean' }])
+    for (const f of parsed.tracebacks.flatMap((b) => b.frames)) expect(f.file).not.toMatch(/[[\]~]/)
+  })
+
   // ── .NET grammar ────────────────────────────────────────────────────────
 
   const SAMPLE_DOTNET = [
