@@ -142,6 +142,30 @@ function pushTextValue(runs: string[], val: unknown): void {
   }
 }
 
+const MATH_PARA_RE = /<m:oMathPara(?:\s[^>]*)?>([\s\S]*?)<\/m:oMathPara>/g
+const MATH_RE = /<m:oMath(?:\s[^>]*)?>([\s\S]*?)<\/m:oMath>/g
+const MATH_TEXT_RE = /<m:t(?:\s[^>]*)?>([^<]*)<\/m:t>/g
+
+function mathRunText(fragment: string): string {
+  let out = ''
+  for (const m of fragment.matchAll(MATH_TEXT_RE)) out += m[1] as string
+  return out
+}
+
+/** Rewrites Office Math (OMML, ECMA-376-1 §22.1) into an ordinary same-named text run, at the XML-string level and before the tree is parsed. An equation is a direct sibling of the surrounding `w:r`/`a:r` runs, so its text belongs between them; but fast-xml-parser folds consecutive same-name elements into one array keyed at the position of the first, which destroys the interleaving of `w:r` and `m:oMath` the moment the part is parsed. Matching `m:t` on the parsed tree therefore appends the equation after the paragraph's tail instead of placing it inline -- the same failure already fixed for `<w:tab/>` in the docx reader. Emitting the equation as a run of the host namespace before parsing keeps it in document order. Text is copied still XML-escaped, since the parser decodes it. Word's linear view of `E=mc²` is `E=mc2`, so plain concatenation of the `m:t` runs is the faithful reading; multiple `m:oMath` under one `m:oMathPara` are separate display lines and are joined with a space. */
+export function inlineMathRuns(xml: string, openRun: string, closeRun: string): string {
+  const asRun = (text: string): string => (text.length > 0 ? `${openRun}${text}${closeRun}` : '')
+  const withParas = xml.replace(MATH_PARA_RE, (_whole, inner: string) => {
+    const lines: string[] = []
+    for (const m of inner.matchAll(MATH_RE)) {
+      const text = mathRunText(m[1] as string)
+      if (text.length > 0) lines.push(text)
+    }
+    return asRun(lines.length > 0 ? lines.join(' ') : mathRunText(inner))
+  })
+  return withParas.replace(MATH_RE, (_whole, inner: string) => asRun(mathRunText(inner)))
+}
+
 /** Collects every text-run value under `tag` (e.g. `a:t` for pptx, `w:t` for docx) anywhere in the parsed XML tree, in document order. Handles both a single run (`{tag: "text"}`) and repeated sibling runs (`{tag: ["a", "b"]}`, how fast-xml-parser folds consecutive same-name elements) since OOXML text is split across many short runs by most editors/exporters. */
 export function collectTextRuns(node: unknown, tag: string, skipInside: readonly string[] = []): string[] {
   const runs: string[] = []
