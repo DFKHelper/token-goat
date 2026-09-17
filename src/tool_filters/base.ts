@@ -187,6 +187,8 @@ export class CompressedOutput {
 export interface CompressContext {
   /** True when the clamp dropped part of the input, so any count derived from it is a lower bound rather than a total. */
   readonly inputTruncated?: boolean
+  /** The line cap {@link ToolFilter.apply} will enforce after `compress` returns, so a filter can shape its own output against the cap it actually ships into instead of guessing. */
+  readonly maxLines?: number
 }
 
 /** Options accepted by {@link ToolFilter.apply}. */
@@ -374,7 +376,7 @@ export abstract class ToolFilter {
         body = fallbackTruncate(normOut, normErr, maxLines)
       } else {
         // Step 7: structural compression.
-        body = this.compress(normOut, normErr, exitCode, argv, { inputTruncated: soClamped !== null || seClamped !== null })
+        body = this.compress(normOut, normErr, exitCode, argv, { inputTruncated: soClamped !== null || seClamped !== null, maxLines })
       }
     } catch (exc) {
       const kind = exc instanceof Error ? exc.constructor.name : 'Error'

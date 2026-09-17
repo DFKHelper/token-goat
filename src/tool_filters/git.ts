@@ -165,6 +165,36 @@ const _GIT_LOG_MERGE_RE = /^Merge:/
 const _GIT_LOG_AUTHOR_RE = /^Author:\s+(.+)/
 const _GIT_LOG_DATE_RE = /^Date:\s+(.+)/
 
+/** Reduces one commit block's lines to its `hash` / `Merge:` / `  author | date | "subject"` header summary, dropping the message body and any stat/patch lines. Shared by {@link _compressGitLogFull} (whole-block collapse above 10 commits) and {@link _compressGitLogCapped} (per-commit collapse when the shipping line cap would otherwise be blown by commit message bodies alone). */
+function _summariseCommitHeader(lines: string[]): string[] {
+  const hashLine = lines[0] ?? ''
+  const merge = lines.find((ln) => _GIT_LOG_MERGE_RE.test(ln)) ?? ''
+  let author = ''
+  let dateStr = ''
+  let subject = ''
+  for (const ln of lines) {
+    if (!author) {
+      const m = _GIT_LOG_AUTHOR_RE.exec(ln)
+      if (m) author = (m[1] ?? '').split('<')[0]!.trim()
+    }
+    if (!dateStr) {
+      const m = _GIT_LOG_DATE_RE.exec(ln)
+      if (m) dateStr = (m[1] ?? '').trim()
+    }
+    if (!subject && ln.startsWith('    ') && ln.trim()) {
+      subject = ln.trim()
+    }
+  }
+  const parts = [hashLine]
+  if (merge) parts.push(merge)
+  const detailParts: string[] = []
+  if (author) detailParts.push(author)
+  if (dateStr) detailParts.push(dateStr)
+  if (subject) detailParts.push(`"${subject}"`)
+  if (detailParts.length) parts.push('  ' + detailParts.join(' | '))
+  return parts
+}
+
 /** Collapse commits to one-liner summaries when there are more than 10. */
 function _compressGitLogFull(stdout: string, stderr: string): string {
   const blocks = splitBlocks(stdout, _GIT_LOG_COMMIT_RE)
@@ -173,36 +203,7 @@ function _compressGitLogFull(stdout: string, stderr: string): string {
   const commits = blocks.filter((b) => _GIT_LOG_COMMIT_RE.test(b))
   if (commits.length <= 10) return stdout
 
-  const collapsed: string[] = []
-  for (const block of commits) {
-    const lines = block.split('\n')
-    const hashLine = lines[0] ?? ''
-    const merge = lines.find((ln) => _GIT_LOG_MERGE_RE.test(ln)) ?? ''
-    let author = ''
-    let dateStr = ''
-    let subject = ''
-    for (const ln of lines) {
-      if (!author) {
-        const m = _GIT_LOG_AUTHOR_RE.exec(ln)
-        if (m) author = (m[1] ?? '').split('<')[0]!.trim()
-      }
-      if (!dateStr) {
-        const m = _GIT_LOG_DATE_RE.exec(ln)
-        if (m) dateStr = (m[1] ?? '').trim()
-      }
-      if (!subject && ln.startsWith('    ') && ln.trim()) {
-        subject = ln.trim()
-      }
-    }
-    const parts = [hashLine]
-    if (merge) parts.push(merge)
-    const detailParts: string[] = []
-    if (author) detailParts.push(author)
-    if (dateStr) detailParts.push(dateStr)
-    if (subject) detailParts.push(`"${subject}"`)
-    if (detailParts.length) parts.push('  ' + detailParts.join(' | '))
-    collapsed.push(parts.join('\n'))
-  }
+  const collapsed = commits.map((block) => _summariseCommitHeader(block.split('\n')).join('\n'))
   let text = (prelude ? prelude + '\n' : '') + collapsed.join('\n\n')
   if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
   return text
@@ -236,22 +237,48 @@ function _capPatchLinesInBlock(block: string, maxLines: number): string {
 /** Shared by _compressGitLogPatch/_compressGitLogStat: split into commit blocks, cap each
  *  block via `capBlock`, and rejoin with prelude/stderr -- identical shape, only the per-block
  *  truncation differs (patch-line cap vs. stat-file cap). */
-function _compressGitLogCapped(stdout: string, stderr: string, capBlock: (block: string) => string): string {
+// Git indents a commit message body by exactly four spaces; stat lines start with one space, name-only lines at column 0, numstat/name-status lines with a digit or status letter -- so a four-space-indent test is enough to tell a message-body line from every stat/patch shape this function handles, without needing to know which of those shapes it is looking at.
+const _GIT_LOG_MESSAGE_LINE_RE = /^ {4}/
+
+/** Drops a commit block's message-body lines (kept intact by `capBlock` above), leaving only its header summary plus whatever stat/patch/omitted-marker lines `capBlock` already produced. Blank lines inside the block collapse away; the caller rejoins blocks with a blank line between them. */
+function _collapseCommitBody(block: string): string {
+  const lines = block.split('\n')
+  const header = _summariseCommitHeader(lines)
+  const isHeaderLine = (ln: string) =>
+    _GIT_LOG_COMMIT_RE.test(ln) || _GIT_LOG_MERGE_RE.test(ln) || _GIT_LOG_AUTHOR_RE.test(ln) || _GIT_LOG_DATE_RE.test(ln)
+  const rest = lines.filter((ln) => ln.trim() && !_GIT_LOG_MESSAGE_LINE_RE.test(ln) && !isHeaderLine(ln))
+  return [...header, ...rest].join('\n')
+}
+
+/**
+ *  truncation differs (patch-line cap vs. stat-file cap). */
+function _compressGitLogCapped(
+  stdout: string,
+  stderr: string,
+  capBlock: (block: string) => string,
+  maxLines?: number,
+): string {
   const blocks = splitBlocks(stdout, _GIT_LOG_COMMIT_RE)
   if (!blocks.length) return stdout
   const prelude = !_GIT_LOG_COMMIT_RE.test(blocks[0]!) ? blocks[0]! : ''
   const commits = blocks.filter((b) => _GIT_LOG_COMMIT_RE.test(b))
 
-  const outBlocks = commits.map(capBlock)
+  let outBlocks = commits.map(capBlock)
+
+  // The per-commit stat/patch cap above bounds only the stat/patch portion of each block; a multi-paragraph commit message body is untouched and can alone push a stat-shaped log past the line cap the caller is about to ship into, at which point the generic tail truncation picks survivors by prose keyword match rather than by git structure. Collapse each commit's message body to its header summary before that happens, but only when the cap would otherwise be blown -- a log that already fits ships byte-identical to today.
+  if (maxLines !== undefined) {
+    const lineCount = ((prelude ? prelude + '\n' : '') + outBlocks.join('\n')).split('\n').length
+    if (lineCount > maxLines) outBlocks = outBlocks.map(_collapseCommitBody)
+  }
 
   let text = (prelude ? prelude + '\n' : '') + outBlocks.join('\n')
   if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
   return text
 }
 
-function _compressGitLogPatch(stdout: string, stderr: string): string {
+function _compressGitLogPatch(stdout: string, stderr: string, maxLines?: number): string {
   const MAX_PATCH_LINES = 30
-  return _compressGitLogCapped(stdout, stderr, (block) => _capPatchLinesInBlock(block, MAX_PATCH_LINES))
+  return _compressGitLogCapped(stdout, stderr, (block) => _capPatchLinesInBlock(block, MAX_PATCH_LINES), maxLines)
 }
 
 /** Compress --stat log: limit file list per commit block. */
@@ -283,13 +310,19 @@ function _capStatLinesInBlock(block: string, maxFiles: number): string {
   return newLines.join('\n')
 }
 
-function _compressGitLogStat(stdout: string, stderr: string): string {
+function _compressGitLogStat(stdout: string, stderr: string, maxLines?: number): string {
   const MAX_STAT_FILES = 20
-  return _compressGitLogCapped(stdout, stderr, (block) => _capStatLinesInBlock(block, MAX_STAT_FILES))
+  return _compressGitLogCapped(stdout, stderr, (block) => _capStatLinesInBlock(block, MAX_STAT_FILES), maxLines)
 }
 
 /** Format-aware log compression: dispatch to the right strategy. */
-function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[], inputTruncated = false): string {
+function _compressGitLogEnhanced(
+  stdout: string,
+  stderr: string,
+  argv: string[],
+  inputTruncated = false,
+  maxLines?: number,
+): string {
   const flags = new Set(argv)
 
   // Detect --oneline / short format
@@ -356,8 +389,8 @@ function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[],
     return out
   }
 
-  if (isPatch) return _compressGitLogPatch(stdout, stderr)
-  if (isStat) return _compressGitLogStat(stdout, stderr)
+  if (isPatch) return _compressGitLogPatch(stdout, stderr, maxLines)
+  if (isStat) return _compressGitLogStat(stdout, stderr, maxLines)
 
   return _compressGitLogFull(stdout, stderr)
 }
@@ -367,7 +400,7 @@ export class GitLogFilter extends GitBaseFilter {
   override readonly subcommands = new Set(['log'])
 
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[], ctx: CompressContext = {}): string {
-    return _compressGitLogEnhanced(stdout, stderr, argv, ctx.inputTruncated === true)
+    return _compressGitLogEnhanced(stdout, stderr, argv, ctx.inputTruncated === true, ctx.maxLines)
   }
 }
 

@@ -11,7 +11,9 @@ import {
   CAPTURE_NAME_ONLY_12,
   CAPTURE_NUMSTAT_12,
   CAPTURE_ONELINE_NAME_ONLY_8,
+  CAPTURE_STAT_12,
 } from './fixtures/git_log_real_captures.js'
+import { compressOutput } from '../src/tool_filters/dispatch.js'
 import {
   GIT_FILTERS,
   GitBlameFilter,
@@ -403,6 +405,72 @@ describe('GitLogFilter --name-only / --numstat', () => {
     const result = apply(gitLogFilter, commits, ['git', 'log', '--stat=200', '-12', '--no-color'])
     expect(result).toContain('src/wide/commit0_file0.py')
     expect(result).toContain('src/wide/commit11_file1.py')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GitLogFilter stat shapes under the shipping line cap
+// ---------------------------------------------------------------------------
+
+// `_compressGitLogCapped` (the shared body of --stat/--name-only/--numstat/--name-status/-p) caps only the stat/patch lines per commit and left the message body uncapped, so a repo with multi-paragraph commit bodies (this one) pushed a 12-commit stat-shaped log to 335-347 raw lines -- past the 200-line cap the `balanced` profile actually ships into -- and the generic tail-truncation cap then picked survivors by an error-keyword regex matching commit-message prose, not by git structure, dropping 39 of 43 file lines. Every existing stat/name-only/numstat test above drives the filter through the bare `apply` helper, whose default cap is `DEFAULT_MAX_LINES` (1000) -- never the 200 the shipping path (`compressOutput` at the `balanced` profile) actually passes, so none of them could have caught this. These tests drive `compressOutput` directly so the cap under test is the one the CLI ships.
+describe('GitLogFilter stat shapes under the shipping line cap', () => {
+  it('keeps every filename across a 12-commit --name-only log under the balanced (200-line) cap', () => {
+    const result = compressOutput(gitLogFilter, CAPTURE_NAME_ONLY_12, '', 0, ['git', 'log', '--name-only', '-12', '--no-color'], {
+      compressionProfile: 'balanced',
+    }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    expect(result).not.toContain('lines omitted ---')
+    expect(result).toContain('src/tool_filters/package_managers.ts')
+    expect(result).toContain('tests/tool_filters_package_managers.test.ts')
+    expect(result).toContain('src/tool_filters/pytest.ts')
+    expect(result).toContain('src/xlsx_reader.ts')
+    expect(result).toContain('src/transcript_extract.ts')
+    expect(result).toContain('src/languages/groovy.ts')
+    const fileLineCount = lines.filter((ln) => /^[A-Za-z0-9_./-]+\.[A-Za-z0-9]+$/.test(ln)).length
+    expect(fileLineCount).toBe(43)
+  })
+
+  it('keeps every numstat line across a 12-commit --numstat log under the balanced (200-line) cap', () => {
+    const result = compressOutput(gitLogFilter, CAPTURE_NUMSTAT_12, '', 0, ['git', 'log', '--numstat', '-12', '--no-color'], {
+      compressionProfile: 'balanced',
+    }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    expect(result).not.toContain('lines omitted ---')
+    expect(result).toContain('5\t18\tsrc/tool_filters/package_managers.ts')
+    expect(result).toContain('7\t2\tsrc/tool_filters/git.ts')
+    const fileLineCount = lines.filter((ln) => /^\d+\t\d+\t\S+$/.test(ln)).length
+    expect(fileLineCount).toBe(43)
+  })
+
+  it('keeps every stat line across a 12-commit --stat log under the balanced (200-line) cap', () => {
+    const result = compressOutput(gitLogFilter, CAPTURE_STAT_12, '', 0, ['git', 'log', '--stat', '-12', '--no-color'], {
+      compressionProfile: 'balanced',
+    }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    expect(result).not.toContain('lines omitted ---')
+    expect(result).toContain('src/tool_filters/git.ts        |  9 +++++++--')
+    expect(result).toContain('3 files changed, 52 insertions(+), 2 deletions(-)')
+    // Commit 1 (newest) and commit 12 (oldest kept) subjects, so the summary header survives.
+    expect(result).toContain('route --name-only, --numstat, and --stat=<width> logs as stat shapes')
+    expect(result).toContain('keep a marker that follows a rejected kind word on the same line')
+    // A real diffstat line is `<path> | <count> <+/->`; the synthesized commit-header detail line (`  author | date | "subject"`) also contains ` | ` and a `-` from the timezone offset (e.g. `-0500`), so this is anchored to the trailing `<digits><+/->` diffstat shape to avoid double-counting header lines as stat lines.
+    const statLineCount = lines.filter((ln) => /^\s*\S+\s*\|\s*\d+\s*[+-]*$/.test(ln)).length
+    expect(statLineCount).toBe(43)
+  })
+
+  // Mutating the message-line predicate from `/^ {4}/` to `/^ /` also eats stat lines (they start with a single leading space), so this test is the one that would go red on that mutation -- the name-only/numstat tests above would not, since those shapes have no leading-space lines.
+  it('the --stat capture is required: a one-space predicate would eat stat lines too', () => {
+    expect(CAPTURE_STAT_12.split('\n').some((ln) => /^ \S/.test(ln) && ln.includes(' | '))).toBe(true)
+  })
+
+  it('a stat log under the cap passes through unchanged (the collapse never fires)', () => {
+    const text = makeStatLog(5)
+    const uncapped = apply(gitLogFilter, text, ['git', 'log', '--stat'])
+    const capped = compressOutput(gitLogFilter, text, '', 0, ['git', 'log', '--stat'], { compressionProfile: 'balanced' }).text
+    expect(capped).toBe(uncapped)
   })
 })
 
