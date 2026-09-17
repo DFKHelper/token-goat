@@ -13,6 +13,7 @@ import {
   CAPTURE_ONELINE_NAME_ONLY_8,
   CAPTURE_STAT_12,
 } from './fixtures/git_log_real_captures.js'
+import { CAPTURE_DIFF_9_FILES } from './fixtures/git_diff_real_captures.js'
 import { compressOutput } from '../src/tool_filters/dispatch.js'
 import {
   GIT_FILTERS,
@@ -910,6 +911,76 @@ describe('GitDiffFilter stat rollup', () => {
     const text = [...headFiles, ...elidedSmall, bigFile, summary].join('\n')
     const result = apply(gitDiffFilter, text, ['git', 'diff', '--stat', '--', 'src/'])
     expect(result).toContain('+15 more files changed, +914 -100 lines')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GitDiffFilter multi-file diffs under the shipping line cap
+// ---------------------------------------------------------------------------
+
+// _compressGitDiffBody compressed per hunk and per file but never measured its own output against the line cap it ships into: any diff whose per-hunk-compressed form still exceeded 200 lines (the `balanced` profile's cap) was handed whole to the generic tail-truncation truncator, which keeps 10 head + 10 tail lines plus context around error-signal keyword matches -- in a diff, survivors were chosen by which hunks happened to contain words like `Error`/`failed`, so the file list, the one thing a diff reader needs first, was what got dropped. A real 9-file, 346-line capture from this repo shipped as 58 lines carrying 1 of 9 `diff --git` headers. Every existing diff test above drives the bare `apply` helper, whose default cap is 1000, never the 200 the shipping path (`compressOutput` at the `balanced` profile) actually passes, so none of them could have caught this. These tests drive `compressOutput` directly so the cap under test is the one the CLI ships. Loop-37's `makeMultiHunkDiff(60)` fallback-parity fixture above collapses to ~43 lines after per-hunk capping and would stay green under a reverted fix, so it is not a substitute for the capture-based assertions here.
+describe('GitDiffFilter multi-file diffs under the shipping line cap', () => {
+  it('the capture is required: per-hunk compression alone still exceeds the 200-line cap', () => {
+    // Precondition, not the bug itself: without a maxLines in ctx the new cap-aware reducer never runs, so this is what the filter's own per-hunk compression alone produces. If a later hunk-cap change shrinks that below 200 lines, this goes red before the assertions below could go vacuous.
+    const direct = gitDiffFilter.compress(CAPTURE_DIFF_9_FILES, '', 0, ['git', 'diff', '--no-color'])
+    expect(direct.split('\n').length).toBeGreaterThan(200)
+  })
+
+  it('keeps every file header across a real 9-file diff under the balanced (200-line) cap', () => {
+    const result = compressOutput(gitDiffFilter, CAPTURE_DIFF_9_FILES, '', 0, ['git', 'diff', '--no-color'], {
+      compressionProfile: 'balanced',
+    }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    expect(result).not.toContain('lines omitted ---')
+    expect(result).toContain('collapsed to fit the line cap')
+    for (const file of [
+      'diff --git a/CHANGELOG.md b/CHANGELOG.md',
+      'diff --git a/src/doc_embed_extract.ts b/src/doc_embed_extract.ts',
+      'diff --git a/src/embed_fingerprint.ts b/src/embed_fingerprint.ts',
+      'diff --git a/src/tool_filters/cloud.ts b/src/tool_filters/cloud.ts',
+      'diff --git a/src/tool_filters/containers.ts b/src/tool_filters/containers.ts',
+      'diff --git a/src/tool_filters/git.ts b/src/tool_filters/git.ts',
+      'diff --git a/tests/tool_filters_cloud.test.ts b/tests/tool_filters_cloud.test.ts',
+      'diff --git a/tests/tool_filters_containers.test.ts b/tests/tool_filters_containers.test.ts',
+      'diff --git a/tests/tool_filters_git.test.ts b/tests/tool_filters_git.test.ts',
+    ]) {
+      expect(result).toContain(file)
+    }
+    // A content line from the first file's hunk must survive verbatim, not just its header -- reverting the "keep earlier files whole" ordering (collapsing every file, including the first) would leave the headers intact while dropping this.
+    expect(result).toContain(
+      "+- **The PDF, Word, PowerPoint and Excel readers no longer load on every hook call**: a hook fires before every tool call and parses the whole eagerly reachable half of its bundle before running any of it, and the four document readers (pdfjs, the OOXML and zip machinery, the spreadsheet reader) were reachable from the indexer's document bridge even though the predicate that decides whether a file is one of those formats only looks at its extension. They are now imported where they are used, which takes 69 KB off what every hook call has to parse.",
+    )
+  })
+
+  it('a small diff under the cap ships byte-identical through compressOutput (the collapse never fires)', () => {
+    // HAND-DERIVED: a synthetic 3-file diff, well under 200 lines, so this pins that an under-cap diff is untouched by the new reducer.
+    const diff = [
+      'diff --git a/a.py b/a.py',
+      'index aaa1111..aaa2222 100644',
+      '--- a/a.py',
+      '+++ b/a.py',
+      '@@ -1,2 +1,2 @@',
+      '-old a',
+      '+new a',
+      'diff --git a/b.py b/b.py',
+      'index bbb1111..bbb2222 100644',
+      '--- a/b.py',
+      '+++ b/b.py',
+      '@@ -1,2 +1,2 @@',
+      '-old b',
+      '+new b',
+      'diff --git a/c.py b/c.py',
+      'index ccc1111..ccc2222 100644',
+      '--- a/c.py',
+      '+++ b/c.py',
+      '@@ -1,2 +1,2 @@',
+      '-old c',
+      '+new c',
+    ].join('\n')
+    const uncapped = apply(gitDiffFilter, diff, ['git', 'diff', '--no-color'])
+    const capped = compressOutput(gitDiffFilter, diff, '', 0, ['git', 'diff', '--no-color'], { compressionProfile: 'balanced' }).text
+    expect(capped).toBe(uncapped)
   })
 })
 

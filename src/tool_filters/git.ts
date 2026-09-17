@@ -652,7 +652,47 @@ function _capHunksByDensity(hunks: string[], maxHunksPerFile: number): { hunks: 
   }
 }
 
-function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 10): string {
+// Collapses per-file diff blocks in order to fit maxLines when the per-hunk compression above still leaves the whole body over the cap: a block that is not a file block (the prelude before the first `diff --git`, e.g. a `git show` commit header) is always kept whole; a file block is kept whole if it fits within the remaining budget once the collapsed cost of every later file block is reserved, otherwise it is replaced by its header lines plus a one-line summary of how much was collapsed. This mirrors _compressGitLogCapped's rule that a diff already under the cap ships byte-identical, and keeps earlier files intact (git orders diff output by path) so a reader scanning top-down sees full hunks first and headers-only for the files that didn't fit.
+function _collapseDiffBlocksToCap(outBlocks: string[], maxLines: number): string[] {
+  const isFileBlock = outBlocks.map((block) => _GIT_DIFF_FILE_RE.test(block))
+  const collapsedFormOf = (block: string): { headerLines: string[]; summary: string; size: number } => {
+    const lines = block.split('\n')
+    const hunkIdx = lines.findIndex((ln) => _GIT_DIFF_HUNK_RE.test(ln))
+    const headerLines = hunkIdx === -1 ? lines : lines.slice(0, hunkIdx)
+    const hunkCount = lines.filter((ln) => _GIT_DIFF_HUNK_RE.test(ln)).length
+    const added = lines.filter(_isDiffAdd).length
+    const removed = lines.filter(_isDiffRemove).length
+    const summary = `[token-goat: ${hunkCount} hunk(s), +${added} -${removed} lines collapsed to fit the line cap]`
+    return { headerLines, summary, size: headerLines.length + 1 }
+  }
+
+  const collapsedSizes = outBlocks.map((block, i) => (isFileBlock[i] ? collapsedFormOf(block).size : 0))
+  const reserve: number[] = new Array(outBlocks.length).fill(0)
+  for (let i = outBlocks.length - 2; i >= 0; i--) reserve[i] = reserve[i + 1]! + collapsedSizes[i + 1]!
+
+  let budget = maxLines
+  const result: string[] = []
+  for (let i = 0; i < outBlocks.length; i++) {
+    const block = outBlocks[i]!
+    if (!isFileBlock[i]) {
+      result.push(block)
+      budget -= block.split('\n').length
+      continue
+    }
+    const lineCount = block.split('\n').length
+    if (lineCount <= budget - reserve[i]!) {
+      result.push(block)
+      budget -= lineCount
+    } else {
+      const { headerLines, summary, size } = collapsedFormOf(block)
+      result.push(headerLines.join('\n') + '\n' + summary)
+      budget -= size
+    }
+  }
+  return result
+}
+
+function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 10, maxLines?: number): string {
   const MAX_HUNK_CHANGED = 25
   const HUNK_HEAD_KEEP = 15
   const HUNK_TAIL_KEEP = 5
@@ -737,13 +777,18 @@ function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 
     outBlocks.push(compressedHunks.join('\n'))
   }
 
-  let text = outBlocks.join('\n')
+  let finalBlocks = outBlocks
+  if (maxLines !== undefined && outBlocks.join('\n').split('\n').length > maxLines) {
+    finalBlocks = _collapseDiffBlocksToCap(outBlocks, maxLines)
+  }
+
+  let text = finalBlocks.join('\n')
   if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
   return text
 }
 
 /** Format-aware diff compression. */
-function _compressGitDiffEnhanced(stdout: string, stderr: string, argv: string[]): string {
+function _compressGitDiffEnhanced(stdout: string, stderr: string, argv: string[], maxLines?: number): string {
   const flags = new Set(argv)
   const isStat = flags.has('--stat') || flags.has('--shortstat') || flags.has('--name-only')
   if (isStat) return _compressGitDiffStat(stdout, stderr, argv)
@@ -756,16 +801,16 @@ function _compressGitDiffEnhanced(stdout: string, stderr: string, argv: string[]
     maxHunksPerFile = undefined
   }
   return maxHunksPerFile === undefined
-    ? _compressGitDiffBody(stdout, stderr)
-    : _compressGitDiffBody(stdout, stderr, maxHunksPerFile)
+    ? _compressGitDiffBody(stdout, stderr, undefined, maxLines)
+    : _compressGitDiffBody(stdout, stderr, maxHunksPerFile, maxLines)
 }
 
 export class GitDiffFilter extends GitBaseFilter {
   readonly name = 'git-diff'
   override readonly subcommands = new Set(['diff', 'show'])
 
-  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
-    return _compressGitDiffEnhanced(stdout, stderr, argv)
+  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[], ctx: CompressContext = {}): string {
+    return _compressGitDiffEnhanced(stdout, stderr, argv, ctx.maxLines)
   }
 }
 
@@ -1397,12 +1442,12 @@ export class GitFilter extends GitBaseFilter {
     return gitPositionalArgs(argv.slice(1))[0] !== 'grep'
   }
 
-  override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
+  override compress(stdout: string, stderr: string, exitCode: number, argv: string[], ctx: CompressContext = {}): string {
     const positionals = gitPositionalArgs(argv.slice(1))
     const subcommand = positionals[0] ?? ''
     if (subcommand === 'diff' || subcommand === 'show') {
       // Unreachable today: GitDiffFilter claims both subcommands and is registered ahead of this catch-all, confirmed through selectFilter rather than by reading the registry order. Kept as a fallback against a future registry change, and pointed at the same compressor GitDiffFilter uses. It previously called a second, near-duplicate diff compressor that had drifted from the live one: that copy built its stat-only view by walking only the `diff --git` blocks, so every standalone notice between them was dropped without a word, and it returned before appending stderr, so a diff large enough to trigger the stat view discarded whatever git wrote there. Neither defect was reachable, and neither was catchable, which is the argument against keeping a second copy at all.
-      return _compressGitDiffEnhanced(stdout, stderr, argv)
+      return _compressGitDiffEnhanced(stdout, stderr, argv, ctx.maxLines)
     }
     if (subcommand === 'ls-files' || subcommand === 'ls-tree')
       return _truncateListing(stdout, stderr, 100)
