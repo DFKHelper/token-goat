@@ -395,6 +395,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
         "path grammar: slash- or dot-separated tag names with optional bracket segments and attribute selectors -- " +
         "[n] index, [*] wildcard, [@attr] or [@attr=value] filter, and trailing @attr to extract attribute value. " +
         "Bracket clauses stack and apply left to right, so an index after a filter counts within the filtered set. " +
+        "A clause may also be a comparison, contains() or starts-with() on an attribute or text(), joined with and/or; a clause outside that set, such as not(), matches nothing rather than being ignored, so you get an empty result instead of the unfiltered list. " +
         "Examples: root.child, catalog/book[@id=101]/title, catalog/book[@genre=Fantasy][0], /feed/entry[*]/@href, //DTS:Executable[@DTS:ExecutableType='...']",
     )
     .option('--head <n>', 'limit a matching result list to the first N items')
