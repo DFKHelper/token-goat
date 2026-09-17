@@ -36,7 +36,9 @@ import {
   PsFilter,
   SHELL_FILE_FILTERS,
 } from '../src/tool_filters/shell_file.js'
-import { selectFilter } from '../src/tool_filters/dispatch.js'
+import { selectFilter, compressOutput } from '../src/tool_filters/dispatch.js'
+import { combineStreams } from '../src/tool_filters/helpers.js'
+import { CAPTURE_DIFF_RU_9_FILES, CAPTURE_DIFF_R_NORMAL } from './fixtures/diff_ru_real_captures.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1359,5 +1361,103 @@ describe('SHELL_FILE_FILTERS registry', () => {
 
   it('selectFilter dispatches ps', () => {
     expect(selectFilter(['ps', 'aux'])).toBeInstanceOf(PsFilter)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// DiffFilter multi-file diffs under the shipping line cap
+// ---------------------------------------------------------------------------
+
+// The unified branch (_compressUnified) caps hunks per file but never measured its combined output against the
+// line cap it ships into, and compressBody did not even accept the ctx argument the shipping path (base.ts::apply)
+// passes -- so a diff whose per-file-capped form still exceeded 200 lines (the balanced profile's cap) was handed
+// whole to the generic tail-truncation truncator, which keeps head/tail lines plus context around error-signal
+// keyword matches. In a diff, survivors were chosen by which hunks happened to contain words like `error`/`failed`
+// in ordinary source text, not by file identity, so the file list -- the one thing a diff reader needs first -- was
+// what got dropped: a real 9-file, 319-line capture shipped as 57 lines carrying 1 of 9 `diff -ru` headers. The
+// separate normal-format branch (non-unified `3c3`/`<`/`>` diffs) passed a fixed cap of 300 to compressTestOutput,
+// above the 200-line shipping cap, so its own elision marker -- the thing that discloses how many lines were
+// dropped -- was itself among the lines the outer truncation then cut, disclosing a smaller drop than the real one.
+// The existing large-unified-diff test below (`compresses large unified diff across many files`) asserts only that
+// the output got shorter than the input, which an over-collapsed or content-picked survivor set also satisfies, so
+// it stays green under every mutation exercised here and never caught either defect. Every test above drives
+// `filter.compress()` directly, which never passes a cap at all; these tests drive `compressOutput` (the dispatch.ts
+// wrapper the CLI shipping path actually calls) so the cap under test is the one that ships.
+describe('DiffFilter multi-file diffs under the shipping line cap', () => {
+  const argvUnified = ['diff', '-ru', 'a', 'b']
+  const argvNormal = ['diff', '-r', 'a', 'b']
+
+  it('the capture is required: per-file hunk compression alone still exceeds the 200-line cap', () => {
+    // Precondition, not the bug itself: without a maxLines in ctx the new cap-aware collapse never runs, so this is
+    // what the filter's own per-file compression alone produces. If a later hunk-cap change shrinks this below 200
+    // lines, this goes red before the assertions below could go vacuous.
+    const direct = new DiffFilter().compress(CAPTURE_DIFF_RU_9_FILES, '', 0, argvUnified)
+    expect(direct.split('\n').length).toBeGreaterThan(200)
+    for (const file of ['base', 'dispatch', 'git', 'go_test', 'helpers', 'linters', 'package_managers', 'pytest', 'shell_file']) {
+      expect(direct).toContain(`diff -ru a/${file}.ts b/${file}.ts`)
+    }
+  })
+
+  it('keeps every file header across a real 9-file diff under the balanced (200-line) cap', () => {
+    const result = compressOutput(new DiffFilter(), CAPTURE_DIFF_RU_9_FILES, '', 0, argvUnified, {
+      compressionProfile: 'balanced',
+    }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    expect(result).not.toContain('lines omitted ---')
+    expect(result).toContain('collapsed to fit the line cap')
+    // Must-not-drop list: file identity must survive the cap, unlike the old
+    // behavior where survivors were chosen by error-keyword content instead.
+    for (const file of ['base', 'dispatch', 'git', 'go_test', 'helpers', 'linters', 'package_managers', 'pytest', 'shell_file']) {
+      expect(result).toContain(`diff -ru a/${file}.ts b/${file}.ts`)
+    }
+  })
+
+  it('a 3-file diff under the cap ships byte-identical through compressOutput (the collapse never fires)', () => {
+    const parts: string[] = []
+    for (let i = 0; i < 3; i++) {
+      parts.push(`diff -ru a/small${i}.ts b/small${i}.ts`)
+      parts.push(`--- a/small${i}.ts\t2024-01-01 00:00:00.000000000 +0000`)
+      parts.push(`+++ b/small${i}.ts\t2024-01-01 00:00:01.000000000 +0000`)
+      parts.push('@@ -1,3 +1,3 @@')
+      parts.push(' context line')
+      parts.push('-old line')
+      parts.push('+new line')
+      for (let j = 0; j < 15; j++) parts.push(' more context')
+    }
+    const diff = parts.join('\n')
+    const f = new DiffFilter()
+    const direct = f.compress(diff, '', 0, argvUnified)
+    expect(direct.split('\n').length).toBeLessThanOrEqual(200)
+    const capped = compressOutput(f, diff, '', 0, argvUnified, { compressionProfile: 'balanced' }).text
+    expect(capped).toBe(direct)
+  })
+
+  it('normal-format (non-unified) diffs cap below the 200-line shipping limit and disclose the real drop', () => {
+    const f = new DiffFilter()
+    const direct = f.compress(CAPTURE_DIFF_R_NORMAL, '', 0, argvNormal)
+    // Precondition: the capture reaches both compressTestOutput's own 300-ish
+    // ceiling and the 200-line shipping cap, so both branches under test fire.
+    expect(direct.split('\n').length).toBeGreaterThan(300)
+
+    const result = compressOutput(f, CAPTURE_DIFF_R_NORMAL, '', 0, argvNormal, {
+      compressionProfile: 'balanced',
+    }).text
+    const lines = result.split('\n')
+    expect(lines.length).toBeLessThanOrEqual(200)
+    expect(result).not.toContain('lines omitted ---')
+
+    const markers = lines.filter((l) => l.includes('lines elided by token-goat'))
+    expect(markers.length).toBe(1)
+    const match = markers[0]!.match(/\.\.\. \[(\d+) lines elided by token-goat\]/)
+    expect(match).not.toBeNull()
+    const disclosed = Number(match![1])
+    // Pin the disclosed count against the real drop: the combined (stdout+stderr, trailing-whitespace-stripped)
+    // input line count minus every line actually shown (all lines except the marker itself). Before the fix this
+    // under-reported by more than half (274 of 839 disclosed) because the elision marker from the first-stage
+    // truncateMiddle call was itself among the lines the outer 200-line cut then dropped.
+    const combinedInputLines = combineStreams(CAPTURE_DIFF_R_NORMAL, '').split('\n').length
+    const shownLines = lines.length - 1
+    expect(disclosed).toBe(combinedInputLines - shownLines)
   })
 })

@@ -1058,6 +1058,7 @@ export class DiffFilter extends ToolFilter {
     stderr: string,
     _exitCode: number,
     _argv: string[],
+    ctx: CompressContext = {},
   ): string {
     const text = this.combineOutput(stdout, stderr)
     const lines = text.split('\n')
@@ -1066,11 +1067,14 @@ export class DiffFilter extends ToolFilter {
     if (nonEmpty.length <= 50) return text
 
     const hasUnified = lines.slice(0, 20).some(l => _DIFF_HUNK_RE.test(l))
-    if (hasUnified) return this._compressUnified(lines)
-    return compressTestOutput(lines, 300)
+    if (hasUnified) return this._compressUnified(lines, ctx.maxLines)
+    // truncateMiddle (called inside compressTestOutput) returns maxLines + 1 lines (head + marker + tail), so
+    // passing the raw shipping cap here would still overrun it by one and get re-truncated by base.ts step 8,
+    // silently dropping this branch's own elision marker along with the count it discloses. Pass cap minus one.
+    return compressTestOutput(lines, ctx.maxLines === undefined ? 300 : Math.min(300, ctx.maxLines) - 1)
   }
 
-  private _compressUnified(lines: string[]): string {
+  private _compressUnified(lines: string[], maxLines?: number): string {
     const text = lines.join('\n')
     const rawBlocks = _mergeDiffEchoBlocks(_splitDiffFileBlocks(text))
     const realFiles = rawBlocks.filter(b => _DIFF_FILE_HEADER_RE.test(b.split('\n')[0] ?? ''))
@@ -1135,8 +1139,59 @@ export class DiffFilter extends ToolFilter {
       const capped = _scoreAndCapHunks(blockLines, maxHunksPerFile)
       outParts.push(capped.join('\n'))
     }
+    // outParts still has one entry per file, sized by the per-file hunk cap above; if the combined output
+    // still overruns the shipping line cap, base.ts step 8 would otherwise hand it whole to
+    // truncateMiddleSmart, which picks survivors by error-keyword content rather than file identity and
+    // drops whole file headers without disclosure. Collapse file blocks (not the non-file passthrough
+    // entries) to header-plus-summary, budgeted so every file identity survives even when its hunk body
+    // does not, mirroring git.ts's _collapseDiffBlocksToCap for the same shipping-cap gap.
+    if (maxLines !== undefined && outParts.join('\n').split('\n').length > maxLines) {
+      return _collapsePlainDiffBlocksToCap(outParts, maxLines).join('\n')
+    }
     return outParts.join('\n')
   }
+}
+
+// Same shape as git.ts's _collapseDiffBlocksToCap, parameterized on plain diff's own file/hunk regexes
+// (`_DIFF_FILE_HEADER_RE`/`_DIFF_HUNK_RE`) instead of git's `diff --git`/`diff --cc` ones, since those never
+// match a plain `diff -ru a/x b/x` block and would treat every block here as non-file, pushing it through whole.
+function _collapsePlainDiffBlocksToCap(outBlocks: string[], maxLines: number): string[] {
+  const isFileBlock = outBlocks.map((block) => _DIFF_FILE_HEADER_RE.test(block.split('\n')[0] ?? ''))
+  const collapsedFormOf = (block: string): { headerLines: string[]; summary: string; size: number } => {
+    const blockLines = block.split('\n')
+    const hunkIdx = blockLines.findIndex((ln) => _DIFF_HUNK_RE.test(ln))
+    const headerLines = hunkIdx === -1 ? blockLines : blockLines.slice(0, hunkIdx)
+    const hunkCount = blockLines.filter((ln) => _DIFF_HUNK_RE.test(ln)).length
+    const added = blockLines.filter(_isDiffAdd).length
+    const removed = blockLines.filter(_isDiffRemove).length
+    const summary = `[token-goat: ${hunkCount} hunk(s), +${added} -${removed} lines collapsed to fit the line cap]`
+    return { headerLines, summary, size: headerLines.length + 1 }
+  }
+
+  const collapsedSizes = outBlocks.map((block, i) => (isFileBlock[i] ? collapsedFormOf(block).size : 0))
+  const reserve: number[] = new Array(outBlocks.length).fill(0)
+  for (let i = outBlocks.length - 2; i >= 0; i--) reserve[i] = reserve[i + 1]! + collapsedSizes[i + 1]!
+
+  let budget = maxLines
+  const result: string[] = []
+  for (let i = 0; i < outBlocks.length; i++) {
+    const block = outBlocks[i]!
+    if (!isFileBlock[i]) {
+      result.push(block)
+      budget -= block.split('\n').length
+      continue
+    }
+    const lineCount = block.split('\n').length
+    if (lineCount <= budget - reserve[i]!) {
+      result.push(block)
+      budget -= lineCount
+    } else {
+      const { headerLines, summary, size } = collapsedFormOf(block)
+      result.push(headerLines.join('\n') + '\n' + summary)
+      budget -= size
+    }
+  }
+  return result
 }
 
 // ---------------------------------------------------------------------------
