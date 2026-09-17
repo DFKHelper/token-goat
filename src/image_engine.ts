@@ -67,6 +67,8 @@ export interface ImageMeta {
   height: number
   format: string | null
   pages: number
+  /** EXIF orientation tag (1-8) when the format carries one, else absent. Consumers that need the storage-order geometry back out of `width`/`height` must consult this: for 5-8 the reported dimensions are the transposed, display ones. */
+  orientation?: number
 }
 
 export interface DecodedImage {
@@ -190,10 +192,11 @@ export function probeBufferMeta(buf: Buffer): ImageMeta | null {
     }
 
     if (width > 0 && height > 0) {
+      // Orientations 5-8 transpose the frame, so what a viewer shows is the swap of what the SOF marker stores. This is DISPLAY geometry and is the contract `image-meta` reports; it must never be fed to a routine that walks the decoded RGBA, whose rows are still in storage order. Ask the decoder for buffer geometry, and rotate with applyExifOrientation before resizing.
       if (orientation >= 5 && orientation <= 8) {
-        return { width: height, height: width, format: "jpeg", pages: 1 }
+        return { width: height, height: width, format: "jpeg", pages: 1, orientation }
       }
-      return { width, height, format: "jpeg", pages: 1 }
+      return { width, height, format: "jpeg", pages: 1, orientation }
     }
     return null
   }
@@ -736,6 +739,66 @@ export function encodeJpeg(width: number, height: number, rgba: Uint8Array, qual
     height,
   }, quality)
   return encoded.data
+}
+
+/**
+ * Each EXIF orientation is an affine map from destination pixel to source pixel: `sx = a*dx + b*dy + cW*(width-1)`, `sy = d*dx + e*dy + fH*(height-1)`. A row is `[a, b, cW, d, e, fH]`, indexed by `orientation - 2`, so the whole thing resolves to one lookup outside the loops instead of a switch evaluated per pixel.
+ *
+ * Read each row against the spec value it encodes -- 2 top-right (mirror horizontal): source x counts down from the right edge, y unchanged. 3 bottom-right (rotate 180): both count down. 4 bottom-left (mirror vertical): x unchanged, y counts down. 5 left-top (transpose): the axes swap outright. 6 right-top (rotate 90 clockwise): source x is the destination row, source y counts down from the bottom. 7 right-bottom (transverse): both swapped axes count down. 8 left-bottom (rotate 270 clockwise): source x counts down from the right, source y is the destination column.
+ */
+const ORIENTATION_MAPS: readonly (readonly [number, number, number, number, number, number])[] = [
+  [-1, 0, 1, 0, 1, 0],
+  [-1, 0, 1, 0, -1, 1],
+  [1, 0, 0, 0, -1, 1],
+  [0, 1, 0, 1, 0, 0],
+  [0, 1, 0, -1, 0, 1],
+  [0, -1, 1, -1, 0, 1],
+  [0, -1, 1, 1, 0, 0],
+]
+
+/**
+ * Rotate/flip decoded RGBA into display order for an EXIF orientation tag (TIFF tag 274), returning the new buffer and its dimensions.
+ *
+ * The re-encode this engine performs writes no EXIF block, so there is no metadata channel left to carry the instruction downstream: the pixels themselves have to move, or the model is handed a photo lying on its side.
+ *
+ * Spec values, named by the row/column the visual origin sits at: 1 top-left (identity), 2 top-right (mirror horizontal), 3 bottom-right (rotate 180), 4 bottom-left (mirror vertical), 5 left-top (transpose across the main diagonal), 6 right-top (rotate 90 clockwise), 7 right-bottom (transverse, across the anti-diagonal), 8 left-bottom (rotate 270 clockwise). 5-8 swap width and height.
+ *
+ * 1 -- and any value outside 1-8, which the tag being absent or corrupt looks like -- returns `rgba` itself, not a copy: the common case must not pay for a full-frame allocation.
+ */
+export function applyExifOrientation(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+  orientation: number | undefined,
+): { data: Uint8Array; width: number; height: number } {
+  if (orientation === undefined || orientation < 2 || orientation > 8) {
+    return { data: rgba, width, height }
+  }
+
+  const map = ORIENTATION_MAPS[orientation - 2]
+  if (map === undefined) return { data: rgba, width, height }
+  const [a, b, cW, d, e, fH] = map
+
+  const transposed = orientation >= 5
+  const dstW = transposed ? height : width
+  const dstH = transposed ? width : height
+  const dst = Buffer.alloc(dstW * dstH * 4)
+
+  for (let dy = 0; dy < dstH; dy++) {
+    // Everything that depends only on the row is hoisted here, so the inner loop is one multiply-add per axis and no branch at all.
+    const sxRow = b * dy + cW * (width - 1)
+    const syRow = e * dy + fH * (height - 1)
+    for (let dx = 0; dx < dstW; dx++) {
+      const si = ((d * dx + syRow) * width + (a * dx + sxRow)) * 4
+      const di = (dy * dstW + dx) * 4
+      dst[di] = rgba[si] as number
+      dst[di + 1] = rgba[si + 1] as number
+      dst[di + 2] = rgba[si + 2] as number
+      dst[di + 3] = rgba[si + 3] as number
+    }
+  }
+
+  return { data: dst, width: dstW, height: dstH }
 }
 
 export function resizeRgba(

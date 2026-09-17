@@ -23,7 +23,9 @@ import omggif from 'omggif'
 import { loadConfig, type VisionTier } from './config.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import {
+  applyExifOrientation,
   assertDecodableSize,
+  type DecodedImage,
   probeBufferMeta,
   decodePng,
   encodePng,
@@ -188,12 +190,16 @@ const DEFAULT_SIZE_THRESHOLD_BYTES = 512 * 1024
  * When the dispatch was an if/else chain, `image-meta` answered "Shrink: no benefit (already
  * small/optimal)" for a 3000x3000 webp, reporting a missing decoder as a measured verdict.
  */
-const SINGLE_FRAME_DECODERS = new Map<string, (input: Buffer) => Buffer | null>([
-  ['png', (input) => decodePng(input).data],
-  ['jpeg', (input) => decodeJpeg(input).data],
-  ['bmp', (input) => decodeBmp(input).data],
+const SINGLE_FRAME_DECODERS = new Map<string, (input: Buffer) => DecodedImage | null>([
+  ['png', (input) => decodePng(input)],
+  ['jpeg', (input) => decodeJpeg(input)],
+  ['bmp', (input) => decodeBmp(input)],
   // The still-image path wants frame 0 and nothing else. Decoding the whole animation to index into it costs a full canvas per frame for frames that are then dropped, and a file can declare far more of them than it contains pixels.
-  ['gif', (input) => decodeGif(input, { maxFrames: 1 }).frames[0]?.data ?? null],
+  ['gif', (input) => {
+    const decoded = decodeGif(input, { maxFrames: 1 })
+    const frame = decoded.frames[0]
+    return frame === undefined ? null : { data: frame.data, width: frame.width, height: frame.height }
+  }],
 ])
 
 /** Whether the engine has a decoder for `format`, i.e. whether a shrink is even attemptable. A `false` here is a capability limit, not a measurement: it must never be reported as "no benefit". A Map rather than an object literal, so a format spelled `constructor` or `toString` answers no instead of resolving off Object.prototype and handing a Function to the decode call. */
@@ -241,7 +247,7 @@ export function isImagePath(p: string): boolean {
 /** Sentinel thrown by {@link probeImageMeta} when bytes will not decode as a valid image or exceed pixel limit. */
 export class ImageDecodeError extends Error {}
 
-export async function probeImageMeta(input: Buffer): Promise<{ width: number; height: number; format: string | null; pages: number } | null> {
+export async function probeImageMeta(input: Buffer): Promise<{ width: number; height: number; format: string | null; pages: number; orientation?: number } | null> {
   const meta = probeBufferMeta(input)
   if (meta === null) {
     throw new ImageDecodeError('image could not be decoded')
@@ -256,6 +262,7 @@ export async function probeImageMeta(input: Buffer): Promise<{ width: number; he
     height: meta.height,
     format: meta.format,
     pages: meta.pages,
+    ...(meta.orientation === undefined ? {} : { orientation: meta.orientation }),
   }
 }
 
@@ -306,7 +313,7 @@ export async function shrinkImage(
   const originalBytes = input.length
   if (originalBytes < sizeThreshold) return null
 
-  let inputMeta: { width: number; height: number; format: string | null; pages: number } | null
+  let inputMeta: { width: number; height: number; format: string | null; pages: number; orientation?: number } | null
   try {
     inputMeta = await probeImageMeta(input)
   } catch {
@@ -357,10 +364,12 @@ export async function shrinkImage(
     // Single-frame image handling
     const decode = SINGLE_FRAME_DECODERS.get(inputMeta.format ?? '')
     if (!decode) return null
-    const srcRgba = decode(input)
-    if (srcRgba === null) return null
+    const decoded = decode(input)
+    if (decoded === null) return null
 
-    const dstRgba = resizeRgba(srcRgba, inputMeta.width, inputMeta.height, targetW, targetH)
+    // The decoder's own dimensions, not the probe's: for EXIF orientations 5-8 the probe reports display geometry, and reading this buffer at that stride shears every row. Rotating here is the only way the orientation survives, since the re-encode below writes no EXIF block.
+    const oriented = applyExifOrientation(decoded.data, decoded.width, decoded.height, inputMeta.orientation)
+    const dstRgba = resizeRgba(oriented.data, oriented.width, oriented.height, targetW, targetH)
 
     const jpegBuf = encodeJpeg(targetW, targetH, dstRgba, quality)
     const pngBuf = encodePng(targetW, targetH, dstRgba)
@@ -422,8 +431,16 @@ function imageShrinkCacheDir(): string {
  * domain-separates by full source path, so a collision would additionally require two different
  * paths to also match on size+mtime.
  */
+/** Bump whenever the engine starts producing different pixels for an unchanged input file. Nothing else in the key moves when the code does, so without this an entry garbled by a shipped defect keeps being served from disk until DEFAULT_MAX_AGE_MS retires it -- the fix reaches new files only. Revision 2: EXIF orientation is now baked into the pixels. */
+export const SHRINK_ENGINE_REVISION = 2
+
+/** Exported so a test can hold every other input fixed and vary only the revision, which is the one property the salt has to have. */
+export function shrinkCacheKeyForRevision(revision: number, originalPath: string, size: number, mtimeMs: number, quality: number): string {
+  return createHash('sha256').update(`r${revision}:${originalPath}:${size}:${mtimeMs}:${quality}`).digest('hex').slice(0, 16)
+}
+
 function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number, quality: number): string {
-  return createHash('sha256').update(`${originalPath}:${size}:${mtimeMs}:${quality}`).digest('hex').slice(0, 16)
+  return shrinkCacheKeyForRevision(SHRINK_ENGINE_REVISION, originalPath, size, mtimeMs, quality)
 }
 
 /**
