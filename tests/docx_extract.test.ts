@@ -160,9 +160,9 @@ describe('cell text the folded parse tree cannot position exactly', () => {
     return p
   }
 
-  // Provenance: HAND-DERIVED from ECMA-376 part 1 section 17.3.3.1 (`w:br`, an explicit break inside a paragraph's run content). The point is the shape, not a byte capture: two text runs with a break between them are two lines, so concatenating them makes one word out of two.
+  // Provenance: HAND-DERIVED from ECMA-376 part 1 section 17.3.3.1 (`w:br`, an explicit break inside a paragraph's run content, so it sits inside a `w:r` like every other run element). The point is the shape, not a byte capture: two text runs with a break between them are two lines, so concatenating them makes one word out of two, and a markdown cell cannot hold the newline.
   it('puts a space where a line break separates two runs, rather than gluing them', async () => {
-    const file2 = writeDocx('line-break.docx', '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Alpha</w:t></w:r><w:br/><w:r><w:t>Beta</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+    const file2 = writeDocx('line-break.docx', '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Alpha</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>Beta</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
     const tables = await docxTables(file2)
     expect(tables[0]?.rows[0]?.[0]).toBe('Alpha Beta')
   })
@@ -173,5 +173,49 @@ describe('cell text the folded parse tree cannot position exactly', () => {
     const tables = await docxTables(file2)
     expect(tables[0]?.rows[0]?.[0]).toBe('')
     expect(tables[1]?.rows).toEqual([['INNER']])
+  })
+})
+
+describe('tabs and breaks between runs', () => {
+  let dir3: string
+  beforeAll(() => {
+    dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docx3-'))
+  })
+  afterAll(() => {
+    fs.rmSync(dir3, { recursive: true, force: true })
+  })
+
+  function writeDocx(name: string, bodyXml: string): string {
+    const p = path.join(dir3, name)
+    fs.writeFileSync(p, zipSync({ 'word/document.xml': strToU8(`<?xml version="1.0"?><w:document><w:body>${bodyXml}</w:body></w:document>`) }))
+    return p
+  }
+
+  // Provenance: CAPTURE. The two run shapes are copied byte-for-byte (rsid and rPr included) from `word/document.xml` of an NDA saved by Microsoft Office Word (docProps/app.xml `<Application>Microsoft Office Word`): a run holding only `<w:tab/>` between the section number and its heading, and a run whose `<w:tab/>` precedes its own `<w:t>`. That file holds 16 such tabs and docx-text printed every one of them as nothing, `Section 1.Definitions.`.
+  it('keeps a Word tab as a tab character between the runs it separates', async () => {
+    const rPr = '<w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>'
+    const bold = '<w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:b/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>'
+    const f = writeDocx('tabs.docx',
+      `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r w:rsidRPr="001144AA">${bold}<w:t>Section 1</w:t></w:r><w:r w:rsidRPr="001144AA">${rPr}<w:t>.</w:t></w:r><w:r w:rsidRPr="001144AA">${rPr}<w:tab/></w:r><w:r w:rsidRPr="001144AA">${bold}<w:t>Definitions.</w:t></w:r></w:p>` +
+      `<w:p><w:r w:rsidRPr="001144AA">${bold}<w:t>Section 3.</w:t></w:r><w:r w:rsidRPr="001144AA">${bold}<w:tab/><w:t>Confidentiality Obligation</w:t></w:r></w:p>`)
+    const text = await docxText(f)
+    expect(text).toBe('Section 1.\tDefinitions.\n\nSection 3.\tConfidentiality Obligation')
+    expect(text).not.toContain('Section 1.Definitions')
+    expect(await docxOutline(f)).toEqual([{ level: 1, text: 'Section 1.\tDefinitions.' }])
+  })
+
+  // Provenance: HAND-DERIVED from ECMA-376 part 1 section 17.3.3.30 (`w:tab`, tab character): one run may hold text on both sides of the tab. A per-paragraph "join with a space" cannot place it, and neither can the folded tree; only the XML text knows where it sat.
+  it('places a tab that sits between two text elements of the same run', async () => {
+    const f = writeDocx('tab-in-run.docx', '<w:p><w:r><w:t>Name:</w:t><w:tab/><w:t>Value</w:t></w:r></w:p>')
+    expect(await docxText(f)).toBe('Name:\tValue')
+  })
+
+  // Provenance: CAPTURE. `<w:p><w:r><w:br w:type="page"/></w:r></w:p>` is how Microsoft Macintosh Word writes a manual page break (three of them in a license draft on this machine); a tab-stop definition `<w:tab w:val="left" w:pos="720"/>` is what `w:tabs` holds in the same file's paragraph properties. Neither is a character: the page break must not become a paragraph of its own and the tab stop must not become a tab.
+  it('does not turn a page break or a tab-stop definition into text', async () => {
+    const f = writeDocx('page-break.docx',
+      '<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs></w:pPr><w:r><w:t>Before</w:t></w:r></w:p>' +
+      '<w:p><w:r><w:br w:type="page"/></w:r></w:p>' +
+      '<w:p><w:r><w:t>Line one</w:t><w:br/><w:t>Line two</w:t></w:r></w:p>')
+    expect(await docxText(f)).toBe('Before\n\nLine one\nLine two')
   })
 })

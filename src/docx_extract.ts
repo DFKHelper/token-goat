@@ -30,11 +30,16 @@ function headingLevel(styleVal: string | undefined): number | null {
   return m?.[1] !== undefined ? parseInt(m[1], 10) : null
 }
 
+/** A tab in Word is not text: it is an empty `<w:tab/>` element sitting between `<w:t>` runs (`Section 1.<w:tab/>Definitions.`), and a line break inside a paragraph is `<w:br/>` (`<w:cr/>` the legacy form) the same way. The parse folds same-name siblings into one array per name, so once the part is a tree the element's position among the runs is gone -- `<w:t>A</w:t><w:tab/><w:t>B</w:t>` arrives as `{'w:t': ['A', 'B'], 'w:tab': ''}` -- and every reader glued the words on either side together. Rewriting each into a `<w:t>` run holding the character BEFORE the parse makes it a same-name sibling of the text it sits between, and those the parse does keep in order. Only the bare `<w:tab/>` is a tab character; `<w:tab w:val=".." w:pos=".."/>` under `w:tabs` is a tab-stop definition and always carries attributes. */
+function inlineRunSeparators(xml: string): string {
+  return xml.replace(/<w:tab\s*\/>/g, '<w:t>\t</w:t>').replace(/<w:(?:br|cr)(?:\s[^/>]*)?\/>/g, '<w:t>\n</w:t>')
+}
+
 async function loadDocumentBody(filePath: string): Promise<unknown> {
   const entries = await readOoxmlZip(filePath, '.docx')
   const xml = decodeZipEntry(entries, 'word/document.xml', ooxmlPartBudget())
   if (xml === null) throw new NotAnOfficeDocumentError(`no word/document.xml found in ${filePath} (not a valid .docx?)`)
-  return parseOoxmlPart(xml)
+  return parseOoxmlPart(inlineRunSeparators(xml))
 }
 
 export async function docxOutline(filePath: string): Promise<DocxHeading[]> {
@@ -73,8 +78,8 @@ export async function docxTables(filePath: string): Promise<DocxTable[]> {
       const tcElements = collectElements(tr, 'w:tc')
       const rowCells: string[] = []
       for (const tc of tcElements) {
-        // Paragraph-aware, and blind to a nested table: the nested rows are reported as their own table instead of being flattened into this cell.
-        const cellText = collectParagraphTexts(tc, 'w:p', 'w:t', ['w:tbl'], 'w:br')
+        // Paragraph-aware, and blind to a nested table: the nested rows are reported as their own table instead of being flattened into this cell. A line break is already a `\n` run by the time the tree is parsed (see inlineRunSeparators), and a markdown cell cannot hold a newline, so it becomes a space here.
+        const cellText = collectParagraphTexts(tc, 'w:p', 'w:t', ['w:tbl'])
           .map((t) => t.replace(/\r?\n/g, ' ').trim())
           .filter((t) => t.length > 0)
           .join(' ')
