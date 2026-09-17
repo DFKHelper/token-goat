@@ -588,6 +588,14 @@ export function decodeBmp(buf: Buffer): DecodedImage {
   return { width, height, data: outRgba }
 }
 
+/** Clear one frame rectangle of an RGBA canvas back to fully transparent (GIF disposal 2). */
+function clearCanvasRect(canvas: Buffer, canvasWidth: number, rect: { x: number; y: number; width: number; height: number }): void {
+  for (let row = 0; row < rect.height; row++) {
+    const start = ((rect.y + row) * canvasWidth + rect.x) * 4
+    canvas.fill(0, start, start + rect.width * 4)
+  }
+}
+
 /**
  * Decode a GIF's frames.
  *
@@ -611,14 +619,35 @@ export function decodeGif(buf: Buffer, opts?: { maxFrames?: number }): DecodedAn
   // to decode, resize and quantize; 256 MB of canvas is 26 such frames, or roughly 2.3 seconds,
   // which is already as long as a hook standing between an agent and its Read ought to take. A
   // larger ceiling would mostly convert an out-of-memory into a wait.
+  //
+  // Compositing adds one persistent canvas below, and one more saved copy while a disposal-3 frame
+  // is in flight, so peak memory is `wanted + 2` canvases rather than `wanted`. Two canvases do not
+  // move a ceiling expressed in tens of them, which is why the count passed here is still `wanted`.
   assertDecodableSize("GIF", width, height, 4, wanted)
 
   const frames: AnimatedGifFrame[] = []
 
+  // One persistent canvas that every frame composites onto, plus at most one saved copy for
+  // disposal 3. `decodeAndBlitFrameRGBA` paints only the frame's own sub-rectangle and skips its
+  // transparent pixels, so a fresh zeroed canvas per frame leaves everything outside that rectangle
+  // black -- correct only for the full-canvas opaque frames that every fixture happened to use.
+  // Compositing is what the format means by a frame.
+  const canvas = Buffer.alloc(width * height * 4)
+  let previous: { x: number; y: number; width: number; height: number; disposal: number } | null = null
+  let restore: Buffer | null = null
+
   for (let i = 0; i < wanted; i++) {
+    if (previous?.disposal === 2) {
+      clearCanvasRect(canvas, width, previous)
+    } else if (previous?.disposal === 3 && restore) {
+      restore.copy(canvas)
+    }
+
     const frameInfo = reader.frameInfo(i)
-    const frameRgba = Buffer.alloc(width * height * 4)
-    reader.decodeAndBlitFrameRGBA(i, frameRgba)
+    restore = frameInfo.disposal === 3 ? Buffer.from(canvas) : null
+    reader.decodeAndBlitFrameRGBA(i, canvas)
+    previous = { x: frameInfo.x, y: frameInfo.y, width: frameInfo.width, height: frameInfo.height, disposal: frameInfo.disposal }
+
     frames.push({
       width,
       height,
@@ -626,7 +655,8 @@ export function decodeGif(buf: Buffer, opts?: { maxFrames?: number }): DecodedAn
       y: frameInfo.y,
       delay: frameInfo.delay,
       disposal: frameInfo.disposal,
-      data: frameRgba,
+      // A copy: pushing the canvas itself would alias every frame to the last one composited.
+      data: Buffer.from(canvas),
     })
   }
 
@@ -641,7 +671,15 @@ export function encodeGif(width: number, height: number, rgba: Uint8Array): Buff
   return buf.subarray(0, gifWriter.end())
 }
 
-export function quantizeRgbaToIndexed(rgba: Uint8Array, width: number, height: number): { indexedPixels: number[]; palette: number[] } {
+/**
+ * Quantize RGBA to the fixed 8x8x4 web palette.
+ *
+ * When any pixel is more transparent than half, index 0 is reserved as the GIF transparent colour
+ * and the opaque pixels that would have landed there -- near-black -- are nudged to index 1, the
+ * next darkest entry. That costs pure black a barely visible step and keeps the palette at its full
+ * 256 entries. A fully opaque frame reserves nothing, so its output is unchanged.
+ */
+export function quantizeRgbaToIndexed(rgba: Uint8Array, width: number, height: number): { indexedPixels: number[]; palette: number[]; transparentIndex: number | null } {
   const palette: number[] = []
   for (let r = 0; r < 8; r++) {
     for (let g = 0; g < 8; g++) {
@@ -655,18 +693,31 @@ export function quantizeRgbaToIndexed(rgba: Uint8Array, width: number, height: n
   }
 
   const numPixels = width * height
+  let transparentIndex: number | null = null
+  for (let i = 0; i < numPixels; i++) {
+    if ((rgba[i * 4 + 3] ?? 255) < 128) {
+      transparentIndex = 0
+      break
+    }
+  }
+
   const indexedPixels: number[] = new Array(numPixels)
   for (let i = 0; i < numPixels; i++) {
+    if (transparentIndex !== null && (rgba[i * 4 + 3] ?? 255) < 128) {
+      indexedPixels[i] = transparentIndex
+      continue
+    }
     const r = rgba[i * 4] ?? 0
     const g = rgba[i * 4 + 1] ?? 0
     const b = rgba[i * 4 + 2] ?? 0
     const rIdx = Math.min(7, Math.floor((r / 256) * 8))
     const gIdx = Math.min(7, Math.floor((g / 256) * 8))
     const bIdx = Math.min(3, Math.floor((b / 256) * 4))
-    indexedPixels[i] = (rIdx << 5) | (gIdx << 2) | bIdx
+    const idx = (rIdx << 5) | (gIdx << 2) | bIdx
+    indexedPixels[i] = transparentIndex !== null && idx === transparentIndex ? 1 : idx
   }
 
-  return { indexedPixels, palette }
+  return { indexedPixels, palette, transparentIndex }
 }
 
 export function decodeJpeg(buf: Buffer): DecodedImage {

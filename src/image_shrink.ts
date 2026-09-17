@@ -332,11 +332,12 @@ export async function shrinkImage(
 
       for (const frame of decodedGif.frames) {
         const resizedFrameRgba = resizeRgba(frame.data, frame.width, frame.height, targetW, targetH)
-        const { indexedPixels, palette } = quantizeRgbaToIndexed(resizedFrameRgba, targetW, targetH)
+        const { indexedPixels, palette, transparentIndex } = quantizeRgbaToIndexed(resizedFrameRgba, targetW, targetH)
         gifWriter.addFrame(0, 0, targetW, targetH, indexedPixels, {
           palette,
           delay: frame.delay,
           disposal: frame.disposal,
+          ...(transparentIndex === null ? {} : { transparent: transparentIndex }),
         })
       }
       const data = outBuf.subarray(0, gifWriter.end())
