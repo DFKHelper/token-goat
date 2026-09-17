@@ -23,6 +23,17 @@ function isReturnType(typeText: string): boolean {
   return /^[A-Z]/.test(last)
 }
 
+/** `code` with a leading generic method type-parameter list (`<T>`, `<T extends Comparable<T>>`) removed, so `static <T> T first(...)` presents the same header as `def <T> T first(...)`. Unbalanced angle brackets leave the text as is. */
+function withoutTypeParams(code: string): string {
+  if (!code.startsWith('<')) return code
+  let depth = 0
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === '<') depth++
+    else if (code[i] === '>' && --depth === 0) return code.slice(i + 1).trimStart()
+  }
+  return code
+}
+
 function matchGroovy(code: string, ctx: DeclContext): Decl | null {
   const s = stripLeadingWords(code, MODIFIERS, true)
   const at = code.length - s.length
@@ -38,7 +49,7 @@ function matchGroovy(code: string, ctx: DeclContext): Decl | null {
     if (ctx.scope === 'container' && TYPE_KINDS.has(ctx.parentKind) && s.startsWith(ctx.parent) && /^\s*\(/.test(s.slice(ctx.parent.length))) {
       return { name: ctx.parent, kind: 'constructor', end: 'brace' }
     }
-    const fn = cFunctionHeader(s)
+    const fn = cFunctionHeader(withoutTypeParams(s))
     if (fn !== null && fn.qualifier === '' && isReturnType(fn.typeText)) return { name: fn.name, kind: member, end: 'brace' }
   }
   if (ctx.insideFunction) return null

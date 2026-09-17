@@ -199,6 +199,36 @@ describe('Groovy adapter', () => {
     expect(imports(r)).toEqual(['groovy.transform.CompileStatic', 'java.lang.Boolean.FALSE'])
   })
 
+  // Regression: the C-style header reader requires the text before `(` to start with a letter, so a generic method whose type-parameter list comes first (`static <T> T first(...)`) never reached it and was dropped, while `def <T> T first(...)` was indexed because `def` came first.
+  it('reads a generic method whose type-parameter list precedes an explicit return type', () => {
+    // FORMAT-DERIVED: signatures from the Groovy JDK's DefaultGroovyMethods (https://docs.groovy-lang.org/latest/html/groovy-jdk/java/util/List.html): `static <T> T first(List<T> self)`, `static <T> List<T> tail(List<T> self)`. HAND-DERIVED: the bounded form follows the Java Language Specification's TypeParameter grammar (JLS 8.1.2), which Groovy shares; a top-level script method gets the same shape.
+    const src = [
+      'class Util {',
+      '    static <T> T first(List<T> self) {',
+      '        return self[0]',
+      '    }',
+      '    public static <T> List<T> tail(List<T> self) {',
+      '        return self.tail()',
+      '    }',
+      '    static <T extends Comparable<T>> T max(List<T> self) {',
+      '        return self.max()',
+      '    }',
+      '    def <T> T pick(T x) { x }',
+      '}',
+      '<T> T identity(T x) {',
+      '    return x',
+      '}',
+    ].join('\n')
+    expect(shape(extractGroovy(src, 'Util.groovy'))).toEqual([
+      'class Util 1-12',
+      'method first 2-4 Util',
+      'method tail 5-7 Util',
+      'method max 8-10 Util',
+      'method pick 11-11 Util',
+      'function identity 13-15',
+    ])
+  })
+
   it('reads Gradle task registrations, and a registration with no block ends on its own line', () => {
     // FORMAT-DERIVED: https://docs.gradle.org/current/userguide/more_about_tasks.html
     const src = [
