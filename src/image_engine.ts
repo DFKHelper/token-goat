@@ -611,30 +611,16 @@ export function decodeGif(buf: Buffer, opts?: { maxFrames?: number }): DecodedAn
   const height = reader.height
   const wanted = Math.min(reader.numFrames(), opts?.maxFrames ?? Number.POSITIVE_INFINITY)
 
-  // Every frame is a full canvas and every one is kept, so the cost is the canvas times the frame
-  // count, not the canvas. Frames are cheap to declare -- an empty 1x1 sub-frame is about 23 bytes
-  // -- so the ratio between the file and what it costs to decode is effectively unbounded. This is
-  // the one check that has to happen before the loop rather than inside it: catching it on frame
-  // 400 means 399 canvases have already been allocated.
+  // Every frame is a full canvas and every one is kept, so the cost is the canvas times the frame count, not the canvas. Frames are cheap to declare -- an empty 1x1 sub-frame is about 23 bytes -- so the ratio between the file and what it costs to decode is effectively unbounded. This is the one check that has to happen before the loop rather than inside it: catching it on frame 400 means 399 canvases have already been allocated.
   //
-  // The ceiling doubles as a time budget, which is why raising it would not simply buy more
-  // capability. Measured end to end through the pre-read hook, a 1600x1600 frame costs about 87 ms
-  // to decode, resize and quantize; 256 MB of canvas is 26 such frames, or roughly 2.3 seconds,
-  // which is already as long as a hook standing between an agent and its Read ought to take. A
-  // larger ceiling would mostly convert an out-of-memory into a wait.
+  // The ceiling doubles as a time budget, which is why raising it would not simply buy more capability. Measured end to end through the pre-read hook, a 1600x1600 frame costs about 87 ms to decode, resize and quantize; 256 MB of canvas is 26 such frames, or roughly 2.3 seconds, which is already as long as a hook standing between an agent and its Read ought to take. A larger ceiling would mostly convert an out-of-memory into a wait.
   //
-  // Compositing adds one persistent canvas below, and one more saved copy while a disposal-3 frame
-  // is in flight, so peak memory is `wanted + 2` canvases rather than `wanted`. Two canvases do not
-  // move a ceiling expressed in tens of them, which is why the count passed here is still `wanted`.
+  // Compositing adds one persistent canvas below, and one more saved copy while a disposal-3 frame is in flight, so peak memory is `wanted + 2` canvases rather than `wanted`. Two canvases do not move a ceiling expressed in tens of them, which is why the count passed here is still `wanted`.
   assertDecodableSize("GIF", width, height, 4, wanted)
 
   const frames: AnimatedGifFrame[] = []
 
-  // One persistent canvas that every frame composites onto, plus at most one saved copy for
-  // disposal 3. `decodeAndBlitFrameRGBA` paints only the frame's own sub-rectangle and skips its
-  // transparent pixels, so a fresh zeroed canvas per frame leaves everything outside that rectangle
-  // black -- correct only for the full-canvas opaque frames that every fixture happened to use.
-  // Compositing is what the format means by a frame.
+  // One persistent canvas that every frame composites onto, plus at most one saved copy for disposal 3. `decodeAndBlitFrameRGBA` paints only the frame's own sub-rectangle and skips its transparent pixels, so a fresh zeroed canvas per frame leaves everything outside that rectangle black -- correct only for the full-canvas opaque frames that every fixture happened to use. Compositing is what the format means by a frame.
   const canvas = Buffer.alloc(width * height * 4)
   let previous: { x: number; y: number; width: number; height: number; disposal: number } | null = null
   let restore: Buffer | null = null
@@ -677,10 +663,7 @@ export function encodeGif(width: number, height: number, rgba: Uint8Array): Buff
 /**
  * Quantize RGBA to the fixed 8x8x4 web palette.
  *
- * When any pixel is more transparent than half, index 0 is reserved as the GIF transparent colour
- * and the opaque pixels that would have landed there -- near-black -- are nudged to index 1, the
- * next darkest entry. That costs pure black a barely visible step and keeps the palette at its full
- * 256 entries. A fully opaque frame reserves nothing, so its output is unchanged.
+ * When any pixel is more transparent than half, index 0 is reserved as the GIF transparent colour and the opaque pixels that would have landed there -- near-black -- are nudged to index 1, the next darkest entry. That costs pure black a barely visible step and keeps the palette at its full 256 entries. A fully opaque frame reserves nothing, so its output is unchanged.
  */
 export function quantizeRgbaToIndexed(rgba: Uint8Array, width: number, height: number): { indexedPixels: number[]; palette: number[]; transparentIndex: number | null } {
   const palette: number[] = []
