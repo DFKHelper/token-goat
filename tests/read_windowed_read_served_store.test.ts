@@ -52,6 +52,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { getBashOutput } from '../src/bash_output_cache.js'
 import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -88,10 +89,11 @@ function windowText(from: number): string {
 
 function readEvent(
   phase: 'pre_tool_use' | 'post_tool_use',
-  opts: { offset?: number; content?: string } = {},
+  opts: { offset?: number; limit?: number; content?: string } = {},
 ) {
   const toolInput: Record<string, unknown> = { file_path: target }
   if (opts.offset !== undefined) toolInput['offset'] = opts.offset
+  if (opts.limit !== undefined) toolInput['limit'] = opts.limit
   const content = opts.content ?? ''
   return makeHookEvent({
     eventName: phase,
@@ -117,7 +119,7 @@ function readEvent(
 }
 
 /** One complete delivery: the pre hook records the read, the post hook stores what it handed over. */
-function deliver(opts: { offset?: number; content: string }): void {
+function deliver(opts: { offset?: number; limit?: number; content: string }): void {
   preReadHandler(readEvent('pre_tool_use', opts))
   postReadHandler(readEvent('post_tool_use', opts))
 }
@@ -167,6 +169,44 @@ describe('a windowed Read marks only the lines it delivered', () => {
     expect(notice).toBeDefined()
     // Without `--full` every render path in cmdBashOutput elides the middle past head+tail, so the command the notice names returns less than the notice just withheld. Pinned as an exact substring rather than a loose /--full/ match so a pointer that carries the flag on some other token still fails.
     expect(notice).toMatch(/token-goat bash-output [0-9a-f]+ --full`/)
+  })
+
+  it('a disjoint later window does not overwrite an earlier windows stored pointer, and the earlier window is still elided next time', () => {
+    const A_OFFSET = 1
+    const A_LIMIT = 10
+    const B_OFFSET = 30
+    const B_LIMIT = 10
+    const windowA = lines.slice(A_OFFSET - 1, A_OFFSET - 1 + A_LIMIT).join('\n') + '\n'
+    const windowB = lines.slice(B_OFFSET - 1, B_OFFSET - 1 + B_LIMIT).join('\n') + '\n'
+    expect(Buffer.byteLength(windowA, 'utf-8')).toBeGreaterThan(512)
+    expect(Buffer.byteLength(windowB, 'utf-8')).toBeGreaterThan(512)
+
+    // First delivery of window A, then a second identical delivery of the same window -- the shape that produces the elision notice.
+    deliver({ offset: A_OFFSET, limit: A_LIMIT, content: windowA })
+    const secondRead = postReadHandler(readEvent('post_tool_use', { offset: A_OFFSET, limit: A_LIMIT, content: windowA }))
+    expect(secondRead).not.toBeNull()
+    const secondBody = secondRead !== null && secondRead.hookType === 'rewriteOutput' ? secondRead.updatedOutput : ''
+    expect(secondBody).toContain(NOTICE)
+    const idMatch = /token-goat bash-output ([0-9a-f]+) --full/.exec(secondBody)
+    expect(idMatch).not.toBeNull()
+    const id = idMatch?.[1] as string
+
+    // Positive control: before the disjoint read below, the pointer already resolves to window A's own bytes.
+    expect(getBashOutput(id)?.output).toContain(lines[A_OFFSET - 1])
+
+    // A disjoint later Read of an entirely different window of the same file.
+    deliver({ offset: B_OFFSET, limit: B_LIMIT, content: windowB })
+
+    // Must-not-drop: the id the earlier notice named must still return window A's bytes, not window B's -- this is the id-collision gate.
+    const recalled = getBashOutput(id)?.output ?? ''
+    expect(recalled).toContain(lines[A_OFFSET - 1])
+    expect(recalled).toContain(lines[A_OFFSET - 1 + A_LIMIT - 1])
+    expect(recalled).not.toContain(lines[B_OFFSET - 1])
+
+    // The feature must not under-fire either: a fourth Read of window A is still elided.
+    const fourthRead = postReadHandler(readEvent('post_tool_use', { offset: A_OFFSET, limit: A_LIMIT, content: windowA }))
+    const fourthBody = fourthRead !== null && fourthRead.hookType === 'rewriteOutput' ? fourthRead.updatedOutput : windowA
+    expect(fourthBody).toContain(NOTICE)
   })
 })
 

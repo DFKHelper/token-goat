@@ -1588,7 +1588,14 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
     // own floor, so anything smaller is dead weight in the cache.
     if (Buffer.byteLength(served, 'utf-8') < Math.max(cfg.cache_min_bytes, IDENTICAL_READ_MIN_BODY_BYTES)) return
 
-    const id = storeBashOutputSync('Read ' + normalized, served, 0, getCwd(event) ?? process.cwd())
+    // The synthetic command must carry the requested window, mirroring what the Bash surface gets for free from its literal command line (e.g. `sed -n '120,160p'`); commandHashSync keys only on this string plus cwd, so without the window every offset/limit of one file in one cwd collapses onto the same id and each later Read silently overwrites the previous window's stored body.
+    const window = readRequestedSliceWindow(event)
+    let syntheticCommand = 'Read ' + normalized
+    if (window.isExplicitSlice) {
+      syntheticCommand += ' --offset ' + window.offset
+      if (window.limit !== undefined) syntheticCommand += ' --limit ' + window.limit
+    }
+    const id = storeBashOutputSync(syntheticCommand, served, 0, getCwd(event) ?? process.cwd())
     recordFileServedOutput(normalized, id)
   } catch {
     // best-effort; never affect the completed Read
