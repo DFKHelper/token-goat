@@ -528,16 +528,20 @@ function parseSinglePredicate(predStr: string): XmlPredicate | null {
   const s = predStr.trim()
   if (!s) return null
 
-  const andParts = splitTopLevel(s, ' and ')
-  if (andParts.length > 1) {
-    const predicates = andParts.map(parseSinglePredicate).filter((p): p is XmlPredicate => p !== null)
-    return { kind: 'and', predicates }
-  }
-
+  // `or` binds loosest (XPath 1.0 §3.4), so it has to be split first: splitting `and` first parses `@a='1' or @b='2' and @c='3'` as `(A or B) and C` and answers a three-book catalog with one book instead of two. Splitting on the loosest operator first is what puts it at the root of the tree.
   const orParts = splitTopLevel(s, ' or ')
   if (orParts.length > 1) {
-    const predicates = orParts.map(parseSinglePredicate).filter((p): p is XmlPredicate => p !== null)
-    return { kind: 'or', predicates }
+    const predicates = orParts.map(parseSinglePredicate)
+    if (predicates.some((p) => p === null)) return null
+    return { kind: 'or', predicates: predicates as XmlPredicate[] }
+  }
+
+  // A sub-predicate this parser cannot read makes the whole conjunction unreadable. Filtering the nulls out instead would quietly evaluate `@a='1' and not(@b)` as `@a='1'`, widening the match to rows the caller asked to exclude.
+  const andParts = splitTopLevel(s, ' and ')
+  if (andParts.length > 1) {
+    const predicates = andParts.map(parseSinglePredicate)
+    if (predicates.some((p) => p === null)) return null
+    return { kind: 'and', predicates: predicates as XmlPredicate[] }
   }
 
   if (/^-?\d+$/.test(s)) {
@@ -563,21 +567,21 @@ function parseSinglePredicate(predStr: string): XmlPredicate | null {
     }
   }
 
-  const containsAttrMatch = /^contains\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*["']([^"']*)["']\s*\)$/i.exec(s)
+  const containsAttrMatch = /^contains\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*(?:"([^"]*)"|'([^']*)')\s*\)$/i.exec(s)
   if (containsAttrMatch) {
     const attrName = containsAttrMatch[1]!.replace(/^@/, '')
-    return { kind: 'attrContains', name: attrName, value: containsAttrMatch[2]! }
+    return { kind: 'attrContains', name: attrName, value: containsAttrMatch[2] ?? containsAttrMatch[3]! }
   }
 
-  const containsTextMatch = /^contains\(\s*(?:text\(\)|\.)\s*,\s*["']([^"']*)["']\s*\)$/i.exec(s)
+  const containsTextMatch = /^contains\(\s*(?:text\(\)|\.)\s*,\s*(?:"([^"]*)"|'([^']*)')\s*\)$/i.exec(s)
   if (containsTextMatch) {
-    return { kind: 'textContains', value: containsTextMatch[1]! }
+    return { kind: 'textContains', value: containsTextMatch[1] ?? containsTextMatch[2]! }
   }
 
-  const startsWithAttrMatch = /^starts-with\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*["']([^"']*)["']\s*\)$/i.exec(s)
+  const startsWithAttrMatch = /^starts-with\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*(?:"([^"]*)"|'([^']*)')\s*\)$/i.exec(s)
   if (startsWithAttrMatch) {
     const attrName = startsWithAttrMatch[1]!.replace(/^@/, '')
-    return { kind: 'attrStartsWith', name: attrName, value: startsWithAttrMatch[2]! }
+    return { kind: 'attrStartsWith', name: attrName, value: startsWithAttrMatch[2] ?? startsWithAttrMatch[3]! }
   }
 
   const textMatch = /^(?:text\(\)|\.)\s*(!?=)\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))\s*$/i.exec(s)
@@ -590,11 +594,11 @@ function parseSinglePredicate(predStr: string): XmlPredicate | null {
     }
   }
 
-  const compMatch = /^(@?[a-zA-Z0-9_:.\\-]+)\s*(!?=)\s*(?:["']([^"']*)["']|([^\s\]]+))$/.exec(s)
+  const compMatch = /^(@?[a-zA-Z0-9_:.\\-]+)\s*(!?=)\s*(?:"([^"]*)"|'([^']*)'|([^\s\]]+))$/.exec(s)
   if (compMatch) {
     const name = compMatch[1]!
     const op = compMatch[2]!
-    const val = compMatch[3] !== undefined ? compMatch[3] : compMatch[4] ?? ''
+    const val = compMatch[3] !== undefined ? compMatch[3] : compMatch[4] !== undefined ? compMatch[4] : compMatch[5] ?? ''
     if (name.startsWith('@')) {
       return {
         kind: 'attrEquals',
@@ -802,22 +806,31 @@ export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
     let legacyAllIndices: boolean | undefined
     let legacyAttrFilter: XmlSelectorStep['attributeFilter']
 
+    let unreadablePredicate = false
     for (const rawP of rawPredicates) {
       const parsedP = parseSinglePredicate(rawP)
-      if (parsedP) {
-        predicates.push(parsedP)
-        if (parsedP.kind === 'index') {
-          legacyIndex = parsedP.index
-        } else if (parsedP.kind === 'all') {
-          legacyAllIndices = true
-        } else if (parsedP.kind === 'attrEquals' || parsedP.kind === 'childEquals') {
-          legacyAttrFilter = {
-            name: parsedP.kind === 'attrEquals' ? parsedP.name : parsedP.tag,
-            value: parsedP.value,
-            ...(parsedP.notEqual ? { notEqual: true } : {}),
-          }
+      if (!parsedP) {
+        unreadablePredicate = true
+        break
+      }
+      predicates.push(parsedP)
+      if (parsedP.kind === 'index') {
+        legacyIndex = parsedP.index
+      } else if (parsedP.kind === 'all') {
+        legacyAllIndices = true
+      } else if (parsedP.kind === 'attrEquals' || parsedP.kind === 'childEquals') {
+        legacyAttrFilter = {
+          name: parsedP.kind === 'attrEquals' ? parsedP.name : parsedP.tag,
+          value: parsedP.value,
+          ...(parsedP.notEqual ? { notEqual: true } : {}),
         }
       }
+    }
+
+    // A predicate this parser does not support (`book[not(@archived)]`) is well-formed XPath, so it reaches here parsed as null. Dropping it leaves the step unfiltered and `//book[not(@archived)]` answers with every book, which is the opposite of what was asked. Fall back to the same treatment an unclosed predicate gets: match nothing, so the caller sees an empty result rather than a wrong one.
+    if (unreadablePredicate) {
+      steps.push({ tag: s, isRecursive })
+      continue
     }
 
     const hasComplexPredicates =

@@ -196,6 +196,47 @@ describe('queryXml', () => {
     ).toBe('Maeve Ascendant')
   })
 
+  it('matches nothing, not everything, when a predicate is beyond this parser', () => {
+    // HAND-DERIVED: the two books are chosen so the unfiltered list and the correctly filtered one differ in size, which is what separates "dropped the predicate" from "applied it".
+    const xml = `<catalog><book archived="true"/><book/></catalog>`
+    // `not()` is well-formed XPath this parser has no case for, so it parses to null. Pre-fix the null was skipped and the step ran unfiltered, answering a filtering query with both books.
+    expect(queryXml(xml, '//book[not(@archived)]').items).toEqual([])
+    expect(queryXml(xml, '//book').items.length).toBe(2)
+    // An empty clause is the same kind of typo and gets the same answer, rather than reading as no clause at all.
+    expect(queryXml(xml, '//book[]').items).toEqual([])
+  })
+
+  it('refuses a whole boolean expression when one of its arms is beyond this parser', () => {
+    // HAND-DERIVED: the first book satisfies the readable arm of both expressions, so filtering the unreadable arm out rather than propagating it would return it.
+    const xml = `<catalog><book a="1" archived="true"/><book a="0"/></catalog>`
+    // Dropping the null arm would evaluate the conjunction as `@a='1'` alone, widening the match to the very row `not(@archived)` was written to exclude.
+    expect(queryXml(xml, `//book[@a='1' and not(@archived)]`).items).toEqual([])
+    // The disjunction cannot be answered either: an arm that cannot be evaluated could be the one that decides it.
+    expect(queryXml(xml, `//book[not(@archived) or @a='1']`).items).toEqual([])
+  })
+
+  it('reads a value whose delimiter is one quote character and whose content is the other', () => {
+    // HAND-DERIVED: an attribute value containing a literal double quote, delimited by single quotes, which XML permits.
+    const xml = `<catalog><book name='A"B'/><book name='other'/></catalog>`
+    // Pre-fix the literal pattern was `["']([^"']*)["']`, which rejects both quote characters in the content rather than only the delimiter, so the clause failed to parse and matched nothing.
+    const res = queryXml(xml, `//book[@name='A"B']`)
+    expect(res.items.length).toBe(1)
+    expect(res.items[0]?.attributes.name).toBe('A"B')
+    expect(queryXml(xml, `//book[contains(@name,'A"B')]`).items.length).toBe(1)
+    expect(queryXml(xml, `//book[starts-with(@name,'A"')]`).items.length).toBe(1)
+    // Text content carries its own literal pattern, which was fixed separately and so needs its own case.
+    const textXml = `<catalog><book>A"B</book><book>z</book></catalog>`
+    expect(queryXml(textXml, `//book[contains(text(),'A"B')]`).items.length).toBe(1)
+  })
+
+  it('binds or looser than and, as XPath 1.0 requires', () => {
+    // HAND-DERIVED: book 1 satisfies only the `or` arm, book 2 satisfies only the `and` arm, book 3 satisfies neither -- so `A or (B and C)` gives 2 and the wrong grouping `(A or B) and C` gives 1.
+    const xml = `<catalog><book a="1" c="0"/><book b="2" c="3"/><book b="2" c="0"/></catalog>`
+    const res = queryXml(xml, `//book[@a='1' or @b='2' and @c='3']`)
+    expect(res.items.length).toBe(2)
+    expect(res.items.map((n) => n.attributes.c)).toEqual(['0', '3'])
+  })
+
   it('extracts multiple elements with wildcard or multi-match tags', () => {
     const res = queryXml(SAMPLE_XML, 'catalog/book[*]/title')
     expect(res.fanned).toBe(true)
