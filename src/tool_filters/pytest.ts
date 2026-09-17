@@ -11,6 +11,8 @@ import { trimRepeatedPrefix } from './helpers.js'
 const XDIST_PREFIX_RE = /^\[gw\d+\]\s*(?:\[\s*\d+%\]\s*)?/
 // Pure progress line: `....F..s....    [ 50%]`.
 const DOTS_RE = /^[.FxXEsS]+\s*(\[\s*\d+%\])?\s*$/
+// Default (non-verbose, non-xdist) progress line: pytest leads each file's result run with its path, `tests/test_foo.py ..F.s    [ 50%]`, and only a wrapped continuation is bare dots. The percent column is required here because a bare `path dots` shape would also match captured text such as `assert F`.
+const FILE_DOTS_RE = /^\S+\s+[.FxXEsS]+\s+\[\s*\d+%\]\s*$/
 // Constant banner lines (also xdist "bringing up nodes" + cacheprovider).
 const BANNER_RE =
   /^(?:platform\s|cachedir:\s|rootdir:\s|plugins:\s|configfile:\s|bringing up\s|cacheprovider-)/
@@ -70,8 +72,8 @@ export class PytestFilter extends ToolFilter {
       // Strip the pytest-xdist worker prefix so downstream logic sees clean lines.
       if (XDIST_PREFIX_RE.test(line)) line = line.replace(XDIST_PREFIX_RE, '')
 
-      // Drop the dots/percent progress line entirely.
-      if (DOTS_RE.test(line)) continue
+      // Drop the dots/percent progress line entirely, in both its bare and its path-led form.
+      if (DOTS_RE.test(line) || FILE_DOTS_RE.test(line)) continue
       // Drop constant banner lines (platform/cachedir/rootdir/…), zero signal.
       if (BANNER_RE.test(line)) continue
       // Drop `collecting …` preamble lines before the session starts.

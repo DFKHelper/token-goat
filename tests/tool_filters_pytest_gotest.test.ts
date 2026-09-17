@@ -17,6 +17,32 @@ describe('pytest filter', () => {
     expect(out).toContain('FAILED test_a')
   })
 
+  it('drops the default path-led per-file progress line, not only the bare-dots continuation shape', () => {
+    // FORMAT-DERIVED: the pytest docs page "How to manage pytest's output" (https://docs.pytest.org/en/stable/how-to/output.html, "Verbosity" section) shows the default run as `test_verbosity_example.py .FFF   [100%]`: pytest leads every file's result run with its path, and only a wrapped continuation line is bare dots. The bare-dots test above exercised the shape real non-xdist pytest never emits alone, so every per-file progress line of a default run passed straight through. The second file's line is synthetic in the same shape.
+    const text = [
+      '============================= test session starts ==============================',
+      'collected 4 items',
+      '',
+      'test_verbosity_example.py .FFF                                       [100%]',
+      'tests/unit/test_more.py ..s.....                                     [ 40%]',
+      '',
+      '=================================== FAILURES ===================================',
+      '___________________________________ test_words_fail ____________________________',
+      'E       assert F == 1',
+      '=========================== short test summary info ============================',
+      'FAILED test_verbosity_example.py::test_words_fail - AssertionError',
+      '========================= 3 failed, 1 passed in 0.03s ==========================',
+    ].join('\n')
+    const out = pytestFilter.compress(text, '', 1, ['pytest'])
+    expect(out).not.toContain('test_verbosity_example.py .FFF')
+    expect(out).not.toContain('tests/unit/test_more.py ..s.....')
+    expect(out).not.toMatch(/\[\s*\d+%\]/)
+    // Must-not-drop: everything the run was read for survives, including a captured line that starts with a bare status letter.
+    for (const line of ['collected 4 items', 'E       assert F == 1', 'FAILED test_verbosity_example.py::test_words_fail - AssertionError', '3 failed, 1 passed in 0.03s']) {
+      expect(out).toContain(line)
+    }
+  })
+
   it('keeps failures and the final tally', () => {
     const text =
       '= test session starts =\n' +
