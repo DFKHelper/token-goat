@@ -156,18 +156,14 @@ const VCPKG_EXTRACTING_RE =
 
 // NodePackageFilter (legacy/general npm/pnpm/yarn)
 const NPM_PROGRESS_RE = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s|^npm\s+(?:WARN\s+deprecated|sill|http|verb|timing)\s/
-const NPM_DEPRECATED_GENERAL_RE = /\bdeprecated\b/i
+const NPM_DEPRECATED_GENERAL_RE = /^npm\s+warn\s+deprecated\b/i
 const NPM_AUDIT_PKG_RE = /^(?:npm\s+)?(?:found|run `npm audit`|packages are looking for funding)/i
 const NPM_ERR_RE = /^npm (?:ERR!|error)/i
 
 // dep-list
 const DEP_LIST_THRESHOLD = 30
 
-// Subcommands whose output belongs to DepListFilter's 30-line cap, not to the
-// generic install/run compression paths below. NodePackageFilter, PnpmFilter,
-// and YarnFilter each match their binary unconditionally (no subcommand gate),
-// so without this exclusion they intercept `npm list`/`pnpm list`/`yarn list`
-// before DepListFilter (registered last in PACKAGE_MANAGER_FILTERS) ever sees them.
+// Subcommands whose output belongs to DepListFilter's 30-line cap, not to the generic install/run compression paths below. NodePackageFilter, PnpmFilter, and YarnFilter each match their binary unconditionally (no subcommand gate), so without this exclusion they intercept `npm list`/`pnpm list`/`yarn list` before DepListFilter (registered last in PACKAGE_MANAGER_FILTERS) ever sees them.
 const DEP_LIST_OWNED_SUBCOMMANDS = new Set(['list', 'ls'])
 
 // ---------------------------------------------------------------------------
@@ -1086,26 +1082,17 @@ function compressNpmAuditJson(text: string): string {
   return JSON.stringify(result, null, 2)
 }
 
-// Modern `npm audit` (npm 7+, the only versions in real-world use) prints each advisory as
-// "<pkg>  <range>\nSeverity: <level>\n...\n" with no leading "<level>  <pkg>" header line and no
-// "found N vulnerabilit…" summary prefix -- both of which the old block detector below required.
-// Real npm 11 output looks like:
+// Modern `npm audit` (npm 7+, the only versions in real-world use) prints each advisory as "<pkg>  <range>\nSeverity: <level>\n...\n" with no leading "<level>  <pkg>" header line and no "found N vulnerabilit…" summary prefix -- both of which the old block detector below required. Real npm 11 output looks like:
 //   @hono/node-server  <2.0.5
 //   Severity: moderate
 //   ...
 //   16 vulnerabilities (6 moderate, 8 high, 2 critical)
-// Detecting blocks by a "<severity>  <pkg>" header line (npm 6's format) or a "found N
-// vulnerabilit…" summary line never matches this, so the whole 10-block cap silently never
-// engaged on any output a currently-shipped npm actually produces.
+// Detecting blocks by a "<severity>  <pkg>" header line (npm 6's format) or a "found N vulnerabilit…" summary line never matches this, so the whole 10-block cap silently never engaged on any output a currently-shipped npm actually produces.
 const _NPM_AUDIT_SEVERITY_LINE_RE = /^Severity:\s*(critical|high|moderate|low)/i
 const _NPM_AUDIT_LEGACY_HDR_RE = /^(critical|high|moderate|low)\s+\S/i
 
 function compressNpmAuditHuman(text: string): string {
-  // Keep the first 10 advisory blocks; collapse the rest with a count per severity. Advisory
-  // blocks are blank-line-delimited paragraphs (npm audit separates each package's advisory,
-  // including its "Depends on ..." dependents, from the next with a single blank line);
-  // non-advisory paragraphs (the "# npm audit report" header, the trailing vulnerability-count
-  // summary, and the "To address issues ..." hint blocks) are always kept verbatim.
+  // Keep the first 10 advisory blocks; collapse the rest with a count per severity. Advisory blocks are blank-line-delimited paragraphs (npm audit separates each package's advisory, including its "Depends on ..." dependents, from the next with a single blank line); non-advisory paragraphs (the "# npm audit report" header, the trailing vulnerability-count summary, and the "To address issues ..." hint blocks) are always kept verbatim.
   const paragraphs: string[][] = [[]]
   for (const line of text.split('\n')) {
     if (line.trim() === '') paragraphs.push([])

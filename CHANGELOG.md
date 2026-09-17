@@ -32,6 +32,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **A C# `delegate` is filed as a type rather than an interface**: a delegate declares a function type, so `outline` and `symbol` reported a construct the language does not have, and put delegates in the same bucket as the real `interface` declarations beside them, which made a kind filter over a mixed file useless. They are now `type`, matching what the other language adapters use for the closest analog, a type alias naming a function signature. Upgrading reindexes.
 
+- **The npm filter no longer deletes script output lines that merely contain the word "deprecated"**: the general deprecation pattern was unanchored, so it matched any line with that word anywhere in it, not just npm's own `npm WARN deprecated pkg@ver: msg` lines. `npm test`/`npm run <script>` fall through to this filter whenever the script is a compound command (`vitest run && tsc --noEmit`, for example), so a vitest suite named `deprecated flag handling`, or any failing test whose name contains the word, had its `FAIL` headers, `×` lines and code frames deleted wholesale and replaced with a fabricated `collapsed N deprecation warnings across M packages: <unknown>` trailer, while the pass/fail counts in the footer survived untouched. The pattern is now anchored to npm's own `npm warn deprecated ...` line shape, which still collapses real npm deprecation noise.
+
 ## [2.9.15] - 2026-09-17
 
 ### Fixed

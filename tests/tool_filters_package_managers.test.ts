@@ -326,10 +326,7 @@ describe('YarnFilter classic (v1)', () => {
     expect(result.text).toMatch(/deduplicated/i)
   })
 
-  // Regression: the dedup key truncated each warning line to its first 60 characters, so two
-  // distinct warnings sharing a long common leading substring (e.g. the same package name in
-  // two different peer-dependency warnings) collided and one was silently dropped as a false
-  // "repeat".
+  // Regression: the dedup key truncated each warning line to its first 60 characters, so two distinct warnings sharing a long common leading substring (e.g. the same package name in two different peer-dependency warnings) collided and one was silently dropped as a false "repeat".
   it('does not drop a distinct warning that shares a long common prefix with another', () => {
     const out = [
       'yarn install v1.22.19',
@@ -463,10 +460,7 @@ describe('PipFilter', () => {
     expect(result.text).toContain('ERROR: Could not find')
   })
 
-  // Regression: pip list/freeze dispatch to PipFilter (it precedes DepListFilter
-  // in dispatch order), but PipFilter had no truncation logic of its own -- a
-  // long `pip freeze` passed straight through the generic install-noise
-  // stripper unchanged, since none of its patterns match plain package lines.
+  // Regression: pip list/freeze dispatch to PipFilter (it precedes DepListFilter in dispatch order), but PipFilter had no truncation logic of its own -- a long `pip freeze` passed straight through the generic install-noise stripper unchanged, since none of its patterns match plain package lines.
   it('pip freeze ≤50 packages: passthrough', () => {
     const out = Array.from({ length: 40 }, (_, i) => `package-${i}==1.${i}`).join('\n')
     const result = pipFilter.apply(out, '', 0, ['pip', 'freeze'])
@@ -1110,13 +1104,80 @@ describe('NodePackageFilter', () => {
     expect(result.text).toContain('added 42 packages')
   })
 
-  // Regression: real `npm audit` (npm 7+, the only versions in current use) prints each
-  // advisory as "<pkg>  <range>\nSeverity: <level>\n..." with a blank line between packages and
-  // a trailing "N vulnerabilities (...)" summary -- npm 6's "<level>  <pkg>" header line and
-  // "found N vulnerabilit…" summary prefix that the old block detector required never appear in
-  // this format, so the "keep first 10, collapse the rest" cap silently never engaged on any
-  // output a currently-shipped npm actually produces (verified against real `npm audit` output
-  // from this repo, npm 11.6.2).
+  // CAPTURE: real vitest 4.1.11 output, captured 2026-09-17 by running `node vitest.mjs run --root .` against a scratch project with a `describe('deprecated flag handling')` block of four tests (three deliberately failing), exit code 1. The suite name itself contains the word "deprecated", which is exactly the shape the old unanchored regex deleted wholesale.
+  it('keeps a failing test run intact even though its describe block is named "deprecated flag handling"', () => {
+    const stdout = [
+      ' RUN  v4.1.11 C:/scratch/tg-scout-fix35',
+      '',
+      ' \u276f flags.test.ts (4 tests | 3 failed) 5ms',
+      '     \u00d7 rejects the deprecated --legacy flag 4ms',
+      '     \u00d7 rejects the deprecated --old-format flag 0ms',
+      '     \u00d7 rejects the deprecated --unsafe flag 0ms',
+      '',
+      '\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 3 \u23af\u23af\u23af\u23af\u23af\u23af\u23af',
+      '',
+      ' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --legacy flag',
+      'AssertionError: expected true to be false // Object.is equality',
+      '',
+      '- Expected',
+      '+ Received',
+      '',
+      '- false',
+      '+ true',
+      '',
+      " \u276f flags.test.ts:5:18",
+      "      3| describe('deprecated flag handling', () => {",
+      "      4|   it('rejects the deprecated --legacy flag', () => {",
+      '      5|     expect(true).toBe(false)',
+      '       |                  ^',
+      '      6|   })',
+      '      7|',
+      '',
+      ' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --old-format flag',
+      ' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --unsafe flag',
+      '',
+      ' Test Files  1 failed (1)',
+      '      Tests  3 failed | 1 passed (4)',
+      '   Start at  14:10:12',
+      '   Duration  154ms (transform 13ms, setup 0ms, import 23ms, tests 5ms, environment 0ms)',
+    ].join('\n')
+    const result = npmFilter.apply(stdout, '', 1, ['npm', 'test'])
+    expect(result.text).toContain('\u00d7 rejects the deprecated --legacy flag')
+    expect(result.text).toContain(' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --legacy flag')
+    expect(result.text).toContain(' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --old-format flag')
+    expect(result.text).toContain(' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --unsafe flag')
+    expect(result.text).toContain("      4|   it('rejects the deprecated --legacy flag', () => {")
+    expect(result.text).toContain('Tests  3 failed | 1 passed (4)')
+    expect(result.text).not.toMatch(/collapsed \d+ deprecation warnings/)
+  })
+
+  // CAPTURE: real npm 11.6.2, captured 2026-09-17 by running `npm update --no-audit --no-fund` against a scratch project depending on inflight@1.0.6, a package npm itself flags deprecated.
+  it('still collapses a real npm deprecation warning line', () => {
+    const stdout = [
+      'npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.',
+      '',
+      'added 3 packages in 259ms',
+    ].join('\n')
+    const result = npmFilter.apply(stdout, '', 0, ['npm', 'update'])
+    expect(result.text).not.toContain('npm warn deprecated inflight')
+    expect(result.text).toContain('added 3 packages')
+    expect(result.text).toMatch(/collapsed 1 deprecation warnings across 1 packages: inflight/)
+  })
+
+  // Proves the classifier keys on the `npm warn deprecated` prefix, not on the mere presence of the word "deprecated" -- a real npm deprecation line and a vitest FAIL line (which also contains the word) in the same input must be told apart.
+  it('collapses a real npm deprecation line while keeping an unrelated FAIL line containing the same word', () => {
+    const stdout = [
+      'npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.',
+      ' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --legacy flag',
+      'added 3 packages in 259ms',
+    ].join('\n')
+    const result = npmFilter.apply(stdout, '', 1, ['npm', 'test'])
+    expect(result.text).not.toContain('npm warn deprecated inflight')
+    expect(result.text).toContain(' FAIL  flags.test.ts > deprecated flag handling > rejects the deprecated --legacy flag')
+    expect(result.text).toMatch(/collapsed 1 deprecation warnings across 1 packages: inflight/)
+  })
+
+  // Regression: real `npm audit` (npm 7+, the only versions in current use) prints each advisory as "<pkg>  <range>\nSeverity: <level>\n..." with a blank line between packages and a trailing "N vulnerabilities (...)" summary -- npm 6's "<level>  <pkg>" header line and "found N vulnerabilit…" summary prefix that the old block detector required never appear in this format, so the "keep first 10, collapse the rest" cap silently never engaged on any output a currently-shipped npm actually produces (verified against real `npm audit` output from this repo, npm 11.6.2).
   it('collapses npm audit human advisory blocks beyond the first 10 (real npm 7+ format)', () => {
     const block = (n: number) =>
       [
@@ -1264,14 +1325,7 @@ describe('Dispatch: package-manager filters in TOOL_FILTERS', () => {
     expect(result?.filter.name).toBe('dep-list')
   })
 
-  // Regression: TWO_TOKEN_PREFIXES used to list `tool` as a generic two-token
-  // trigger for `uv`, so `uv tool install/run <bin>` was stripped the same way
-  // as `uv run <bin>` (consume 2 -> ['install'|'run', bin]), landing on a
-  // subcommand token that matches no filter. `uv tool install` must stay
-  // unstripped (UvFilter's own `tool` branch claims it -- it's uv's own
-  // package-management output, not the tool's own output), while
-  // `uv tool run` needs a dedicated 3-token strip since it really does
-  // execute `<bin>` and stream its output.
+  // Regression: TWO_TOKEN_PREFIXES used to list `tool` as a generic two-token trigger for `uv`, so `uv tool install/run <bin>` was stripped the same way as `uv run <bin>` (consume 2 -> ['install'|'run', bin]), landing on a subcommand token that matches no filter. `uv tool install` must stay unstripped (UvFilter's own `tool` branch claims it -- it's uv's own package-management output, not the tool's own output), while `uv tool run` needs a dedicated 3-token strip since it really does execute `<bin>` and stream its output.
   it('uv tool install <bin> dispatches to the uv filter (real argv-stripping path)', () => {
     const f = selectFilter(['uv', 'tool', 'install', 'ruff'])
     expect(f?.name).toBe('uv')
@@ -1282,13 +1336,7 @@ describe('Dispatch: package-manager filters in TOOL_FILTERS', () => {
     expect(f?.name).toBe('ruff')
   })
 
-  // Regression: NodePackageFilter/PnpmFilter/YarnFilter each matched their
-  // binary unconditionally (no subcommand gate), so `npm list`/`pnpm list`/
-  // `yarn list` never reached DepListFilter's 30-line cap -- they were
-  // intercepted first. Direct `.matches()` calls on the isolated DepListFilter
-  // instance (see the `DepListFilter` describe block above) don't exercise
-  // this: they skip the earlier filters in PACKAGE_MANAGER_FILTERS entirely.
-  // These go through the real selectFilter/stripPrefixes dispatch path.
+  // Regression: NodePackageFilter/PnpmFilter/YarnFilter each matched their binary unconditionally (no subcommand gate), so `npm list`/`pnpm list`/`yarn list` never reached DepListFilter's 30-line cap -- they were intercepted first. Direct `.matches()` calls on the isolated DepListFilter instance (see the `DepListFilter` describe block above) don't exercise this: they skip the earlier filters in PACKAGE_MANAGER_FILTERS entirely. These go through the real selectFilter/stripPrefixes dispatch path.
   it('npm list dispatches to dep-list filter (real dispatch path, not npm/npm_install)', () => {
     const f = selectFilter(['npm', 'list'])
     expect(f?.name).toBe('dep-list')
@@ -1311,11 +1359,7 @@ describe('Dispatch: package-manager filters in TOOL_FILTERS', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Package-manager run-script resolution: `npm test` / `npm run <script>` /
-// `yarn <script>` / `pnpm run <script>` / `bun run <script>` resolve to the
-// argv the script actually executes (via the nearest ancestor package.json),
-// so dispatch lands on the SPECIFIC filter (vitest, eslint, ...) instead of
-// the generic npm/pnpm/yarn/bun catch-all.
+// Package-manager run-script resolution: `npm test` / `npm run <script>` / `yarn <script>` / `pnpm run <script>` / `bun run <script>` resolve to the argv the script actually executes (via the nearest ancestor package.json), so dispatch lands on the SPECIFIC filter (vitest, eslint, ...) instead of the generic npm/pnpm/yarn/bun catch-all.
 // ---------------------------------------------------------------------------
 
 describe('Dispatch: package-manager run-script resolution', () => {
@@ -1333,10 +1377,7 @@ describe('Dispatch: package-manager run-script resolution', () => {
     fs.writeFileSync(path.join(atDir, 'package.json'), JSON.stringify({ scripts }))
   }
 
-  // The test that matters most: given a fixture package.json with `"test": "vitest run"`,
-  // `npm test` must select the vitest filter via the REAL selectFilter/detectFromCommand
-  // dispatch path -- not a unit test of resolvePackageManagerScript in isolation (which would
-  // fall into this repo's documented injected-seam trap).
+  // The test that matters most: given a fixture package.json with `"test": "vitest run"`, `npm test` must select the vitest filter via the REAL selectFilter/detectFromCommand dispatch path -- not a unit test of resolvePackageManagerScript in isolation (which would fall into this repo's documented injected-seam trap).
   it('npm test resolves to the vitest filter when scripts.test is a vitest invocation', () => {
     writePkg({ test: 'vitest run' })
     const f = selectFilter(['npm', 'test'], dir)
@@ -1373,16 +1414,14 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('vitest')
   })
 
-  // Negative control: bare `bun test` is bun's own built-in test runner, not a script alias --
-  // it must keep dispatching to the bun filter even when scripts.test names something else.
+  // Negative control: bare `bun test` is bun's own built-in test runner, not a script alias -- it must keep dispatching to the bun filter even when scripts.test names something else.
   it('bare bun test is NOT treated as a script alias (bun has its own built-in test runner)', () => {
     writePkg({ test: 'vitest run' })
     const f = selectFilter(['bun', 'test'], dir)
     expect(f?.name).toBe('bun')
   })
 
-  // Negative control: `npm install`/`npm ci` must keep hitting the npm package-manager filter
-  // unchanged -- resolution only applies to run-script forms.
+  // Negative control: `npm install`/`npm ci` must keep hitting the npm package-manager filter unchanged -- resolution only applies to run-script forms.
   it('npm install still dispatches to npm_install filter even with a cwd package.json present', () => {
     writePkg({ test: 'vitest run' })
     const f = selectFilter(['npm', 'install'], dir)
@@ -1395,8 +1434,7 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('dep-list')
   })
 
-  // A repo with no scripts.test (or no package.json at all) must fall through to the ordinary
-  // npm filter exactly as today -- resolution failure is silent, not an error.
+  // A repo with no scripts.test (or no package.json at all) must fall through to the ordinary npm filter exactly as today -- resolution failure is silent, not an error.
   it('npm test falls through to the npm filter when scripts.test is absent', () => {
     writePkg({ build: 'tsc' })
     const f = selectFilter(['npm', 'test'], dir)
@@ -1414,18 +1452,14 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('npm')
   })
 
-  // Compound scripts (`&&`, `||`, `;`, pipes) aren't one dispatchable command -- resolving to
-  // just the first segment would silently discard the rest, so this declines to resolve rather
-  // than guess, and falls through to the generic npm filter (which still compresses the whole
-  // combined output faithfully).
+  // Compound scripts (`&&`, `||`, `;`, pipes) aren't one dispatchable command -- resolving to just the first segment would silently discard the rest, so this declines to resolve rather than guess, and falls through to the generic npm filter, which now keeps FAIL/error content from any compound script instead of deleting lines that merely contain the word "deprecated".
   it('a compound script (vitest run && eslint .) declines to resolve and falls through to npm', () => {
     writePkg({ test: 'vitest run && eslint .' })
     const f = selectFilter(['npm', 'test'], dir)
     expect(f?.name).toBe('npm')
   })
 
-  // A script that invokes another npm script chains through bounded resolution rather than
-  // stopping at the intermediate `npm run <script>` form.
+  // A script that invokes another npm script chains through bounded resolution rather than stopping at the intermediate `npm run <script>` form.
   it('a script that invokes another script chains to the final resolved filter', () => {
     writePkg({ test: 'npm run unit', unit: 'vitest run' })
     const f = selectFilter(['npm', 'test'], dir)
@@ -1438,8 +1472,7 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(() => selectFilter(['npm', 'test'], dir)).not.toThrow()
   })
 
-  // Monorepo: the nearest ancestor package.json wins over one further up, even though both
-  // exist -- resolution must not assume repo root.
+  // Monorepo: the nearest ancestor package.json wins over one further up, even though both exist -- resolution must not assume repo root.
   it('resolves against the nearest ancestor package.json, not a further-up one', () => {
     writePkg({ test: 'eslint .' }, dir) // "root"
     const sub = fs.mkdtempSync(path.join(dir, 'pkg-'))
@@ -1448,9 +1481,7 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('vitest')
   })
 
-  // Unit-level guard on the resolver itself, complementing (not replacing) the end-to-end
-  // dispatch assertions above: without a cwd, selectFilter must behave exactly as before
-  // (existing callers that never pass cwd must see no change in behaviour).
+  // Unit-level guard on the resolver itself, complementing (not replacing) the end-to-end dispatch assertions above: without a cwd, selectFilter must behave exactly as before (existing callers that never pass cwd must see no change in behaviour).
   it('resolvePackageManagerScript returns null for a non-run-script form', () => {
     expect(resolvePackageManagerScript(['npm', 'install'], dir)).toBeNull()
   })
@@ -1461,9 +1492,7 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('npm')
   })
 
-  // A leading `cd DIR &&` must shift the cwd used for script resolution to DIR, not leave it
-  // at the original cwd -- otherwise a peeled `cd sub && npm test` would resolve against the
-  // wrong package.json and land on the wrong filter.
+  // A leading `cd DIR &&` must shift the cwd used for script resolution to DIR, not leave it at the original cwd -- otherwise a peeled `cd sub && npm test` would resolve against the wrong package.json and land on the wrong filter.
   it('selectFilter resolves the package-manager script against the peeled cd directory, not the original cwd', () => {
     writePkg({ test: 'eslint .' }, dir) // "root" -- would resolve to eslint if cwd weren't shifted
     const sub = fs.mkdtempSync(path.join(dir, 'pkg-'))
@@ -1473,8 +1502,7 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('vitest')
   })
 
-  // When the caller never had a cwd to begin with, peeling the cd must not conjure one --
-  // script resolution stays skipped exactly as it already is for any other cwd-less call.
+  // When the caller never had a cwd to begin with, peeling the cd must not conjure one -- script resolution stays skipped exactly as it already is for any other cwd-less call.
   it('selectFilter with a cd peel but no cwd argument does not resolve a package-manager script', () => {
     writePkg({ test: 'vitest run' })
     const f = selectFilter(['cd', 'sub', '&&', 'npm', 'test'])
