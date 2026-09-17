@@ -234,13 +234,13 @@ function noteUnrecognizedTool(event: HookEvent, list: readonly Registration[]): 
   const toolName = event.toolName
   if (typeof toolName !== 'string' || toolName === '') return
   const named: string[] = []
+  const folded = foldToolName(toolName)
   for (const { toolName: want } of list) {
     if (want === undefined) continue
-    if (want === toolName) return
+    if (want === toolName || foldToolName(want) === folded) return
     named.push(want)
   }
   if (named.length === 0) return
-  const folded = foldToolName(toolName)
   const nearMiss = named.find((n) => foldToolName(n) === folded) ?? null
   recordUnmappedTool(toolName, event.eventName, nearMiss)
 }
@@ -256,7 +256,7 @@ export async function runHook(event: HookEvent): Promise<HookOutput> {
   // regardless of registration order.
   let advisoryResult: HookOutput | undefined
   for (const { handler, toolName, advisory } of list) {
-    if (toolName !== undefined && toolName !== event.toolName) continue
+    if (toolName !== undefined && toolName !== event.toolName && foldToolName(toolName) !== foldToolName(event.toolName ?? '')) continue
     let result: HookOutput
     try {
       result = await handler(event)
