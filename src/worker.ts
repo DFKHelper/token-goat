@@ -344,6 +344,11 @@ export function workerPidPath(dir: string = dataDir()): string {
   return path.join(dir, 'worker.pid')
 }
 
+/** Absolute path to the sibling file recording which on-disk bundle the running daemon was spawned from -- a separate file rather than a second line in worker.pid so an older token-goat reading the pid file with a strict `/^\d+$/` check keeps working unchanged. */
+export function workerStampPath(dir: string = dataDir()): string {
+  return path.join(dir, 'worker.stamp')
+}
+
 /**
  * Read every queued dirty path for `dir`, deduplicated, in insertion order.
  *
@@ -1075,7 +1080,16 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
     // If we can't even write the marker, don't let that block the liveness check below --
     // worst case we just check more often than intended.
   }
-  if (isWorkerRunning(dir)) return
+  if (isWorkerRunning(dir)) {
+    // A live daemon is still running the bundle it was spawned from -- after an upgrade (or a
+    // rebuilt dist/token-goat.mjs) that's the pre-upgrade code forever, since nothing else ever
+    // re-checks it. Stop it with the same graceful mechanism `worker stop` uses and fall through
+    // to spawn a fresh one; startDetachedWorker's own claimWorkerPidFile call already handles two
+    // hooks racing to do this at once (same TOCTOU-safe wx-create/reclaim path `worker start`
+    // relies on), so no new locking is needed here.
+    if (workerBundleMatches(dir)) return
+    stopWorker(dir)
+  }
   try {
     startDetachedWorker({ dataDir: dir })
   } catch (e) {
@@ -1228,6 +1242,26 @@ function daemonEntryScript(): string {
   return self
 }
 
+/** Identity of the bundle a freshly spawned daemon would run right now: the entry script path plus its size and mtime, cheap enough (one stat) to call from the hot `ensureWorkerAlive` path on every hook invocation. Falls back to the bare path if the file is momentarily unreadable, which just makes the next comparison a mismatch rather than throwing. Exported so a test can stamp a fixture pid file with the exact value the real code would compare against. */
+export function currentDaemonStamp(): string {
+  const entry = daemonEntryScript()
+  try {
+    const st = fs.statSync(entry)
+    return `${entry}|${st.size}|${Math.trunc(st.mtimeMs)}`
+  } catch {
+    return entry
+  }
+}
+
+/** True only when the stamp left by whichever daemon claimed the pid file names the exact bundle {@link currentDaemonStamp} resolves to right now. False for a missing stamp file too -- that is the pre-upgrade pid-file format, and a daemon that predates this stamping is exactly the case an upgrade needs to restart. */
+function workerBundleMatches(dir: string): boolean {
+  try {
+    return fs.readFileSync(workerStampPath(dir), 'utf8').trim() === currentDaemonStamp()
+  } catch {
+    return false
+  }
+}
+
 export function startDetachedWorker(opts?: WorkerOptions): number {
   const pollIntervalMs = resolvePollIntervalMs(opts?.pollIntervalMs)
   const dir = opts?.dataDir ?? dataDir()
@@ -1265,6 +1299,13 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
     }
     child.unref()
     throw new WorkerAlreadyRunningError()
+  }
+
+  // Best-effort: a failed write here just leaves the stamp missing, which workerBundleMatches already treats as a mismatch on the next check -- no worse than before this daemon ever stamped anything.
+  try {
+    fs.writeFileSync(workerStampPath(dir), currentDaemonStamp())
+  } catch {
+    // best-effort
   }
 
   child.unref()

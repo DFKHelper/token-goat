@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   claimWorkerPidFile,
   cleanupWorkerStateFiles,
+  currentDaemonStamp,
   dirtyQueuePathFor,
   drainHeartbeatPathFor,
   drainOnce,
@@ -20,6 +21,7 @@ import {
   runWorkerLoop,
   stopWorker,
   workerPidPath,
+  workerStampPath,
 } from '../src/worker.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
@@ -198,13 +200,57 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
     expect(String(result)).toContain('no worker-errors.log written')
   })
 
-  it('does nothing when a live worker is already running', () => {
+  it('does nothing when a live worker running the current bundle is already running', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
     writeWorkerHeartbeat(DIR)
+    // Stamp it as running the exact bundle ensureWorkerAlive would spawn right now -- otherwise
+    // the bundle-mismatch check below has nothing to compare against and (correctly) treats this
+    // as a pre-upgrade pid file, restarting it.
+    fs.writeFileSync(workerStampPath(DIR), currentDaemonStamp())
     ensureWorkerAlive(DIR)
     // The pid file must still name the already-live process -- no restart was attempted.
     expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
     expect(isWorkerRunning(DIR)).toBe(true)
+  })
+
+  // Regression: a running daemon was never compared against the bundle on disk, so an
+  // `npm install -g .` upgrade (or a rebuilt dist/token-goat.mjs) left the already-running worker
+  // executing the pre-upgrade code forever -- nothing else ever re-checks it, and the fix a user
+  // just installed silently never reaches the daemon until a reboot or a manual kill.
+  it('restarts a live worker whose stamp names a bundle other than the one on disk', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    writeWorkerHeartbeat(DIR)
+    // Deliberately not currentDaemonStamp(): simulates a daemon spawned from an older bundle.
+    fs.writeFileSync(workerStampPath(DIR), 'stale-bundle-from-before-the-upgrade|1|1')
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      ensureWorkerAlive(DIR)
+      // The mismatched daemon was stopped via the same graceful mechanism `worker stop` uses...
+      expect(killSpy).toHaveBeenCalledWith(process.pid)
+      // ...and a fresh daemon claimed the slot, stamped with the bundle actually on disk now.
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe(String(process.pid))
+      expect(fs.readFileSync(workerStampPath(DIR), 'utf8').trim()).toBe(currentDaemonStamp())
+    } finally {
+      killSpy.mockRestore()
+      // Stop the real spawned daemon before DIR is torn down in afterEach.
+      stopWorker(DIR)
+    }
+  })
+
+  it('restarts a live worker with no stamp file at all (pre-upgrade pid-file format)', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    writeWorkerHeartbeat(DIR)
+    // No workerStampPath(DIR) write at all -- the exact shape of a pid file left by a daemon that
+    // predates this stamping mechanism.
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      ensureWorkerAlive(DIR)
+      expect(killSpy).toHaveBeenCalledWith(process.pid)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe(String(process.pid))
+    } finally {
+      killSpy.mockRestore()
+      stopWorker(DIR)
+    }
   })
 
   it('spawns a fresh worker when the recorded pid is stale/dead', () => {
