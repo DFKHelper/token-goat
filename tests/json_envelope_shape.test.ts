@@ -42,6 +42,7 @@ const ENVELOPE_COMMANDS = [
   'dead',
   'test-for',
   'semantic',
+  'locate',
 ] as const
 
 /**

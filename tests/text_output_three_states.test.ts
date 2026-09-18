@@ -36,7 +36,7 @@ const THREE_STATE_VERIFIED = [
   // an unknown-symbol/never-indexed error path via isIndexEmptyForProject's emptyIndexMessage
   // guard, and a --grep-filtered-to-empty path via grepFilteredToEmptyNotice or the shared
   // envelope, verified in tests/graph_commands.test.ts and tests/read_commands.test.ts.
-  'symbol', 'refs', 'outline', 'skeleton', 'types', 'callers', 'dead', 'test-for', 'semantic',
+  'symbol', 'refs', 'outline', 'skeleton', 'types', 'callers', 'dead', 'test-for', 'semantic', 'locate',
   // Index-backed, verified this cycle or in prior cycles per project memory.
   'call-chain', 'coverage-gaps', 'map', 'exports', 'imports',
   // Notes store, verified this cycle.
