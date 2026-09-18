@@ -1,18 +1,7 @@
 /**
  * In-memory session state.
- *
- * Ports the session-tracking concepts from `session.py`: which files were
- * read/edited this session, which hints have already fired (so they are not
- * repeated), and the URL/command -> cache-id indexes for web-fetch and
- * bash-output dedup. This module owns the live state in Maps/Sets, cleared
- * between tests via {@link registerReset}.
- *
- * Each Claude Code hook runs as a separate `token-goat hook` process, so these
- * Maps would not survive between tool calls on their own. `session_store.ts`
- * persists them across processes, mirroring the JSON `SessionCache` the Python
- * implementation kept keyed by session ID: `relay` hydrates this state via
- * {@link importSessionState} before a hook runs and writes it back via
- * {@link exportSessionState} afterward.
+ * Ports the session-tracking concepts from `session.py`: which files were read/edited this session, which hints have already fired (so they are not repeated), and the URL/command -> cache-id indexes for web-fetch and bash-output dedup. This module owns the live state in Maps/Sets, cleared between tests via {@link registerReset}.
+ * Each Claude Code hook runs as a separate `token-goat hook` process, so these Maps would not survive between tool calls on their own. `session_store.ts` persists them across processes, mirroring the JSON `SessionCache` the Python implementation kept keyed by session ID: `relay` hydrates this state via {@link importSessionState} before a hook runs and writes it back via {@link exportSessionState} afterward.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -26,10 +15,7 @@ import { redactSecrets } from './secret_redact.js'
 
 /**
  * Tracks reads/edits of a single file within the session.
- *
- * Mirrors the load-bearing fields of `session.py::FileEntry` used by the
- * re-read dedup hint: read count, last-read timestamp, whether the file was
- * edited (which invalidates any cached read window), and its size at last read.
+ * Mirrors the load-bearing fields of `session.py::FileEntry` used by the re-read dedup hint: read count, last-read timestamp, whether the file was edited (which invalidates any cached read window), and its size at last read.
  */
 export interface FileEntry {
   /** Normalized absolute path, case-preserved -- also the literal `_files` map key for this entry's first-seen casing. See {@link resolveFilesKey} for how a later read of the same physical file under different casing (case-insensitive filesystems) still resolves to this same entry. */
@@ -49,12 +35,7 @@ export interface FileEntry {
   /** True when the session saw this file's content delivered incompletely: a Read result carrying a `[Truncated:` marker, or a tail-style shell dump whose shown lines cannot be placed against the file. */
   readonly wasTruncated?: boolean
   /**
-   * Symbol/section/range tokens this file was read *surgically* by this session
-   * (via `token-goat read|section "file::symbol"` and friends), as opposed to a
-   * whole-file Read. Non-empty means the file was engaged with narrowly, which
-   * compact.ts's `computeAdaptiveBudget` rewards with a manifest-budget bonus.
-   * Populated by {@link recordSymbolRead}; never touched by
-   * {@link recordFileRead} (whole-file Read tracking is unchanged).
+   * Symbol/section/range tokens this file was read *surgically* by this session (via `token-goat read|section "file::symbol"` and friends), as opposed to a whole-file Read. Non-empty means the file was engaged with narrowly, which compact.ts's `computeAdaptiveBudget` rewards with a manifest-budget bonus. Populated by {@link recordSymbolRead}; never touched by {@link recordFileRead} (whole-file Read tracking is unchanged).
    */
   readonly symbols_read?: string[]
 }
@@ -90,9 +71,7 @@ let _globQueries = new Map<string, number>()
 let _lastTabContext: string | null = null // fingerprint of the block, never the block; see setLastTabContext
 let _seenImageHashes: string[] = []
 
-/** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's
- * duplicate-brief detection: the original prompt text (before any briefing/advisory the
- * pre-hook appends) and when it was recorded. */
+/** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's duplicate-brief detection: the original prompt text (before any briefing/advisory the * pre-hook appends) and when it was recorded. */
 export interface OutstandingAgentSpawn {
   readonly prompt: string
   readonly ts: number
@@ -150,9 +129,7 @@ let _transcriptPath: { path: string; sessionId: string } | null = null
 
 /**
  * Best-effort file size in bytes, or 0 when the file cannot be stat'd.
- *
- * Never throws: a missing/locked file simply records size 0 so the read is
- * still tracked for dedup.
+ * Never throws: a missing/locked file simply records size 0 so the read is still tracked for dedup.
  */
 function fileSize(absPath: string): number {
   try {
@@ -163,19 +140,8 @@ function fileSize(absPath: string): number {
 }
 
 /**
- * Resolve `normalized` to the literal key already used in `_files`, falling back to a
- * case-folded scan only when no exact match exists.
- *
- * `_files`'s primary key stays case-preserved (not folded) rather than folding it outright,
- * because `getSessionFiles()` exposes the raw map and hooks_read.ts's re-read-count branch does
- * a direct `getSessionFiles().get(normalized)` lookup with its own `normalizePath(filePath)` --
- * folding the stored key out from under that direct lookup would break it even for the common
- * case of the identical path queried twice. normalizePath only lowercases the drive letter, so
- * without this fallback, a second Read of the SAME physical file under different casing beyond
- * the drive letter (e.g. "Worker.ts" vs "worker.ts" -- Windows/macOS filesystems are
- * case-insensitive) would create a second, separate entry instead of being recognized as the
- * existing one. The fallback scan is bounded by the small, capped number of files tracked per
- * session (see session_store.ts's capFiles).
+ * Resolve `normalized` to the literal key already used in `_files`, falling back to a case-folded scan only when no exact match exists.
+ * `_files`'s primary key stays case-preserved (not folded) rather than folding it outright, because `getSessionFiles()` exposes the raw map and hooks_read.ts's re-read-count branch does a direct `getSessionFiles().get(normalized)` lookup with its own `normalizePath(filePath)` -- folding the stored key out from under that direct lookup would break it even for the common case of the identical path queried twice. normalizePath only lowercases the drive letter, so without this fallback, a second Read of the SAME physical file under different casing beyond the drive letter (e.g. "Worker.ts" vs "worker.ts" -- Windows/macOS filesystems are case-insensitive) would create a second, separate entry instead of being recognized as the existing one. The fallback scan is bounded by the small, capped number of files tracked per session (see session_store.ts's capFiles).
  */
 function resolveFilesKey(normalized: string): string {
   if (_files.has(normalized)) return normalized
@@ -189,10 +155,7 @@ function resolveFilesKey(normalized: string): string {
 
 /**
  * Record that `filePath` was read.
- *
- * First read creates an entry; subsequent reads increment `readCount` and
- * refresh `lastReadAt` / `sizeBytes` while preserving the `wasEdited` flag.
- *
+ * First read creates an entry; subsequent reads increment `readCount` and refresh `lastReadAt` / `sizeBytes` while preserving the `wasEdited` flag.
  * `isFullRead` (default true) marks whether this particular read carried no offset/limit/view-range slice -- callers passing an explicit slice window must pass `false` so `lastFullReadAt` (and therefore `wasFileFullyReadThisSession`) stays untouched: a ranged read still bumps `readCount`/`lastReadAt` for the count-based and range-level dedup that legitimately treats it as a read, but must never arm a whole-file "unchanged since last read" deny that assumes the model has seen content it was never sent.
  */
 export function recordFileRead(filePath: string, isFullRead: boolean = true): void {
@@ -225,15 +188,7 @@ export function recordFileRead(filePath: string, isFullRead: boolean = true): vo
 const MAX_SYMBOLS_PER_FILE = 25
 
 /**
- * Record that `filePath` was read *surgically* (by symbol/section/range) this
- * session, e.g. via `token-goat read "file::symbol"`. This is deliberately
- * separate from {@link recordFileRead}: a surgical CLI read is not a whole-file
- * Read tool fire, so it must NOT bump `readCount` (that field means Read-tool
- * hits). It records the narrowing token on the file's entry so the compaction
- * manifest can reward files that were engaged with narrowly. If the file has no
- * entry yet (surgically read but never Read-tooled), a `readCount: 0` entry is
- * created so the read is still represented; otherwise the existing entry is
- * annotated in place, leaving its read/edit state untouched.
+ * Record that `filePath` was read *surgically* (by symbol/section/range) this session, e.g. via `token-goat read "file::symbol"`. This is deliberately separate from {@link recordFileRead}: a surgical CLI read is not a whole-file Read tool fire, so it must NOT bump `readCount` (that field means Read-tool hits). It records the narrowing token on the file's entry so the compaction manifest can reward files that were engaged with narrowly. If the file has no entry yet (surgically read but never Read-tooled), a `readCount: 0` entry is created so the read is still represented; otherwise the existing entry is annotated in place, leaving its read/edit state untouched.
  */
 export function recordSymbolRead(filePath: string, symbol: string): void {
   const normalized = normalizePath(filePath)
@@ -257,9 +212,7 @@ export function recordSymbolRead(filePath: string, symbol: string): void {
 }
 
 /** Snapshot of each file's readCount exactly as it was at hydration time, before this process
- * made any changes. session_store.ts's merge uses this to compute how many *new* reads this
- * process actually contributed since its own load, rather than assuming the larger of the two
- * counters reflects every read that ever happened -- two concurrent processes that both start
+ * Snapshot of each file's readCount exactly as it was at hydration time, before this process made any changes. session_store.ts's merge uses this to compute how many *new* reads this process actually contributed since its own load, rather than assuming the larger of the two counters reflects every read that ever happened -- two concurrent processes that both start * from the same on-disk count and each record one genuine read must sum to two, not one.
  * from the same on-disk count and each record one genuine read must sum to two, not one. */
 export function filesReadCountAtLoad(): ReadonlyMap<string, number> {
   return _filesAtLoad
@@ -267,12 +220,7 @@ export function filesReadCountAtLoad(): ReadonlyMap<string, number> {
 
 /**
  * Record that `filePath` was edited/written.
- *
- * Sets `wasEdited` true. If the file was never read this session an entry is
- * created with `readCount` 0 so the edit is still tracked. Also drops any
- * previously recorded sed line-range history for the file (see
- * {@link recordFileLineRange}): an edit shifts line numbers and content, so a
- * pre-edit range can no longer be trusted by hooks_bash.ts's overlap check.
+ * Sets `wasEdited` true. If the file was never read this session an entry is created with `readCount` 0 so the edit is still tracked. Also drops any previously recorded sed line-range history for the file (see {@link recordFileLineRange}): an edit shifts line numbers and content, so a pre-edit range can no longer be trusted by hooks_bash.ts's overlap check.
  */
 export function recordFileEdit(filePath: string): void {
   const normalized = normalizePath(filePath)
@@ -300,16 +248,9 @@ export function getSessionFiles(): ReadonlyMap<string, FileEntry> {
 }
 
 /**
- * True if `filePath` was read at least once this session (`readCount > 0`) AND that read is
- * still in the model's context (its `lastReadAt` is at or after the last compaction epoch).
- *
- * A file that was only edited (never read) returns false, matching the
- * re-read-hint semantics: there is no prior read to dedup against.
- *
- * This means "content is currently in the model's context", not "this session touched this
- * file at some point" -- consumers that want the historical fact (the compact manifest, stats,
- * hot/recent listings, edit tracking) must read `getSessionFiles()`/`readCount` directly
- * instead of calling this.
+ * True if `filePath` was read at least once this session (`readCount > 0`) AND that read is still in the model's context (its `lastReadAt` is at or after the last compaction epoch).
+ * A file that was only edited (never read) returns false, matching the re-read-hint semantics: there is no prior read to dedup against.
+ * This means "content is currently in the model's context", not "this session touched this file at some point" -- consumers that want the historical fact (the compact manifest, stats, hot/recent listings, edit tracking) must read `getSessionFiles()`/`readCount` directly instead of calling this.
  */
 export function wasFileReadThisSession(filePath: string): boolean {
   const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
@@ -317,12 +258,7 @@ export function wasFileReadThisSession(filePath: string): boolean {
 }
 
 /**
- * True if `filePath` had at least one whole-file (unranged) read this session that is still in
- * context (same compaction-epoch rule as {@link wasFileReadThisSession}). A file read only via
- * offset/limit/view-range slices returns false here even though `wasFileReadThisSession` returns
- * true for it -- the model has only ever seen the requested windows, never the whole file, so any
- * deny that claims "unchanged since last read" of the *whole file* must gate on this, not on
- * `wasFileReadThisSession`.
+ * True if `filePath` had at least one whole-file (unranged) read this session that is still in context (same compaction-epoch rule as {@link wasFileReadThisSession}). A file read only via offset/limit/view-range slices returns false here even though `wasFileReadThisSession` returns true for it -- the model has only ever seen the requested windows, never the whole file, so any deny that claims "unchanged since last read" of the *whole file* must gate on this, not on `wasFileReadThisSession`.
  */
 export function wasFileFullyReadThisSession(filePath: string): boolean {
   const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
@@ -344,11 +280,7 @@ export function markCompacted(now: number = Date.now()): void {
 }
 
 /**
- * Case-fold-aware lookup of a file's session entry -- resolves `filePath` through
- * {@link resolveFilesKey} the same way `recordFileRead`/`wasFileReadThisSession` do, so a
- * caller that only has a differently-cased path than the one first recorded (case-insensitive
- * filesystems) still finds the existing entry instead of missing it. Use this instead of a
- * direct `getSessionFiles().get(filePath)` for any single-entry lookup.
+ * Case-fold-aware lookup of a file's session entry -- resolves `filePath` through {@link resolveFilesKey} the same way `recordFileRead`/`wasFileReadThisSession` do, so a caller that only has a differently-cased path than the one first recorded (case-insensitive filesystems) still finds the existing entry instead of missing it. Use this instead of a direct `getSessionFiles().get(filePath)` for any single-entry lookup.
  */
 export function getSessionFileEntry(filePath: string): FileEntry | undefined {
   return _files.get(resolveFilesKey(normalizePath(filePath)))
@@ -405,9 +337,7 @@ export function consumedPendingLargeFileHintKeys(): string[] {
 }
 
 /** Snapshot of pending large-file hints exactly as they were at hydration time, before this
- * process made any changes. session_store.ts's merge uses this to tell "this process merely
- * carried the key from load, untouched" apart from "this process genuinely added or updated
- * it" — an untouched key must defer to the freshest disk read instead of being blindly
+ * Snapshot of pending large-file hints exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to tell "this process merely carried the key from load, untouched" apart from "this process genuinely added or updated it" — an untouched key must defer to the freshest disk read instead of being blindly * resurrected if another process legitimately removed it in the meantime.
  * resurrected if another process legitimately removed it in the meantime. */
 export function pendingLargeFileHintsAtLoad(): ReadonlyMap<string, number> {
   return _pendingLargeFileHintsAtLoad
@@ -418,24 +348,15 @@ export const WEB_FETCH_KEY_SEP = '\x00'
 
 /**
  * Build the session-state key for a fetched url + prompt.
- *
- * The session-state file is written without storeBlob's redaction pass, so a signed url or one
- * with an embedded api key was persisted in full -- as was the prompt, which can carry a header
- * or token the caller pasted in. Both halves are redacted here.
- *
- * Redaction alone is not a safe key: two urls differing only inside the redacted span collapse
- * to one entry, silently dropping a fetch from the compaction manifest and breaking the exact
- * (url, prompt) lookup contract. A digest of the raw pair is appended to restore identity while
- * the readable, redacted halves stay first -- the manifest displays those (hooks_compact.ts,
- * compact.ts), and both read only the leading fields.
+ * The session-state file is written without storeBlob's redaction pass, so a signed url or one with an embedded api key was persisted in full -- as was the prompt, which can carry a header or token the caller pasted in. Both halves are redacted here.
+ * Redaction alone is not a safe key: two urls differing only inside the redacted span collapse to one entry, silently dropping a fetch from the compaction manifest and breaking the exact (url, prompt) lookup contract. A digest of the raw pair is appended to restore identity while the readable, redacted halves stay first -- the manifest displays those (hooks_compact.ts, compact.ts), and both read only the leading fields.
  */
 function webFetchKey(url: string, prompt: string): string {
   const digest = shortFingerprint(`${url}${WEB_FETCH_KEY_SEP}${prompt}`)
   return [redactSecrets(url).text, redactSecrets(prompt).text, digest].join(WEB_FETCH_KEY_SEP)
 }
 
-/** Index a web-fetch result: (`url`, `prompt`) -> `cacheId`, so two WebFetch calls to the same
- * url with different prompts are tracked separately instead of clobbering each other. */
+/** Index a web-fetch result: (`url`, `prompt`) -> `cacheId`, so two WebFetch calls to the same * url with different prompts are tracked separately instead of clobbering each other. */
 export function recordWebFetch(url: string, prompt: string, cacheId: string): void {
   _webFetches.set(webFetchKey(url, prompt), cacheId)
 }
@@ -447,19 +368,9 @@ export function getWebFetchCacheId(url: string, prompt = ''): string | null {
 
 /**
  * Rewrite a persisted session-state key written by an older token-goat into the current shape.
- *
- * Old state files on disk hold the pre-redaction spellings: a curl key was the raw url, and a
- * webFetch key was `url\x00prompt` with both halves unredacted. Left alone those rows are worse
- * than useless -- they keep a signed url or an embedded api key sitting in the state file for the
- * life of the session, and every lookup misses because the reader now computes the new key, so a
- * cached fetch is silently re-fetched and re-billed.
- *
- * Migration happens at `coerce()` in session_store.ts, the single boundary every disk read passes
- * through (including the fresh read the save path performs), so no caller has to remember it.
- *
- * Detection is shape-based, not versioned: a current curl key is exactly 16 hex chars, which no
- * url can be, and a current webFetch key has three separator-delimited fields where the legacy
- * one had two. A key already in the current shape is returned unchanged.
+ * Old state files on disk hold the pre-redaction spellings: a curl key was the raw url, and a webFetch key was `url\x00prompt` with both halves unredacted. Left alone those rows are worse than useless -- they keep a signed url or an embedded api key sitting in the state file for the life of the session, and every lookup misses because the reader now computes the new key, so a cached fetch is silently re-fetched and re-billed.
+ * Migration happens at `coerce()` in session_store.ts, the single boundary every disk read passes through (including the fresh read the save path performs), so no caller has to remember it.
+ * Detection is shape-based, not versioned: a current curl key is exactly 16 hex chars, which no url can be, and a current webFetch key has three separator-delimited fields where the legacy one had two. A key already in the current shape is returned unchanged.
  */
 export function migrateCurlDownloadKey(key: string): string {
   if (/^[0-9a-f]{16}$/.test(key)) return key
@@ -480,9 +391,7 @@ export function getSessionWebFetches(): ReadonlyMap<string, string> {
 
 /**
  * Index a bash-output result: `commandHash` -> `outputId`.
- *
- * `sizeBytes` is accepted to match the spec'd signature; the size itself lives
- * with the full entry in the bash-output cache, so it is not stored here.
+ * `sizeBytes` is accepted to match the spec'd signature; the size itself lives with the full entry in the bash-output cache, so it is not stored here.
  */
 export function recordBashOutput(commandHash: string, outputId: string, _sizeBytes: number): void {
   _bashOutputs.set(commandHash, outputId)
@@ -530,13 +439,7 @@ export function getGlobMatchCount(signature: string): number | null {
 
 /**
  * Record the most recent "Tab Context:" block seen this session, for hooks_browser_image.ts's dedup.
- *
- * A fingerprint is stored, never the block itself. The only question ever asked of this value is
- * whether the next block is identical to it ({@link lastTabContextMatches}), and a fingerprint
- * answers that exactly. The block does not: it is a list of the tabs open in the user's browser,
- * titles and full URLs, and session state is written to disk, so keeping the text would put
- * whatever a URL happens to carry -- a session token, a signed link, a password-reset parameter --
- * into a file on disk that nothing ever reads back for its content.
+ * A fingerprint is stored, never the block itself. The only question ever asked of this value is whether the next block is identical to it ({@link lastTabContextMatches}), and a fingerprint answers that exactly. The block does not: it is a list of the tabs open in the user's browser, titles and full URLs, and session state is written to disk, so keeping the text would put whatever a URL happens to carry -- a session token, a signed link, a password-reset parameter -- into a file on disk that nothing ever reads back for its content.
  */
 export function setLastTabContext(text: string): void {
   _lastTabContext = shortFingerprint(text)
@@ -549,11 +452,7 @@ export function lastTabContextMatches(text: string): boolean {
 
 /**
  * Upper bound on screenshot fingerprints remembered per session.
- *
- * Bounded for the same reason MAX_OUTSTANDING_AGENT_SPAWNS is: a long browsing session takes
- * hundreds of screenshots and this list is written to disk on every hook. Oldest is evicted
- * first, which is also the right policy on merit -- a screenshot from an hour ago being
- * repeated now is a coincidence, while one from three tool calls ago is a poll loop.
+ * Bounded for the same reason MAX_OUTSTANDING_AGENT_SPAWNS is: a long browsing session takes hundreds of screenshots and this list is written to disk on every hook. Oldest is evicted first, which is also the right policy on merit -- a screenshot from an hour ago being repeated now is a coincidence, while one from three tool calls ago is a poll loop.
  */
 export const MAX_SEEN_IMAGE_HASHES = 16
 
@@ -575,9 +474,7 @@ export function recordSeenImage(hash: string): void {
 /** Upper bound on outstanding Agent-spawn prompts tracked per session; oldest recorded first once exceeded, mirroring MAX_RANGES_PER_FILE's cap-then-evict shape. A long session that spawns many subagents must not grow this list unboundedly. */
 export const MAX_OUTSTANDING_AGENT_SPAWNS = 30
 
-/** Record that an Agent-tool spawn with `prompt` (the original prompt text, before any
- * briefing/advisory is appended) is now outstanding this session. Caps the tracked list at
- * {@link MAX_OUTSTANDING_AGENT_SPAWNS}, evicting the oldest entries first. */
+/** Record that an Agent-tool spawn with `prompt` (the original prompt text, before any briefing/advisory is appended) is now outstanding this session. Caps the tracked list at * {@link MAX_OUTSTANDING_AGENT_SPAWNS}, evicting the oldest entries first. */
 export function recordOutstandingAgentSpawn(prompt: string): void {
   // Redact before storing: this prompt lands in SerializedSession.outstandingAgentSpawns and, on a
   // later hooks_agent_spawn.ts truncateForWarning read, is echoed back model-ward -- a raw secret
@@ -594,32 +491,24 @@ export function getOutstandingAgentSpawns(): ReadonlyArray<OutstandingAgentSpawn
 }
 
 /** Remove the outstanding entry whose tracked prompt is a prefix of `finishedPrompt` -- prefix,
- * not exact equality, because preAgentHandler's rewriteInput only ever appends text
- * (briefing/advisory) after the original prompt tracked here, so a completed spawn's actual
- * tool_input prompt always starts with the tracked original. Removes the oldest match first (the
+ * Remove the outstanding entry whose tracked prompt is a prefix of `finishedPrompt` -- prefix, not exact equality, because preAgentHandler's rewriteInput only ever appends text (briefing/advisory) after the original prompt tracked here, so a completed spawn's actual tool_input prompt always starts with the tracked original. Removes the oldest match first (the * earliest still-outstanding entry with that prefix) and is a no-op if none match.
  * earliest still-outstanding entry with that prefix) and is a no-op if none match. */
 export function removeOutstandingAgentSpawn(finishedPrompt: string): void {
   const idx = _outstandingAgentSpawns.findIndex((e) => finishedPrompt.startsWith(e.prompt))
   if (idx !== -1) _outstandingAgentSpawns.splice(idx, 1)
 }
 
-/** A stable identity key for one outstanding-spawn entry (prompt + record timestamp), used by
- * session_store.ts's merge to tell entries apart even when two distinct spawns share identical
- * prompt text. */
+/** A stable identity key for one outstanding-spawn entry (prompt + record timestamp), used by session_store.ts's merge to tell entries apart even when two distinct spawns share identical * prompt text. */
 export function outstandingAgentSpawnKey(prompt: string, ts: number): string {
   return `${prompt} ${ts}`
 }
 
-/** Snapshot of outstanding Agent-spawn entries exactly as they were at hydration time, before
- * this process made any changes. session_store.ts's merge uses this to compute which entries
- * this process explicitly removed (see {@link consumedOutstandingAgentSpawnKeys}). */
+/** Snapshot of outstanding Agent-spawn entries exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to compute which entries * this process explicitly removed (see {@link consumedOutstandingAgentSpawnKeys}). */
 export function outstandingAgentSpawnsAtLoad(): ReadonlyArray<OutstandingAgentSpawn> {
   return _outstandingAgentSpawnsAtLoad
 }
 
-/** Keys (see {@link outstandingAgentSpawnKey}) present at load but removed (consumed by
- * {@link removeOutstandingAgentSpawn}) since -- tombstones for session_store.ts's merge, mirroring
- * {@link consumedPendingLargeFileHintKeys} for the same removal-is-not-a-union-op reason. */
+/** Keys (see {@link outstandingAgentSpawnKey}) present at load but removed (consumed by {@link removeOutstandingAgentSpawn}) since -- tombstones for session_store.ts's merge, mirroring * {@link consumedPendingLargeFileHintKeys} for the same removal-is-not-a-union-op reason. */
 export function consumedOutstandingAgentSpawnKeys(): string[] {
   const currentKeys = new Set(_outstandingAgentSpawns.map((e) => outstandingAgentSpawnKey(e.prompt, e.ts)))
   const consumed: string[] = []
@@ -633,14 +522,7 @@ export function consumedOutstandingAgentSpawnKeys(): string[] {
 /** Record that a curl -o download saved `url` to `savedPath` this session. */
 /**
  * Key the curl-download map by a digest of the url rather than the url itself.
- *
- * A download url routinely carries a credential -- an `api_key=` query parameter, a signed
- * link's `X-Amz-Signature` -- and this map is serialized verbatim into the session-state file,
- * which is written directly rather than through storeBlob's redaction pass. web_cache.ts
- * already redacts a url for exactly this reason. A digest rather than a redaction because the
- * only consumer is an exact-match lookup that DENIES a repeat download: two urls differing only
- * inside a redacted span would collide and block a legitimate fetch of a different resource.
- * Nothing displays this key, so a digest costs nothing.
+ * A download url routinely carries a credential -- an `api_key=` query parameter, a signed link's `X-Amz-Signature` -- and this map is serialized verbatim into the session-state file, which is written directly rather than through storeBlob's redaction pass. web_cache.ts already redacts a url for exactly this reason. A digest rather than a redaction because the only consumer is an exact-match lookup that DENIES a repeat download: two urls differing only inside a redacted span would collide and block a legitimate fetch of a different resource. Nothing displays this key, so a digest costs nothing.
  */
 function curlDownloadKey(url: string): string {
   return shortFingerprint(url)
@@ -660,16 +542,12 @@ export function clearCurlDownload(url: string): void {
   _curlDownloads.delete(curlDownloadKey(url))
 }
 
-/** Snapshot of curl-download entries exactly as they were at hydration time, before this process
- * made any changes. session_store.ts's merge uses this to compute which entries this process
- * explicitly cleared (see {@link consumedCurlDownloadKeys}). */
+/** Snapshot of curl-download entries exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to compute which entries this process * explicitly cleared (see {@link consumedCurlDownloadKeys}). */
 export function curlDownloadsAtLoad(): ReadonlyMap<string, string> {
   return _curlDownloadsAtLoad
 }
 
-/** URLs present at load but cleared (consumed by {@link clearCurlDownload}) since -- tombstones
- * for session_store.ts's merge, mirroring {@link consumedPendingLargeFileHintKeys} for the same
- * removal-is-not-a-union-op reason. */
+/** URLs present at load but cleared (consumed by {@link clearCurlDownload}) since -- tombstones for session_store.ts's merge, mirroring {@link consumedPendingLargeFileHintKeys} for the same * removal-is-not-a-union-op reason. */
 export function consumedCurlDownloadKeys(): string[] {
   const consumed: string[] = []
   for (const url of _curlDownloadsAtLoad.keys()) {
@@ -703,10 +581,7 @@ export function resetFileLineRanges(filePath: string): void {
 
 /**
  * Cap on retained served-output ids per file.
- *
- * Deliberately small: every id retained here is a blob the containment check may have to read from
- * disk before it can decide, so this is a bound on that read fan-out and not just on memory. Newest
- * ids are kept, since a later body is the more likely container of the next read of the same file.
+ * Deliberately small: every id retained here is a blob the containment check may have to read from disk before it can decide, so this is a bound on that read fan-out and not just on memory. Newest ids are kept, since a later body is the more likely container of the next read of the same file.
  */
 export const MAX_SERVED_OUTPUTS_PER_FILE = 8
 
@@ -716,11 +591,7 @@ const GENERIC_SERVED_OUTPUT_FOLDED_KEY = foldPath(normalizePath(GENERIC_SERVED_O
 
 /**
  * Cap on retained served-output ids under the single session-wide generic (non-file) key.
- *
- * Unlike MAX_SERVED_OUTPUTS_PER_FILE, this key is shared by every non-file-read Bash command in the
- * session rather than split one-per-file, so 8 would mean "only the last 8 Bash outputs in the whole
- * session are searchable." Sized larger than the per-file cap for that reason, while still bounding
- * the read-and-index fan-out `elideServedShellLines` pays for every id in the list on each call.
+ * Unlike MAX_SERVED_OUTPUTS_PER_FILE, this key is shared by every non-file-read Bash command in the session rather than split one-per-file, so 8 would mean "only the last 8 Bash outputs in the whole session are searchable." Sized larger than the per-file cap for that reason, while still bounding the read-and-index fan-out `elideServedShellLines` pays for every id in the list on each call.
  */
 export const MAX_GENERIC_SERVED_OUTPUTS = 32
 
@@ -741,18 +612,8 @@ export function getFileServedOutputs(filePath: string): readonly string[] {
 
 /**
  * Mark `filePath` as having been delivered incompletely this session.
- *
- * Two callers, not one: the post_tool_use Read hook when the tool response
- * carries a `[Truncated:` marker, and the post_tool_use Bash hook for a
- * tail-style dump, whose shown lines cannot be placed against the file because
- * their absolute start depends on a total line count the hook does not have.
- *
- * A later pre_tool_use for the same file may then deny with a
- * skeleton/surgical-read hint rather than serve another full read. May, not
- * will: the deny is gated on `hints.truncated_read_min_lines`, so a small file
- * that merely tripped the token-based marker is still read normally, a redirect
- * there costing more than it saves. Session-artifact files take a separate
- * branch with their own recall message.
+ * Two callers, not one: the post_tool_use Read hook when the tool response carries a `[Truncated:` marker, and the post_tool_use Bash hook for a tail-style dump, whose shown lines cannot be placed against the file because their absolute start depends on a total line count the hook does not have.
+ * A later pre_tool_use for the same file may then deny with a skeleton/surgical-read hint rather than serve another full read. May, not will: the deny is gated on `hints.truncated_read_min_lines`, so a small file that merely tripped the token-based marker is still read normally, a redirect there costing more than it saves. Session-artifact files take a separate branch with their own recall message.
  */
 export function markFileTruncated(filePath: string, isFullRead: boolean = true): void {
   const normalized = normalizePath(filePath)
@@ -785,9 +646,7 @@ export function wasFileTruncatedThisSession(filePath: string): boolean {
 
 /**
  * Generate a random session id when `CLAUDE_CODE_SESSION_ID` is unset.
- *
- * Prefers `crypto.randomUUID` (Node >= 19); falls back to hex from
- * `randomBytes` on older runtimes where `randomUUID` is unavailable.
+ * Prefers `crypto.randomUUID` (Node >= 19); falls back to hex from `randomBytes` on older runtimes where `randomUUID` is unavailable.
  */
 function generateSessionId(): string {
   try {
@@ -799,9 +658,7 @@ function generateSessionId(): string {
 
 /**
  * Return the session id, resolved once per process.
- *
- * Uses `process.env.CLAUDE_CODE_SESSION_ID` when set and non-empty; otherwise a
- * generated id, cached so repeated calls return the same value.
+ * Uses `process.env.CLAUDE_CODE_SESSION_ID` when set and non-empty; otherwise a generated id, cached so repeated calls return the same value.
  */
 export function getSessionId(): string {
   if (_sessionId !== null) return _sessionId
@@ -824,10 +681,7 @@ export function getTranscriptPath(): string | undefined {
 
 /**
  * The serializable snapshot of session state.
- *
- * Maps are flattened to entry arrays so the shape round-trips through JSON.
- * Consumed by `session_store.ts` to persist state across the per-tool-call hook
- * processes (the Python `SessionCache` JSON this port restores).
+ * Maps are flattened to entry arrays so the shape round-trips through JSON. Consumed by `session_store.ts` to persist state across the per-tool-call hook processes (the Python `SessionCache` JSON this port restores).
  */
 export interface SerializedSession {
   files: FileEntry[]
@@ -852,10 +706,7 @@ export interface SerializedSession {
   /** Unix-ms of the most recent context compaction, or absent if none. Merged max-wins by session_store.ts so a stamp made by one hook process is never lost to a concurrent process that predates it. See `_compactedAt`. */
   compactedAt?: number
   /**
-   * Unix time in *seconds* at which this session's on-disk cache was first
-   * written. Set exactly once by `session_store.ts::saveSessionState` and
-   * preserved across every later write, so it marks cache creation, not last
-   * modification. compact.ts derives the session-age budget multiplier from it.
+   * Unix time in *seconds* at which this session's on-disk cache was first written. Set exactly once by `session_store.ts::saveSessionState` and preserved across every later write, so it marks cache creation, not last modification. compact.ts derives the session-age budget multiplier from it.
    */
   created_ts?: number
 }
@@ -885,11 +736,7 @@ export function exportSessionState(): SerializedSession {
 
 /**
  * Replace the in-memory session state with `s` (hydrate from a loaded snapshot).
- *
- * Called once per hook process after loading the on-disk state, before any
- * handler runs. `FileEntry.path` is already the normalized map key, so entries
- * re-key directly. Tolerant of a malformed `path` (skips that entry) but assumes
- * the caller has otherwise validated the shape.
+ * Called once per hook process after loading the on-disk state, before any handler runs. `FileEntry.path` is already the normalized map key, so entries re-key directly. Tolerant of a malformed `path` (skips that entry) but assumes the caller has otherwise validated the shape.
  */
 export function importSessionState(s: SerializedSession): void {
   _files = new Map()

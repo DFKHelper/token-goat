@@ -191,14 +191,7 @@ afterEach(() => {
 })
 
 /**
- * Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of
- * random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the
- * 25,000-token cap; this is the notice byte-for-byte as the harness emitted it, only the temp path
- * left as it was written. It is the only truncation-notice form with external provenance: Claude
- * Code's own changelog documents the "PARTIAL view" notice, and a scan of 13,904 real Read results
- * turned up no other form. The fixtures this replaced ('first chunk Truncated: PARTIAL view of
- * file' and '[Truncated: file too large, showing first 33K tokens]') were both written from
- * hooks_read.ts's own matcher and so agreed with it by construction.
+ * Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the 25,000-token cap; this is the notice byte-for-byte as the harness emitted it, only the temp path left as it was written. It is the only truncation-notice form with external provenance: Claude Code's own changelog documents the "PARTIAL view" notice, and a scan of 13,904 real Read results turned up no other form. The fixtures this replaced ('first chunk Truncated: PARTIAL view of file' and '[Truncated: file too large, showing first 33K tokens]') were both written from hooks_read.ts's own matcher and so agreed with it by construction.
  */
 const HARNESS_TRUNCATION_NOTICE =
   '[Truncated: PARTIAL view — C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_trunc_probe\\probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]'
@@ -2542,11 +2535,7 @@ content here` },
   })
 
   /**
-   * Fixture provenance: CAPTURE. The `truncatedByTokenCap` key and its shape come from the stored
-   * `toolUseResult.file` object of real Claude Code Read results: across 13,904 of them the key is
-   * present on 159 and `true` on all 159, and those 159 are exactly the reads the harness cut at its
-   * token cap. On that harness the notice itself never enters `tool_response` at all (it rides as a
-   * separate attachment banner), so this flag is the only signal a hook can see.
+   * Fixture provenance: CAPTURE. The `truncatedByTokenCap` key and its shape come from the stored `toolUseResult.file` object of real Claude Code Read results: across 13,904 of them the key is present on 159 and `true` on all 159, and those 159 are exactly the reads the harness cut at its token cap. On that harness the notice itself never enters `tool_response` at all (it rides as a separate attachment banner), so this flag is the only signal a hook can see.
    */
   it('postReadHandler marks file truncated on the structural truncatedByTokenCap flag, with no marker in the body', () => {
     const cfg = defaultConfig()
@@ -2584,11 +2573,7 @@ content here` },
   })
 
   /**
-   * Fixture provenance: HAND-DERIVED. The body below is a source line written for this test that
-   * quotes the marker inside a string literal, which is where every real occurrence of the literal
-   * in a Read body has been: measured over 13,904 real Read results, the only bodies ever carrying
-   * `[Truncated:` were this repo's own guard lines and one comment in session.ts, i.e. a file
-   * discussing truncation rather than a truncated read.
+   * Fixture provenance: HAND-DERIVED. The body below is a source line written for this test that quotes the marker inside a string literal, which is where every real occurrence of the literal in a Read body has been: measured over 13,904 real Read results, the only bodies ever carrying `[Truncated:` were this repo's own guard lines and one comment in session.ts, i.e. a file discussing truncation rather than a truncated read.
    */
   it('postReadHandler does not mark file truncated when the body merely quotes the marker mid-line', () => {
     // Same config the two positive cases above use, so the only thing that can make this pass is the

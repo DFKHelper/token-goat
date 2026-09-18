@@ -1,24 +1,7 @@
 /**
  * Per-session state persistence — the dropped Python `SessionCache` JSON.
- *
- * token-goat hooks run as a fresh `token-goat hook <event>` process per tool
- * call, so the session Maps in {@link file://./session.ts} (read/edit tracking,
- * shown-hint dedup, web/bash/curl recall indexes) would die at the end of every
- * hook if kept only in memory. This module loads that state at the start of a
- * hook and saves it at the end, keyed by session id, so re-read dedup and the
- * recall hints work across the separate processes.
- *
- * Mirrors the on-disk conventions of `snapshots.ts`: a per-session file under
- * `~/.token-goat/sessions/`, session-id sanitization, a traversal guard, and an
- * atomic temp-file + rename. Two invariants hold every operation together:
- *  - **Fail-soft.** A disk error never throws; a corrupt/missing file is just an
- *    empty session. {@link file://./relay.ts} additionally guards the calls so a
- *    persistence bug can never drop a hook's real output.
- *  - **Merge-on-save.** Save re-reads the on-disk state and merges it with the
- *    in-memory state (set-union for hints, field-wise for files, newest-wins for
- *    the indexes). Combined with the atomic rename this bounds the cost of two
- *    overlapping same-session hook processes to, at worst, a dropped hint —
- *    never a corrupt file.
+ * token-goat hooks run as a fresh `token-goat hook <event>` process per tool call, so the session Maps in {@link file://./session.ts} (read/edit tracking, shown-hint dedup, web/bash/curl recall indexes) would die at the end of every hook if kept only in memory. This module loads that state at the start of a hook and saves it at the end, keyed by session id, so re-read dedup and the recall hints work across the separate processes.
+ * Mirrors the on-disk conventions of `snapshots.ts`: a per-session file under `~/.token-goat/sessions/`, session-id sanitization, a traversal guard, and an atomic temp-file + rename. Two invariants hold every operation together: - **Fail-soft.** A disk error never throws; a corrupt/missing file is just an empty session. {@link file://./relay.ts} additionally guards the calls so a persistence bug can never drop a hook's real output. - **Merge-on-save.** Save re-reads the on-disk state and merges it with the in-memory state (set-union for hints, field-wise for files, newest-wins for the indexes). Combined with the atomic rename this bounds the cost of two overlapping same-session hook processes to, at worst, a dropped hint — never a corrupt file.
  */
 
 import { createHash } from 'node:crypto'
@@ -36,59 +19,29 @@ const MAX_FILES = 500
 export const SESSIONS_SUBDIR = 'sessions'
 
 /**
- * The sanitized form of relay.ts's `sessionStateKey` agent-salt separator
- * (`:agent:`), as it actually appears in an on-disk filename after
- * {@link sessionPath}'s sanitization (`:` -> `_`). Exported so any
- * code that needs to recognize or exclude a subagent-scoped session blob by
- * filename (sibling-blob discovery for the pre_compact manifest, "latest
- * session" resolution) derives the marker from the same sanitization logic
- * rather than hardcoding a string that could drift out of sync with it.
+ * The sanitized form of relay.ts's `sessionStateKey` agent-salt separator (`:agent:`), as it actually appears in an on-disk filename after {@link sessionPath}'s sanitization (`:` -> `_`). Exported so any code that needs to recognize or exclude a subagent-scoped session blob by filename (sibling-blob discovery for the pre_compact manifest, "latest session" resolution) derives the marker from the same sanitization logic rather than hardcoding a string that could drift out of sync with it.
  */
 export const AGENT_SALT_MARKER = sanitizeIdForFilename(':agent:')
 
 /** Raw separator `relay.ts`'s `sessionStateKey` joins a session id and an agent id with. */
 const AGENT_SALT_SEPARATOR = ':agent:'
 
-/** Characters of agent-id digest appended to a salted stem. 12 hex chars is 48 bits: far more
- * than enough to keep the handful of subagents alive in one session apart, and short enough
- * that the session id keeps most of the 64-char budget. */
+/** Characters of agent-id digest appended to a salted stem. 12 hex chars is 48 bits: far more than enough to keep the handful of subagents alive in one session apart, and short enough * that the session id keeps most of the 64-char budget. */
 const AGENT_DIGEST_CHARS = 12
 
-/** How much of the session id a SALTED stem may use, leaving room for the marker and the
- * digest so both always survive the 64-char cap. */
+/** How much of the session id a SALTED stem may use, leaving room for the marker and the * digest so both always survive the 64-char cap. */
 const SALTED_SESSION_MAX = 64 - AGENT_SALT_MARKER.length - AGENT_DIGEST_CHARS
 
-/** The session-id portion of a salted filename, and the prefix sibling discovery matches on.
- * Must be derived here rather than recomputed at each site, so the writer and the scanner can
- * never disagree about how much of the id survived. */
+/** The session-id portion of a salted filename, and the prefix sibling discovery matches on. Must be derived here rather than recomputed at each site, so the writer and the scanner can * never disagree about how much of the id survived. */
 function saltedStemPrefix(sessionId: string): string {
   return `${sanitizeIdForFilename(sessionId, SALTED_SESSION_MAX)}${AGENT_SALT_MARKER}`
 }
 
 /**
- * Filename stem for `sessionId`, which may be a plain session id or an agent-salted key
- * (`${sessionId}:agent:${agentId}`, see relay.ts's `sessionStateKey`).
- *
- * A plain id keeps its exact human-readable `<sessionId>.json` spelling, capped at 64 chars.
- * Callers and tests (`tests/session_persistence_e2e.test.ts`) rely on that, so it must not
- * change.
- *
- * A salted key is spelled `<session id, capped>_agent_<12-hex digest of the agent id>`. The
- * agent id is hashed rather than truncated because truncation lost the very distinction the
- * salt exists to draw. `sessionStateKey`'s docstring states the salt is there so "a subagent's
- * genuinely-first read of a file [is not] denied as 'already read' because a *different*
- * subagent read it earlier" -- but the whole key used to be sanitized and sliced at 64 as one
- * string, so once the session id reached 58 sanitized characters the 7-char marker itself was
- * cut off and every subagent in that session, and at 64 the parent too, mapped onto one file.
- * Reproduced against the built bundle: two sibling subagents each doing their first read of
- * the same file produced two session files at a 36-char id and one at 55 and above, with the
- * second subagent told "You've already read package.json" about a file it had never seen.
- * Session ids come off the wire from whatever harness is driving (`relay.ts`'s `session_id` /
- * `sessionId`), and `CLAUDE_CODE_SESSION_ID` is a plain env var a wrapper can set to any
- * descriptive string, so ids well past 55 characters are not exotic.
- *
- * Hashing also retires the ~21-char-agent-id-prefix collision this function's previous comment
- * accepted as a known risk: two agent ids sharing a long prefix no longer share a filename.
+ * Filename stem for `sessionId`, which may be a plain session id or an agent-salted key (`${sessionId}:agent:${agentId}`, see relay.ts's `sessionStateKey`).
+ * A plain id keeps its exact human-readable `<sessionId>.json` spelling, capped at 64 chars. Callers and tests (`tests/session_persistence_e2e.test.ts`) rely on that, so it must not change.
+ * A salted key is spelled `<session id, capped>_agent_<12-hex digest of the agent id>`. The agent id is hashed rather than truncated because truncation lost the very distinction the salt exists to draw. `sessionStateKey`'s docstring states the salt is there so "a subagent's genuinely-first read of a file [is not] denied as 'already read' because a *different* subagent read it earlier" -- but the whole key used to be sanitized and sliced at 64 as one string, so once the session id reached 58 sanitized characters the 7-char marker itself was cut off and every subagent in that session, and at 64 the parent too, mapped onto one file. Reproduced against the built bundle: two sibling subagents each doing their first read of the same file produced two session files at a 36-char id and one at 55 and above, with the second subagent told "You've already read package.json" about a file it had never seen. Session ids come off the wire from whatever harness is driving (`relay.ts`'s `session_id` / `sessionId`), and `CLAUDE_CODE_SESSION_ID` is a plain env var a wrapper can set to any descriptive string, so ids well past 55 characters are not exotic.
+ * Hashing also retires the ~21-char-agent-id-prefix collision this function's previous comment accepted as a known risk: two agent ids sharing a long prefix no longer share a filename.
  */
 export function sessionFileStem(sessionId: string): string {
   const sep = sessionId.indexOf(AGENT_SALT_SEPARATOR)
@@ -98,23 +51,14 @@ export function sessionFileStem(sessionId: string): string {
   return `${saltedStemPrefix(sessionId.slice(0, sep))}${digest}`
 }
 
-/** Resolve the on-disk path for `sessionId`, or null when the id is empty,
- * sanitizes to empty, or would escape the sessions dir (traversal guard).
- * See {@link sessionFileStem} for how salted keys are spelled. */
+/** Resolve the on-disk path for `sessionId`, or null when the id is empty, sanitizes to empty, or would escape the sessions dir (traversal guard). * See {@link sessionFileStem} for how salted keys are spelled. */
 function sessionPath(sessionId: string): string | null {
   return sessionSidecarPath(sessionId, '.json')
 }
 
 /**
- * Resolve the on-disk path for a session-scoped file, or null when the id is empty, sanitizes to
- * empty, or would escape the sessions dir (traversal guard).
- *
- * `suffix` selects which file: `.json` is the session state itself, and any other suffix is a
- * sidecar sharing the same salted stem. Exported so a caller needing per-session state of its own
- * gets this sanitization and traversal guard rather than rebuilding either -- and so that state
- * can live beside the session instead of inside its JSON, which would mean adding a field to the
- * serialize, deserialize, validate and merge paths where omitting one half silently does nothing.
- * See {@link sessionFileStem} for how salted keys are spelled.
+ * Resolve the on-disk path for a session-scoped file, or null when the id is empty, sanitizes to empty, or would escape the sessions dir (traversal guard).
+ * `suffix` selects which file: `.json` is the session state itself, and any other suffix is a sidecar sharing the same salted stem. Exported so a caller needing per-session state of its own gets this sanitization and traversal guard rather than rebuilding either -- and so that state can live beside the session instead of inside its JSON, which would mean adding a field to the serialize, deserialize, validate and merge paths where omitting one half silently does nothing. See {@link sessionFileStem} for how salted keys are spelled.
  */
 export function sessionSidecarPath(sessionId: string, suffix: string): string | null {
   if (!sessionId) return null
@@ -177,12 +121,8 @@ function asFileEntry(raw: unknown): FileEntry | null {
 }
 
 /**
- * Parse one entry from a Python-format `files` dict value into a {@link FileEntry}.
- * Returns null for any malformed entry so the caller can skip it safely.
- *
- * Python fields: rel_or_abs (string), read_count (int), last_read_ts (float seconds),
- * read_size (bytes), last_edit_ts (float seconds, may be absent).
- * The dict key itself is used as the path fallback when rel_or_abs is missing.
+ * Parse one entry from a Python-format `files` dict value into a {@link FileEntry}. Returns null for any malformed entry so the caller can skip it safely.
+ * Python fields: rel_or_abs (string), read_count (int), last_read_ts (float seconds), read_size (bytes), last_edit_ts (float seconds, may be absent). The dict key itself is used as the path fallback when rel_or_abs is missing.
  */
 function asPyFileEntry(dictKey: string, raw: unknown): FileEntry | null {
   if (raw === null || typeof raw !== 'object') return null
@@ -229,20 +169,12 @@ function asServedOutputs(raw: unknown): Array<[string, string[]]> {
 }
 
 /** Coerce an untrusted parsed-JSON value into a valid (possibly empty)
- * {@link SerializedSession}, dropping anything malformed. Never throws.
- *
- * Handles both the TS array format (`files: FileEntry[]`) and the legacy Python
- * dict format (`files: { path: { rel_or_abs, read_count, last_read_ts, ... } }`).
- * Python-format files are transparently migrated to the TS shape on load; the
- * next {@link saveSessionState} call then writes the file in the TS format so
+ * Coerce an untrusted parsed-JSON value into a valid (possibly empty) {@link SerializedSession}, dropping anything malformed. Never throws.
+ * Handles both the TS array format (`files: FileEntry[]`) and the legacy Python dict format (`files: { path: { rel_or_abs, read_count, last_read_ts, ... } }`). Python-format files are transparently migrated to the TS shape on load; the next {@link saveSessionState} call then writes the file in the TS format so * subsequent loads use the fast path automatically.
  * subsequent loads use the fast path automatically. */
 /**
  * Rewrite persisted keys into the current shape as they come off disk.
- *
- * Every disk read passes through {@link coerce}, including the fresh re-read the save path does
- * before merging, so migrating here means no individual caller has to know a key shape ever
- * changed. A last-write-wins collapse is correct if two legacy keys migrate to the same key: the
- * new key is a function of the same pair, so a collision means they were the same fetch.
+ * Every disk read passes through {@link coerce}, including the fresh re-read the save path does before merging, so migrating here means no individual caller has to know a key shape ever changed. A last-write-wins collapse is correct if two legacy keys migrate to the same key: the new key is a function of the same pair, so a collision means they were the same fetch.
  */
 function migrateKeys(pairs: Array<[string, string]>, migrate: (key: string) => string): Array<[string, string]> {
   return pairs.map(([key, value]) => [migrate(key), value])
@@ -331,8 +263,7 @@ function coerce(raw: unknown): SerializedSession {
   }
 }
 
-/** Combine two views of one file: keep every read/edit/truncation signal and
- * the size from the more recent read. Never loses a positive flag. */
+/** Combine two views of one file: keep every read/edit/truncation signal and * the size from the more recent read. Never loses a positive flag. */
 function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   const newest = a.lastReadAt >= b.lastReadAt ? a : b
   // readCount is reconciled, not maxed: b (this process's own in-memory view) may have started from a stale disk snapshot and incremented independently of whatever other concurrent processes already wrote into a (the freshest disk read, taken under the save lock in saveSessionState). Math.max(a, b) silently drops a concurrent process's distinct increment whenever the two counters happen to coincide. Instead, add only the reads this process genuinely made since its own load (b.readCount minus its baseline at hydration time) on top of the freshest disk count, so two processes that each record one real read from the same starting point sum to two instead of collapsing to one.
@@ -358,8 +289,7 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
 }
 
 /** "mem overlays disk" merge: the current process's view is at least as fresh. Shared by every
- * pure-append/overwrite disk/mem pair-list field with no removal path (webFetches, bashOutputs,
- * grepQueries, globQueries). curlDownloads has one (clearCurlDownload) and uses
+ * "mem overlays disk" merge: the current process's view is at least as fresh. Shared by every pure-append/overwrite disk/mem pair-list field with no removal path (webFetches, bashOutputs, grepQueries, globQueries). curlDownloads has one (clearCurlDownload) and uses * {@link mergeCurlDownloads} instead so a clearing deletion actually sticks.
  * {@link mergeCurlDownloads} instead so a clearing deletion actually sticks. */
 function mergePairs<V>(disk: Array<[string, V]>, mem: Array<[string, V]>): Array<[string, V]> {
   return Array.from(new Map([...disk, ...mem]).entries())
@@ -375,8 +305,7 @@ function mergeMaxNumberPairs(disk: Array<[string, number]>, mem: Array<[string, 
 }
 
 /** Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file.
- * The cap never evicts a range already on disk (another process's confirmed, persisted work) — once a
- * file is at the cap, a fresh range from this process's own in-memory view is simply not added rather
+ * Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file. The cap never evicts a range already on disk (another process's confirmed, persisted work) — once a file is at the cap, a fresh range from this process's own in-memory view is simply not added rather * than displacing a disk-persisted entry.
  * than displacing a disk-persisted entry. */
 function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Array<[string, Array<[number, number]>]>): Array<[string, Array<[number, number]>]> {
   const byPath = new Map<string, Array<[number, number]>>()
@@ -413,15 +342,8 @@ function mergeServedOutputs(disk: Array<[string, string[]]>, mem: Array<[string,
 }
 
 /** Merge pending large-file hints: union disk with mem, but drop any key this process
- * explicitly consumed (took an outcome for) even if a stale disk read still has it — the
- * other merged fields are monotonic sets where union is always correct, but this one is a
- * pending-to-consumed lifecycle where a deletion must actually stick.
- *
- * The overlay only re-asserts keys this process actually acted on this run: brand-new keys
- * it added, or keys whose value it changed. A key it merely carried unchanged from hydration
- * (same key, same size as `pendingLargeFileHintsAtLoad`) is left alone and instead defers to
- * whatever the freshest disk read says — otherwise a process that loaded a key but never
- * touched it would resurrect that key on every save, even after a *different* concurrent
+ * Merge pending large-file hints: union disk with mem, but drop any key this process explicitly consumed (took an outcome for) even if a stale disk read still has it — the other merged fields are monotonic sets where union is always correct, but this one is a pending-to-consumed lifecycle where a deletion must actually stick.
+ * The overlay only re-asserts keys this process actually acted on this run: brand-new keys it added, or keys whose value it changed. A key it merely carried unchanged from hydration (same key, same size as `pendingLargeFileHintsAtLoad`) is left alone and instead defers to whatever the freshest disk read says — otherwise a process that loaded a key but never touched it would resurrect that key on every save, even after a *different* concurrent * process legitimately consumed and removed it from disk in the meantime.
  * process legitimately consumed and removed it from disk in the meantime. */
 function mergePendingLargeFileHints(
   disk: Array<[string, number]>,
@@ -438,15 +360,8 @@ function mergePendingLargeFileHints(
 }
 
 /** Merge two views of curl -o download records: union disk with mem, but drop any URL this
- * process explicitly cleared (see {@link consumedCurlDownloadKeys}) even if a stale disk read
- * still has it -- like mergePendingLargeFileHints, this is NOT a plain set-union field, because
- * clearCurlDownload's removal must actually stick.
- *
- * The overlay only re-asserts URLs this process actually acted on this run: brand-new URLs it
- * recorded, or URLs whose saved path it changed. A URL merely carried unchanged from hydration
- * (same URL, same path as `curlDownloadsAtLoad`) is left alone and instead defers to whatever
- * the freshest disk read says -- otherwise a process that loaded a URL but never touched it would
- * resurrect that URL on every save, even after a *different* concurrent process legitimately
+ * Merge two views of curl -o download records: union disk with mem, but drop any URL this process explicitly cleared (see {@link consumedCurlDownloadKeys}) even if a stale disk read still has it -- like mergePendingLargeFileHints, this is NOT a plain set-union field, because clearCurlDownload's removal must actually stick.
+ * The overlay only re-asserts URLs this process actually acted on this run: brand-new URLs it recorded, or URLs whose saved path it changed. A URL merely carried unchanged from hydration (same URL, same path as `curlDownloadsAtLoad`) is left alone and instead defers to whatever the freshest disk read says -- otherwise a process that loaded a URL but never touched it would resurrect that URL on every save, even after a *different* concurrent process legitimately * cleared it from disk in the meantime.
  * cleared it from disk in the meantime. */
 function mergeCurlDownloads(
   disk: Array<[string, string]>,
@@ -463,12 +378,7 @@ function mergeCurlDownloads(
 }
 
 /** Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below,
- * this is NOT a plain set-union: removal (the post-hook clearing a completed spawn) must actually
- * stick, so a plain disk-union would silently resurrect an entry this process just removed from
- * the pre-update disk snapshot. Start from disk, drop anything this process explicitly removed
- * (see consumedOutstandingAgentSpawnKeys), then overlay only the entries this process newly added
- * (present in mem but not in its own load-time snapshot) -- an entry merely carried over unchanged
- * defers to disk. Finally cap to MAX_OUTSTANDING_AGENT_SPAWNS, dropping the oldest entries first,
+ * Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below, this is NOT a plain set-union: removal (the post-hook clearing a completed spawn) must actually stick, so a plain disk-union would silently resurrect an entry this process just removed from the pre-update disk snapshot. Start from disk, drop anything this process explicitly removed (see consumedOutstandingAgentSpawnKeys), then overlay only the entries this process newly added (present in mem but not in its own load-time snapshot) -- an entry merely carried over unchanged defers to disk. Finally cap to MAX_OUTSTANDING_AGENT_SPAWNS, dropping the oldest entries first, * same oldest-evicted shape as recordOutstandingAgentSpawn's own local cap.
  * same oldest-evicted shape as recordOutstandingAgentSpawn's own local cap. */
 function mergeOutstandingAgentSpawns(
   disk: Array<[string, number]>,
@@ -566,12 +476,7 @@ function readDiskState(p: string): SerializedSession | null {
 }
 
 /**
- * Read and coerce the on-disk session state for `sessionId` without touching
- * in-memory session state (unlike {@link loadSessionState}, which imports the
- * result into the live session maps for the hook lifecycle). Handles both the
- * current TS array `files` format and the legacy Python dict format via the
- * same {@link coerce} normalization `loadSessionState`/`saveSessionState`
- * rely on. Returns null if the id is empty/unusable or no file exists.
+ * Read and coerce the on-disk session state for `sessionId` without touching in-memory session state (unlike {@link loadSessionState}, which imports the result into the live session maps for the hook lifecycle). Handles both the current TS array `files` format and the legacy Python dict format via the same {@link coerce} normalization `loadSessionState`/`saveSessionState` rely on. Returns null if the id is empty/unusable or no file exists.
  */
 export function readSessionStateFile(sessionId: string): SerializedSession | null {
   const p = sessionPath(sessionId)
@@ -580,17 +485,8 @@ export function readSessionStateFile(sessionId: string): SerializedSession | nul
 }
 
 /**
- * Read every sibling subagent session-state blob for `sessionId` (i.e. every
- * on-disk file salted with `${sessionId}:agent:${agentId}` per relay.ts's
- * `sessionStateKey`), without touching in-memory session state.
- *
- * `sessionPath` sanitizes and truncates the *whole* salted key to 64 chars,
- * so a sibling's filename is `${sanitize(sessionId)}_agent_<agentId prefix>`
- * possibly truncated mid-agentId — but the `${sanitize(sessionId)}_agent_`
- * prefix itself (well under 64 chars for realistic session ids) always
- * survives intact, which is what this scan matches on. Returns [] when the
- * id is empty/unusable, the sessions dir doesn't exist, or on any read error
- * (fail-soft, mirroring every other read in this module).
+ * Read every sibling subagent session-state blob for `sessionId` (i.e. every on-disk file salted with `${sessionId}:agent:${agentId}` per relay.ts's `sessionStateKey`), without touching in-memory session state.
+ * `sessionPath` sanitizes and truncates the *whole* salted key to 64 chars, so a sibling's filename is `${sanitize(sessionId)}_agent_<agentId prefix>` possibly truncated mid-agentId — but the `${sanitize(sessionId)}_agent_` prefix itself (well under 64 chars for realistic session ids) always survives intact, which is what this scan matches on. Returns [] when the id is empty/unusable, the sessions dir doesn't exist, or on any read error (fail-soft, mirroring every other read in this module).
  */
 export function listSiblingSessionStates(sessionId: string): SerializedSession[] {
   if (!sessionId) return []
@@ -622,9 +518,7 @@ export function listSiblingSessionStates(sessionId: string): SerializedSession[]
 
 /**
  * Load the persisted state for `sessionId` into the in-memory session maps.
- *
- * No-op (clean session) when the id is empty/unusable or no file exists.
- * Fail-soft: a corrupt file leaves the session empty rather than throwing.
+ * No-op (clean session) when the id is empty/unusable or no file exists. Fail-soft: a corrupt file leaves the session empty rather than throwing.
  */
 export function loadSessionState(sessionId: string): void {
   const p = sessionPath(sessionId)
@@ -635,9 +529,7 @@ export function loadSessionState(sessionId: string): void {
 }
 
 /**
- * Persist the in-memory session state for `sessionId`, merged with whatever is
- * already on disk (so a concurrent same-session hook process is not clobbered).
- *
+ * Persist the in-memory session state for `sessionId`, merged with whatever is already on disk (so a concurrent same-session hook process is not clobbered).
  * No-op when the id is empty/unusable. Fail-soft: a disk error is swallowed.
  */
 export function saveSessionState(sessionId: string): void {

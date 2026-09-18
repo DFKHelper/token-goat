@@ -1,13 +1,6 @@
 /**
  * Cross-process session-persistence smoke test against the BUILT bundle.
- *
- * The hooks run as a fresh `token-goat hook <event>` OS process per tool call,
- * so session state (re-read dedup, bash-output recall index) only works if it is
- * persisted to disk between processes. Before this layer existed, a second
- * `pre_tool_use` for the same file in a separate process saw a cold session and
- * emitted nothing. These tests drive the real bundle via separate `spawnSync`
- * invocations sharing one TOKEN_GOAT_HOME and session id, asserting state
- * survives the process boundary. They fail on a port without disk persistence.
+ * The hooks run as a fresh `token-goat hook <event>` OS process per tool call, so session state (re-read dedup, bash-output recall index) only works if it is persisted to disk between processes. Before this layer existed, a second `pre_tool_use` for the same file in a separate process saw a cold session and emitted nothing. These tests drive the real bundle via separate `spawnSync` invocations sharing one TOKEN_GOAT_HOME and session id, asserting state survives the process boundary. They fail on a port without disk persistence.
  */
 
 import { spawnSync } from 'node:child_process'
