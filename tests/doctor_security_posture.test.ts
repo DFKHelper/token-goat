@@ -84,13 +84,13 @@ describe('checkSecurityPosture', () => {
     expect(line.message).toContain('injection.enabled')
   })
 
-  it('warns when MCP reads are no longer confined to the project root', () => {
+  it('reports when MCP reads are not confined to the project root', () => {
     const cfg = baseConfig()
     cfg.mcp.confine_reads_to_project_root = false
 
     const line = find(checkSecurityPosture(cfg, root), 'Security mcp roots')
 
-    expect(line.status).toBe('warn')
+    expect(line.status).toBe('ok')
     expect(line.message).toContain('mcp.confine_reads_to_project_root')
   })
 
@@ -115,12 +115,14 @@ describe('checkSecurityPosture', () => {
 
     expect(line.status).toBe('ok')
     expect(line.message).toContain('confined to this project')
+    expect(line.message).toContain('token-goat config set indexing.cross_project_symbols true')
     // Without this the confined message could still describe the permissive state and pass the assertion above's sibling.
     expect(line.message).not.toContain('other projects')
   })
 
   it('names the roots callers may pick from rather than reporting plain confinement when there are some', () => {
     const cfg = baseConfig()
+    cfg.mcp.confine_reads_to_project_root = true
     cfg.mcp.allowed_roots = ['/srv/shared']
 
     const line = find(checkSecurityPosture(cfg, root), 'Security mcp roots')
@@ -128,6 +130,7 @@ describe('checkSecurityPosture', () => {
     expect(line.status).toBe('ok')
     expect(line.message).toContain('only the 1 root')
     expect(line.message).toContain('mcp.allowed_roots')
+    expect(line.message).toContain('token-goat config set mcp.confine_reads_to_project_root false')
     // The empty-allowlist wording must not survive into the configured case, or the two states read alike.
     expect(line.message).not.toContain('any root on this machine')
   })
@@ -143,6 +146,7 @@ describe('checkSecurityPosture', () => {
     expect(line.status).toBe('ok')
     expect(line.message).toContain('any root on this machine')
     expect(line.message).toContain('mcp.allowed_roots')
+    expect(line.message).toContain('token-goat config set mcp.confine_reads_to_project_root false')
   })
 
   it('says offline mode is on in terms of what it stops, not just that a flag is set', () => {

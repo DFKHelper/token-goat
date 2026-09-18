@@ -544,8 +544,17 @@ interface PerCallUsage {
   output: number
 }
 
-/** List every `*.jsonl` transcript under `corpusDir` (one level of project dirs, plus loose files). */
+/** List every `*.jsonl` transcript under `corpusDir` (one level of project dirs, plus loose files, or a single file). */
 export function listCorpusTranscripts(corpusDir: string): string[] {
+  if (!fs.existsSync(corpusDir)) return []
+  try {
+    const stat = fs.statSync(corpusDir)
+    if (stat.isFile()) {
+      return corpusDir.endsWith('.jsonl') ? [corpusDir] : []
+    }
+  } catch {
+    return []
+  }
   const found: string[] = []
   // Recurse the whole tree: modern Claude Code stores subagent and workflow transcripts under <project>/<session>/subagents/**, and a two-level walk misses them (measured on one real corpus: 6,022 of 11,555 transcripts, carrying 65% of all API calls and 57% of cache-read billing).
   const walk = (dir: string, entries: fs.Dirent[]): void => {
@@ -564,12 +573,41 @@ export function listCorpusTranscripts(corpusDir: string): string[] {
       }
     }
   }
-  walk(corpusDir, fs.readdirSync(corpusDir, { withFileTypes: true }))
+  try {
+    walk(corpusDir, fs.readdirSync(corpusDir, { withFileTypes: true }))
+  } catch {
+    // best-effort
+  }
   return found.sort()
 }
 
 export function defaultCorpusDir(): string {
-  return path.join(os.homedir(), '.claude', 'projects')
+  const claudeDir = path.join(os.homedir(), '.claude', 'projects')
+  if (fs.existsSync(claudeDir) && listCorpusTranscripts(claudeDir).length > 0) {
+    return claudeDir
+  }
+  const home = os.homedir()
+  const appData = process.env['APPDATA'] || path.join(home, 'AppData', 'Roaming')
+  const candidates = [
+    claudeDir,
+    path.join(appData, 'Code', 'User', 'workspaceStorage'),
+    path.join(appData, 'Code - Insiders', 'User', 'workspaceStorage'),
+    path.join(home, 'Library', 'Application Support', 'Code', 'User', 'workspaceStorage'),
+    path.join(home, 'Library', 'Application Support', 'Code - Insiders', 'User', 'workspaceStorage'),
+    path.join(home, '.config', 'Code', 'User', 'workspaceStorage'),
+    path.join(home, '.config', 'Code - Insiders', 'User', 'workspaceStorage'),
+    path.join(home, '.copilot', 'session-state'),
+  ]
+  for (const cand of candidates) {
+    try {
+      if (fs.existsSync(cand) && listCorpusTranscripts(cand).length > 0) {
+        return cand
+      }
+    } catch {
+      // continue
+    }
+  }
+  return claudeDir
 }
 
 /** Stream one transcript into the accumulating summary. Throws only on stream-open failure. */
@@ -670,7 +708,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
         addCategory(s.estimated.otherLocal, lineBytes)
         continue
       }
-      const type = typeof obj['type'] === 'string' ? obj['type'] : '(untyped)'
+      const type = typeof obj['type'] === 'string' ? obj['type'] : (typeof obj['kind'] === 'number' ? `vscode:kind${obj['kind']}` : '(untyped)')
       const census = (s.lineTypes[type] ??= { lines: 0, bytes: 0 })
       census.lines += 1
       census.bytes += lineBytes

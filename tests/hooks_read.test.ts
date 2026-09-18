@@ -401,6 +401,52 @@ describe('preReadHandler', () => {
     })
   })
 
+  describe('structured file re-read denial (.json, .html >= 8KB)', () => {
+    it('denies a re-read of an 11KB JSON file and suggests json-query', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      saveConfig(cfg)
+
+      const p = makeTmpFileNamed('payload.json', '{\n  "data": "' + 'a'.repeat(11 * 1024) + '"\n}')
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('already read this session')
+        expect(result.message).toContain('token-goat json-query')
+      }
+    })
+
+    it('denies a re-read of an 11.5KB HTML file and suggests section/outline', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      saveConfig(cfg)
+
+      const p = makeTmpFileNamed('page.html', '<html><body><h1>Title</h1><p>' + 'a'.repeat(11500) + '</p></body></html>')
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('already read this session')
+        expect(result.message).toContain('token-goat section')
+      }
+    })
+
+    it('allows explicit slice reads (offset/limit) through', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      saveConfig(cfg)
+
+      const p = makeTmpFileNamed('payload.json', '{\n  "data": "' + 'a'.repeat(11 * 1024) + '"\n}')
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEventWithRange(p, 1, 10))
+      expect(result.hookType).not.toBe('deny')
+    })
+  })
+
   // Regression: hints.protect_recent_reads was defined, validated, persisted, and displayed
   // in config.ts but had zero consumers -- neither reread-deny call site (the doc/source
   // diff-on-reread branch, nor the generic re-read-dedup fallback) exempted recently-read

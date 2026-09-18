@@ -165,6 +165,7 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
 
   program
     .command('session-audit')
+    .alias('audit-session')
     .description('corpus-wide token attribution across every local Claude Code session transcript: measured billed usage, estimated content size by source and by tool, and billed cost by session position (aggregate counts only, never transcript content)')
     .option('--dir <path>', 'transcript corpus root to scan (default: ~/.claude/projects)')
     .option('--json', 'output JSON')

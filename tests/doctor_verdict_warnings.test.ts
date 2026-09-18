@@ -56,4 +56,16 @@ describe('doctor verdict line', () => {
     expect(out).not.toContain('All checks passed')
     expect(out).not.toContain('No failures')
   })
+
+  it('prints permissive defaults suggestion when restrictive mode is detected', () => {
+    const restrictive: DoctorResult = {
+      name: 'Security mcp roots',
+      status: 'ok',
+      message: 'reads are confined (restrictive mode; restore permissive default with: token-goat config set mcp.confine_reads_to_project_root false)',
+    }
+    const out = capture([restrictive])
+
+    expect(out).toContain('Permissive defaults suggestion:')
+    expect(out).toContain('token-goat config set mcp.confine_reads_to_project_root false')
+  })
 })

@@ -401,4 +401,41 @@ describe('bash filter fire-rate and read repeat census', () => {
     expect(parsed.readInterception).toEqual(EXPECTED_READ)
     expect(parsed.laneAgentTypes).toEqual(EXPECTED_LANE_TYPES)
   })
+
+  it('supports auditing a single .jsonl file directly', async () => {
+    const singleFile = path.join(censusDir, 'C--Projects-bashcensus', 'main.jsonl')
+    const files = listCorpusTranscripts(singleFile)
+    expect(files).toEqual([singleFile])
+
+    const s = await auditSessionCorpus({ dir: singleFile })
+    expect(s.filesScanned).toBe(1)
+  })
+
+  it('supports the audit-session command alias via CLI dispatch', async () => {
+    const res = await runBatched(['audit-session', '--dir', censusDir, '--json'])
+    expect(res.status).toBe(0)
+    const parsed = JSON.parse(res.stdout) as { bashInterception: unknown; filesScanned: number }
+    expect(parsed.filesScanned).toBe(2)
+  })
+
+  it('parses VS Code chat session jsonl format safely without errors', async () => {
+    const tempFile = path.join(censusDir, 'vscode_chat.jsonl')
+    const vscodeLines = [
+      JSON.stringify({ kind: 1, v: { type: 'user', text: 'hello' } }),
+      JSON.stringify({
+        kind: 2,
+        v: {
+          type: 'assistant',
+          model: 'copilot-chat',
+          references: [],
+          toolCalls: [{ name: 'read_file', arguments: { path: 'file.txt' } }],
+        },
+      }),
+      JSON.stringify({ kind: 3, v: { result: 'content' } }),
+    ]
+    fs.writeFileSync(tempFile, vscodeLines.join('\n') + '\n')
+    const s = await auditSessionCorpus({ dir: tempFile })
+    expect(s.filesScanned).toBe(1)
+    expect(s.parseFailedLines).toBe(0)
+  })
 })

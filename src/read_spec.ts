@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { loadConfig } from './config.js'
 import { globalDbPath } from './constants.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -201,8 +202,18 @@ export function formatAmbiguity(symbol: string, file: string, candidates: Symbol
   return lines.join('\n')
 }
 
-export function confinedProjectRoot(): string | null {
-  return loadConfig().indexing.cross_project_symbols ? null : resolveProjectRoot()
+export function confinedProjectRoot(explicitRoot?: string): string | null {
+  if (loadConfig().indexing.cross_project_symbols) return null
+  return resolveProjectRoot(explicitRoot !== undefined && explicitRoot.trim().length > 0 ? { project: explicitRoot } : {})
+}
+
+export function isProjectRootAllowed(candidateRoot: string, baseConfinedRoot: string): boolean {
+  if (isInsideRoot(candidateRoot, baseConfinedRoot)) return true
+  const allowedRoots = loadConfig().mcp.allowed_roots
+  if (allowedRoots.length > 0 && allowedRoots.some((allowed) => isInsideRoot(candidateRoot, path.resolve(allowed)))) {
+    return true
+  }
+  return false
 }
 
 export function confinementRefusal(label: string, resolved: string, root: string | null): string | null {
@@ -211,7 +222,7 @@ export function confinementRefusal(label: string, resolved: string, root: string
 }
 
 export function fileConfinementRefusal(label: string, file: string, projectRoot: string | undefined): string | null {
-  const root = confinedProjectRoot()
+  const root = confinedProjectRoot(projectRoot)
   if (root === null) return null
   return confinementRefusal(label, resolveIndexPath(file, projectRoot ?? process.cwd()), root)
 }
@@ -225,7 +236,7 @@ export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectR
   const lineAnchor = anchorMatch !== null ? parseInt(anchorMatch[2]!, 10) : undefined
 
   const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
-  const confined = confinementRefusal('This file', resolved, confinedProjectRoot())
+  const confined = confinementRefusal('This file', resolved, confinedProjectRoot(projectRoot))
   if (confined !== null) return { kind: 'confined', message: confined }
   if (forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())

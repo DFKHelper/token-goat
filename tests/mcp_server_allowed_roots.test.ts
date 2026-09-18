@@ -173,4 +173,42 @@ describe('mcp allowed_roots', () => {
       invalidateConfigCache()
     }
   })
+
+  it('permits reads outside projectRoot when confine_reads_to_project_root is disabled by default', async () => {
+    delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+    delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
+    invalidateConfigCache()
+    const { client, close } = await connectedClient()
+    cleanup = close
+    const targetFile = path.join(otherRoot, 'outside.txt')
+    const result = await client.callTool({
+      name: 'grep',
+      arguments: { pattern: 'OUTSIDE-CONTENT', path: [targetFile], projectRoot: allowedRoot },
+    })
+    expect(textOf(result)).toContain('OUTSIDE-CONTENT')
+    expect(textOf(result)).not.toContain('refused: target is outside')
+  })
+
+  it('permits auxiliary skill paths even when confine_reads_to_project_root is enabled', async () => {
+    process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '1'
+    invalidateConfigCache()
+    const skillsDir = path.join(os.homedir(), '.claude', 'skills', 'test-skill-' + Date.now())
+    try {
+      fs.mkdirSync(skillsDir, { recursive: true })
+      const skillFile = path.join(skillsDir, 'SKILL.md')
+      fs.writeFileSync(skillFile, '# Auxiliary Skill Content\n')
+
+      const { client, close } = await connectedClient()
+      cleanup = close
+      const result = await client.callTool({
+        name: 'grep',
+        arguments: { pattern: 'Auxiliary Skill Content', path: [skillFile], projectRoot: allowedRoot },
+      })
+      expect(textOf(result)).toContain('Auxiliary Skill Content')
+    } finally {
+      delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+      invalidateConfigCache()
+      fs.rmSync(skillsDir, { recursive: true, force: true })
+    }
+  })
 })

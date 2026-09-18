@@ -16,7 +16,7 @@ export interface MarkdownHeading {
 }
 
 /** Size threshold (bytes) above which to analyze markdown files for structure. */
-export const MARKDOWN_SIZE_THRESHOLD = 8000
+export const MARKDOWN_SIZE_THRESHOLD = 4000
 
 /** Maximum number of headings to extract and display. */
 const MAX_HEADINGS = 40

@@ -1,6 +1,7 @@
 /** MCP (Model Context Protocol) stdio server exposing token-goat's surgical-read commands as tools, so any MCP-aware harness (VS Code, Copilot CLI, etc.) can call them in-process instead of shelling out to `token-goat <cmd>`. Every tool handler mirroring a CLI command is a thin adapter over the same `run*`/`runSemantic` functions the CLI commands in `cli.ts` call — no logic is duplicated, so a fix or format change to a surgical-read command applies to both surfaces automatically. The one exception is `index_status`, which has no CLI counterpart by design: it answers a question only an MCP client needs to ask (is an empty result "no match" or "index not ready?"), since CLI users have the hook layer and `doctor`/`stats` for the same signal. */
 
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 
 // Type-only, so both are erased at compile time and neither reaches the bundle's import list. The runtime value is loaded inside createMcpServer -- see the note on that function.
@@ -155,10 +156,42 @@ function resolveToolRoot(projectRoot: string | undefined): string {
 class RootNotAllowedError extends Error {}
 
 /** Refuse a resolved root that the operator has not allowed. This check used to live inside {@link confineTargets}, which meant two things it should not have. Four tools -- `semantic`, `index_status`, `map` and `changed` -- resolve a caller-supplied root but read no individual file path, so they never call that function and were never checked at all: naming any directory on the machine returned its file inventory, headline symbols, indexed content chunks, or changed symbols and diff hunks, straight past the allowlist. And `confineTargets` returns early when `confine_reads_to_project_root` is off, so turning off the traversal guard silently voided the root allowlist for the other thirteen tools too, even though they are separate operator policies answering separate questions. Sitting on the one function that resolves a caller's root instead means a tool is covered by construction rather than by remembering, and the allowlist holds whatever the traversal guard is set to. Deliberately loadConfig() with NO argument -- the server's own config, never the caller-chosen root's -- which is the exact INVERSE of what mcp_server_confine_reads_config_scoping.test.ts pins for `confine_reads_to_project_root`. That is intentional: `confine_reads_to_project_root` is a workspace's policy about ITSELF, so it must be read from that workspace, while `allowed_roots` is the operator's policy about WHICH workspaces may be named at all, so reading it from the resolved root would let the root being restricted supply the setting that restricts it -- a repo could ship a project config listing itself and the allowlist would authorise the very root it exists to reject. */
+/** Standard user skill directories, prompt assets, and transcript storage that token-goat permits for cross-workspace inspections. */
+function getStandardAuxiliaryRoots(targetPath?: string): string[] {
+  const home = os.homedir()
+  const roots: string[] = [
+    path.join(home, '.claude', 'skills'),
+    path.join(home, '.copilot', 'skills'),
+    path.join(home, '.claude', 'projects'),
+    path.join(home, '.copilot', 'session-state'),
+  ]
+  const appData = process.env['APPDATA'] || path.join(home, 'AppData', 'Roaming')
+  roots.push(
+    path.join(appData, 'Code', 'User', 'workspaceStorage'),
+    path.join(appData, 'Code - Insiders', 'User', 'workspaceStorage'),
+    path.join(appData, 'Cursor', 'User', 'workspaceStorage'),
+    path.join(home, 'Library', 'Application Support', 'Code', 'User', 'workspaceStorage'),
+    path.join(home, 'Library', 'Application Support', 'Code - Insiders', 'User', 'workspaceStorage'),
+    path.join(home, 'Library', 'Application Support', 'Cursor', 'User', 'workspaceStorage'),
+    path.join(home, '.config', 'Code', 'User', 'workspaceStorage'),
+    path.join(home, '.config', 'Code - Insiders', 'User', 'workspaceStorage'),
+    path.join(home, '.config', 'Cursor', 'User', 'workspaceStorage'),
+  )
+  if (targetPath) {
+    const norm = normalizePath(targetPath)
+    const promptIdx = norm.toLowerCase().indexOf('/resources/app/extensions/')
+    if (promptIdx !== -1) {
+      roots.push(norm.slice(0, promptIdx + '/resources/app/extensions/'.length))
+    }
+  }
+  return roots
+}
+
 function assertRootAllowed(resolvedRoot: string): void {
   const allowedRoots = loadConfig().mcp.allowed_roots
   if (allowedRoots.length === 0) return
   if (allowedRoots.some((allowed) => checkWithinProjectRoot(resolvedRoot, allowed).inside)) return
+  if (getStandardAuxiliaryRoots(resolvedRoot).some((aux) => checkWithinProjectRoot(resolvedRoot, aux).inside)) return
   throw new RootNotAllowedError(
     `refused: "${resolvedRoot}" is not inside any root listed in mcp.allowed_roots. ` +
       'A caller-supplied projectRoot is untrusted input, so this deployment pins which roots may be named; ' +
@@ -271,6 +304,7 @@ function refusalText(file: string, resolvedRoot: string, reason: ContainmentReas
 function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true): ConfinementResult {
   // The allowlist is NOT checked here any more -- it moved to assertRootAllowed, called from resolveToolRoot, so it applies to every tool and is independent of this setting. See its doc comment for what that early return used to void.
   if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return { ok: true, targets, pins: NO_PINS }
+  const allowedRoots = loadConfig().mcp.allowed_roots
   const checked: string[] = []
   const pins = new Map<string, string>()
   for (const raw of targets) {
@@ -278,7 +312,25 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
     for (const part of parts) {
       const file = specFilePart(part)
       if (file === '') continue
-      const check = checkWithinProjectRoot(file, resolvedRoot)
+      let check = checkWithinProjectRoot(file, resolvedRoot)
+      if (!check.inside) {
+        for (const allowed of allowedRoots) {
+          const altCheck = checkWithinProjectRoot(file, allowed)
+          if (altCheck.inside) {
+            check = altCheck
+            break
+          }
+        }
+      }
+      if (!check.inside) {
+        for (const aux of getStandardAuxiliaryRoots(file)) {
+          const auxCheck = checkWithinProjectRoot(file, aux)
+          if (auxCheck.inside) {
+            check = auxCheck
+            break
+          }
+        }
+      }
       if (!check.inside) {
         return { ok: false, refusal: toCallToolResult({ text: refusalText(file, resolvedRoot, check.reason), code: 1 }) }
       }

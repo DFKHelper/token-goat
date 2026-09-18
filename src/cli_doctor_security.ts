@@ -145,10 +145,10 @@ export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorRe
           name: 'Security mcp roots',
           status: 'ok',
           message: extraRoots === 0
-            ? 'reads are confined to the project root the caller names, but mcp.allowed_roots is empty, so an MCP caller may name any root on this machine'
-            : `reads are confined to the project root, and callers may name only the ${extraRoots} root${extraRoots === 1 ? '' : 's'} in mcp.allowed_roots`,
+            ? 'reads are confined to the project root the caller names, but mcp.allowed_roots is empty, so an MCP caller may name any root on this machine. (Restrictive mode: may block external skills or transcripts; restore permissive default with: token-goat config set mcp.confine_reads_to_project_root false)'
+            : `reads are confined to the project root, and callers may name only the ${extraRoots} root${extraRoots === 1 ? '' : 's'} in mcp.allowed_roots (restrictive mode; restore permissive default with: token-goat config set mcp.confine_reads_to_project_root false)`,
         }
-      : { name: 'Security mcp roots', status: 'warn', message: 'confinement is off (mcp.confine_reads_to_project_root): a read can leave the project' },
+      : { name: 'Security mcp roots', status: 'ok', message: 'confinement is off (mcp.confine_reads_to_project_root = false): MCP reads are unconfined across workspaces, skills, and transcripts (recommended default)' },
   )
 
   results.push({
@@ -156,7 +156,7 @@ export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorRe
     status: 'ok',
     message: cfg.indexing.cross_project_symbols
       ? 'symbol lookups can resolve into other projects in the machine-wide index (indexing.cross_project_symbols = false confines them to this project)'
-      : 'symbol lookups are confined to this project',
+      : 'symbol lookups are confined to this project (restrictive mode; restore permissive cross-project resolution with: token-goat config set indexing.cross_project_symbols true)',
   })
 
   const overridden = envOverriddenSecuritySettings()

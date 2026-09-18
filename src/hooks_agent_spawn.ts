@@ -91,7 +91,7 @@ function buildSubagentBriefing(): string {
     // 3. Surgical-read reminder, plus the report-contract clause. Both are load-bearing (dropped only in the last-resort tail-slice below, after the cache-ids block is already gone) -- the contract is what makes a spawned subagent's report cite evidence instead of pasting it, and its "state every unverified claim explicitly" clause is what has caught a subagent shipping something it never checked, three cycles running.
     const tail: string[] = []
     tail.push('')
-    tail.push('Before your first read of any file, check for a token-goat command that returns just what you need and run it instead of a full-file read or wide grep: `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::<heading>"`. Skipping that check is a violation, not an oversight; the only exemptions are a file under ~200 lines you need whole, a never-indexed file, or an image.')
+    tail.push('Before your first read of any file, check for a token-goat command that returns just what you need and run it instead of a full-file read or wide grep: `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::<heading>"`, `token-goat json-query file \'a.b.c\'`. Skipping that check is a violation, not an oversight; the only exemptions are a file under ~200 lines you need whole, a never-indexed file, or an image.')
     tail.push('')
     tail.push('Report contract: cite evidence as `file::symbol` or a token-goat recall id (`token-goat mcp-output <id> --full`) rather than pasting bodies; paste a fenced block only when the exact bytes are load-bearing; state every unverified claim explicitly (e.g. "not verified: ...") rather than omitting it.')
 

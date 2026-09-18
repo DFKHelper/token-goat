@@ -14,7 +14,7 @@ import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
-import { resolveIndexPath, toDisplayPath, displaySafePath } from './paths.js'
+import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
@@ -71,6 +71,7 @@ import {
   extractTerminalXmlParsing,
   extractRgSymbolSearch,
   extractCatJsonPipe,
+  extractPowerShellJsonPipeline,
   extractWslCatFile,
   extractPythonFileRead,
   extractHeadFile,
@@ -834,11 +835,26 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const catJsonPipe = extractCatJsonPipe(cmd)
   if (catJsonPipe !== null) {
-    const { filePath } = catJsonPipe
+    const { filePath, isDirectJq } = catJsonPipe
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
+    const label = isDirectJq ? '`jq`' : '`cat | jq`'
     return contextOutput(
-      '`cat | jq` loads the whole file. Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to slice one value.',
+      label + ' loads the whole file. Use `token-goat json-query "' + hintPath + '" "<key>"` or `token-goat config-get "' + hintPath + '" KEY_NAME` to slice one value.',
+    )
+  }
+
+  const psJsonPipe = extractPowerShellJsonPipeline(cmd)
+  if (psJsonPipe !== null) {
+    recordStat('session_hint', 0, 0)
+    if (psJsonPipe.filePath) {
+      const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, psJsonPipe.filePath, hintCwd) : psJsonPipe.filePath)
+      return contextOutput(
+        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query "' + hintPath + '" "<selector>"` to extract fields directly without shell conversion scripts.',
+      )
+    }
+    return contextOutput(
+      'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query <file> "<selector>"` or `token-goat web-output` to extract fields directly.',
     )
   }
 
@@ -1356,6 +1372,40 @@ function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): vo
  * can emit a recall hint the next time the same command is run, avoiding a
  * redundant re-execution and the token cost of re-reading the output.
  */
+async function maybeEmitLargeUncompressedHint(
+  cmd: string,
+  output: string,
+  exitCode: number | null,
+  cwd: string | null,
+  isUnwrapped: boolean,
+  event: HookEvent,
+  ansiResult: HookOutput | null,
+): Promise<HookOutput | null> {
+  const outputBytes = Buffer.byteLength(output, 'utf-8')
+  if (
+    outputBytes < 4096 ||
+    process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0' ||
+    (exitCode !== null && exitCode !== 0) ||
+    (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))
+  ) {
+    return null
+  }
+  const key = `bash-uncompressed-4k:${event.sessionId ?? ''}:${shortFingerprint(cmd)}`
+  if (wasHintShown(key)) return null
+  markHintShown(key)
+  recordStat('session_hint', 0, 0)
+  const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+  const kb = Math.round(outputBytes / 1024)
+  const msg = `[tg] Output was ${kb}KB uncompressed. For large tool outputs, run with 'token-goat compress -c "${displaySafeText(cmd)}"' or inspect via 'token-goat bash-output ${id}'.`
+  if (ansiResult !== null && ansiResult.hookType === 'rewriteOutput') {
+    return {
+      hookType: 'rewriteOutput',
+      updatedOutput: ansiResult.updatedOutput + '\n' + msg,
+    }
+  }
+  return contextOutput(msg)
+}
+
 export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const rawCmdRaw = extractCommand(event)
@@ -1503,7 +1553,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         if (genericElision !== null) return genericElision
       }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
-      return maybeStripAnsiOnly(output) ?? passOutput()
+      const ansiStripped = maybeStripAnsiOnly(output)
+      const largeHint = await maybeEmitLargeUncompressedHint(cmd, output, exitCode, cwd, isUnwrapped, event, ansiStripped)
+      if (largeHint !== null) return largeHint
+      return ansiStripped ?? passOutput()
     }
 
     if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return passOutput()
@@ -1534,6 +1587,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // other cached command -- including the colourised build runs `isBuildCommand` routes here --
     // reaches this line, so this is where most escape bytes are removed.
     const ansiOnly = maybeStripAnsiOnly(output)
+    const largeHint = await maybeEmitLargeUncompressedHint(cmd, output, exitCode, cwd, isUnwrapped, event, ansiOnly)
+    if (largeHint !== null) return largeHint
     if (ansiOnly !== null) return ansiOnly
   } catch {
     // Never block — hook failures must be silent.

@@ -95,6 +95,38 @@ describe('postBashHandler', () => {
     expect(getBashOutputId('anything')).toBeNull()
   })
 
+  it('emits an advisory compress hint when vscode harness runs a command with >=4KB uncompressed output', async () => {
+    const event: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: 'curl http://example.com/api' },
+      sessionId: 'test-session-vscode',
+      agentId: undefined,
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command: 'curl http://example.com/api' },
+        tool_response: 'x'.repeat(5000),
+        _tg_harness: 'vscode',
+      },
+    }
+    const result = await postBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('uncompressed. For large tool outputs, run with \'token-goat compress')
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('emits an advisory compress hint on compound command with >=4KB uncompressed output', async () => {
+    const event = makePostBashEvent('curl http://example.com/api && echo done', 'y'.repeat(5000))
+    const result = await postBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('uncompressed. For large tool outputs, run with \'token-goat compress')
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
   it('passes through when output is below the size threshold', async () => {
     const event = makePostBashEvent('pytest tests/', 'short')
     const result = await postBashHandler(event)
@@ -1509,6 +1541,70 @@ describe('preBashHandler — cat | jq pipe interception', () => {
   it('passes through cat temp json | jq', () => {
     const result = preBashHandler(makeBashEvent('cat /tmp/output.json | jq .'))
     expect(result.hookType).toBe('pass')
+  })
+
+  it('emits context hint for direct jq with long flags', () => {
+    const result = preBashHandler(makeBashEvent('jq --raw-output .name payload.json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('`jq` loads the whole file')
+      expect(result.context).toContain('token-goat json-query "payload.json"')
+    }
+  })
+})
+
+describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits context hint for Get-Content file.json | ConvertFrom-Json', () => {
+    const result = preBashHandler(makeBashEvent('Get-Content data.json | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query "data.json"')
+    }
+  })
+
+  it('emits context hint for Get-Content with -Raw flag', () => {
+    const result = preBashHandler(makeBashEvent('Get-Content -Raw payload.json | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query "payload.json"')
+    }
+  })
+
+  it('emits context hint for powershell wrapped ConvertFrom-Json', () => {
+    const result = preBashHandler(makeBashEvent('powershell -Command "Get-Content \'payload.json\' | ConvertFrom-Json"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query "payload.json"')
+    }
+  })
+
+  it('does not falsely extract json path from unrecognized extensions like .bak', () => {
+    const result = preBashHandler(makeBashEvent('Get-Content payload.json.bak | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat json-query <file>')
+    }
+  })
+
+  it('does not trigger on unrelated commands mentioning ConvertFrom-Json outside pipeline', () => {
+    const result = preBashHandler(makeBashEvent('Write-Output ConvertFrom-Json; echo done'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('emits generic json-query hint when ConvertFrom-Json has no file path', () => {
+    const result = preBashHandler(makeBashEvent('$response | ConvertFrom-Json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('ConvertFrom-Json')
+      expect(result.context).toContain('token-goat json-query <file>')
+    }
   })
 })
 

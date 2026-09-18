@@ -80,6 +80,7 @@ import {
   confinedProjectRoot,
   confinementRefusal,
   formatAmbiguity,
+  isProjectRootAllowed,
   parseColonLineRange,
   parseCrossFileMultiSpec,
   parseLineRange,
@@ -799,10 +800,15 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // agent does not contain it. `indexing.cross_project_symbols = false` confines the command to
   // the project it is run from. The confinement has to cover --project and an absolute --file as
   // well, or the setting is bypassed by the same caller it exists to constrain.
-  const confinedRoot = confinedProjectRoot()
-  if (confinedRoot !== null) {
+  const baseConfined = confinedProjectRoot()
+  const confinedRoot = opts.projectRoot !== undefined && baseConfined !== null && isProjectRootAllowed(opts.projectRoot, baseConfined)
+    ? (confinedProjectRoot(opts.projectRoot) ?? baseConfined)
+    : baseConfined
+  if (baseConfined !== null) {
     const requested = opts.projectRoot
-    const projectDenial = requested === undefined ? null : confinementRefusal('--project', requested, confinedRoot)
+    const projectDenial = requested === undefined || (confinedRoot !== baseConfined)
+      ? null
+      : confinementRefusal('--project', requested, baseConfined)
     if (projectDenial !== null) return { text: projectDenial, code: 1 }
     if (opts.file !== undefined) {
       const fileDenial = confinementRefusal('--file', resolveIndexPath(opts.file, requested ?? process.cwd()), confinedRoot)
@@ -1623,9 +1629,15 @@ export function runRefs(opts: RefsOptions): number {
   // Same confinement the file-spec read commands enforce, applied before any query: an explicit
   // --project or an out-of-root file in the spec would otherwise re-open the channel that
   // refsRootDir closes for the bare-name form.
-  const confinedRoot = confinedProjectRoot()
-  if (confinedRoot !== null) {
-    const projectDenial = opts.projectRoot === undefined ? null : confinementRefusal('--project', opts.projectRoot, confinedRoot)
+  const baseConfined = confinedProjectRoot()
+  const confinedRoot = opts.projectRoot !== undefined && baseConfined !== null && isProjectRootAllowed(opts.projectRoot, baseConfined)
+    ? (confinedProjectRoot(opts.projectRoot) ?? baseConfined)
+    : baseConfined
+  if (baseConfined !== null) {
+    const requested = opts.projectRoot
+    const projectDenial = requested === undefined || (confinedRoot !== baseConfined)
+      ? null
+      : confinementRefusal('--project', requested, baseConfined)
     if (projectDenial !== null) {
       emitErr(projectDenial)
       return 1
