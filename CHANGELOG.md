@@ -2,6 +2,20 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.17] - 2026-09-18
+
+### Added
+
+- **`token-goat locate <spec>` finds a symbol or landmark and prints its exact line span**: it takes `name` or `file::name`, falls back to the closest names by edit distance when nothing matches exactly, narrows to one file with `--file`, caps results with `--limit`, and emits the shared envelope with `--json`.
+
+### Fixed
+
+- **The large-output hint keeps its `bash-output` pointer when the command contains quotes**: the hint used to quote the whole command in its suggestion, and any command holding a double quote, `$`, a backtick or a newline had the entire suggestion replaced with "command omitted", pointer included. In recorded sessions 60 of 75 of these hints arrived with nothing to act on. The hint now leads with the recall pointer, offers `compress -c` only for a command it can quote, and stays silent on token-goat's own commands, whose output is already the narrow form.
+
+- **A `node -e` script that reads a file and writes the same file back is no longer denied**: an in-place edit is not a read into context, and denying it only pushed the identical script into a file that then ran unchecked. 7 of 29 `node -e` denies across 300 recorded sessions were this shape. A script that writes a different file than the one it read is still denied.
+
+- **After an upgrade, the session-start note no longer says every file changed outside the session**: files reindexed only because the parser or chunker changed are unchanged on disk, but the note counted them as edits, so one session opened with "1484 changed" when two files had. They now get their own clause ("unchanged on disk but indexed by an older version of token-goat"), and the changed/new/removed breakdown counts only real drift.
+
 ## [2.9.16] - 2026-09-18
 
 ### Fixed
