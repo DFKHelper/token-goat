@@ -10,6 +10,7 @@ import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as zlib from 'node:zlib'
 import { spawn } from 'node:child_process'
 import type * as WebfetchModule from '../src/webfetch.js'
 import type * as ImageShrinkModule from '../src/image_shrink.js'
@@ -28,7 +29,8 @@ const atomicWriteBytesMock = vi.hoisted(() => vi.fn())
 // the fake, non-image byte payloads used elsewhere in this file resolves to null / "not shrunk").
 vi.mock('../src/image_shrink.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ImageShrinkModule>()
-  shrinkImageMock.mockImplementation((buf: Buffer) => actual.shrinkImage(buf))
+  // opts must be forwarded, not dropped -- a mock that always calls actual.shrinkImage(buf) with no second argument would silently discard whatever options cmdFetchImage passes (e.g. the sizeThresholdBytes: 0 the read-hook-parity fix below relies on), making every test in this file blind to a regression in that argument regardless of what the real call site passes.
+  shrinkImageMock.mockImplementation((buf: Buffer, opts?: Parameters<typeof actual.shrinkImage>[1]) => actual.shrinkImage(buf, opts))
   return { ...actual, shrinkImage: shrinkImageMock }
 })
 
@@ -1579,7 +1581,67 @@ describe('cmdFetchImage security hardening (regression: fetchBuffer now routes t
     const leftoverTmp = fs.readdirSync(dir).filter((f) => f.includes('.tmp'))
     expect(leftoverTmp).toEqual([])
   })
+
+  // Regression: cmdFetchImage called shrinkImage(buf) with no options, which falls back inside shrinkImage to a 512KiB byte-size threshold and no dimension qualifier -- so a fetched image small in bytes but huge in pixels (a flat-colour PNG well under 512KiB, far past the dimension shrink target) was delivered unshrunk, while the identical bytes read from disk hit the pre-read hook (image_shrink.ts::preReadImageHandler), which passes sizeThresholdBytes: 0 and shrinks it. HAND-DERIVED fixture: `solidColorPng` below builds a real, spec-valid PNG (uncompressed row filter, zlib-deflated per the PNG spec) directly, independent of image_shrink.ts's own encoder, rather than importing anything from the code under test.
+  it('shrinks a fetched image that is small in bytes but far over the dimension target, matching the read-hook qualifier', async () => {
+    const bigDim = 4000 // > DEFAULT_MAX_DIMENSION (1568), but the solid fill keeps bytes tiny
+    const solidColorPng = makeSolidColorPng(bigDim, bigDim, 120, 60, 200)
+    expect(solidColorPng.length).toBeLessThan(512 * 1024) // must stay under the byte threshold cmdFetchImage used to gate on
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'image/png' },
+      body: solidColorPng,
+    }))
+    const out = path.join(tmpHome, 'small-bytes-huge-dimensions.png')
+    await cmdFetchImage({ url: 'http://example.test/huge-dimension.png', out })
+    const written = fs.readFileSync(out)
+    expect(written.length).toBeLessThan(solidColorPng.length)
+  })
 })
+
+/** Builds a minimal, spec-valid, uncompressed-per-row PNG (8-bit RGB) filled with one solid color, entirely independent of image_shrink.ts's own PNG encoder -- used to give cmdFetchImage a real, small-byte, large-dimension image without needing a decodable committed binary fixture. */
+function makeSolidColorPng(width: number, height: number, r: number, g: number, b: number): Buffer {
+  const crcTable = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    crcTable[n] = c >>> 0
+  }
+  const crc32 = (buf: Buffer): number => {
+    let crc = 0xffffffff
+    for (let i = 0; i < buf.length; i++) crc = crcTable[(crc ^ buf[i]!) & 0xff]! ^ (crc >>> 8)
+    return (crc ^ 0xffffffff) >>> 0
+  }
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const len = Buffer.alloc(4)
+    len.writeUInt32BE(data.length, 0)
+    const typeBuf = Buffer.from(type, 'ascii')
+    const crcBuf = Buffer.alloc(4)
+    crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0)
+    return Buffer.concat([len, typeBuf, data, crcBuf])
+  }
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8
+  ihdr[9] = 2
+  const rowBytes = 1 + width * 3
+  const raw = Buffer.alloc(rowBytes * height)
+  for (let y = 0; y < height; y++) {
+    const off = y * rowBytes
+    raw[off] = 0
+    for (let x = 0; x < width; x++) {
+      const p = off + 1 + x * 3
+      raw[p] = r
+      raw[p + 1] = g
+      raw[p + 2] = b
+    }
+  }
+  const idatData = zlib.deflateSync(raw, { level: 9 })
+  return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idatData), chunk('IEND', Buffer.alloc(0))])
+}
 
 // ── history ───────────────────────────────────────────────────────────────────
 

@@ -823,7 +823,8 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
   let wasShrunk = false
   let finalPath = outPath
   try {
-    const result = await shrinkImage(buf)
+    // sizeThresholdBytes: 0, matching the pre-read hook (image_shrink.ts::preReadImageHandler) -- the default 512KiB threshold this used to fall through to gates on bytes alone, so a fetched image small in bytes but huge in pixels (a flat-colour PNG, a heavily-compressed photo) was delivered unshrunk here while the identical bytes read from disk were shrunk by the hook, which qualifies on dimensions too. shrinkImage's own "never enlarge" check (declines when the re-encode would not be smaller) still protects an image that is genuinely already small.
+    const result = await shrinkImage(buf, { sizeThresholdBytes: 0 })
     if (result !== null) {
       outData = result.data
       shrunkBytes = result.shrunkBytes

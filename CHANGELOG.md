@@ -58,6 +58,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **A routine 24-megapixel camera or phone photo now reaches the model shrunk instead of untouched, and the ceiling that used to block it silently now shows up in `token-goat stats`**: `image_shrink.max_image_pixels` shipped at 16,000,000, well under a common 24MP DSLR or 48MP phone sensor and under the exact input this feature exists to shrink, and the header probe that enforces it swallowed its own rejection into the same bare "not a candidate" result as a corrupt or unsupported file, so an oversized photo passed through full-size with no stat, no skip, nothing to show why it never shrank. The default is now 64,000,000, chosen against the image engine's own hard decode ceiling (67,108,864 pixels) rather than picked arbitrarily, and a distinct `image_shrink_over_pixel_limit` stat is now recorded whenever the configured limit -- default or user-set -- is the reason a file was never a shrink candidate.
 
+- **`token-goat fetch-image` shrinks a fetched image that is small in bytes but far over the normal resize target, matching what a `Read` of the same bytes from disk already does**: the pre-read hook qualifies an image on pixel dimensions as well as byte size, but `cmdFetchImage` called the shrink path with its plain 512KiB byte-size default and no dimension check, so a fetched image well under that threshold in bytes but well past the resize target in width or height -- a flat-colour or heavily-compressed PNG, for instance -- was written to disk untouched, while the identical bytes read from a local file were shrunk. `cmdFetchImage` now qualifies on dimensions the same way the read hook does.
+
 ## [2.9.15] - 2026-09-17
 
 ### Fixed
