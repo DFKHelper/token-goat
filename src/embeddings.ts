@@ -19,6 +19,7 @@ import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
 import { EMBED_FINGERPRINT } from './embed_fingerprint.js'
+import { MAX_SEQUENCE_TOKENS } from './embed_tokenizer.js'
 
 // Re-exported because the model's identity belongs to the module that fetches and verifies it, and because every existing caller and test reads these three from here.
 export {
@@ -34,7 +35,7 @@ export {
 export const QUERY_INSTRUCTION_PREFIX = 'Represent this sentence for searching relevant passages: '
 
 // Building an extractor loads the ONNX graph and the 30k-entry vocabulary, so it is memoized per model name and cached as a Promise (not the resolved extractor) so concurrent embedTexts calls racing on a cold cache share the same in-flight construction instead of each kicking off a redundant load. Cleared via registerReset so tests that mock the pipeline factory start from a clean slate.
-type FeatureExtractor = (text: string, options: Record<string, unknown>) => Promise<unknown>
+type FeatureExtractor = ((text: string, options: Record<string, unknown>) => Promise<unknown>) & { countTokens?: (text: string) => number }
 type PipelineFn = (
   task: string,
   model: string,
@@ -45,7 +46,7 @@ const _extractorCache = new Map<string, Promise<FeatureExtractor>>()
 /** The real backend, in the shape the cache and the retry loop already expect. The `task` argument is ignored: there is exactly one thing this builds. It kept its name and signature through the move off @xenova/transformers so the override below, and every test using it, still fit. (That name survives in this file's comments only where it is describing history.) */
 const inHousePipelineFn: PipelineFn = async (_task, modelName) => {
   const model = await EmbeddingModel.load(modelName)
-  return async (text: string) => ({ data: await model.embed(text) })
+  return Object.assign(async (text: string) => ({ data: await model.embed(text) }), { countTokens: (text: string) => model.countTokens(text) })
 }
 
 // The backend is loaded through Node's real CJS loader rather than vitest's mockable module graph, so vi.mock can't intercept it. This override lets tests substitute a cheap fake factory (mirrors the setXForTesting pattern already used in skill_cache.ts) instead of loading a real model.
@@ -95,9 +96,10 @@ async function buildExtractorWithRetry(
   throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
-// Chunk size constraints (chars). MIN_CHUNK_CHARS filters trivial symbols. MAX_CHUNK_CHARS caps before embedding: bge-small has ~512-token context window.
+// Chunk size constraints. MIN_CHUNK_CHARS filters trivial symbols. MAX_CHUNK_TOKENS is the bound that matters: the model reads MAX_SEQUENCE_TOKENS wordpieces, [CLS] and [SEP] included, and silently drops the rest, so a chunk past it got a vector for its head while its row claimed every line. A char cap cannot stand in for it: measured over 6,117 stored chunks, a wordpiece covers 1.59 chars at the 1st percentile and 3.48 at the median, so the old 8,000-char cap let 32.8% of chunks through too long and 55% of all embedded tokens were never read. MAX_CHUNK_CHARS still bounds a chunk's stored text when its lines are mostly whitespace, and is the only bound when no tokenizer is supplied.
 export const MIN_CHUNK_CHARS = 50
 export const MAX_CHUNK_CHARS = 8000
+export const MAX_CHUNK_TOKENS = MAX_SEQUENCE_TOKENS - 2
 
 // Line-window size for sliding-window fallback on unparsed files.
 export const WINDOW_LINES = 100
@@ -204,6 +206,21 @@ export function embeddingBackendLoadError(): Error | null {
   return runtimeLoadError()
 }
 
+// Memoized per model name so the model is only loaded once per process (see _extractorCache above) instead of reading the graph and the vocabulary again on every embedTexts call.
+function getExtractor(modelName: string): Promise<FeatureExtractor> {
+  let extractorPromise = _extractorCache.get(modelName)
+  if (!extractorPromise) {
+    const pipelineFn: PipelineFn = _pipelineFnOverride ?? inHousePipelineFn
+    // Building an extractor downloads the model over the network on a cold cache, so a single transient CDN blip (a dropped connection, a brief rate-limit window) fails outright. Retrying here absorbs that. The cache MUST be populated with a promise that only resolves on eventual success, never with the raw pipelineFn() promise directly - on a terminal failure (all attempts exhausted) the entry is deleted rather than left holding a rejected promise, because this cache is keyed by model name and lives for the process lifetime: a rejected promise cached here would permanently poison every future embedTexts call for that model, even long after a transient outage clears, since a Promise's settled state never changes once observed.
+    extractorPromise = buildExtractorWithRetry(pipelineFn, modelName)
+    _extractorCache.set(modelName, extractorPromise)
+    extractorPromise.catch(() => {
+      if (_extractorCache.get(modelName) === extractorPromise) _extractorCache.delete(modelName)
+    })
+  }
+  return extractorPromise
+}
+
 /**
  * Embed a batch of texts to fixed-dimension semantic vectors. Uses the pinned bge-small-en-v1.5 checkpoint on onnxruntime-node (384-dimensional output).
  *
@@ -226,18 +243,7 @@ export async function embedTexts(
     return []
   }
 
-  // Memoized per model name so the model is only loaded once per process (see _extractorCache above) instead of reading the graph and the vocabulary again on every embedTexts call.
-  let extractorPromise = _extractorCache.get(modelName)
-  if (!extractorPromise) {
-    const pipelineFn: PipelineFn = _pipelineFnOverride ?? inHousePipelineFn
-    // Building an extractor downloads the model over the network on a cold cache, so a single transient CDN blip (a dropped connection, a brief rate-limit window) fails outright. Retrying here absorbs that. The cache MUST be populated with a promise that only resolves on eventual success, never with the raw pipelineFn() promise directly - on a terminal failure (all attempts exhausted) the entry is deleted rather than left holding a rejected promise, because this cache is keyed by model name and lives for the process lifetime: a rejected promise cached here would permanently poison every future embedTexts call for that model, even long after a transient outage clears, since a Promise's settled state never changes once observed.
-    extractorPromise = buildExtractorWithRetry(pipelineFn, modelName)
-    _extractorCache.set(modelName, extractorPromise)
-    extractorPromise.catch(() => {
-      if (_extractorCache.get(modelName) === extractorPromise) _extractorCache.delete(modelName)
-    })
-  }
-  const extractor = await extractorPromise
+  const extractor = await getExtractor(modelName)
 
   const vecs: number[][] = []
   const expectedDim = DEFAULT_DIM
@@ -314,20 +320,36 @@ function splitRangeIntoChunks(
   chunkSize: number,
   overlap: number,
   kind: string,
+  countTokens?: (text: string) => number,
 ): Chunk[] {
   const chunks: Chunk[] = []
 
+  // Wordpieces per line, 0 throughout when no tokenizer was given. Words never span a newline, so a chunk's count is the sum of its lines' and each line is counted once.
+  const lineTokenCache = new Map<number, number>()
+  const tokensOf = (lineNo: number): number => {
+    if (countTokens === undefined) return 0
+    let n = lineTokenCache.get(lineNo)
+    if (n === undefined) {
+      n = countTokens(lines[lineNo - 1] ?? '')
+      lineTokenCache.set(lineNo, n)
+    }
+    return n
+  }
+
   let currentChunk = ''
+  let currentTokens = 0
   let startLine = rangeStart
   let currentLine = rangeStart
 
   for (let lineNo = rangeStart; lineNo <= rangeEnd; lineNo++) {
     const line = lines[lineNo - 1] ?? ''
     const lineWithNewline = line + '\n'
-    if (currentChunk.length + lineWithNewline.length > chunkSize && currentChunk.length > 0) {
+    const lineTokens = tokensOf(lineNo)
+    if ((currentChunk.length + lineWithNewline.length > chunkSize || currentTokens + lineTokens > MAX_CHUNK_TOKENS) && currentChunk.length > 0) {
       // Flush current chunk if adding the next line would exceed size. Measured against the TRIMMED length, not the raw accumulated buffer: a long run of whitespace-only lines can clear MIN_CHUNK_CHARS in raw chars while trimming down to an empty string, and the text actually pushed below is `currentChunk.trim()` -- comparing the untrimmed length here let an all-whitespace chunk sail past this "too small" filter and get embedded/stored with text === "" (confirmed via a scratch repro: 30 whitespace- only lines followed by real content produced a chunk with rawTextLen 60+ but an entirely empty trimmed text).
       const trimmedLength = currentChunk.trim().length
-      const currentChunkTooSmall = trimmedLength < MIN_CHUNK_CHARS
+      // A below-floor chunk is carried into the next one by the overlap pin below, which makes that one this buffer plus the line that did not fit beside it. Under a token budget that is a chunk over the budget by construction, so there it goes out short instead: a short vector costs one more row, a truncated one loses its tail.
+      const currentChunkTooSmall = trimmedLength === 0 || (trimmedLength < MIN_CHUNK_CHARS && countTokens === undefined)
       if (!currentChunkTooSmall) {
         chunks.push({
           filePath,
@@ -340,12 +362,17 @@ function splitRangeIntoChunks(
 
       // Start new chunk with overlap, never reaching before this range's own start. `overlap` is a CHARACTER budget (chunkFile documents it as "Overlap in chars between consecutive chunks", default 200), so the window is measured in the real lengths of the lines it covers. It used to be `Math.ceil(overlap / 40)` -- a fixed line count derived from a guess that every line is about 40 characters wide. On any file whose lines are wider than that guess, the guess is the only thing that bounded the window, and it bounded it in the wrong unit: 200 chars became 5 lines regardless, so a file of 3,000-char lines carried 15,000 characters of overlap into each chunk instead of 200. That broke the size cap this function exists to enforce -- `MAX_CHUNK_CHARS` is documented as the limit "before embedding: bge-small has ~512-token context window", and stored chunks reached 18,005 chars against a cap of 8,000, because the prefilled overlap alone was already over it before a single new line was added. It also multiplied what the database holds: measured over a 300 KB file of 3,000-char lines, the chunks stored 1,752,485 chars for 300,099 chars of source, 5.84x amplification, every duplicated byte also being embedded. Minified bundles, generated code, long CSV or log lines and single-line JSON all have lines far wider than 40 chars.
       let overlapChars = 0
+      let overlapTokens = 0
       let computedOverlapStart = currentLine
       while (computedOverlapStart > rangeStart) {
         // +1 for the newline the rebuild below rejoins with.
         const candidateChars = (lines[computedOverlapStart - 2] ?? '').length + 1
         if (overlapChars + candidateChars > overlap) break
+        // The overlap and the line that tripped this flush start the next chunk together, so both count against its budget.
+        const candidateTokens = tokensOf(computedOverlapStart - 1)
+        if (overlapTokens + candidateTokens + lineTokens > MAX_CHUNK_TOKENS) break
         overlapChars += candidateChars
+        overlapTokens += candidateTokens
         computedOverlapStart--
       }
       // A below-MIN_CHUNK_CHARS chunk is dropped above (never pushed) rather than merged, so its lines must not be silently lost -- overlapStart normally starts fresh at `currentLine - overlapLines`, which can land AFTER this dropped chunk's own startLine whenever it spans more lines than the overlap window covers (e.g. several short lines followed immediately by one line long enough alone to trip the size flush). Confirmed via a scratch repro: ~5 one-char lines ahead of an 8500-char line vanished from every emitted chunk entirely -- never embedded, never semantically searchable -- because the recomputed overlap window (5 lines back from the huge line) started after them. Flooring at this chunk's own `startLine` when it was too small to keep on its own guarantees every source line survives into some chunk, at the cost of a larger-than-usual overlap on the rare case this triggers. Pinning applies only when the dropped chunk actually held something. The pin exists to stop a below-floor chunk's *content* being lost, and a buffer that trims to nothing has no content to lose -- while pinning it is what made this loop quadratic. `startLine` stops advancing, so the buffer grows without bound, so every following line re-trips the size flush and re-runs `trim()` over an ever-longer string. Measured on files that are entirely blank lines: 8,000 lines took 127 ms and 64,000 took 11.3 s, an 89-fold rise for an 8-fold input, and every run produced zero chunks. At the 500 KB the indexer accepts that is minutes of one core inside the worker's drain loop, spent to produce nothing. A blank-padded log or a half-written file is all it takes.
@@ -357,11 +384,27 @@ function splitRangeIntoChunks(
           .slice(overlapStart - 1, currentLine - 1)
           .join('\n')
         currentChunk = overlapText + '\n'
+        currentTokens = overlapTokens
         startLine = overlapStart
       }
     }
 
+    if (countTokens !== undefined && (lineTokens > MAX_CHUNK_TOKENS || lineWithNewline.length > chunkSize)) {
+      // One line past the budget on its own (minified code, a long generated string): cut it across chunks of its own line number, keeping the last piece open for the lines after it. Anything still buffered here is overlap out of the chunk the flush above just pushed, or whitespace, so starting over loses nothing.
+      const pieces = splitToFit(line, (piece) => piece.length + 1 <= chunkSize && countTokens(piece) <= MAX_CHUNK_TOKENS)
+      const last = pieces.pop() ?? ''
+      for (const piece of pieces) {
+        if (piece.trim().length > 0) chunks.push({ filePath, startLine: lineNo, endLine: lineNo, text: piece.trim(), kind })
+      }
+      currentChunk = last + '\n'
+      currentTokens = countTokens(last)
+      startLine = lineNo
+      currentLine++
+      continue
+    }
+
     currentChunk += lineWithNewline
+    currentTokens += lineTokens
     currentLine++
   }
 
@@ -376,29 +419,50 @@ function splitRangeIntoChunks(
     })
   } else if (currentChunk.length > 0 && chunks.length > 0) {
     const last = chunks[chunks.length - 1]!
-    last.endLine = rangeEnd
-    last.text = lines.slice(last.startLine - 1, rangeEnd).join('\n').trim()
+    let mergedTokens = 0
+    for (let lineNo = last.startLine; lineNo <= rangeEnd; lineNo++) mergedTokens += tokensOf(lineNo)
+    // The merge rebuilds the last chunk from whole lines, so it is refused when those lines are over the token budget, and the fragment goes out on its own.
+    if (mergedTokens <= MAX_CHUNK_TOKENS) {
+      last.endLine = rangeEnd
+      last.text = lines.slice(last.startLine - 1, rangeEnd).join('\n').trim()
+    } else if (currentChunk.trim().length > 0) {
+      chunks.push({ filePath, startLine, endLine: rangeEnd, text: currentChunk.trim(), kind })
+    }
   }
 
   return chunks
 }
 
-/**
- * Chunk file content into semantically meaningful segments. With no boundaries (the default), splits on newlines using a fixed-size sliding window, respecting requested chunk size and overlap - the original behavior, unchanged, and the fallback for any file with zero parsed symbols/headings. With `boundaries` supplied (symbol rows for source files, markdown headings for doc files - see `indexFileEmbeddings` in parser.ts), chunk cuts snap to structure instead of slicing blindly: one chunk per boundary, tagged with its `kind`. An oversized boundary is sub-split with the same sliding-window logic the fallback path uses. Small gaps between boundaries - or before the first one - are folded into the nearest adjacent chunk rather than becoming their own tiny fragment; a gap large enough to clear MIN_CHUNK_CHARS on its own still becomes a standalone 'window' chunk. Nested boundaries (a class symbol row and its own methods' rows both cover the same lines) collapse to the outermost one so the same lines are never embedded twice under two different chunks. A boundary that only partially overlaps a previously-accepted one (starts inside it but extends past its end) is not dropped - it is clipped to start right after the accepted boundary's end and keeps its own `kind`, so its non-overlapping tail still gets its own chunk instead of silently vanishing into an unrelated chunk.
- *
- * @param filePath - Relative path to the file.
- * @param content - File content.
- * @param chunkSize - Target chunk size in chars (default: MAX_CHUNK_CHARS).
- * @param overlap - Overlap in chars between consecutive chunks (default: 200).
- * @param boundaries - Optional structural cut points (symbol or section ranges).
- * @returns Array of Chunk objects.
- */
+/** Cut `text` into consecutive pieces that each satisfy `fits`, halving at the whitespace nearest the middle (or at the middle when there is none) so the tokenizer is run over the text about log2(pieces) times rather than once per piece. The pieces concatenate back to `text`. */
+function splitToFit(text: string, fits: (piece: string) => boolean): string[] {
+  if (text.length < 2 || fits(text)) return [text]
+  const mid = Math.floor(text.length / 2)
+  let cut = mid
+  for (let d = 0; d <= Math.floor(text.length / 4); d++) {
+    if (/\s/.test(text[mid - d] ?? '')) {
+      cut = mid - d
+      break
+    }
+    if (/\s/.test(text[mid + d] ?? '')) {
+      cut = mid + d
+      break
+    }
+  }
+  // Never between the halves of a surrogate pair.
+  const before = text.charCodeAt(cut - 1)
+  if (before >= 0xd800 && before <= 0xdbff) cut++
+  if (cut <= 0 || cut >= text.length) return [text]
+  return [...splitToFit(text.slice(0, cut), fits), ...splitToFit(text.slice(cut), fits)]
+}
+
+/** Chunk file content into semantically meaningful segments. With no boundaries (the default), splits on newlines using a fixed-size sliding window, respecting requested chunk size and overlap - the original behavior, unchanged, and the fallback for any file with zero parsed symbols/headings. With `boundaries` supplied (symbol rows for source files, markdown headings for doc files - see `indexFileEmbeddings` in parser.ts), chunk cuts snap to structure instead of slicing blindly: one chunk per boundary, tagged with its `kind`. An oversized boundary is sub-split with the same sliding-window logic the fallback path uses. Small gaps between boundaries - or before the first one - are folded into the nearest adjacent chunk rather than becoming their own tiny fragment; a gap large enough to clear MIN_CHUNK_CHARS on its own still becomes a standalone 'window' chunk. Nested boundaries (a class symbol row and its own methods' rows both cover the same lines) collapse to the outermost one so the same lines are never embedded twice under two different chunks. A boundary that only partially overlaps a previously-accepted one (starts inside it but extends past its end) is not dropped - it is clipped to start right after the accepted boundary's end and keeps its own `kind`, so its non-overlapping tail still gets its own chunk instead of silently vanishing into an unrelated chunk. @param filePath - Relative path to the file. @param content - File content. @param chunkSize - Target chunk size in chars (default: MAX_CHUNK_CHARS). @param overlap - Overlap in chars between consecutive chunks (default: 200). @param boundaries - Optional structural cut points (symbol or section ranges). @param countTokens - The embedding model's wordpiece count for a text; when given, no chunk exceeds MAX_CHUNK_TOKENS, and a line too long for one chunk is cut across several. @returns Array of Chunk objects. */
 export function chunkFile(
   filePath: string,
   content: string,
   chunkSize: number = MAX_CHUNK_CHARS,
   overlap: number = 200,
   boundaries: ChunkBoundary[] = [],
+  countTokens?: (text: string) => number,
 ): Chunk[] {
   const lines = content.split(/\r?\n/)
   // splitlines() parity: a trailing newline must not introduce a phantom empty final line (it would inflate endLine by one and append a stray blank line).
@@ -406,7 +470,7 @@ export function chunkFile(
   const totalLines = lines.length
 
   if (boundaries.length === 0) {
-    return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window')
+    return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window', countTokens)
   }
 
   // Clip to the file's actual line range and drop anything inverted, then sort by start (ties broken longest-first) so the flattening pass below always meets an outer boundary before any boundary nested inside it.
@@ -420,7 +484,7 @@ export function chunkFile(
     .sort((a, b) => a.start - b.start || b.end - a.end)
 
   if (clipped.length === 0) {
-    return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window')
+    return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window', countTokens)
   }
 
   // Flatten nested/overlapping boundaries so each line belongs to exactly one chunk. A boundary fully contained in a previously-accepted one (a class row containing its own method rows) is dropped entirely - nothing new to add. A boundary that only partially overlaps a previously-accepted one is clipped to start right after that boundary's end, keeping its own kind for the non-overlapping tail instead of losing it.
@@ -504,7 +568,7 @@ export function chunkFile(
 
   const chunks: Chunk[] = []
   for (const r of ranges) {
-    chunks.push(...splitRangeIntoChunks(filePath, lines, r.start, r.end, chunkSize, overlap, r.kind))
+    chunks.push(...splitRangeIntoChunks(filePath, lines, r.start, r.end, chunkSize, overlap, r.kind, countTokens))
   }
   return chunks
 }
@@ -916,9 +980,14 @@ export async function indexFile(
   content: string,
   boundaries: ChunkBoundary[] = [],
 ): Promise<EmbedOutcome> {
-  const chunks = chunkFile(filePath, content, undefined, undefined, boundaries)
+  let chunks = chunkFile(filePath, content, undefined, undefined, boundaries)
   // Replace, do not append: drop the file's prior chunks (and their vectors) before inserting, so a reindex - or an edit that empties the file - leaves no stale rows behind.
   if (chunks.length > 0) {
+    // Re-cut to what the model reads, with its own tokenizer, whenever these chunks are going to be embedded. The char-sized cut above is kept only to learn that there is anything to embed without loading the model for an empty file, and to serve the skip below when the model is absent.
+    if (embeddingsDepsAvailable(db)) {
+      const { countTokens } = await getExtractor(DEFAULT_MODEL)
+      if (countTokens !== undefined) chunks = chunkFile(filePath, content, undefined, undefined, boundaries, countTokens)
+    }
     // upsertChunks deletes the file's prior chunks/vectors as part of the same transaction as the new insert, so a failed insert can't leave them deleted-but-not-replaced. It returns 'unavailable' when the optional embedding deps are absent so the caller can avoid falsely stamping the file as embedded.
     return upsertChunks(db, chunks)
   }

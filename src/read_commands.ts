@@ -2748,6 +2748,8 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   mergedHits.forEach((h, denseRank) => {
     const enclosing = resolveEnclosingSymbol(h.filePath, h.startLine)
     const key = enclosing !== null ? `${h.filePath}::${enclosing.name}@${enclosing.lineStart}` : `${h.filePath}::L${h.startLine}`
+    // A long symbol is several chunks, and the list is best-first, so the first chunk to claim a symbol is its best: a later one taking the row would report a worse range at a worse rank.
+    if (fused.has(key)) return
     fused.set(key, {
       filePath: h.filePath,
       startLine: h.startLine,

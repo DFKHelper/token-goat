@@ -486,6 +486,11 @@ export class EmbeddingModel {
     return new EmbeddingModel(tokenizer, session, ort.Tensor)
   }
 
+  /** Wordpieces `text` becomes under this model's own tokenizer, markers excluded. */
+  countTokens(text: string): number {
+    return this.tokenizer.countTokens(text)
+  }
+
   /** Embed one text. Sequences are run singly, so there is no padding and no mask to get wrong. */
   async embed(text: string): Promise<Float32Array> {
     const ids = this.tokenizer.encode(text)

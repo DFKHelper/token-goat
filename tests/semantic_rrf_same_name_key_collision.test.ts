@@ -111,3 +111,24 @@ describe('runSemantic RRF fusion key does not collapse two distinct same-named s
     expect(plain).toContain("return 'beta'")
   })
 })
+
+describe('runSemantic RRF fusion keeps the best of several dense hits inside one symbol', () => {
+  it('reports the best-ranked chunk of a long function, not the last one to share its key', async () => {
+    // PROVENANCE: HAND-DERIVED -- one function long enough to be cut into several embedding chunks, with the two hits more than mergeNearbyHits' 20-line proximity apart so they reach fusion as two rows keyed by the same enclosing symbol.
+    const longFile = path.join(TMP, 'long.ts')
+    fs.writeFileSync(longFile, ['export function planRollout(): number {', ...Array.from({ length: 60 }, (_, i) => `  const step${i} = ${i}`), '  return 0', '}', ''].join('\n'), 'utf8')
+    indexFileSync(longFile, globalDbPath())
+    const hits: SearchHit[] = [
+      { filePath: longFile, startLine: 45, endLine: 55, kind: 'symbol', distance: 0.1, text: 'const step44 = 44' },
+      { filePath: longFile, startLine: 2, endLine: 12, kind: 'symbol', distance: 0.4, text: 'const step1 = 1' },
+    ]
+    searchSemanticMock.mockResolvedValue(hits)
+
+    const { text, code } = await runSemantic('step 44', { json: true, projectRoot: TMP })
+    expect(code).toBe(0)
+    const rows = (JSON.parse(text) as { items: Array<{ filePath: string; name: string | null; startLine: number; distance: number | null }> }).items.filter((i) => i.name === 'planRollout')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.startLine).toBe(45)
+    expect(rows[0]!.distance).toBe(0.1)
+  })
+})

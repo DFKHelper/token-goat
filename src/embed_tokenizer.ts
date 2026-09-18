@@ -298,4 +298,11 @@ export class BertWordPiece {
     ids.push(this.sepId)
     return ids.length > maxLength ? ids.slice(0, maxLength) : ids
   }
+
+  /** How many wordpieces `text` becomes, markers excluded and nothing cut: what {@link encode} would read before its limit, for a caller sizing text to fit under it. Words never span whitespace, so the count of a newline-joined text is the sum of its lines' counts. */
+  countTokens(text: string): number {
+    const ids: number[] = []
+    for (const word of preTokenize(normalize(text))) this.wordToIds(word, ids)
+    return ids.length
+  }
 }

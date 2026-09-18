@@ -20,6 +20,8 @@ import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as zlib from 'node:zlib'
+import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -27,6 +29,7 @@ import { closeAllDbs, getDb } from '../src/db.js'
 import { indexFileEmbeddings, indexFileSync } from '../src/parser.js'
 import { isAvailable, mergeNearbyHits, searchSemantic } from '../src/embeddings.js'
 import { modelFilesPresent } from '../src/embed_model.js'
+import { BertWordPiece, MAX_SEQUENCE_TOKENS } from '../src/embed_tokenizer.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
 import { fingerprintFile } from '../src/fingerprint.js'
 import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
@@ -113,6 +116,31 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
         )
         .get(filePath) as { c: number }
       expect(vecRow.c).toBe(1)
+    },
+  )
+
+  it.skipIf(!canExerciseRealEmbeddings)(
+    'cuts a long dense function into chunks the model reads to the end, through the real default path',
+    async () => {
+      process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+      const dbPath = path.join(TMP, 'index.db')
+      const filePath = path.join(TMP, 'dense.ts')
+      // PROVENANCE: HAND-DERIVED -- 120 lines of dense snake_case code in one symbol, about 14,700 chars: cut at 8,000 chars it was two chunks of well past 512 wordpieces each.
+      const body = Array.from({ length: 120 }, (_, i) => `  const reconciled_offset_table_${i} = merge_partition_descriptors(shard_lookup_${i}, [0x${i.toString(16)}, 0x7f], { retry_budget_ms: ${i * 13} })`)
+      fs.writeFileSync(filePath, ['export function rebuildPartitionIndex(): void {', ...body, '}', ''].join('\n'))
+
+      indexFileSync(filePath, dbPath)
+      await indexFileEmbeddings(filePath, dbPath)
+
+      const db = getDb(dbPath)
+      const rows = db.prepare('SELECT start_line, end_line, text FROM chunks WHERE file_path = ? ORDER BY start_line').all(filePath) as Array<{ start_line: number; end_line: number; text: string }>
+      expect(rows.length).toBeGreaterThan(1)
+      // PROVENANCE: CAPTURE -- the pinned model's own tokenizer.json, checked in for tests/embed_tokenizer_oracle.test.ts.
+      const tokenizer = new BertWordPiece(JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'wordpiece', 'tokenizer.json.gz'))).toString('utf8')))
+      const over = rows.filter((r) => tokenizer.encode(r.text, Number.MAX_SAFE_INTEGER).length > MAX_SEQUENCE_TOKENS).map((r) => `${r.start_line}-${r.end_line}`)
+      expect(over).toEqual([])
+      expect(rows[0]!.start_line).toBe(1)
+      expect(rows.at(-1)!.end_line).toBe(122)
     },
   )
 

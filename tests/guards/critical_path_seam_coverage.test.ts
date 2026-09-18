@@ -87,6 +87,9 @@ const DECISIONS: Record<string, Decision> = {
       marker: 'default path indexes drained files into global.db (no injected callback)',
     },
   },
+  'src/embeddings.ts::chunkFile::countTokens': {
+    coveredBy: { test: 'tests/embeddings_index_wiring.test.ts', marker: 'cuts a long dense function into chunks the model reads to the end, through the real default path' },
+  },
   'src/embeddings.ts::setPipelineFnForTesting': {
     coveredBy: { test: 'tests/embeddings_index_wiring.test.ts', marker: 'canExerciseRealUpsert' },
   },
