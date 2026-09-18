@@ -21,7 +21,9 @@ import * as zlib from 'node:zlib'
 
 import { describe, expect, it } from 'vitest'
 
-import { decodeBmp, decodeGif, decodePng, probeBufferMeta } from '../src/image_engine.js'
+import jpeg from 'jpeg-js'
+
+import { decodeBmp, decodeGif, decodeJpeg, decodePng, probeBufferMeta } from '../src/image_engine.js'
 import { shrinkImage } from '../src/image_shrink.js'
 
 // --- PNG construction -------------------------------------------------------------------------
@@ -314,5 +316,35 @@ describe('the shrink path bounds what it writes, not only what it reads', () => 
     expect(out?.format).toBe('gif')
     expect(out?.width).toBe(160)
     expect(out!.shrunkBytes).toBeLessThan(out!.originalBytes)
+  })
+})
+
+describe('the JPEG decoder is bounded by our ceiling, not by jpeg-js defaults', () => {
+  // HAND-DERIVED. A bare SOI + SOF0 + EOI assembled from JPEG's own marker layout (ITU-T T.81
+  // section B.2.2: length, sample precision, number of lines, samples per line, component spec),
+  // not from anything this repo encodes. 9000x9000 is 81MP: over the 67.1MP that MAX_DECODED_BYTES
+  // allows at 4 bytes a pixel, and under jpeg-js's own 100MP default.
+  function sofOnly(width: number, height: number): Buffer {
+    return Buffer.from([
+      0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b, 0x08,
+      (height >> 8) & 0xff, height & 0xff,
+      (width >> 8) & 0xff, width & 0xff,
+      0x01, 0x01, 0x11, 0x00, 0xff, 0xd9,
+    ])
+  }
+
+  it('refuses a resolution the library would have accepted', () => {
+    // Naming the limit in the message is the whole point: at 81MP jpeg-js's own default never fires,
+    // so a message mentioning maxResolutionInMP can only come from the option decodeJpeg passes.
+    expect(() => decodeJpeg(sofOnly(9000, 9000))).toThrow(/maxResolutionInMP limit exceeded/)
+    expect(() => jpeg.decode(sofOnly(9000, 9000), { useTArray: true })).not.toThrow(
+      /maxResolutionInMP limit exceeded/,
+    )
+  })
+
+  it('non-firing: leaves an ordinary photo-sized frame alone', () => {
+    // 4000x3000 is 12MP. It has no scan data, so it still fails -- but on the missing scan, never on
+    // a limit, which is what separates a bound from a blanket refusal.
+    expect(() => decodeJpeg(sofOnly(4000, 3000))).not.toThrow(/limit exceeded/)
   })
 })

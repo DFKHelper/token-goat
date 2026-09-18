@@ -689,8 +689,13 @@ export function quantizeRgbaToIndexed(rgba: Uint8Array, width: number, height: n
   return { indexedPixels, palette, transparentIndex }
 }
 
+/** Decode a JPEG to RGBA. This is the one decoder here that cannot call {@link assertDecodableSize} first -- jpeg-js reads the frame header itself and allocates before returning anything this file could measure -- so the bound is handed to the library instead of checked around it, and without these options a JPEG decode is bounded only by whatever jpeg-js happens to default to. The resolution limit is {@link MAX_DECODED_BYTES} in this file's own unit, 67.1MP at 4 bytes a pixel, which is tighter than jpeg-js's 100MP default and is the same ceiling every other decoder here is held to. The memory limit is deliberately not derived from that ceiling: jpeg-js counts its own coefficient buffers, not the RGBA output, and measured on this machine a 20.3MP photo needs about 281MB through its accounting -- roughly 14 bytes a pixel, so a figure computed at 4 would refuse a routine camera photo, and one computed at 14 would come to ~925MB and be looser than the library's own default. 512MB is that default, passed explicitly so the number is one this file states rather than one a future jpeg-js release picks; at ~14 bytes a pixel it is the limit that actually binds first, well before the resolution one. */
 export function decodeJpeg(buf: Buffer): DecodedImage {
-  const decoded = jpeg.decode(buf, { useTArray: true })
+  const decoded = jpeg.decode(buf, {
+    useTArray: true,
+    maxResolutionInMP: MAX_DECODED_BYTES / 4 / 1_000_000,
+    maxMemoryUsageInMB: 512,
+  })
   return {
     width: decoded.width,
     height: decoded.height,
