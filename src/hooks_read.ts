@@ -440,6 +440,19 @@ function scanCrossSessionManifests(
  * Returns `pass` otherwise.
  * Always records the read so the re-read hint fires on the next touch.
  */
+export function isNarrowViewRange(event: HookEvent): boolean {
+  if (event.toolName?.toLowerCase() !== 'view') return false
+  const vr = event.toolInput?.['view_range']
+  if (Array.isArray(vr) && vr.length >= 2) {
+    const s = Number(vr[0])
+    const e = Number(vr[1])
+    if (Number.isFinite(s) && Number.isFinite(e) && e >= s && e - s <= 50) {
+      return true
+    }
+  }
+  return false
+}
+
 // Grep's cost/relevance depends on its search pattern, not the file's total size or content —
 // re-scoping several Greps at the same path is a legitimate workflow, so Grep must never feed
 // the Read-specific read-count that the count-based deny check (and every "already read X"
@@ -987,6 +1000,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const isDocDiffable = /\.(md|mdx|markdown|rst|txt)$/i.test(basename)
   const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && isDiffableSource(basename)
   if (
+    !isNarrowViewRange(event) &&
     (isDocDiffable || isSourceDiffable) &&
     wasFileReadThisSession(normalized) &&
     !isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)
@@ -1141,7 +1155,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
       // Item 2.5: sequential line-range paging on source files and docs/XML (3+ slices read so far)
       const isPagingTracked = isSourceExt || /\.(md|mdx|markdown|rst|xml|dtsx|ampkg|xaml)$/i.test(basename)
-      if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3) {
+      if (!isNarrowViewRange(event) && isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3) {
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
         return denyOutput(
@@ -1195,7 +1209,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-      if (isSourceExt && reads >= 2) {
+      if (!isNarrowViewRange(event) && isSourceExt && reads >= 2) {
         // read_count_deny carries the credit for this blocked read. Both it and session_hint
         // map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint
         // row here would double the same blocked bytes into the by_source rollup that
@@ -1215,7 +1229,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const contextHint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
-    if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
+    if (!isNarrowViewRange(event) && config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
       return denyOutput(

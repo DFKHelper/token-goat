@@ -207,8 +207,12 @@ function resolveCanonicalToolName(name) {
   if (!name || typeof name !== 'string') return name
   const direct = TOOL_TO_TG[name]
   if (direct !== undefined) return direct
+  const stripped = name.indexOf(':') !== -1 ? name.split(':').pop() : name
+  const strippedDirect = TOOL_TO_TG[stripped]
+  if (strippedDirect !== undefined) return strippedDirect
   const folded = foldToolName(name)
-  return FOLDED_TOOL_TO_TG[folded] || name
+  const foldedStripped = foldToolName(stripped)
+  return FOLDED_TOOL_TO_TG[folded] || FOLDED_TOOL_TO_TG[foldedStripped] || name
 }
 
 // Confirmed via github/copilot-cli#3349 (open, unresolved as of writing): some
@@ -281,12 +285,15 @@ function remapToolInput(copilotToolName, input) {
   let out = input
   // Add the canonical key alongside the original rather than renaming it, so nothing that
   // might read the original 'path'/'shellId' key elsewhere (e.g. a future handler) loses it.
-  const folded = foldToolName(copilotToolName)
-  const pathKey = FILE_PATH_ARG_KEY[copilotToolName] || (folded === 'view' || folded === 'edit' || folded === 'create' ? 'path' : undefined)
+  const stripped = typeof copilotToolName === 'string' && copilotToolName.indexOf(':') !== -1
+    ? copilotToolName.split(':').pop()
+    : copilotToolName
+  const folded = foldToolName(stripped)
+  const pathKey = FILE_PATH_ARG_KEY[copilotToolName] || FILE_PATH_ARG_KEY[stripped] || (folded === 'view' || folded === 'edit' || folded === 'create' ? 'path' : undefined)
   if (pathKey !== undefined && pathKey in out) {
     out = Object.assign({}, out, { file_path: out[pathKey] })
   }
-  const idKey = POLL_ID_ARG_KEY[copilotToolName] || (folded === 'readbash' || folded === 'readpowershell' ? 'shellId' : undefined)
+  const idKey = POLL_ID_ARG_KEY[copilotToolName] || POLL_ID_ARG_KEY[stripped] || (folded === 'readbash' || folded === 'readpowershell' ? 'shellId' : undefined)
   if (idKey !== undefined && idKey in out) {
     out = Object.assign({}, out, { bash_id: out[idKey] })
   }
