@@ -267,6 +267,15 @@ export async function probeImageMeta(input: Buffer): Promise<{ width: number; he
   }
 }
 
+/** Whether the header's declared pixel count alone is why `probeImageMeta` would throw for `input` -- computed independently (and before) that throw, off the same header-only `probeBufferMeta` read, so a caller can tell "over the configured limit" apart from every other decode failure and record it as its own event rather than folding it into a generic skip. */
+function exceedsConfiguredPixelLimit(input: Buffer): boolean {
+  const meta = probeBufferMeta(input)
+  if (meta === null) return false
+  const cfg = loadConfig().image_shrink
+  const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
+  return limitInputPixels !== false && meta.width * meta.height > limitInputPixels
+}
+
 /**
  * True when `input` is worth spending a re-encode on.
  *
@@ -765,9 +774,11 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     return passOutput()
   }
 
-  // A pass here is a file that was never a candidate, which is not the same event as a candidate
-  // the re-encode declined below, so it deliberately records nothing.
-  if (!(await imageQualifiesForShrink(input))) return passOutput()
+  // A pass here is a file that was never a candidate, which is not the same event as a candidate the re-encode declined below, so it deliberately records nothing -- except when the reason it never became a candidate is the pixel-limit check inside probeImageMeta throwing, which is otherwise invisible to the stats surface and to anyone debugging "why didn't this shrink": an image over the configured ceiling is recorded distinctly, the same way image_shrink_skipped is recorded below for a candidate the re-encode declined.
+  if (!(await imageQualifiesForShrink(input))) {
+    if (exceedsConfiguredPixelLimit(input)) recordStat('image_shrink_over_pixel_limit')
+    return passOutput()
+  }
 
   const result = await shrinkImage(input, { quality, sizeThresholdBytes: 0 })
   if (result === null) {

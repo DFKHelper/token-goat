@@ -108,7 +108,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   image_shrink: {
     enabled: true,
     jpeg_quality: 75,
-    max_image_pixels: 16_000_000,
+    // 16,000,000 used to reject a routine 24MP DSLR/phone photo outright -- the exact input this feature exists to shrink -- while the engine's own decode ceiling (MAX_DECODED_BYTES in image_engine.ts, 256MB at 4 bytes/pixel for a single frame) sits at 67,108,864px. 64,000,000 covers cameras well past 24MP (including 48MP phone sensors) with ~4.9% margin below that hard ceiling, which assertDecodableSize enforces independently of this value on every decode regardless of what this header check allows through. Measured on this engine (2026-09-17): a 24MP PNG decodes+shrinks in ~370ms, 60,000,516px in ~920ms, and 67,108,864px (the ceiling itself) in ~760ms -- all comfortably fast, so the new value is chosen for coverage headroom under the ceiling, not for decode-time cost.
+    max_image_pixels: 64_000_000,
     screenshot_redirect: true,
     ocr_enabled: true,
     // Confidence is Tesseract's own 0-100 mean-word-confidence score. 65 is a deliberately

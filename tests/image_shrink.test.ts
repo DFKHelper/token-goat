@@ -168,13 +168,8 @@ describe('shrinkImage', () => {
     expect(lowQuality.shrunkBytes).toBeLessThan(baseline.shrunkBytes)
   })
 
-  it('honours a configured max_image_pixels with no explicit opts (cap below actual size => sharp rejects decode)', async () => {
-    // largeJpeg is 3000x3000 = 9,000,000px. The schema default (16,000,000)
-    // comfortably covers it, so it shrinks normally (see the "returns a smaller
-    // ShrinkResult" test above). Capping max_image_pixels below the image's
-    // real pixel count wires straight into sharp's own decode-time
-    // decompression-bomb guard (limitInputPixels), so the decode is now
-    // refused and shrinkImage degrades to its normal "undecodable input" path.
+  it('honours a configured max_image_pixels with no explicit opts (cap below actual size => probeImageMeta rejects decode)', async () => {
+    // largeJpeg is 3000x3000 = 9,000,000px. The schema default (64,000,000) comfortably covers it, so it shrinks normally (see the "returns a smaller ShrinkResult" test above). Capping max_image_pixels below the image's real pixel count wires straight into probeImageMeta's own pixel-limit check, so the decode is now refused (ImageDecodeError, caught by shrinkImage) and shrinkImage degrades to its normal "undecodable input" path.
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nmax_image_pixels = 1000000\n', 'utf8')
     invalidateConfigCache()
     expect(await shrinkImage(largeJpeg)).toBeNull()
@@ -369,6 +364,35 @@ describe('preReadImageHandler', () => {
     expect(after?.bytes_saved ?? 0).toBe(0)
   })
 
+  // Regression: max_image_pixels shipped at 16,000,000, which rejected a routine 24MP camera photo outright -- exactly the input this feature exists to shrink -- while the engine's own decode ceiling (image_engine.ts's MAX_DECODED_BYTES) sits at 67,108,864px. No config file is written and no TOKEN_GOAT_MAX_IMAGE_PIXELS is set here, so this drives the shipped default in config_defaults.ts, not a value the test forces.
+  it('shrinks a >16MP image under the shipped default max_image_pixels', async () => {
+    const side = 4500 // 20,250,000px: over the old 16,000,000 default, comfortably under the new 64,000,000 one
+    const noise = Buffer.allocUnsafe(side * side * 3)
+    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256)
+    const overOldLimitJpeg = await sharp(noise, { raw: { width: side, height: side, channels: 3 } }).jpeg({ quality: 100 }).toBuffer()
+    const overOldLimitPath = path.join(TMP, 'over-old-limit.jpg')
+    fs.writeFileSync(overOldLimitPath, overOldLimitJpeg)
+    const out = await preReadImageHandler(makeEvent(overOldLimitPath))
+    expect(out.hookType).toBe('context')
+  })
+
+  // Regression: an image over the pixel limit made probeImageMeta throw, imageQualifiesForShrink swallowed the throw into a bare `false`, and preReadImageHandler's qualify-check passed the file through recording nothing at all -- not even a skip -- so the ceiling was invisible to `token-goat stats` and to anyone debugging "why didn't this shrink". Only the 24-byte PNG signature+IHDR is needed: probeBufferMeta's PNG branch reads width/height straight from those bytes and never touches IDAT, so this is FORMAT-DERIVED off the PNG spec's own header layout (w3.org/TR/2003/REC-PNG-20031110/#11IHDR) rather than anything image_shrink.ts encodes. No TOKEN_GOAT_MAX_IMAGE_PIXELS override here either.
+  it('records a distinct image_shrink_over_pixel_limit stat for an image over the shipped default pixel limit', async () => {
+    const overNewLimitPath = path.join(TMP, 'over-new-limit.png')
+    fs.writeFileSync(overNewLimitPath, fakePngHeader(9000, 9000)) // 81,000,000px > the shipped 64,000,000 default
+
+    const before = summarize(30).by_kind['image_shrink_over_pixel_limit']
+    const beforeEvents = before?.events ?? 0
+
+    const out = await preReadImageHandler(makeEvent(overNewLimitPath))
+    expect(out.hookType).toBe('pass')
+
+    const after = summarize(30).by_kind['image_shrink_over_pixel_limit']
+    expect(after).toBeDefined()
+    expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+    expect(after?.bytes_saved ?? 0).toBe(0)
+  })
+
   it('passes a large image through unshrunk when image_shrink.enabled is false (regression: no way to opt out of shrinking)', async () => {
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nenabled = false\n', 'utf8')
     invalidateConfigCache()
@@ -381,6 +405,15 @@ describe('preReadImageHandler', () => {
     }
   })
 })
+
+/** Just enough of a PNG (signature + IHDR's width/height fields, 24 bytes total) for probeBufferMeta's PNG branch to report `width`x`height` without any IDAT -- that branch returns as soon as it has read those 8 header bytes, so this is FORMAT-DERIVED off the PNG spec's own layout (w3.org/TR/2003/REC-PNG-20031110/#11IHDR), never a real decodable image. */
+function fakePngHeader(width: number, height: number): Buffer {
+  const buf = Buffer.alloc(24)
+  buf.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+  buf.writeUInt32BE(width, 16)
+  buf.writeUInt32BE(height, 20)
+  return buf
+}
 
 /**
  * An animated GIF of `frames` full-canvas frames, padded with a comment extension the re-encode

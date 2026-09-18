@@ -543,6 +543,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'gdrive_image',
       'webfetch_image',
       'image_shrink_skipped',
+      'image_shrink_over_pixel_limit',
       'image_shrink_cache_hit',
       'image_ocr',
     ]),

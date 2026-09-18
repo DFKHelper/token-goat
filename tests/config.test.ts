@@ -661,7 +661,7 @@ describe('defaultConfig field spot-checks', () => {
   it('ImageShrinkConfig defaults', () => {
     const cfg = defaultConfig()
     expect(cfg.image_shrink.jpeg_quality).toBe(75)
-    expect(cfg.image_shrink.max_image_pixels).toBe(16_000_000)
+    expect(cfg.image_shrink.max_image_pixels).toBe(64_000_000)
     expect(cfg.image_shrink.screenshot_redirect).toBe(true)
     expect(cfg.image_shrink.ocr_enabled).toBe(true)
     expect(cfg.image_shrink.ocr_min_confidence).toBe(65)

@@ -14,23 +14,7 @@ import * as zlib from "node:zlib"
 import jpeg from "jpeg-js"
 import omggif from "omggif"
 
-/**
- * Ceiling on the pixel buffer a single decode may allocate, in bytes.
- *
- * Every decoder below sizes its output from the image's own header, so without a ceiling the file
- * chooses how much memory token-goat allocates. Measured on this engine before the ceiling existed:
- * a 3.7 KB GIF declaring a 1600x1600 canvas and 160 frames allocated 1,562 MB, linearly, because
- * each frame is a full canvas and all of them are held at once -- 500 frames fits in 11.5 KB and
- * comes to 5.1 GB. `image_shrink.max_image_pixels` does not stop it: that gate is `width * height`
- * and never looks at the frame count, so 1600x1600 passes with 84% of the budget to spare.
- *
- * 256 MB is four times the largest still the default 16 MP gate admits (16,000,000 x 4 bytes of
- * RGBA = 61 MB), so no single image that passes that gate is refused here. What it bounds is the
- * multi-frame case, where roughly 26 frames fit at the 1568px resize target and around 130 at
- * 800x600. Refusing is cheap: {@link shrinkImage} catches the throw and returns null, which passes
- * the original file through to the model untouched. Declining to shrink a very long animation is a
- * better outcome than allocating gigabytes to do it.
- */
+/** Ceiling on the pixel buffer a single decode may allocate, in bytes. Every decoder below sizes its output from the image's own header, so without a ceiling the file chooses how much memory token-goat allocates. Measured on this engine before the ceiling existed: a 3.7 KB GIF declaring a 1600x1600 canvas and 160 frames allocated 1,562 MB, linearly, because each frame is a full canvas and all of them are held at once -- 500 frames fits in 11.5 KB and comes to 5.1 GB. `image_shrink.max_image_pixels` does not stop it: that gate is `width * height` and never looks at the frame count, so 1600x1600 passes with 96% of the budget to spare (measured against this file's current 64,000,000 default). 256 MB leaves only about a 4.9% margin over the largest a still image at the default 64 MP gate in image_shrink.ts admits (64,000,000 x 4 bytes of RGBA = 256,000,000 bytes, against the 268,435,456-byte ceiling here) -- a much tighter relationship than an earlier, lower default left, because this check is the actual hard bound regardless of what that header-level gate allows through: raising the gate does not raise this. What the margin still has room for is the multi-frame case, where roughly 26 frames fit at the 1568px resize target and around 130 at 800x600. Refusing is cheap: {@link shrinkImage} catches the throw and returns null, which passes the original file through to the model untouched. Declining to shrink a very long animation is a better outcome than allocating gigabytes to do it. */
 const MAX_DECODED_BYTES = 256 * 1024 * 1024
 
 /**

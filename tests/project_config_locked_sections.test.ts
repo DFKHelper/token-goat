@@ -199,7 +199,7 @@ describe('loadConfig with a per-project override on disk', () => {
     fs.writeFileSync(path.join(root, '.token-goat.toml'), '[image_shrink]\nmax_image_pixels = 0\njpeg_quality = 40\n')
 
     const cfg = loadConfig(root)
-    expect(cfg.image_shrink.max_image_pixels).toBe(16_000_000)
+    expect(cfg.image_shrink.max_image_pixels).toBe(64_000_000)
     // Only the one key is locked -- the rest of the section is ordinary tuning and still applies.
     expect(cfg.image_shrink.jpeg_quality).toBe(40)
     expect(lastProjectConfigLockedKeys()).toEqual(['image_shrink.max_image_pixels'])

@@ -56,6 +56,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **A `.tif` file reaches the model as an image again instead of being denied as an oversized text file**: `.tiff` was recognised, `.tif` was not, so a TIFF using the shorter, more common spelling missed the image path entirely and hit the same large-file deny meant for oversized source or log files, offering commands like `token-goat symbol`/`skeleton` that make no sense against a binary image. `.tif` is now recognised alongside `.tiff`; the other common alternate-spelling pairs this set already covers (`.jpg`/`.jpeg`, `.heic`/`.heif`) were already both present.
 
+- **A routine 24-megapixel camera or phone photo now reaches the model shrunk instead of untouched, and the ceiling that used to block it silently now shows up in `token-goat stats`**: `image_shrink.max_image_pixels` shipped at 16,000,000, well under a common 24MP DSLR or 48MP phone sensor and under the exact input this feature exists to shrink, and the header probe that enforces it swallowed its own rejection into the same bare "not a candidate" result as a corrupt or unsupported file, so an oversized photo passed through full-size with no stat, no skip, nothing to show why it never shrank. The default is now 64,000,000, chosen against the image engine's own hard decode ceiling (67,108,864 pixels) rather than picked arbitrarily, and a distinct `image_shrink_over_pixel_limit` stat is now recorded whenever the configured limit -- default or user-set -- is the reason a file was never a shrink candidate.
+
 ## [2.9.15] - 2026-09-17
 
 ### Fixed
