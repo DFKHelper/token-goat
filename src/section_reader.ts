@@ -541,6 +541,7 @@ function resolveHeaderPos(
   headers: readonly SectionHeader[],
   base: string,
   ordinal: number | null,
+  allowFuzzy: boolean = true,
 ): { headerPos: number; redirectedFrom: string | null; occurrences: number[] | null } | null {
   const target = base.toLowerCase()
   const normalizedTarget = normalizeHeading(base).toLowerCase()
@@ -617,10 +618,130 @@ function resolveHeaderPos(
     const allWordsMatch = queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
     if (allWordsMatch) widenedMatches.push(i)
   }
-  if (widenedMatches.length !== 1) return null
-  const widenedPos = widenedMatches[0]
-  if (widenedPos === undefined) return null
-  return { headerPos: widenedPos, redirectedFrom: base, occurrences: null }
+  if (widenedMatches.length === 1) {
+    const widenedPos = widenedMatches[0]
+    if (widenedPos !== undefined) {
+      return { headerPos: widenedPos, redirectedFrom: base, occurrences: null }
+    }
+  }
+
+function sectionLevenshtein(a: string, b: string): number {
+  if (a === b) return 0
+  const la = a.length
+  const lb = b.length
+  if (la === 0) return lb
+  if (lb === 0) return la
+  const v0 = new Array<number>(lb + 1)
+  const v1 = new Array<number>(lb + 1)
+  for (let i = 0; i <= lb; i++) v0[i] = i
+  for (let i = 0; i < la; i++) {
+    v1[0] = i + 1
+    for (let j = 0; j < lb; j++) {
+      const cost = a.charCodeAt(i) === b.charCodeAt(j) ? 0 : 1
+      v1[j + 1] = Math.min(v1[j]! + 1, v0[j + 1]! + 1, v0[j]! + cost)
+    }
+    for (let j = 0; j <= lb; j++) v0[j] = v1[j]!
+  }
+  return v0[lb]!
+}
+
+// Fuzzy heading matching tier: catches minor phrasing differences, typos, punctuation differences,
+// stem variations, or extra/missing words (e.g. "Pre-Commit Hook" for "Pre-Commit Hook Configurations",
+// "Fuzzy Heading Matchers" for "Fuzzy Heading Matcher", or "Quick-Start Guide" for "Quick-Start & Usage Guide").
+const STOP_WORDS = new Set(['a', 'an', 'the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', '&'])
+const cleanTokens = (str: string): string[] =>
+  str.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0)
+
+  const rawQTokens = cleanTokens(base)
+  const qTokens = rawQTokens.filter((t) => !STOP_WORDS.has(t) || rawQTokens.length <= 2)
+
+  if (allowFuzzy && qTokens.length > 0) {
+    interface FuzzyCandidate {
+      readonly index: number
+      readonly score: number
+    }
+    const candidates: FuzzyCandidate[] = []
+
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i]
+      if (h === undefined) continue
+      const rawHTokens = cleanTokens(h.heading)
+      const hTokens = rawHTokens.filter((t) => !STOP_WORDS.has(t) || rawHTokens.length <= 2)
+      if (hTokens.length === 0) continue
+
+      const normH = normalizeHeading(h.heading).toLowerCase()
+      const maxLen = Math.max(normalizedTarget.length, normH.length)
+      const editDist = sectionLevenshtein(normalizedTarget, normH)
+      const strSim = maxLen > 0 ? 1 - editDist / maxLen : 0
+
+      let matchedQ = 0
+      for (const qw of qTokens) {
+        let best = 0
+        for (const hw of hTokens) {
+          if (qw === hw) {
+            best = 1.0
+            break
+          }
+          if (qw.length >= 3 && hw.length >= 3) {
+            if (hw.startsWith(qw) || qw.startsWith(hw)) {
+              best = Math.max(best, 0.9)
+            } else if (sectionLevenshtein(qw, hw) <= 1) {
+              best = Math.max(best, 0.85)
+            }
+          }
+        }
+        matchedQ += best
+      }
+
+      let matchedH = 0
+      for (const hw of hTokens) {
+        let best = 0
+        for (const qw of qTokens) {
+          if (qw === hw) {
+            best = 1.0
+            break
+          }
+          if (qw.length >= 3 && hw.length >= 3) {
+            if (hw.startsWith(qw) || qw.startsWith(hw)) {
+              best = Math.max(best, 0.9)
+            } else if (sectionLevenshtein(qw, hw) <= 1) {
+              best = Math.max(best, 0.85)
+            }
+          }
+        }
+        matchedH += best
+      }
+
+      const wordRecall = matchedQ / qTokens.length
+      const wordPrecision = matchedH / hTokens.length
+      const tokenDice = (2 * matchedQ) / (qTokens.length + hTokens.length)
+
+      let score = 0
+      if (strSim >= 0.8) {
+        score = strSim
+      } else if (tokenDice >= 0.75 && wordRecall >= 0.7 && wordPrecision >= 0.7) {
+        score = (tokenDice + wordRecall + wordPrecision) / 3
+      }
+
+      if (score >= 0.75) {
+        candidates.push({ index: i, score })
+      }
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.score - a.score)
+      const best = candidates[0]!
+      const runnerUp = candidates[1]
+      if (
+        candidates.length === 1 ||
+        (runnerUp !== undefined && best.score - runnerUp.score >= 0.08)
+      ) {
+        return { headerPos: best.index, redirectedFrom: base, occurrences: null }
+      }
+    }
+  }
+
+  return null
 }
 
 /**
@@ -666,14 +787,19 @@ function buildSectionResult(
  */
 /** Shared by {@link extractSection}/{@link readSection}: resolve `headingSpec` against
  * `text`'s header structure (parsed for `language`) and build the section result. */
-function resolveSectionFromText(text: string, headingSpec: string, language: string): SectionResult | null {
+function resolveSectionFromText(
+  text: string,
+  headingSpec: string,
+  language: string,
+  allowFuzzy: boolean = true,
+): SectionResult | null {
   const { headers, kind } = findHeaders(text, language)
   const { base, ordinal } = parseHeadingSpec(headingSpec, headers)
   if (base.length === 0) return null
 
   const lines = text.split('\n')
 
-  const resolved = resolveHeaderPos(headers, base, ordinal)
+  const resolved = resolveHeaderPos(headers, base, ordinal, allowFuzzy)
   if (resolved === null) return null
   const built = buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
   if (built === null || resolved.occurrences === null) return built
@@ -731,11 +857,12 @@ export function readSection(
   filePath: string,
   headingSpec: string,
   readFn?: (p: string) => string | null,
+  allowFuzzy: boolean = true,
 ): SectionResult | null {
   const text = readTextForSections(filePath, readFn)
   if (text === null) return null
 
-  return resolveSectionFromText(text, headingSpec, refineLanguageByContent(filePath, detectLanguage(filePath), text))
+  return resolveSectionFromText(text, headingSpec, refineLanguageByContent(filePath, detectLanguage(filePath), text), allowFuzzy)
 }
 
 // Finds the tightest (innermost) heading section whose line range contains a symbol's [lineStart, lineEnd] (1-based, inclusive) -- mirrors enclosingSymbol's containment/tie-break approach in graph_commands.ts, but over heading ranges instead of symbol ranges. Returns null when the file has no heading structure enclosing the symbol, which is the common case for source files without markdown-style doc comments.

@@ -10,19 +10,10 @@
  * The bundle-level cases below drive the real built binary, because the hint is emitted from run()'s
  * commander error branch -- wiring no unit test on the pure functions can pin.
  */
-import { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
-
 import { describe, expect, it } from 'vitest'
 
 import { attemptedCommandName, suggestForUnknownCommand } from '../src/command_intent.js'
-
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
-
-function runBundle(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [BUNDLE, ...args], { encoding: 'utf-8' })
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
-}
+import { runBundle } from './helpers/bundle.js'
 
 describe('suggestForUnknownCommand', () => {
   it('points a search-shaped guess at the three commands that actually search', () => {

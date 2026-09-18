@@ -914,3 +914,46 @@ describe('findContainingSection', () => {
     expect(findContainingSection('/no/such/path/nope.md', 1, 1)).toBeNull()
   })
 })
+
+describe('fuzzy heading matching for minor phrasing differences', () => {
+  const md = [
+    '# Documentation',
+    '',
+    '## Installation Guide',
+    'Run npm install.',
+    '',
+    '## Configuration Options',
+    'Configure via token-goat.json.',
+    '',
+    '## Quick-Start & Usage Guide',
+    'Follow these quick steps.',
+  ].join('\n')
+
+  it('resolves headings with minor typos (1-2 edit distance)', () => {
+    const file = tmpFile('fuzzy1.md', md)
+    const result = readSection(file, 'Instalation Guide')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Installation Guide')
+    expect(result?.redirectedFrom).toBe('Instalation Guide')
+  })
+
+  it('resolves singular query to plural heading', () => {
+    const file = tmpFile('fuzzy2.md', md)
+    const result = readSection(file, 'Configuration Option')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Configuration Options')
+  })
+
+  it('resolves phrasing variation across punctuation and stop words', () => {
+    const file = tmpFile('fuzzy3.md', md)
+    const result = readSection(file, 'Quick Start Guide')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Quick-Start & Usage Guide')
+  })
+
+  it('does not falsely match unrelated headings', () => {
+    const file = tmpFile('fuzzy4.md', md)
+    expect(readSection(file, 'Troubleshooting Guide')).toBeNull()
+  })
+})
+

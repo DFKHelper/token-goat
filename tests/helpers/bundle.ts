@@ -42,10 +42,26 @@ export interface RunResult {
   readonly stderr: string
 }
 
-export function runCli(args: string[], input = ''): RunResult {
-  // Spawn the prebuilt bundle directly with node - no per-call tsx transpile (much faster than --import tsx across dozens of spawns) and it exercises the real shipping artifact. No shell, so no .cmd-shim or quoting issues on Windows.
+export function tgIsolatedEnv(base: string, extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    HOME: base,
+    USERPROFILE: base,
+    LOCALAPPDATA: base,
+    XDG_DATA_HOME: base,
+    ...extra,
+  }
+}
+
+export function runBundle(
+  args: string[],
+  opts?: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string; timeout?: number },
+): RunResult {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
-    input,
+    cwd: opts?.cwd,
+    env: opts?.env,
+    input: opts?.input,
+    timeout: opts?.timeout,
     encoding: 'utf8',
   })
   return {
@@ -53,4 +69,8 @@ export function runCli(args: string[], input = ''): RunResult {
     stdout: res.stdout ?? '',
     stderr: res.stderr ?? '',
   }
+}
+
+export function runCli(args: string[], input = ''): RunResult {
+  return runBundle(args, { input })
 }

@@ -23,41 +23,21 @@
  * confirming the running daemon (not a manual `index` call) drains it.
  */
 
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { BUNDLE, readCoreBundleText } from './helpers/bundle.js'
-
-interface RunResult {
-  status: number | null
-  stdout: string
-  stderr: string
-}
+import { readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
-  const res = spawnSync(process.execPath, [BUNDLE, ...args], {
-    cwd,
-    env,
-    encoding: 'utf8',
-    timeout: 30000,
-  })
-  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  return sharedRunBundle(args, { cwd, env, timeout: 30000 })
 }
 
 /** `pollMs` is forwarded to the daemon as TG_WORKER_POLL_MS, so the drain assertions below do not have to wait out the 2000ms production default. */
 function tgEnv(base: string, pollMs?: number): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    HOME: base,
-    USERPROFILE: base,
-    LOCALAPPDATA: base,
-    XDG_DATA_HOME: base,
-    ...(pollMs === undefined ? {} : { TG_WORKER_POLL_MS: String(pollMs) }),
-  }
+  return tgIsolatedEnv(base, pollMs === undefined ? undefined : { TG_WORKER_POLL_MS: String(pollMs) })
 }
 
 /**

@@ -596,7 +596,7 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
     // If the file vanished
   }
 
-  const result = readSection(file, opts.after)
+  const result = readSection(file, opts.after, undefined, false)
   if (result === null) {
     const allHeadings = listSections(file)
     const messages = [`Section '${opts.after}' not found in '${file}'`]

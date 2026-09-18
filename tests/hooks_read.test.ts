@@ -4047,6 +4047,36 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
+    it('exempts small view_range slices (<=50 lines) from repeat-read denial counter', () => {
+      const p = path.join(os.tmpdir(), `tg-narrow-slice-${process.pid}-${Math.random().toString(36).slice(2)}.py`)
+      fs.writeFileSync(p, Array.from({ length: 300 }, (_, i) => `def method_${i}():\n    return ${i}\n`).join('\n'))
+      tmpFiles.push(p)
+
+      // Slice 1: [1, 25] (24 lines <= 50)
+      const r1 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 25] }, sessionId: 'test' }))
+      expect(r1.hookType).not.toBe('deny')
+
+      // Slice 2: [26, 50] (24 lines <= 50)
+      const r2 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [26, 50] }, sessionId: 'test' }))
+      expect(r2.hookType).not.toBe('deny')
+
+      // Slice 3: [51, 75] (24 lines <= 50)
+      const r3 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [51, 75] }, sessionId: 'test' }))
+      expect(r3.hookType).not.toBe('deny')
+
+      // Slice 4: [76, 100] (24 lines <= 50) - without exemption, 4th slice would be hard-denied by sequential paging or read count
+      const r4 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [76, 100] }, sessionId: 'test' }))
+      expect(r4.hookType).not.toBe('deny')
+
+      // Slice 5: [101, 125] (24 lines <= 50)
+      const r5 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [101, 125] }, sessionId: 'test' }))
+      expect(r5.hookType).not.toBe('deny')
+
+      // Re-reading identical lines that were already served should still be denied
+      const rRedundant = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 25] }, sessionId: 'test' }))
+      expect(rRedundant.hookType).toBe('deny')
+    })
+
     it('caps isProtectedRecentRead so files read 4+ times cannot loop indefinitely in small sessions', () => {
       const p = path.join(os.tmpdir(), `tg-cap-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, 'export const val = 42;\n')

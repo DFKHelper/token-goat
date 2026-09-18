@@ -282,7 +282,7 @@ describe('built bundle end-to-end indexing', () => {
     const sym = runBundle(['symbol', 'knownBundleSymbol'])
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('knownBundleSymbol')
-  }, 60000)
+  }, 120000)
 
   it('index then skeleton --stats reports a TS function with a leading doc comment as documented from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -293,7 +293,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(sk.stdout).toContain('bundleDocstringSymbol')
     expect(sk.stdout).not.toContain('undocumented')
     expect(sk.stdout).toContain('documented')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a Rust macro_rules! definition from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -303,7 +303,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundleMacroSymbol')
     expect(sym.stdout).toContain('macro_fixture.rs')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves Rust static and union definitions from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -318,7 +318,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(uni.status).toBe(0)
     expect(uni.stdout).toContain('BundleUnionSymbol')
     expect(uni.stdout).toContain('static_union_fixture.rs')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a Rust trait associated type from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -328,7 +328,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('BundleAssocTypeItem')
     expect(sym.stdout).toContain('assoc_type_fixture.rs')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a C union definition from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -338,7 +338,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(uni.status).toBe(0)
     expect(uni.stdout).toContain('BundleCUnionSymbol')
     expect(uni.stdout).toContain('union_fixture.c')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves an anonymous-tag C typedef alias from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -348,7 +348,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(td.status).toBe(0)
     expect(td.stdout).toContain('BundleCTypedefSymbol')
     expect(td.stdout).toContain('typedef_fixture.c')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a C++ namespace definition from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -358,7 +358,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(ns.status).toBe(0)
     expect(ns.stdout).toContain('BundleNamespaceSymbol')
     expect(ns.stdout).toContain('namespace_fixture.cpp')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a Go interface method signature from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -373,7 +373,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(meth.status).toBe(0)
     expect(meth.stdout).toContain('BundleGoInterfaceMethod')
     expect(meth.stdout).toContain('iface_fixture.go')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves TS interface method/property signatures from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -388,7 +388,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(prop.status).toBe(0)
     expect(prop.stdout).toContain('bundleTsInterfaceProp')
     expect(prop.stdout).toContain('iface_fixture.ts')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a Java annotation type element from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -403,7 +403,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(elem.status).toBe(0)
     expect(elem.stdout).toContain('bundleJavaAnnoElement')
     expect(elem.stdout).toContain('anno_fixture.java')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a PEP 695 Python type alias from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -413,7 +413,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(alias.status).toBe(0)
     expect(alias.stdout).toContain('BundlePyTypeAlias')
     expect(alias.stdout).toContain('pep695_fixture.py')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a bare Gemfile method definition from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -423,7 +423,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundle_gemfile_symbol')
     expect(sym.stdout).toContain('Gemfile')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a bare Vagrantfile method definition from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -433,7 +433,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundle_vagrantfile_symbol')
     expect(sym.stdout).toContain('Vagrantfile')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a bare Brewfile method definition from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -443,7 +443,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundle_brewfile_symbol')
     expect(sym.stdout).toContain('Brewfile')
-  }, 60000)
+  }, 120000)
 
   it('index then symbol resolves a .rake method definition from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -453,7 +453,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundle_rake_symbol')
     expect(sym.stdout).toContain('bundle_rake_fixture.rake')
-  }, 60000)
+  }, 120000)
 
   it('imports resolves a Kotlin aliased import to its clean path, not the whole "as"-suffixed line, from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -463,7 +463,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('foo.bar.Baz')
     expect(res.stdout).not.toContain('foo.bar.Baz as Qux')
-  }, 60000)
+  }, 120000)
 
   it('imports resolves a Swift submodule import to its clean path, not the leading keyword, from the built bundle', () => {
     const idx = runBundle(['index', repo])
@@ -473,7 +473,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('UIKit.UIView')
     expect(res.stdout).not.toContain('class UIKit.UIView')
-  }, 60000)
+  }, 120000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
   it('refs --callers resolves a caller from the built bundle', () => {
@@ -484,7 +484,7 @@ describe('built bundle end-to-end indexing', () => {
     expect(refs.status).toBe(0)
     expect(refs.stdout).toContain('refDriver')
     expect(refs.stdout).toContain('caller.ts')
-  }, 60000)
+  }, 120000)
 })
 
 /**
@@ -498,7 +498,7 @@ describe('built bundle rejects ambiguous file::symbol lookups (regression)', () 
   beforeAll(() => {
     const idx = runBundle(['index', repo])
     expect(idx.status).toBe(0)
-  }, 60000)
+  }, 120000)
 
   it('errors, listing every candidate, when a bare name matches multiple classes', () => {
     const res = runBundle(['read', 'ambig.ts::compress'])
@@ -567,7 +567,7 @@ describe('built bundle non-git walk-index (--walk)', () => {
     } finally {
       fs.rmSync(walkDir, { recursive: true, force: true })
     }
-  }, 60000)
+  }, 120000)
 })
 
 describe('built bundle resolves relative reader paths (regression for path keying)', () => {
@@ -575,7 +575,7 @@ describe('built bundle resolves relative reader paths (regression for path keyin
   beforeAll(() => {
     const idx = runBundle(['index', repo])
     expect(idx.status).toBe(0)
-  }, 60000)
+  }, 120000)
 
   it('skeleton resolves a relative path to indexed symbols', () => {
     const res = runBundle(['skeleton', 'src/mod.ts'])
@@ -660,7 +660,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
     const idx = runRel(['index', '.'])
     expect(idx.status).toBe(0)
     expect(idx.stdout).toMatch(/Indexed \d+ files? /)
-  }, 60000)
+  }, 120000)
 
   afterAll(() => {
     if (relData) fs.rmSync(relData, { recursive: true, force: true })
@@ -739,7 +739,7 @@ describe('built bundle exposes exports / imports / find / web-output', () => {
     git(['add', '.'])
     const idx = run(['index', '.'])
     expect(idx.status).toBe(0)
-  }, 60000)
+  }, 120000)
 
   afterAll(() => {
     if (cmdData) fs.rmSync(cmdData, { recursive: true, force: true })

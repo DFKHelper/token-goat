@@ -9,7 +9,7 @@
  * detailed metadata, Flow references, and an otherwise unknown *-meta.xml.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -22,7 +22,7 @@ import { queryRefs, querySymbols } from '../src/index_reader.js'
 import { normalizePath } from '../src/paths.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { runBundle as sharedRunBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(HERE, 'fixtures', 'salesforce-dx')
@@ -65,24 +65,7 @@ function runBundle(
   dataBase: string,
   args: readonly string[],
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync(process.execPath, [BUNDLE, ...args], {
-    cwd: repo,
-    // token-goat follows platformdirs semantics: macOS derives its data dir from HOME,
-    // Linux from XDG_DATA_HOME, and Windows from LOCALAPPDATA/USERPROFILE.
-    env: {
-      ...process.env,
-      HOME: dataBase,
-      USERPROFILE: dataBase,
-      LOCALAPPDATA: dataBase,
-      XDG_DATA_HOME: dataBase,
-    },
-    encoding: 'utf8',
-  })
-  return {
-    status: result.status,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-  }
+  return sharedRunBundle([...args], { cwd: repo, env: tgIsolatedEnv(dataBase) })
 }
 
 afterEach(() => {

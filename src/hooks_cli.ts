@@ -37,6 +37,109 @@ export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | '
  */
 export type HookPayload = Record<string, unknown>
 
+/** Canonical tool names recognized and handled by token-goat. */
+export const CANONICAL_TG_TOOLS = [
+  'Bash',
+  'BashOutput',
+  'Read',
+  'Write',
+  'Edit',
+  'WebFetch',
+  'WebSearch',
+  'Grep',
+  'Glob',
+  'Skill',
+  'NotebookEdit',
+  'ExitPlanMode',
+] as const
+
+/**
+ * Case-insensitively fold a tool name: lowercase, stripped of underscores and dashes.
+ */
+export function foldToolName(name: string): string {
+  return typeof name === 'string' ? name.toLowerCase().replace(/[_-]/g, '') : ''
+}
+
+/**
+ * Normalizes an inbound tool name against a harness map and canonical tool names
+ * case-insensitively and separator-insensitively.
+ */
+export function normalizeToolNameWithMap(toolName: string, nameMap?: Record<string, string>): string {
+  if (!toolName || typeof toolName !== 'string') return toolName
+
+  const stripped = toolName.includes(':') ? toolName.split(':').pop()! : toolName
+
+  // 1. Exact match in nameMap
+  if (nameMap) {
+    if (toolName in nameMap) return nameMap[toolName]!
+    if (stripped in nameMap) return nameMap[stripped]!
+  }
+
+  const lower = toolName.toLowerCase()
+  const lowerStripped = stripped.toLowerCase()
+  const folded = foldToolName(toolName)
+  const foldedStripped = foldToolName(stripped)
+
+  // 2. Case-insensitive or folded match in nameMap keys
+  if (nameMap) {
+    for (const [k, v] of Object.entries(nameMap)) {
+      const kLower = k.toLowerCase()
+      const kFolded = foldToolName(k)
+      if (kLower === lower || kLower === lowerStripped || kFolded === folded || kFolded === foldedStripped) {
+        return v
+      }
+    }
+    // 3. Name matches a mapped value directly (case-insensitive / folded)
+    for (const v of Object.values(nameMap)) {
+      const vLower = v.toLowerCase()
+      const vFolded = foldToolName(v)
+      if (vLower === lower || vLower === lowerStripped || vFolded === folded || vFolded === foldedStripped) {
+        return v
+      }
+    }
+  }
+
+  // 4. Matches any canonical token-goat tool name (case-insensitive / folded, e.g. web_search -> WebSearch, skill -> Skill)
+  for (const canonical of CANONICAL_TG_TOOLS) {
+    const cLower = canonical.toLowerCase()
+    const cFolded = foldToolName(canonical)
+    if (cLower === lower || cLower === lowerStripped || cFolded === folded || cFolded === foldedStripped) {
+      return canonical
+    }
+  }
+
+  return toolName
+}
+
+/**
+ * Copilot CLI tool name -> internal PascalCase tool name.
+ */
+export const COPILOT_CLI_TOOL_NAME_MAP: Record<string, string> = {
+  bash: 'Bash',
+  powershell: 'Bash',
+  read_bash: 'BashOutput',
+  read_powershell: 'BashOutput',
+  view: 'Read',
+  create: 'Write',
+  edit: 'Edit',
+  web_fetch: 'WebFetch',
+  web_search: 'WebSearch',
+  grep: 'Grep',
+  glob: 'Glob',
+  skill: 'Skill',
+  exit_plan_mode: 'ExitPlanMode',
+}
+
+/**
+ * Copilot CLI tool_input key -> internal key, per remapped tool.
+ */
+export const COPILOT_CLI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
+  Read: { path: 'file_path' },
+  Write: { path: 'file_path' },
+  Edit: { path: 'file_path', old_str: 'old_string', new_str: 'new_string' },
+  BashOutput: { shellId: 'bash_id' },
+}
+
 /**
  * Codex tool name → internal PascalCase tool name.
  * Codex uses lowercase/snake_case; token-goat handlers expect PascalCase.
@@ -380,11 +483,11 @@ function remapToolName(
   nameMap: Record<string, string>,
   inputKeyMap: Record<string, Record<string, string>>,
 ): Record<string, unknown> {
-  const mapped = nameMap[toolName] ?? toolName
+  const mapped = normalizeToolNameWithMap(toolName, nameMap)
   const result = { ...obj }
   result['tool_name'] = mapped
   const rawInput = obj['tool_input']
-  const keyMap = inputKeyMap[mapped]
+  const keyMap = inputKeyMap[mapped] ?? inputKeyMap[toolName]
   if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
     result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
   }
@@ -483,7 +586,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
   }
 
   if (harness === 'codex') {
-    const mapped = CODEX_TOOL_NAME_MAP[toolName]
+    const mapped = normalizeToolNameWithMap(toolName, CODEX_TOOL_NAME_MAP)
     const result = { ...obj }
     if (mapped) {
       result['tool_name'] = mapped
@@ -493,23 +596,21 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
   }
 
   // Copilot CLI's shim (src/bridges/copilot_cli.ts) already remaps the built-ins it knows
-  // (bash/powershell->Bash, view->Read, ...) and forwards everything else verbatim, so what
-  // arrives here for an MCP call is Copilot's own `<server>-<tool>` spelling. Canonicalise it
-  // to `mcp__<server>__<tool>` -- by exact match against Copilot's own tool cache only, never
-  // by guessing from the name's shape -- so the MCP dedup/compression and repeat-screenshot
-  // handlers, all of which gate on that prefix, stop being dead code on Copilot. A name with
-  // no cache entry (including every built-in) passes through untouched.
+  // (bash/powershell->Bash, view->Read, ...) and forwards everything else verbatim. Remap
+  // via COPILOT_CLI_TOOL_NAME_MAP case-insensitively, and canonicalise MCP tools to
+  // `mcp__<server>__<tool>` so handlers behind all tool names work consistently.
   if (harness === 'copilot_cli') {
-    const result = { ...obj }
-    result['tool_name'] = canonicalizeCopilotMcpToolName(toolName)
+    const result = remapToolName(obj, toolName, COPILOT_CLI_TOOL_NAME_MAP, COPILOT_CLI_INPUT_KEY_MAP)
+    result['tool_name'] = canonicalizeCopilotMcpToolName(result['tool_name'] as string)
     result['_tg_harness'] = harness
     return result
   }
 
   if (harness === 'vscode') {
+    const mapped = normalizeToolNameWithMap(toolName, VSCODE_TOOL_NAME_MAP)
     const result = { ...obj }
-    result['tool_name'] = VSCODE_TOOL_NAME_MAP[toolName] ?? toolName
-    const keyMap = VSCODE_INPUT_KEY_MAP[toolName]
+    result['tool_name'] = mapped
+    const keyMap = VSCODE_INPUT_KEY_MAP[toolName] ?? VSCODE_INPUT_KEY_MAP[mapped]
     const rawInput = obj['tool_input']
     if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
       result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
@@ -547,6 +648,10 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
   }
 
   const result = { ...obj }
+  const normalizedCanonical = normalizeToolNameWithMap(toolName)
+  if (normalizedCanonical !== toolName) {
+    result['tool_name'] = normalizedCanonical
+  }
   result['_tg_harness'] = harness
   return result
 }

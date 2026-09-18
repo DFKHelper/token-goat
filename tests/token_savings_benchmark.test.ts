@@ -28,7 +28,7 @@
  * test is for -- so the exception is scoped to the case that earned it.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -36,7 +36,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { runBundle as sharedRunBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE_DIR = path.join(HERE, 'fixtures', 'token_savings')
@@ -61,24 +61,7 @@ function runBundle(
   dataBase: string,
   args: readonly string[],
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync(process.execPath, [BUNDLE, ...args], {
-    cwd: repo,
-    // token-goat follows platformdirs semantics: macOS derives its data dir from HOME,
-    // Linux from XDG_DATA_HOME, and Windows from LOCALAPPDATA/USERPROFILE.
-    env: {
-      ...process.env,
-      HOME: dataBase,
-      USERPROFILE: dataBase,
-      LOCALAPPDATA: dataBase,
-      XDG_DATA_HOME: dataBase,
-    },
-    encoding: 'utf8',
-  })
-  return {
-    status: result.status,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-  }
+  return sharedRunBundle([...args], { cwd: repo, env: tgIsolatedEnv(dataBase) })
 }
 
 interface Measurement {
