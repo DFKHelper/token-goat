@@ -1,18 +1,11 @@
 /**
  * The session_start hook runs the drift sweep and says so only when it found something.
  *
- * This is the wiring that makes reconciliation automatic rather than a command nobody remembers to
- * run, and it sits on the hook path this repo's own measurement says is dominated by startup cost.
- * So there are two failure directions, not one: a hook that never repairs anything, and a hook
- * that narrates on every session start and charges for the line. Both have cases here.
+ * This is the wiring that makes reconciliation automatic rather than a command nobody remembers to run, and it sits on the hook path this repo's own measurement says is dominated by startup cost. So there are two failure directions, not one: a hook that never repairs anything, and a hook that narrates on every session start and charges for the line. Both have cases here.
  *
- * The sweep is also the one piece of this hook that touches every tracked file, so "never throws"
- * is a property and not an aspiration: a session_start handler that threw would cost the agent the
- * routing reminder the hook exists to deliver, on every session, to fix a stale symbol lookup.
+ * The sweep is also the one piece of this hook that touches every tracked file, so "never throws" is a property and not an aspiration: a session_start handler that threw would cost the agent the routing reminder the hook exists to deliver, on every session, to fix a stale symbol lookup.
  *
- * Provenance: CAPTURE. Every expectation is measured from real `token-goat hook session_start`
- * runs against a real indexed temp project, driving the built bundle over the same stdin JSON
- * shape the harness sends. No expected string is transcribed from `hooks_session_start.ts`.
+ * Provenance: CAPTURE. Every expectation is measured from real `token-goat hook session_start` runs against a real indexed temp project, driving the built bundle over the same stdin JSON shape the harness sends. No expected string is transcribed from `hooks_session_start.ts`.
  */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -20,6 +13,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
+
+import { getDb } from '../src/db.js'
+import { findGlobalDb } from './helpers/find_global_db.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -69,26 +65,22 @@ beforeAll(() => {
 describe('session_start reconciliation', () => {
   it('delivers the routing reminder and no drift line when the index already matches disk', () => {
     const context = sessionStartContext()
-    // Calibration: the hook is doing its normal job here, so a later "the drift line appeared"
-    // assertion is measuring the sweep and not the hook simply always emitting the same text.
+    // Calibration: the hook is doing its normal job here, so a later "the drift line appeared" assertion is measuring the sweep and not the hook simply always emitting the same text.
     expect(context, 'the hook injected no context at all').toContain('token-goat:')
     expect(context.toLowerCase(), 'a clean index produced a drift line anyway').not.toContain('changed outside this session')
   })
 
   it('names the drift after a file is edited with no hook watching', () => {
-    // Written straight to disk, which is what an editor or a pull in another terminal does. No
-    // token-goat code path sees this happen -- that absence is the whole point.
+    // Written straight to disk, which is what an editor or a pull in another terminal does. No token-goat code path sees this happen -- that absence is the whole point.
     writeFileSync(join(projectDir, 'alpha.ts'), 'export function alpha(): number {\n  return 4242\n}\n')
     const context = sessionStartContext()
     expect(context).toContain('changed outside this session')
-    // The routing reminder still has to survive: the drift line is added to the hook's output, not
-    // substituted for it.
+    // The routing reminder still has to survive: the drift line is added to the hook's output, not substituted for it.
     expect(context).toContain('symbol')
   })
 
   it('goes quiet again once the drift has been reconciled', () => {
-    // The previous case queued the file; draining it and reindexing must return the hook to
-    // silence. A note that never clears is a permanent tax and stops meaning anything.
+    // The previous case queued the file; draining it and reindexing must return the hook to silence. A note that never clears is a permanent tax and stops meaning anything.
     expect(cli(['index', '.']).code).toBe(0)
     const context = sessionStartContext()
     expect(context, 'the drift note persisted after the index was brought up to date').not.toContain('changed outside this session')
@@ -105,13 +97,23 @@ describe('session_start reconciliation', () => {
     expect(withoutSweep).toContain('token-goat:')
   })
 
+  // Regression: files queued only because their rows came from an older parser were counted in the same "changed outside this session" line as real edits, so after an upgrade the note claimed 1,484 files had been edited outside the session when none had.
+  it('says an upgrade-stale file was indexed by an older version, not changed outside this session', () => {
+    expect(cli(['index', '.']).code, 'bringing the fixture index up to date failed').toBe(0)
+    expect(sessionStartContext(), 'calibration: the up-to-date index still reports drift').not.toContain('reindexing')
+    const db = getDb(findGlobalDb(homeDir) as string)
+    db.prepare("UPDATE files SET parser_sha = '0000000000000000' WHERE path LIKE '%alpha.ts'").run()
+    db.close()
+
+    const context = sessionStartContext()
+    expect(context).toContain('reindexing 1 file unchanged on disk but indexed by an older version of token-goat')
+    expect(context).not.toContain('changed outside this session')
+  })
+
   it('discloses a budget-exhausted sweep instead of reading as a clean index', () => {
-    // Bring the index up to date first, then add a brand-new tracked file the index has never
-    // seen. A 0ms budget makes reconcileProject break out of its scan loop before it ever reaches
-    // this file (see reconcileProject's per-iteration clock check), so `added` comes back empty
+    // Bring the index up to date first, then add a brand-new tracked file the index has never seen. A 0ms budget makes reconcileProject break out of its scan loop before it ever reaches this file (see reconcileProject's per-iteration clock check), so `added` comes back empty
     // -- not because the file is unindexed-but-known, but because the sweep never got that far.
-    // isReconcileClean() only looks at changed/added/removed, so a note gated on it alone reads
-    // this exact case as "nothing to report" even though budgetExhausted is true.
+    // isReconcileClean() only looks at changed/added/removed, so a note gated on it alone reads this exact case as "nothing to report" even though budgetExhausted is true.
     expect(cli(['index', '.']).code, 'bringing the fixture index up to date failed').toBe(0)
     writeFileSync(join(projectDir, 'zzz_never_indexed.ts'), 'export function neverIndexed(): number {\n  return 7\n}\n')
     const git = (...args: string[]): void => {
