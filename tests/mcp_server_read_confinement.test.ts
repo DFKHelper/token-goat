@@ -2,7 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -217,6 +217,21 @@ function textOf(result: unknown): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return ((result as any).content as any[])[0].text as string
 }
+
+// Confinement ships OFF by default (src/config_defaults.ts, mcp.confine_reads_to_project_root). Every assertion below is about what the gate does when it is ON, so this file turns it on explicitly; the shipped-off default is covered by tests/mcp_shipped_defaults.test.ts, which forces no env at all.
+let originalConfineReads: string | undefined
+
+beforeEach(() => {
+  originalConfineReads = process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+  process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '1'
+  invalidateConfigCache()
+})
+
+afterEach(() => {
+  if (originalConfineReads === undefined) delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+  else process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = originalConfineReads
+  invalidateConfigCache()
+})
 
 describe('mcp read confinement', () => {
   let root: string

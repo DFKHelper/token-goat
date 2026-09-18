@@ -33,6 +33,7 @@ vi.mock('../src/index_reader.js', async (importOriginal) => {
 })
 
 const { createMcpServer } = await import('../src/mcp_server.js')
+const { invalidateConfigCache } = await import('../src/config.js')
 
 const IN_ROOT = 'IN-ROOT-MARKER'
 const SECRET = 'SECRET-MARKER-DO-NOT-LEAK'
@@ -55,6 +56,21 @@ function textOf(result: unknown): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return ((result as any).content as any[])[0].text as string
 }
+
+// Confinement ships OFF by default (src/config_defaults.ts, mcp.confine_reads_to_project_root). Every assertion below is about what the gate does when it is ON, so this file turns it on explicitly; the shipped-off default is covered by tests/mcp_shipped_defaults.test.ts, which forces no env at all.
+let originalConfineReads: string | undefined
+
+beforeEach(() => {
+  originalConfineReads = process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+  process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '1'
+  invalidateConfigCache()
+})
+
+afterEach(() => {
+  if (originalConfineReads === undefined) delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+  else process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = originalConfineReads
+  invalidateConfigCache()
+})
 
 describe('mcp confinement: gate base must equal execution base', () => {
   let root: string

@@ -58,6 +58,21 @@ const REFUSAL = 'could not be resolved to a real location'
 /** The ordinary out-of-root wording, asserted absent so the two refusals cannot silently merge. */
 const OUT_OF_ROOT = 'is outside the project root "'
 
+// Confinement ships OFF by default (src/config_defaults.ts, mcp.confine_reads_to_project_root). Every assertion below is about what the gate does when it is ON, so this file turns it on explicitly; the shipped-off default is covered by tests/mcp_shipped_defaults.test.ts, which forces no env at all.
+let originalConfineReads: string | undefined
+
+beforeEach(() => {
+  originalConfineReads = process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+  process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '1'
+  invalidateConfigCache()
+})
+
+afterEach(() => {
+  if (originalConfineReads === undefined) delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+  else process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = originalConfineReads
+  invalidateConfigCache()
+})
+
 describe('the MCP confinement gate fails closed on a target it cannot resolve', () => {
   let projectRoot: string
   let cleanup: (() => Promise<void>) | undefined
