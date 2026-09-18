@@ -1435,6 +1435,20 @@ content here` },
     expect(result.hookType).toBe('pass')
   })
 
+  it('blocks Reads of files under dist/ (generated/build artifacts) with a deny output', () => {
+    const result = preReadHandler(readEvent('/project/dist/token-goat.mjs'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Generated/build artifact')
+      expect(result.message).toContain('read the source file instead')
+    }
+  })
+
+  it('allows Grep to search build output (dist/), exempting it from the generated/build artifact deny', () => {
+    const result = preReadHandler(grepPathEvent('/project/dist/token-goat.mjs'))
+    expect(result.hookType).not.toBe('deny')
+  })
+
   it('does not hard-deny repeated Grep calls scoped to the same directory with different patterns — Grep cost/relevance depends on the pattern, not just the path, so it is exempt from the count-based re-read dedup', () => {
     const dir = '/project/src/components'
     const grepWithPattern = (pattern: string): HookEvent => ({

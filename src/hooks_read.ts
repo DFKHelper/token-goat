@@ -586,7 +586,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     )
   }
 
-  if (isInBuildDir(normalized) || isGeneratedFile(normalized)) {
+  if (event.toolName !== 'Grep' && (isInBuildDir(normalized) || isGeneratedFile(normalized))) {
     return denyOutput(
       'Generated/build artifact — read the source file instead.',
     )
