@@ -25,6 +25,7 @@ import type { SymbolEntry } from './parser_types.js'
 import {
   emit,
   emitErr,
+  fileIsGone,
   findSpecSeparator,
   formatAmbiguity,
   formatBareNameSpecError,
@@ -35,6 +36,7 @@ import {
   recordReadStat,
   resolveBody,
   resolveSymbolSpec,
+  staleWarning,
   sumFileSizes,
   trimBlankLines,
 } from './read_commands.js'
@@ -70,6 +72,8 @@ export interface BriefResult {
   hiddenByExcludeTests?: number
   /** How many (post `--exclude-tests`) callers `--grep` dropped. Same omit-when-zero convention as {@link hiddenByExcludeTests}. */
   hiddenByGrep?: number
+  /** Present and `true` only when the resolved symbol's file is no longer on disk, mirroring `runRead`'s json branch -- omitted for a live file so existing output keeps its shape. */
+  deleted?: boolean
   section: SectionResult | null
 }
 
@@ -153,6 +157,8 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
       truncated,
       ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}),
       ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}),
+      // Mirrors runRead's json branch: emitting the row verbatim would hand a JSON consumer a deleted file's stale body with no signal it is no longer live.
+      ...(fileIsGone(match.filePath) ? { deleted: true } : {}),
       section,
     }
     const jsonText = displaySafeJson(result)
@@ -169,6 +175,9 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
     body,
     '',
   ]
+
+  // Same staleWarning/healStaleIndex pair every other single-file surgical-read command runs (resolveSymbolSpec above already heals a stale-but-reparseable file in place; this is the same trailing check runRead makes to catch what healing could not fix -- most visibly a deleted file, which healStaleIndex leaves untouched).
+  const warning = staleWarning(match.filePath)
 
   // An empty caller block reads as "nothing calls this", which for a symbol exercised only by tests is the opposite of the truth and invites deleting live code -- so when the filter is what emptied it, say so instead of showing a bare zero.
   const hiddenNote = excludeTests && hiddenByExcludeTests > 0 ? ` (${excludeTestsHiddenNote(hiddenByExcludeTests)})` : ''
@@ -200,7 +209,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
     lines.push(`Section: ${section.heading} (lines ${section.lineStart}-${section.lineEnd})`)
   }
 
-  const text = guardText(trimBlankLines(lines).join('\n'), 'symbol')
+  const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol')
   if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: 0 }
 }
