@@ -763,8 +763,7 @@ export function processDirtyBatch(
         remove(p)
         clearRetryCount(path.join(dir, 'global.db'), p)
       } catch (err) {
-        // A failed deletion leaves stale symbols just like a failed reindex. Keep it
-        // queued within the same retry budget, without blocking healthy batch entries.
+        // A failed deletion leaves stale symbols just like a failed reindex. Keep it queued within the same retry budget, without blocking healthy batch entries.
         appendWorkerErrorLog(dir, `${new Date().toISOString()} removeFileFromIndex failed for ${p}: ${extractErrorMessage(err)}\n`)
         requeue(dir, p)
       }
@@ -772,8 +771,7 @@ export function processDirtyBatch(
     }
     const sha = fingerprintFile(p)
     if (sha === null) {
-      // The file exists but couldn't be read right now (lock/permission/race) -- see
-      // logTransientReadFailure's doc comment. Log and requeue instead of silently dropping it.
+      // The file exists but couldn't be read right now (lock/permission/race) -- see logTransientReadFailure's doc comment. Log and requeue instead of silently dropping it.
       logTransientReadFailure(dir, p)
       requeue(dir, p)
       continue

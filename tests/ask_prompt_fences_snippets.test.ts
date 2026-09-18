@@ -63,8 +63,7 @@ describe('token-goat ask fences and redacts the snippets it sends to a backend',
   beforeEach(() => {
     vi.mocked(spawnSync).mockClear()
     vi.mocked(searchSymbolsFts).mockReturnValue([hostileHit()])
-    // Backend discovery checks the filesystem; use a known executable on every platform.
-    // spawnSync stays mocked, so it only captures the prompt and never executes Node.
+    // Backend discovery checks the filesystem; use a known executable on every platform. spawnSync stays mocked, so it only captures the prompt and never executes Node.
     vi.stubEnv('TOKEN_GOAT_ASK_BACKEND', process.execPath)
   })
 
