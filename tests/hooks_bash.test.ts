@@ -8,14 +8,7 @@ import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 
-// vi.mock is hoisted — this redirects configPath() to a per-test-file temp
-// file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests
-// near the bottom of this file can set a non-default config value
-// deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts.
-// dataDir() is also redirected to an isolated temp dir so the git-mutation
-// staleness-enqueue tests below (which exercise the real queue/dirty.txt
-// write path via enqueueDirtyPathSafe) never touch the real local dirty
-// queue -- mirrors tests/hooks_edit.test.ts's isolation pattern.
+// vi.mock is hoisted — this redirects configPath() to a per-test-file temp file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests near the bottom of this file can set a non-default config value deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts. dataDir() is also redirected to an isolated temp dir so the git-mutation staleness-enqueue tests below (which exercise the real queue/dirty.txt write path via enqueueDirtyPathSafe) never touch the real local dirty queue -- mirrors tests/hooks_edit.test.ts's isolation pattern.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -43,11 +36,7 @@ import { foldPath } from '../src/util.js'
 /**
  * The dirty queue, case-folded for comparison.
  *
- * The git-mutation tests build their expected path from `tmpdir()` (the environment's spelling,
- * `C:\WINDOWS\TEMP`) while the enqueued path originates from git's own output (the on-disk
- * spelling, `C:/Windows/Temp`). Both name the same file, so a case-sensitive `toContain` fails
- * on a distinction the filesystem does not make. foldPath is the product's own path-comparison
- * function, so folding both sides asserts the invariant that actually holds.
+ * The git-mutation tests build their expected path from `tmpdir()` (the environment's spelling, `C:\WINDOWS\TEMP`) while the enqueued path originates from git's own output (the on-disk spelling, `C:/Windows/Temp`). Both name the same file, so a case-sensitive `toContain` fails on a distinction the filesystem does not make. foldPath is the product's own path-comparison function, so folding both sides asserts the invariant that actually holds.
  */
 function foldedDirtyPaths(): string[] {
   return getDirtyPaths().map(foldPath)
@@ -112,7 +101,7 @@ describe('postBashHandler', () => {
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('uncompressed. For large tool outputs, run with \'token-goat compress')
+      expect(result.context).toContain('`token-goat compress -c "curl http://example.com/api"`')
       expect(result.context).toContain('token-goat bash-output')
     }
   })
@@ -122,7 +111,7 @@ describe('postBashHandler', () => {
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('uncompressed. For large tool outputs, run with \'token-goat compress')
+      expect(result.context).toContain('`token-goat compress -c "curl http://example.com/api && echo done"`')
       expect(result.context).toContain('token-goat bash-output')
     }
   })
@@ -271,10 +260,7 @@ describe('postBashHandler', () => {
     }
   })
 
-  // Compound/piped commands escape the pre-hook's `token-goat compress` wrapper (their shell
-  // operators would break the -c arg), so before this their large output was shown raw. The post
-  // hook now applies the same generic compressor to the already-captured output and caches the
-  // full text for recall. Pre-fix, all three of these compound cases returned hookType 'pass'.
+  // Compound/piped commands escape the pre-hook's `token-goat compress` wrapper (their shell operators would break the -c arg), so before this their large output was shown raw. The post hook now applies the same generic compressor to the already-captured output and caches the full text for recall. Pre-fix, all three of these compound cases returned hookType 'pass'.
   it('compresses a compound/piped command output and caches the full text for recall', async () => {
     const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
     const result = await postBashHandler(makePostBashEvent('grep pattern app.log | sort', dup))
@@ -282,8 +268,7 @@ describe('postBashHandler', () => {
     if (result.hookType === 'rewriteOutput') {
       // The rewritten view is far smaller than the raw output (3000 identical lines → ~1).
       expect(result.updatedOutput.length).toBeLessThan(dup.length / 10)
-      // A recall pointer to the full output must be present, and it must use --full: a bare
-      // `bash-output <id>` elides head/tail, so only --full genuinely returns the complete output.
+      // A recall pointer to the full output must be present, and it must use --full: a bare `bash-output <id>` elides head/tail, so only --full genuinely returns the complete output.
       expect(result.updatedOutput).toContain('--full')
       const m = result.updatedOutput.match(/bash-output (\S+)/)
       expect(m).not.toBeNull()
@@ -315,9 +300,7 @@ describe('postBashHandler', () => {
   })
 
   it('does NOT compact a failing compound command — its diagnostics must reach the model in full', async () => {
-    // A non-zero exit means the pipeline failed; the model needs the whole error on its first read,
-    // not a compacted view behind a --full recall. Pre-fix (no exit-code gate) this compacted like
-    // any other compound command.
+    // A non-zero exit means the pipeline failed; the model needs the whole error on its first read, not a compacted view behind a --full recall. Pre-fix (no exit-code gate) this compacted like any other compound command.
     const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
     const event = makeHookEvent({
       eventName: 'post_tool_use',
@@ -494,9 +477,7 @@ describe('preBashHandler — unbalanced shell quoting false positives (detectUnb
     }
   })
 
-  // Inside ANSI-C quoting a backslash escapes the next character, so the apostrophe in `it\'s`
-  // does not end the string. Reading it with the plain-single-quote rule closed the string early
-  // and reported an unclosed quote on a command that runs fine.
+  // Inside ANSI-C quoting a backslash escapes the next character, so the apostrophe in `it\'s` does not end the string. Reading it with the plain-single-quote rule closed the string early and reported an unclosed quote on a command that runs fine.
   it('does not false-positive on an escaped apostrophe inside ANSI-C quoting', () => {
     const result = preBashHandler(makeBashEvent("echo $'it\\'s a test'"))
     expect(result.hookType, 'ANSI-C $\'...\' with an escaped apostrophe is a complete, valid command').toBe('pass')
@@ -512,8 +493,7 @@ describe('preBashHandler — unbalanced shell quoting false positives (detectUnb
     expect(result.hookType).toBe('pass')
   })
 
-  // The guard must not swallow the real thing it was added next to: a `$'` that never closes is
-  // still an unclosed single quote and must still be reported.
+  // The guard must not swallow the real thing it was added next to: a `$'` that never closes is still an unclosed single quote and must still be reported.
   it('still flags an ANSI-C quote that is never closed', () => {
     const result = preBashHandler(makeBashEvent("echo $'never closed"))
     expect(result.hookType).toBe('context')
@@ -592,9 +572,7 @@ describe('preBashHandler — cd-prefix stripping', () => {
     const result = preBashHandler(makeBashEvent('cd subdir && cat file.py', '/repo'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      // The suggested command must not name the bare path extracted from the stripped
-      // command — that path is relative to `subdir`, not to the actual cwd the model runs
-      // its next command from, so it would fail to resolve if followed literally.
+      // The suggested command must not name the bare path extracted from the stripped command — that path is relative to `subdir`, not to the actual cwd the model runs its next command from, so it would fail to resolve if followed literally.
       expect(result.context).not.toContain('"file.py::')
       const expectedPath = resolveIndexPath('file.py', resolveIndexPath('subdir', '/repo'))
       expect(result.context).toContain(expectedPath)
@@ -676,8 +654,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('denies a multi-file cat that a single-file cat would deny (regex previously anchored one path, so `cat a.ts b.ts` slipped through)', () => {
-    // `cat src/a.ts` alone is denied; the single-path regex `$`-anchor rejected a
-    // trailing second path, so `cat src/a.ts src/b.ts` bypassed the deny entirely.
+    // `cat src/a.ts` alone is denied; the single-path regex `$`-anchor rejected a trailing second path, so `cat src/a.ts src/b.ts` bypassed the deny entirely.
     const event = makeBashEvent('cat src/a.ts src/b.ts')
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
@@ -728,10 +705,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('does not false-positive on a command that merely contains the substring "python3" elsewhere', () => {
-    // The python-read detector used to be unanchored (`/python3?/.test(cmd)`), matching that
-    // substring ANYWHERE in the command — not just an actual python invocation. A command that
-    // just mentions "python3" in passing (e.g. a commit message) while separately calling an
-    // unrelated open(...) (here a Node one-liner) must not be misread as a Python file read.
+    // The python-read detector used to be unanchored (`/python3?/.test(cmd)`), matching that substring ANYWHERE in the command — not just an actual python invocation. A command that just mentions "python3" in passing (e.g. a commit message) while separately calling an unrelated open(...) (here a Node one-liner) must not be misread as a Python file read.
     const event = makeBashEvent("git commit -m \"add python3 support\" && node -e \"require('fs').open('config.json', 'r', cb)\"")
     const result = preBashHandler(event)
     expect(result.hookType).toBe('pass')
@@ -1006,15 +980,9 @@ describe('preBashHandler — cat source file recall', () => {
    * `head` writes to the line-range ledger and never read from it.
    *
    * `recordBashFileReadsForSessionCache` has always recorded 1..n for a successful `head -n N file`
-   * -- leading-lines reads are the one truncated shape whose absolute range is known. Nothing ever
-   * read that entry back, so a second `head -30 CHANGELOG.md` produced the same generic advice as
-   * the first and never mentioned that those lines were already in context. Observed live: the same
-   * `head -30 CHANGELOG.md` twice verbatim in one session, and five near-identical CHANGELOG
-   * head-reads in another.
+   * -- leading-lines reads are the one truncated shape whose absolute range is known. Nothing ever read that entry back, so a second `head -30 CHANGELOG.md` produced the same generic advice as the first and never mentioned that those lines were already in context. Observed live: the same `head -30 CHANGELOG.md` twice verbatim in one session, and five near-identical CHANGELOG head-reads in another.
    *
-   * A ledger's write half and read half are separately observable, and a guard holding only one of
-   * them is indistinguishable from a working guard unless both directions are asserted -- hence the
-   * paired "first read does not warn" test below.
+   * A ledger's write half and read half are separately observable, and a guard holding only one of them is indistinguishable from a working guard unless both directions are asserted -- hence the paired "first read does not warn" test below.
    */
   it('a first head read gets the normal surgical hint and no overlap warning', async () => {
     const first = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_demo.md'))
@@ -1065,9 +1033,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a repeat tail read still gets the plain hint, since its absolute start line is unknown', async () => {
-    // The deliberate non-change. `tail` is recorded as truncated, not as a range, because where its
-    // output starts depends on the file's total length -- which this hook does not know. Claiming an
-    // overlap for it would be a fabricated range, so the plain hint is the correct outcome.
+    // The deliberate non-change. `tail` is recorded as truncated, not as a range, because where its output starts depends on the file's total length -- which this hook does not know. Claiming an overlap for it would be a fabricated range, so the plain hint is the correct outcome.
     preBashHandler(makeBashEvent('tail -n 30 docs/paging_tail_demo.md'))
     await postBashHandler(makePostBashEvent('tail -n 30 docs/paging_tail_demo.md', 'line\n'.repeat(30)))
 
@@ -1673,12 +1639,7 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     expect(result.hookType).toBe('rewriteInput')
   })
 
-  // Every write fixture above spells the mode as the second positional argument, directly after a
-  // flat string-literal path, and pairs it with a `.write(` the guard also matches on its own. The
-  // guard's own span for the mode was `open\\s*\\([^)]*,\\s*['"][wa]`, and none of those fixtures ever
-  // asked it to reach past a nested call, read a keyword argument, or recognise a mode outside
-  // `w`/`a`. These three do, and each one was denied before: the caller was told to extract a
-  // symbol from a file the command was about to create.
+  // Every write fixture above spells the mode as the second positional argument, directly after a flat string-literal path, and pairs it with a `.write(` the guard also matches on its own. The guard's own span for the mode was `open\\s*\\([^)]*,\\s*['"][wa]`, and none of those fixtures ever asked it to reach past a nested call, read a keyword argument, or recognise a mode outside `w`/`a`. These three do, and each one was denied before: the caller was told to extract a symbol from a file the command was about to create.
   it('passes through a write whose path argument is itself a call', () => {
     const event = makeBashEvent("python3 -c \"import json; json.dump(d, open(os.path.join(t,'out.json'),'w'))\"")
     const result = preBashHandler(event)
@@ -1697,8 +1658,7 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     expect(result.hookType, 'a pure write was denied as a read').not.toBe('deny')
   })
 
-  // The counterweight: reading is still what the mode says it is, in each of the same shapes, so
-  // the wider guard cannot be satisfied by any open() call at all.
+  // The counterweight: reading is still what the mode says it is, in each of the same shapes, so the wider guard cannot be satisfied by any open() call at all.
   it('still denies a read whose path argument is itself a call', () => {
     const event = makeBashEvent("python3 -c \"import json; d=json.load(open(os.path.join(t,'out.json'), 'r'))\"")
     const result = preBashHandler(event)
@@ -1711,9 +1671,7 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     expect(result.hookType).toBe('deny')
   })
 
-  // `.write(` on its own used to exempt a command from the read check, and a standard stream has a
-  // .write too. These two commands put the same whole file into the conversation; only the print
-  // one was ever caught.
+  // `.write(` on its own used to exempt a command from the read check, and a standard stream has a .write too. These two commands put the same whole file into the conversation; only the print one was ever caught.
   it('denies a whole-file read piped to sys.stdout.write, as it does the print spelling', () => {
     const viaPrint = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts').read())\""))
     const viaStdout = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stdout.write(open('src/cli.ts').read())\""))
@@ -1726,45 +1684,37 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     expect(result.hookType, 'writing to a stream is not a file write').toBe('deny')
   })
 
-  // The counterweight: a write through a real file object is still a write, so narrowing the
-  // receiver has not turned every write back into a denied read.
+  // The counterweight: a write through a real file object is still a write, so narrowing the receiver has not turned every write back into a denied read.
   it('still passes through a write made through a file-object variable', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"f = something(); f.write(open('src/cli.ts').read())\""))
     expect(result.hookType, 'a real file write was denied as a read').not.toBe('deny')
   })
 
-  // `.buffer` is how the byte half of a standard stream is reached. It is the same stream, so a
-  // read sent through it puts just as much of the file into the conversation as the print spelling.
+  // `.buffer` is how the byte half of a standard stream is reached. It is the same stream, so a read sent through it puts just as much of the file into the conversation as the print spelling.
   it('denies a whole-file read piped to sys.stdout.buffer.write', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stdout.buffer.write(open('src/cli.ts','rb').read())\""))
     expect(result.hookType, 'writing to a stream buffer is not a file write').toBe('deny')
   })
 
-  // The guards search for `open(` and `.write(` as text, and a snippet can carry either inside a
-  // string. This one only reads, but the trailing literal used to look like a write and exempt it.
+  // The guards search for `open(` and `.write(` as text, and a snippet can carry either inside a string. This one only reads, but the trailing literal used to look like a write and exempt it.
   it('denies a whole-file read that mentions .write( inside a string literal', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts').read()); note='logger.write('\""))
     expect(result.hookType, 'a string literal was read as a file write').toBe('deny')
   })
 
-  // A mode that is passed but not written out cannot be read, and the harmless answer is to let it
-  // past: denying a write blocks the command and advises extracting a symbol from a file that does
-  // not exist yet, while letting a read past only costs the hint.
+  // A mode that is passed but not written out cannot be read, and the harmless answer is to let it past: denying a write blocks the command and advises extracting a symbol from a file that does not exist yet, while letting a read past only costs the hint.
   it('passes through a write whose mode is held in a variable', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"m='w'; open('src/out.ts', m).write('x')\""))
     expect(result.hookType, 'an unreadable mode was treated as a read').not.toBe('deny')
   })
 
-  // `encoding=` sits in the slot a positional mode would use. Reading it as an unreadable mode
-  // would call this plain read a write and drop the hint entirely.
+  // `encoding=` sits in the slot a positional mode would use. Reading it as an unreadable mode would call this plain read a write and drop the hint entirely.
   it('still denies a read that names a keyword argument where the mode would go', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts', encoding='utf-8').read())\""))
     expect(result.hookType, 'a keyword argument was read as a write mode').toBe('deny')
   })
 
-  // The indirect branch guesses the file from any literal in the command, for `open(path_var)`.
-  // Here the call already names its own file, one with no source extension, so there is nothing to
-  // guess: the command was denied naming a file it never opens.
+  // The indirect branch guesses the file from any literal in the command, for `open(path_var)`. Here the call already names its own file, one with no source extension, so there is nothing to guess: the command was denied naming a file it never opens.
   it('does not deny a read of an unrelated file because a source path appears elsewhere', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"path='src/cli.ts'; print(open('notes').read())\""))
     expect(result.hookType, 'denied naming a file the command never opens').not.toBe('deny')
@@ -1811,12 +1761,9 @@ describe('preBashHandler — orchestrator state file exemption', () => {
     }
   })
 
-  // The .output extension is shared by two unrelated kinds of file: an agent task's JSONL transcript,
-  // and a background bash task's plain stdout, which the harness itself tells the model to read. This
-  // path judged on the extension alone, so reading a build log was refused with advice to run
+  // The .output extension is shared by two unrelated kinds of file: an agent task's JSONL transcript, and a background bash task's plain stdout, which the harness itself tells the model to read. This path judged on the extension alone, so reading a build log was refused with advice to run
   // --transcript on it, which would have returned nothing. The cat/tail guard on the same directory
-  // already sniffed the first byte; only this caller did not. Both halves are pinned here, because a
-  // sniff that answers "transcript" for everything passes the first test on its own.
+  // already sniffed the first byte; only this caller did not. Both halves are pinned here, because a sniff that answers "transcript" for everything passes the first test on its own.
   it('does not deny python open() of a .output file that is a background command\'s plain stdout', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-pyout-'))
     const plainFile = join(tmpDir, 'b1l6az05r.output')
@@ -1863,8 +1810,7 @@ describe('preBashHandler — task output file interception', () => {
         expect(result.message).toContain(`token-goat bash-output --file "${jsonlFile}"`)
         expect(result.message).toContain('--transcript')
         expect(result.message).toContain('--tail 50')
-        // The recall hint must also advertise the line-range slice read -- the only way to
-        // reach the MIDDLE of a large on-disk artifact (bash-output only does head/tail/grep).
+        // The recall hint must also advertise the line-range slice read -- the only way to reach the MIDDLE of a large on-disk artifact (bash-output only does head/tail/grep).
         expect(result.message).toContain('@START-END')
         expect(result.message).toContain('token-goat read')
         expect(result.message).not.toContain('already cached')
@@ -1893,8 +1839,7 @@ describe('preBashHandler — task output file interception', () => {
   })
 
   it('denies cat with Windows-style backslash tasks path', () => {
-    // Note: even though this uses Windows-style path syntax, on Windows the file would need to exist.
-    // For cross-platform testing, we use a valid path that won't exist, and expect pass (fall-through).
+    // Note: even though this uses Windows-style path syntax, on Windows the file would need to exist. For cross-platform testing, we use a valid path that won't exist, and expect pass (fall-through).
     const result = preBashHandler(makeBashEvent('cat C:\\Users\\user\\.claude\\tasks\\def789.output'))
     expect(result.hookType).toBe('pass')
   })
@@ -2149,8 +2094,7 @@ describe('preBashHandler — sed line-range interception', () => {
       expect(result.context).toContain('src/foo.ts@10-20')
       expect(result.context).toContain('src/foo.ts@100-110')
       expect(result.context).toContain('src/foo.ts@200-210')
-      // Three-range sed joins reads with an Oxford comma so the agent clearly sees the last
-      // run-on boundary; without it the three reads read as a single comma-separated run.
+      // Three-range sed joins reads with an Oxford comma so the agent clearly sees the last run-on boundary; without it the three reads read as a single comma-separated run.
       expect(result.context).toContain(', and ')
     }
   })
@@ -2179,17 +2123,9 @@ describe('preBashHandler — sed line-range interception', () => {
 })
 
 /**
- * `awk 'NR>=A && NR<=B' file` and `awk 'NR==A,NR==B' file` print exactly the lines
- * `sed -n 'A,Bp' file` prints, bypass the read hooks identically, and cost the same context. Only
- * the sed spelling was recognized, so the awk one drew no surgical-read hint and, worse, no overlap
- * dedup -- a file read by both spellings looked like two unrelated files, so the second read was
- * never reported as already served.
+ * `awk 'NR>=A && NR<=B' file` and `awk 'NR==A,NR==B' file` print exactly the lines `sed -n 'A,Bp' file` prints, bypass the read hooks identically, and cost the same context. Only the sed spelling was recognized, so the awk one drew no surgical-read hint and, worse, no overlap dedup -- a file read by both spellings looked like two unrelated files, so the second read was never reported as already served.
  *
- * Why didn't a test catch this: every case in the sed block above spells the command `sed`, because
- * the block was written to cover that extractor's own patterns (quoting, multi-range, the -n guard).
- * Nothing asked whether a different tool could express the same read, so the gap was in the command
- * vocabulary, not in any tested branch. These cases pin both awk spellings, the shared dedup ledger
- * across the two tools, and the programs that must still be left alone.
+ * Why didn't a test catch this: every case in the sed block above spells the command `sed`, because the block was written to cover that extractor's own patterns (quoting, multi-range, the -n guard). Nothing asked whether a different tool could express the same read, so the gap was in the command vocabulary, not in any tested branch. These cases pin both awk spellings, the shared dedup ledger across the two tools, and the programs that must still be left alone.
  */
 describe('preBashHandler — awk line-range interception', () => {
   beforeEach(() => {
@@ -2228,9 +2164,7 @@ describe('preBashHandler — awk line-range interception', () => {
     expect(second.hookType).toBe('context')
     if (second.hookType === 'context') {
       expect(second.context, 'the same lines read twice by two tools is still one file read twice').toContain('already read lines 10-50')
-      // The ledger records ranges, not which command served each, so the recall line must not
-      // name a tool: an awk read followed by a sed read once claimed the lines came "via an
-      // earlier `sed`", which was the current command rather than the one that served them.
+      // The ledger records ranges, not which command served each, so the recall line must not name a tool: an awk read followed by a sed read once claimed the lines came "via an earlier `sed`", which was the current command rather than the one that served them.
       expect(second.context, 'the recall line must not attribute the prior read to a tool it cannot know').not.toContain('via an earlier `sed`')
       expect(second.context).toContain('via an earlier line-range read')
     }
@@ -2538,8 +2472,7 @@ describe('preBashHandler — curl GET recall', () => {
       clearModuleCaches()
       await postBashHandler(makePostBashEvent(cmd, largeOutput))
       const result = preBashHandler(makeBashEvent(cmd))
-      // rewriteInput (first-run compression wrap) is fine; a 'context' recall hint containing
-      // 'curl response cached' would mean the credential-carrying command got persisted.
+      // rewriteInput (first-run compression wrap) is fine; a 'context' recall hint containing 'curl response cached' would mean the credential-carrying command got persisted.
       if (result.hookType === 'context') {
         expect(result.context).not.toContain('curl response cached')
       }
@@ -2572,8 +2505,7 @@ describe('preBashHandler — curl GET recall', () => {
 
   it('does not redirect a cached curl GET response below hints.bash_dedup_min_bytes, and lets the command run instead', async () => {
     const cmd = 'curl -s https://api.example.com/tiny-cached-data'
-    // Large enough to clear bash_compress.cache_min_bytes (default 512) so it actually gets
-    // cached, but well under the inflated hints.bash_dedup_min_bytes floor set below.
+    // Large enough to clear bash_compress.cache_min_bytes (default 512) so it actually gets cached, but well under the inflated hints.bash_dedup_min_bytes floor set below.
     const cachedOutput = JSON.stringify({ items: new Array(200).fill({ id: 1, name: 'foo' }) })
     const orig = process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES']
     try {
@@ -2617,11 +2549,7 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
     clearModuleCaches()
   })
 
-  // pip freeze is both a cacheable build command (BUILD_COMMAND_PATTERNS) and
-  // a dep-list command (isDepListCommand), so storeBashOutput fingerprints it
-  // against requirements.txt. Before this fix, the fingerprint was computed
-  // and stored but never re-checked at recall time -- a cached entry stayed
-  // "recallable" forever even after the underlying dependency set changed.
+  // pip freeze is both a cacheable build command (BUILD_COMMAND_PATTERNS) and a dep-list command (isDepListCommand), so storeBashOutput fingerprints it against requirements.txt. Before this fix, the fingerprint was computed and stored but never re-checked at recall time -- a cached entry stayed "recallable" forever even after the underlying dependency set changed.
   it('does not recall a cached pip freeze once requirements.txt changes since it was cached', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-m44-'))
     writeFileSync(join(tmpDir, 'requirements.txt'), 'requests==2.0.0\n')
@@ -2638,8 +2566,7 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
         expect(freshResult.context).toContain('is cached')
       }
 
-      // The dependency set changed since the output was cached -- the cached
-      // freeze output is now stale and must not be served as if it were fresh.
+      // The dependency set changed since the output was cached -- the cached freeze output is now stale and must not be served as if it were fresh.
       writeFileSync(join(tmpDir, 'requirements.txt'), 'requests==3.0.0\nnewpkg==1.0.0\n')
 
       const staleResult = preBashHandler(makeBashEvent(cmd, tmpDir))
@@ -2661,13 +2588,10 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
     const dir = gitRepoWithCommit()
     try {
       const cmd = 'git status --porcelain -- a.txt'
-      // Padded well above bash_compress.cache_min_bytes (512) — a real scoped status/diff
-      // output is often this small, but the cache write is gated on the size floor same as
-      // every other recall source (gh api, curl, monitoring), so the test must clear it too.
+      // Padded well above bash_compress.cache_min_bytes (512) — a real scoped status/diff output is often this small, but the cache write is gated on the size floor same as every other recall source (gh api, curl, monitoring), so the test must clear it too.
       const output = (' M a.txt\n').repeat(80)
 
-      // First run: nothing cached yet — the existing git-diff/status compression pipeline
-      // (detectFromCommand -> maybeCompressRewrite) wraps it, which is unrelated to caching.
+      // First run: nothing cached yet — the existing git-diff/status compression pipeline (detectFromCommand -> maybeCompressRewrite) wraps it, which is unrelated to caching.
       const firstResult = preBashHandler(makeBashEvent(cmd, dir))
       expect(firstResult.hookType).not.toBe('block')
       await postBashHandler(makePostBashEvent(cmd, output, dir))
@@ -2716,10 +2640,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
       const freshResult = preBashHandler(makeBashEvent(cmd, dir))
       expect(freshResult.hookType).toBe('context')
 
-      // Edit the scoped path without staging or committing -- this is exactly what a real
-      // edit-tool write followed by postEditHandler's dirty-queue append looks like from git's
-      // perspective: the file's content changes, HEAD stays put. `git status --porcelain`
-      // reflects it immediately, which is what the fingerprint is keyed on.
+      // Edit the scoped path without staging or committing -- this is exactly what a real edit-tool write followed by postEditHandler's dirty-queue append looks like from git's perspective: the file's content changes, HEAD stays put. `git status --porcelain` reflects it immediately, which is what the fingerprint is keyed on.
       writeFileSync(join(dir, 'a.txt'), 'two\n')
 
       const staleResult = preBashHandler(makeBashEvent(cmd, dir))
@@ -2766,8 +2687,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
 
       await postBashHandler(makePostBashEvent(cmd, output, dir))
       const result = preBashHandler(makeBashEvent(cmd, dir))
-      // The generic git compression pipeline may still rewrite this (unrelated to caching);
-      // what matters is that the scoped-git recall hint specifically never fires for it.
+      // The generic git compression pipeline may still rewrite this (unrelated to caching); what matters is that the scoped-git recall hint specifically never fires for it.
       if (result.hookType === 'context') {
         expect(result.context).not.toContain('is cached and unchanged')
       }
@@ -2808,11 +2728,7 @@ describe('extractCurlDownload', () => {
     expect(extractCurlDownload('curl -H "Authorization: Bearer tok" https://example.com -o /tmp/out')).toBeNull()
   })
 
-  // A URL is a perfectly ordinary thing to put in a Referer or User-Agent header, and neither
-  // makes the request unsafe to cache, so curlHasUnsafeFlags lets these through. Reading the
-  // target as "first https:// in the string" then picked the header's URL instead of the file
-  // being downloaded -- so two different downloads got the same key and the second was refused
-  // as already done. Each case below names the URL that curl actually fetches.
+  // A URL is a perfectly ordinary thing to put in a Referer or User-Agent header, and neither makes the request unsafe to cache, so curlHasUnsafeFlags lets these through. Reading the target as "first https:// in the string" then picked the header's URL instead of the file being downloaded -- so two different downloads got the same key and the second was refused as already done. Each case below names the URL that curl actually fetches.
   it('takes the download target by argument position, not the first URL in a header value', () => {
     const a = extractCurlDownload('curl -H "Referer: https://cdn.example.com/track" -o f1.zip https://real1.example.com/a.zip')
     const b = extractCurlDownload('curl -H "Referer: https://cdn.example.com/track" -o f2.zip https://real2.example.com/b.zip')
@@ -2849,8 +2765,7 @@ describe('extractCurlDownload', () => {
     expect(r?.url).toBe('https://target7.example.com/a.zip')
   })
 
-  // Options whose own value is a URL or host: each one left out of the value-flag set reproduced
-  // the original defect exactly, just through a different flag.
+  // Options whose own value is a URL or host: each one left out of the value-flag set reproduced the original defect exactly, just through a different flag.
   it.each([
     ['--doh-url', 'https://doh.example.com/dns-query'],
     ['--preproxy', 'https://proxy.example.com:8080'],
@@ -2861,15 +2776,13 @@ describe('extractCurlDownload', () => {
     expect(r?.url).toBe('https://target8.example.com/a.zip')
   })
 
-  // A backslash still escapes a double quote inside double quotes. Closing the word at that quote
-  // ran the rest of the command into the header value and the target went with it.
+  // A backslash still escapes a double quote inside double quotes. Closing the word at that quote ran the rest of the command into the header value and the target went with it.
   it('keeps a backslash-escaped quote inside a header value', () => {
     const r = extractCurlDownload('curl -H "X: \\" https://header9.example.com/h" -o f9.zip https://target9.example.com/a.zip')
     expect(r?.url).toBe('https://target9.example.com/a.zip')
   })
 
-  // A target written through a substitution or a variable is still the target. Requiring the word
-  // to *start* with the scheme silently turned dedup off for that shape.
+  // A target written through a substitution or a variable is still the target. Requiring the word to *start* with the scheme silently turned dedup off for that shape.
   it.each([
     'curl -o f10.zip "$(printf https://target10.example.com/a.zip)"',
     'curl -o f10.zip "${BASE}https://target10.example.com/a.zip"',
@@ -2877,8 +2790,7 @@ describe('extractCurlDownload', () => {
     expect(extractCurlDownload(cmd)?.url).toBe('https://target10.example.com/a.zip')
   })
 
-  // The over-fix guard: the substitution fallback must not resurrect the header-URL bug it sits
-  // next to, so a header URL still loses to the real positional target.
+  // The over-fix guard: the substitution fallback must not resurrect the header-URL bug it sits next to, so a header URL still loses to the real positional target.
   it('still prefers the positional target over a header URL', () => {
     const r = extractCurlDownload('curl -H "Referer: https://cdn11.example.com/t" -o f11.zip https://target11.example.com/a.zip')
     expect(r?.url).toBe('https://target11.example.com/a.zip')
@@ -2905,9 +2817,7 @@ describe('preBashHandler — curl download dedup', () => {
       const result = preBashHandler(makeBashEvent(secondCmd))
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
-        // The recall message shows the fully-resolved, normalized path recorded at download
-        // time (see the "resolves a relative -o path against the ORIGINAL download cwd"
-        // regression below), not the raw -o argument as typed on the command line.
+        // The recall message shows the fully-resolved, normalized path recorded at download time (see the "resolves a relative -o path against the ORIGINAL download cwd" regression below), not the raw -o argument as typed on the command line.
         expect(result.message).toContain(resolveIndexPath(v1Path))
         expect(result.message).toContain('rg')
         expect(result.message).toContain('token-goat read')
@@ -2983,12 +2893,10 @@ describe('preBashHandler — curl download dedup', () => {
       // Record the download as if it ran from dirA.
       await postBashHandler(makePostBashEvent(cmd, '', dirA))
 
-      // The recorded path must be the fully-resolved absolute path from the ORIGINAL cwd, not
-      // the raw relative string.
+      // The recorded path must be the fully-resolved absolute path from the ORIGINAL cwd, not the raw relative string.
       expect(getCurlDownloadPath(url)).toBe(resolveIndexPath(relOutputPath, dirA))
 
-      // Now the same command is run again, but from a DIFFERENT cwd (dirB) that happens to
-      // contain its own, much-smaller file at the same relative path.
+      // Now the same command is run again, but from a DIFFERENT cwd (dirB) that happens to contain its own, much-smaller file at the same relative path.
       const result = preBashHandler(makeBashEvent(cmd, dirB))
 
       // The recall must still find and deny based on the ORIGINAL (dirA) file, not dirB's.
@@ -3090,9 +2998,7 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
   })
 
   it('cross-references a file already fully read via the Read tool', () => {
-    // The Read tool always records an absolute path; the CLI dedup key is now resolved against
-    // the bash event's cwd too (falling back to process.cwd() here, since makeBashEvent sets none)
-    // so both sides land on the same absolute path.
+    // The Read tool always records an absolute path; the CLI dedup key is now resolved against the bash event's cwd too (falling back to process.cwd() here, since makeBashEvent sets none) so both sides land on the same absolute path.
     recordFileRead(resolveIndexPath('src/foo.ts'))
     const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"'))
     expect(result.hookType).toBe('context')
@@ -3108,9 +3014,7 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
   })
 
   it('cross-references a file already fully read via the Read tool when the CLI read uses an @N-M line-range suffix', () => {
-    // A `token-goat read "file@N-M"` spec must extract the bare file path for the dedup/
-    // pending-hint key (stripping the range suffix), not the literal "file@N-M" string —
-    // otherwise a range-scoped read never cross-references the same file read in full.
+    // A `token-goat read "file@N-M"` spec must extract the bare file path for the dedup/pending-hint key (stripping the range suffix), not the literal "file@N-M" string — otherwise a range-scoped read never cross-references the same file read in full.
     recordFileRead(resolveIndexPath('src/foo.ts'))
     const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts@10-50"'))
     expect(result.hookType).toBe('context')
@@ -3296,10 +3200,7 @@ describe('extractRgSymbolSearch', () => {
   })
 
   it('still fires with a --color long flag that merely contains the letter r (not an actual recursive flag)', () => {
-    // Regression: the recursive-flag guard used to match any long flag containing 'r' anywhere
-    // (--color, --sort, ...) because its leading `-` could anchor off the SECOND dash of a
-    // double-dash flag. That silently suppressed the symbol-search hint for one of the most
-    // common rg/grep flags in real commands.
+    // Regression: the recursive-flag guard used to match any long flag containing 'r' anywhere (--color, --sort, ...) because its leading `-` could anchor off the SECOND dash of a double-dash flag. That silently suppressed the symbol-search hint for one of the most common rg/grep flags in real commands.
     const result = extractRgSymbolSearch('rg -n --color=never "MyType" src/types.ts')
     expect(result).not.toBeNull()
     expect(result?.identifier).toBe('MyType')
@@ -3424,9 +3325,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  // Regression: the PowerShell-wrapped Get-Content SQL branch used to deny (not advise) whenever
-  // the command had no cd-prefix, breaking the deliberate SQL-never-deny design every other SQL
-  // extractor (cat/wsl-cat) already follows -- see the two tests directly above.
+  // Regression: the PowerShell-wrapped Get-Content SQL branch used to deny (not advise) whenever the command had no cd-prefix, breaking the deliberate SQL-never-deny design every other SQL extractor (cat/wsl-cat) already follows -- see the two tests directly above.
   it('emits context hint (not deny) for a PowerShell-wrapped Get-Content of a SQL file, with no cd prefix', () => {
     const result = preBashHandler(makeBashEvent(`powershell -Command "Get-Content 'schema.sql'"`))
     expect(result.hookType).toBe('context')
@@ -3499,27 +3398,21 @@ describe('postBashHandler — escaped quote inside quoted arg does not expose in
   })
 })
 
-// Regression: a backslash-escaped quote next to a real trailing pipe must not
-// desynchronize the inside-quotes tracker used to find the pipeline split point.
+// Regression: a backslash-escaped quote next to a real trailing pipe must not desynchronize the inside-quotes tracker used to find the pipeline split point.
 describe('postBashHandler — escaped quote next to a real pipe does not desync quote tracking', () => {
   beforeEach(() => {
     clearModuleCaches()
   })
 
   it('caches under the full command, not a base truncated at the escaped quote', async () => {
-    // Bug: the pipe-split scanner toggled inDouble/inSingle on every raw quote char,
-    // with no backslash-escape check. The escaped backslash-quote inside the -k pattern
-    // flipped the tracker out of sync, so the scanner either split on the | still inside
-    // the quoted string or missed the real trailing | head -20 pipe -- either way producing
-    // the wrong base command and thus the wrong cache key.
+    // Bug: the pipe-split scanner toggled inDouble/inSingle on every raw quote char, with no backslash-escape check. The escaped backslash-quote inside the -k pattern flipped the tracker out of sync, so the scanner either split on the | still inside the quoted string or missed the real trailing | head -20 pipe -- either way producing the wrong base command and thus the wrong cache key.
     const cmd = 'pytest -k "fix: replace \\" | \\" separator"' + ' | head -20'
     const largeOutput = 'PASSED test_skipme\n'.repeat(60)
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
 
     const { fingerprintContent } = await import('../src/fingerprint.js')
 
-    // Must be stored under the base command with the trailing | head -20 stripped,
-    // but the whole quoted -k value (including the escaped quotes) intact.
+    // Must be stored under the base command with the trailing | head -20 stripped, but the whole quoted -k value (including the escaped quotes) intact.
     const correctBase = 'pytest -k "fix: replace \\" | \\" separator"'
     const correctHash = fingerprintContent(correctBase).slice(0, 16)
     expect(getBashOutputId(correctHash)).not.toBeNull()
@@ -3658,8 +3551,7 @@ describe('gh api recall (F4)', () => {
   // A read-only `gh api` GET body large enough to clear the 512-byte cache floor.
   const bigBody = JSON.stringify({ content: 'x'.repeat(800), encoding: 'base64' })
 
-  // True only when the pre-hook fired the F4 recall hint. A non-cached gh api otherwise
-  // falls through to the pre-existing output-compression wrap (rewriteInput), not a recall.
+  // True only when the pre-hook fired the F4 recall hint. A non-cached gh api otherwise falls through to the pre-existing output-compression wrap (rewriteInput), not a recall.
   const ghRecalled = (cmd: string): boolean => {
     const r = preBashHandler(makeBashEvent(cmd))
     return r.hookType === 'context' && r.context.includes('gh api response cached')
@@ -3814,9 +3706,7 @@ describe('extractPowerShellWrappedGetContent — unwraps a powershell -Command G
     expect(r?.isConfig).toBe(false)
   })
 
-  // Regression for F6: the reported flood used a TRAILING -Raw, which bare extractCatFile
-  // rejects (its regex demands end-of-string right after the path). The wrapper extractor
-  // must still classify it. Neutralizing POWERSHELL_WRAP_RE makes this return null.
+  // Regression for F6: the reported flood used a TRAILING -Raw, which bare extractCatFile rejects (its regex demands end-of-string right after the path). The wrapper extractor must still classify it. Neutralizing POWERSHELL_WRAP_RE makes this return null.
   it('still matches when a trailing -Raw / -Encoding follows the path', () => {
     expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content 'src/auth.ts' -Raw"`)?.filePath).toBe('src/auth.ts')
     expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content 'src/auth.ts' -Raw -Encoding utf8"`)?.filePath).toBe('src/auth.ts')
@@ -3858,8 +3748,7 @@ describe('preBashHandler — powershell-wrapped Get-Content recall (wiring)', ()
     clearModuleCaches()
   })
 
-  // Proves the extractor is wired into preBashHandler ahead of the compress fallback:
-  // a non-temp source read through a powershell wrapper denies with the read hint.
+  // Proves the extractor is wired into preBashHandler ahead of the compress fallback: a non-temp source read through a powershell wrapper denies with the read hint.
   it('denies a non-temp source read with a token-goat read hint and the powershell lead', () => {
     const result = preBashHandler(makeBashEvent(`powershell -Command "Get-Content 'src/auth.ts'"`))
     expect(result.hookType).toBe('deny')
@@ -4026,11 +3915,7 @@ describe('postBashHandler — failing test-runner advisory', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Config-driven bash_compress.cache_min_bytes / timeout_seconds. Before this
-// fix, hooks_bash.ts always used a hardcoded MIN_CACHE_BYTES=512 floor and
-// never emitted --timeout at all (the compress action silently fell back to
-// bash_runner.ts's hardcoded DEFAULT_TIMEOUT_SECONDS), so these two config.ts
-// knobs were validated/saved but had zero effect on real behavior.
+// Config-driven bash_compress.cache_min_bytes / timeout_seconds. Before this fix, hooks_bash.ts always used a hardcoded MIN_CACHE_BYTES=512 floor and never emitted --timeout at all (the compress action silently fell back to bash_runner.ts's hardcoded DEFAULT_TIMEOUT_SECONDS), so these two config.ts knobs were validated/saved but had zero effect on real behavior.
 // ---------------------------------------------------------------------------
 describe('postBashHandler — config-driven bash_compress.cache_min_bytes', () => {
   beforeEach(() => {
@@ -4104,11 +3989,7 @@ describe('preBashHandler — config-driven bash_compress.timeout_seconds', () =>
   })
 })
 
-// Regression (bug #242): a backgrounded or newline-separated command must never be
-// rewritten into `token-goat compress -c '<cmd>'`. compress's `bash_runner.run` uses
-// spawnSync with piped stdio, which blocks until the pipes close; the backgrounded
-// grandchild inherits stdout, so the call hangs until it exits or the wrapper's 600s
-// timeout kills the whole process tree the user wanted kept running in the background.
+// Regression (bug #242): a backgrounded or newline-separated command must never be rewritten into `token-goat compress -c '<cmd>'`. compress's `bash_runner.run` uses spawnSync with piped stdio, which blocks until the pipes close; the backgrounded grandchild inherits stdout, so the call hangs until it exits or the wrapper's 600s timeout kills the whole process tree the user wanted kept running in the background.
 describe('preBashHandler — backgrounded/multi-line commands are never compress-wrapped', () => {
   it('does not wrap a backgrounded dev-server command', () => {
     const result = preBashHandler(makeBashEvent('vite dev &'))
@@ -4136,11 +4017,7 @@ describe('preBashHandler — backgrounded/multi-line commands are never compress
   })
 })
 
-// Regression: checkout/switch/pull/merge/rebase/reset/cherry-pick rewrite working-tree file
-// content without ever going through Claude Code's Edit tool, so those files never entered
-// queue/dirty.txt via the normal postEditHandler path -- every surgical-read command would
-// otherwise silently keep serving stale symbols/refs computed before the mutation. See the
-// isHeadMovingGitCommand block in postBashHandler.
+// Regression: checkout/switch/pull/merge/rebase/reset/cherry-pick rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never entered queue/dirty.txt via the normal postEditHandler path -- every surgical-read command would otherwise silently keep serving stale symbols/refs computed before the mutation. See the isHeadMovingGitCommand block in postBashHandler.
 describe('isHeadMovingGitCommand — classification table', () => {
   it.each([
     ['git checkout feature', true],
@@ -4386,13 +4263,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 })
 
-// Regression: the git-mutation block above only fires for commands that move HEAD, and
-// hooks_edit.ts::postEditHandler only ever sees Edit/Write/NotebookEdit events (it reads
-// tool_input.file_path, which a Bash event does not carry). So every working-tree rewrite that
-// neither moves HEAD nor goes through the Edit tool -- `git restore`, `git stash pop|apply`,
-// `sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix` -- used to
-// reach queue/dirty.txt through NO path at all, leaving the index silently serving pre-mutation
-// symbols. See enqueueNonHeadMovingRewrites in hooks_bash.ts.
+// Regression: the git-mutation block above only fires for commands that move HEAD, and hooks_edit.ts::postEditHandler only ever sees Edit/Write/NotebookEdit events (it reads tool_input.file_path, which a Bash event does not carry). So every working-tree rewrite that neither moves HEAD nor goes through the Edit tool -- `git restore`, `git stash pop|apply`, `sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix` -- used to reach queue/dirty.txt through NO path at all, leaving the index silently serving pre-mutation symbols. See enqueueNonHeadMovingRewrites in hooks_bash.ts.
 describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -4602,9 +4473,7 @@ describe('postBashHandler — feeds Bash file dumps into the session read-cache'
 
     await postBashHandler(makePostBashEvent('head -40 package.json', 'line\n'.repeat(40)))
 
-    // The specific wrong behavior under test: a partial dump must never flip the full-read flag
-    // a later Read's dedup hint keys on. If this were true, a subsequent Read of package.json
-    // would be wrongly told "already read this session" despite 39/40+ lines never being shown.
+    // The specific wrong behavior under test: a partial dump must never flip the full-read flag a later Read's dedup hint keys on. If this were true, a subsequent Read of package.json would be wrongly told "already read this session" despite 39/40+ lines never being shown.
     expect(wasFileReadThisSession(target)).toBe(false)
     expect(getFileLineRanges(target)).toContainEqual([1, 40])
   })
@@ -4762,19 +4631,9 @@ describe('preBashHandler — awk range reads with a pure line-print action (loop
 })
 
 /**
- * Bash was the one site in the codebase where token-goat substituted its own text for a tool result
- * and handed it to the model with no untrusted-content fence. Every other substitution site fences
- * first: `hooks_fetch.ts`, `hooks_websearch.ts`, `hooks_mcp.ts`, and the splice points in
- * `hooks_read.ts`. The gap survived the 448 tests above because every one of them asserts on the
- * recall pointer, the compressed size, or the cache round-trip, and not one ever looked at what the
- * emitted body was wrapped in -- a missing wrapper produces silence, not a failure.
+ * Bash was the one site in the codebase where token-goat substituted its own text for a tool result and handed it to the model with no untrusted-content fence. Every other substitution site fences first: `hooks_fetch.ts`, `hooks_websearch.ts`, `hooks_mcp.ts`, and the splice points in `hooks_read.ts`. The gap survived the 448 tests above because every one of them asserts on the recall pointer, the compressed size, or the cache round-trip, and not one ever looked at what the emitted body was wrapped in -- a missing wrapper produces silence, not a failure.
  *
- * Fixture provenance: HAND-DERIVED. The output strings are synthetic and carry no claim about what
- * a real command emits; they exercise routing, containment and gate arithmetic only. The fence tag
- * comes from the producer's own exported constant on purpose, because the assertions that carry
- * weight here are positional -- what sits inside the fence versus outside it, and whether the fence
- * is paid for before the gate rather than after -- and no restatement of the tag can satisfy those
- * by construction.
+ * Fixture provenance: HAND-DERIVED. The output strings are synthetic and carry no claim about what a real command emits; they exercise routing, containment and gate arithmetic only. The fence tag comes from the producer's own exported constant on purpose, because the assertions that carry weight here are positional -- what sits inside the fence versus outside it, and whether the fence is paid for before the gate rather than after -- and no restatement of the tag can satisfy those by construction.
  */
 describe('postBashHandler fences the bytes it substitutes', () => {
   const OPEN = `<${UNTRUSTED_TOOL_TAG}>`
@@ -4792,17 +4651,12 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     const out = result.updatedOutput
     expect(out).toContain(OPEN)
     expect(out).toContain(CLOSE)
-    // The load-bearing assertion. token-goat's recall pointer must sit after the closing tag: put
-    // it inside and anyone who guesses its wording gets to write a line the model reads as ours.
+    // The load-bearing assertion. token-goat's recall pointer must sit after the closing tag: put it inside and anyone who guesses its wording gets to write a line the model reads as ours.
     expect(out.indexOf(OPEN)).toBeLessThan(out.indexOf(CLOSE))
     expect(out.indexOf('bash-output')).toBeGreaterThan(out.indexOf(CLOSE))
   })
 
-  // The cap notice was the one place token-goat's own voice really did end up inside its own
-  // fence, and the marker neutraliser in injection_scan.ts is what exposed it: it escaped our
-  // notice, so the model got `&#91;token-goat: output capped...`. Exempting the notice from the
-  // escape would have been worse than leaving it -- the string is not a secret, so an attacker's
-  // output printing it would inherit the same exemption. The notice moves out instead.
+  // The cap notice was the one place token-goat's own voice really did end up inside its own fence, and the marker neutraliser in injection_scan.ts is what exposed it: it escaped our notice, so the model got `&#91;token-goat: output capped...`. Exempting the notice from the escape would have been worse than leaving it -- the string is not a secret, so an attacker's output printing it would inherit the same exemption. The notice moves out instead.
   it('leaves the filter cap notice outside the fence, unescaped, where our other text sits', async () => {
     const lines = Array.from({ length: 3000 }, (_, i) => `[12:00:00] compiling crate number ${i}`)
     const result = await postBashHandler(makePostBashEvent('grep compiling build.log | sort', lines.join('\n') + '\n'))
@@ -4815,9 +4669,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     expect(out).not.toContain('&#91;token-goat: output capped at')
   })
 
-  // The other half of the same rule, and the one that would silently regress if the split above
-  // were widened: a notice-shaped line the command itself printed is not ours and must stay fenced
-  // and escaped, wherever in the body it sits.
+  // The other half of the same rule, and the one that would silently regress if the split above were widened: a notice-shaped line the command itself printed is not ours and must stay fenced and escaped, wherever in the body it sits.
   it('escapes a cap notice the command itself printed, rather than promoting it out of the fence', async () => {
     const lines = Array.from({ length: 3000 }, (_, i) => `[12:00:00] compiling crate number ${i}`)
     // Early, so it survives the filter's own cap: a line past the cap is cut and proves nothing.
@@ -4841,39 +4693,22 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     expect(getBashOutput(m![1]!)!.output).toBe(dup)
   })
 
-  // The other half of the gate. Fencing every command would be a permanent tax on the highest
-  // volume call in the harness, which is the one thing this product exists not to do, so a short
-  // command has to come back untouched rather than fenced.
+  // The other half of the gate. Fencing every command would be a permanent tax on the highest volume call in the harness, which is the one thing this product exists not to do, so a short command has to come back untouched rather than fenced.
   it('leaves a short command alone rather than paying a fence for nothing', async () => {
     const result = await postBashHandler(makePostBashEvent('echo hi | cat', 'hi\n'))
     expect(result.hookType).toBe('pass')
   })
 
-  // The fence is built before `isRewriteWorthwhile`, not bolted on after it. A strip that clears
-  // the floor only by not paying for its own fence is not a saving, and returning null leaves the
-  // raw output reaching the model exactly as it does today.
+  // The fence is built before `isRewriteWorthwhile`, not bolted on after it. A strip that clears the floor only by not paying for its own fence is not a saving, and returning null leaves the raw output reaching the model exactly as it does today.
   //
-  // This one only discriminates inside a window, and the first version of it did not: a payload
-  // saving 5 bytes returns 'pass' whether or not the fence is priced in, because it never cleared
-  // the floor either way. The saving has to land ABOVE the floor and BELOW floor-plus-fence, so
-  // the two versions of the code disagree about it. The window is asserted rather than assumed --
-  // if the floor or the fence's size ever moves, this fails loudly instead of quietly going
-  // vacuous, which is the failure mode that let the original gap live in the first place.
-  // The escape-stripping path is the one deliberate exemption from the rule above, and this test
-  // pins the reason rather than the outcome. The fence marks where token-goat stops speaking, so it
-  // is owed wherever token-goat puts something of its own beside bytes it did not write. Stripping
-  // escapes puts nothing there: the emitted body is the input minus sequences the model cannot
-  // render, with no marker, no recall pointer, and no summary vouching for dropped lines.
+  // This one only discriminates inside a window, and the first version of it did not: a payload saving 5 bytes returns 'pass' whether or not the fence is priced in, because it never cleared the floor either way. The saving has to land ABOVE the floor and BELOW floor-plus-fence, so the two versions of the code disagree about it. The window is asserted rather than assumed -- if the floor or the fence's size ever moves, this fails loudly instead of quietly going vacuous, which is the failure mode that let the original gap live in the first place. The escape-stripping path is the one deliberate exemption from the rule above, and this test pins the reason rather than the outcome. The fence marks where token-goat stops speaking, so it is owed wherever token-goat puts something of its own beside bytes it did not write. Stripping escapes puts nothing there: the emitted body is the input minus sequences the model cannot render, with no marker, no recall pointer, and no summary vouching for dropped lines.
   it('leaves escape-stripped output unfenced, because it splices nothing of its own into it', async () => {
     const coloured = '\x1b[38;2;240;246;252mcompiling crate number one\x1b[0m\n'.repeat(400)
     const result = await postBashHandler(makePostBashEvent('./bin/render-report', coloured))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
 
-    // Both halves of the exemption, so it cannot rot into "escape stripping is simply safe": no
-    // fence, and nothing of ours inside the block to need one. Give this path a marker or a recall
-    // pointer later and this goes red -- correctly, because it would then be substituting rather
-    // than passing through, and the fence would be owed.
+    // Both halves of the exemption, so it cannot rot into "escape stripping is simply safe": no fence, and nothing of ours inside the block to need one. Give this path a marker or a recall pointer later and this goes red -- correctly, because it would then be substituting rather than passing through, and the fence would be owed.
     expect(result.updatedOutput).not.toContain(OPEN)
     expect(result.updatedOutput).not.toContain('[token-goat')
     // Computed from the input, not read off the stripper: exactly the bytes in, minus the escapes.

@@ -1,9 +1,7 @@
 /**
  * pre_tool_use hook for the Bash tool.
  *
- * When a build tool command (cargo, go, mvn, make, etc.) is about to run and
- * its output is already cached in the session bash-output store, inject a recall
- * hint so the model can inspect cached output instead of re-running the command.
+ * When a build tool command (cargo, go, mvn, make, etc.) is about to run and its output is already cached in the session bash-output store, inject a recall hint so the model can inspect cached output instead of re-running the command.
  */
 
 import type { HookEvent } from './hook_registry.js'
@@ -121,11 +119,7 @@ export {
 } from './bash_extractors.js'
 
 /**
- * Wrap a recognized command in `token-goat compress` so its output is
- * structurally compressed on this run. Returns a `rewriteInput` HookOutput that
- * replaces the Bash tool input wholesale (preserving description/timeout), or
- * null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config),
- * the command is unsuitable, or the chosen filter is disabled.
+ * Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled.
  *
  * @param event  hook event; its toolInput is preserved verbatim except `command`
  * @param rawCmd original command INCLUDING any `cd … &&` prefix (run by compress)
@@ -187,12 +181,7 @@ function elideServedShellLines(cmd: string, output: string, priorIds: readonly s
   }
   const cuts = planServedElisions(rows, bodies)
   if (cuts.length === 0) return null
-  // Spans, not one joined string. The notices below are token-goat's own voice spliced BETWEEN the
-  // command's own lines, so this body has no cut point that puts our words outside a fence tag.
-  // Marking authorship here -- where it is known, because this function just wrote them -- is what
-  // lets the fencer neutralize the command's lines without mangling our notices into
-  // `&#91;token-goat] ...`. Matching the notices by their text later would be forgeable by the very
-  // bytes being fenced.
+  // Spans, not one joined string. The notices below are token-goat's own voice spliced BETWEEN the command's own lines, so this body has no cut point that puts our words outside a fence tag. Marking authorship here -- where it is known, because this function just wrote them -- is what lets the fencer neutralize the command's lines without mangling our notices into `&#91;token-goat] ...`. Matching the notices by their text later would be forgeable by the very bytes being fenced.
   const spans: FenceSpan[] = []
   const push = (text: string, own: boolean): void => {
     const sep = spans.length === 0 ? '' : '\n'
@@ -233,8 +222,7 @@ function foldShellReadBodies(cmd: string, output: string, fileKey: string, cwd: 
   const rows: FoldRow[] = []
   for (let i = 0; i < lines.length; i++) {
     const no = numbers[i]
-    // One unknown row abandons the whole fold. `?? 0` here would put a fabricated line number into a notice that otherwise reads as a precise answer.
-    // Defence in depth, and deliberately not claimed as more than that: `deliveredLineNumbers` today returns either all-real numbers or all-null, and the all-null case is already rejected downstream by the `lastRow.no - firstRow.no + 1 === len` contiguity check in both planners, so mutating this line to `?? 0` leaves the suite green. What it guards is a *mixed* array, which no producer emits yet and which the contiguity check would wave through for any run that happened to be numbered.
+    // One unknown row abandons the whole fold. `?? 0` here would put a fabricated line number into a notice that otherwise reads as a precise answer. Defence in depth, and deliberately not claimed as more than that: `deliveredLineNumbers` today returns either all-real numbers or all-null, and the all-null case is already rejected downstream by the `lastRow.no - firstRow.no + 1 === len` contiguity check in both planners, so mutating this line to `?? 0` leaves the suite green. What it guards is a *mixed* array, which no producer emits yet and which the contiguity check would wave through for any run that happened to be numbered.
     if (no === undefined || no === null) return null
     rows.push({ no, text: lines[i] ?? '', raw: lines[i] ?? '' })
   }
@@ -287,20 +275,12 @@ function foldShellReadStructure(cmd: string, filePath: string, output: string, f
 /**
  * Collapse a byte-identical re-run of a pure file read down to a pointer at the cached copy.
  *
- * Unlike every other rewrite in this handler, this one needs no judgement about which parts of the
- * output matter, because nothing is being summarized: the bytes the model already holds and the
- * bytes it would be handed again are the same bytes. Only a duplicate is dropped, and the original
- * stays whole in the bash-output cache, so a caller that genuinely wants it back can ask.
+ * Unlike every other rewrite in this handler, this one needs no judgement about which parts of the output matter, because nothing is being summarized: the bytes the model already holds and the bytes it would be handed again are the same bytes. Only a duplicate is dropped, and the original stays whole in the bash-output cache, so a caller that genuinely wants it back can ask.
  *
- * Why a rewrite and not a hint. The advisory channel measurably does not work for bash: the
- * `bash_redirect` and `bash_recall` hint categories sit at 2.7% and 13.8% acted-on and are
- * suppressed by the backoff ledger for that reason, while the two paths that act on the payload
- * instead of asking for cooperation (`read_reread_dedup`, `edit_reread_suggest`) sit at 95.6% and
+ * Why a rewrite and not a hint. The advisory channel measurably does not work for bash: the `bash_redirect` and `bash_recall` hint categories sit at 2.7% and 13.8% acted-on and are suppressed by the backoff ledger for that reason, while the two paths that act on the payload instead of asking for cooperation (`read_reread_dedup`, `edit_reread_suggest`) sit at 95.6% and
  * 98.5%. Advice about a redundant read still costs the redundant read.
  *
- * Returns null -- leaving output untouched -- on a command's first run, when the file changed so
- * the output differs, on a non-zero exit, or when the net-benefit gate declines. The first run is
- * also where the body gets cached, so a later identical run has a baseline to compare against.
+ * Returns null -- leaving output untouched -- on a command's first run, when the file changed so the output differs, on a non-zero exit, or when the net-benefit gate declines. The first run is also where the body gets cached, so a later identical run has a baseline to compare against.
  */
 /** Appended OUTSIDE the fence when a composed rewrite had to be cut back to fit the delivery cap. */
 const REWRITE_CLIP_NOTE = '\n[token-goat: rewrite clipped to the harness delivery cap; the pointer above recalls the untouched output]'
@@ -308,8 +288,7 @@ const REWRITE_CLIP_NOTE = '\n[token-goat: rewrite clipped to the harness deliver
 /**
  * Fence a body this file composed, clipped so that the fence still closes.
  *
- * The single place the tool-output fence is applied to a Bash rewrite, so no call site restates
- * either half of the rule. Both halves are load-bearing:
+ * The single place the tool-output fence is applied to a Bash rewrite, so no call site restates either half of the rule. Both halves are load-bearing:
  *
  * - The fence goes on because these bodies are SUBSTITUTIONS: token-goat splices its own notices in
  *   beside bytes it did not write, so the model needs to see where one voice ends. A pure
@@ -320,21 +299,17 @@ const REWRITE_CLIP_NOTE = '\n[token-goat: rewrite clipped to the harness deliver
  *   original. Overhead is measured off a real fence call rather than assumed, because
  *   `fenceUntrustedSpans` returns the body unchanged when injection fencing is switched off.
  *
- * The caller prices what this RETURNS, never the unfenced body: pricing the body and then fencing
- * it is how a fence silently pushes a rewrite under its own net-benefit gate, at which point the
- * rewrite is declined and the bytes ship unfenced anyway.
+ * The caller prices what this RETURNS, never the unfenced body: pricing the body and then fencing it is how a fence silently pushes a rewrite under its own net-benefit gate, at which point the rewrite is declined and the bytes ship unfenced anyway.
  */
 function fenceRewriteWithinCap(spans: readonly FenceSpan[]): string {
   const joined = spans.map((s) => s.text).join('')
   const fenced = fenceUntrustedSpans(spans, UNTRUSTED_TOOL_TAG)
-  // Fencing switched off: nothing was wrapped around the body, so there is no closing tag to lose
-  // and the cap behaves exactly as it did before this fence existed.
+  // Fencing switched off: nothing was wrapped around the body, so there is no closing tag to lose and the cap behaves exactly as it did before this fence existed.
   if (fenced === joined) return joined
   const overhead = Buffer.byteLength(fenced, 'utf-8') - Buffer.byteLength(joined, 'utf-8') + Buffer.byteLength(REWRITE_CLIP_NOTE, 'utf-8')
   const cut = clipToDeliveryCap(joined, overhead)
   if (!cut.clipped) return fenced
-  // Re-cut the spans to the clipped length so authorship survives the clip: the clipped text is a
-  // prefix of `joined`, so taking that many characters back off the span list reproduces it exactly.
+  // Re-cut the spans to the clipped length so authorship survives the clip: the clipped text is a prefix of `joined`, so taking that many characters back off the span list reproduces it exactly.
   const kept: FenceSpan[] = []
   let left = cut.text.length
   for (const s of spans) {
@@ -354,27 +329,16 @@ async function maybeCollapseIdenticalRead(
   cacheMinBytes: number,
 ): Promise<HookOutput | null> {
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
-  // A failed read's output is an error message, not file content. Never store one as the baseline a
-  // later run would be collapsed against, and never collapse one away.
+  // A failed read's output is an error message, not file content. Never store one as the baseline a later run would be collapsed against, and never collapse one away.
   if (exitCode !== null && exitCode !== 0) return null
   const filePath = pureFileReadPath(cmd)
   if (filePath === null) return null
   const originalBytes = Buffer.byteLength(output, 'utf-8')
   if (originalBytes < Math.max(cacheMinBytes, IDENTICAL_READ_MIN_BODY_BYTES)) return null
 
-  // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the
-  // session, but this rewrite's whole claim is that the model already holds these bytes -- which is
-  // only true if the earlier read happened in THIS conversation. Keying on the session's own
-  // per-file index (serialized per session id, and cleared on edit and on compaction) rather than
-  // on the blob cache alone is what makes the claim true: a first read in a fresh session finds
-  // nothing here and passes through whole, even when an identical body from yesterday is still
-  // sitting in the blob cache.
+  // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the session, but this rewrite's whole claim is that the model already holds these bytes -- which is only true if the earlier read happened in THIS conversation. Keying on the session's own per-file index (serialized per session id, and cleared on edit and on compaction) rather than on the blob cache alone is what makes the claim true: a first read in a fresh session finds nothing here and passes through whole, even when an identical body from yesterday is still sitting in the blob cache.
   //
-  // Keyed by file rather than by command, because the measured waste is not one command repeated:
-  // it is several spellings of overlapping reads of one file, which hash differently and return
-  // different bytes. Newest first, since a later body is the more likely container and stopping at
-  // the first hit bounds how many blobs get read.
-  // Against the directory a leading `cd DIR` actually leaves the shell in, not this hook's own cwd: `cd docs` then a read of `README.md` is a different file from the `README.md` beside it, and two files can hold identical text. `cmd` arrives with the prefix already stripped, so the raw form is what still knows where the shell went.
+  // Keyed by file rather than by command, because the measured waste is not one command repeated: it is several spellings of overlapping reads of one file, which hash differently and return different bytes. Newest first, since a later body is the more likely container and stopping at the first hit bounds how many blobs get read. Against the directory a leading `cd DIR` actually leaves the shell in, not this hook's own cwd: `cd docs` then a read of `README.md` is a different file from the `README.md` beside it, and two files can hold identical text. `cmd` arrives with the prefix already stripped, so the raw form is what still knows where the shell went.
   const fileKey = resolveIndexPath(filePath, cdPrefixCwd(rawCmd, cwd ?? process.cwd()))
   const priorIds = getFileServedOutputs(fileKey)
   let containerId: string | null = null
@@ -408,11 +372,7 @@ async function maybeCollapseIdenticalRead(
         rewrite = { text: structural.text, reason: structural.kind === 'bash_compress:markdown-outline' ? 'document replaced with its heading tree' : 'source replaced with its structural skeleton', kind: structural.kind, detail: structural.detail }
       }
       if (rewrite === null) {
-        // One untrusted span: unlike the elision above, every notice this fold splices in (`... N
-        // more lines of X folded`, the comment and prose variants beside it) is bracket-free, and
-        // the marker neutralizer only matches the bracketed forms -- so nothing token-goat authored
-        // is at risk from fencing the block whole. Same argument planSourceSkeleton already makes
-        // for the structural fold, which is why that path arrives fenced by its own producer.
+        // One untrusted span: unlike the elision above, every notice this fold splices in (`... N more lines of X folded`, the comment and prose variants beside it) is bracket-free, and the marker neutralizer only matches the bracketed forms -- so nothing token-goat authored is at risk from fencing the block whole. Same argument planSourceSkeleton already makes for the structural fold, which is why that path arrives fenced by its own producer.
         const folded = foldShellReadBodies(cmd, output, fileKey, cwd)
         if (folded !== null) {
           const fenced = fenceRewriteWithinCap([{ text: folded.text }])
@@ -434,15 +394,7 @@ async function maybeCollapseIdenticalRead(
     ? '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + containerId + ' --full`.'
     : '[token-goat] These ' + originalBytes + ' bytes already appear verbatim inside a wider read of ' + filePath + ' served earlier in this session. Withheld -- recall the full earlier output with `token-goat bash-output ' + containerId + ' --full`.'
   if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(pointer, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
-  // Deliberately NOT recordBashRerun() here, unlike the delta path below. That call marks the
-  // earlier run as safe for the compaction manifest to drop, which is right when a newer *full*
-  // copy has superseded it. Here the newer copy is a pointer, so dropping the earlier one would
-  // strand this pointer and leave the transcript with neither the body nor a duplicate of it. The
-  // earlier full copy is precisely what this rewrite is pointing at, so it must stay.
-  // Priced against the delivered size, not the original: the harness truncates a Bash result before
-  // the model sees it, so collapsing an oversized body spares at most the delivered slice. See
-  // deliveredOutputBytes in src/delivery_cap.ts. The worthwhile gate above deliberately stays on the
-  // uncapped bytes -- this is an accounting correction, not a change to which rewrites ship.
+  // Deliberately NOT recordBashRerun() here, unlike the delta path below. That call marks the earlier run as safe for the compaction manifest to drop, which is right when a newer *full* copy has superseded it. Here the newer copy is a pointer, so dropping the earlier one would strand this pointer and leave the transcript with neither the body nor a duplicate of it. The earlier full copy is precisely what this rewrite is pointing at, so it must stay. Priced against the delivered size, not the original: the harness truncates a Bash result before the model sees it, so collapsing an oversized body spares at most the delivered slice. See deliveredOutputBytes in src/delivery_cap.ts. The worthwhile gate above deliberately stays on the uncapped bytes -- this is an accounting correction, not a change to which rewrites ship.
   return emitRewrite(pointer, identical ? 'identical file re-read collapsed' : 'already-served file lines collapsed', { kind: identical ? 'bash_compress:identical-reread' : 'bash_compress:contained-reread', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
@@ -474,9 +426,7 @@ async function maybeElideServedGenericOutput(
   let rewrittenText: string | null = null
   if (priorIds.length > 0) {
     const elided = elideServedShellLines(cmd, output, priorIds, true)
-    // Fenced before it is priced, for the reason spelled out on fenceRewriteWithinCap: this body is
-    // the command's own rows with token-goat's `[token-goat] N lines ... withheld` notices spliced
-    // between them, which is a substitution and owes a fence.
+    // Fenced before it is priced, for the reason spelled out on fenceRewriteWithinCap: this body is the command's own rows with token-goat's `[token-goat] N lines ... withheld` notices spliced between them, which is a substitution and owes a fence.
     const fenced = elided === null ? null : fenceRewriteWithinCap(elided)
     if (fenced !== null && isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(fenced, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) {
       rewrittenText = fenced
@@ -499,10 +449,7 @@ async function maybeCompressCompoundOutput(
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
   // Single commands were handled by the pre-hook's wrapper if wrapped; unwrapped single commands (e.g. in environments without pre-hook rewriting) reach here and are eligible for compression.
   if (!isUnwrapped && isCompressibleSingleCommand(cmd)) return null
-  // Don't compact a command that reported a non-zero exit: a failing compound pipeline's
-  // diagnostics must reach the model in full on its first read, not behind a `--full` recall.
-  // An unknown exit (null -- common on harnesses that do not report one) is treated as
-  // non-failure, matching the success gates elsewhere in this handler.
+  // Don't compact a command that reported a non-zero exit: a failing compound pipeline's diagnostics must reach the model in full on its first read, not behind a `--full` recall. An unknown exit (null -- common on harnesses that do not report one) is treated as non-failure, matching the success gates elsewhere in this handler.
   if (exitCode !== null && exitCode !== 0) return null
   let cfg: { enabled: boolean; disabled_filters: string[]; max_lines: number; max_bytes: number }
   try {
@@ -527,20 +474,7 @@ async function maybeCompressCompoundOutput(
   if (!compressed.worthApplying(minNet)) return null
   // The id is `commandHash(cmd, cwd)`, exactly what storeBashOutput would return, so the pointer's real byte cost is known before committing to the cache write.
   const id = await commandHash(cmd, cwd)
-  // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies
-  // head/tail elision, so it would return a truncated view, not the complete original.
-  // The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall
-  // pointer sit outside it. Fold them in and the model loses its one signal for where our voice
-  // ends and the command's output begins, and anyone who guesses the marker's wording gets to
-  // write text the model reads as ours. Every other rewrite hook already follows this rule --
-  // fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in
-  // the codebase that handed the model a replacement body with no fence at all.
-  // A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the
-  // marker outside the tag rather than riding inside with the command's bytes. Leaving it in was
-  // the one case where token-goat's voice really did sit inside its own fence, which is exactly the
-  // ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our
-  // own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the
-  // point it describes is where the body ends, which the closing tag already marks.
+  // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies head/tail elision, so it would return a truncated view, not the complete original. The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall pointer sit outside it. Fold them in and the model loses its one signal for where our voice ends and the command's output begins, and anyone who guesses the marker's wording gets to write text the model reads as ours. Every other rewrite hook already follows this rule -- fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in the codebase that handed the model a replacement body with no fence at all. A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the marker outside the tag rather than riding inside with the command's bytes. Leaving it in was the one case where token-goat's voice really did sit inside its own fence, which is exactly the ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the point it describes is where the body ends, which the closing tag already marks.
   const { body: untrusted, notices } = splitOwnTrailingNotices(compressed.text)
   const marker = compressed.withMarker(minNet).slice(compressed.text.length)
   const body =
@@ -561,38 +495,20 @@ async function maybeCompressCompoundOutput(
     return null
   }
   await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
-  // emitRewrite prices the saving from the string it returns, which is this same `body`, converts it with the one savedTokensFromBytes every other saving uses, and books the placeholders the filter's own redaction pass left in that body. Nothing booked those before: the cache copy is redacted by bash_output_cache before disk_cache sees it, so disk_cache's count comes back zero and this path's redactions were protecting the model while reporting nothing.
-  // originalBytes is capped at the harness delivery cap (src/delivery_cap.ts): the model never
-  // receives more than that inline, so a larger counterfactual would book output it could not see.
-  // The kind names the filter that actually ran, not the one this path used to hardcode. A stat key fixed to `generic` while the filter varies makes every family selection invisible to the ledger and to any test asserting on it, which is the shape commit 6645b3f3 removed from the byte-crediting stats for the same reason.
+  // emitRewrite prices the saving from the string it returns, which is this same `body`, converts it with the one savedTokensFromBytes every other saving uses, and books the placeholders the filter's own redaction pass left in that body. Nothing booked those before: the cache copy is redacted by bash_output_cache before disk_cache sees it, so disk_cache's count comes back zero and this path's redactions were protecting the model while reporting nothing. originalBytes is capped at the harness delivery cap (src/delivery_cap.ts): the model never receives more than that inline, so a larger counterfactual would book output it could not see. The kind names the filter that actually ran, not the one this path used to hardcode. A stat key fixed to `generic` while the filter varies makes every family selection invisible to the ledger and to any test asserting on it, which is the shape commit 6645b3f3 removed from the byte-crediting stats for the same reason.
   return emitRewrite(body, 'bash', { kind: `bash_compress:${filter.name}`, originalBytes: deliveredOutputBytes(compressed.originalBytes) })
 }
 
 /**
- * Last-resort, strictly lossless pass: drop terminal display escapes (SGR colour, cursor moves,
- * OSC titles) from output that nothing else compressed. A model reads `\x1b[38;2;240;246;252m` as
- * tokens and gets no information from it -- it is markup for a terminal, not content.
+ * Last-resort, strictly lossless pass: drop terminal display escapes (SGR colour, cursor moves, OSC titles) from output that nothing else compressed. A model reads `\x1b[38;2;240;246;252m` as tokens and gets no information from it -- it is markup for a terminal, not content.
  *
- * Three things follow from "lossless" and separate this from every other rewrite on this path:
- * nothing is withheld, so there is no recall pointer and no marker to price in (a marker would be
- * pure cost -- there is nothing to recall); the saving is exactly the escape bytes removed; and it
- * is deliberately NOT gated on exit code. The other paths skip a failing command so its
- * diagnostics reach the model whole, but stripping display markup is what keeps a failing
- * colourised build whole -- a red `FAIL` and a plain `FAIL` say the same thing to a reader that
- * has no colours.
+ * Three things follow from "lossless" and separate this from every other rewrite on this path: nothing is withheld, so there is no recall pointer and no marker to price in (a marker would be pure cost -- there is nothing to recall); the saving is exactly the escape bytes removed; and it is deliberately NOT gated on exit code. The other paths skip a failing command so its diagnostics reach the model whole, but stripping display markup is what keeps a failing colourised build whole -- a red `FAIL` and a plain `FAIL` say the same thing to a reader that has no colours.
  *
- * Only single commands reach here in practice: a compound one is compressed by
- * {@link maybeCompressCompoundOutput}, whose filter pipeline already strips escapes as its first
- * stage. This closes the gap on the other side of that helper's `isCompressibleSingleCommand`
- * early return, where the pre-hook wrapper only covers a whitelist of recognised command shapes
- * and everything else -- including token-goat's own colourised output -- passed through untouched.
+ * Only single commands reach here in practice: a compound one is compressed by {@link maybeCompressCompoundOutput}, whose filter pipeline already strips escapes as its first stage. This closes the gap on the other side of that helper's `isCompressibleSingleCommand` early return, where the pre-hook wrapper only covers a whitelist of recognised command shapes and everything else -- including token-goat's own colourised output -- passed through untouched.
  */
 function maybeStripAnsiOnly(output: string): HookOutput | null {
   if (!output.includes('\x1b')) return null
-  // No explicit TOKEN_GOAT_BASH_COMPRESS check: config.ts folds that env var into
-  // `bash_compress.enabled`, so `!cfg.enabled` below already carries the kill switch. An extra
-  // check here read as a second guard while being unreachable -- mutation testing removed it and
-  // nothing went red, which is what an unreachable guard looks like.
+  // No explicit TOKEN_GOAT_BASH_COMPRESS check: config.ts folds that env var into `bash_compress.enabled`, so `!cfg.enabled` below already carries the kill switch. An extra check here read as a second guard while being unreachable -- mutation testing removed it and nothing went red, which is what an unreachable guard looks like.
   let cfg: { enabled: boolean; disabled_filters: string[] }
   try {
     cfg = loadConfig().bash_compress
@@ -602,16 +518,7 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   if (!cfg.enabled || cfg.disabled_filters.includes('ansi')) return null
   const stripped = stripAnsiEscapes(output)
   const originalBytes = Buffer.byteLength(output, 'utf-8')
-  // Deliberately not fenced, unlike the compressing path above. The fence marks where token-goat
-  // stops speaking and third-party bytes begin, and it earns that only where token-goat has
-  // something of its own in the block: the compressing path drops lines, vouches for what it kept,
-  // and splices a `[token-goat: ...]` marker in beside content it did not write. This path does
-  // none of that. It emits `stripped` alone -- no marker, no recall pointer, no summary -- so the
-  // model receives the same bytes the harness would have delivered anyway, minus escape sequences
-  // it cannot render. There is no token-goat voice here to delimit.
-  // Pricing a fence in here also costs the strip itself: the whole saving is the escape bytes, so
-  // the fence's ~123 outweighs it on ordinary build output, the gate returns null, and the raw
-  // output reaches the model unfenced regardless -- losing the strip and buying no safety.
+  // Deliberately not fenced, unlike the compressing path above. The fence marks where token-goat stops speaking and third-party bytes begin, and it earns that only where token-goat has something of its own in the block: the compressing path drops lines, vouches for what it kept, and splices a `[token-goat: ...]` marker in beside content it did not write. This path does none of that. It emits `stripped` alone -- no marker, no recall pointer, no summary -- so the model receives the same bytes the harness would have delivered anyway, minus escape sequences it cannot render. There is no token-goat voice here to delimit. Pricing a fence in here also costs the strip itself: the whole saving is the escape bytes, so the fence's ~123 outweighs it on ordinary build output, the gate returns null, and the raw output reaches the model unfenced regardless -- losing the strip and buying no safety.
   if (
     !isRewriteWorthwhile({
       originalBytes,
@@ -622,10 +529,7 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   ) {
     return null
   }
-  // 'counted-elsewhere': this pass redacts nothing, it only removes escape bytes. Any placeholder
-  // in `stripped` was already in the original and was booked by whoever put it there, so counting
-  // here would credit this path with a redaction it did not perform.
-  // Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
+  // 'counted-elsewhere': this pass redacts nothing, it only removes escape bytes. Any placeholder in `stripped` was already in the original and was booked by whoever put it there, so counting here would credit this path with a redaction it did not perform. Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
   return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
 }
 
@@ -649,12 +553,10 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   // `--full` is mandatory here: `bash-output <id>` alone returns only a head slice, so a notice omitting the flag would point the reader at a command that silently loses most of the raw markup.
   const notice = `[token-goat: curl HTML body cleaned via extractCleanText; use \`token-goat bash-output ${id} --full\` to recall the raw markup]\n`
   const noticeBytes = Buffer.byteLength(notice, 'utf-8')
-  // Fenced like maybeCompressCompoundOutput above: the cleaned text is a fetched webpage's own words, third-party content by provenance the same way a WebFetch body is, so it gets the same untrusted-content fence and injection scan hooks_fetch.ts already applies to that surface.
-  // Clipped to the harness delivery cap rather than shipped whole, because unlike every other rewrite in this file this one can legitimately EXCEED that cap: extractCleanText shrinks a page enormously relative to its markup and still leaves more prose than the cap carries, measured at 29,252 bytes of cleaned text from a 197,504-byte Wikipedia article. Shipping past the cap costs nothing in bytes (the harness truncates either way) but loses the tail, and the tail is where the closing fence marker and the recall notice sit. Losing the notice is the expensive half: the harness persists the CLEANED text it was handed, so once this hook substitutes, the raw markup survives only in token-goat's own bash cache and that notice is its only route back. Overhead is measured off an actual fence call rather than assumed, since fenceUntrusted returns the text unchanged when injection fencing is switched off.
+  // Fenced like maybeCompressCompoundOutput above: the cleaned text is a fetched webpage's own words, third-party content by provenance the same way a WebFetch body is, so it gets the same untrusted-content fence and injection scan hooks_fetch.ts already applies to that surface. Clipped to the harness delivery cap rather than shipped whole, because unlike every other rewrite in this file this one can legitimately EXCEED that cap: extractCleanText shrinks a page enormously relative to its markup and still leaves more prose than the cap carries, measured at 29,252 bytes of cleaned text from a 197,504-byte Wikipedia article. Shipping past the cap costs nothing in bytes (the harness truncates either way) but loses the tail, and the tail is where the closing fence marker and the recall notice sit. Losing the notice is the expensive half: the harness persists the CLEANED text it was handed, so once this hook substitutes, the raw markup survives only in token-goat's own bash cache and that notice is its only route back. Overhead is measured off an actual fence call rather than assumed, since fenceUntrusted returns the text unchanged when injection fencing is switched off.
   const clipNote = '\n[token-goat: cleaned text clipped to the harness delivery cap; the notice at the top of this output recalls the full raw markup]'
   const fenceOverhead = Buffer.byteLength(fenceUntrusted(cleaned, UNTRUSTED_TOOL_TAG), 'utf-8') - Buffer.byteLength(cleaned, 'utf-8')
-  // The cap rule itself lives in delivery_cap.ts and is shared with fenceRewriteWithinCap above, so
-  // the two Bash paths that can outrun the cap cannot drift apart on where they cut.
+  // The cap rule itself lives in delivery_cap.ts and is shared with fenceRewriteWithinCap above, so the two Bash paths that can outrun the cap cannot drift apart on where they cut.
   const cut = clipToDeliveryCap(cleaned, noticeBytes + fenceOverhead + Buffer.byteLength(clipNote, 'utf-8'))
   const body = cut.text
   const clipped = cut.clipped ? clipNote : ''
@@ -670,16 +572,14 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   ) {
     return null
   }
-  // Default 'count-here' redaction accounting, matching the other lossy-rewrite sites in this file (the generic compress and identical/contained-reread paths above): extractCleanText performs no redaction of its own, so this is the same posture as those sites rather than the ansi path's 'counted-elsewhere', which exists only because that path is a pure identity transform on bytes already accounted for elsewhere.
-  // Notice FIRST, not appended: it is the only pointer back to the raw markup, and a trailing one sits exactly where the harness truncates.
+  // Default 'count-here' redaction accounting, matching the other lossy-rewrite sites in this file (the generic compress and identical/contained-reread paths above): extractCleanText performs no redaction of its own, so this is the same posture as those sites rather than the ansi path's 'counted-elsewhere', which exists only because that path is a pure identity transform on bytes already accounted for elsewhere. Notice FIRST, not appended: it is the only pointer back to the raw markup, and a trailing one sits exactly where the harness truncates.
   return emitRewrite(notice + fenced, 'curl HTML body cleaned', { kind: 'bash_compress:curl-html', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
 /**
  * pre_tool_use handler for the Bash tool.
  *
- * Emits a recall hint when the command is a known build tool and its output
- * was already captured this session. Passes through for all other commands.
+ * Emits a recall hint when the command is a known build tool and its output was already captured this session. Passes through for all other commands.
  */
 function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
@@ -688,8 +588,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const cdStripped = cmd !== rawCmd
   // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell itself would — hoisted here (rather than computed right before its first use) so every path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
   const preHookCwd = getCwd(event) ?? null
-  // When a cd prefix was stripped, path-based hints below resolve their filePath against the
-  // directory that cd would actually leave the shell in, not this hook's own cwd.
+  // When a cd prefix was stripped, path-based hints below resolve their filePath against the directory that cd would actually leave the shell in, not this hook's own cwd.
   const hintCwd = preHookCwd ?? process.cwd()
 
   // Check for unbalanced shell quoting or unterminated heredocs
@@ -776,22 +675,16 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     )
   }
 
-  // Item 4b: sed line-range extraction — replaced with extractSedRange to provide specific line range
-  // A single-command read is preferred; failing that, the compound spellings (echo-separated multi-span reads, formatting-only pipes) are the same read class and get the same per-file treatment.
+  // Item 4b: sed line-range extraction — replaced with extractSedRange to provide specific line range A single-command read is preferred; failing that, the compound spellings (echo-separated multi-span reads, formatting-only pipes) are the same read class and get the same per-file treatment.
   const singleLineRangeRead = extractLineRangeRead(cmd)
   const sedReads = singleLineRangeRead !== null ? [singleLineRangeRead] : extractLineRangeReadsCompound(cmd)
   if (sedReads !== null) {
     recordStat('session_hint', 0, 0)
     const hints: string[] = []
     for (const { filePath, ranges, tool } of sedReads) {
-      // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve
-      // against the directory cd would actually leave the shell in, matching every other path-carrying
-      // hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd
-      // instead of the shell's real one, both mislabeling the hint and missing dedup against a
-      // non-cd-prefixed reference to the same file.
+      // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve against the directory cd would actually leave the shell in, matching every other path-carrying hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd instead of the shell's real one, both mislabeling the hint and missing dedup against a non-cd-prefixed reference to the same file.
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-      // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths.
-      // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
+      // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
       const overlapHints: string[] = []
       const freshRanges: Array<readonly [number, number]> = []
@@ -810,13 +703,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return contextOutput(hints.join(' '))
   }
 
-  // These two must run before extractCatFile: a `-Tail`/`Select-Object -First`-flagged Get-Content command is a
-  // single path with a flag VALUE in the argument list (e.g. `Get-Content -Tail 50 src/auth.ts`, where `50` reads
-  // as a bare positional token), and extractCatFile's own trailing-flag catch-all matches that same shape. Left
-  // in its original position below, extractCatFile denied a `-Tail 50` read outright as a whole-file dump --
-  // "loads the entire file into context" -- when only 50 lines were ever going to be read, exactly the ordering
-  // hazard extractCatFilesMulti's own out.length >= 2 guard was written to avoid, and recordBashFileReadsForSessionCache
-  // already orders its own gcTail/tail/gcSelect/head checks ahead of extractCatFile for this identical reason.
+  // These two must run before extractCatFile: a `-Tail`/`Select-Object -First`-flagged Get-Content command is a single path with a flag VALUE in the argument list (e.g. `Get-Content -Tail 50 src/auth.ts`, where `50` reads as a bare positional token), and extractCatFile's own trailing-flag catch-all matches that same shape. Left in its original position below, extractCatFile denied a `-Tail 50` read outright as a whole-file dump -- "loads the entire file into context" -- when only 50 lines were ever going to be read, exactly the ordering hazard extractCatFilesMulti's own out.length >= 2 guard was written to avoid, and recordBashFileReadsForSessionCache already orders its own gcTail/tail/gcSelect/head checks ahead of extractCatFile for this identical reason.
   const gcTailResult = extractGetContentTail(cmd)
   if (gcTailResult !== null) {
     const { filePath, isDoc, isConfig, isSql, isXml } = gcTailResult
@@ -902,12 +789,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
     if (isSql) {
-      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile's
-      // deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) --
-      // a schema/migration file is routinely read in full for review, and `token-goat section
-      // "file::table_name"` only extracts one block at a time, so denying the whole-file read here
-      // (as the cd-unprefixed branch below does for every other file type) would block a legitimate
-      // workflow this hint category was never meant to gate that hard.
+      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat section "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as the cd-unprefixed branch below does for every other file type) would block a legitimate workflow this hint category was never meant to gate that hard.
       return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
@@ -934,10 +816,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isOutputFile) {
-      // Same two kinds the cat/tail guard above tells apart, decided the same way. An agent transcript
-      // is JSONL worth hundreds of kilobytes and reading it whole is the mistake worth blocking; a
-      // background command's stdout is plain text the harness expects to be read, so that only gets
-      // advice about narrowing it, never a refusal.
+      // Same two kinds the cat/tail guard above tells apart, decided the same way. An agent transcript is JSONL worth hundreds of kilobytes and reading it whole is the mistake worth blocking; a background command's stdout is plain text the harness expects to be read, so that only gets advice about narrowing it, never a refusal.
       if (taskOutputIsJsonlTranscript(filePath)) {
         const tHint = 'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file "' + hintPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
         return cdStripped ? contextOutput(tHint) : denyOutput(tHint)
@@ -977,17 +856,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     const lead = 'Node.js `fs.readFileSync()` bypasses read hooks. '
     if (isSql) {
-      // SQL reads are always advisory-only (never denied), matching extractCatFile/
-      // extractWslCatFile/extractPowerShellWrappedGetContent's deliberate SQL-never-deny design
-      // (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is
-      // routinely read in full for review, and `token-goat section "file::table_name"` only
-      // extracts one block at a time, so denying the whole-file read here (as this handler did
-      // for every other file type, unconditionally, before this fix) would block a legitimate
-      // workflow this hint category was never meant to gate that hard. This branch previously
-      // fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case
-      // below, so a non-cd-prefixed `node -e "readFileSync('x.sql')"` was hard-denied while the
-      // equivalent `cat x.sql` was always advisory -- the exact SQL-hint-classifier divergence
-      // already fixed for cat/head/tail/Get-Content.
+      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile/extractPowerShellWrappedGetContent's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat section "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as this handler did for every other file type, unconditionally, before this fix) would block a legitimate workflow this hint category was never meant to gate that hard. This branch previously fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case below, so a non-cd-prefixed `node -e "readFileSync('x.sql')"` was hard-denied while the equivalent `cat x.sql` was always advisory -- the exact SQL-hint-classifier divergence already fixed for cat/head/tail/Get-Content.
       recordStat('session_hint', 0, 0)
       return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
@@ -1092,8 +961,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       ? resolveIndexPath(prevPath, preHookCwd ?? process.cwd())
       : null
     if (prevPath !== null && prevResolvedPath !== null && !existsSync(prevResolvedPath)) {
-      // The previously downloaded file is gone (deleted/moved since). Forget the
-      // stale session record and let the re-download proceed instead of denying.
+      // The previously downloaded file is gone (deleted/moved since). Forget the stale session record and let the re-download proceed instead of denying.
       clearCurlDownload(curlDl.url)
     } else if (prevPath !== null && prevResolvedPath !== null && statSync(prevResolvedPath).size >= loadConfig().hints.bash_dedup_min_bytes) {
       recordStat('session_hint', 0, 0)
@@ -1179,8 +1047,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   if (isTestRunnerCommand(cmd) && isDirectTestRunnerCommand(cmd) && !hasTestRunScopeOrBudget(cmd)) {
-    // The compressor supplies a timeout itself. Preserve that stronger existing safeguard instead
-    // of replacing its rewrite with an advisory that would leave the test unbounded.
+    // The compressor supplies a timeout itself. Preserve that stronger existing safeguard instead of replacing its rewrite with an advisory that would leave the test unbounded.
     const compression = maybeCompressRewrite(event, rawCmd, cmd)
     if (compression !== null) return compression
 
@@ -1194,8 +1061,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools.
-  // isBuildCommand's patterns are prefix-anchored so a trailing `2>&1` never breaks them, but detectFromCommand rejects any redirect outright (hasRedirect) — so a command recognized only via detectFromCommand (e.g. `npm test`, resolved through its package-manager-script dispatch, not a BUILD_COMMAND_PATTERNS entry) needs the same trailing-`2>&1` allowance maybeCompressRewrite applies below, or it never reaches that function at all.
+  // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools. isBuildCommand's patterns are prefix-anchored so a trailing `2>&1` never breaks them, but detectFromCommand rejects any redirect outright (hasRedirect) — so a command recognized only via detectFromCommand (e.g. `npm test`, resolved through its package-manager-script dispatch, not a BUILD_COMMAND_PATTERNS entry) needs the same trailing-`2>&1` allowance maybeCompressRewrite applies below, or it never reaches that function at all.
   if (!isBuildCommand(cmd) && detectFromCommand(stripTrailingStderrRedirect(cmd), preHookCwd ?? undefined) === null) return passOutput()
 
   // Derive the same command hash used by the session store.
@@ -1222,8 +1088,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
 
 /**
- * Extract the tool response text from a post_tool_use event.
- * Claude Code may send a string or an object with an output/content field.
+ * Extract the tool response text from a post_tool_use event. Claude Code may send a string or an object with an output/content field.
  */
 function extractBashOutput(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
@@ -1232,16 +1097,7 @@ function extractBashOutput(raw: Record<string, unknown>): string {
 /**
  * Best-effort exit code from a Bash tool_response (absent on many harnesses).
  *
- * On Claude Code this is always null, and deliberately so. Measured over 186,335 recorded Bash
- * results: not one carried `exit_code`, `exitCode`, `returncode` or `code`. The only status-shaped
- * field the harness ever sends is `returnCodeInterpretation` (2,133 results), and its every observed
- * value is a BENIGN non-zero exit -- "No matches found", "Files differ", "Some directories were
- * inaccessible" -- never a genuine failure, and it never co-occurred with non-empty stderr. Treating
- * it as "exit != 0" would fire the failing-test-runner advisory on a clean grep that matched
- * nothing, so it is not consulted. Non-empty stderr is no better: plenty of green runs write to it.
- * Every caller but the test-runner advisory reads null as success, so the rest of the handler is
- * unaffected; that one advisory stays dormant on this harness until a real exit status is on the
- * wire, which is the correct trade against a false "your test run failed" nudge on a passing run.
+ * On Claude Code this is always null, and deliberately so. Measured over 186,335 recorded Bash results: not one carried `exit_code`, `exitCode`, `returncode` or `code`. The only status-shaped field the harness ever sends is `returnCodeInterpretation` (2,133 results), and its every observed value is a BENIGN non-zero exit -- "No matches found", "Files differ", "Some directories were inaccessible" -- never a genuine failure, and it never co-occurred with non-empty stderr. Treating it as "exit != 0" would fire the failing-test-runner advisory on a clean grep that matched nothing, so it is not consulted. Non-empty stderr is no better: plenty of green runs write to it. Every caller but the test-runner advisory reads null as success, so the rest of the handler is unaffected; that one advisory stays dormant on this harness until a real exit status is on the wire, which is the correct trade against a false "your test run failed" nudge on a passing run.
  */
 function extractExitCode(raw: Record<string, unknown>): number | null {
   const resp = raw['tool_response']
@@ -1267,13 +1123,9 @@ const GH_SCOPE_PHRASES = [
 const GH_NOT_FOUND = /^gh: .*\(HTTP 404\)|"status":\s*"404"/m
 
 /**
- * Advisory hints for `gh api` commands: a scope/permission nudge when the call hits a permission
- * wall, and a token-savings nudge when the JSON response is wide enough that a `--jq` projection
- * would meaningfully shrink it. Returns the joined hint text, or null when nothing applies.
+ * Advisory hints for `gh api` commands: a scope/permission nudge when the call hits a permission wall, and a token-savings nudge when the JSON response is wide enough that a `--jq` projection would meaningfully shrink it. Returns the joined hint text, or null when nothing applies.
  *
- * The scope hint is accumulated before the response is parsed, so a non-JSON or malformed body
- * still surfaces it — unlike the original Python, where a `json.loads` failure discarded an
- * already-detected scope hint. Never throws.
+ * The scope hint is accumulated before the response is parsed, so a non-JSON or malformed body still surfaces it — unlike the original Python, where a `json.loads` failure discarded an already-detected scope hint. Never throws.
  */
 function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): string | null {
   if (stdout === '' || !cmd.startsWith('gh api')) return null
@@ -1307,9 +1159,7 @@ function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): s
   return hints.length > 0 ? hints.join(' ') : null
 }
 
-// Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen.
-// Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one.
-// extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record.
+// Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen. Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one. extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record.
 function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): void {
   const resolve = (p: string) => resolveIndexPath(p, cwd ?? process.cwd())
 
@@ -1368,9 +1218,7 @@ function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): vo
 /**
  * post_tool_use handler for the Bash tool.
  *
- * Caches the output of monitoring and build commands so that `preBashHandler`
- * can emit a recall hint the next time the same command is run, avoiding a
- * redundant re-execution and the token cost of re-reading the output.
+ * Caches the output of monitoring and build commands so that `preBashHandler` can emit a recall hint the next time the same command is run, avoiding a redundant re-execution and the token cost of re-reading the output.
  */
 async function maybeEmitLargeUncompressedHint(
   cmd: string,
@@ -1386,6 +1234,8 @@ async function maybeEmitLargeUncompressedHint(
     outputBytes < 4096 ||
     process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0' ||
     (exitCode !== null && exitCode !== 0) ||
+    // token-goat's own output is already the narrow form; telling the model to compress it is noise.
+    /^\s*token-goat\s/.test(cmd) ||
     (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))
   ) {
     return null
@@ -1396,7 +1246,9 @@ async function maybeEmitLargeUncompressedHint(
   recordStat('session_hint', 0, 0)
   const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
   const kb = Math.round(outputBytes / 1024)
-  const msg = `[tg] Output was ${kb}KB uncompressed. For large tool outputs, run with 'token-goat compress -c "${displaySafeText(cmd)}"' or inspect via 'token-goat bash-output ${id}'.`
+  // The recall pointer leads and each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of it took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion.
+  const compressable = !/["`$\r\n]/.test(cmd)
+  const msg = `[tg] Output was ${kb}KB uncompressed; \`token-goat bash-output ${id}\` recalls it` + (compressable ? `, and \`token-goat compress -c "${displaySafeText(cmd)}"\` compresses the next run.` : '.')
   if (ansiResult !== null && ansiResult.hookType === 'rewriteOutput') {
     // The ansi strip already emitted through emitRewrite and booked its own saving there, so this re-emit carries the same text and books no saving of its own -- the hint is the session_hint stat recorded above, and double-booking those bytes would inflate every total that sums them. Routing through emitRewrite rather than constructing the object here is also what applies the vscode guard: that harness has no field which replaces a tool result, so a hand-built rewrite was silently dropped while still reading as an emit. maybeStripAnsiOnly may ship those bytes unfenced because it adds nothing of ours to them, but this block does add a marker, so the command output is fenced here and the marker stays outside it: otherwise the model cannot tell which of the two voices in the block is token-goat's, and output that forged the marker wording would read as ours. The marker leads rather than trails because it carries the only pointer back to the full output, and the harness truncates from the end.
     return emitRewrite(msg + '\n' + fenceUntrusted(ansiResult.updatedOutput, UNTRUSTED_TOOL_TAG), 'large uncompressed output hint', undefined, 'counted-elsewhere')
@@ -1526,21 +1378,13 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
-    // A whole-file dump goes to the file-read branch even when a monitoring pattern also names it, and one does: MONITORING_COMMAND_PATTERNS carries `cat <file>.(ts|py|go|...)`, so every `cat` of a SOURCE file was classified as a monitored command and routed past this branch entirely, while the same `cat` of a document -- which no monitoring pattern names -- fell into it and folded normally. That left the whole first-read fold below unreachable for exactly the files it was written for. The branch still caches the output under the same key the monitoring path would (shortFingerprint(stripOutputPipeline(cmd)), see maybeCollapseIdenticalRead), so recall by id is unaffected; what a source-file read gives up is the cross-run delta summary, in exchange for the stronger identical/contained collapse the same branch already applies to every other file read.
-    // The diversion is gated on pureFileReadPath alone. An additional whole-file SHAPE test was tried here on the theory that pureFileReadPath would also admit `tail -f app.log`, the live-log shape monitoring exists to summarise; measured against 15 fold controls and 6 monitoring shapes it changed no outcome, so it was dropped rather than kept as an unfalsifiable second opinion. Re-deciding the path's identity at this site is how a repo ends up with two parsers disagreeing: that check stays inside isWholeFileDump, where the fold weighs it against the on-disk size.
+    // A whole-file dump goes to the file-read branch even when a monitoring pattern also names it, and one does: MONITORING_COMMAND_PATTERNS carries `cat <file>.(ts|py|go|...)`, so every `cat` of a SOURCE file was classified as a monitored command and routed past this branch entirely, while the same `cat` of a document -- which no monitoring pattern names -- fell into it and folded normally. That left the whole first-read fold below unreachable for exactly the files it was written for. The branch still caches the output under the same key the monitoring path would (shortFingerprint(stripOutputPipeline(cmd)), see maybeCollapseIdenticalRead), so recall by id is unaffected; what a source-file read gives up is the cross-run delta summary, in exchange for the stronger identical/contained collapse the same branch already applies to every other file read. The diversion is gated on pureFileReadPath alone. An additional whole-file SHAPE test was tried here on the theory that pureFileReadPath would also admit `tail -f app.log`, the live-log shape monitoring exists to summarise; measured against 15 fold controls and 6 monitoring shapes it changed no outcome, so it was dropped rather than kept as an unfalsifiable second opinion. Re-deciding the path's identity at this site is how a repo ends up with two parsers disagreeing: that check stays inside isWholeFileDump, where the fold weighs it against the on-disk size.
     const isFileRead = pureFileReadPath(cmd) !== null
     if (isFileRead || (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd))) {
-      // A plain file read reaches here and, before this branch existed, left with nothing: no
-      // cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger
-      // suppresses. Re-reading the same unchanged file therefore cost its full body every time.
-      // Collapse the byte-identical repeat first, since it is strictly cheaper than compressing
-      // a body the model has already been given verbatim.
+      // A plain file read reaches here and, before this branch existed, left with nothing: no cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger suppresses. Re-reading the same unchanged file therefore cost its full body every time. Collapse the byte-identical repeat first, since it is strictly cheaper than compressing a body the model has already been given verbatim.
       const identical = await maybeCollapseIdenticalRead(cmd, rawCmd, output, exitCode, cwd, cacheMinBytes)
       if (identical !== null) return identical
-      // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
-      // for compression) or an unwrapped single command gets its already-captured output compressed here.
-      // File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression.
-      // Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
+      // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap for compression) or an unwrapped single command gets its already-captured output compressed here. File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression. Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
       if (!isFileRead && (!isUnwrapped || !isCompressibleSingleCommand(cmd))) {
         const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
         if (compound !== null) return compound
@@ -1576,14 +1420,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         return contextOutput(delta + ' — full output: bash-output ' + id + ' --full')
       }
     }
-    // A curl of an HTML page is folded before the ansi-only pass, since the ansi pass alone
-    // cannot help a page that carries no escape codes at all.
+    // A curl of an HTML page is folded before the ansi-only pass, since the ansi pass alone cannot help a page that carries no escape codes at all.
     const curlHtmlFold = maybeFoldCurlHtml(cmd, output, id)
     if (curlHtmlFold !== null) return curlHtmlFold
-    // Deliberately after the delta hint, which keeps its existing priority: a hook returns one
-    // channel, and the delta is only reachable on a rerun whose output actually changed. Every
-    // other cached command -- including the colourised build runs `isBuildCommand` routes here --
-    // reaches this line, so this is where most escape bytes are removed.
+    // Deliberately after the delta hint, which keeps its existing priority: a hook returns one channel, and the delta is only reachable on a rerun whose output actually changed. Every other cached command -- including the colourised build runs `isBuildCommand` routes here -- reaches this line, so this is where most escape bytes are removed.
     const ansiOnly = maybeStripAnsiOnly(output)
     const largeHint = await maybeEmitLargeUncompressedHint(cmd, output, exitCode, cwd, isUnwrapped, event, ansiOnly)
     if (largeHint !== null) return largeHint
