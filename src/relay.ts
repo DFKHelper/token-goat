@@ -20,7 +20,7 @@
  * side-effects, so the registry is populated by the time {@link relay} runs.
  */
 
-import { detectHarness } from './bridges/index.js'
+import { detectHarness } from './bridges/registry.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
 import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'

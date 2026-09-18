@@ -7,8 +7,8 @@
 // Booking the original is the accounting-honesty failure this module exists to prevent: a saving is
 // real only in the billing unit, on the branch that actually blocks the cost.
 
-import { detectHarness } from './bridges/index.js'
-import type { HarnessName } from './bridges/index.js'
+import { detectHarness } from './bridges/registry.js'
+import type { HarnessName } from './bridges/types.js'
 
 /**
  * Bytes of a Bash tool result Claude Code delivers inline before it truncates.

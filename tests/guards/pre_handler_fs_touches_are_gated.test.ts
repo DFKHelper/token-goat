@@ -244,14 +244,9 @@ describe('the pre-dispatch call graph is real', () => {
     pinnedPopulation({
       what: 'functions reachable from relayInProcess before handler dispatch',
       items: closure.map((v) => v.key),
-      // Measured, not believed. This was pinned at 40 against a BELIEVED population of 45; the real
-      // one is 112, so the floor could have lost 72 members -- 64% of the closure -- before saying
-      // anything. The ceiling is what makes the belief falsifiable: a 45-sized belief implies a
-      // ceiling around 55, which goes red at 112 instead of passing silently. Measure both (raise
-      // the floor to 9999, read the count out of the failure) whenever the traversal or the shared
-      // parser in reachability.ts changes -- widening that parser moves this number.
+      // Measured, not believed. This was pinned at 40 against a BELIEVED population of 45; the real one is 112, so the floor could have lost 72 members -- 64% of the closure -- before saying anything. The ceiling is what makes the belief falsifiable: a 45-sized belief implies a ceiling around 55, which goes red at 112 instead of passing silently. Measure both (raise the floor to 9999, read the count out of the failure) whenever the traversal or the shared parser in reachability.ts changes -- widening that parser moves this number. Moved 140 -> 141 when relay.ts, delivery_cap.ts and compact.ts stopped importing detectHarness through the bridges barrel: the call was always made, but a re-export hid it from this traversal, so the single new member is bridges/registry.ts::detectHarness becoming visible rather than new code entering the pre-dispatch path.
       floor: 100,
-      ceiling: 140,
+      ceiling: 141,
       mustInclude: ['relay.ts::relayInProcess', 'relay.ts::buildEvent', 'vscode_duplicate.ts::shouldSuppressDuplicateVscodeHook', 'vscode_duplicate.ts::userScopeCopyIsRedundant'],
     })
   })

@@ -6,7 +6,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { detectHarness } from './bridges/index.js'
+import { detectHarness } from './bridges/registry.js'
 import { isAutoTriggerMultiplierExplicit, loadConfig } from './config.js'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
