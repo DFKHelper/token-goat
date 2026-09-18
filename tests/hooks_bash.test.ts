@@ -127,6 +127,36 @@ describe('postBashHandler', () => {
     }
   })
 
+  // PROVENANCE: HAND-DERIVED. The command output is built by this test (a repeated SGR colour pair around filler) and every assertion is computed from that input independently of the hook, so nothing here is read back off the producer. The two hint tests above cover only the `context` branch, which is why the rewrite branch shipped a hand-built emit and an unfenced marker without any test objecting.
+  it('fences the command bytes and leads with the marker when the hint rides on an ansi rewrite', async () => {
+    const esc = String.fromCharCode(27)
+    const noisy = (esc + '[31m' + 'z'.repeat(60) + esc + '[0m').repeat(120)
+    // Its own session and command: the hint fires once per session per command fingerprint, and the shared 'test-session' id is already spent on this command by the compound-command test above.
+    const command = 'curl http://example.com/ansi-fence && echo done'
+    const event = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command },
+      sessionId: 'test-session-ansi-fence',
+      agentId: undefined,
+      raw: { tool_name: 'Bash', tool_input: { command }, tool_response: noisy },
+    })
+    const result = await postBashHandler(event)
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      const out = result.updatedOutput
+      const markerAt = out.indexOf('[tg] Output was')
+      const fenceAt = out.indexOf('<untrusted-tool-output>')
+      expect(markerAt, 'the hint marker is missing from the rewrite').toBeGreaterThanOrEqual(0)
+      expect(fenceAt, 'the command bytes ride in the same block as our marker but are not fenced').toBeGreaterThanOrEqual(0)
+      // Our sentence must sit outside the fence, and ahead of it: it carries the only pointer back to the full output, and the harness truncates from the end.
+      expect(markerAt, 'the marker must lead the block, not trail the fenced bytes').toBeLessThan(fenceAt)
+      expect(out.slice(0, fenceAt), 'the fence must open after our sentence, not wrap it').toContain('token-goat bash-output')
+      expect(out).toContain('</untrusted-tool-output>')
+      expect(out, 'the escape bytes should still have been stripped').not.toContain(esc + '[31m')
+    }
+  })
+
   it('passes through when output is below the size threshold', async () => {
     const event = makePostBashEvent('pytest tests/', 'short')
     const result = await postBashHandler(event)
