@@ -1084,11 +1084,13 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
     // A live daemon is still running the bundle it was spawned from -- after an upgrade (or a
     // rebuilt dist/token-goat.mjs) that's the pre-upgrade code forever, since nothing else ever
     // re-checks it. Stop it with the same graceful mechanism `worker stop` uses and fall through
-    // to spawn a fresh one; startDetachedWorker's own claimWorkerPidFile call already handles two
-    // hooks racing to do this at once (same TOCTOU-safe wx-create/reclaim path `worker start`
-    // relies on), so no new locking is needed here.
+    // to spawn a fresh one. Pass the pid we just judged mismatched so stopWorker only acts if the
+    // pid file still names it -- two hooks can both see the same stale pid and race here, and if
+    // hook A already stopped it and a fresh daemon claimed the slot, an unconditional stopWorker
+    // from hook B would tear down that brand-new daemon's pid file before it ever writes its own
+    // startup heartbeat, orphaning it and leaving two daemons draining one queue.
     if (workerBundleMatches(dir)) return
-    stopWorker(dir)
+    stopWorker(dir, readPidFile(dir) ?? undefined)
   }
   try {
     startDetachedWorker({ dataDir: dir })
@@ -1112,9 +1114,11 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
  * file existed or the recorded pid was already dead. The pid file is removed in
  * both the killed and stale cases so the slate is clean afterwards.
  */
-export function stopWorker(dir: string = dataDir()): boolean {
+export function stopWorker(dir: string = dataDir(), expectedPid?: number): boolean {
   const pid = readPidFile(dir)
   if (pid === null) return false
+  // If the caller judged a specific pid mismatched/stale earlier and the pid file now names someone else, another hook already raced ahead of us (stopped it and spawned a replacement); do nothing rather than tearing down that replacement's pid file before it can prove itself alive.
+  if (expectedPid !== undefined && pid !== expectedPid) return false
   const running = isWorkerRunning(dir)
   if (running) {
     try {
@@ -1253,10 +1257,24 @@ export function currentDaemonStamp(): string {
   }
 }
 
-/** True only when the stamp left by whichever daemon claimed the pid file names the exact bundle {@link currentDaemonStamp} resolves to right now. False for a missing stamp file too -- that is the pre-upgrade pid-file format, and a daemon that predates this stamping is exactly the case an upgrade needs to restart. */
+/** True when the daemon behind `dir` needs no restart: either its stamp names the exact bundle {@link currentDaemonStamp} resolves to right now, or its stamp names a different install's entry script entirely -- two installs (e.g. a global npm install and a worktree/temp-copy dist/) sharing one data dir must never restart each other's daemon just because their entry paths differ. False (restart) only for a missing/unparseable stamp (pre-upgrade pid-file format) or a stamp naming this same entry script with a different size/mtime (this install was rebuilt or upgraded). */
 function workerBundleMatches(dir: string): boolean {
+  let raw: string
   try {
-    return fs.readFileSync(workerStampPath(dir), 'utf8').trim() === currentDaemonStamp()
+    raw = fs.readFileSync(workerStampPath(dir), 'utf8').trim()
+  } catch {
+    return false
+  }
+  const parts = raw.split('|')
+  if (parts.length !== 3) return false
+  const [entry, sizeStr, mtimeStr] = parts
+  if (entry !== daemonEntryScript()) return true
+  const size = Number(sizeStr)
+  const mtimeMs = Number(mtimeStr)
+  if (!Number.isFinite(size) || !Number.isFinite(mtimeMs)) return false
+  try {
+    const st = fs.statSync(entry)
+    return st.size === size && Math.trunc(st.mtimeMs) === mtimeMs
   } catch {
     return false
   }

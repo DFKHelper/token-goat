@@ -217,11 +217,12 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
   // `npm install -g .` upgrade (or a rebuilt dist/token-goat.mjs) left the already-running worker
   // executing the pre-upgrade code forever -- nothing else ever re-checks it, and the fix a user
   // just installed silently never reaches the daemon until a reboot or a manual kill.
-  it('restarts a live worker whose stamp names a bundle other than the one on disk', () => {
+  it('restarts a live worker whose stamp names this same entry script with a different mtime', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
     writeWorkerHeartbeat(DIR)
-    // Deliberately not currentDaemonStamp(): simulates a daemon spawned from an older bundle.
-    fs.writeFileSync(workerStampPath(DIR), 'stale-bundle-from-before-the-upgrade|1|1')
+    // Same entry path as currentDaemonStamp() would resolve, but a different mtime: simulates a rebuilt/upgraded install.
+    const [entry, size, mtime] = currentDaemonStamp().split('|')
+    fs.writeFileSync(workerStampPath(DIR), `${entry}|${size}|${Number(mtime) + 1}`)
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
     try {
       ensureWorkerAlive(DIR)
@@ -234,6 +235,26 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
       killSpy.mockRestore()
       // Stop the real spawned daemon before DIR is torn down in afterEach.
       stopWorker(DIR)
+    }
+  })
+
+  // Regression: two installs sharing one data dir (e.g. the global npm install and a worktree or
+  // temp-copy dist/) each keyed the mismatch check on entry-script identity alone, so each saw the
+  // other's daemon as running a "different bundle" and restarted it -- at most once per 5-minute
+  // health marker, but still tearing down a perfectly live, correctly-versioned daemon that just
+  // happens to belong to a different install.
+  it('does not restart a live worker whose stamp names a different install entry path', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    writeWorkerHeartbeat(DIR)
+    fs.writeFileSync(workerStampPath(DIR), 'C:/other-worktree/dist/token-goat.mjs|123|456')
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      ensureWorkerAlive(DIR)
+      // kill(pid, 0) is the liveness probe isWorkerRunning itself makes; the terminate call (no signal arg) is what stopWorker would issue, and it must never happen here.
+      expect(killSpy).not.toHaveBeenCalledWith(process.pid)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
+    } finally {
+      killSpy.mockRestore()
     }
   })
 
@@ -365,6 +386,20 @@ describe('stopWorker', () => {
     expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
 
     killSpy.mockRestore()
+  })
+
+  // Regression (double-daemon race, mismatch path): ensureWorkerAlive's bundle-mismatch branch used to call stopWorker(dir) with no compare, so two hooks racing on the same stale pid could both act -- hook A stops it and a fresh daemon claims the slot, then hook B's stopWorker reads the new pid (not yet heartbeat-fresh, so isWorkerRunning is false) and rmSyncs its pid file anyway, orphaning it before it ever sees its own pid on disk. stopWorker now takes the pid the caller judged stale and refuses to touch a pid file that no longer names it.
+  it('leaves the pid file alone when it no longer names the pid the caller judged stale', () => {
+    fs.writeFileSync(workerPidPath(DIR), '424242\n')
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      const result = stopWorker(DIR, 111111)
+      expect(result).toBe(false)
+      expect(killSpy).not.toHaveBeenCalled()
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
+    } finally {
+      killSpy.mockRestore()
+    }
   })
 })
 
