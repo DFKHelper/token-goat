@@ -95,7 +95,7 @@ export function prepareSymbolListing(
   opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
 ): { kind: 'confined'; text: string } | { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined; totalLines: number } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-  const confined = confinementRefusal('This file', resolved, confinedProjectRoot())
+  const confined = confinementRefusal('This file', resolved, confinedProjectRoot(opts.projectRoot))
   if (confined !== null) return { kind: 'confined', text: confined }
   if (opts.forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())

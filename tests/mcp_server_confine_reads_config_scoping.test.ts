@@ -68,10 +68,12 @@ describe('mcp confine_reads_to_project_root: gate must read the REQUEST projectR
     serverCwd = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfgscope-cwd-')))
     outsideDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfgscope-outside-')))
     fs.writeFileSync(path.join(outsideDir, 'secret.txt'), `${SECRET}\n`)
+    process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '1'
     invalidateConfigCache()
   })
 
   afterEach(async () => {
+    delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
     process.chdir(originalCwd)
     if (cleanup !== undefined) await cleanup()
     cleanup = undefined

@@ -1089,10 +1089,13 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
   runStats(statsOpts)
 }
 
-async function cmdDoctor(opts: { context?: boolean; json?: boolean }): Promise<void> {
-  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string } = {}
+async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean }): Promise<void> {
+  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean } = {}
   if (opts.context === true) {
     doctorOpts.context = true
+  }
+  if (opts.repair === true || opts.fix === true) {
+    doctorOpts.repair = true
   }
   // Scope the Symbols check to the invoking project so an unrelated project sharing the same
   // global.db can't mask this project's own parser being broken (see checkSymbolCount's doc
@@ -2056,6 +2059,8 @@ export function buildProgram(): Command {
     .description('diagnose token-goat health')
     .option('--context', 'include context footprint analysis')
     .option('--json', 'emit check results as JSON instead of text')
+    .option('--repair', 'automatically repair fixable issues (permissive settings, missing semantics models)')
+    .option('--fix', 'alias for --repair')
     .action(guard(cmdDoctor))
 
   program

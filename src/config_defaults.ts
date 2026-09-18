@@ -253,7 +253,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     offline: false,
   },
   mcp: {
-    confine_reads_to_project_root: true,
+    confine_reads_to_project_root: false,
     allowed_roots: [],
   },
   hint_stats: {

@@ -95,6 +95,38 @@ describe('postBashHandler', () => {
     expect(getBashOutputId('anything')).toBeNull()
   })
 
+  it('emits an advisory compress hint when vscode harness runs a command with >=4KB uncompressed output', async () => {
+    const event: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: 'curl http://example.com/api' },
+      sessionId: 'test-session-vscode',
+      agentId: undefined,
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command: 'curl http://example.com/api' },
+        tool_response: 'x'.repeat(5000),
+        _tg_harness: 'vscode',
+      },
+    }
+    const result = await postBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('uncompressed. For large tool outputs, run with \'token-goat compress')
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('emits an advisory compress hint on compound command with >=4KB uncompressed output', async () => {
+    const event = makePostBashEvent('curl http://example.com/api && echo done', 'y'.repeat(5000))
+    const result = await postBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('uncompressed. For large tool outputs, run with \'token-goat compress')
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
   it('passes through when output is below the size threshold', async () => {
     const event = makePostBashEvent('pytest tests/', 'short')
     const result = await postBashHandler(event)

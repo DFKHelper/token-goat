@@ -15,8 +15,9 @@ import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEART
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
-import { loadConfig, readConfigSource } from './config.js'
+import { loadConfig, readConfigSource, saveConfig, invalidateConfigCache } from './config.js'
 import type { Config } from './config.js'
+import { ensureModelFiles, modelFilesPresent } from './embed_model.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
@@ -149,15 +150,13 @@ export function checkDbExists(dataDir: string): DoctorResult {
   // cause. A healthy index is tens of MB; 1 GB means something is storing far more per symbol
   // than it should (see MAX_SYMBOL_BODY_CHARS in parser.ts).
   if (sizeBytes > DB_SIZE_WARN_BYTES) {
+    const mb = Math.round(sizeBytes / (1024 * 1024))
     return {
       name: 'Database',
       status: 'warn',
       message:
-        `global.db is ${Math.round(sizeBytes / (1024 * 1024))} MB at ${dbPath} — far larger than a healthy index. ` +
-        `Large writes against it can exceed the 15s busy_timeout and appear as "database is locked". ` +
-        `Try 'token-goat reclaim-index' first (a plain VACUUM, cheap, can recover a useful amount on its own); ` +
-        `only reach for 'token-goat reclaim-index --rebuild' if that isn't enough, since --rebuild reparses and ` +
-        `re-embeds every indexed file across every project and can take a long time on a large multi-project index`,
+        `global.db is ${mb} MB at ${displaySafeText(dbPath)} (larger than recommended). ` +
+        `Run 'token-goat reclaim-index' to recover space (or 'token-goat reclaim-index --rebuild' to re-index).`,
     }
   }
   // Name the resolved path even when healthy. The warn branch above already does, and the
@@ -569,6 +568,33 @@ export function checkEmbeddings(config: Config): DoctorResult {
 }
 
 /**
+ * Check whether the pinned embedding model files are present on disk.
+ */
+export function checkEmbeddingModel(config: Config): DoctorResult {
+  const name = 'Embedding model'
+  if ((config.indexing?.embeddings_enabled ?? true) === false) {
+    return { name, status: 'ok', message: 'embeddings disabled by config' }
+  }
+  if (!modelFilesPresent()) {
+    if (config.network?.offline) {
+      return {
+        name,
+        status: 'warn',
+        message:
+          'model files are missing and network is disabled (network.offline = true) — run "token-goat doctor --repair" to restore network and download model',
+      }
+    }
+    return {
+      name,
+      status: 'warn',
+      message:
+        'model files are missing — run "token-goat doctor --repair" to download',
+    }
+  }
+  return { name, status: 'ok', message: 'model files verified and ready' }
+}
+
+/**
  * Check if config file is valid and readable.
  */
 export function checkConfigValid(configPath: string): DoctorResult {
@@ -945,6 +971,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))
   results.push(checkEmbeddings(loadConfig(rootDir)))
+  results.push(checkEmbeddingModel(loadConfig(rootDir)))
   // Directly after the availability row: "available" and "3% of files covered" are both true at
   // once, and reading either alone gives the wrong picture of what `semantic` can actually see.
   results.push(checkEmbeddingCoverage(path.join(actualDataDir, 'global.db'), rootDir))
@@ -976,58 +1003,241 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   return results
 }
 
+export interface DoctorRepairResult {
+  repairs: string[]
+  errors: string[]
+}
+
+/**
+ * Automatically repairs known issues such as restrictive security posture
+ * and missing semantic models due to offline rollout.
+ */
+export async function runDoctorRepair(opts?: {
+  dataDir?: string | undefined
+  configPath?: string | undefined
+  rootDir?: string | undefined
+}): Promise<DoctorRepairResult> {
+  const repairs: string[] = []
+  const errors: string[] = []
+  const cfg = loadConfig(opts?.rootDir)
+
+  let configDirty = false
+  const updatedCfg = { ...cfg }
+
+  // 1. Repair restrictive settings to permissive defaults
+  if (updatedCfg.mcp?.confine_reads_to_project_root) {
+    updatedCfg.mcp = { ...updatedCfg.mcp, confine_reads_to_project_root: false }
+    configDirty = true
+    repairs.push('Restored permissive read access (mcp.confine_reads_to_project_root = false)')
+  }
+  if (updatedCfg.indexing?.cross_project_symbols === false) {
+    updatedCfg.indexing = { ...updatedCfg.indexing, cross_project_symbols: true }
+    configDirty = true
+    repairs.push('Restored cross-project symbol search (indexing.cross_project_symbols = true)')
+  }
+
+  // 2. Repair missing semantic model (e.g. from mistaken rollout with network disabled)
+  const needModel = !modelFilesPresent()
+  if (needModel) {
+    if (updatedCfg.network?.offline) {
+      updatedCfg.network = { ...updatedCfg.network, offline: false }
+      configDirty = true
+      repairs.push('Restored network access (network.offline = false)')
+    }
+    if ((updatedCfg.indexing?.embeddings_enabled ?? true) === false) {
+      updatedCfg.indexing = { ...updatedCfg.indexing, embeddings_enabled: true }
+      configDirty = true
+      repairs.push('Enabled semantic embeddings (indexing.embeddings_enabled = true)')
+    }
+  }
+
+  if (configDirty) {
+    try {
+      saveConfig(updatedCfg)
+      invalidateConfigCache()
+    } catch (e) {
+      errors.push(`Failed to update configuration: ${extractErrorMessage(e)}`)
+    }
+  }
+
+  // 3. Download and verify missing semantic model files
+  if (needModel) {
+    try {
+      console.log('Downloading and verifying semantic model files...')
+      await ensureModelFiles()
+      repairs.push('Downloaded and verified semantic embedding model files')
+    } catch (e) {
+      errors.push(`Failed to download embedding model: ${extractErrorMessage(e)}`)
+    }
+  }
+
+  return { repairs, errors }
+}
+
 /**
  * Format and print doctor results to stdout.
  */
 export function printDoctorResults(results: DoctorResult[]): void {
   console.log('\ntoken-goat doctor\n')
 
-  const grouped = new Map<string, DoctorResult[]>()
-  for (const result of results) {
-    const key = result.name.split(' ')[0]!
-    if (!grouped.has(key)) {
-      grouped.set(key, [])
-    }
-    grouped.get(key)!.push(result)
+  const categoryMap: Record<string, string> = {
+    Installation: 'System & Runtime',
+    TypeScript: 'System & Runtime',
+    'Tree-sitter': 'System & Runtime',
+    Worker: 'System & Runtime',
+    Config: 'System & Runtime',
+    Disk: 'System & Runtime',
+
+    Database: 'Index & Storage',
+    Symbol: 'Index & Storage',
+    Symbols: 'Index & Storage',
+    Dirty: 'Index & Storage',
+    Parser: 'Index & Storage',
+    Compaction: 'Index & Storage',
+
+    Embeddings: 'Semantic Search',
+    Embedding: 'Semantic Search',
+
+    Security: 'Security & Access',
+
+    Copilot: 'Bridges & Integrations',
+    VS: 'Bridges & Integrations',
+    Visual: 'Bridges & Integrations',
+    Cursor: 'Bridges & Integrations',
+    Zed: 'Bridges & Integrations',
+    Global: 'Bridges & Integrations',
+    MCP: 'Bridges & Integrations',
+
+    'CLAUDE.md': 'Diagnostics & Tools',
+    Tool: 'Diagnostics & Tools',
   }
 
-  for (const [, items] of grouped) {
-    for (const item of items) {
-      const prefix = item.status === 'ok' ? '  ' : `  [${item.status.toUpperCase()}] `
-      // The single print site for every check, so escaping here is the backstop for all of them: a check that interpolates a config-derived path or server name into its message cannot reach stdout unescaped even if it forgets to escape at its own interpolation site. Checks that build a message from several untrusted fields still escape each one individually, because only they know which parts are theirs.
-      console.log(`${prefix}${item.name}: ${displaySafeText(item.message)}`)
+  const categoryOrder = [
+    'System & Runtime',
+    'Index & Storage',
+    'Semantic Search',
+    'Security & Access',
+    'Bridges & Integrations',
+    'Diagnostics & Tools',
+  ]
+
+  const grouped = new Map<string, DoctorResult[]>()
+  for (const cat of categoryOrder) {
+    grouped.set(cat, [])
+  }
+
+  for (const result of results) {
+    const key = result.name.split(' ')[0]!
+    const category = categoryMap[key] || 'Diagnostics & Tools'
+    if (!grouped.has(category)) {
+      grouped.set(category, [])
     }
+    grouped.get(category)!.push(result)
+  }
+
+  for (const cat of categoryOrder) {
+    const items = grouped.get(cat)
+    if (!items || items.length === 0) continue
+
+    console.log(`[${cat}]`)
+    for (const item of items) {
+      const badge = item.status === 'ok' ? '  ✓ ' : `  [${item.status.toUpperCase()}] `
+      console.log(`${badge}${item.name}: ${displaySafeText(item.message)}`)
+    }
+    console.log()
   }
 
   const hasFailures = results.some((r) => r.status === 'fail')
-  // A warning is not a pass. The verdict counted only failures, so a run that printed several
-  // [WARN] lines -- an oversized database, an empty index for this project, orphaned processes --
-  // still signed off with "All checks passed" directly underneath them. Nothing here changes
-  // what counts as a failure or the exit code; the summary stops contradicting the list above it.
   const warnings = results.filter((r) => r.status === 'warn').length
   const clean =
     warnings === 0
-      ? '\nAll checks passed'
-      : `\nNo failures, but ${warnings} warning${warnings === 1 ? '' : 's'} above`
-  console.log(hasFailures ? '\nFAILURES DETECTED' : clean)
+      ? 'All checks passed'
+      : `No failures, but ${warnings} warning${warnings === 1 ? '' : 's'} above`
+  console.log(hasFailures ? 'FAILURES DETECTED' : clean)
+
+  const restrictiveTips: string[] = []
+  let hasRepairable = false
+  for (const result of results) {
+    if (result.message.includes('restrictive mode') || result.message.includes('Restrictive mode')) {
+      hasRepairable = true
+      const idx = result.message.indexOf('with: ')
+      if (idx !== -1) {
+        const after = result.message.slice(idx + 6)
+        const closeParen = after.indexOf(')')
+        if (closeParen !== -1) {
+          restrictiveTips.push(after.slice(0, closeParen).trim())
+        }
+      }
+    }
+    if (result.message.includes('doctor --repair')) {
+      hasRepairable = true
+    }
+  }
+
+  if (restrictiveTips.length > 0) {
+    console.log('\nPermissive defaults suggestion:')
+    console.log('  Some settings are in restrictive mode. The recommended setup is fully permissive so external skills, transcripts, and cross-project symbols are never blocked.')
+    console.log('  To restore recommended permissive defaults, run:')
+    for (const cmd of restrictiveTips) {
+      console.log(`    ${cmd}`)
+    }
+    console.log("  Or run: token-goat doctor --repair")
+  }
+
+  if (hasRepairable) {
+    console.log('\nAuto-repair available:')
+    console.log("  Run 'token-goat doctor --repair' to automatically resolve fixable warnings.")
+  }
+
   console.log()
 }
 
 /**
  * Run doctor and return exit code (0 for success, 1 for failures).
  */
-export async function runDoctorAndExit(opts?: {
+export async function runDoctorAndExit(opts?: string | {
   dataDir?: string
   configPath?: string
   context?: boolean
   rootDir?: string
   /** See `runDoctor`: supply a list to skip the Windows process gather. */
   processes?: ProcessInfo[]
+  repair?: boolean
+  fix?: boolean
 }): Promise<number> {
-  const results = runDoctor(opts?.dataDir, opts?.configPath, opts?.rootDir, opts?.processes)
+  const options = typeof opts === 'string' ? { rootDir: opts } : (opts ?? {})
+
+  if (options.repair === true || options.fix === true) {
+    console.log('Running automatic repairs...\n')
+    const { repairs, errors } = await runDoctorRepair({
+      dataDir: options.dataDir,
+      configPath: options.configPath,
+      rootDir: options.rootDir,
+    })
+
+    if (repairs.length > 0) {
+      console.log('Repairs applied:')
+      for (const r of repairs) {
+        console.log(`  ✓ ${r}`)
+      }
+      console.log()
+    } else {
+      console.log('No automatic repairs needed.\n')
+    }
+
+    if (errors.length > 0) {
+      console.log('Repair errors encountered:')
+      for (const e of errors) {
+        console.log(`  ✕ ${e}`)
+      }
+      console.log()
+    }
+  }
+
+  const results = runDoctor(options.dataDir, options.configPath, options.rootDir, options.processes)
   printDoctorResults(results)
 
-  if (opts?.context === true) {
+  if (options.context === true) {
     console.log('\n## Context footprint\n')
     // Call runContextStats to show the context breakdown.
     await runContextStats({})

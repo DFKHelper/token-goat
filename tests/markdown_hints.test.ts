@@ -318,7 +318,7 @@ Older release notes`
 })
 
 describe('MARKDOWN_SIZE_THRESHOLD', () => {
-  it('is set to 8000 bytes', () => {
-    expect(MARKDOWN_SIZE_THRESHOLD).toBe(8000)
+  it('is set to 4000 bytes', () => {
+    expect(MARKDOWN_SIZE_THRESHOLD).toBe(4000)
   })
 })

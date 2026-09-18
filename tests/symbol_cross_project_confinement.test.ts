@@ -304,3 +304,78 @@ describe('scope and refs with cross_project_symbols = false', () => {
     expect(text).toContain('betaSecretForecastCaller')
   })
 })
+
+describe('cross_project_symbols = false with caller-supplied projectRoot (e.g. MCP tool calls)', () => {
+  beforeEach(() => {
+    confine()
+  })
+
+  it('read resolves a symbol in projectRoot when cwd is a different directory', () => {
+    const file = path.join(rootB, 'src', 'thing.ts')
+    // Absolute path with Windows backslashes
+    const backslashSpec = `${file.replace(/\//g, '\\')}::betaSecretForecast`
+    const res = runRead({ spec: backslashSpec, projectRoot: rootB })
+    expect(res.code, res.text).toBe(0)
+    expect(res.text).toContain('BBB-CONFIDENTIAL-FROM-PROJECT-B')
+
+    // Relative path against projectRoot
+    const relSpec = `src/thing.ts::betaSecretForecast`
+    const relRes = runRead({ spec: relSpec, projectRoot: rootB })
+    expect(relRes.code, relRes.text).toBe(0)
+    expect(relRes.text).toContain('BBB-CONFIDENTIAL-FROM-PROJECT-B')
+  })
+
+  it('read refuses a file outside the caller-supplied projectRoot', () => {
+    // Spec points to rootA file, but projectRoot is rootB
+    const fileA = path.join(rootA, 'src', 'thing.ts')
+    const res = runRead({ spec: `${fileA}::alphaOwnSymbol`, projectRoot: rootB })
+    expect(res.code).toBe(1)
+    expect(res.text).toContain('confines symbol lookups to it')
+    expect(res.text).not.toContain('AAA-FROM-PROJECT-A')
+  })
+
+  it('skeleton and outline honor caller-supplied projectRoot when cwd differs', () => {
+    const fileB = path.join(rootB, 'src', 'thing.ts')
+    const skel = runSkeleton({ file: fileB, projectRoot: rootB })
+    expect(skel.code, skel.text).toBe(0)
+    expect(skel.text).toContain('betaSecretForecast')
+
+    const outl = runOutline({ file: fileB, projectRoot: rootB })
+    expect(outl.code, outl.text).toBe(0)
+    expect(outl.text).toContain('betaSecretForecast')
+  })
+
+  it('exports honors caller-supplied projectRoot when cwd differs', () => {
+    const fileB = path.join(rootB, 'src', 'thing.ts')
+    const exp = captureStdoutCode(() => runExports({ file: fileB, projectRoot: rootB }))
+    expect(exp.code, exp.text).toBe(0)
+    expect(exp.text).toContain('betaSecretForecast')
+  })
+
+  it('refs honors caller-supplied projectRoot and spec inside rootB when allowed in mcp.allowed_roots', () => {
+    process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = rootB
+    invalidateConfigCache()
+    try {
+      const fileB = path.join(rootB, 'src', 'thing.ts')
+      const refs = captureStdoutCode(() => runRefs({ spec: `${fileB}::betaSecretForecast`, projectRoot: rootB }))
+      expect(refs.code, refs.text).toBe(0)
+      expect(refs.text).toContain('betaSecretForecastCaller')
+    } finally {
+      delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
+      invalidateConfigCache()
+    }
+  })
+
+  it('symbol honors caller-supplied projectRoot when allowed in mcp.allowed_roots', () => {
+    process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = rootB
+    invalidateConfigCache()
+    try {
+      const sym = runSymbol({ name: 'betaSecretForecast', projectRoot: rootB })
+      expect(sym.code, sym.text).toBe(0)
+      expect(sym.text).toContain('BBB-CONFIDENTIAL-FROM-PROJECT-B')
+    } finally {
+      delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
+      invalidateConfigCache()
+    }
+  })
+})

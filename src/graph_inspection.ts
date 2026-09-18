@@ -405,6 +405,7 @@ export function runTypes(opts: TypesOptions): number {
 export interface ScopeOptions {
   spec: string
   json?: boolean
+  projectRoot?: string
 }
 
 export function runScope(opts: ScopeOptions): number {
@@ -427,13 +428,13 @@ export function runScope(opts: ScopeOptions): number {
     return 1
   }
 
-  const confined = fileConfinementRefusal('This file', file, undefined)
+  const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) {
     emitErr(confined)
     return 1
   }
 
-  const filePath = resolveIndexPath(file)
+  const filePath = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   const enclosing = querySymbols({ filePath, enclosingLine: line, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
     .sort((a, b) => b.lineStart - a.lineStart || a.lineEnd - b.lineEnd || a.name.localeCompare(b.name, 'en'))
 
