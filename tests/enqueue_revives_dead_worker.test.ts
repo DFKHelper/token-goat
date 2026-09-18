@@ -21,24 +21,16 @@
  * Provenance: CAPTURE. `token-goat replace` is run for real against a real file, and the daemon's
  * own heartbeat file is polled for real, not asserted on the source implementing this fix.
  */
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { BUNDLE } from './helpers/bundle.js'
-
-interface RunResult {
-  status: number | null
-  stdout: string
-  stderr: string
-}
+import { runBundle as sharedRunBundle, type RunResult } from './helpers/bundle.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
-  const res = spawnSync(process.execPath, [BUNDLE, ...args], { cwd, env, encoding: 'utf8', timeout: 30000 })
-  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  return sharedRunBundle(args, { cwd, env, timeout: 30000 })
 }
 
 /** Mirrors constants.ts's defaultDataDir() platform join -- see worker_daemon_e2e.test.ts's identical helper for why this can't just import constants.ts. */

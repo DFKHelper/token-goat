@@ -6,14 +6,41 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-// vitest globalSetup: build the shipping bundle (dist/token-goat.mjs) exactly once per `vitest` invocation, before any test file runs. The e2e and CLI smoke tests spawn this prebuilt artifact, so without this each of them rebuilt it in its own beforeAll - six redundant esbuild runs that also raced on the same output path. One build here replaces all of them. Note: in watch mode this runs once at startup and not on source edits, so a bundle-spawning test will see stale dist until the watcher is restarted; the gating path (`vitest run` in CI and pre-push) rebuilds fresh on every invocation.
+function newestSourceMtime(): number {
+  const inputs = [
+    path.join(ROOT, 'package.json'),
+    path.join(ROOT, 'esbuild.config.mjs'),
+  ]
+  const stack = [path.join(ROOT, 'src')]
+  while (stack.length > 0) {
+    const dir = stack.pop()!
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) stack.push(full)
+      else if (entry.isFile()) inputs.push(full)
+    }
+  }
+  return Math.max(...inputs.map((file) => fs.statSync(file).mtimeMs))
+}
+
+function shouldBuildBundle(): boolean {
+  if (process.env['TOKEN_GOAT_TEST_FORCE_BUNDLE_BUILD'] === '1') return true
+
+  const bundle = path.join(ROOT, 'dist', 'token-goat.mjs')
+  const coreBundle = path.join(ROOT, 'dist', 'token-goat.core.mjs')
+  if (!fs.existsSync(bundle) || !fs.existsSync(coreBundle)) return true
+
+  return fs.statSync(bundle).mtimeMs <= newestSourceMtime()
+}
+
+// vitest globalSetup: ensure the shipping bundle (dist/token-goat.mjs) is available and fresh before any test file runs. The e2e and CLI smoke tests spawn this prebuilt artifact, so without this each of them rebuilt it in its own beforeAll - six redundant esbuild runs that also raced on the same output path. One freshness-gated build here replaces all of them. Note: in watch mode this runs once at startup and not on source edits, so a bundle-spawning test will see stale dist until the watcher is restarted.
 export default function setup(): (() => void) | void {
   // A nested `vitest run` spawned from inside a test (retry_visibility_reporter.test.ts) inherits
   // this config and so would rebuild the bundle while the outer run's workers are reading and
   // spawning it. On Windows that contention makes esbuild fail outright, failing the nested run
   // for a reason unrelated to what it tests. Such a run sets this and skips the build: it never
   // touches the bundle, so it has nothing to build.
-  if (process.env['TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD'] !== '1') {
+  if (process.env['TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD'] !== '1' && shouldBuildBundle()) {
     execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
   }
   // Must run before createRunRoot(): enableCompileCache writes into os.tmpdir(), and if the run root
