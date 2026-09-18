@@ -109,6 +109,15 @@ describe('reconcile', () => {
     expect(r.removed, 'a freshly indexed project reported deleted files').toEqual([])
   })
 
+  it('does not report a single untouched file as timestamp-drifted', () => {
+    // PROVENANCE: HAND-DERIVED -- nothing in this fixture was touched between indexing and this sweep, so zero files can honestly be reported as "timestamp moved but content identical"; that count is computed from the input, not from reconcile's own output.
+    const r = json(['reconcile', '--dry-run'])
+    expect(r.changed, 'an untouched project reported changed files').toEqual([])
+    expect(r.added, 'an untouched project reported unindexed files').toEqual([])
+    expect(r.removed, 'an untouched project reported deleted files').toEqual([])
+    expect(r.mtimeOnly, 'the cheap mtime gate never short-circuits, so every untouched file fell through to a content hash and was counted as timestamp-only').toBe(0)
+  })
+
   it('detects a file edited outside any session', () => {
     writeFileSync(join(projectDir, 'mod1.ts'), 'export function mod1(): number {\n  return 999\n}\n')
     const r = json(['reconcile', '--dry-run'])

@@ -231,8 +231,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       continue
     }
 
-    // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch.
-    if (entry.mtime !== 0 && mtimeMs === entry.mtime) continue
+    // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
+    if (entry.mtime !== 0 && mtimeMs / 1000 === entry.mtime) continue
 
     const diskSha = fingerprintFile(file)
     if (diskSha === null) {
