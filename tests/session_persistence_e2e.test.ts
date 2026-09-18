@@ -223,6 +223,15 @@ describe('sibling subagents get independent re-read dedup ledgers (regression: a
     const preA1 = runHook('pre_tool_use', readPayload('agent-A'))
     expect(preA1.status).toBe(0)
     expect(preA1.stdout).not.toMatch(/"decision":"block"/)
+    // A real Read always completes with a post_tool_use call, which is what stores the content
+    // snapshot the exact-overlap re-read deny revalidates against (defect B) -- without it there
+    // is no fingerprint to confirm agent-A's second read below is genuinely unchanged.
+    expect(
+      runHook('post_tool_use', {
+        ...(readPayload('agent-A') as Record<string, unknown>),
+        tool_response: { content: fs.readFileSync(mdFile, 'utf8') },
+      }).status,
+    ).toBe(0)
 
     // Agent B (a sibling subagent -- SAME session_id, different agent_id) reads the
     // SAME file for its own genuinely-first time. Before salting the persisted

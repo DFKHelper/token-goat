@@ -696,6 +696,11 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
   return _fileLineRanges.get(foldPath(normalizePath(filePath))) ?? []
 }
 
+/** Drop every recorded line range for `filePath` without marking it edited (unlike {@link recordFileEdit}, which does both): a change discovered on disk that the session itself never made -- an edit outside this session, or a Read/Write by another process -- still invalidates the ranges the exact-overlap dedup trusts, but it must not falsely mark the file as edited by this session for the compaction manifest and resume logic that read `wasEdited`. */
+export function resetFileLineRanges(filePath: string): void {
+  _fileLineRanges.delete(foldPath(normalizePath(filePath)))
+}
+
 /**
  * Cap on retained served-output ids per file.
  *

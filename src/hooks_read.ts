@@ -24,7 +24,7 @@ import { displaySafePath, displaySafeText, normalizePath, toDisplayPath } from '
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges } from './session.js'
+import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
 import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
@@ -1132,13 +1132,19 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const start = window.offset
         const end = window.offset + window.limit - 1
         if (prevRanges.some(([s, e]) => s <= start && e >= end)) {
-          const blocked = counterfactualCredit(rereadCreditBasis)
-          recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
-          recordStat('session_hint', 0, 0)
-          return denyOutput(
-            'Lines ' + start + '..' + end + ' of ' + shown + ' was already read this session. ' +
-            'Pull just the part you need with `token-goat read "' + shown + '::Symbol"`.',
-          )
+          // A prior overlapping range only proves this span was served before, never that it still matches disk: an edit outside this session (another tool, another process, the user's own editor) can land between the two reads with nothing here to observe it. Reuse the same snapshot-fingerprint mechanism the whole-file "unchanged since last read" check above relies on rather than trusting the recorded range alone; only a confirmed byte-for-byte match denies.
+          const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
+          if (snapDiff.kind === 'unchanged') {
+            const blocked = counterfactualCredit(rereadCreditBasis)
+            recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
+            recordStat('session_hint', 0, 0)
+            return denyOutput(
+              'Lines ' + start + '..' + end + ' of ' + shown + ' was already read this session. ' +
+              'Pull just the part you need with `token-goat read "' + shown + '::Symbol"`.',
+            )
+          }
+          // Content changed (kind 'diff') or freshness could not be confirmed (kind 'none', e.g. no snapshot yet): the recorded ranges no longer describe what disk holds, so they must not keep denying this or any other overlapping read of this file. Drop them and let the read proceed to fresh content.
+          resetFileLineRanges(normalized)
         }
       }
 

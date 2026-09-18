@@ -3862,6 +3862,37 @@ describe('a ranged read does not arm the whole-file "unchanged since last read" 
   })
 })
 
+// HAND-DERIVED: preToolUse/postToolUse call pairs plus a direct fs.writeFileSync between them (standing in for an edit outside this session -- another tool, another process, the user's own editor) constructed directly against the hook API this file already tests; not sourced from a captured transcript.
+describe('a repeated line range is revalidated against disk before being denied (defect B)', () => {
+  it('an external content change between two overlapping ranged Reads is not denied as "already read"', () => {
+    pinProtectRecentReadsToZero()
+    const p = makeTmpMultilineFileWithExt(5000, 'ts')
+
+    const r1 = preReadHandler(readEventWithRange(p, 1, 5))
+    expect(r1.hookType).not.toBe('deny')
+    postReadHandler(readEventWithRange(p, 1, 5))
+
+    // The session never observed this write (no Write/Edit tool call, so recordFileEdit never
+    // ran) -- it stands in for an edit made outside the session's own tool calls.
+    fs.appendFileSync(p, 'line changed-externally: some sample content here\n')
+
+    const r2 = preReadHandler(readEventWithRange(p, 1, 5))
+    expect(r2.hookType).not.toBe('deny')
+  })
+
+  it('an unchanged file still denies the second overlapping ranged Read (control, unaffected by the fix)', () => {
+    pinProtectRecentReadsToZero()
+    const p = makeTmpMultilineFileWithExt(5000, 'ts')
+
+    const r1 = preReadHandler(readEventWithRange(p, 1, 5))
+    expect(r1.hookType).not.toBe('deny')
+    postReadHandler(readEventWithRange(p, 1, 5))
+
+    const r2 = preReadHandler(readEventWithRange(p, 1, 5))
+    expect(r2.hookType).toBe('deny')
+  })
+})
+
 describe('multi-harness ranged reads (view_range, lines, range, start_line/end_line)', () => {
   it('normalizes Copilot CLI view_range correctly', () => {
     const event = makeHookEvent({
@@ -4066,6 +4097,14 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         sessionId: 'test',
       }))
       expect(r1.hookType).not.toBe('deny')
+      // A real Read always completes with a post_tool_use call, which is what stores the
+      // content snapshot the exact-overlap deny now revalidates against (defect B) -- without
+      // it there is no fingerprint to confirm the file is still unchanged.
+      postReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [10, 30] },
+        sessionId: 'test',
+      }))
 
       // Second slice: lines 15..25 (completely within 10..30)
       const r2 = preReadHandler(makeHookEvent({
@@ -4103,6 +4142,11 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       return buildEvent('pre_tool_use', normalizePayload(raw, 'copilot_cli'))
     }
 
+    function postCopilotViewEvent(p: string, sessionId: string, start: number, end: number): HookEvent {
+      const raw = { tool_name: 'view', tool_input: { path: p, view_range: [start, end] }, tool_response: { content: 'stub' }, session_id: sessionId }
+      return buildEvent('post_tool_use', normalizePayload(raw, 'copilot_cli'))
+    }
+
     it('two disjoint Copilot view_range slices never hand over the whole file, so a later unranged read is not denied as unchanged', () => {
       pinProtectRecentReadsToZero()
       const p = path.join(os.tmpdir(), `tg-narrow-slice-${process.pid}-${Math.random().toString(36).slice(2)}.py`)
@@ -4113,6 +4157,9 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       // Slice 1: [1, 25]
       const r1 = preReadHandler(copilotViewEvent(p, sessionId, 1, 25))
       expect(r1.hookType).not.toBe('deny')
+      // A real Read always completes with a post_tool_use call, which is what stores the
+      // content snapshot the exact-overlap deny now revalidates against (defect B).
+      postReadHandler(postCopilotViewEvent(p, sessionId, 1, 25))
 
       // Slice 2: [26, 50], disjoint from slice 1
       const r2 = preReadHandler(copilotViewEvent(p, sessionId, 26, 50))
