@@ -344,6 +344,38 @@ export function extractTsJsSymbols(root: TsNode, filePath: string, lines: readon
       }
     }
 
+    // Object literal property methods / handlers / chart configs / plugin objects.
+    // e.g. `const config = { labels: [...], update: () => {} }`, `plugins: { legend: { ... } }`,
+    // or method declarations inside objects `{ myHandler() { ... }, onHover: (e) => { ... } }`.
+    if (node.type === 'method_definition' && node.parent?.type === 'object') {
+      const name = nodeName(node)
+      if (name !== null && name !== '') {
+        out.push(makeSymbol(filePath, name, 'method', node, lines, 'c'))
+      }
+    }
+    if (node.type === 'pair' && node.parent?.type === 'object') {
+      const key = node.childForFieldName('key')
+      const value = node.childForFieldName('value')
+      if (key !== null && value !== null) {
+        const keyName = key.type === 'identifier' || key.type === 'property_identifier' || key.type === 'string'
+          ? key.text.replace(/^['"]|['"]$/g, '')
+          : null
+        if (keyName !== null && keyName !== '') {
+          const isFn =
+            value.type === 'arrow_function' ||
+            value.type === 'function_expression' ||
+            value.type === 'function'
+          const isObjectOrArray = value.type === 'object' || value.type === 'array'
+          if (isFn) {
+            out.push(makeSymbol(filePath, keyName, 'method', node, lines, 'c'))
+          } else if (isObjectOrArray && (node.endPosition.row - node.startPosition.row >= 1)) {
+            // Multiline configuration blocks, chart options, data mappings, plugin configs
+            out.push(makeSymbol(filePath, keyName, 'config', node, lines, 'c'))
+          }
+        }
+      }
+    }
+
     const childInside = insideFunction || TSJS_FN_SCOPE_TYPES.has(node.type)
     for (const child of node.namedChildren) {
       visit(child, childInside)

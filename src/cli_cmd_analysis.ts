@@ -44,6 +44,7 @@ import {
   runExports,
   runImports,
   runFind,
+  runLocate,
   runGrep,
 } from './read_commands.js'
 import {
@@ -100,6 +101,23 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
       runExit(() =>
         runFind({
           pattern,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('locate <spec>')
+    .description('locate symbol or landmark with exact line spans (supports name or file::name, with fuzzy fallback)')
+    .option('-j, --json', 'output as JSON')
+    .option('-l, --limit <n>', 'max results (default: 25)')
+    .option('-f, --file <path>', 'restrict search to a specific file')
+    .action((spec: string, opts: { json?: boolean; limit?: string; file?: string }) =>
+      runExit(() =>
+        runLocate({
+          spec,
+          ...(opts.file !== undefined ? { file: opts.file } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
         }),

@@ -144,6 +144,7 @@ const CASES: readonly Case[] = [
   { command: 'refs', args: ['refs', 'target.ts::hotSymbol'], flag: '--limit', disclosure: ENVELOPE },
   { command: 'callers', args: ['callers', 'target.ts::hotSymbol'], flag: '--limit', disclosure: ENVELOPE },
   { command: 'find', args: ['find', 'dup'], flag: '--limit', disclosure: ENVELOPE },
+  { command: 'locate', args: ['locate', 'dup'], flag: '--limit', disclosure: ENVELOPE },
   { command: 'dead', args: ['dead'], flag: '--top', disclosure: ENVELOPE },
   { command: 'brief', args: ['brief', 'target.ts::hotSymbol'], flag: '--limit', disclosure: { kind: 'envelope', totalField: 'totalCallers' } },
   { command: 'csv-query', args: ['csv-query', 'data.csv'], flag: '--head', disclosure: ENVELOPE },

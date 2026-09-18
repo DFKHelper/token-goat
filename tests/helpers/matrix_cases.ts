@@ -615,6 +615,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
   },
   find: () => expectRead(['find', 'alphaSym'], 'mod'),
+  locate: () => expectRead(['locate', 'alphaSym'], 'alphaSym'),
   grep: () => {
     expectRead(['grep', 'alphamarker', '.'], 'alphamarker')
 

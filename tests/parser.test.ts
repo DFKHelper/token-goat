@@ -47,6 +47,37 @@ describe('parseFile', () => {
     expect(names).toContain('bar')
   })
 
+  it('extracts object literal methods and multiline configs from JS/TS frontend code', async () => {
+    const file = write(
+      'chart_config.js',
+      'export const chartOptions = {\n' +
+      '  responsive: true,\n' +
+      '  plugins: {\n' +
+      '    legend: {\n' +
+      '      display: true,\n' +
+      '      position: "top",\n' +
+      '    },\n' +
+      '  },\n' +
+      '  onClick(event, elements) {\n' +
+      '    console.log(elements);\n' +
+      '  },\n' +
+      '};\n',
+    )
+    const result = await parseFile(file)
+    expect(result.language).toBe('javascript')
+    const symNames = result.symbols.map((s) => s.name)
+    expect(symNames).toContain('chartOptions')
+    expect(symNames).toContain('plugins')
+    expect(symNames).toContain('onClick')
+
+    const onClickSym = result.symbols.find((s) => s.name === 'onClick')
+    expect(onClickSym?.kind).toBe('method')
+
+    const pluginsSym = result.symbols.find((s) => s.name === 'plugins')
+    expect(pluginsSym?.kind).toBe('config')
+    expect(pluginsSym?.lineEnd).toBeGreaterThan(pluginsSym?.lineStart ?? 0)
+  })
+
   it('parses .tsx files with the JSX-aware tsx grammar, not plain typescript (regression: both extensions shared the typescript grammar, which errors on JSX and silently drops trailing symbols)', async () => {
     const file = write(
       'ItemList.tsx',

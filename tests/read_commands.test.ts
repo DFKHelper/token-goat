@@ -85,6 +85,7 @@ import {
   runSkeleton,
   runOutline,
   runFind,
+  runLocate,
   runListSections,
   runGrep,
   runConfigGet,
@@ -5293,6 +5294,50 @@ describe('read_commands', () => {
       const opts = mockQuerySymbols.mock.calls[0]?.[0]
       expect(opts?.rootDir).not.toBe(subdir)
       expect(opts?.rootDir).toBe(resolveProjectRoot({ project: subdir }))
+    })
+  })
+
+  describe('runLocate', () => {
+    it('returns 1 when no symbol or landmark matches', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { stderr } = capture(() => {
+        const code = runLocate({ spec: 'noSuchLandmark' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).toContain("No landmark or symbol located for 'noSuchLandmark'")
+    })
+
+    it('locates exact and partial symbol landmarks with line spans', () => {
+      const syms: MockSymbol[] = [
+        { name: 'updateChart1', kind: 'function', filePath: 'scripts/dashboard.js', lineStart: 10, lineEnd: 50, body: '', docstring: '' },
+        { name: 'chartOptions', kind: 'config', filePath: 'scripts/dashboard.js', lineStart: 55, lineEnd: 80, body: '', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+
+      const { stdout } = capture(() => {
+        const code = runLocate({ spec: 'updateChart1' })
+        expect(code).toBe(0)
+      })
+      expect(stdout).toContain('scripts/dashboard.js:10-50 [function] updateChart1')
+    })
+
+    it('supports file::symbol targeting and --json output', () => {
+      const syms: MockSymbol[] = [
+        { name: 'plugins', kind: 'config', filePath: 'scripts/dashboard.js', lineStart: 60, lineEnd: 75, body: '', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+
+      const { stdout } = capture(() => {
+        const code = runLocate({ spec: 'scripts/dashboard.js::plugins', json: true })
+        expect(code).toBe(0)
+      })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.items).toHaveLength(1)
+      expect(parsed.items[0].name).toBe('plugins')
+      expect(parsed.items[0].kind).toBe('config')
+      expect(parsed.items[0].span).toBe('60-75')
     })
   })
 

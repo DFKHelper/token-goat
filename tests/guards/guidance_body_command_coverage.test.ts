@@ -165,6 +165,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'exports', reason: NAV_REASON },
   { command: 'imports', reason: NAV_REASON },
   { command: 'find', reason: NAV_REASON },
+  { command: 'locate', reason: NAV_REASON },
   { command: 'grep', reason: NAV_REASON },
   { command: 'skill-body', reason: NAV_REASON },
   { command: 'skill-compact', reason: NAV_REASON },

@@ -2535,6 +2535,10 @@ export function runGrep(opts: GrepOptions): number {
 
   if (hits.length > maxLines) {
     emitErr(`... (${hits.length - maxLines} more lines omitted)`)
+    emitErr(`Tip: To avoid broad grepping and reduce token expenditure, locate specific symbols with:`)
+    emitErr(`  token-goat symbol <name>`)
+    emitErr(`  token-goat locate <name>`)
+    emitErr(`  token-goat outline <file> / token-goat skeleton <file>`)
   }
 
   return 0

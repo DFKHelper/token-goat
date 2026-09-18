@@ -34,6 +34,7 @@ import {
   recordReadStat,
   resolveAgainstProjectRoot,
   sumFileSizes,
+  healStaleResultFiles,
   FIND_SCAN_LIMIT,
 } from './read_commands.js'
 import { listSections } from './section_reader.js'
@@ -785,6 +786,115 @@ export function runFind(opts: FindOptions): number {
   }
   if (rawSymbols.length === FIND_SCAN_LIMIT) {
     emitErr(`Results may be incomplete; index scan hit limit of ${FIND_SCAN_LIMIT} symbols`)
+  }
+
+  return 0
+}
+
+export interface LocateOptions {
+  spec: string
+  file?: string
+  limit?: number
+  json?: boolean
+  projectRoot?: string
+}
+
+export interface LocateHit {
+  filePath: string
+  name: string
+  kind: string
+  lineStart: number
+  lineEnd: number
+  span: string
+}
+
+export function runLocate(opts: LocateOptions): number {
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
+  const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+  let targetSpec = opts.spec
+  let targetFile = opts.file
+
+  if (targetSpec.includes('::')) {
+    const colonIdx = targetSpec.indexOf('::')
+    targetFile = targetSpec.slice(0, colonIdx)
+    targetSpec = targetSpec.slice(colonIdx + 2)
+  }
+
+  const queryOpts: Parameters<typeof querySymbols>[0] = {
+    limit: FIND_SCAN_LIMIT,
+  }
+
+  if (targetFile !== undefined) {
+    queryOpts.filePath = resolveIndexPath(targetFile, rootDir)
+    healStaleIndex(queryOpts.filePath)
+  } else {
+    queryOpts.rootDir = rootDir
+  }
+
+  let rawSymbols = querySymbols(queryOpts)
+  if (targetFile === undefined) {
+    const heal = healStaleResultFiles(rawSymbols.map((s) => s.filePath))
+    if (heal.healed) rawSymbols = querySymbols(queryOpts)
+  }
+
+  const specLower = targetSpec.toLowerCase()
+  // Exact name matches first, then prefix/contains matches
+  const exactMatches = rawSymbols.filter((s: SymbolEntry) => s.name.toLowerCase() === specLower)
+  const partialMatches = rawSymbols.filter((s: SymbolEntry) =>
+    s.name.toLowerCase() !== specLower && s.name.toLowerCase().includes(specLower),
+  )
+
+  const combined = [...exactMatches, ...partialMatches]
+  let fuzzyNames: string[] = []
+  if (combined.length === 0) {
+    fuzzyNames = rankSimilarNames(rawSymbols.map((s: SymbolEntry) => s.name), targetSpec)
+  }
+
+  const matched = fuzzyNames.length > 0
+    ? fuzzyNames.flatMap((n: string) => rawSymbols.filter((s: SymbolEntry) => s.name === n))
+    : combined
+
+  const limit = opts.limit ?? 25
+  const shown = matched.slice(0, limit)
+
+  if (shown.length === 0) {
+    emitErr(`No landmark or symbol located for '${targetSpec}'`)
+    return 1
+  }
+
+  const hits: LocateHit[] = shown.map((s: SymbolEntry) => ({
+    filePath: toDisplayPath(rootDir, s.filePath),
+    name: s.name,
+    kind: s.kind,
+    lineStart: s.lineStart,
+    lineEnd: s.lineEnd,
+    span: `${s.lineStart}-${s.lineEnd}`,
+  }))
+
+  if (opts.json === true) {
+    emit(displaySafeJson({
+      items: hits,
+      totalCount: matched.length,
+      truncated: matched.length > limit,
+      ...(fuzzyNames.length > 0 ? { fuzzy: true, matchedNames: fuzzyNames } : {}),
+    }))
+    return 0
+  }
+
+  if (fuzzyNames.length > 0) {
+    emitErr(`No exact landmark for '${targetSpec}'; nearest matches: ${fuzzyNames.join(', ')}`)
+  }
+
+  for (const hit of hits) {
+    emit(`${displaySafeText(hit.filePath)}:${hit.span} [${displaySafeText(hit.kind)}] ${displaySafeText(hit.name)}`)
+  }
+
+  if (matched.length > limit) {
+    emitErr(`Showing ${limit} of ${matched.length} locations; rerun with --limit ${matched.length} to see them all`)
   }
 
   return 0
