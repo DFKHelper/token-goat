@@ -1135,6 +1135,16 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
+  // Regression: an in-place edit that reads a file and writes the same file back was denied as a read into context, so the agent moved the identical script into a file and ran it unchecked; 7 of 29 node -e denies across 300 transcripts were this shape.
+  it('does not deny node -e that writes back the file it read (in-place edit)', () => {
+    // CAPTURE: a denied command from a real session, trimmed to its fs calls.
+    const event = makeBashEvent(`node -e 'const fs=require("fs");const cl=fs.readFileSync("CHANGELOG.md","utf8");fs.writeFileSync("CHANGELOG.md",cl.replace("a","b"))'`)
+    expect(preBashHandler(event).hookType).not.toBe('deny')
+    // Writing a different file than the one read is still a read into context.
+    const other = makeBashEvent(`node -e 'const fs=require("fs");fs.writeFileSync("out.md",fs.readFileSync("CHANGELOG.md","utf8"))'`)
+    expect(preBashHandler(other).hookType).toBe('deny')
+  })
+
   it('passes through node -e without readFileSync', () => {
     const event = makeBashEvent(`node -e "require('./scripts/lib/organic-pin-miner-action'); console.log('ok')"`)
     const result = preBashHandler(event)
