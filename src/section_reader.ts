@@ -541,6 +541,7 @@ function resolveHeaderPos(
   headers: readonly SectionHeader[],
   base: string,
   ordinal: number | null,
+  allowFuzzy: boolean = true,
 ): { headerPos: number; redirectedFrom: string | null; occurrences: number[] | null } | null {
   const target = base.toLowerCase()
   const normalizedTarget = normalizeHeading(base).toLowerCase()
@@ -654,7 +655,7 @@ const cleanTokens = (str: string): string[] =>
   const rawQTokens = cleanTokens(base)
   const qTokens = rawQTokens.filter((t) => !STOP_WORDS.has(t) || rawQTokens.length <= 2)
 
-  if (qTokens.length > 0) {
+  if (allowFuzzy && qTokens.length > 0) {
     interface FuzzyCandidate {
       readonly index: number
       readonly score: number
@@ -786,14 +787,19 @@ function buildSectionResult(
  */
 /** Shared by {@link extractSection}/{@link readSection}: resolve `headingSpec` against
  * `text`'s header structure (parsed for `language`) and build the section result. */
-function resolveSectionFromText(text: string, headingSpec: string, language: string): SectionResult | null {
+function resolveSectionFromText(
+  text: string,
+  headingSpec: string,
+  language: string,
+  allowFuzzy: boolean = true,
+): SectionResult | null {
   const { headers, kind } = findHeaders(text, language)
   const { base, ordinal } = parseHeadingSpec(headingSpec, headers)
   if (base.length === 0) return null
 
   const lines = text.split('\n')
 
-  const resolved = resolveHeaderPos(headers, base, ordinal)
+  const resolved = resolveHeaderPos(headers, base, ordinal, allowFuzzy)
   if (resolved === null) return null
   const built = buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
   if (built === null || resolved.occurrences === null) return built
@@ -851,11 +857,12 @@ export function readSection(
   filePath: string,
   headingSpec: string,
   readFn?: (p: string) => string | null,
+  allowFuzzy: boolean = true,
 ): SectionResult | null {
   const text = readTextForSections(filePath, readFn)
   if (text === null) return null
 
-  return resolveSectionFromText(text, headingSpec, refineLanguageByContent(filePath, detectLanguage(filePath), text))
+  return resolveSectionFromText(text, headingSpec, refineLanguageByContent(filePath, detectLanguage(filePath), text), allowFuzzy)
 }
 
 // Finds the tightest (innermost) heading section whose line range contains a symbol's [lineStart, lineEnd] (1-based, inclusive) -- mirrors enclosingSymbol's containment/tie-break approach in graph_commands.ts, but over heading ranges instead of symbol ranges. Returns null when the file has no heading structure enclosing the symbol, which is the common case for source files without markdown-style doc comments.
