@@ -973,16 +973,12 @@ export function deleteFileEmbeddings(
   db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(folded)
 }
 
-/**
- * Drop every stored vector and chunk in the database, and clear the `embed_sha` of each file that had one, so the freshness gate re-embeds it (see {@link isEmbedFresh} in parser.ts). Only files that actually had chunk rows are cleared. A file carrying a bare `embed_sha` with no chunks is a deliberate terminal skip -- an empty file, or a policy-excluded one like a multi-megabyte `.profile-meta.xml` -- and re-entering those would re-read their whole content just to reach the same early return. Collecting the paths before the delete rather than after is what makes that distinction possible at all, and mirrors purgeDotenvEmbeddings in db.ts.
- *
- * @returns How many files were marked for re-embedding.
- */
-export function resetAllEmbeddings(db: SqliteDatabase): number {
+/** Clear the `embed_sha` of every file that has chunk rows, so the freshness gate re-embeds it (see {@link isEmbedFresh} in parser.ts), and drop those chunks and their vectors unless `keepVectors` is set, in which case they keep answering searches until each file is re-embedded (upsertChunks replaces a file's chunks in one transaction, so the rebuild never duplicates them). Only files that actually had chunk rows are cleared. A file carrying a bare `embed_sha` with no chunks is a deliberate terminal skip -- an empty file, or a policy-excluded one like a multi-megabyte `.profile-meta.xml` -- and re-entering those would re-read their whole content just to reach the same early return. Collecting the paths before the delete rather than after is what makes that distinction possible at all, and mirrors purgeDotenvEmbeddings in db.ts. Returns how many files were marked for re-embedding. */
+export function resetAllEmbeddings(db: SqliteDatabase, keepVectors = false): number {
   const paths = db.prepare('SELECT DISTINCT file_path FROM chunks').pluck().all() as string[]
   const clearEmbedSha = db.prepare(`UPDATE files SET embed_sha = NULL WHERE ${pathEqClause('path')}`)
   const tx = db.transaction(() => {
-    for (const p of paths) deleteFileEmbeddings(db, p)
+    if (!keepVectors) for (const p of paths) deleteFileEmbeddings(db, p)
     for (const p of paths) clearEmbedSha.run(foldPath(p))
   })
   tx.immediate()
@@ -1009,21 +1005,13 @@ function majorMinor(version: string): string {
 // Memoized per connection, like _chunkVectorsUsable above and for the same reason: the answer cannot change during a connection's life (the provenance is fixed once the runtime has loaded, and the stamp is rewritten in the same call that finds it stale), so re-running the read on every embed and every search would be pure overhead on the hot path.
 const _provenanceChecked = new WeakSet<SqliteDatabase>()
 
-/**
- * Make sure the vectors already in this database were produced by the stack running right now, and
- * throw the whole set away if they were not.
- *
- * Three cases, and the middle one is the reason this needs no migration step:
- *  - the stored provenance matches: nothing to do, the overwhelmingly common path.
- *  - nothing is stored but chunks exist: the vectors predate this stamp entirely, so their
- *    provenance is unknowable and they must be assumed foreign. Discarding them is the whole
- *    upgrade path -- a database written by any earlier release lands here exactly once.
- *  - nothing is stored and no chunks exist: a fresh index, so just record the stamp.
- *
- * Discarding is the right response rather than tolerating the mix, because there is no way to tell
- * which rows came from where once they are in the table, and a partially-foreign index gives wrong
- * neighbours quietly. The cost is one re-embed, which the caller is told how to trigger.
- */
+/** The half of a provenance stamp that decides whether its vectors can be compared with this process's query vectors: the model, its revision and the runtime, i.e. everything before the `/embed-` chunking suffix, or the whole stamp when it was written before that suffix existed. */
+function vectorSpaceOf(provenance: string): string {
+  const at = provenance.lastIndexOf('/embed-')
+  return at === -1 ? provenance : provenance.slice(0, at)
+}
+
+/** Make sure the vectors already in this database were produced by the stack running right now. When the stored stamp matches there is nothing to do, the overwhelmingly common path. When only the chunking half (EMBED_FINGERPRINT) moved, the stored vectors still live in the same space as the query vectors and are only cut at old chunk boundaries, so they are kept serving while every embedded file is marked stale: reconcileProject enqueues each one for the worker and `token-goat index` re-embeds them all. Discarding them here instead emptied semantic search in every project on the machine at once, and since embeddings.ts is itself a hashed source, any edit to this file did that. When the model, revision or runtime moved, or nothing is stored but chunks exist (vectors that predate this stamp, whose provenance is unknowable -- the upgrade path for any database written by an earlier release), every vector is discarded, because there is no way to tell which rows came from where once they are in the table and a partially-foreign index gives wrong neighbours quietly; the caller is told how to rebuild. With nothing stored and no chunks, a fresh index, the stamp is just recorded. */
 export function ensureEmbeddingProvenance(
   db: SqliteDatabase,
   modelName: string = DEFAULT_MODEL,
@@ -1037,12 +1025,13 @@ export function ensureEmbeddingProvenance(
     | undefined
   if (stored === current) return
 
-  const cleared = resetAllEmbeddings(db)
+  const keepVectors = stored !== undefined && vectorSpaceOf(stored) === vectorSpaceOf(current)
+  const cleared = resetAllEmbeddings(db, keepVectors)
   db.prepare(
     'INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET provenance = excluded.provenance',
   ).run(current)
 
-  if (cleared > 0) {
+  if (cleared > 0 && !keepVectors) {
     console.warn(
       `Embedding stack changed (${stored ?? 'unrecorded'} -> ${current}); discarded ${cleared} ` +
         `file${cleared === 1 ? '' : 's'} worth of vectors because they no longer reliably describe this file's current chunks. ` +

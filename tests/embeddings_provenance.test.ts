@@ -170,6 +170,41 @@ describe('ensureEmbeddingProvenance()', () => {
     expect(message).toContain(embeddingProvenance())
   })
 
+  it('keeps the vectors and marks every embedded file stale when only the chunker fingerprint moved', () => {
+    // PROVENANCE: HAND-DERIVED. The stamp is the running stack's own with just its `/embed-` suffix swapped, the state any edit to an embedding source leaves behind: same model, revision and runtime, so the stored vectors still share the query vectors' space.
+    const dbPath = path.join(TMP, 'chunker.db')
+    seedIndex(dbPath, { 'a.ts': 3, 'b.ts': 2 })
+    getDb(dbPath)
+      .prepare('INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?)')
+      .run(embeddingProvenance().replace(/\/embed-[0-9a-f]{16}$/, '/embed-0000000000000000'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    ensureEmbeddingProvenance(getDb(dbPath))
+
+    expect(chunkCount(dbPath)).toBe(5)
+    expect(getDb(dbPath).prepare("SELECT COUNT(*) FROM chunks WHERE text = 'body 0 of a.ts'").pluck().get()).toBe(1)
+    expect(embedShaOf(dbPath, 'a.ts')).toBeNull()
+    expect(embedShaOf(dbPath, 'b.ts')).toBeNull()
+    expect(storedProvenance(dbPath)).toBe(embeddingProvenance())
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('still discards vectors when the runtime moved, even though the chunker fingerprint did not', () => {
+    // PROVENANCE: HAND-DERIVED. The running stack's own stamp with only the runtime major.minor changed, so the chunking suffix matches and only the vector-space half differs.
+    const dbPath = path.join(TMP, 'runtime.db')
+    seedIndex(dbPath, { 'a.ts': 2 })
+    getDb(dbPath)
+      .prepare('INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?)')
+      .run(embeddingProvenance().replace(/\/onnxruntime-node@[^/]+\//, '/onnxruntime-node@0.0/'))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    ensureEmbeddingProvenance(getDb(dbPath))
+
+    expect(chunkCount(dbPath)).toBe(0)
+    expect(embedShaOf(dbPath, 'a.ts')).toBeNull()
+    expect(storedProvenance(dbPath)).toBe(embeddingProvenance())
+  })
+
   it('keeps a matching index intact instead of re-embedding it for no reason', () => {
     const dbPath = path.join(TMP, 'match.db')
     seedIndex(dbPath, { 'a.ts': 4 })

@@ -20,6 +20,7 @@ import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from 
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { getDisplayRoot } from './project.js'
 import { getTrackedFiles } from './repomap.js'
+import { projectScopeClause } from './sql_path.js'
 import { countNoun, foldPath } from './util.js'
 
 /** Wall-clock budget for a sweep. Chosen so the session-start hook stays imperceptible even on a cold filesystem cache: this repo's own measurement is that hook cost is dominated by process startup rather than logic, and a sweep that pushed past that would turn a correctness improvement into a latency regression on every single session. */
@@ -80,6 +81,8 @@ export interface ReconcileResult {
   mtimeOnly: number
   /** Tracked files (a subset of {@link changed}) enqueued purely because their rows carry a `parser_sha` other than {@link PARSER_FINGERPRINT} -- content on disk never moved, but the extractor that produced their symbol/ref rows did. Reported separately from the rest of `changed` because it is the one bucket a content-only diff (`diskSha !== entry.sha`) could never have found on its own. */
   parserStale: number
+  /** Tracked files (a subset of {@link changed}) enqueued because they still hold embedding chunks but no `embed_sha`: ensureEmbeddingProvenance clears it after a chunker change while keeping the old vectors serving, so content and parse are both current and only this enqueue gets a file nobody edits re-embedded. */
+  embedStale: number
   /** True when the budget stopped the sweep before every tracked file was examined. */
   budgetExhausted: boolean
   /** True when the tracked-file enumeration came back empty against a non-empty index -- the project is not a git repository, git is missing, or git errored. Distinguished from a genuinely emptied project because the two are identical in the numbers and opposite in what they mean. */
@@ -147,6 +150,10 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     const reparseVerb = opts.dryRun === true ? 'would reparse' : 'queued for reparse'
     lines.push(`${countNoun(result.parserStale, 'file')} of the above ${result.parserStale === 1 ? 'was' : 'were'} unchanged on disk but indexed by an older parser (${reparseVerb}).`)
   }
+  if (result.embedStale > 0) {
+    const reembedVerb = opts.dryRun === true ? 'would re-embed' : 'queued for re-embedding'
+    lines.push(`${countNoun(result.embedStale, 'file')} of the above ${result.embedStale === 1 ? 'was' : 'were'} unchanged on disk but held out-of-date embeddings (${reembedVerb}).`)
+  }
   if (result.trackedUnavailable) {
     lines.push('This project has an index but git listed no files in it, so nothing could be compared and no deletions were computed. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
@@ -177,6 +184,10 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds a prefix-range bound straight from the root it is handed. A relative `cwd` -- what `token-goat reconcile` from inside the project passes -- would produce a relative prefix that matches no stored row, so every tracked file would look unindexed and the sweep would enqueue the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
   const indexed = getProjectFileEntries(projectRoot, dbPath)
+  const chunkScope = projectScopeClause('file_path')
+  const chunked = new Set(
+    (getDb(dbPath).prepare(`SELECT DISTINCT file_path FROM chunks WHERE ${chunkScope.clause}`).pluck().all(...chunkScope.params(projectRoot)) as string[]).map((p) => foldPath(normalizePath(p))),
+  )
 
   // Resume where the previous budget-truncated sweep of this project left off, instead of rescanning the same deterministic `git ls-files` prefix every session forever and never reaching whatever comes after it. Matched by folded/normalized path rather than by array index, because the tracked-file list can change shape between sessions (a file added, removed, or renamed shifts every index after it); a cursor that no longer matches anything just is not found, and the sweep falls back to starting from the beginning -- never an out-of-bounds read, never a crash. `scanOrder` is always a full permutation of `tracked` (same elements, same count, only reordered), so a lap that completes without exhausting the budget still visits every tracked file exactly once, which is what the deletion logic below depends on.
   let scanOrder = tracked
@@ -194,6 +205,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const seenOnDisk = new Set<string>()
   let mtimeOnly = 0
   let parserStale = 0
+  let embedStale = 0
   let scanned = 0
   let budgetExhausted = false
   let lastScanned: string | null = null
@@ -219,6 +231,13 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     if (entry.parserSha !== PARSER_FINGERPRINT) {
       changed.push(file)
       parserStale++
+      continue
+    }
+
+    // Same shape one freshness key over: chunks with no embed_sha are vectors ensureEmbeddingProvenance kept serving after a chunker change (or that a reparse left behind older content), and the content checks below compare bytes that never moved, so without this a file nobody edits keeps its old chunks forever.
+    if (entry.embedSha === '' && chunked.has(folded)) {
+      changed.push(file)
+      embedStale++
       continue
     }
 
@@ -289,6 +308,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     removed,
     mtimeOnly,
     parserStale,
+    embedStale,
     budgetExhausted,
     trackedUnavailable,
     unscanned: Math.max(0, tracked.length - scanned),
