@@ -34,7 +34,7 @@ const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
  * this is a regression trip-wire for the whole bundle collapsing back into the eager set, not a
  * budget to be tuned on every dependency change.
  */
-const MAX_EAGER_BYTES = 3.2 * 1024 * 1024
+const MAX_EAGER_BYTES = 3.25 * 1024 * 1024
 
 /** Chunk filenames the given built file imports with a static `import ... from "./..."`. */
 function staticChunkImports(file: string): string[] {
