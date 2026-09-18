@@ -708,11 +708,7 @@ export function encodeJpeg(width: number, height: number, rgba: Uint8Array, qual
   return encoded.data
 }
 
-/**
- * Each EXIF orientation is an affine map from destination pixel to source pixel: `sx = a*dx + b*dy + cW*(width-1)`, `sy = d*dx + e*dy + fH*(height-1)`. A row is `[a, b, cW, d, e, fH]`, indexed by `orientation - 2`, so the whole thing resolves to one lookup outside the loops instead of a switch evaluated per pixel.
- *
- * Read each row against the spec value it encodes -- 2 top-right (mirror horizontal): source x counts down from the right edge, y unchanged. 3 bottom-right (rotate 180): both count down. 4 bottom-left (mirror vertical): x unchanged, y counts down. 5 left-top (transpose): the axes swap outright. 6 right-top (rotate 90 clockwise): source x is the destination row, source y counts down from the bottom. 7 right-bottom (transverse): both swapped axes count down. 8 left-bottom (rotate 270 clockwise): source x counts down from the right, source y is the destination column.
- */
+// Each EXIF orientation is an affine map from destination pixel to source pixel: `sx = a*dx + b*dy + cW*(width-1)`, `sy = d*dx + e*dy + fH*(height-1)`. A row is `[a, b, cW, d, e, fH]`, indexed by `orientation - 2`, so the whole thing resolves to one lookup outside the loops instead of a switch evaluated per pixel. Read each row against the spec value it encodes -- 2 top-right (mirror horizontal): source x counts down from the right edge, y unchanged. 3 bottom-right (rotate 180): both count down. 4 bottom-left (mirror vertical): x unchanged, y counts down. 5 left-top (transpose): the axes swap outright. 6 right-top (rotate 90 clockwise): source x is the destination row, source y counts down from the bottom. 7 right-bottom (transverse): both swapped axes count down. 8 left-bottom (rotate 270 clockwise): source x counts down from the right, source y is the destination column.
 const ORIENTATION_MAPS: readonly (readonly [number, number, number, number, number, number])[] = [
   [-1, 0, 1, 0, 1, 0],
   [-1, 0, 1, 0, -1, 1],
@@ -723,15 +719,7 @@ const ORIENTATION_MAPS: readonly (readonly [number, number, number, number, numb
   [0, -1, 1, 1, 0, 0],
 ]
 
-/**
- * Rotate/flip decoded RGBA into display order for an EXIF orientation tag (TIFF tag 274), returning the new buffer and its dimensions.
- *
- * The re-encode this engine performs writes no EXIF block, so there is no metadata channel left to carry the instruction downstream: the pixels themselves have to move, or the model is handed a photo lying on its side.
- *
- * Spec values, named by the row/column the visual origin sits at: 1 top-left (identity), 2 top-right (mirror horizontal), 3 bottom-right (rotate 180), 4 bottom-left (mirror vertical), 5 left-top (transpose across the main diagonal), 6 right-top (rotate 90 clockwise), 7 right-bottom (transverse, across the anti-diagonal), 8 left-bottom (rotate 270 clockwise). 5-8 swap width and height.
- *
- * 1 -- and any value outside 1-8, which the tag being absent or corrupt looks like -- returns `rgba` itself, not a copy: the common case must not pay for a full-frame allocation.
- */
+// Rotate/flip decoded RGBA into display order for an EXIF orientation tag (TIFF tag 274), returning the new buffer and its dimensions. The re-encode this engine performs writes no EXIF block, so there is no metadata channel left to carry the instruction downstream: the pixels themselves have to move, or the model is handed a photo lying on its side. Spec values, named by the row/column the visual origin sits at: 1 top-left (identity), 2 top-right (mirror horizontal), 3 bottom-right (rotate 180), 4 bottom-left (mirror vertical), 5 left-top (transpose across the main diagonal), 6 right-top (rotate 90 clockwise), 7 right-bottom (transverse, across the anti-diagonal), 8 left-bottom (rotate 270 clockwise). 5-8 swap width and height. 1 -- and any value outside 1-8, which the tag being absent or corrupt looks like -- returns `rgba` itself, not a copy: the common case must not pay for a full-frame allocation.
 export function applyExifOrientation(
   rgba: Uint8Array,
   width: number,
