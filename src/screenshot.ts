@@ -398,7 +398,7 @@ async function captureOnce(url: string, ctx: CaptureContext): Promise<{ buffer: 
     })
 
     try {
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30_000 })
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 })
     } catch (err) {
       if (hop.url !== null) return { redirectTo: hop.url }
       // An aborted main-frame navigation surfaces as a generic net::ERR_FAILED, which would hide why it failed -- report the policy refusal instead.
