@@ -2,15 +2,13 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [2.9.16] - 2026-09-18
 
 ### Fixed
 
 - **Semantic search now covers the whole of every chunk it stores, so a match in the second half of a long function is found**: chunks were capped at 8,000 characters, but the embedding model reads 512 wordpieces, about 1,700 characters of code, and silently drops the rest, so the vector stored for a longer chunk described only its head while the chunk's line range claimed all of it. On this repository's own index, 17.3% of chunks were over that limit and 49.5% of the chunked text was never embedded; a query for the TIFF page-loop guard in `probeBufferMeta` ranked the chunk holding it 10,442nd of 18,102 by vector distance, and now ranks it first. Chunks are now cut with the model's own tokenizer so none is longer than what the model reads, and a single line too long for one chunk, such as minified code, is split across several. The same repository now indexes to 27,296 chunks instead of 18,102, a 12% larger database, and a full index takes about twice as long, because that text is now actually embedded. Upgrading keeps the existing vectors answering searches and re-embeds each file as reconcile or `token-goat index` reaches it.
 
 - **`semantic` reports the best-matching part of a long function instead of the worst one**: results are grouped by the symbol that encloses them, and when several chunks of one function matched, each later and weaker chunk replaced the one before it, so the row showed the least relevant range at the least favorable rank. A query whose best chunk was the third-closest in the whole index dropped out of the top 25; it now leads the list.
-
-- **The hint that fires on a 4KB-plus shell output no longer hands the model a block where token-goat's sentence and the command's own bytes run together undelimited**: when a command's output had ANSI escapes stripped, the hint was appended to those bytes and the pair shipped as one unfenced body, so nothing marked where the tool's words ended and token-goat's began, and output that reproduced the marker wording read as token-goat's own. The command bytes are now fenced and the hint sits outside the fence, ahead of it rather than after it, because that sentence carries the only pointer back to the full output and the harness truncates from the end. The bare escape-strip path is unchanged: it adds nothing of token-goat's to the bytes, so there is no second voice to separate. The same emit was also built by hand rather than through the shared path that prices and counts it, which meant it was recorded nowhere and skipped the check for harnesses whose post-tool hook cannot replace a tool result at all -- on those it was emitted into a response the model never receives.
 
 - **Semantic search keeps answering through an upgrade that changes how files are chunked**: when only the code that decides chunk text and boundaries has moved, the model and runtime are the same and stored vectors still compare correctly with new queries, so they are kept and every embedded file is marked for re-embedding. Before, every stored vector on the machine was deleted at once, and `semantic` came back empty in every project until each one was reindexed by hand. The session-start drift sweep and `token-goat reconcile` queue those files for the background worker, which rebuilds each file's chunks in place, and `token-goat index` rebuilds them all. A change of model, model revision or inference runtime still discards the stored vectors, since they no longer share a space with new queries. This release changes the chunking digest, so upgrading re-embeds in the background.
 
@@ -71,6 +69,46 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **A routine 24-megapixel camera or phone photo now reaches the model shrunk instead of untouched, and the ceiling that used to block it silently now shows up in `token-goat stats`**: `image_shrink.max_image_pixels` shipped at 16,000,000, well under a common 24MP DSLR or 48MP phone sensor and under the exact input this feature exists to shrink, and the header probe that enforces it swallowed its own rejection into the same bare "not a candidate" result as a corrupt or unsupported file, so an oversized photo passed through full-size with no stat, no skip, nothing to show why it never shrank. The default is now 64,000,000, chosen against the image engine's own hard decode ceiling (67,108,864 pixels) rather than picked arbitrarily, and a distinct `image_shrink_over_pixel_limit` stat is now recorded whenever the configured limit -- default or user-set -- is the reason a file was never a shrink candidate.
 
 - **`token-goat fetch-image` shrinks a fetched image that is small in bytes but far over the normal resize target, matching what a `Read` of the same bytes from disk already does**: the pre-read hook qualifies an image on pixel dimensions as well as byte size, but `cmdFetchImage` called the shrink path with its plain 512KiB byte-size default and no dimension check, so a fetched image well under that threshold in bytes but well past the resize target in width or height -- a flat-colour or heavily-compressed PNG, for instance -- was written to disk untouched, while the identical bytes read from a local file were shrunk. `cmdFetchImage` now qualifies on dimensions the same way the read hook does.
+
+- **Grep can search build output**: a Grep whose path was under `dist/` or another build or generated directory was refused with "Generated/build artifact, read the source file instead", as if a search were a full read of the bundle. Grep is now exempt, as it already was from every other read deny; a Read of build output is still redirected to the source.
+
+- **Reading a file in ranges no longer blocks a later full read of it**: every Read counted toward the "already read this session, unchanged" deny whether or not it asked for a line range, so two ranged reads of a file the model had never seen whole could get the next unranged read, or even a second ranged read of different lines, hard-denied. Only a full read now arms the whole-file denies, including the size-based one that a single range of a large file used to trigger, and only full reads since the last context compaction count toward them; repeating the exact same range is still caught separately.
+
+- **A repeated line-range read shows the new content when the file changed outside the session**: the deny for re-reading a range already served fired from the session's range history alone, so an edit made by your editor, another tool or another process was hidden behind "already read this session". The deny now fires only when the file is confirmed unchanged since that range was read, by its stored snapshot or, for large and non-text files that have none, by its size and modification time; otherwise the range history for that file is cleared and the read goes through.
+
+- **A file deleted from the project is removed from the index even when the first attempt fails**: a failed removal was silently ignored, so the deleted file's symbols stayed in search results. It is now logged to the worker error log and retried within the same retry budget as a failed reindex, without holding up the rest of the batch.
+
+- **`token-goat reconcile` stops re-hashing every file and stops reporting timestamp drift that never happened**: the stored modification time was in seconds and the file's current one in milliseconds, so the cheap timestamp check never matched, every run read and hashed the whole tracked set, and the summary claimed "N files had a newer timestamp but identical content" for all of them. On this repository that line said 1221 files; it now says 1, the one file actually touched.
+
+- **Hooks recognise tool names however a harness spells them**: Copilot CLI, Codex and VS Code tool names are now matched case-insensitively, ignoring underscores and dashes and a `server:` prefix, so a spelling such as `web_search` or a prefixed built-in reaches the same handler as its standard name instead of passing through with no token-goat handling at all.
+
+- **`brief` warns when the file behind a symbol has been deleted**: it printed the indexed body, callers and line numbers of a deleted file as if current, while `read` flagged it. It now prints the same deleted-file warning, and `--json` output carries `"deleted": true`.
+
+- **The background indexer restarts itself after an upgrade**: a worker started before `npm install -g` or an upgrade kept running the old code until the machine restarted or someone killed it by hand, so indexing fixes in the new version never took effect. The worker now records which build it runs, and the next hook that finds it running an older copy of the same install stops it and starts a new one. A worker started by a different install sharing the same data folder is left alone.
+
+- **`screenshot` waits up to 60 seconds for a page to load instead of 30**: slow pages that were still settling at 30 seconds failed to capture.
+
+- **A symbol lookup made through MCP with an explicit project root resolves in that project when cross-project symbols are off**: with `indexing.cross_project_symbols = false`, the lookup was confined to the current working directory's project rather than the project the caller named, so the symbol was not found.
+
+### Added
+
+- **`section` finds a heading from a close but inexact name**: when no exact or widened match exists, a heading that differs by a typo, punctuation, a plural or stem, or an extra or missing word (for example "Pre-Commit Hook" for "Pre-Commit Hook Configurations") is now matched, as long as one heading is clearly the best candidate. `insert-section` still requires an exact heading, so it never writes under a guessed one.
+
+- **`token-goat doctor --repair` (alias `--fix`) fixes what doctor finds**: it restores permissive read confinement and cross-project symbol search if they were turned off, turns networking and embeddings back on if the semantic model is missing because of offline mode, and downloads and verifies the model files. Doctor now also checks that the embedding model files are present, groups its results by category in plainer language, and points to `--repair` when a warning can be fixed automatically.
+
+- **A hint for PowerShell `ConvertFrom-Json` pipelines and direct `jq` reads of a config file**: `Get-Content file.json | ConvertFrom-Json`, `[IO.File]::ReadAllText(...)` piped the same way, and `jq .key file.json` now get a pointer to `token-goat json-query`, and the existing `cat | jq` hint now suggests `json-query` as well.
+
+- **A hint when a shell command prints 4KB or more uncompressed**: the hint gives the `token-goat compress -c` form of the command and a `bash-output` id for the stored output. It fires once per command per session, only for successful commands that token-goat could not already compress, and not when `TOKEN_GOAT_BASH_COMPRESS=0`. The command output is fenced with the hint outside the fence and ahead of it, so the pointer back to the full output survives truncation and nothing in the output can pass for token-goat text, and the hint is not emitted on harnesses whose hook cannot replace a tool result.
+
+- **`session-audit` accepts a single `.jsonl` transcript, answers to `audit-session`, and finds VS Code and Cursor chat transcripts**: when `~/.claude/projects` has no transcripts, the default scan now looks in the VS Code, VS Code Insiders and Cursor workspace storage folders.
+
+### Changed
+
+- **MCP reads are no longer confined to the project root by default**: `mcp.confine_reads_to_project_root` now defaults to `false`, and doctor reports confinement being off as the recommended setup rather than a warning. With confinement turned on, reads under the standard skills, transcript and editor-storage folders (`~/.claude/skills`, `~/.claude/projects`, `~/.copilot/skills`, `~/.copilot/session-state`, the VS Code and Cursor workspace storage folders, and editor extension folders) and any root in `mcp.allowed_roots` are now allowed.
+
+- **A second full Read of a JSON or HTML file of 8KB or more is denied with a pointer to a narrow read**: it now gets the same treatment as a re-read of a markdown file, naming `json-query` or `json-outline` for JSON and `section` or `outline` for HTML. YAML re-read hints now name `yaml-query` alongside `section`.
+
+- **The markdown hint suggesting `section` or `outline` now fires on files of 4KB or more instead of 8KB**.
 
 ## [2.9.15] - 2026-09-17
 
