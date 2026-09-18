@@ -18,13 +18,10 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import omggif from 'omggif'
-
 import { loadConfig, type VisionTier } from './config.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import {
   applyExifOrientation,
-  assertDecodableSize,
   type DecodedImage,
   probeBufferMeta,
   decodePng,
@@ -33,7 +30,6 @@ import {
   encodeJpeg,
   decodeBmp,
   decodeGif,
-  quantizeRgbaToIndexed,
   resizeRgba,
   calculateFitInside,
 } from './image_engine.js'
@@ -338,26 +334,9 @@ export async function shrinkImage(
     // Animated GIF handling
     if (isAnimated && inputMeta.format === 'gif') {
       const decodedGif = decodeGif(input)
-      // The decode ceiling bounds the frames going in; it does not bound what comes out. This
-      // buffer is a second allocation of the same shape -- five bytes per pixel per frame -- and at
-      // a 1568x1568 output it passes the ceiling at 25 frames, so peak memory was the sum of two
-      // budgets with only one of them checked. Sized and checked here rather than left to the
-      // input bound, which is the wrong number for it.
-      assertDecodableSize('GIF output', targetW, targetH, 5, decodedGif.frames.length)
-      const outBuf = Buffer.alloc(targetW * targetH * 5 * decodedGif.frames.length + 4096)
-      const gifWriter = new omggif.GifWriter(outBuf, targetW, targetH, { loop: 0 })
-
-      for (const frame of decodedGif.frames) {
-        const resizedFrameRgba = resizeRgba(frame.data, frame.width, frame.height, targetW, targetH)
-        const { indexedPixels, palette, transparentIndex } = quantizeRgbaToIndexed(resizedFrameRgba, targetW, targetH)
-        gifWriter.addFrame(0, 0, targetW, targetH, indexedPixels, {
-          palette,
-          delay: frame.delay,
-          disposal: frame.disposal,
-          ...(transparentIndex === null ? {} : { transparent: transparentIndex }),
-        })
-      }
-      const data = outBuf.subarray(0, gifWriter.end())
+      // Dynamically imported so the animated-GIF encoder stays out of the hook entry's eager set. A rejected import (missing chunk, corrupt install) lands in this function's own catch below and returns null, which is the same pass-through the size guard two lines down takes, so a failure here ships the original image rather than a broken one.
+      const { encodeAnimatedGifDelta } = await import('./image_gif_encode.js')
+      const data = encodeAnimatedGifDelta(decodedGif, targetW, targetH)
       if (data.length >= originalBytes) return null
       return {
         data,
@@ -441,8 +420,8 @@ function imageShrinkCacheDir(): string {
  * domain-separates by full source path, so a collision would additionally require two different
  * paths to also match on size+mtime.
  */
-/** Bump whenever the engine starts producing different pixels for an unchanged input file. Nothing else in the key moves when the code does, so without this an entry garbled by a shipped defect keeps being served from disk until DEFAULT_MAX_AGE_MS retires it -- the fix reaches new files only. Revision 2: EXIF orientation is now baked into the pixels. */
-export const SHRINK_ENGINE_REVISION = 2
+/** Bump whenever the engine starts producing different pixels for an unchanged input file. Nothing else in the key moves when the code does, so without this an entry garbled by a shipped defect keeps being served from disk until DEFAULT_MAX_AGE_MS retires it -- the fix reaches new files only. Revision 2: EXIF orientation is now baked into the pixels. Revision 3: animated GIFs re-encode as delta frames against one global palette. */
+export const SHRINK_ENGINE_REVISION = 3
 
 /** Exported so a test can hold every other input fixed and vary only the revision, which is the one property the salt has to have. */
 export function shrinkCacheKeyForRevision(revision: number, originalPath: string, size: number, mtimeMs: number, quality: number): string {

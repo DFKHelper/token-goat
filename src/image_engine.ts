@@ -644,23 +644,22 @@ export function encodeGif(width: number, height: number, rgba: Uint8Array): Buff
   return buf.subarray(0, gifWriter.end())
 }
 
-/**
- * Quantize RGBA to the fixed 8x8x4 web palette.
- *
- * When any pixel is more transparent than half, index 0 is reserved as the GIF transparent colour and the opaque pixels that would have landed there -- near-black -- are nudged to index 1, the next darkest entry. That costs pure black a barely visible step and keeps the palette at its full 256 entries. A fully opaque frame reserves nothing, so its output is unchanged.
- */
-export function quantizeRgbaToIndexed(rgba: Uint8Array, width: number, height: number): { indexedPixels: number[]; palette: number[]; transparentIndex: number | null } {
+/** The fixed 8x8x4 web palette every quantized GIF frame is written against. Built once and shared rather than rebuilt per frame so that a GIF writer can declare it as the single global colour table: a sub-rectangle frame carries no palette of its own, and a per-frame local table would cost 768 bytes a frame on top of that. Callers must treat it as read-only. */
+export const GIF_WEB_PALETTE: number[] = (() => {
   const palette: number[] = []
   for (let r = 0; r < 8; r++) {
     for (let g = 0; g < 8; g++) {
       for (let b = 0; b < 4; b++) {
-        const red = Math.round((r / 7) * 255)
-        const green = Math.round((g / 7) * 255)
-        const blue = Math.round((b / 3) * 255)
-        palette.push((red << 16) | (green << 8) | blue)
+        palette.push((Math.round((r / 7) * 255) << 16) | (Math.round((g / 7) * 255) << 8) | Math.round((b / 3) * 255))
       }
     }
   }
+  return palette
+})()
+
+/** Quantize RGBA to the fixed 8x8x4 web palette. When any pixel is more transparent than half, index 0 is reserved as the GIF transparent colour and the opaque pixels that would have landed there -- near-black -- are nudged to index 1, the next darkest entry. That costs pure black a barely visible step and keeps the palette at its full 256 entries. A fully opaque frame reserves nothing, so its output is unchanged. */
+export function quantizeRgbaToIndexed(rgba: Uint8Array, width: number, height: number): { indexedPixels: number[]; palette: number[]; transparentIndex: number | null } {
+  const palette = GIF_WEB_PALETTE
 
   const numPixels = width * height
   let transparentIndex: number | null = null

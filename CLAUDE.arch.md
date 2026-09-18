@@ -320,6 +320,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/image_engine.ts`](src/image_engine.ts) | Pure TypeScript / JavaScript Image Processing Engine for token-goat. |
+| [`src/image_gif_encode.ts`](src/image_gif_encode.ts) | Re-encode an already-decoded animated GIF as delta frames. |
 | [`src/image_ocr.ts`](src/image_ocr.ts) | OCR — extract text from text-heavy images (screenshots of a terminal, a stack trace, a table, an editor, a doc page) instead of paying vision tokens to reconstruct their pixels. |
 | [`src/json_query.ts`](src/json_query.ts) | Narrow structural summary + path-based extraction for `token-goat json-outline` / `json-query`, so a multi-thousand-line JSON document never needs a full `Read` just to answer "wha |
 | [`src/pdf_extract.ts`](src/pdf_extract.ts) | PDF -> plain text extraction for `token-goat pdf-extract`, so a PDF's useful content reaches the model as text instead of forcing a full binary `Read` (which token-goat can't index |

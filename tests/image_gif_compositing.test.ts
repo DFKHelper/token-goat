@@ -210,13 +210,14 @@ describe('the shrink path delivers composited, transparency-preserving GIFs', ()
     // Must not drop: the notice's dimensions have to be the dimensions actually delivered.
     expect(text).toContain(`${reader.width}x${reader.height} gif`)
 
-    const rgba = Buffer.alloc(reader.width * reader.height * 4)
-    reader.decodeAndBlitFrameRGBA(1, rgba)
+    // Composited, not a bare blit of frame 1: the delivered GIF is itself delta-encoded, so frame 1 covers only the rectangle that changed and a fresh-canvas blit of it is black everywhere else by construction. What must not be mostly black is the picture a viewer shows.
+    const { frames, width, height } = decodeGif(gif)
+    const rgba = frames[1]!.data
     let black = 0
-    for (let i = 0; i < reader.width * reader.height; i++) {
+    for (let i = 0; i < width * height; i++) {
       if (rgba[i * 4]! < 16 && rgba[i * 4 + 1]! < 16 && rgba[i * 4 + 2]! < 16) black++
     }
-    expect(black / (reader.width * reader.height)).toBeLessThan(0.5)
+    expect(black / (width * height)).toBeLessThan(0.5)
   })
 
   it('carries a transparent index through to the delivered GIF', async () => {
