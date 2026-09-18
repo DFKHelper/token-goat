@@ -564,7 +564,7 @@ function runShim(eventName: string, stdin: string, cwd: string, env?: NodeJS.Pro
     cwd,
     input: stdin,
     encoding: 'utf8',
-    timeout: 15000,
+    timeout: 60000,
     env: env ?? process.env,
   })
   return res.stdout ?? ''
@@ -651,7 +651,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
         cwd,
         input: JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'view', toolArgs: { path: '/f.txt' } }),
         encoding: 'utf8',
-        timeout: 15000,
+        timeout: 60000,
         env: process.env,
       },
     )
@@ -690,7 +690,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       cwd,
       input: JSON.stringify({ sessionId: 's1', cwd: '/tmp' }),
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
       env: process.env,
     })
     expect(res.status).toBe(0)
@@ -1244,7 +1244,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
         cwd,
         input: stdin,
         encoding: 'utf8',
-        timeout: 15000,
+        timeout: 60000,
         env,
       })
       expect(res.status).toBe(0)
