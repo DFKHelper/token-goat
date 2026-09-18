@@ -1004,8 +1004,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
     const isSourceExt = isSourceExtension(basename)
-    // Whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on this, not on `reads`, which a slice bumps too.
-    const fullReads = entry?.fullReadCount ?? 0
+    // Whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on this, not on `reads`, which a slice bumps too. Epoch-scoped like wasFileFullyReadThisSession: a fullReadCount from before the last compaction no longer describes what the model currently holds, so it must not count here either.
+    const fullReads = (entry?.lastFullReadAt !== undefined && entry.lastFullReadAt >= getCompactedAt()) ? (entry.fullReadCount ?? 0) : 0
 
     // Rank must be computed against session state as of the *last* read, before the read
     // below bumps this file's own lastReadAt -- otherwise every re-read would trivially rank
@@ -1069,7 +1069,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         if (prevRanges.some(([s, e]) => s <= start && e >= end)) {
           // A prior overlapping range only proves this span was served before, never that it still matches disk: an edit outside this session (another tool, another process, the user's own editor) can land between the two reads with nothing here to observe it. Reuse the same snapshot-fingerprint mechanism the whole-file "unchanged since last read" check above relies on rather than trusting the recorded range alone; only a confirmed byte-for-byte match denies.
           const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
-          if (snapDiff.kind === 'unchanged') {
+          const denyRangeReread = (): HookOutput => {
             const blocked = counterfactualCredit(rereadCreditBasis)
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
@@ -1078,8 +1078,27 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
               'Pull just the part you need with `token-goat read "' + shown + '::Symbol"`.',
             )
           }
-          // Content changed (kind 'diff') or freshness could not be confirmed (kind 'none', e.g. no snapshot yet): the recorded ranges no longer describe what disk holds, so they must not keep denying this or any other overlapping read of this file. Drop them and let the read proceed to fresh content.
-          resetFileLineRanges(normalized)
+          if (snapDiff.kind === 'unchanged') {
+            return denyRangeReread()
+          }
+          if (snapDiff.kind === 'none') {
+            // No snapshot exists to diff against -- postReadHandler only snapshots doc/artifact/diffable-source files up to 256KB, so a large file or an unsnapshotted extension (.html, .csv, .log, ...) always lands here. Fall back to a cheap file identity (size + mtimeMs) captured when the range was recorded: if disk still matches, nothing observable changed, so deny as before; if it moved, an edit happened between the two reads and the ranges must not keep denying; if no identity was ever recorded (legacy session state predating this field), deny as the pre-range-identity code did.
+            const recordedIdentity = getSessionFileEntry(normalized)?.rangeFileIdentity
+            let currentIdentity: { size: number; mtimeMs: number } | undefined
+            try {
+              const st = fs.statSync(normalized)
+              currentIdentity = { size: st.size, mtimeMs: st.mtimeMs }
+            } catch {
+              currentIdentity = undefined
+            }
+            if (recordedIdentity === undefined || (currentIdentity !== undefined && recordedIdentity.size === currentIdentity.size && recordedIdentity.mtimeMs === currentIdentity.mtimeMs)) {
+              return denyRangeReread()
+            }
+            resetFileLineRanges(normalized)
+          } else {
+            // Content confirmed changed (kind 'diff'): the recorded ranges no longer describe what disk holds, so they must not keep denying this or any other overlapping read of this file. Drop them and let the read proceed to fresh content.
+            resetFileLineRanges(normalized)
+          }
         }
       }
 
@@ -1159,7 +1178,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const contextHint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
-    if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || fullReads >= 2)) {
+    if (config.hints.reread_deny && !protectedRead && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2)) {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
       return denyOutput(

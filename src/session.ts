@@ -38,6 +38,8 @@ export interface FileEntry {
    * Symbol/section/range tokens this file was read *surgically* by this session (via `token-goat read|section "file::symbol"` and friends), as opposed to a whole-file Read. Non-empty means the file was engaged with narrowly, which compact.ts's `computeAdaptiveBudget` rewards with a manifest-budget bonus. Populated by {@link recordSymbolRead}; never touched by {@link recordFileRead} (whole-file Read tracking is unchanged).
    */
   readonly symbols_read?: string[]
+  /** Cheap file identity (size + mtimeMs) captured by statSync at the moment the most recent line range was recorded via {@link recordFileLineRange}. Lets the repeated-range deny in hooks_read.ts tell whether disk has moved since without a snapshot or a hash: if a later statSync of the same file no longer matches, an external edit landed between the two reads and the recorded ranges must not keep denying. */
+  readonly rangeFileIdentity?: { readonly size: number; readonly mtimeMs: number }
 }
 
 // path -> entry. The key is the normalized absolute path so a file referenced via different relative strings collapses to one entry.
@@ -45,6 +47,7 @@ let _files = new Map<string, FileEntry>()
 
 // Snapshot of each file's readCount at hydration time, so session_store.ts's merge can tell "this process's own genuinely new reads since load" apart from "whatever was already on disk" -- Math.max(disk, mem) silently drops a concurrent process's distinct increment whenever the two values happen to coincide (see mergeFileEntry in session_store.ts).
 let _filesAtLoad = new Map<string, number>()
+let _filesFullReadCountAtLoad = new Map<string, number>()
 
 // Hint fingerprints already emitted this session (dedup, matches session.py mark_hint_seen / has_hint_fingerprint).
 let _hintsShown = new Set<string>()
@@ -216,6 +219,11 @@ export function recordSymbolRead(filePath: string, symbol: string): void {
  * from the same on-disk count and each record one genuine read must sum to two, not one. */
 export function filesReadCountAtLoad(): ReadonlyMap<string, number> {
   return _filesAtLoad
+}
+
+/** Same snapshot mechanism as {@link filesReadCountAtLoad}, but for fullReadCount: session_store.ts's merge reconciles this counter the same way, for the same reason -- a concurrent process's own genuine full read must never be dropped just because Math.max(a, b) happened to coincide with another process's count. */
+export function filesFullReadCountAtLoad(): ReadonlyMap<string, number> {
+  return _filesFullReadCountAtLoad
 }
 
 /**
@@ -559,14 +567,30 @@ export function consumedCurlDownloadKeys(): string[] {
 /** Cap on retained line ranges per file - bounds memory if one file is paged many times. */
 export const MAX_RANGES_PER_FILE = 64
 
-/** Record that inclusive line range [start, end] of `filePath` was served via a sed line-range read this session. Deduplicates identical ranges and caps retained ranges per file. */
+/** Best-effort file identity (size + mtimeMs) for the repeated-range deny's no-snapshot fallback, or undefined when the file cannot be stat'd. */
+function statIdentity(absPath: string): { size: number; mtimeMs: number } | undefined {
+  try {
+    const st = fs.statSync(absPath)
+    return { size: st.size, mtimeMs: st.mtimeMs }
+  } catch {
+    return undefined
+  }
+}
+
+/** Record that inclusive line range [start, end] of `filePath` was served via a sed line-range read this session. Deduplicates identical ranges and caps retained ranges per file. Also stamps the file's current identity (size + mtimeMs) onto its session entry, so a later repeated read of the same range can be denied even when no content snapshot exists to diff against (see `rangeFileIdentity`). */
 export function recordFileLineRange(filePath: string, start: number, end: number): void {
-  const key = foldPath(normalizePath(filePath))
+  const normalized = normalizePath(filePath)
+  const key = foldPath(normalized)
   const ranges = _fileLineRanges.get(key) ?? []
-  if (ranges.some(([s, e]) => s === start && e === end)) return
-  ranges.push([start, end])
-  if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
-  _fileLineRanges.set(key, ranges)
+  if (!ranges.some(([s, e]) => s === start && e === end)) {
+    ranges.push([start, end])
+    if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
+    _fileLineRanges.set(key, ranges)
+  }
+  const entryKey = resolveFilesKey(normalized)
+  const entry = _files.get(entryKey)
+  const identity = statIdentity(normalized)
+  if (entry && identity) _files.set(entryKey, { ...entry, rangeFileIdentity: identity })
 }
 
 /** Inclusive line ranges of `filePath` already served via sed this session (empty if none). */
@@ -744,6 +768,7 @@ export function importSessionState(s: SerializedSession): void {
     if (e && typeof e.path === 'string') _files.set(e.path, e)
   }
   _filesAtLoad = new Map(Array.from(_files, ([key, e]) => [key, e.readCount]))
+  _filesFullReadCountAtLoad = new Map(Array.from(_files, ([key, e]) => [key, e.fullReadCount ?? 0]))
   _hintsShown = new Set(s.hintsShown)
   _scheduledPromptCounts = new Map(s.scheduledPromptCounts ?? [])
   _webFetches = new Map(s.webFetches)
@@ -768,6 +793,7 @@ export function importSessionState(s: SerializedSession): void {
 registerReset(() => {
   _files = new Map()
   _filesAtLoad = new Map()
+  _filesFullReadCountAtLoad = new Map()
   _hintsShown = new Set()
   _scheduledPromptCounts = new Map()
   _webFetches = new Map()

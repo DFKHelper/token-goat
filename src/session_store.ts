@@ -12,7 +12,7 @@ import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, saniti
 import { normalizePath } from './paths.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { redactSecrets } from './secret_redact.js'
-import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -116,6 +116,15 @@ function asFileEntry(raw: unknown): FileEntry | null {
   if (Array.isArray(o['symbols_read'])) {
     const symbols = (o['symbols_read'] as unknown[]).filter((s): s is string => typeof s === 'string')
     if (symbols.length > 0) entry = { ...entry, symbols_read: symbols }
+  }
+  // Preserve the range-identity stamp so hooks_read.ts's no-snapshot repeated-range deny survives a save -> load round-trip; without this every hook process (a fresh process per invocation) sees it as never-recorded and falls back to denying unconditionally, defeating the external-edit check it exists for.
+  const rangeIdentity = o['rangeFileIdentity']
+  if (
+    rangeIdentity !== null && typeof rangeIdentity === 'object' &&
+    typeof (rangeIdentity as Record<string, unknown>)['size'] === 'number' &&
+    typeof (rangeIdentity as Record<string, unknown>)['mtimeMs'] === 'number'
+  ) {
+    entry = { ...entry, rangeFileIdentity: { size: (rangeIdentity as Record<string, unknown>)['size'] as number, mtimeMs: (rangeIdentity as Record<string, unknown>)['mtimeMs'] as number } }
   }
   return entry
 }
@@ -276,10 +285,14 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
     wasEdited: a.wasEdited || b.wasEdited,
     sizeBytes: newest.sizeBytes,
   }
+  if (newest.rangeFileIdentity) merged = { ...merged, rangeFileIdentity: newest.rangeFileIdentity }
   if (a.wasTruncated || b.wasTruncated) merged = { ...merged, wasTruncated: true }
   const lastFullReadAt = Math.max(a.lastFullReadAt ?? 0, b.lastFullReadAt ?? 0)
   if (lastFullReadAt > 0) merged = { ...merged, lastFullReadAt }
-  const fullReadCount = Math.max(a.fullReadCount ?? 0, b.fullReadCount ?? 0)
+  // fullReadCount is reconciled the same way readCount is above, not maxed, for the same reason: Math.max would drop a concurrent process's own genuine full read whenever the two counters happen to coincide.
+  const fullReadBaseline = filesFullReadCountAtLoad().get(b.path) ?? 0
+  const newFullReadsThisProcess = Math.max(0, (b.fullReadCount ?? 0) - fullReadBaseline)
+  const fullReadCount = (a.fullReadCount ?? 0) + newFullReadsThisProcess
   if (fullReadCount > 0) merged = { ...merged, fullReadCount }
   // Union the surgical-read tokens from both views so a concurrent process's
   // symbol reads are not clobbered by whichever save lands last.

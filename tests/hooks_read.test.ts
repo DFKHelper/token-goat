@@ -22,7 +22,7 @@ import type { HookEvent } from '../src/hook_registry.js'
 import { preReadHandler, postReadHandler, buildLineDiff, readRequestedSliceWindow } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState } from '../src/session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState, markCompacted } from '../src/session.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
 import { tokenGoatHome } from '../src/disk_cache.js'
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
@@ -4186,5 +4186,90 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         expect(r5.message).toContain('Tried to read this file 4 times already')
       }
     })
+  })
+})
+
+// HAND-DERIVED: reproduces the scenario from the adversarial review of 7f5f700f -- the catch-all reread-count-deny at the bottom of the wasFileReadThisSession block gated only on size (rereadBytes >= reread_deny_min_bytes) OR fullReads >= 2, so a file touched only by a ranged read (fullReads stays 0) could still be denied on its first-ever whole-file read once it crossed the size threshold, even though the model never actually held the whole file before.
+describe('the size-based catch-all reread-count-deny requires a prior full read (finding 1)', () => {
+  it('does not deny a first whole-file read of a large file that was previously only read by range', () => {
+    pinProtectRecentReadsToZero()
+    const p = makeTmpFile('x'.repeat(60 * 1024))
+    // A ranged read (isFullRead: false) bumps readCount so wasFileReadThisSession is true, but must never count as a full read.
+    recordFileRead(normalizePath(p), false)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).not.toBe('deny')
+    unpinProtectRecentReadsToZero()
+  })
+
+  it('still denies a genuine 2nd whole-file read of a large file above the size threshold', () => {
+    pinProtectRecentReadsToZero()
+    const p = makeTmpFile('x'.repeat(60 * 1024))
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    unpinProtectRecentReadsToZero()
+  })
+})
+
+// HAND-DERIVED: reproduces the scenario from the adversarial review of 7f5f700f -- fullReadCount in hooks_read.ts was read raw off the session entry, ignoring compaction, unlike wasFileFullyReadThisSession's own lastFullReadAt >= _compactedAt check. Two full reads before compaction, then a single ranged read after compaction, must not accumulate into a "read 3 times" deny on the next whole-file read.
+describe('fullReads is scoped to reads since the last compaction (finding 2)', () => {
+  it('does not count full reads from before compaction toward the count-based deny', () => {
+    pinProtectRecentReadsToZero()
+    const p = makeTmpFile('small content')
+    const normalized = normalizePath(p)
+    // Two full reads recorded at a fixed, deliberately early timestamp, then compaction at a fixed later one -- explicit timestamps rather than Date.now() so the epoch boundary can never tie with either side.
+    importSessionState({
+      files: [{ path: normalized, readCount: 2, lastReadAt: 1000, fullReadCount: 2, lastFullReadAt: 1000, wasEdited: false, sizeBytes: 13 }],
+      hintsShown: [],
+      webFetches: [],
+      bashOutputs: [],
+      curlDownloads: [],
+    })
+    markCompacted(2000)
+    // A ranged read after compaction (real Date.now(), far past the fixed 2000 marker above) bumps readCount but is not a full read.
+    preReadHandler(readEventWithRange(p, 1, 5))
+    postReadHandler(readEventWithRange(p, 1, 5))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).not.toBe('deny')
+    unpinProtectRecentReadsToZero()
+  })
+})
+
+// HAND-DERIVED: reproduces the scenario from the adversarial review of 898d0c36 -- the repeated-range deny only fires when loadSnapshotDiff returns 'unchanged', but postReadHandler only snapshots doc/session-artifact/diffable-source files up to 256KB. A .log file is none of those, so an identical repeated range on it was never denied even with nothing changed on disk.
+describe('the repeated-range deny falls back to file identity when there is no snapshot (finding 4)', () => {
+  it('denies an identical repeated range on an unsnapshotted file when disk is unchanged', () => {
+    const p = path.join(os.tmpdir(), `tg-range-identity-${process.pid}-${Math.random().toString(36).slice(2)}.log`)
+    fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n'))
+    tmpFiles.push(p)
+
+    const r1 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [10, 30] }, sessionId: 'test' }))
+    expect(r1.hookType).not.toBe('deny')
+    postReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [10, 30] }, sessionId: 'test' }))
+
+    const r2 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [15, 25] }, sessionId: 'test' }))
+    expect(r2.hookType).toBe('deny')
+    if (r2.hookType === 'deny') {
+      expect(r2.message).toContain('Lines 15..25 of')
+      expect(r2.message).toContain('was already read this session')
+    }
+  })
+
+  it('passes the repeated range through once disk changes size/mtime after it was recorded', () => {
+    const p = path.join(os.tmpdir(), `tg-range-identity-changed-${process.pid}-${Math.random().toString(36).slice(2)}.log`)
+    fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n'))
+    tmpFiles.push(p)
+
+    const r1 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [10, 30] }, sessionId: 'test' }))
+    expect(r1.hookType).not.toBe('deny')
+    postReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [10, 30] }, sessionId: 'test' }))
+
+    // External write changes the file's size (and mtime) between the two reads.
+    fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n') + '\nextra line')
+
+    const r2 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [15, 25] }, sessionId: 'test' }))
+    expect(r2.hookType).not.toBe('deny')
   })
 })

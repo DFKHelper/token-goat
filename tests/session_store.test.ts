@@ -13,6 +13,7 @@ import {
   importSessionState,
   MAX_RANGES_PER_FILE,
   recordCurlDownload,
+  recordFileLineRange,
   recordFileRead,
   recordLargeFileHintPending,
   recordOutstandingAgentSpawn,
@@ -273,6 +274,31 @@ describe('concurrent readCount increments are not lost on merge (task #110)', ()
     const disk = JSON.parse(fs.readFileSync(sessionFile('sid-race'), 'utf8')) as SerializedSession
     const entry = disk.files.find((f) => f.path === normalized)
     expect(entry?.readCount).toBe(7)
+  })
+})
+
+// HAND-DERIVED: mirrors the readCount race test above (task #110) for fullReadCount, the counter hooks_read.ts's whole-file re-read denies gate on -- mergeFileEntry previously Math.max'd it, the same defect readCount's own merge had before the #110 fix.
+describe('concurrent fullReadCount increments are not lost on merge', () => {
+  it('sums two processes genuine full reads instead of collapsing them via Math.max', () => {
+    const filePath = path.join(tmpHome, 'shared-full.ts')
+    fs.writeFileSync(filePath, 'export const x = 1\n')
+    const normalized = normalizePath(filePath)
+    const baseline: SerializedSession = { ...empty(), files: [file(normalized, 100, { readCount: 5, fullReadCount: 5, lastFullReadAt: 100 })] }
+
+    // Process A: loads the shared baseline, records one genuine new full read, saves first.
+    importSessionState(baseline)
+    recordFileRead(filePath)
+    saveSessionState('sid-full-race')
+
+    // Process B: independently loads the SAME baseline, records its own genuine new full read, saves after A.
+    importSessionState(baseline)
+    recordFileRead(filePath)
+    saveSessionState('sid-full-race')
+
+    // Two distinct real full reads happened on top of a shared baseline of 5, so the correct total is 7. Math.max(a.fullReadCount, b.fullReadCount) collapses this to 6, silently losing process B's full read.
+    const disk = JSON.parse(fs.readFileSync(sessionFile('sid-full-race'), 'utf8')) as SerializedSession
+    const entry = disk.files.find((f) => f.path === normalized)
+    expect(entry?.fullReadCount).toBe(7)
   })
 })
 
@@ -773,6 +799,24 @@ describe('symbols_read (surgical-read tokens) persistence', () => {
 
     const entry = readSessionStateFile('sid-symbols-merge')?.files.find((f) => f.path.endsWith('foo.ts'))
     expect(entry?.symbols_read?.sort()).toEqual(['a', 'b'])
+  })
+})
+
+// HAND-DERIVED: found while dogfooding the built bundle for finding 4 (hooks_read.ts's no-snapshot repeated-range deny) -- asFileEntry whitelists fields by name when loading disk JSON, the same defect class symbols_read had above, and rangeFileIdentity was never added to that whitelist, so it survived within one process but was silently dropped on every save -> load round-trip, which every real hook invocation is (a fresh process each time). The bug was invisible to an in-memory-only unit test and only surfaced by actually spawning the built bundle twice against the same TOKEN_GOAT_HOME.
+describe('rangeFileIdentity persistence', () => {
+  it('preserves rangeFileIdentity across a save -> load round-trip', () => {
+    const filePath = path.join(tmpHome, 'range.ts')
+    fs.writeFileSync(filePath, 'export const x = 1\n')
+    importSessionState(empty())
+    recordFileRead(filePath)
+    recordFileLineRange(filePath, 10, 30)
+    saveSessionState('sid-range-identity')
+
+    const disk = readSessionStateFile('sid-range-identity')
+    const entry = disk?.files.find((f) => f.path.endsWith('range.ts'))
+    expect(entry?.rangeFileIdentity).toBeDefined()
+    expect(typeof entry?.rangeFileIdentity?.size).toBe('number')
+    expect(typeof entry?.rangeFileIdentity?.mtimeMs).toBe('number')
   })
 })
 
