@@ -31,10 +31,10 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { loadConfig } from '../src/config.js'
-import { closeDb } from '../src/db.js'
+import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import * as parserModule from '../src/parser.js'
-import { drainOnce, getDirtyPathsFor } from '../src/worker.js'
+import { drainOnce, getDirtyPathsFor, pendingEmbeddings } from '../src/worker.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
@@ -74,6 +74,41 @@ afterEach(() => {
 })
 
 describe('a path whose indexing failed is retried, not dropped', () => {
+  it.each([false, true])('retries a failed deletion with a bounded budget (permanent: %s)', async (permanent) => {
+    const target = normalizePath(path.join(DIR, 'deleted.ts'))
+    fs.writeFileSync(target, 'export function deletedSymbol() { return 1 }\n')
+    writeQueue(DIR, [target])
+    expect(drainOnce(DIR)).toBe(1)
+    await pendingEmbeddings()
+    const db = getDb(path.join(DIR, 'global.db'))
+    const symbols = () => db.prepare("SELECT name FROM symbols WHERE name = 'deletedSymbol'").all()
+    expect(symbols()).toEqual([{ name: 'deletedSymbol' }])
+    fs.unlinkSync(target)
+    // Fail inside the real deletion transaction, without replacing the default remover.
+    db.exec("CREATE TRIGGER fail_delete BEFORE DELETE ON symbols BEGIN SELECT RAISE(ABORT, 'delete unavailable'); END")
+    const healthy = normalizePath(path.join(DIR, 'healthy.ts'))
+    fs.writeFileSync(healthy, 'export function healthySymbol() { return 2 }\n')
+    writeQueue(DIR, [target, healthy])
+    expect(drainOnce(DIR)).toBe(1)
+    await pendingEmbeddings()
+    expect(db.prepare("SELECT name FROM symbols WHERE name = 'healthySymbol'").all()).toHaveLength(1)
+    expect(queuedNormalized(DIR)).toEqual([normalizePath(target)])
+    expect(symbols()).toHaveLength(1)
+    expect(errorLog(DIR)).toContain('removeFileFromIndex failed')
+    if (permanent) {
+      for (let cycle = 0; cycle < 6; cycle++) drainOnce(DIR)
+      expect(queuedNormalized(DIR)).toEqual([])
+      expect(errorLog(DIR).match(/giving up on/g)).toHaveLength(1)
+      expect(symbols()).toHaveLength(1)
+    } else {
+      db.exec('DROP TRIGGER fail_delete')
+      expect(drainOnce(DIR)).toBe(0)
+      expect(queuedNormalized(DIR)).toEqual([])
+      expect(symbols()).toEqual([])
+      expect(db.prepare('SELECT path FROM files WHERE path = ?').all(target)).toEqual([])
+    }
+  })
+
   it('requeues a readable file whose index attempt threw', () => {
     const target = path.join(DIR, 'busy.ts')
     fs.writeFileSync(target, 'export const x = 1\n')

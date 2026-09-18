@@ -9,7 +9,7 @@
  * neutraliser. The prompt is captured from the real `spawnSync` call the shipping path makes, so
  * what is asserted is what the backend would actually receive.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ChildProcess from 'node:child_process'
 import type * as IndexReader from '../src/index_reader.js'
@@ -18,8 +18,6 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof ChildProcess>()
   return {
     ...actual,
-    // `which`/`where.exe` must still answer, or runAsk degrades before ever building a prompt.
-    execFileSync: vi.fn(() => (process.platform === 'win32' ? 'C:\\Windows\\System32\\cmd.exe\n' : '/bin/echo\n')),
     spawnSync: vi.fn(() => ({ status: 0, stdout: 'answer', stderr: '', pid: 1, output: [], signal: null })),
   }
 })
@@ -65,8 +63,12 @@ describe('token-goat ask fences and redacts the snippets it sends to a backend',
   beforeEach(() => {
     vi.mocked(spawnSync).mockClear()
     vi.mocked(searchSymbolsFts).mockReturnValue([hostileHit()])
-    process.env['TOKEN_GOAT_ASK_BACKEND'] = 'echo'
+    // Backend discovery checks the filesystem; use a known executable on every platform.
+    // spawnSync stays mocked, so it only captures the prompt and never executes Node.
+    vi.stubEnv('TOKEN_GOAT_ASK_BACKEND', process.execPath)
   })
+
+  afterEach(() => vi.unstubAllEnvs())
 
   it('wraps the snippets in the untrusted-file fence', () => {
     const write = process.stdout.write.bind(process.stdout)

@@ -723,11 +723,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
 // Build the remove callback the drain loop uses by default: drop the index rows and embedding chunks for a path whose file has vanished from disk, reconciling deletions. A failure on one path is swallowed so a single bad delete never aborts the batch or crashes the drain loop.
 function makeRemover(dbPath: string): (absPath: string) => void {
   return (absPath) => {
-    try {
-      removeFileFromIndex(getDb(dbPath), absPath)
-    } catch {
-      // One failed delete must not abort the rest of the batch.
-    }
+    removeFileFromIndex(getDb(dbPath), absPath)
   }
 }
 
@@ -763,7 +759,15 @@ export function processDirtyBatch(
     if (isUnderBlockedRoot(p, blockedRoots)) continue
     // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever. fileIsAbsent, not fs.existsSync: existsSync answers false for a locked or permission-denied file exactly as it does for a missing one, so a file held open by an AV scanner or sitting behind a deny ACE would have had its symbols, references, sections and embedding chunks deleted while it was still on disk -- silently, and with no way back until something edited it again. That is the same class of transient failure the fingerprint branch immediately below already logs and requeues, so an unreadable file now falls through to it instead of being pruned.
     if (fileIsAbsent(p)) {
-      remove(p)
+      try {
+        remove(p)
+        clearRetryCount(path.join(dir, 'global.db'), p)
+      } catch (err) {
+        // A failed deletion leaves stale symbols just like a failed reindex. Keep it
+        // queued within the same retry budget, without blocking healthy batch entries.
+        appendWorkerErrorLog(dir, `${new Date().toISOString()} removeFileFromIndex failed for ${p}: ${extractErrorMessage(err)}\n`)
+        requeue(dir, p)
+      }
       continue
     }
     const sha = fingerprintFile(p)
