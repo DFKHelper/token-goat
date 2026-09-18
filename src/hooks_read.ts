@@ -24,7 +24,7 @@ import { displaySafePath, displaySafeText, normalizePath, toDisplayPath } from '
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges } from './session.js'
+import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges } from './session.js'
 import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
@@ -440,18 +440,6 @@ function scanCrossSessionManifests(
  * Returns `pass` otherwise.
  * Always records the read so the re-read hint fires on the next touch.
  */
-export function isNarrowViewRange(event: HookEvent): boolean {
-  if (event.toolName?.toLowerCase() !== 'view') return false
-  const vr = event.toolInput?.['view_range']
-  if (Array.isArray(vr) && vr.length >= 2) {
-    const s = Number(vr[0])
-    const e = Number(vr[1])
-    if (Number.isFinite(s) && Number.isFinite(e) && e >= s && e - s <= 50) {
-      return true
-    }
-  }
-  return false
-}
 
 // Grep's cost/relevance depends on its search pattern, not the file's total size or content —
 // re-scoping several Greps at the same path is a legitimate workflow, so Grep must never feed
@@ -460,7 +448,7 @@ export function isNarrowViewRange(event: HookEvent): boolean {
 // Grep on a file can never poison a subsequent single Read's count.
 function recordActualRead(event: HookEvent, filePath: string): void {
   if (event.toolName === 'Grep') return
-  recordFileRead(filePath)
+  recordFileRead(filePath, !readRequestedSliceWindow(event).isExplicitSlice)
 }
 
 function recordActualSlice(event: HookEvent, filePath: string): void {
@@ -730,7 +718,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (fileContent !== null) {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length >= 3) {
-        const alreadyRead = wasFileReadThisSession(normalized)
+        const alreadyRead = wasFileFullyReadThisSession(normalized)
         const { guidance, sectionsList } = formatHeadingTreeParts(headings, normalized)
         // Filter the hardcoded per-basename shortcut list down to headings that actually
         // exist in this file — otherwise a README missing e.g. 'API' or 'Getting Started'
@@ -870,7 +858,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     normalized.toLowerCase().includes('memory/memory.md') ||
     /[/\\]memory[/\\][^/\\]+\.md$/i.test(normalized)
   )
-  if (isMemoryMd && wasFileReadThisSession(normalized)) {
+  if (isMemoryMd && wasFileFullyReadThisSession(normalized)) {
     // Prefer the same unchanged/diff snapshot machinery the isDocDiffable block
     // further below uses, rather than the bare denial that says nothing about
     // whether the file actually changed. Reuses that block's exact message
@@ -946,7 +934,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   // Session artifact re-read dedup: tasks/<id>.output and tool-results/<id>.txt On first read of tasks/*.output, emit a proactive hint toward --tail/--grep. On re-reads (either type), inject a diff or "unchanged" denial using the same snapshot logic as doc files.
   if (isSessionArtifactFile(normalized)) {
-    if (wasFileReadThisSession(normalized)) {
+    if (wasFileFullyReadThisSession(normalized)) {
       if (wasFileTruncatedThisSession(normalized)) {
         recordActualRead(event, normalized)
         recordStat('session_hint', 0, 0)
@@ -1000,9 +988,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const isDocDiffable = /\.(md|mdx|markdown|rst|txt)$/i.test(basename)
   const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && isDiffableSource(basename)
   if (
-    !isNarrowViewRange(event) &&
     (isDocDiffable || isSourceDiffable) &&
-    wasFileReadThisSession(normalized) &&
+    wasFileFullyReadThisSession(normalized) &&
     !isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)
   ) {
     // Truncation takes priority: redirect to skeleton/surgical reads, gated on
@@ -1082,6 +1069,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
     const isSourceExt = isSourceExtension(basename)
+    // Whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on this, not on `reads`, which a slice bumps too.
+    const fullReads = entry?.fullReadCount ?? 0
 
     // Rank must be computed against session state as of the *last* read, before the read
     // below bumps this file's own lastReadAt -- otherwise every re-read would trivially rank
@@ -1155,7 +1144,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
       // Item 2.5: sequential line-range paging on source files and docs/XML (3+ slices read so far)
       const isPagingTracked = isSourceExt || /\.(md|mdx|markdown|rst|xml|dtsx|ampkg|xaml)$/i.test(basename)
-      if (!isNarrowViewRange(event) && isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3) {
+      if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3) {
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
         return denyOutput(
@@ -1190,8 +1179,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
 
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
-      // Sliced/ranged reads (carrying offset/limit) are surgical already and are left alone.
-      if (!window.isExplicitSlice && /\.(md|mdx|markdown|rst)$/i.test(basename)) {
+      // Sliced/ranged reads (carrying offset/limit) are surgical already and are left alone. Also requires a prior *whole-file* read (fullReads >= 1): a file touched only by narrow slices so far has never actually been read in full, so this unranged read is its first real full read, not a re-read.
+      if (!window.isExplicitSlice && fullReads >= 1 && /\.(md|mdx|markdown|rst)$/i.test(basename)) {
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-doc-deny')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
@@ -1199,8 +1188,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         )
       }
 
-      // Structured re-read denial: .json / .html files >= 8KB already read this session
-      if (!window.isExplicitSlice && /\.(json|jsonc|html|htm)$/i.test(basename) && rereadBytes >= 8192) {
+      // Structured re-read denial: .json / .html files >= 8KB already read this session (fullReads >= 1: same reasoning as the markdown branch above)
+      if (!window.isExplicitSlice && fullReads >= 1 && /\.(json|jsonc|html|htm)$/i.test(basename) && rereadBytes >= 8192) {
         const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
         return denyOutput(
@@ -1209,7 +1198,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-      if (!isNarrowViewRange(event) && isSourceExt && reads >= 2) {
+      if (isSourceExt && fullReads >= 2) {
         // read_count_deny carries the credit for this blocked read. Both it and session_hint
         // map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint
         // row here would double the same blocked bytes into the by_source rollup that
@@ -1229,7 +1218,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const contextHint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
-    if (!isNarrowViewRange(event) && config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
+    if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || fullReads >= 2)) {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
       return denyOutput(
@@ -1447,7 +1436,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   const shown = displaySafePath(normalized)
   const respText = extractReadOutput(event.raw)
   if (isTruncatedReadDelivery(event, respText)) {
-    markFileTruncated(normalized)
+    markFileTruncated(normalized, !readRequestedSliceWindow(event).isExplicitSlice)
   }
 
   // Snapshot doc file content so the next re-read can inject a diff instead of the full file.

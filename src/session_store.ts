@@ -165,6 +165,9 @@ function asFileEntry(raw: unknown): FileEntry | null {
     sizeBytes: o['sizeBytes'],
   }
   if (o['wasTruncated'] === true) entry = { ...entry, wasTruncated: true }
+  // Preserve the whole-file-read markers so a re-read's "unchanged since last read" denies survive a save -> load round-trip; without this a process boundary (every hook is a fresh process) silently drops them and a ranged-only read looks indistinguishable from a full one on the very next process, or vice versa.
+  if (typeof o['lastFullReadAt'] === 'number') entry = { ...entry, lastFullReadAt: o['lastFullReadAt'] }
+  if (typeof o['fullReadCount'] === 'number') entry = { ...entry, fullReadCount: o['fullReadCount'] }
   // Preserve the surgical-read tokens so compact.ts's symbolsBonus survives a save -> load round-trip; without this the field is silently dropped and the bonus is always zero.
   if (Array.isArray(o['symbols_read'])) {
     const symbols = (o['symbols_read'] as unknown[]).filter((s): s is string => typeof s === 'string')
@@ -343,6 +346,10 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
     sizeBytes: newest.sizeBytes,
   }
   if (a.wasTruncated || b.wasTruncated) merged = { ...merged, wasTruncated: true }
+  const lastFullReadAt = Math.max(a.lastFullReadAt ?? 0, b.lastFullReadAt ?? 0)
+  if (lastFullReadAt > 0) merged = { ...merged, lastFullReadAt }
+  const fullReadCount = Math.max(a.fullReadCount ?? 0, b.fullReadCount ?? 0)
+  if (fullReadCount > 0) merged = { ...merged, fullReadCount }
   // Union the surgical-read tokens from both views so a concurrent process's
   // symbol reads are not clobbered by whichever save lands last.
   const symbols = Array.from(new Set([...(a.symbols_read ?? []), ...(b.symbols_read ?? [])]))

@@ -33,6 +33,8 @@ import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.
 import { summarize, SOURCE_HINT } from '../src/stats.js'
 import { PER_FILE_COUNTERFACTUAL_CEILING } from '../src/util.js'
 import { globalDbPath } from '../src/constants.js'
+import { normalizePayload } from '../src/hooks_cli.js'
+import { buildEvent } from '../src/relay.js'
 import { getDb } from '../src/db.js'
 import { indexFileSync } from '../src/parser.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -3814,15 +3816,49 @@ describe('denied ranged Read credits only the requested window, not the whole fi
 
     const beforeHintBytes = summarize(30).by_source[SOURCE_HINT]?.bytes_saved ?? 0
 
-    // 3rd read asks for a 3-line window only.
-    const r3 = preReadHandler(readEventWithRange(p, 1, 3))
+    // 3rd read asks for a 60-line window; the count-based deny fires regardless of window size, and this test asserts that whatever it credits is scoped to the window, not the whole file.
+    const r3 = preReadHandler(readEventWithRange(p, 1, 60))
     expect(r3.hookType).toBe('deny')
 
     const afterHintBytes = summarize(30).by_source[SOURCE_HINT]?.bytes_saved ?? 0
     const credited = afterHintBytes - beforeHintBytes
-    // Must-not-happen: crediting anywhere near the whole file for a 3-line request.
-    expect(credited, 'a 3-line ranged Read deny must not credit anywhere near the 50KB file').toBeLessThan(fullBytes / 20)
+    // Must-not-happen: crediting anywhere near the whole file for a 60-line request.
+    expect(credited, 'a 60-line ranged Read deny must not credit anywhere near the 50KB file').toBeLessThan(fullBytes / 20)
     expect(credited).toBeGreaterThan(0)
+  })
+})
+
+// HAND-DERIVED: preToolUse/postToolUse call pairs constructed directly against the hook API this file already tests (readEventWithRange/readEvent/preReadHandler/postReadHandler); not sourced from a captured transcript.
+describe('a ranged read does not arm the whole-file "unchanged since last read" deny (defect A)', () => {
+  it('two disjoint ranged Reads followed by an unranged Read of the same unchanged file is not denied', () => {
+    pinProtectRecentReadsToZero()
+    const p = makeTmpMultilineFileWithExt(5000, 'ts')
+
+    const r1 = preReadHandler(readEventWithRange(p, 1, 5))
+    expect(r1.hookType).not.toBe('deny')
+    postReadHandler(readEventWithRange(p, 1, 5))
+
+    const r2 = preReadHandler(readEventWithRange(p, 20, 5))
+    expect(r2.hookType).not.toBe('deny')
+    postReadHandler(readEventWithRange(p, 20, 5))
+
+    // Neither ranged read counted as "the whole file was already read", so this genuinely-first
+    // full read must go through, not get denied as "unchanged since last read" (the model has
+    // only ever seen 10 lines, never the whole file).
+    const r3 = preReadHandler(readEvent(p))
+    expect(r3.hookType).not.toBe('deny')
+  })
+
+  it('two full Reads of the same unchanged file still deny on the second (control, unaffected by the fix)', () => {
+    pinProtectRecentReadsToZero()
+    const p = makeTmpMultilineFileWithExt(5000, 'ts')
+
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).not.toBe('deny')
+    postReadHandler(readEvent(p))
+
+    const r2 = preReadHandler(readEvent(p))
+    expect(r2.hookType).toBe('deny')
   })
 })
 
@@ -4061,34 +4097,36 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
-    it('exempts small view_range slices (<=50 lines) from repeat-read denial counter', () => {
+    // FORMAT-DERIVED: raw tool_name 'view' + tool_input.path/view_range is Copilot CLI's actual wire shape, per src/bridges/copilot_cli.ts's remapToolInput (the real bridge's view_range -> offset/limit conversion) and hooks_cli.ts's COPILOT_CLI_TOOL_NAME_MAP ('view' -> 'Read'). Driven through normalizePayload(..., 'copilot_cli') + buildEvent, the same normalization the real hook entry point (relay.ts's relayInProcess) applies, rather than handed to preReadHandler with a raw toolName: 'view' that no real payload reaching this file ever carries (isNarrowViewRange's dead-code trap).
+    function copilotViewEvent(p: string, sessionId: string, start: number, end: number): HookEvent {
+      const raw = { tool_name: 'view', tool_input: { path: p, view_range: [start, end] }, session_id: sessionId }
+      return buildEvent('pre_tool_use', normalizePayload(raw, 'copilot_cli'))
+    }
+
+    it('two disjoint Copilot view_range slices never hand over the whole file, so a later unranged read is not denied as unchanged', () => {
+      pinProtectRecentReadsToZero()
       const p = path.join(os.tmpdir(), `tg-narrow-slice-${process.pid}-${Math.random().toString(36).slice(2)}.py`)
       fs.writeFileSync(p, Array.from({ length: 300 }, (_, i) => `def method_${i}():\n    return ${i}\n`).join('\n'))
       tmpFiles.push(p)
+      const sessionId = `test-copilot-narrow-${process.pid}-${Math.random().toString(36).slice(2)}`
 
-      // Slice 1: [1, 25] (24 lines <= 50)
-      const r1 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 25] }, sessionId: 'test' }))
+      // Slice 1: [1, 25]
+      const r1 = preReadHandler(copilotViewEvent(p, sessionId, 1, 25))
       expect(r1.hookType).not.toBe('deny')
 
-      // Slice 2: [26, 50] (24 lines <= 50)
-      const r2 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [26, 50] }, sessionId: 'test' }))
+      // Slice 2: [26, 50], disjoint from slice 1
+      const r2 = preReadHandler(copilotViewEvent(p, sessionId, 26, 50))
       expect(r2.hookType).not.toBe('deny')
 
-      // Slice 3: [51, 75] (24 lines <= 50)
-      const r3 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [51, 75] }, sessionId: 'test' }))
-      expect(r3.hookType).not.toBe('deny')
-
-      // Slice 4: [76, 100] (24 lines <= 50) - without exemption, 4th slice would be hard-denied by sequential paging or read count
-      const r4 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [76, 100] }, sessionId: 'test' }))
-      expect(r4.hookType).not.toBe('deny')
-
-      // Slice 5: [101, 125] (24 lines <= 50)
-      const r5 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [101, 125] }, sessionId: 'test' }))
-      expect(r5.hookType).not.toBe('deny')
-
-      // Re-reading identical lines that were already served should still be denied
-      const rRedundant = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 25] }, sessionId: 'test' }))
+      // Re-reading identical lines that were already served is still denied (exact-range-overlap dedup, unaffected by this fix)
+      const rRedundant = preReadHandler(copilotViewEvent(p, sessionId, 1, 25))
       expect(rRedundant.hookType).toBe('deny')
+
+      // Neither of the two disjoint slices above ever handed over the whole file, so a later
+      // unranged (whole-file) read must not be denied as an "already read"/"unchanged" re-read.
+      const rawFull = { tool_name: 'view', tool_input: { path: p }, session_id: sessionId }
+      const rFull = preReadHandler(buildEvent('pre_tool_use', normalizePayload(rawFull, 'copilot_cli')))
+      expect(rFull.hookType).not.toBe('deny')
     })
 
     it('caps isProtectedRecentRead so files read 4+ times cannot loop indefinitely in small sessions', () => {

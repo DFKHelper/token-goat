@@ -38,6 +38,10 @@ export interface FileEntry {
   readonly readCount: number
   /** Unix-ms timestamp of the most recent read. */
   readonly lastReadAt: number
+  /** Unix-ms timestamp of the most recent whole-file (unranged) read, or undefined if every read of this file so far carried an explicit offset/limit/view-range slice. A ranged read never means the model has seen the whole file, so the whole-file "unchanged since last read" denies must check this instead of `lastReadAt`, which a slice bumps too (see `wasFileFullyReadThisSession`). */
+  readonly lastFullReadAt?: number
+  /** Number of whole-file (unranged) reads this session, as opposed to `readCount`, which also counts offset/limit/view-range slices. The count-based "you've re-read this whole file N times" denies must gate on this, not `readCount`: a file touched only via a handful of narrow slices has never actually been re-read in full and must not trip a deny meant for repeated whole-file reads. */
+  readonly fullReadCount?: number
   /** True once Write/Edit fired on this file this session. */
   readonly wasEdited: boolean
   /** File size in bytes captured at the last read (0 if unreadable). */
@@ -188,8 +192,10 @@ function resolveFilesKey(normalized: string): string {
  *
  * First read creates an entry; subsequent reads increment `readCount` and
  * refresh `lastReadAt` / `sizeBytes` while preserving the `wasEdited` flag.
+ *
+ * `isFullRead` (default true) marks whether this particular read carried no offset/limit/view-range slice -- callers passing an explicit slice window must pass `false` so `lastFullReadAt` (and therefore `wasFileFullyReadThisSession`) stays untouched: a ranged read still bumps `readCount`/`lastReadAt` for the count-based and range-level dedup that legitimately treats it as a read, but must never arm a whole-file "unchanged since last read" deny that assumes the model has seen content it was never sent.
  */
-export function recordFileRead(filePath: string): void {
+export function recordFileRead(filePath: string, isFullRead: boolean = true): void {
   const normalized = normalizePath(filePath)
   const key = resolveFilesKey(normalized)
   const now = Date.now()
@@ -202,6 +208,7 @@ export function recordFileRead(filePath: string): void {
       lastReadAt: now,
       wasEdited: false,
       sizeBytes: size,
+      ...(isFullRead ? { lastFullReadAt: now, fullReadCount: 1 } : {}),
     })
     return
   }
@@ -210,6 +217,7 @@ export function recordFileRead(filePath: string): void {
     readCount: prev.readCount + 1,
     lastReadAt: now,
     sizeBytes: size,
+    ...(isFullRead ? { lastFullReadAt: now, fullReadCount: (prev.fullReadCount ?? 0) + 1 } : {}),
   })
 }
 
@@ -306,6 +314,19 @@ export function getSessionFiles(): ReadonlyMap<string, FileEntry> {
 export function wasFileReadThisSession(filePath: string): boolean {
   const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
   return entry !== undefined && entry.readCount > 0 && entry.lastReadAt >= _compactedAt
+}
+
+/**
+ * True if `filePath` had at least one whole-file (unranged) read this session that is still in
+ * context (same compaction-epoch rule as {@link wasFileReadThisSession}). A file read only via
+ * offset/limit/view-range slices returns false here even though `wasFileReadThisSession` returns
+ * true for it -- the model has only ever seen the requested windows, never the whole file, so any
+ * deny that claims "unchanged since last read" of the *whole file* must gate on this, not on
+ * `wasFileReadThisSession`.
+ */
+export function wasFileFullyReadThisSession(filePath: string): boolean {
+  const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
+  return entry !== undefined && entry.lastFullReadAt !== undefined && entry.lastFullReadAt >= _compactedAt
 }
 
 /** Unix-ms of the last context compaction this session, or 0 if none. See `_compactedAt`. */
@@ -728,21 +749,26 @@ export function getFileServedOutputs(filePath: string): readonly string[] {
  * there costing more than it saves. Session-artifact files take a separate
  * branch with their own recall message.
  */
-export function markFileTruncated(filePath: string): void {
+export function markFileTruncated(filePath: string, isFullRead: boolean = true): void {
   const normalized = normalizePath(filePath)
   const key = resolveFilesKey(normalized)
   const prev = _files.get(key)
+  const now = Date.now()
   if (prev === undefined) {
     _files.set(key, {
       path: key,
       readCount: 1,
-      lastReadAt: Date.now(),
+      lastReadAt: now,
       wasEdited: false,
       sizeBytes: fileSize(normalized),
       wasTruncated: true,
+      ...(isFullRead ? { lastFullReadAt: now, fullReadCount: 1 } : {}),
     })
     return
   }
+  // An existing entry already went through recordFileRead for this same read (pre_tool_use runs
+  // before post_tool_use lands here), so readCount/lastFullReadAt/fullReadCount are already
+  // correct -- only the truncation flag is new information here.
   _files.set(key, { ...prev, wasTruncated: true })
 }
 
