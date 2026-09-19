@@ -112,6 +112,10 @@ let _fileLineRanges = new Map<string, Array<[number, number]>>()
 // path -> bash-output cache ids whose body this session was actually shown for that file, oldest first. Distinct from `_fileLineRanges`, which stores only line numbers: numbers cannot prove a later read's bytes were already served, because a change token-goat never observed (an external editor, a pull in another terminal) leaves the recorded range in place while the lines behind it move. These ids point at the served text itself, so containment can be decided on the bytes and a stale entry simply fails to match.
 let _fileServedOutputs = new Map<string, string[]>()
 
+// Snapshots of the two maps above at hydration time, so `consumedFileLineRangeKeys`/`consumedFileServedOutputKeys` can tell "this process explicitly cleared this file's history" (recordFileEdit) apart from "this process never touched it" -- same removal-is-not-a-union-op reason as `_curlDownloadsAtLoad`: without this, session_store.ts's plain per-file union would resurrect an edited file's pre-edit ranges/served ids straight off a stale disk read.
+let _fileLineRangesAtLoad = new Map<string, Array<[number, number]>>()
+let _fileServedOutputsAtLoad = new Map<string, string[]>()
+
 // Unix-ms of the most recent context compaction (0 = never compacted this session). After Claude Code compacts, the model's context no longer holds any file content it read earlier, so every read whose `lastReadAt` predates this stamp must be treated as NOT read -- see `wasFileReadThisSession`. Stored as a monotonically increasing scalar rather than resetting each entry's `readCount` to 0 because session_store.ts's `mergeFileEntry` reconciles `readCount` as "freshest disk count + this process's own increments since load", so an in-memory reset to 0 contributes a 0 delta and the disk value is handed straight back -- the reset would be silently resurrected across concurrent hook processes. A max-merged scalar has no such resurrection path.
 let _compactedAt = 0
 
@@ -564,6 +568,24 @@ export function consumedCurlDownloadKeys(): string[] {
   return consumed
 }
 
+/** Folded file paths present at load but cleared (consumed by {@link recordFileEdit}) since -- tombstones for session_store.ts's merge, same removal-is-not-a-union-op reason as {@link consumedCurlDownloadKeys}: an edit's per-file deletion must actually stick instead of being resurrected by a plain disk/mem union. */
+export function consumedFileLineRangeKeys(): string[] {
+  const consumed: string[] = []
+  for (const key of _fileLineRangesAtLoad.keys()) {
+    if (!_fileLineRanges.has(key)) consumed.push(key)
+  }
+  return consumed
+}
+
+/** Same as {@link consumedFileLineRangeKeys}, for the served-output index {@link recordFileEdit} also clears on edit. */
+export function consumedFileServedOutputKeys(): string[] {
+  const consumed: string[] = []
+  for (const key of _fileServedOutputsAtLoad.keys()) {
+    if (!_fileServedOutputs.has(key)) consumed.push(key)
+  }
+  return consumed
+}
+
 /** Cap on retained line ranges per file - bounds memory if one file is paged many times. */
 export const MAX_RANGES_PER_FILE = 64
 
@@ -777,7 +799,9 @@ export function importSessionState(s: SerializedSession): void {
   _curlDownloads = new Map(s.curlDownloads)
   _curlDownloadsAtLoad = new Map(_curlDownloads)
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
+  _fileLineRangesAtLoad = new Map(_fileLineRanges)
   _fileServedOutputs = new Map(s.fileServedOutputs ?? [])
+  _fileServedOutputsAtLoad = new Map(_fileServedOutputs)
   _cliReads = new Set(s.cliReads ?? [])
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
   _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
@@ -802,7 +826,9 @@ registerReset(() => {
   _curlDownloads = new Map()
   _curlDownloadsAtLoad = new Map()
   _fileLineRanges = new Map()
+  _fileLineRangesAtLoad = new Map()
   _fileServedOutputs = new Map()
+  _fileServedOutputsAtLoad = new Map()
   _cliReads = new Set()
   _pendingLargeFileHints = new Map()
   _pendingLargeFileHintsAtLoad = new Map()

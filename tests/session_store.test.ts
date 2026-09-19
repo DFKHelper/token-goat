@@ -13,8 +13,10 @@ import {
   importSessionState,
   MAX_RANGES_PER_FILE,
   recordCurlDownload,
+  recordFileEdit,
   recordFileLineRange,
   recordFileRead,
+  recordFileServedOutput,
   recordLargeFileHintPending,
   recordOutstandingAgentSpawn,
   recordSymbolRead,
@@ -817,6 +819,45 @@ describe('rangeFileIdentity persistence', () => {
     expect(entry?.rangeFileIdentity).toBeDefined()
     expect(typeof entry?.rangeFileIdentity?.size).toBe('number')
     expect(typeof entry?.rangeFileIdentity?.mtimeMs).toBe('number')
+  })
+})
+
+// Bug: recordFileEdit clears a file's line-range/served-output history in memory (an edit
+// invalidates both), but mergeLineRanges/mergeServedOutputs did a plain per-file union against
+// whatever was already on disk, so the very next save resurrected the cleared entries straight off
+// the disk copy written before the edit -- the clearing never actually persisted. Simulates two
+// writer processes through the real save path: the first process records ranges/served output for
+// two files and saves; the second process loads that disk state (as a fresh process would), edits
+// one of the two files, and saves again. The edited file's history must be gone from disk while the
+// other file's, which no process touched after the first save, must survive untouched.
+describe('recordFileEdit clearing survives the merge-on-save', () => {
+  it('drops an edited file\'s line ranges and served outputs from disk instead of resurrecting them from a stale read', () => {
+    const editedFile = path.join(tmpHome, 'edited.ts')
+    const untouchedFile = path.join(tmpHome, 'untouched.ts')
+    fs.writeFileSync(editedFile, 'export const a = 1\n')
+    fs.writeFileSync(untouchedFile, 'export const b = 1\n')
+
+    // Writer 1: records history for both files, saves.
+    importSessionState(empty())
+    recordFileLineRange(editedFile, 1, 10)
+    recordFileServedOutput(editedFile, 'id-before-edit')
+    recordFileLineRange(untouchedFile, 1, 5)
+    recordFileServedOutput(untouchedFile, 'id-untouched')
+    saveSessionState('sid-edit-clear')
+
+    // Writer 2: a fresh process loads the same disk state, edits `editedFile`, saves again.
+    const diskAfterWrite1 = readSessionStateFile('sid-edit-clear')
+    importSessionState({ ...empty(), ...diskAfterWrite1 })
+    recordFileEdit(editedFile)
+    saveSessionState('sid-edit-clear')
+
+    const diskAfterEdit = readSessionStateFile('sid-edit-clear')
+    const editedKey = normalizePath(editedFile).toLowerCase()
+    const untouchedKey = normalizePath(untouchedFile).toLowerCase()
+    expect((diskAfterEdit?.fileLineRanges ?? []).some(([f]) => f.toLowerCase() === editedKey)).toBe(false)
+    expect((diskAfterEdit?.fileServedOutputs ?? []).some(([f]) => f.toLowerCase() === editedKey)).toBe(false)
+    expect((diskAfterEdit?.fileLineRanges ?? []).find(([f]) => f.toLowerCase() === untouchedKey)?.[1]).toEqual([[1, 5]])
+    expect((diskAfterEdit?.fileServedOutputs ?? []).find(([f]) => f.toLowerCase() === untouchedKey)?.[1]).toEqual(['id-untouched'])
   })
 })
 

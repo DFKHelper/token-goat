@@ -12,7 +12,7 @@ import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, saniti
 import { normalizePath } from './paths.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { redactSecrets } from './secret_redact.js'
-import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -424,11 +424,16 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   // Compaction epoch is max-wins: it only ever moves forward, so whichever side saw the most recent compaction is authoritative and a concurrent process that predates the stamp can never roll it back. This is exactly why session.ts records an epoch instead of resetting each entry's readCount -- a readCount reset merges to a no-op here (see mergeFileEntry), a max-merged scalar does not.
   const compactedAt = Math.max(disk.compactedAt ?? 0, mem.compactedAt ?? 0)
   // Sed line ranges carry no timestamp of their own, so they cannot be filtered per-range against the epoch the way FileEntry.lastReadAt can. Instead drop the ranges of any side that had not yet observed the winning epoch: they were recorded by a process whose view predates the compaction, so they may describe content the model no longer holds. Erring toward dropping only costs a full read that was already going to be correct; keeping them would keep serving "you already saw lines N-M" against invisible content.
-  const diskRanges = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileLineRanges ?? []) : []
+  const rawDiskRanges = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileLineRanges ?? []) : []
   const memRanges = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileLineRanges ?? []) : []
   // Same epoch filter, same reason: a served body recorded before the winning compaction may no longer be in the model's context, so it must not justify withholding a later read of that file.
-  const diskServed = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileServedOutputs ?? []) : []
+  const rawDiskServed = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileServedOutputs ?? []) : []
   const memServed = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileServedOutputs ?? []) : []
+  // recordFileEdit clears a single file's ranges/served-output history in-memory (an edit invalidates both), but that per-file deletion carries no epoch of its own, so the compaction filter above cannot see it -- an unrelated disk read from before the edit would otherwise resurrect the exact entry this process just cleared. Drop those files from the disk side before the union so the clearing actually sticks.
+  const clearedRangeFiles = new Set(consumedFileLineRangeKeys())
+  const clearedServedFiles = new Set(consumedFileServedOutputKeys())
+  const diskRanges = rawDiskRanges.filter(([path]) => !clearedRangeFiles.has(path))
+  const diskServed = rawDiskServed.filter(([path]) => !clearedServedFiles.has(path))
   return {
     files: Array.from(byPath.values()),
     hintsShown: Array.from(new Set([...disk.hintsShown, ...mem.hintsShown])),
