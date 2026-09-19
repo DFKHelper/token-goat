@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
 import { classifyTreeSitterLoadError } from '../src/cli_doctor.js'
 import { missingTreeSitterGrammarPackages, setTreeSitterCoreForTesting } from '../src/parser.js'
 import { createRequire } from 'node:module'
@@ -695,6 +695,36 @@ describe('cli_doctor', () => {
 
       const result = checkSymbolBodySize(dbPath)
       expect(result.status).toBe('warn')
+    })
+
+    // Regression: the oversized-DB warning named a total size with no way to act on it -- it
+    // never said which table held the bytes, so 'reclaim-index' vs 'project prune' vs leaving
+    // it alone was a guess. HAND-DERIVED: rows are inserted directly by this test, and the
+    // expected byte counts are the same LENGTH() sum the fixture itself can be recomputed from.
+    describe('dbCategoryBreakdown', () => {
+      it('names the dominant category first, ahead of smaller ones', () => {
+        const dbPath = path.join(tempDir, 'global.db')
+        const db = getDb(dbPath)
+        const bigBody = 'x'.repeat(500_000)
+        db.prepare(
+          'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ).run('src/big.ts', 'big', 'function', 1, 2, bigBody, '')
+        db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)').run('src/small.ts', 'small', 1, 1, 'tiny context')
+        db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)').run('src/small.ts', 1, 2, 'tiny chunk', 'code')
+
+        const shares = dbCategoryBreakdown(dbPath)
+        expect(shares[0].name).toBe('symbol bodies')
+        expect(shares[0].bytes).toBe(bigBody.length)
+        expect(shares[0].command).toContain('reclaim-index --rebuild')
+        expect(shares.map((s) => s.name)).toContain('refs')
+        expect(shares.map((s) => s.name)).toContain('chunk text')
+      })
+
+      it('omits a category with no bytes stored', () => {
+        const dbPath = path.join(tempDir, 'global.db')
+        getDb(dbPath) // creates the schema with every table empty
+        expect(dbCategoryBreakdown(dbPath)).toEqual([])
+      })
     })
 
     it('does not fail the whole doctor run when the DB is unreadable', () => {

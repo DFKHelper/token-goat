@@ -47,4 +47,16 @@ describe('oversizeDbMessage', () => {
   it('sends a file that is largely free pages to reclaim-index', () => {
     expect(oversizeDbMessage('/data/global.db', 2000 * MB, 900 * MB, 0)).toContain("'token-goat reclaim-index' returns the 900 MB")
   })
+
+  // HAND-DERIVED: category byte counts are constructed by this test, not read off the message's own formatter.
+  it('names the dominant category and its shrink command before the smaller ones', () => {
+    const msg = oversizeDbMessage('/data/global.db', 2250 * MB, 1.3 * MB, 0, [
+      { name: 'embedding vectors', bytes: 320 * MB, command: "'token-goat reclaim-index --rebuild' drops them" },
+      { name: 'symbol bodies', bytes: 160 * MB, command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
+      { name: 'stats detail', bytes: 10 * MB, command: 'ages out on its own (180-day retention)' },
+    ])
+    expect(msg).toContain('embedding vectors 320 MB')
+    expect(msg.indexOf('embedding vectors')).toBeLessThan(msg.indexOf('symbol bodies'))
+    expect(msg).toContain("reclaim-index --rebuild")
+  })
 })

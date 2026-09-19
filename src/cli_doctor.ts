@@ -111,15 +111,70 @@ export function freelistBytes(header: Buffer): number {
   return (rawPageSize === 1 ? 65536 : rawPageSize) * header.readUInt32BE(36)
 }
 
+/** One row category's measured byte share of an oversized global.db, and the command that actually shrinks it. */
+export interface CategoryByteShare {
+  name: string
+  bytes: number
+  command: string
+}
+
+// Columns actually worth summing: everything else in these tables is fixed-width integers that
+// cannot explain a multi-GB file. `LENGTH()` on a whole table is a full scan, but measured at
+// 0.3-0.5s each against a live 2.4 GB / 1.87M-row global.db (well under doctor's own gating,
+// which only runs this when the size warning has already fired), so no sampling is needed.
+const CATEGORY_COLUMNS: Array<{ name: string; table: string; column: string; command: string }> = [
+  { name: 'symbol bodies', table: 'symbols', column: 'body', command: "'token-goat reclaim-index --rebuild' drops and re-derives them under the current parser's size cap" },
+  { name: 'refs', table: 'refs', column: 'context', command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
+  { name: 'chunk text', table: 'chunks', column: 'text', command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
+  { name: 'stats detail', table: 'stats', column: 'detail', command: 'ages out on its own (180-day retention) -- no manual command needed' },
+]
+// float[384], the fixed dimension chunk_vectors is created with in db.ts -- a per-row byte cost with no variable-length column for LENGTH() to sum.
+const VECTOR_BYTES_PER_ROW = 384 * 4
+
+/** Measures where an oversized global.db's bytes actually are, one row per non-empty category, so the warning below can name which table dominates instead of just the total. Fails soft per category (a missing table, or sqlite-vec not loaded for `chunk_vectors`, drops just that entry) since this only runs after the size warning has already fired. */
+export function dbCategoryBreakdown(dbPath: string): CategoryByteShare[] {
+  const db = getDb(dbPath)
+  const shares: CategoryByteShare[] = []
+  for (const cat of CATEGORY_COLUMNS) {
+    try {
+      const row = db.prepare(`SELECT COALESCE(SUM(LENGTH(${cat.column})), 0) as bytes FROM ${cat.table}`).get() as { bytes: number }
+      if (row.bytes > 0) shares.push({ name: cat.name, bytes: row.bytes, command: cat.command })
+    } catch {
+      // table missing on an older/partial schema -- skip just this category
+    }
+  }
+  try {
+    const row = db.prepare('SELECT COUNT(*) as n FROM chunk_vectors').get() as { n: number }
+    if (row.n > 0) {
+      shares.push({
+        name: 'embedding vectors',
+        bytes: row.n * VECTOR_BYTES_PER_ROW,
+        command: "'token-goat reclaim-index --rebuild' drops them (set indexing.embeddings_enabled = false first so they don't regrow)",
+      })
+    }
+  } catch {
+    // sqlite-vec not loaded -- no vector table to measure
+  }
+  return shares.sort((a, b) => b.bytes - a.bytes)
+}
+
 /** The oversized-index warning, naming only what is measurably there to recover: sending someone to VACUUM a file with no free pages has them wait on a rewrite of gigabytes that frees nothing. */
-export function oversizeDbMessage(dbPath: string, sizeBytes: number, freeBytes: number, tempRows: number): string {
+export function oversizeDbMessage(dbPath: string, sizeBytes: number, freeBytes: number, tempRows: number, categories: CategoryByteShare[] = []): string {
   const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024))
   const advice: string[] = []
   if (freeBytes >= sizeBytes / 10) advice.push(`'token-goat reclaim-index' returns the ${mb(freeBytes)} MB of it that is free pages`)
   if (tempRows > 0) advice.push(`'token-goat project prune' removes ${countNoun(tempRows, 'scratch file')} indexed under the OS temp dir`)
   const head = `global.db is ${mb(sizeBytes)} MB at ${displaySafeText(dbPath)} (larger than recommended). `
-  if (advice.length > 0) return `${head}${advice.join('; ')}.`
-  return `${head}Only ${mb(freeBytes)} MB of it is free pages and none of it is temp-dir scratch, so it is live index data that neither 'reclaim-index' nor 'project prune' will shrink.`
+  const totalCategoryBytes = categories.reduce((sum, c) => sum + c.bytes, 0)
+  const breakdown =
+    totalCategoryBytes > 0
+      ? ` Where it went: ${categories
+          .slice(0, 3)
+          .map((c) => `${c.name} ${mb(c.bytes)} MB (${Math.round((c.bytes / totalCategoryBytes) * 100)}%) -- ${c.command}`)
+          .join('; ')}.`
+      : ''
+  if (advice.length > 0) return `${head}${advice.join('; ')}.${breakdown}`
+  return `${head}Only ${mb(freeBytes)} MB of it is free pages and none of it is temp-dir scratch, so it is live index data that neither 'reclaim-index' nor 'project prune' will shrink.${breakdown}`
 }
 
 /**
@@ -166,7 +221,13 @@ export function checkDbExists(dataDir: string): DoctorResult {
     } catch {
       // an unreadable files table only loses this half of the advice
     }
-    return { name: 'Database', status: 'warn', message: oversizeDbMessage(dbPath, sizeBytes, freelistBytes(headerBytes), tempRows) }
+    let categories: CategoryByteShare[] = []
+    try {
+      categories = dbCategoryBreakdown(dbPath)
+    } catch {
+      // measuring the breakdown only loses that half of the message, not the warning itself
+    }
+    return { name: 'Database', status: 'warn', message: oversizeDbMessage(dbPath, sizeBytes, freelistBytes(headerBytes), tempRows, categories) }
   }
   // Name the resolved path even when healthy. The warn branch above already does, and the asymmetry actively misleads: TOKEN_GOAT_HOME and the data dir resolve independently, so exporting both to point at a scratch directory does NOT guarantee a command reads the isolated index. Without the path here, a dogfood run against the real global index is indistinguishable from an isolated one, and "which index am I actually on" is the first question worth answering when a command returns surprising output.
   return {
