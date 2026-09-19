@@ -1548,7 +1548,7 @@ async function cmdCompress(
       return
     }
     const maxTokens = opts.maxTokens !== undefined ? requireNonNegativeInt('--max-tokens', opts.maxTokens) : 0
-    process.exitCode = bashRunner.run(command, {
+    process.exitCode = await bashRunner.run(command, {
       filterName: opts.filter,
       timeout: parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
       maxTokens,

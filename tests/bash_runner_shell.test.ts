@@ -16,9 +16,9 @@ import { resolveWindowsBash } from '../src/shell.js'
 
 describe('compress runs the inner command under bash on Windows', () => {
   // POSIX cannot regress this way, and with no Git-Bash installed the wrapper is absent rather than broken: both are skips, so the run reports them on the skip counter instead of as a pass for a body that asserted nothing.
-  it.skipIf(process.platform !== 'win32' || resolveWindowsBash() === null)('evaluates a bash-only arithmetic expansion instead of echoing it literally', () => {
+  it.skipIf(process.platform !== 'win32' || resolveWindowsBash() === null)('evaluates a bash-only arithmetic expansion instead of echoing it literally', async () => {
     let captured = ''
-    const exit = bashRunner.run('echo answer=$((6*7))', {
+    const exit = await bashRunner.run('echo answer=$((6*7))', {
       filterName: 'generic',
       writeStdout: (s) => {
         captured += s
@@ -32,9 +32,9 @@ describe('compress runs the inner command under bash on Windows', () => {
   })
 
   // CAPTURE: reproduced directly against Node's spawnSync on this machine — spawnSync(cmd, { shell: bashPath }) drops one backslash from a literal pair (output "p\q") while spawnSync(bashPath, ['-c', cmd]) (this fix) preserves both (output "p\\q"), because passing the command through spawnSync's `shell` option makes Node re-quote it with Windows argv rules before MSYS re-parses it.
-  it.skipIf(process.platform !== 'win32' || resolveWindowsBash() === null)('preserves a literal backslash pair instead of dropping one through Windows argv re-quoting', () => {
+  it.skipIf(process.platform !== 'win32' || resolveWindowsBash() === null)('preserves a literal backslash pair instead of dropping one through Windows argv re-quoting', async () => {
     let captured = ''
-    const exit = bashRunner.run("printf '%s' 'p\\\\q'", {
+    const exit = await bashRunner.run("printf '%s' 'p\\\\q'", {
       filterName: 'generic',
       writeStdout: (s) => {
         captured += s

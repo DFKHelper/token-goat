@@ -73,7 +73,7 @@ afterAll(() => {
 })
 
 describe('bash_runner.run (in-process)', () => {
-  it('applies the named filter and dedupes consecutive lines', () => {
+  it('applies the named filter and dedupes consecutive lines', async () => {
     // 60 repeats (not 6): dedupe collapses ~900 bytes down to one line, clearing
     // the net-benefit floor (bash_compress.min_net_savings_bytes) by a wide
     // margin. A handful of repeats saves only marker-sized bytes and would now
@@ -81,41 +81,41 @@ describe('bash_runner.run (in-process)', () => {
     // the real dedupe logic, not that trivial-savings edge case.
     const s = script('dup.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
-    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
     expect(out).toContain('×60')
     expect(out).toContain('done')
     expect(out).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
   })
 
-  it('returns the wrapped command exit code through the compression path', () => {
+  it('returns the wrapped command exit code through the compression path', async () => {
     const s = script('fail.js', "console.log('partial output')\nprocess.exit(3)\n")
     let out = ''
-    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(3)
   })
 
-  it('caps output to --max-tokens while keeping the savings marker', () => {
+  it('caps output to --max-tokens while keeping the savings marker', async () => {
     const s = script('many.js', "for (let i = 0; i < 300; i++) console.log('unique-line-' + i)\n")
     let out = ''
-    run(nodeCmd(s), { filterName: 'generic', maxTokens: 20, writeStdout: (x) => (out += x) })
+    await run(nodeCmd(s), { filterName: 'generic', maxTokens: 20, writeStdout: (x) => (out += x) })
     expect(out).toContain('capped at ~20 tokens')
     expect(out).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
   })
 
-  it('streams a command through untouched when no filter matches', () => {
+  it('streams a command through untouched when no filter matches', async () => {
     // `exit` is a shell builtin that no tool filter will ever claim, so this exercises the filter===null passthrough branch and its exit-code mapping.
-    expect(run('exit 9')).toBe(9)
+    expect(await run('exit 9')).toBe(9)
   })
 
-  it('still applies --max-tokens when no tool filter matches the command', () => {
+  it('still applies --max-tokens when no tool filter matches the command', async () => {
     // Regression: run() routed straight to passthrough() (stdio: 'inherit') whenever
     // resolveFilter returned null, and passthrough() never looked at opts.maxTokens -- the cap
     // logic only lived inside wrapAndCompress. A plain shell `for` loop has no matching tool
     // filter (no registered filter claims "for"), so pre-fix this printed all 300 lines
     // uncapped despite --max-tokens.
     let out = ''
-    const code = run("for i in $(seq 1 300); do echo unfiltered-unique-line-$i; done", {
+    const code = await run("for i in $(seq 1 300); do echo unfiltered-unique-line-$i; done", {
       maxTokens: 20,
       writeStdout: (x) => (out += x),
     })
@@ -152,21 +152,21 @@ describe('bash_runner.run (in-process)', () => {
     })
 
     /** Run a grep command through `run()` and return everything it wrote to stdout. */
-    function grepOut(command: string): string {
+    async function grepOut(command: string): Promise<string> {
       let out = ''
-      run(command, { writeStdout: (x) => (out += x) })
+      await run(command, { writeStdout: (x) => (out += x) })
       return out
     }
 
-    it('clips a long matching line for a bare grep (control)', () => {
-      const out = grepOut(`grep -rn ${NEEDLE} ${q(haystackDir)}`)
+    it('clips a long matching line for a bare grep (control)', async () => {
+      const out = await grepOut(`grep -rn ${NEEDLE} ${q(haystackDir)}`)
       expect(out).toContain(NEEDLE)
       expect(out).toContain('chars elided')
       expect(out.length).toBeLessThan(rawLineLength)
     })
 
-    it('clips a long matching line for a cd-prefixed grep too', () => {
-      const out = grepOut(`cd ${q(haystackDir)} && grep -rn ${NEEDLE} .`)
+    it('clips a long matching line for a cd-prefixed grep too', async () => {
+      const out = await grepOut(`cd ${q(haystackDir)} && grep -rn ${NEEDLE} .`)
       // The match must survive the clip -- a clip that drops the answer is worse than no clip.
       expect(out).toContain(NEEDLE)
       expect(out).toContain('chars elided')
@@ -200,28 +200,28 @@ describe('bash_runner.run — config-driven compress limits (bash_compress.max_l
     }
   })
 
-  it('honors a configured max_lines well below the default (unconfigured) line count', () => {
+  it('honors a configured max_lines well below the default (unconfigured) line count', async () => {
     const cfg = defaultConfig()
     cfg.bash_compress.max_lines = 50 // config.ts's validated floor for this field
     saveConfig(cfg)
 
     const s = script('manylines.js', "for (let i = 0; i < 300; i++) console.log('unique-line-' + i)\n")
     let out = ''
-    run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     const lineCount = out.split('\n').filter((l) => l.startsWith('unique-line-')).length
     // Unconfigured, the 'balanced' profile cap (200) would leave ~200 lines; a
     // configured max_lines=50 should cut that down well below that.
     expect(lineCount).toBeLessThanOrEqual(55)
   })
 
-  it('honors a configured max_bytes well below the built-in 64KB default', () => {
+  it('honors a configured max_bytes well below the built-in 64KB default', async () => {
     const cfg = defaultConfig()
     cfg.bash_compress.max_bytes = 200
     saveConfig(cfg)
 
     const s = script('bigout.js', "console.log('x'.repeat(50000))\n")
     let out = ''
-    run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     // Unconfigured, the output would be capped at the built-in 64KB default;
     // a configured max_bytes=200 should cut that down to a few hundred bytes.
     expect(Buffer.byteLength(out, 'utf-8')).toBeLessThan(2000)
@@ -247,31 +247,31 @@ describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_b
     }
   })
 
-  it('a below-floor saving passes through the ORIGINAL output untouched with no marker', () => {
+  it('a below-floor saving passes through the ORIGINAL output untouched with no marker', async () => {
     // Two repeats of "compiling..." dedupe to a couple dozen bytes of saving —
     // smaller than the ~70-byte marker plus the default 100-byte floor, so this
     // must fall all the way back to the untouched original.
     const s = script('tiny-dup.js', "for (let i = 0; i < 2; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
-    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
     expect(out).not.toContain('×2')
     expect(out).not.toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
     expect(out.trim()).toBe('compiling...\ncompiling...\ndone')
   })
 
-  it('an above-floor saving still compresses exactly as today, marker included', () => {
+  it('an above-floor saving still compresses exactly as today, marker included', async () => {
     // 60 repeats produces a large, unambiguous dedupe win that clears the
     // default 100-byte floor by a wide margin.
     const s = script('big-dup.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
-    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
     expect(out).toContain('×60')
     expect(out).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
   })
 
-  it('the config key actually moves the threshold: lowering it ships a rewrite that the default floor would have suppressed', () => {
+  it('the config key actually moves the threshold: lowering it ships a rewrite that the default floor would have suppressed', async () => {
     const cfg = defaultConfig()
     cfg.bash_compress.min_net_savings_bytes = 0
     saveConfig(cfg)
@@ -281,22 +281,65 @@ describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_b
     // min_net_savings_bytes=0 it should ship.
     const s = script('tiny-dup2.js', "for (let i = 0; i < 10; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
-    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
     expect(out).toContain('×10')
   })
 
-  it('the config key actually moves the threshold: raising it suppresses a rewrite the default floor would have shipped', () => {
+  it('the config key actually moves the threshold: raising it suppresses a rewrite the default floor would have shipped', async () => {
     const cfg = defaultConfig()
     cfg.bash_compress.min_net_savings_bytes = 100_000
     saveConfig(cfg)
 
     const s = script('big-dup2.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
-    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
     expect(out).not.toContain('×60')
     expect(out).not.toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
+  })
+})
+
+describe('bash_runner.run — quiet-command heartbeat (stderr, doubling schedule)', () => {
+  // A long, quiet command used to look hung: spawnSync blocks the event loop for the whole run, so
+  // no timer could ever fire while the child is still running. This drives the real async path with
+  // a lowered heartbeatIntervalMs (never used on the shipping path, which always leaves it at
+  // DEFAULT_HEARTBEAT_INTERVAL_MS) so the test doesn't need to wait 15s for the first line.
+  it('prints a heartbeat to stderr for a quiet command, and leaves the filtered stdout unchanged', async () => {
+    const s = script('quiet-then-print.js', 'setTimeout(() => { console.log("done") }, 300)\n')
+    let out = ''
+    let err = ''
+    const code = await run(nodeCmd(s), {
+      filterName: 'generic',
+      heartbeatIntervalMs: 50,
+      writeStdout: (x) => (out += x),
+      writeStderr: (x) => (err += x),
+    })
+    expect(code).toBe(0)
+    expect(out).toContain('done')
+    expect(err).toMatch(/\[token-goat compress] still running, \d+s elapsed/)
+  })
+
+  // Non-firing guard: a command that keeps producing output resets the quiet clock on every
+  // write, so a chatty command must never see a heartbeat at all.
+  it('non-firing: a chatty command never gets a heartbeat', async () => {
+    const s = script(
+      'chatty.js',
+      'let n = 0\nconsole.log("tick " + n++)\nconst id = setInterval(() => { console.log("tick " + n++); if (n >= 20) { clearInterval(id) } }, 20)\n',
+    )
+    let out = ''
+    let err = ''
+    const code = await run(nodeCmd(s), {
+      filterName: 'generic',
+      // Well above typical Node process-startup latency, so a slow spawn on a loaded CI box never
+      // reads as a "quiet gap" before the child's own first (immediate) write.
+      heartbeatIntervalMs: 500,
+      writeStdout: (x) => (out += x),
+      writeStderr: (x) => (err += x),
+    })
+    expect(code).toBe(0)
+    expect(out).toContain('tick')
+    expect(err).not.toMatch(/still running/)
   })
 })
 

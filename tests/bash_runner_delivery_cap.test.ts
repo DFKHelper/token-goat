@@ -72,12 +72,12 @@ describe('the compress wrapper credits against the delivered size', () => {
 
   // A far-above-cap output. The recorded saving must be cap-minus-compressed, so it can never exceed
   // the cap -- the property the 478 Mt of over-credited rows in the real ledger violated.
-  it('never credits more than the cap for an above-cap output', () => {
+  it('never credits more than the cap for an above-cap output', async () => {
     const line = 'repeated noisy build progress line that dedupes away\n'
     const count = 4000
     expect(line.length * count).toBeGreaterThan(CAP * 5)
     let out = ''
-    const code = run(repeatCmd(line, count), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const code = await run(repeatCmd(line, count), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
     const rows = bashCompressRows()
     expect(rows.length).toBeGreaterThan(0)
@@ -94,11 +94,11 @@ describe('the compress wrapper credits against the delivered size', () => {
   // Uncapped harness control: the same above-cap output on a harness with no measured limit must
   // still be credited in full. A blanket cap would under-credit here, the same error pointing the
   // other way.
-  it('does not cap the credit on a harness with no measured limit', () => {
+  it('does not cap the credit on a harness with no measured limit', async () => {
     process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'opencode'
     const line = 'repeated noisy build progress line that dedupes away\n'
     let out = ''
-    run(repeatCmd(line, 4000), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    await run(repeatCmd(line, 4000), { filterName: 'generic', writeStdout: (x) => (out += x) })
     const rows = bashCompressRows()
     expect(rows.length).toBeGreaterThan(0)
     expect(rows[0]![1]).toBeGreaterThan(CAP)
@@ -107,7 +107,7 @@ describe('the compress wrapper credits against the delivered size', () => {
   // NON-FIRING GUARD: below-cap traffic keeps its full, uncapped credit. Non-emptiness is asserted
   // before the loop and the loop body must actually run, so a clamp-everything regression fails here
   // rather than passing by producing no rows.
-  it('non-firing: a below-cap output keeps its full uncapped credit', () => {
+  it('non-firing: a below-cap output keeps its full uncapped credit', async () => {
     const cases: Array<{ line: string; count: number }> = [
       { line: 'modest repeated line\n', count: 150 },
       { line: 'second modest repeated line\n', count: 200 },
@@ -120,7 +120,7 @@ describe('the compress wrapper credits against the delivered size', () => {
       expect(originalBytes).toBeLessThan(CAP)
       ;(recordStat as unknown as { mockClear: () => void }).mockClear()
       let out = ''
-      run(repeatCmd(line, count), { filterName: 'generic', writeStdout: (x) => (out += x) })
+      await run(repeatCmd(line, count), { filterName: 'generic', writeStdout: (x) => (out += x) })
       for (const [, bytes, tokens] of bashCompressRows()) {
         // Below the cap the delivered size IS the original, so the credit must be the full
         // original-minus-compressed reduction. A blanket clamp would make this smaller.
