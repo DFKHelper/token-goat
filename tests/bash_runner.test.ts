@@ -32,6 +32,7 @@ process.env['XDG_DATA_HOME'] = DATA_DIR_TMP
 const { run, runRaw } = await import('../src/bash_runner.js')
 const { defaultConfig, invalidateConfigCache, saveConfig } = await import('../src/config.js')
 const { configPath } = await import('../src/constants.js')
+const { getBashOutput } = await import('../src/bash_output_cache.js')
 // DATA_DIR is now frozen to the temp dir; restore env to avoid leaking the override into sibling test modules that run in the same worker.
 if (_savedLocal === undefined) delete process.env['LOCALAPPDATA']
 else process.env['LOCALAPPDATA'] = _savedLocal
@@ -86,6 +87,22 @@ describe('bash_runner.run (in-process)', () => {
     expect(out).toContain('×60')
     expect(out).toContain('done')
     expect(out).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
+  })
+
+  // Regression: the marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable
+  // compression, but that env var only ever takes effect when set in the environment that
+  // launches the harness -- setting it inline in this same wrapped command can never reach the
+  // hook process that reads it, so before this fix a compressed single-command run left the
+  // model with no working way to see the untruncated bytes at all.
+  it('stores a recallable copy of the full output and points at it, since the marker notice cannot be actioned inline', async () => {
+    const s = script('dup2.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
+    let out = ''
+    await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const match = /full output: bash-output (\S+) --full/.exec(out)
+    expect(match, 'a compressed run must carry a recall pointer').not.toBeNull()
+    const entry = getBashOutput(match![1] as string)
+    expect(entry, 'the pointed-at id must actually resolve to the cached full output').not.toBeNull()
+    expect(entry!.output.split('compiling...').length - 1, 'the cached copy must be the raw, undeduped output').toBe(60)
   })
 
   it('returns the wrapped command exit code through the compression path', async () => {

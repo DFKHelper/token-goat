@@ -351,7 +351,13 @@ async function wrapAndCompress(
   let text = delivered
   const maxTokens = opts.maxTokens ?? 0
   if (maxTokens > 0) text = capTokens(text, maxTokens)
-  const body = text + marker
+  let body = text + marker
+  if (applied) {
+    // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, but that env var has to be set in the environment that launches the harness, not inline in this same command -- the hook process reads its own environment, never the wrapped command's, so an inline prefix here can never reach it. A recall of the untruncated bytes is the actionable follow-up, so store them the same way the compound post-hook path already does and point at it.
+    const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
+    const recallId = storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
+    body += '\n[token-goat] full output: bash-output ' + recallId + ' --full'
+  }
   writeStdout(body.endsWith('\n') ? body : body + '\n')
 
   if (applied) recordSavings(compressed)
