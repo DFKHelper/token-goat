@@ -23,7 +23,7 @@ export interface RecallCommandOptions {
 // The existing per-type recall command each hit's id resolves through -- mcp entries share
 // bash-output's blob-store subdir but have their own dedicated recall command (mcp-output),
 // see mcp_cache.ts's storeMcpOutput and cli.ts's cmdMcpOutput.
-const RECALL_COMMAND: Record<RecallCacheType, string> = {
+export const RECALL_COMMAND: Record<RecallCacheType, string> = {
   bash: 'bash-output',
   web: 'web-output',
   mcp: 'mcp-output',

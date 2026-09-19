@@ -19,6 +19,7 @@ vi.mock('../src/stats.js', async (importOriginal) => {
 })
 
 import { postBashHandler } from '../src/hooks_bash.js'
+import { isFullRecallCommand } from '../src/hooks_bash_commands.js'
 import { recordStat } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
@@ -153,5 +154,22 @@ describe('post-hook filter selection for a piped command', () => {
     // anchor is asserted on the smaller body, which is the one with something to prove.
     expect(family.length, 'the family filter must beat generic on identical bytes').toBeLessThan(generic.length)
     expect(family, 'and must still name where the matches are').toContain('src/util.ts')
+  })
+
+  // Regression: `token-goat bash-output <id> --full` is the model's own request for a prior full
+  // delivery back verbatim. Piping or chaining it (`| head -300`) fell through to the generic
+  // pipeline path above and got recompressed into a fresh, smaller pointer instead of surviving.
+  it('never recompresses a piped or chained `bash-output <id> --full` recall', async () => {
+    const result = await postBashHandler(makePostBashEvent('token-goat bash-output abc123 --full | head -300', GREP_LINES))
+    expect(result.hookType, 'a full recall must reach the model unrewritten').toBe('pass')
+  })
+
+  it('isFullRecallCommand recognizes bash-output/web-output/mcp-output --full regardless of pipeline stage', () => {
+    expect(isFullRecallCommand('token-goat bash-output abc123 --full')).toBe(true)
+    expect(isFullRecallCommand('token-goat bash-output abc123 --full | head -300')).toBe(true)
+    expect(isFullRecallCommand('token-goat web-output abc123 --full | grep foo')).toBe(true)
+    expect(isFullRecallCommand('token-goat mcp-output abc123 --full')).toBe(true)
+    expect(isFullRecallCommand('token-goat bash-output abc123')).toBe(false)
+    expect(isFullRecallCommand('grep -rn "export function" src | head -200')).toBe(false)
   })
 })

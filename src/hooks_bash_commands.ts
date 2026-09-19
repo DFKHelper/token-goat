@@ -18,6 +18,7 @@ import {
   type ToolFilter,
 } from './tool_filters/index.js'
 import { isTestRunnerCommand, isBuildCommand } from './hints/lang_patterns.js'
+import { RECALL_COMMAND } from './cli_recall.js'
 import {
   splitShellSegments,
   extractCatFile,
@@ -409,6 +410,17 @@ export function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter
   // The first stage with its trailing redirections removed. detectFromCommand refuses anything carrying an unquoted operator, so it has to be asked about that stage alone rather than the whole pipeline.
   const detected = detectFromCommand(stripOutputPipeline(cmd), cwd ?? undefined)
   return detected === null ? null : detected.filter
+}
+
+/** True when the first pipeline stage of `cmd` is a `token-goat bash-output|web-output|mcp-output <id> --full` recall. That command's output is already the model's own earlier full delivery, so it must never be recompressed into a new, smaller pointer -- e.g. `token-goat bash-output <id> --full | head -300` capping a 16,959-byte recall down to a fresh 7,468-byte one. */
+export function isFullRecallCommand(cmd: string): boolean {
+  const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
+  if (hasBareBackgroundOrNewline(forSplit)) return false
+  const first = splitShellSegments(forSplit)[0]
+  if (first === undefined || !segmentCommandIs(first, 'token-goat')) return false
+  const tokens = safeShlexSplit(stripOutputPipeline(first))
+  if (tokens === null) return false
+  return Object.values(RECALL_COMMAND).includes(tokens[1] ?? '') && tokens.includes('--full')
 }
 
 /**

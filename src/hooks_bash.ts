@@ -48,6 +48,7 @@ import {
   gitRepoRoot,
   enqueueNonHeadMovingRewrites,
   pipelineShapeFilter,
+  isFullRecallCommand,
   pureFileReadPath,
   deliveredLineNumbers,
   isWholeFileDump,
@@ -451,6 +452,10 @@ async function maybeCompressCompoundOutput(
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
   // Single commands were handled by the pre-hook's wrapper if wrapped; unwrapped single commands (e.g. in environments without pre-hook rewriting) reach here and are eligible for compression.
   if (!isUnwrapped && isCompressibleSingleCommand(cmd)) return null
+  // A recall of already-delivered full output must survive verbatim, or a piped/chained
+  // read of it (e.g. `bash-output <id> --full | head -300`) gets recompressed into a new,
+  // smaller pointer -- the model asked for the full text back and got another summary.
+  if (isFullRecallCommand(cmd)) return null
   // Don't compact a command that reported a non-zero exit: a failing compound pipeline's diagnostics must reach the model in full on its first read, not behind a `--full` recall. An unknown exit (null -- common on harnesses that do not report one) is treated as non-failure, matching the success gates elsewhere in this handler.
   if (exitCode !== null && exitCode !== 0) return null
   let cfg: { enabled: boolean; disabled_filters: string[]; max_lines: number; max_bytes: number }
