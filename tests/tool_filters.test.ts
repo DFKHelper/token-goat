@@ -51,14 +51,11 @@ describe('helpers: encoding + normalisation', () => {
   })
 
   it('stripProgress does not wipe a line whose only \\r is a trailing one left behind by a \\r\\r\\n run (e.g. curl -v on Windows, whose per-line \\r\\n survives one CRLF-collapse pass as a lone trailing \\r)', () => {
-    // Simulates post-CRLF-collapse state: `replace(/\r\n/g, '\n')` on
-    // '> GET / HTTP/1.1\r\r\n' only consumes the second \r + \n, leaving a
-    // single trailing \r on the line.
+    // Simulates post-CRLF-collapse state: `replace(/\r\n/g, '\n')` on '> GET / HTTP/1.1\r\r\n' only consumes the second \r + \n, leaving a single trailing \r on the line.
     expect(stripProgress('> GET / HTTP/1.1\r\n< HTTP/1.1 200 OK\r')).toBe(
       '> GET / HTTP/1.1\n< HTTP/1.1 200 OK',
     )
-    // A genuine mid-line progress overwrite immediately followed by a
-    // trailing \r must still collapse to the final state, not survive whole.
+    // A genuine mid-line progress overwrite immediately followed by a trailing \r must still collapse to the final state, not survive whole.
     expect(stripProgress('10%\r50%\r100%\r')).toBe('100%')
   })
 
@@ -128,9 +125,7 @@ describe('helpers: capping', () => {
   })
 
   it('capBytes never splits a multi-byte UTF-8 character when no newline is nearby', () => {
-    // '中' is 3 bytes in UTF-8 (E4 B8 AD). No newlines, so the line-boundary
-    // rescue never triggers and the raw byte cut must fall back to a
-    // character-boundary-safe cut instead.
+    // '中' is 3 bytes in UTF-8 (E4 B8 AD). No newlines, so the line-boundary rescue never triggers and the raw byte cut must fall back to a character-boundary-safe cut instead.
     const filler = 'a'.repeat(50)
     const text = filler + '中'.repeat(50)
     const markerLen = Buffer.byteLength('\n... [999 bytes elided by token-goat]', 'utf8')
@@ -152,10 +147,7 @@ describe('helpers: capping', () => {
   })
 
   it('capLongLines never splits a surrogate pair at the cut boundary', () => {
-    // U+1F600 (😀) is a high/low surrogate pair. A naive `slice(0, 5)` lands
-    // exactly between the pair, leaving a lone high surrogate that decodes
-    // as U+FFFD once the string is round-tripped through UTF-8 bytes (as
-    // happens whenever this output is written to stdout or serialized).
+    // U+1F600 (😀) is a high/low surrogate pair. A naive `slice(0, 5)` lands exactly between the pair, leaving a lone high surrogate that decodes as U+FFFD once the string is round-tripped through UTF-8 bytes (as happens whenever this output is written to stdout or serialized).
     const line = 'ab😀😀😀'
     const [out] = capLongLines([line], 5)
     const cutPart = out.slice(0, out.indexOf('  … ['))
@@ -264,10 +256,7 @@ describe("apply(): normalisation early-exit ratio uses pre-normalisation size, n
   })
 
   it('does NOT early-exit on normalisation when truncation alone produced the size drop', () => {
-    // maxInput is tiny relative to the raw payload, so truncation alone already
-    // shrinks the stream to well under 60% of its original size. The surviving
-    // text has no \r progress markers, ANSI codes, or control chars, so
-    // normalise() does nothing to it beyond the truncation that already happened.
+    // maxInput is tiny relative to the raw payload, so truncation alone already shrinks the stream to well under 60% of its original size. The surviving text has no \r progress markers, ANSI codes, or control chars, so normalise() does nothing to it beyond the truncation that already happened.
     process.env[ENV_KEY] = '200'
     const lines: string[] = []
     for (let i = 0; i < 2000; i++) lines.push(`plain distinct line number ${i} with no normalisable content`)
@@ -279,24 +268,17 @@ describe("apply(): normalisation early-exit ratio uses pre-normalisation size, n
   })
 
   it('DOES early-exit on normalisation when it achieves >=40% reduction beyond truncation', () => {
-    // Same tiny maxInput, but the surviving (truncated) text is dense with \r
-    // progress-bar updates, so stripProgress() collapses it to just the final
-    // segment -- a large reduction that truncation alone did not produce.
+    // Same tiny maxInput, but the surviving (truncated) text is dense with \r progress-bar updates, so stripProgress() collapses it to just the final segment -- a large reduction that truncation alone did not produce.
     process.env[ENV_KEY] = '200'
     const progress = Array.from({ length: 4000 }, (_, i) => `${i}%`).join('\r')
     const result = new GenericFilter().apply(progress, '', 0, [])
     expect(result.notes.join(' ')).toContain('early-exit: normalisation alone sufficient')
+    expect(result.text, 'which branch compressed the output tells the model nothing it can act on').not.toContain('early-exit')
   })
 })
 
 describe('apply(): redacts secret-shaped values before returning', () => {
-  // hooks_bash.ts's maybeCompressRewrite rewrites plain `env`/`printenv`/etc. Bash calls to run
-  // through this exact `apply()` pipeline by default -- its output is what an agent sees live, in
-  // the same turn. Every other place token-goat persists or serves tool output (bash_output_cache,
-  // disk_cache, web_cache, mcp_cache) already redacts secret-shaped values before the text leaves
-  // that module; this pipeline is the one live, model-visible path that must do the same.
-  // The key below is a fixture, not a credential: this test exists to prove the filter redacts a
-  // value of that shape, so a literal one has to be present for it to have anything to redact.
+  // hooks_bash.ts's maybeCompressRewrite rewrites plain `env`/`printenv`/etc. Bash calls to run through this exact `apply()` pipeline by default -- its output is what an agent sees live, in the same turn. Every other place token-goat persists or serves tool output (bash_output_cache, disk_cache, web_cache, mcp_cache) already redacts secret-shaped values before the text leaves that module; this pipeline is the one live, model-visible path that must do the same. The key below is a fixture, not a credential: this test exists to prove the filter redacts a value of that shape, so a literal one has to be present for it to have anything to redact.
   it('redacts an AWS access key id that survives filtering into the final body', () => {
     const fakeAwsKey = 'AKIA' + 'ABCDEFGHIJKLMNOP'
     const raw = `AWS_ACCESS_KEY_ID=${fakeAwsKey}\nsome other output line`
@@ -312,17 +294,7 @@ describe('apply(): redacts secret-shaped values before returning', () => {
     expect(result.text).toContain('[REDACTED:github_token]')
   })
 
-  // Regression (HAND-DERIVED: offset computed independently against helpers.ts's own
-  // LONG_LINE_MAX_CHARS constant, not read off its source): apply()'s truncators (clipWideLines,
-  // capLongLines, truncateMiddleSmart, capBytes) used to run BEFORE step 9.5's
-  // redactSecrets(body). capLongLines (step 7.5) is the tightest of the four for a single long
-  // line -- it head-truncates to LONG_LINE_MAX_CHARS (1000), tighter than clipWideLines's 2000-char
-  // keep -- so a credential straddling ITS cut is the one that actually reaches the final body: the
-  // surviving piece is shorter than the AWS pattern's fixed 20-char match, so the pattern that
-  // would have caught the whole key no longer recognises the remnant. Field name deliberately
-  // avoids any redaction keyword. Asserts absence of a FRAGMENT (4+ trailing AKIA chars), not just
-  // the full key: a full-key-only assertion passes even while a fragment leaks, per this repo's
-  // own fixture-provenance lesson.
+  // Regression (HAND-DERIVED: offset computed independently against helpers.ts's own LONG_LINE_MAX_CHARS constant, not read off its source): apply()'s truncators (clipWideLines, capLongLines, truncateMiddleSmart, capBytes) used to run BEFORE step 9.5's redactSecrets(body). capLongLines (step 7.5) is the tightest of the four for a single long line -- it head-truncates to LONG_LINE_MAX_CHARS (1000), tighter than clipWideLines's 2000-char keep -- so a credential straddling ITS cut is the one that actually reaches the final body: the surviving piece is shorter than the AWS pattern's fixed 20-char match, so the pattern that would have caught the whole key no longer recognises the remnant. Field name deliberately avoids any redaction keyword. Asserts absence of a FRAGMENT (4+ trailing AKIA chars), not just the full key: a full-key-only assertion passes even while a fragment leaks, per this repo's own fixture-provenance lesson.
   it('never leaves a raw AKIA fragment when a key straddles capLongLines\' 1000-char cut', () => {
     const key = 'AKIA' + 'ABCDEFGHIJ123456' // 20 chars total, fixed-length pattern, no keyword fallback
     const prefix = 'x'.repeat(990) // capLongLines keeps only the first 1000 chars of an over-long line
@@ -334,25 +306,12 @@ describe('apply(): redacts secret-shaped values before returning', () => {
     expect(result.text).not.toMatch(/AKIA[0-9A-Z]{4,}/)
   })
 
-  // Regression, found live while dogfooding the capLongLines fix above through the real
-  // `token-goat compress` binary (HAND-DERIVED: the key is a fixed-length AWS-shaped literal, not
-  // read off any matcher). apply() itself always redacts (Step 1.5/9.5), but its caller,
-  // dispatch.ts's deliverCompressed(), only ships `compressed.text` when the net-benefit gate
-  // (`worthApplying`) clears the configured floor; below the floor it used to fall back to
-  // `combineStreams(stdout, stderr)` -- the RAW, pre-redaction streams -- discarding the
-  // redaction apply() had already done. A single-line input that is just a bare credential
-  // guarantees the gate fails (the redaction placeholder is not smaller than the key it
-  // replaces, so there is no net saving to clear the floor), which is exactly the shape that
-  // reproduces this: `apply()` redacts it, but the old fallback re-introduced the raw key on the
-  // one path that decides what the model actually receives (`deliverCompressed`'s own doc
-  // comment calls itself "the single definition of what the model actually receives").
+  // Regression, found live while dogfooding the capLongLines fix above through the real `token-goat compress` binary (HAND-DERIVED: the key is a fixed-length AWS-shaped literal, not read off any matcher). apply() itself always redacts (Step 1.5/9.5), but its caller, dispatch.ts's deliverCompressed(), only ships `compressed.text` when the net-benefit gate (`worthApplying`) clears the configured floor; below the floor it used to fall back to `combineStreams(stdout, stderr)` -- the RAW, pre-redaction streams -- discarding the redaction apply() had already done. A single-line input that is just a bare credential guarantees the gate fails (the redaction placeholder is not smaller than the key it replaces, so there is no net saving to clear the floor), which is exactly the shape that reproduces this: `apply()` redacts it, but the old fallback re-introduced the raw key on the one path that decides what the model actually receives (`deliverCompressed`'s own doc comment calls itself "the single definition of what the model actually receives").
   it('never leaves a raw AKIA fragment when redaction alone does not clear the net-benefit floor', () => {
     const key = 'AKIA' + 'ABCDEFGHIJ123456' // 20 chars total, fixed-length pattern, no keyword fallback
     const filter = new GenericFilter()
     const compressedOnly = compressOutput(filter, key, '', 0, [])
-    // Pin the premise this test relies on: redaction alone must not clear the net-benefit floor,
-    // so the fallback branch under test actually runs (a full-key -> placeholder swap is not a
-    // net byte saving here).
+    // Pin the premise this test relies on: redaction alone must not clear the net-benefit floor, so the fallback branch under test actually runs (a full-key -> placeholder swap is not a net byte saving here).
     expect(compressedOnly.worthApplying(100)).toBe(false)
     const delivered = deliverCompressed(filter, key, '', 0, [])
     expect(delivered.applied).toBe(false)
@@ -396,9 +355,7 @@ describe('dispatch: detection + compound handling', () => {
     expect(selectFilter(['othertool'])).toBeNull()
   })
 
-  // A leading `cd DIR &&`/`cd DIR ;` displaces argv[0] away from the real command, so no
-  // filter matches at all (measured: 32.7x more output on an unfiltered `cd DIR && ls -la`
-  // versus plain `ls -la`). Peeling it back to the real command must restore dispatch.
+  // A leading `cd DIR &&`/`cd DIR ;` displaces argv[0] away from the real command, so no filter matches at all (measured: 32.7x more output on an unfiltered `cd DIR && ls -la` versus plain `ls -la`). Peeling it back to the real command must restore dispatch.
   it('selectFilter peels a leading `cd DIR &&` before matching', () => {
     TOOL_FILTERS.push(new EchoFilter())
     expect(selectFilter(shlexSplit('cd /some/dir && mytool -x'))?.name).toBe('echo-test')
@@ -424,8 +381,7 @@ describe('dispatch: detection + compound handling', () => {
     expect(selectFilter(shlexSplit('cd /some/dir'))).toBeNull()
   })
 
-  // Guard: pipes never displace argv[0] (matches() only inspects argv[0]), so this must keep
-  // working exactly as before -- it is not part of the bug and must not be "fixed".
+  // Guard: pipes never displace argv[0] (matches() only inspects argv[0]), so this must keep working exactly as before -- it is not part of the bug and must not be "fixed".
   it('selectFilter still matches through a pipe, unaffected by the cd peel', () => {
     TOOL_FILTERS.push(new EchoFilter())
     expect(selectFilter(shlexSplit('mytool -x | cat'))?.name).toBe('echo-test')
@@ -447,11 +403,7 @@ describe('dispatch: detection + compound handling', () => {
     expect(det?.argv).toEqual(['mytool', 'run'])
   })
 
-  // Regression (bug #242): a bare `&` backgrounds the command; spawnSync's piped
-  // stdio then blocks on the backgrounded grandchild's inherited stdout until it
-  // exits or the wrapper's timeout kills the process tree the user wanted kept
-  // running. Newline-separated compounds slip past the `&&`/`|`/`;` checks the
-  // same way and must be rejected too.
+  // Regression (bug #242): a bare `&` backgrounds the command; spawnSync's piped stdio then blocks on the backgrounded grandchild's inherited stdout until it exits or the wrapper's timeout kills the process tree the user wanted kept running. Newline-separated compounds slip past the `&&`/`|`/`;` checks the same way and must be rejected too.
   it('detectFromCommand rejects a backgrounded command and a newline-separated compound', () => {
     TOOL_FILTERS.push(new EchoFilter())
     expect(detectFromCommand('mytool run &')).toBeNull()
@@ -464,16 +416,9 @@ describe('dispatch: detection + compound handling', () => {
     expect(detectFromCommand('mytool a && mytool b')).toBeNull()
   })
 
-  // Regression: the compound gates used naive `command.includes('|')`/`includes(';')`, which
-  // cannot tell a shell pipeline from a quoted regex alternation. `grep -E 'foo|bar' src/` is a
-  // single command, but it was disqualified from compression entirely (measured on a real
-  // corpus: 346 of 1,553 pipe-rejected results had no shell pipe at all). The masking machinery
-  // already existed and was applied one line below, to `hasBareBackgroundOrNewline`.
+  // Regression: the compound gates used naive `command.includes('|')`/`includes(';')`, which cannot tell a shell pipeline from a quoted regex alternation. `grep -E 'foo|bar' src/` is a single command, but it was disqualified from compression entirely (measured on a real corpus: 346 of 1,553 pipe-rejected results had no shell pipe at all). The masking machinery already existed and was applied one line below, to `hasBareBackgroundOrNewline`.
   //
-  // Fixture provenance: HAND-DERIVED -- these are ordinary POSIX shell command strings whose
-  // quoting semantics come from the POSIX shell grammar (quoted `|`/`;` are literal characters,
-  // https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_02_02),
-  // not read off token-goat's own matchers.
+  // Fixture provenance: HAND-DERIVED -- these are ordinary POSIX shell command strings whose quoting semantics come from the POSIX shell grammar (quoted `|`/`;` are literal characters, https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_02_02), not read off token-goat's own matchers.
   it('detectFromCommand treats a quoted |, ; or && as literal text, not a control operator', () => {
     TOOL_FILTERS.push(new EchoFilter())
     expect(detectFromCommand("mytool -E 'foo|bar' src/")?.filter.name).toBe('echo-test')
@@ -483,8 +428,7 @@ describe('dispatch: detection + compound handling', () => {
     expect(detectFromCommand("mytool -m 'a || b'")?.filter.name).toBe('echo-test')
   })
 
-  // The other half, and it is not optional: a test that only proves the gate got looser cannot
-  // tell this fix from a regression. Every one of these is a genuinely compound command.
+  // The other half, and it is not optional: a test that only proves the gate got looser cannot tell this fix from a regression. Every one of these is a genuinely compound command.
   it('detectFromCommand still rejects a genuinely piped or chained command', () => {
     TOOL_FILTERS.push(new EchoFilter())
     expect(detectFromCommand("mytool -E 'foo|bar' src/ | head -5")).toBeNull()
@@ -518,9 +462,7 @@ describe('dispatch: filterByName + profiles', () => {
 })
 
 describe('splitOwnTrailingNotices', () => {
-  // HAND-DERIVED: each expected pair is the input cut at the notice, written out here rather than
-  // read back from the splitter. The notice spellings themselves are FORMAT-DERIVED from their
-  // producers, `capTokens` and `capBytes` in src/tool_filters/helpers.ts.
+  // HAND-DERIVED: each expected pair is the input cut at the notice, written out here rather than read back from the splitter. The notice spellings themselves are FORMAT-DERIVED from their producers, `capTokens` and `capBytes` in src/tool_filters/helpers.ts.
   it.each([
     ['a token cap', 'line one\nline two\n[token-goat: output capped at ~2000 tokens]', 'line one\nline two'],
     ['a byte elision', 'line one\n... [4096 bytes elided by token-goat]', 'line one'],
@@ -535,9 +477,7 @@ describe('splitOwnTrailingNotices', () => {
     expect(r).toEqual({ body: 'build succeeded in 10.4s', notices: '' })
   })
 
-  // Anchored at the end on purpose. A notice-shaped line in the middle of the output came from the
-  // command, not from us, and moving it outside the fence would hand an attacker the one placement
-  // the fence exists to deny.
+  // Anchored at the end on purpose. A notice-shaped line in the middle of the output came from the command, not from us, and moving it outside the fence would hand an attacker the one placement the fence exists to deny.
   it('leaves a notice-shaped line that is not at the end inside the body', () => {
     const text = '[token-goat: output capped at ~10 tokens]\nmore real output'
     expect(splitOwnTrailingNotices(text)).toEqual({ body: text, notices: '' })

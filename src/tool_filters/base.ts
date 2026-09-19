@@ -32,27 +32,15 @@ import { loadConfig } from '../config.js'
 import { savedTokensFromBytes } from '../stats.js'
 
 /**
- * Default `bash_compress.min_net_savings_bytes` floor, used when config fails
- * to load. Mirrored here (not just in config.ts's own default) because
- * {@link resolveMinNetSavingsBytes} must still return a sane value when
- * `loadConfig()` itself throws.
+ * Default `bash_compress.min_net_savings_bytes` floor, used when config fails to load. Mirrored here (not just in config.ts's own default) because {@link resolveMinNetSavingsBytes} must still return a sane value when `loadConfig()` itself throws.
  */
 const DEFAULT_MIN_NET_SAVINGS_BYTES = 100
+const EARLY_EXIT_NOTE = 'early-exit: normalisation alone sufficient'
 
 /**
- * Resolve the net-benefit floor (bytesSaved minus the rewrite's own
- * notice/marker cost) a rewrite must clear to ship, from
- * `bash_compress.min_net_savings_bytes`. This is the single resolver every
- * output-rewriting hook consults — originally private to `bash_runner.ts`,
- * hoisted here so every consumer of {@link isRewriteWorthwhile} shares the
- * same config read and fallback instead of re-deriving it.
+ * Resolve the net-benefit floor (bytesSaved minus the rewrite's own notice/marker cost) a rewrite must clear to ship, from `bash_compress.min_net_savings_bytes`. This is the single resolver every output-rewriting hook consults — originally private to `bash_runner.ts`, hoisted here so every consumer of {@link isRewriteWorthwhile} shares the same config read and fallback instead of re-deriving it.
  *
- * The config key lives under `bash_compress` for historical reasons (it was
- * introduced for the Bash-output compression filter pipeline first), but the
- * question it answers — "is this net saving worth destabilising bytes that
- * could otherwise be served from the provider's cached prefix?" — applies
- * identically to every rewrite path in this codebase, so it is reused
- * wholesale rather than forked into per-path config families.
+ * The config key lives under `bash_compress` for historical reasons (it was introduced for the Bash-output compression filter pipeline first), but the question it answers — "is this net saving worth destabilising bytes that could otherwise be served from the provider's cached prefix?" — applies identically to every rewrite path in this codebase, so it is reused wholesale rather than forked into per-path config families.
  */
 export function resolveMinNetSavingsBytes(): number {
   try {
@@ -75,12 +63,7 @@ export interface RewriteWorthwhileInput {
 }
 
 /**
- * Single shared definition of "is this rewrite worth shipping", usable by any
- * call site that swaps a tool result for a smaller one plus some notice —
- * not just {@link CompressedOutput.worthApplying}'s bash-filter case. A
- * rewrite is worthwhile only when it has non-negative original bytes, a
- * strictly positive raw saving (`originalBytes - rewrittenBytes`), and that
- * saving still clears `minNetSavingsBytes` after paying for its own notice.
+ * Single shared definition of "is this rewrite worth shipping", usable by any call site that swaps a tool result for a smaller one plus some notice — not just {@link CompressedOutput.worthApplying}'s bash-filter case. A rewrite is worthwhile only when it has non-negative original bytes, a strictly positive raw saving (`originalBytes - rewrittenBytes`), and that saving still clears `minNetSavingsBytes` after paying for its own notice.
  */
 export function isRewriteWorthwhile({
   originalBytes,
@@ -97,9 +80,7 @@ export function isRewriteWorthwhile({
 /**
  * Result of running a {@link ToolFilter} over a captured command output.
  *
- * `text` is the compressed body (no trailing newline — the wrapper adds one).
- * `originalBytes` is `stdout + stderr` size post-decode / pre-filter, so
- * `percentSaved` reflects the true reduction the model sees.
+ * `text` is the compressed body (no trailing newline — the wrapper adds one). `originalBytes` is `stdout + stderr` size post-decode / pre-filter, so `percentSaved` reflects the true reduction the model sees.
  */
 /** Token savings for a byte delta credited by a bash-output compression filter: delegates to {@link savedTokensFromBytes} (bytes/4, stats.ts's single pricing constant) rather than defining its own divisor. This used to divide by 3 (the `estimateTokensFromLength` overflow-guard estimator's ratio, deliberately conservative-high for a budget check, which is the wrong direction for a credit -- see the comment on `savedTokensFromBytes`), which booked every `bash_compress:*` kind roughly a third richer than every sibling kind in the same summed column. Exported so a caller that must recompute the figure against a different byte delta -- notably a delta capped at the harness delivery cap, see `deliveredOutputBytes` in src/delivery_cap.ts -- prices it by the same rule rather than deriving a second one that can drift. */
 export function compressedTokensSaved(bytesSaved: number): number {
@@ -133,30 +114,21 @@ export class CompressedOutput {
   }
 
   /**
-   * Byte cost of the trailing marker {@link withMarker} would append for this
-   * result's filter name and percentage. The marker is not free — a rewrite
-   * whose `bytesSaved` doesn't even cover its own marker is strictly worse
-   * than doing nothing.
+   * Byte cost of the trailing marker {@link withMarker} would append for this result's filter name and percentage. The marker is not free — a rewrite whose `bytesSaved` doesn't even cover its own marker is strictly worse than doing nothing.
    */
   get markerBytes(): number {
     return byteLength(compressionMarker(this.filterName, this.percentSaved))
   }
 
   /**
-   * Net savings after subtracting the marker's own byte cost — the true
-   * benefit of shipping the rewrite instead of the untouched original.
+   * Net savings after subtracting the marker's own byte cost — the true benefit of shipping the rewrite instead of the untouched original.
    */
   get netSavingsBytes(): number {
     return this.bytesSaved - this.markerBytes
   }
 
   /**
-   * Single definition of "is this rewrite worth shipping". `minNetSavingsBytes`
-   * is the configured floor (`bash_compress.min_net_savings_bytes`) below
-   * which a rewrite is considered too trivial to justify destabilising the
-   * bytes (breaks provider prefix caching) for — every consumer that chooses
-   * between the compressed body and the original output must go through this,
-   * not re-derive its own `bytesSaved > 0` check.
+   * Single definition of "is this rewrite worth shipping". `minNetSavingsBytes` is the configured floor (`bash_compress.min_net_savings_bytes`) below which a rewrite is considered too trivial to justify destabilising the bytes (breaks provider prefix caching) for — every consumer that chooses between the compressed body and the original output must go through this, not re-derive its own `bytesSaved > 0` check.
    */
   worthApplying(minNetSavingsBytes: number): boolean {
     return isRewriteWorthwhile({
@@ -168,10 +140,7 @@ export class CompressedOutput {
   }
 
   /**
-   * `text` with the trailing compression-summary marker appended. Skipped
-   * entirely when the rewrite doesn't clear `minNetSavingsBytes` (default 0,
-   * i.e. the marker must at least pay for itself) so raw output never carries
-   * a marker for a trivial or net-negative rewrite.
+   * `text` with the trailing compression-summary marker appended. Skipped entirely when the rewrite doesn't clear `minNetSavingsBytes` (default 0, i.e. the marker must at least pay for itself) so raw output never carries a marker for a trivial or net-negative rewrite.
    */
   withMarker(minNetSavingsBytes = 0): string {
     if (!this.worthApplying(minNetSavingsBytes)) return this.text
@@ -199,15 +168,9 @@ export interface ApplyOptions {
 }
 
 /**
- * Per-tool output compressor. Subclasses declare the command `binaries` they
- * accept (matched against the resolved argv stem after prefix stripping) and
- * implement {@link compressBody} to produce the compressed body. The base
- * {@link apply} handles ANSI / progress normalisation, input/line/byte caps,
- * and the trailing compression marker.
+ * Per-tool output compressor. Subclasses declare the command `binaries` they accept (matched against the resolved argv stem after prefix stripping) and implement {@link compressBody} to produce the compressed body. The base {@link apply} handles ANSI / progress normalisation, input/line/byte caps, and the trailing compression marker.
  *
- * Set {@link errorPassthrough} to `true` to short-circuit to the raw combined
- * output when the command exits non-zero with non-empty stderr — replacing the
- * `_preserve_stderr_on_error` preamble many filters used to duplicate.
+ * Set {@link errorPassthrough} to `true` to short-circuit to the raw combined output when the command exits non-zero with non-empty stderr — replacing the `_preserve_stderr_on_error` preamble many filters used to duplicate.
  */
 export abstract class ToolFilter {
   /** Stable filter identifier (e.g. `"pytest"`), used in the marker + stats. */
@@ -220,10 +183,7 @@ export abstract class ToolFilter {
   readonly errorPassthrough: boolean = false
 
   /**
-   * Return true when this filter should run for `argv`. Checks `binaries`
-   * against the lowercased stem (and full name, for dot-in-name binaries like
-   * `py.test`) of `argv[0]`; when `subcommands` is non-empty, requires one in
-   * the first three positional args.
+   * Return true when this filter should run for `argv`. Checks `binaries` against the lowercased stem (and full name, for dot-in-name binaries like `py.test`) of `argv[0]`; when `subcommands` is non-empty, requires one in the first three positional args.
    */
   matches(argv: string[]): boolean {
     if (argv.length === 0) return false
@@ -253,19 +213,14 @@ export abstract class ToolFilter {
   }
 
   /**
-   * Hook applied to each stream right after {@link normalise}. Identity by
-   * default; the git filter family overrides it to strip CRLF warnings. Keeps
-   * `apply` free of per-family name checks.
+   * Hook applied to each stream right after {@link normalise}. Identity by default; the git filter family overrides it to strip CRLF warnings. Keeps `apply` free of per-family name checks.
    */
   protected postNormalise(text: string): string {
     return text
   }
 
   /**
-   * Template: when {@link errorPassthrough} is set, return the raw combined
-   * error output on non-zero exit before delegating to {@link compressBody}.
-   * Filters that handle errors structurally (pytest, cargo) override this
-   * directly and leave `errorPassthrough` false.
+   * Template: when {@link errorPassthrough} is set, return the raw combined error output on non-zero exit before delegating to {@link compressBody}. Filters that handle errors structurally (pytest, cargo) override this directly and leave `errorPassthrough` false.
    */
   compress(stdout: string, stderr: string, exitCode: number, argv: string[], ctx: CompressContext = {}): string {
     if (this.errorPassthrough) {
@@ -276,9 +231,7 @@ export abstract class ToolFilter {
   }
 
   /**
-   * Inner compression logic, called after the error-passthrough guard.
-   * Default is a passthrough that joins the two streams — useful when the only
-   * compression is the ANSI / progress strip `apply` already performed.
+   * Inner compression logic, called after the error-passthrough guard. Default is a passthrough that joins the two streams — useful when the only compression is the ANSI / progress strip `apply` already performed.
    */
   protected compressBody(stdout: string, stderr: string, _exitCode: number, _argv: string[], _ctx: CompressContext = {}): string {
     if (stderr && stdout) return `${stdout.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
@@ -286,10 +239,7 @@ export abstract class ToolFilter {
   }
 
   /**
-   * Top-level entry: sanitise → input cap → normalise → compress → line/byte
-   * cap → wrap in {@link CompressedOutput}. Faithful port of the Python
-   * `apply` 10-step pipeline. Errors from {@link compress} fall back to a
-   * truncated view so the agent always sees something.
+   * Top-level entry: sanitise → input cap → normalise → compress → line/byte cap → wrap in {@link CompressedOutput}. Faithful port of the Python `apply` 10-step pipeline. Errors from {@link compress} fall back to a truncated view so the agent always sees something.
    */
   apply(stdout: string, stderr: string, exitCode: number, argv: string[], opts: ApplyOptions = {}): CompressedOutput {
     const maxLines = opts.maxLines ?? DEFAULT_MAX_LINES
@@ -300,18 +250,7 @@ export abstract class ToolFilter {
     let so = safeDecode(stdout)
     let se = safeDecode(stderr)
 
-    // Step 1.5: redact BEFORE any truncator/clipper/capper below ever sees the text. Every
-    // truncator in this pipeline (clampKeepingEnds, clipWideLines, capLongLines,
-    // truncateMiddleSmart, capBytes) can cut a real credential mid-value; if that happens before
-    // redaction runs, the surviving fragment can fall under a pattern's minimum-length floor (e.g.
-    // sk-ant- needs 20+ trailing chars) and the regex that would have caught the whole key no
-    // longer recognises the piece that's left, so it ships raw. Redacting the full, untruncated
-    // stream first means every truncator downstream only ever cuts placeholder text
-    // (`[REDACTED:...]`), never secret bytes. This also means the byte-accounting below (soBytes/
-    // seBytes, used as "what the command really produced" for compression-ratio reporting) is
-    // computed on the redacted text -- consistent with every other cache in this repo
-    // (bash_output_cache.ts, mcp_cache.ts) sizing off the redacted output rather than the raw
-    // pre-redaction bytes.
+    // Step 1.5: redact BEFORE any truncator/clipper/capper below ever sees the text. Every truncator in this pipeline (clampKeepingEnds, clipWideLines, capLongLines, truncateMiddleSmart, capBytes) can cut a real credential mid-value; if that happens before redaction runs, the surviving fragment can fall under a pattern's minimum-length floor (e.g. sk-ant- needs 20+ trailing chars) and the regex that would have caught the whole key no longer recognises the piece that's left, so it ships raw. Redacting the full, untruncated stream first means every truncator downstream only ever cuts placeholder text (`[REDACTED:...]`), never secret bytes. This also means the byte-accounting below (soBytes/seBytes, used as "what the command really produced" for compression-ratio reporting) is computed on the redacted text -- consistent with every other cache in this repo (bash_output_cache.ts, mcp_cache.ts) sizing off the redacted output rather than the raw pre-redaction bytes.
     let redactedCount = 0
     const earlySo = redactSecrets(so)
     const earlySe = redactSecrets(se)
@@ -358,9 +297,7 @@ export abstract class ToolFilter {
 
     let body: string
     try {
-      // Byte count of the (already truncated) pre-normalisation streams, so the
-      // "did normalisation itself help" check below isn't credited for size
-      // reduction that truncation alone already produced.
+      // Byte count of the (already truncated) pre-normalisation streams, so the "did normalisation itself help" check below isn't credited for size reduction that truncation alone already produced.
       const preNormBytes = byteLength(so) + byteLength(se)
       const normOut = this.postNormalise(normalise(so, { skipProgress }))
       const normErr = this.postNormalise(normalise(se, { skipProgress }))
@@ -369,7 +306,7 @@ export abstract class ToolFilter {
       // Step 6a: normalisation alone achieved ≥40% reduction — skip the expensive per-tool filter and use simple dedupe.
       if (preNormBytes > 0 && normBytes <= preNormBytes * 0.6) {
         body = compressBashOutput(normOut, normErr)
-        notes.push('early-exit: normalisation alone sufficient')
+        notes.push(EARLY_EXIT_NOTE)
       } else if (normBytes > MAX_INSPECT_BYTES) {
         // Step 6b: runaway log — head/tail truncate rather than per-line scan.
         notes.push(`input exceeded inspect budget (${Math.floor(MAX_INSPECT_BYTES / 1024)} KiB); fell back to truncation`)
@@ -393,20 +330,14 @@ export abstract class ToolFilter {
     if (lines.length > maxLines) body = truncateMiddleSmart(lines, maxLines).join('\n')
     // Step 9: byte cap (backstop for pathological lines).
     body = capBytes(body, maxBytes)
-    // Step 9.5: defense-in-depth secret redaction, re-run on the final body. The primary pass now
-    // runs at Step 1.5, before any truncator in this pipeline can cut a credential below a
-    // pattern's recognition floor (see the comment there); EnvFilter's ENV_KEEP_PREFIXES
-    // intentionally keeps AWS_/GITHUB_/GITLAB_/AZURE_/GOOGLE_/TF_/PULUMI_-prefixed vars for
-    // debugging context, which also keeps any real AWS_ACCESS_KEY_ID/GITHUB_TOKEN/etc. value
-    // verbatim until redacted. This second pass is normally a no-op (redactSecrets is idempotent)
-    // but stays in place as a choke point for any redaction-shaped text a per-tool filter's own
-    // `compress()` might introduce after Step 1.5 already ran.
+    // Step 9.5: defense-in-depth secret redaction, re-run on the final body. The primary pass now runs at Step 1.5, before any truncator in this pipeline can cut a credential below a pattern's recognition floor (see the comment there); EnvFilter's ENV_KEEP_PREFIXES intentionally keeps AWS_/GITHUB_/GITLAB_/AZURE_/GOOGLE_/TF_/PULUMI_-prefixed vars for debugging context, which also keeps any real AWS_ACCESS_KEY_ID/GITHUB_TOKEN/etc. value verbatim until redacted. This second pass is normally a no-op (redactSecrets is idempotent) but stays in place as a choke point for any redaction-shaped text a per-tool filter's own `compress()` might introduce after Step 1.5 already ran.
     const redacted = redactSecrets(body)
     body = redacted.text
     redactedCount += redacted.count
     if (redactedCount > 0) notes.push(`redacted ${redactedCount} secret-shaped value(s)`)
-    // Step 10: prepend notes.
-    if (notes.length) body = `[${notes.join('; ')}]\n${body}`
+    // Step 10: prepend the notes the model can act on. Which branch compressed the output is not one of them, and it rode on 773 outputs across 159 recorded sessions; it stays in `notes` for callers and tests.
+    const shown = notes.filter((n) => n !== EARLY_EXIT_NOTE)
+    if (shown.length) body = `[${shown.join('; ')}]\n${body}`
 
     return new CompressedOutput(body, originalBytes, byteLength(body), this.name, exitCode, notes)
   }
