@@ -129,6 +129,8 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
   // VS Code's run_in_terminal runs the command in whatever shell the user's terminal uses, and its payload does not say which one, so no quoting of the wrapped command is safe in every one of them: the command is never rewritten there.
   if (event.raw['_tg_harness'] === 'vscode') return null
+  // Codex CLI on Windows executes shell-tool commands through PowerShell (same reason codexHookCommandFor prefixes the hook's own invocation with `&` -- see codex_install.ts), not the Git-Bash the harness's payload might suggest, so the POSIX single-quote escaping shellQuoteSingle produces below is invalid there: a literal `--start` (or any argument PowerShell would otherwise treat as a flag) then reaches token-goat compress's own arg parser unquoted, past PowerShell's `'...''...'` escape convention, and fails with "unknown option". Skip the rewrite rather than emit PowerShell-flavored quoting.
+  if (event.raw['_tg_harness'] === 'codex' && process.platform === 'win32') return null
   let cfg: { enabled: boolean; disabled_filters: string[]; timeout_seconds: number }
   try {
     cfg = loadConfig().bash_compress

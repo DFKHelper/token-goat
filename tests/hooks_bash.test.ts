@@ -413,6 +413,48 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
   })
 }
 
+// CAPTURE: real Codex session logs under ~/.codex/sessions on this machine show the harness executing shell-tool commands as ["...pwsh.exe","-Command","<script>"] on Windows, and a captured failure of the form `error: unknown option '--context'` after token-goat's own arg parser received a POSIX single-quote-escaped rewrite through PowerShell's different quoting convention -- confirming Codex on Windows runs the wrapped command through PowerShell, not the bash the rewrite assumes.
+describe('preBashHandler — Codex on Windows skips the compress rewrite', () => {
+  const realPlatform = process.platform
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+  })
+
+  it('does not rewrite when the harness is codex and the platform is win32', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    const event = makeHookEvent({
+      toolName: 'Bash',
+      toolInput: { command: 'rg "TODO" src/foo.ts' },
+      sessionId: 'test-session-codex-win',
+      agentId: undefined,
+      raw: { tool_name: 'Bash', tool_input: { command: 'rg "TODO" src/foo.ts' }, _tg_harness: 'codex' },
+    })
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still rewrites for codex on a non-Windows platform', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    const event = makeHookEvent({
+      toolName: 'Bash',
+      toolInput: { command: 'rg "TODO" src/foo.ts' },
+      sessionId: 'test-session-codex-linux',
+      agentId: undefined,
+      raw: { tool_name: 'Bash', tool_input: { command: 'rg "TODO" src/foo.ts' }, _tg_harness: 'codex' },
+    })
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('rewriteInput')
+  })
+
+  // No platform spoofing here: this must hold on whatever platform actually runs the suite, since
+  // Claude Code's own harness never matches the codex-on-win32 check regardless of process.platform.
+  it('still rewrites for claude code under bash', () => {
+    const result = preBashHandler(makeBashEvent('rg "TODO" src/foo.ts'))
+    expect(result.hookType).toBe('rewriteInput')
+  })
+})
+
 describe('preBashHandler — test-run budget advice', () => {
   it('advises once for an unscoped pytest command', () => {
     const original = process.env['TOKEN_GOAT_BASH_COMPRESS']
