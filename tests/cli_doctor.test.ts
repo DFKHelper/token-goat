@@ -100,6 +100,26 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('warn')
       expect(result.message, 'only the non-daemon process should be counted').toContain('1 orphaned Node process')
     })
+
+    // Regression: the message used to list a bare PID and say "close stale sessions or terminate specific confirmed orphan PIDs", which a user's agent read as an instruction that these PIDs were token-goat's own and told the user to kill them -- they were an unrelated scheduler script excluded from ever being token-goat's own by the --worker-daemon check above.
+    it('names each orphan by its script, and never implies it belongs to token-goat', () => {
+      const result = checkMcpProcessHealth([
+        { processId: 4, parentProcessId: 999, name: 'node.exe', commandLine: 'scripts/selfimprove-scheduler.mjs' },
+      ])
+
+      expect(result.message).toContain('4 (selfimprove-scheduler.mjs)')
+      expect(result.message).toContain("None of these are token-goat's own")
+      expect(result.message).toContain('confirm what each one is')
+    })
+
+    // CAPTURE: `Get-CimInstance Win32_Process`'s CommandLine for a real detached `node orphan_probe.js` process on this machine, quoting the interpreter's own .exe path first -- the interpreter must not win the "what script is this" match just because it also ends in .exe.
+    it('names the actual script, not the quoted node.exe interpreter path ahead of it', () => {
+      const result = checkMcpProcessHealth([
+        { processId: 41584, parentProcessId: 999, name: 'node.exe', commandLine: '"C:\\Program Files\\nodejs\\node.exe" orphan_probe.js' },
+      ])
+
+      expect(result.message).toContain('41584 (orphan_probe.js)')
+    })
   })
 
   describe('checkGlobalMcpConfig', () => {

@@ -19,6 +19,19 @@ export interface ProcessInfo {
   commandLine: string
 }
 
+// Interpreter/shell basenames to skip when picking the token that names the actual script -- a real Windows command line quotes the interpreter's own path first (`"C:\Program Files\nodejs\node.exe" orphan_probe.js`), which itself ends in .exe and would otherwise win as the first match.
+const INTERPRETER_BASENAMES = new Set(['node.exe', 'python.exe', 'python3.exe', 'pwsh.exe', 'powershell.exe', 'cmd.exe'])
+
+// The basename of the first non-interpreter token in `commandLine` ending in a common script/binary extension, falling back to a truncated command line when nothing script-shaped is found -- a bare PID told a user's agent nothing about what it actually was, and it once reported three of these as "stale token-goat workers" to kill, when they were an unrelated scheduler script this same check already excludes from ever being token-goat's own.
+function describeProcess(commandLine: string): string {
+  for (const m of commandLine.matchAll(/[^\s"]+\.(?:js|mjs|cjs|ts|py|exe)\b/gi)) {
+    const basename = m[0].replace(/\\/g, '/').split('/').pop() ?? m[0]
+    if (!INTERPRETER_BASENAMES.has(basename.toLowerCase())) return basename
+  }
+  const trimmed = commandLine.trim()
+  return trimmed.length > 0 ? (trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed) : '(no command line)'
+}
+
 export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null): DoctorResult {
   if (processes === null) {
     return {
@@ -41,13 +54,13 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null):
     if (chromeLaunchers.length > 1) details.push(`${chromeLaunchers.length} Chrome DevTools MCP launchers (PIDs: ${chromeLaunchers.map((p) => p.processId).join(', ')})`)
     if (playwrightLaunchers.length > 1) details.push(`${playwrightLaunchers.length} Playwright MCP launchers (PIDs: ${playwrightLaunchers.map((p) => p.processId).join(', ')})`)
     if (orphanedNodeProcesses.length > 0) {
-      const pids = orphanedNodeProcesses.map((p) => p.processId).join(', ')
-      details.push(`${orphanedNodeProcesses.length} orphaned Node process${orphanedNodeProcesses.length === 1 ? '' : 'es'} (PIDs: ${pids})`)
+      const described = orphanedNodeProcesses.map((p) => `${p.processId} (${describeProcess(p.commandLine)})`).join(', ')
+      details.push(`${orphanedNodeProcesses.length} orphaned Node process${orphanedNodeProcesses.length === 1 ? '' : 'es'}: ${described}`)
     }
     return {
       name: 'MCP process health',
       status: 'warn',
-      message: `${details.join('; ')} detected. These are host-managed processes left by closed terminal/CLI sessions; close stale sessions or terminate specific confirmed orphan PIDs with Stop-Process -Id <PID>.`,
+      message: `${details.join('; ')} detected. None of these are token-goat's own processes -- they are host-managed Node/MCP processes left by closed terminal or CLI sessions; confirm what each one is (the name shown above is a starting point) before stopping it with Stop-Process -Id <PID>.`,
     }
   }
 
