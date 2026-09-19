@@ -405,7 +405,7 @@ function commandMentionsCorrelator(command: string, correlator: string): boolean
  * moves on, so there is no command to observe. The redirect categories are the opposite -- they name
  * a cheaper command to run instead, and running it is the observable proof.
  *
- * Measuring both with the same presence test made these two structurally unable to score: every row
+ * Measuring these with the same presence test made them structurally unable to score: every row
  * resolved `acted_on = 0` no matter how well the hint worked, efficacy sat at exactly 0%, and
  * `shouldSuppress` muted the category for good once `min_sample_size` rows had accrued. So the
  * hints that save the most -- the ones that stop a whole re-read -- were the first to turn
@@ -415,6 +415,7 @@ function commandMentionsCorrelator(command: string, correlator: string): boolean
 const SUPPRESSION_HINT_CATEGORIES: ReadonlySet<HintCategory> = new Set<HintCategory>([
   'read_reread_dedup',
   'edit_reread_suggest',
+  'read_structural_nav',
 ])
 
 /** True when this category's hint asks for an absence rather than a substitute command. */

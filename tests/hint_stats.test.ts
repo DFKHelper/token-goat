@@ -570,18 +570,21 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     cfg.hint_stats.suppress_threshold_pct = 50
     saveConfig(cfg)
 
+    // bash_redirect (not a suppression category): its null-correlator row books acted_on=0,
+    // same as before this fix's polarity change to read_structural_nav -- keeps this test's
+    // threshold/sample-size scaffold orthogonal to that fix.
     const nActed = nonce()
-    logHintEmission('read_structural_nav', nActed, 'C:/repo/a.ts')
+    logHintEmission('bash_redirect', nActed, 'C:/repo/a.ts')
     resolvePendingHintsForEvent(bashEvent(nActed, 'token-goat skeleton "C:/repo/a.ts"'))
     const nNotActed = nonce()
-    logHintEmission('read_structural_nav', nNotActed, null)
+    logHintEmission('bash_redirect', nNotActed, null)
     // 1/2 = 50%, not below a 50% threshold.
-    expect(shouldSuppress('read_structural_nav', nonce())).toBe(false)
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
 
     cfg.hint_stats.suppress_threshold_pct = 60
     saveConfig(cfg)
     // Same 50% data, now below a 60% threshold.
-    expect(shouldSuppress('read_structural_nav', nonce())).toBe(true)
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
 
   // Regression (mutation-testing gap): getHintStatsSummary's per-category `suppressed` field is
@@ -1024,6 +1027,28 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     logHintEmission('edit_reread_suggest', n, 'C:/repo/docs/guide.md')
     idleOut(n)
     expect(rowFor(n)?.acted_on).toBe(1)
+  })
+
+  // Regression: read_structural_nav is worded exactly like read_reread_dedup ("use structural
+  // navigation instead of a future full re-read"), but was measured with the redirect-category
+  // presence test until now, so a session that never re-read the file (the compliance the hint
+  // actually asked for) still booked acted_on=0 and drove the category toward auto-suppression.
+  it('credits a structural-nav hint when the window expires with no re-read (regression: wrong polarity muted this category on its own compliance)', () => {
+    const n = nonce()
+    logHintEmission('read_structural_nav', n, 'C:/repo/src/big.ts')
+    idleOut(n)
+    const row = rowFor(n)
+    expect(row?.resolved, 'the hint never resolved').toBe(1)
+    expect(row?.acted_on, 'not re-reading the file is the compliance this hint asked for').toBe(1)
+  })
+
+  it('counts a full re-read of the named file against the structural-nav hint', () => {
+    const n = nonce()
+    logHintEmission('read_structural_nav', n, 'C:/repo/src/big.ts')
+    resolvePendingHintsForEvent(readEvent(n, 'C:/repo/src/big.ts'))
+    const row = rowFor(n)
+    expect(row?.resolved, 'defiance must resolve the row immediately').toBe(1)
+    expect(row?.acted_on, 're-reading the file is exactly what the hint warned against').toBe(0)
   })
 
   it('counts a plain Read of the named file against the dedup hint', () => {
