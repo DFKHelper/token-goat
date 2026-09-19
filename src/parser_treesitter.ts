@@ -237,12 +237,52 @@ function collectPatternBindings(node: TsNode): string[] {
   return names
 }
 
-/** Node types whose bodies introduce a new function scope — declarations
- * nested inside these are locals, excluded from the document-symbol index. */
+/** Node types whose bodies introduce a new function scope — declarations nested inside these are locals, excluded from the document-symbol index. */
 const TSJS_FN_SCOPE_TYPES: ReadonlySet<string> = new Set([
   'function_declaration', 'function_expression', 'arrow_function',
   'method_definition', 'generator_function', 'generator_function_declaration',
 ])
+
+// tree-sitter node bindings can hand back a fresh wrapper object per accessor call, so `===` between two accesses of what is structurally the same node is unreliable; compare position and type instead.
+function sameNode(a: TsNode | null, b: TsNode | null): boolean {
+  return a !== null && b !== null && a.type === b.type && a.startPosition.row === b.startPosition.row && a.startPosition.column === b.startPosition.column && a.endPosition.row === b.endPosition.row && a.endPosition.column === b.endPosition.column
+}
+
+/** Climbs through parens (and, once, a `!`/`void`/`+` unary wrapper) from `node` to find whether it is the immediately-invoked callee of a call expression sitting directly at an expression-statement. */
+function isIifeCallee(node: TsNode): boolean {
+  let cur: TsNode = node
+  let parent = cur.parent
+  while (parent !== null && parent.type === 'parenthesized_expression') {
+    cur = parent
+    parent = cur.parent
+  }
+  if (parent === null || parent.type !== 'call_expression' || !sameNode(parent.childForFieldName('function'), cur)) return false
+  let stmt: TsNode | null = parent.parent
+  while (stmt !== null && stmt.type === 'parenthesized_expression') stmt = stmt.parent
+  if (stmt !== null && stmt.type === 'unary_expression' && ['!', 'void', '+'].includes(stmt.childForFieldName('operator')?.text ?? '')) {
+    stmt = stmt.parent
+    while (stmt !== null && stmt.type === 'parenthesized_expression') stmt = stmt.parent
+  }
+  return stmt !== null && stmt.type === 'expression_statement'
+}
+
+/** True when `node` is the callback argument of one of the fixed module-wrapper idioms (`document.addEventListener('DOMContentLoaded', fn)`, `$(fn)`, `define(..., fn)`, `require(..., fn)`) invoked directly as a statement. Deliberately narrow: an ordinary event callback (a `click` handler, say) does not match, so it still opens a real function scope. */
+function isModuleWrapperCallback(node: TsNode): boolean {
+  const argsNode = node.parent
+  if (argsNode === null || argsNode.type !== 'arguments') return false
+  const call = argsNode.parent
+  if (call === null || call.type !== 'call_expression' || call.parent === null || call.parent.type !== 'expression_statement') return false
+  const callee = call.childForFieldName('function')
+  if (callee === null) return false
+  if (callee.type === 'identifier' && (callee.text === '$' || callee.text === 'define' || callee.text === 'require')) return true
+  if (callee.type === 'member_expression') {
+    const object = callee.childForFieldName('object')
+    const property = callee.childForFieldName('property')
+    const first = argsNode.namedChildren[0]
+    return object?.type === 'identifier' && object.text === 'document' && property?.text === 'addEventListener' && first?.type === 'string' && first.text.includes('DOMContentLoaded')
+  }
+  return false
+}
 
 /**
  * Walk a TS/JS tree collecting symbols. Descends into export statements (so
@@ -344,15 +384,7 @@ export function extractTsJsSymbols(root: TsNode, filePath: string, lines: readon
       }
     }
 
-    // Object literal property methods / handlers / chart configs / plugin objects.
-    // e.g. `const config = { labels: [...], update: () => {} }`, `plugins: { legend: { ... } }`,
-    // or method declarations inside objects `{ myHandler() { ... }, onHover: (e) => { ... } }`.
-    if (node.type === 'method_definition' && node.parent?.type === 'object') {
-      const name = nodeName(node)
-      if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, 'method', node, lines, 'c'))
-      }
-    }
+    // Object literal property methods / handlers / chart configs / plugin objects, e.g. `const config = { labels: [...], update: () => {} }` or `plugins: { legend: { ... } }`. A `method_definition` here (`{ myHandler() { ... } }`) is already indexed by the generic TSJS_KIND_BY_TYPE path above, which does not gate on the parent, so only the `pair` shape (arrow/function-expression values, and nested config objects) needs handling here.
     if (node.type === 'pair' && node.parent?.type === 'object') {
       const key = node.childForFieldName('key')
       const value = node.childForFieldName('value')
@@ -376,7 +408,10 @@ export function extractTsJsSymbols(root: TsNode, filePath: string, lines: readon
       }
     }
 
-    const childInside = insideFunction || TSJS_FN_SCOPE_TYPES.has(node.type)
+    // An anonymous function stays module scope for its own body when it is an IIFE or a recognized module-wrapper callback invoked directly at module scope; once a real function scope has been entered, this never re-applies, so a callback nested inside a transparent wrapper (a `click` handler, say) still opens a real scope.
+    const isAnonymousFn = node.type === 'function_expression' || node.type === 'arrow_function'
+    const isTransparentWrapper = !insideFunction && isAnonymousFn && (isIifeCallee(node) || isModuleWrapperCallback(node))
+    const childInside = insideFunction || (TSJS_FN_SCOPE_TYPES.has(node.type) && !isTransparentWrapper)
     for (const child of node.namedChildren) {
       visit(child, childInside)
     }

@@ -231,6 +231,46 @@ describe('parseFile', () => {
     expect(names).not.toContain('localGenE2e')
   })
 
+  it('indexes a classic (function(){...})() browser script instead of treating the whole file as one local scope (HAND-DERIVED: shape of a classic IIFE-wrapped dashboard script, from a user report)', async () => {
+    const file = write(
+      'dashboard.js',
+      [
+        '(function () {',
+        "  'use strict';",
+        '  const state = { charts: {} };',
+        '  function updateChart1(data) {',
+        "    const ctx = document.getElementById('chart1');",
+        '  }',
+        '  const renderDailyBaselineBar = (ctx, rows) => {',
+        '    rows.forEach(function (row) {',
+        '      ctx.fillRect(row.x, row.y, row.w, row.h);',
+        '    });',
+        '  };',
+        '  window.Dashboard = {',
+        '    init() {',
+        '      updateChart1({ labels: [], datasets: [] });',
+        '    },',
+        '    refresh: function () {},',
+        '  };',
+        "  document.addEventListener('DOMContentLoaded', () => {",
+        "    const legend = document.querySelector('#legend');",
+        "    legend.addEventListener('click', function onLegendClick(e) {",
+        '      if (e.target.dataset.series) { state.charts.c1.toggle(e.target.dataset.series); }',
+        '    });',
+        '    window.Dashboard.init();',
+        '  });',
+        '})();',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('updateChart1')
+    expect(names).toContain('renderDailyBaselineBar')
+    expect(names).toContain('state')
+    expect(names.filter((n) => n === 'init')).toHaveLength(1)
+    expect(names).not.toContain('onLegendClick')
+  })
+
   it('indexes TS/JS class fields initialized with arrow functions, not data fields', async () => {
     const tsFile = write(
       'widget.ts',
