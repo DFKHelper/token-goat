@@ -5,7 +5,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, foldDetail, MAX_FOLD_DETAIL, type FoldSpan } from '../src/code_fold.js'
@@ -18,6 +17,7 @@ import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
 import { dirtyQueuePath } from '../src/hooks_index.js'
 import type { HookEvent } from '../src/hook_registry.js'
+import { indexableDir } from './helpers/temp-config.js'
 
 /** Rows as parseNumberedReadResult produces them: 1-based line numbers, in order. */
 function rowsFor(count: number, from = 1): Array<{ no: number }> {
@@ -101,7 +101,7 @@ describe('body fold on the real Read hook path', () => {
     for (let i = 0; i < 60; i++) lines.push(`  const localVariable${i} = n + ${i} // body line ${i}`)
     lines.push('  return n', '}', '', 'export const TRAILING_CONSTANT = 7', '')
     const body = lines.join('\n')
-    const file = path.join(os.tmpdir(), `tg-fold-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    const file = path.join(indexableDir(), 'fold.ts')
     fs.writeFileSync(file, body)
     tmpFiles.push(file)
     indexFileSync(normalizePath(file))
@@ -227,7 +227,7 @@ describe('body fold on the real Read hook path', () => {
     for (let i = 0; i < 60; i++) lines.push(`  const localVariable${i} = n + ${i} // body line ${i}`)
     lines.push('  return n', '}', '', 'export const TRAILING_CONSTANT = 7', '')
     const body = lines.join('\n')
-    const file = path.join(os.tmpdir(), `tg-fold-unindexed-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    const file = path.join(indexableDir(), 'fold-unindexed.ts')
     fs.writeFileSync(file, body)
     tmpFiles.push(file)
     // Deliberately no indexFileSync: that call is what every other fixture in this file makes, and skipping it is the entire point of this case.
@@ -316,7 +316,7 @@ describe('body fold on the real Read hook path', () => {
   })
 
   it('names the file relative to the project root in the fold notice, not by absolute path', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fold-proj-'))
+    const root = indexableDir()
     fs.mkdirSync(path.join(root, '.git'), { recursive: true })
     const nested = path.join(root, 'src', 'deeply', 'nested')
     fs.mkdirSync(nested, { recursive: true })
@@ -367,13 +367,7 @@ describe('foldDetail', () => {
 /**
  * The shape Claude Code actually delivers.
  *
- * Fixture provenance: CAPTURE. The envelope and the un-numbered `file.content` below were read off
- * real `toolUseResult` records in a Claude Code session transcript on 2026-09-05 -- 104 of 104 Read
- * results carried the file's own text, none carried a `cat -n` rendering. The block above this one
- * numbers its fixture and says in a comment that numbering is "what the hook parses"; that claim was
- * written from READ_NUMBERED_ROW_RE rather than from the harness, and it was wrong. Because every
- * fold and elision test agreed with it, both post-read rewrites were dead code on this harness --
- * the fold booked 0 events across a full session while the rest of the read hook ran normally.
+ * Fixture provenance: CAPTURE. The envelope and the un-numbered `file.content` below were read off real `toolUseResult` records in a Claude Code session transcript on 2026-09-05 -- 104 of 104 Read results carried the file's own text, none carried a `cat -n` rendering. The block above this one numbers its fixture and says in a comment that numbering is "what the hook parses"; that claim was written from READ_NUMBERED_ROW_RE rather than from the harness, and it was wrong. Because every fold and elision test agreed with it, both post-read rewrites were dead code on this harness -- the fold booked 0 events across a full session while the rest of the read hook ran normally.
  */
 describe('body fold against the captured Claude Code Read envelope', () => {
   const tmpFiles: string[] = []
@@ -390,7 +384,7 @@ describe('body fold against the captured Claude Code Read envelope', () => {
     for (let i = 0; i < 60; i++) lines.push(`  const localVariable${i} = n + ${i} // body line ${i}`)
     lines.push('  return n', '}', '', 'export const TRAILING_CONSTANT = 7', '')
     const body = lines.join('\n')
-    const file = path.join(os.tmpdir(), `tg-fold-cap-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    const file = path.join(indexableDir(), 'fold-cap.ts')
     fs.writeFileSync(file, body)
     tmpFiles.push(file)
     indexFileSync(normalizePath(file))
@@ -520,15 +514,9 @@ describe('body fold against the captured Claude Code Read envelope', () => {
 /**
  * Comment folding.
  *
- * Fixture provenance: HAND-DERIVED. The rows below are synthetic source written for this test and
- * the expected spans are computed from the inputs by hand, independently of the planner. That is
- * the right tier for logic and explicitly NOT evidence about any wire format; the captured-envelope
- * block above is what covers the shape Claude Code actually delivers.
+ * Fixture provenance: HAND-DERIVED. The rows below are synthetic source written for this test and the expected spans are computed from the inputs by hand, independently of the planner. That is the right tier for logic and explicitly NOT evidence about any wire format; the captured-envelope block above is what covers the shape Claude Code actually delivers.
  *
- * The markdown case is the one that matters most. A run of `#` lines is a comment block in Python
- * and a run of headings in Markdown, so a content sniff would fold a document's entire heading
- * structure -- the one thing a reader navigates by. Keying on extension is what prevents that, and
- * the assertion below fails if anyone swaps it for a sniff.
+ * The markdown case is the one that matters most. A run of `#` lines is a comment block in Python and a run of headings in Markdown, so a content sniff would fold a document's entire heading structure -- the one thing a reader navigates by. Keying on extension is what prevents that, and the assertion below fails if anyone swaps it for a sniff.
  */
 function crows(lines: string[], from = 1): Array<{ no: number; text: string }> {
   return lines.map((text, i) => ({ no: from + i, text }))

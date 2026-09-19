@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { getDb } from '../src/db.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
+import { indexableDir } from './helpers/temp-config.js'
 import { drainOnce } from '../src/worker.js'
 import { querySymbols } from '../src/index_reader.js'
 
@@ -61,7 +62,7 @@ function dirtyQueue(): string[] {
 }
 
 beforeEach(() => {
-  projectDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-parser-'))
+  projectDir = indexableDir()
   homeDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-parser-home-'))
 
   writeFileSync(join(projectDir, 'widget.ts'), 'export function widget(): number {\n  return 1\n}\n')

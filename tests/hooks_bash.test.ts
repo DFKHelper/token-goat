@@ -1,4 +1,4 @@
-import { tempConfigPath } from './helpers/temp-config.js'
+import { indexableDir, tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
@@ -4106,7 +4106,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
   // Regression: `git diff --name-only` always reports paths relative to the repo TOP-LEVEL, regardless of which directory git was invoked from -- resolving those paths against the raw event cwd (a monorepo subpackage) instead of the actual repo root computed the wrong absolute path and silently enqueued nothing useful for the file that really changed.
   it('enqueues the correct absolute path when the bash tool cwd is a repo subdirectory, not the repo root', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tg-gitmutate-subdir-'))
+    const dir = indexableDir()
     const sub = join(dir, 'sub')
     try {
       const git = (args: string[], cwd = dir): void => {
@@ -4141,7 +4141,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
   // Regression: for a multi-commit rebase, the final `rebase (finish)` reflog step is a ref finalize, not a new commit -- it points at the SAME sha as the last `rebase (pick)` step, so `HEAD@{1}` and `HEAD@{0}` are identical and `git diff --name-only HEAD@{1} HEAD` comes back completely EMPTY, silently enqueuing nothing at all (empirically confirmed). `ORIG_HEAD` survives the internal reflog churn and correctly diffs against the true pre-rebase tip, catching the file that actually changed (content newly pulled in from the rebase target).
   it('enqueues the changed file after a multi-commit rebase, where HEAD@{1}..HEAD would come back empty', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tg-gitmutate-rebase-'))
+    const dir = indexableDir()
     try {
       const git = (args: string[]): void => {
         execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
@@ -4370,6 +4370,20 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
       await postBashHandler(makePostBashEvent('echo more >> a.txt', '', dir))
 
       expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression, CAPTURE: a live index held 3,186 rows for scratch files under the OS temp dir, among them a commit message written by `cat > msgD.txt <<EOF` from that dir; this detector enqueued every redirect target while the Edit-tool path already refused temp.
+  it('does not enqueue a redirect target under the OS temp dir', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-scratch-'))
+    try {
+      // The target exists, as it would after the command ran: the detector skips paths not on disk, which would make this pass for the wrong reason.
+      writeFileSync(join(dir, 'msgD.txt'), 'msg\n')
+      await postBashHandler(makePostBashEvent('echo msg > msgD.txt', '', dir))
+
+      expect(foldedDirtyPaths().filter((p) => p.includes('tg-scratch-'))).toEqual([])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

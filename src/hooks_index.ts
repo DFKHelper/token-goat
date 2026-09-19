@@ -1,15 +1,9 @@
 /**
  * Dirty-queue management for incremental re-indexing.
  *
- * Ports the `queue/dirty.txt` side of `worker.py::enqueue_dirty` and the
- * pre-compact flush concept. Edited files are appended to the queue by
- * {@link appendDirtyPath} (called from `hooks_edit.ts`); the background indexer
- * (Layer 7) will later drain it. On `pre_compact` this module records the
- * pending paths and clears the queue so the next session starts clean.
+ * Ports the `queue/dirty.txt` side of `worker.py::enqueue_dirty` and the pre-compact flush concept. Edited files are appended to the queue by {@link appendDirtyPath} (called from `hooks_edit.ts`); the background indexer (Layer 7) will later drain it. On `pre_compact` this module records the pending paths and clears the queue so the next session starts clean.
  *
- * This module owns the queue file path and its read/write/clear surface so the
- * writer (`hooks_edit.ts`) and the drainer share one definition rather than
- * duplicating the path join.
+ * This module owns the queue file path and its read/write/clear surface so the writer (`hooks_edit.ts`) and the drainer share one definition rather than duplicating the path join.
  */
 
 import * as fs from 'node:fs'
@@ -20,6 +14,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
 import { resolveIndexPath } from './paths.js'
+import { isUnderSystemTemp } from './project.js'
 import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
 import { encodeDirtyQueueLine, ensureWorkerAlive, parseDirtyQueueLines } from './worker.js'
@@ -32,9 +27,7 @@ export function dirtyQueuePath(): string {
 /**
  * Append `normalizedPath` to the dirty queue, one path per line.
  *
- * Creates the `queue/` directory and the file on first use. Uses append mode
- * so concurrent edits accumulate; a trailing newline terminates each entry so
- * {@link getDirtyPaths} can split cleanly.
+ * Creates the `queue/` directory and the file on first use. Uses append mode so concurrent edits accumulate; a trailing newline terminates each entry so {@link getDirtyPaths} can split cleanly.
  */
 export function appendDirtyPath(normalizedPath: string): void {
   const queuePath = dirtyQueuePath()
@@ -44,9 +37,7 @@ export function appendDirtyPath(normalizedPath: string): void {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
   }
-  // Guard against a torn last line left by a previous crashed write: if the queue file already
-  // exists and does not end in a newline, start this append with one so the partial line never
-  // merges with the new path into a single garbage entry.
+  // Guard against a torn last line left by a previous crashed write: if the queue file already exists and does not end in a newline, start this append with one so the partial line never merges with the new path into a single garbage entry.
   let leadingNewline = ''
   try {
     const existing = fs.readFileSync(queuePath, 'utf8')
@@ -55,57 +46,35 @@ export function appendDirtyPath(normalizedPath: string): void {
     // File doesn't exist yet (first append) -- nothing to guard against.
   }
   fs.appendFileSync(queuePath, `${leadingNewline}${encodeDirtyQueueLine(normalizedPath)}\n`)
-  // Deliberately NOT calling worker.ts's clearRetryCount here anymore: doing so unconditionally
-  // opened a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension
-  // load attempt) via getDb() on every single edit hook invocation -- and could even create
-  // global.db from scratch if it did not exist yet -- just to run a retry-counter reset that is
-  // a no-op for virtually every file. The daemon's own dequeue logic already covers this: every
-  // path whose fingerprintFile read succeeds during a drain has its retry_count cleared right
-  // there (see processDirtyBatch's clearRetryCount call in worker.ts), so a freshly-edited file
-  // gets its retry budget restored automatically the next time it is read successfully -- no
-  // separate reset needed on the hot hook path. The only case this trades away is a file whose
-  // retry budget was already exhausted from an earlier transient-lock episode AND that fails to
-  // fingerprint again on the very first drain immediately following this edit: it will not be
-  // requeued that one cycle, but the next edit re-enqueues it and the cycle repeats -- it is
-  // never permanently lost, only occasionally slower to recover a mid-collision retry.
+  // Deliberately NOT calling worker.ts's clearRetryCount here anymore: doing so unconditionally opened a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension load attempt) via getDb() on every single edit hook invocation -- and could even create global.db from scratch if it did not exist yet -- just to run a retry-counter reset that is a no-op for virtually every file. The daemon's own dequeue logic already covers this: every path whose fingerprintFile read succeeds during a drain has its retry_count cleared right there (see processDirtyBatch's clearRetryCount call in worker.ts), so a freshly-edited file gets its retry budget restored automatically the next time it is read successfully -- no separate reset needed on the hot hook path. The only case this trades away is a file whose retry budget was already exhausted from an earlier transient-lock episode AND that fails to fingerprint again on the very first drain immediately following this edit: it will not be requeued that one cycle, but the next edit re-enqueues it and the cycle repeats -- it is never permanently lost, only occasionally slower to recover a mid-collision retry.
 }
 
 /**
- * Enqueue `filePath` for background reindexing, never letting a queue-append failure block the
- * write/read it follows. Pass `alreadyResolved: true` when the caller has already run the path
- * through {@link resolveIndexPath} (avoids re-resolving); omitted or `false` resolves it here.
+ * Enqueue `filePath` for background reindexing, never letting a queue-append failure block the write/read it follows. Pass `alreadyResolved: true` when the caller has already run the path through {@link resolveIndexPath} (avoids re-resolving); omitted or `false` resolves it here.
+ *
+ * A path under the OS temp dir is dropped here, once, for every caller: nothing there should become a permanent index row (see isUnderSystemTemp), and when only the edit hook refused it, shell redirects, `tee` and `sed -i` into scratch files filled one real index with 3,186 of them.
  */
 export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?: boolean }): void {
   try {
-    appendDirtyPath(opts?.alreadyResolved === true ? filePath : resolveIndexPath(filePath))
+    const resolved = opts?.alreadyResolved === true ? filePath : resolveIndexPath(filePath)
+    if (isUnderSystemTemp(resolved)) return
+    appendDirtyPath(resolved)
   } catch {
-    // Fail-soft: the file write/reparse already landed either way, just not reindexed until the
-    // next `token-goat index` or edit touches this file again.
+    // Fail-soft: the file write/reparse already landed either way, just not reindexed until the next `token-goat index` or edit touches this file again.
     return
   }
-  // Every caller of this function just queued work for the background worker to drain --
-  // `hooks_edit.ts` was the only site that ever nudged a dead worker back to life after doing so,
-  // so a session driven entirely through the Bash hook's rewrite enqueues (`hooks_bash.ts`), the
-  // stale-read self-heal (`read_commands.ts::healStaleIndex`), or a plain CLI append (`cli.ts`,
-  // `fold_delivery.ts`, `reconcile.ts`) could fill the dirty queue with nothing running to drain
-  // it. Calling it here, at the one choke point every enqueue path already funnels through,
-  // covers all of them at once instead of repeating the same nudge at each call site.
-  // `ensureWorkerAlive` already gates on `TOKEN_GOAT_NO_WORKER_SPAWN` and rate-limits itself
-  // internally, so this is cheap (and test-safe) on every call after the first in a given window.
+  // Every caller of this function just queued work for the background worker to drain -- `hooks_edit.ts` was the only site that ever nudged a dead worker back to life after doing so, so a session driven entirely through the Bash hook's rewrite enqueues (`hooks_bash.ts`), the stale-read self-heal (`read_commands.ts::healStaleIndex`), or a plain CLI append (`cli.ts`, `fold_delivery.ts`, `reconcile.ts`) could fill the dirty queue with nothing running to drain it. Calling it here, at the one choke point every enqueue path already funnels through, covers all of them at once instead of repeating the same nudge at each call site. `ensureWorkerAlive` already gates on `TOKEN_GOAT_NO_WORKER_SPAWN` and rate-limits itself internally, so this is cheap (and test-safe) on every call after the first in a given window.
   try {
     ensureWorkerAlive()
   } catch {
-    // Best-effort, same as hooks_edit.ts's own call: a healthcheck failure must never turn a
-    // successful enqueue into a thrown error.
+    // Best-effort, same as hooks_edit.ts's own call: a healthcheck failure must never turn a successful enqueue into a thrown error.
   }
 }
 
 /**
  * Return every queued dirty path, in insertion order, deduplicated.
  *
- * Returns an empty array when the queue file does not exist. Blank lines (from
- * a trailing newline or a partial write) are skipped. Duplicates are collapsed
- * so a file edited several times is reindexed once.
+ * Returns an empty array when the queue file does not exist. Blank lines (from a trailing newline or a partial write) are skipped. Duplicates are collapsed so a file edited several times is reindexed once.
  */
 export function getDirtyPaths(): string[] {
   const queuePath = dirtyQueuePath()
@@ -121,8 +90,7 @@ export function getDirtyPaths(): string[] {
 /**
  * Remove the dirty queue file.
  *
- * Idempotent: a missing file is a no-op rather than an error, so callers can
- * clear unconditionally after draining.
+ * Idempotent: a missing file is a no-op rather than an error, so callers can clear unconditionally after draining.
  */
 export function clearDirtyQueue(): void {
   try {
@@ -135,19 +103,12 @@ export function clearDirtyQueue(): void {
 /**
  * pre_compact handler: snapshot the dirty queue.
  *
- * Actual reindexing is Layer 7; for now this records the pending paths (via
- * {@link atomicWriteBytes} to a sidecar the indexer can pick up). The live
- * queue is deliberately left intact (see the TOCTOU note in the handler body
- * below) so nothing appended around compaction time is ever dropped. Never
- * blocks: always returns `pass`.
+ * Actual reindexing is Layer 7; for now this records the pending paths (via {@link atomicWriteBytes} to a sidecar the indexer can pick up). The live queue is deliberately left intact (see the TOCTOU note in the handler body below) so nothing appended around compaction time is ever dropped. Never blocks: always returns `pass`.
  */
 export function preCompactIndexHandler(_event: HookEvent): HookOutput {
   const paths = getDirtyPaths()
   if (paths.length > 0) {
-    // Informational snapshot only — the live queue is never cleared here. Nothing reads
-    // this sidecar back; the worker keeps draining queue/dirty.txt on its own cadence, so
-    // clearing it at compact time would drop any entry appended around the same moment
-    // (a TOCTOU race with appendDirtyPath) with no code left to reindex it.
+    // Informational snapshot only — the live queue is never cleared here. Nothing reads this sidecar back; the worker keeps draining queue/dirty.txt on its own cadence, so clearing it at compact time would drop any entry appended around the same moment (a TOCTOU race with appendDirtyPath) with no code left to reindex it.
     const sidecar = path.join(dataDir(), 'queue', 'pending.txt')
     try {
       ensureDirSync(path.dirname(sidecar))
@@ -159,7 +120,5 @@ export function preCompactIndexHandler(_event: HookEvent): HookOutput {
   return passOutput()
 }
 
-// advisory: this handler is a side-effect-only snapshot writer that always intends to
-// pass through; marking it advisory guarantees runHook never lets a future non-pass
-// return from it suppress another pre_compact handler's output (see hook_registry.ts).
+// advisory: this handler is a side-effect-only snapshot writer that always intends to pass through; marking it advisory guarantees runHook never lets a future non-pass return from it suppress another pre_compact handler's output (see hook_registry.ts).
 registerHook('pre_compact', preCompactIndexHandler, { advisory: true })

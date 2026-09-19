@@ -1,8 +1,7 @@
 /**
  * Shell command parsing, git mutation detection, pipeline filtering, and syntax validation.
  *
- * Extracted from hooks_bash.ts to isolate pure shell-command inspection and git working-tree
- * mutation tracking from hook I/O delivery and caching.
+ * Extracted from hooks_bash.ts to isolate pure shell-command inspection and git working-tree mutation tracking from hook I/O delivery and caching.
  */
 
 import { statSync } from 'node:fs'
@@ -55,10 +54,7 @@ export function isDirectTestRunnerCommand(cmd: string): boolean {
 }
 
 /**
- * Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the
- * order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the
- * remaining command against the directory the shell would actually land in — not this hook's
- * own cwd — before that path is embedded in a suggested follow-up command.
+ * Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the remaining command against the directory the shell would actually land in — not this hook's own cwd — before that path is embedded in a suggested follow-up command.
  */
 function extractCdPrefixDirs(rawCmd: string): string[] {
   // Must stay in step with CD_PREFIX_RE: this names the directories that one consumes, and a prefix stripped there but not extracted here resolves the file against the hook's own cwd instead of the directory the shell actually landed in.
@@ -75,11 +71,7 @@ function extractCdPrefixDirs(rawCmd: string): string[] {
 }
 
 /**
- * Resolves filePath against the directory a stripped `cd DIR && ...` prefix leaves the shell in
- * (each cd resolved in turn — relative ones against the previous directory, starting from cwd —
- * mirroring real shell semantics), so a hint naming filePath is resolvable from the hook's actual
- * cwd rather than silently relative to a directory the model never navigated to. Falls back to
- * filePath unchanged if the prefix can't be parsed into at least one directory.
+ * Resolves filePath against the directory a stripped `cd DIR && ...` prefix leaves the shell in (each cd resolved in turn — relative ones against the previous directory, starting from cwd — mirroring real shell semantics), so a hint naming filePath is resolvable from the hook's actual cwd rather than silently relative to a directory the model never navigated to. Falls back to filePath unchanged if the prefix can't be parsed into at least one directory.
  */
 export function resolveCdHintPath(rawCmd: string, filePath: string, cwd: string): string {
   if (extractCdPrefixDirs(rawCmd).length === 0) return filePath
@@ -94,15 +86,9 @@ export function cdPrefixCwd(rawCmd: string, cwd: string): string {
 }
 
 /**
- * Strips a command's downstream pipeline and trailing redirections, returning the
- * base command. Used to key the bash-output cache so that the same build/test
- * command run with different downstream filters (`| tail -40` vs `| grep ERROR`)
- * or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET
- * commands are keyed on their URL.
+ * Strips a command's downstream pipeline and trailing redirections, returning the base command. Used to key the bash-output cache so that the same build/test command run with different downstream filters (`| tail -40` vs `| grep ERROR`) or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET commands are keyed on their URL.
  *
- * Splits on the first top-level pipe operator (`|`), ignoring `|` inside single
- * or double quotes and the `||` logical-OR operator, then removes trailing stream
- * redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.).
+ * Splits on the first top-level pipe operator (`|`), ignoring `|` inside single or double quotes and the `||` logical-OR operator, then removes trailing stream redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.).
  */
 export function stripOutputPipeline(cmd: string): string {
   let inSingle = false
@@ -115,8 +101,7 @@ export function stripOutputPipeline(cmd: string): string {
       backslashes++
       continue
     }
-    // A quote is escaped only when preceded by an odd number of consecutive
-    // backslashes (\" is escaped, \\" is a literal backslash then a real quote).
+    // A quote is escaped only when preceded by an odd number of consecutive backslashes (\" is escaped, \\" is a literal backslash then a real quote).
     const escaped = backslashes % 2 === 1
     backslashes = 0
     if (ch === "'" && !inDouble) {
@@ -214,9 +199,7 @@ function segmentCommandIs(segment: string, name: string): boolean {
 /**
  * Files rewritten in place by `sed -i`, or `[]` when this segment is not an in-place sed.
  *
- * Handles the three spellings that actually appear: GNU `sed -i 's/a/b/' f`, GNU with a backup
- * suffix `sed -i.bak ... f`, and BSD/macOS `sed -i '' 's/a/b/' f` where the empty suffix is its
- * own argv entry. The first non-option token is the script unless `-e`/`-f` already supplied one.
+ * Handles the three spellings that actually appear: GNU `sed -i 's/a/b/' f`, GNU with a backup suffix `sed -i.bak ... f`, and BSD/macOS `sed -i '' 's/a/b/' f` where the empty suffix is its own argv entry. The first non-option token is the script unless `-e`/`-f` already supplied one.
  */
 function extractSedInPlaceFiles(segment: string): string[] {
   if (!segmentCommandIs(segment, 'sed')) return []
@@ -339,14 +322,7 @@ function workingTreeStatusPaths(gitDir: string): string[] {
 }
 
 /**
- * Enqueue one rewritten path, filtering the shapes that must never reach the queue: a discard
- * sink, a directory, and anything not actually on disk (a redirect whose target never
- * materialized, or a path parsed out of a command that ran somewhere else).
- *
- * Deliberately does NOT apply the system-temp exclusion `hooks_edit.ts::postEditHandler` uses:
- * the sibling git-mutation enqueue in this same handler already enqueues whatever git names
- * without that filter, and adding it on only one of the two paths would make the same working-tree
- * mutation indexable or not depending on which detector happened to catch it.
+ * Enqueue one rewritten path, filtering the shapes that must never reach the queue: a discard sink, a directory, and anything not actually on disk (a redirect whose target never materialized, or a path parsed out of a command that ran somewhere else). A path under the OS temp dir is refused by enqueueDirtyPathSafe itself, for this detector and the git-mutation one alike.
  */
 function enqueueRewrittenPath(absPath: string): void {
   if (/(?:^|[/\\])(?:NUL|nul)$/.test(absPath) || absPath.replace(/\\/g, '/').endsWith('/dev/null')) return
@@ -359,17 +335,11 @@ function enqueueRewrittenPath(absPath: string): void {
 }
 
 /**
- * Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index
- * does not silently keep serving pre-mutation symbols.
+ * Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols.
  *
- * The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This
- * covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no
- * reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`,
- * `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of
- * these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before.
+ * The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before.
  *
- * Paths that ARE on the command line are taken from it; the rest fall back to the working-tree
- * status sweep rather than a second guessing mechanism.
+ * Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism.
  */
 export function enqueueNonHeadMovingRewrites(cmd: string, rawCmd: string, cwd: string): void {
   // A stripped `cd sub && sed -i ... f` prefix means `f` is relative to `sub`, not to the hook's cwd -- resolving it against cwd would produce a path that is not on disk and silently enqueue nothing.
@@ -488,10 +458,7 @@ export function isWholeFileDump(cmd: string, extractedPath: string): boolean {
 }
 
 /**
- * Unwrap a `token-goat compress -c "<cmd>"` wrapper command to find the
- * underlying command being executed. Used by the post-hook to key the bash
- * output cache on the original command — identical to the hash the pre-hook
- * computed before the rewrite. Returns null for any non-wrapper command.
+ * Unwrap a `token-goat compress -c "<cmd>"` wrapper command to find the underlying command being executed. Used by the post-hook to key the bash output cache on the original command — identical to the hash the pre-hook computed before the rewrite. Returns null for any non-wrapper command.
  */
 export function unwrapCompressCommand(executed: string): string | null {
   const t = executed.trim()
@@ -517,14 +484,9 @@ export function unwrapCompressCommand(executed: string): string | null {
 }
 
 /**
- * Detect unbalanced shell quoting or unterminated heredocs in a bash command.
- * Returns a human-readable reason string if a clear syntax error is found,
- * or null if the command appears syntactically valid.
+ * Detect unbalanced shell quoting or unterminated heredocs in a bash command. Returns a human-readable reason string if a clear syntax error is found, or null if the command appears syntactically valid.
  *
- * Conservative approach: only flags unambiguous errors. Better to miss a false
- * negative (let a broken command run and fail naturally) than to false-positive
- * on valid constructs like `git commit -m "don't do that"` (single quote in
- * double quotes).
+ * Conservative approach: only flags unambiguous errors. Better to miss a false negative (let a broken command run and fail naturally) than to false-positive on valid constructs like `git commit -m "don't do that"` (single quote in double quotes).
  */
 export function detectUnbalancedShellSyntax(cmd: string): string | null {
   let inSingle = false
@@ -579,12 +541,7 @@ export function detectUnbalancedShellSyntax(cmd: string): string | null {
       continue
     }
 
-    // ANSI-C quoting `$'...'`: unlike a plain `'...'` string, a backslash here escapes the next
-    // character, so `$'it\'s'` is one complete string, not an opening quote followed by stray
-    // text. Reading it with the plain-single-quote rule below closed the string at the escaped
-    // apostrophe, left the real closing quote to open a second string that never closed, and
-    // reported "an unclosed single quote" on a command that was perfectly valid -- telling the
-    // model to abandon it for the Write tool. Skipped as one opaque span, like `$(( ... ))` above.
+    // ANSI-C quoting `$'...'`: unlike a plain `'...'` string, a backslash here escapes the next character, so `$'it\'s'` is one complete string, not an opening quote followed by stray text. Reading it with the plain-single-quote rule below closed the string at the escaped apostrophe, left the real closing quote to open a second string that never closed, and reported "an unclosed single quote" on a command that was perfectly valid -- telling the model to abandon it for the Write tool. Skipped as one opaque span, like `$(( ... ))` above.
     if (ch === '$' && cmd[i + 1] === "'") {
       let j = i + 2
       let closed = false
@@ -600,8 +557,7 @@ export function detectUnbalancedShellSyntax(cmd: string): string | null {
         }
         j++
       }
-      // A `$'` that never closes is still a genuinely unclosed single quote, and is reported as
-      // one rather than silently swallowed.
+      // A `$'` that never closes is still a genuinely unclosed single quote, and is reported as one rather than silently swallowed.
       if (!closed) {
         inSingle = true
         break

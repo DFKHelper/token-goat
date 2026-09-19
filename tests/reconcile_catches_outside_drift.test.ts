@@ -1,12 +1,7 @@
 /**
  * `token-goat reconcile` finds files that changed while no hook was watching, and queues them.
  *
- * Every other freshness mechanism in this repo is hook-driven, so it only sees drift that happened
- * during a session token-goat was part of. This one exists for the rest: a pull in another
- * terminal, an IDE save, a codegen step run outside the harness. The failure it guards against is
- * a stale index answering a `semantic`/`symbol`/`refs` query, none of which name a file and so
- * none of which trip the per-file self-heal -- a stale answer there is shaped exactly like a
- * correct one.
+ * Every other freshness mechanism in this repo is hook-driven, so it only sees drift that happened during a session token-goat was part of. This one exists for the rest: a pull in another terminal, an IDE save, a codegen step run outside the harness. The failure it guards against is a stale index answering a `semantic`/`symbol`/`refs` query, none of which name a file and so none of which trip the per-file self-heal -- a stale answer there is shaped exactly like a correct one.
  *
  * Two properties matter more than "it detects a change", and both have cases below:
  *  - it must NOT enqueue on a moved mtime alone, because `git checkout` rewrites mtimes wholesale
@@ -14,9 +9,7 @@
  *  - a budget-truncated sweep must not report deletions, because every file it never got to looks
  *    exactly like one that is indexed and gone.
  *
- * Provenance: CAPTURE. Every expectation is measured from a real run of the built bundle against a
- * real indexed temp project. The drift is created by writing to the file on disk directly, which
- * is the same thing an out-of-session editor does, rather than through any token-goat code path.
+ * Provenance: CAPTURE. Every expectation is measured from a real run of the built bundle against a real indexed temp project. The drift is created by writing to the file on disk directly, which is the same thing an out-of-session editor does, rather than through any token-goat code path.
  */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync, rmSync, existsSync } from 'node:fs'
@@ -24,6 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { indexableDir } from './helpers/temp-config.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -52,10 +46,7 @@ function json(args: string[]): Record<string, unknown> {
 /**
  * Every path currently sitting in the dirty queue, or [] when the queue file does not exist.
  *
- * The queue is located by searching the isolated home rather than by rebuilding `dataDir()`'s
- * layout here: a hardcoded path copied from the implementation would silently stop finding the
- * file if that layout changed, and an empty result reads exactly like "nothing was queued" -- so
- * the test would go green on the very change that broke it.
+ * The queue is located by searching the isolated home rather than by rebuilding `dataDir()`'s layout here: a hardcoded path copied from the implementation would silently stop finding the file if that layout changed, and an empty result reads exactly like "nothing was queued" -- so the test would go green on the very change that broke it.
  */
 function findDirtyQueue(dir: string): string | null {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -80,7 +71,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  projectDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-'))
+  projectDir = indexableDir()
 
   for (let i = 1; i <= 6; i++) {
     writeFileSync(join(projectDir, `mod${i}.ts`), `export function mod${i}(): number {\n  return ${i}\n}\n`)
@@ -99,9 +90,7 @@ beforeEach(() => {
 
 describe('reconcile', () => {
   it('reports a freshly indexed project as clean, so a later "drift found" means something', () => {
-    // Calibration. A sweep that reported drift unconditionally -- because it scoped the index query
-    // wrongly, say, and saw every tracked file as unindexed -- would pass every detection case
-    // below while being completely broken.
+    // Calibration. A sweep that reported drift unconditionally -- because it scoped the index query wrongly, say, and saw every tracked file as unindexed -- would pass every detection case below while being completely broken.
     const r = json(['reconcile', '--dry-run'])
     expect(r.scanned, 'the sweep examined no files; it is not seeing the fixture at all').toBeGreaterThan(0)
     expect(r.changed, 'a freshly indexed project reported changed files').toEqual([])
@@ -125,9 +114,7 @@ describe('reconcile', () => {
   })
 
   it('leaves a file alone when only its timestamp moved', () => {
-    // This is the `git checkout` round trip: mtimes rewritten wholesale, content identical. A sweep
-    // that took a moved mtime as proof of change would queue the entire repository on every branch
-    // switch, which is worse than the staleness it set out to fix.
+    // This is the `git checkout` round trip: mtimes rewritten wholesale, content identical. A sweep that took a moved mtime as proof of change would queue the entire repository on every branch switch, which is worse than the staleness it set out to fix.
     const target = join(projectDir, 'mod2.ts')
     const before = statSync(target)
     const future = new Date(before.mtimeMs + 60_000)
@@ -159,9 +146,7 @@ describe('reconcile', () => {
     expect(real.enqueued, 'the sweep found drift but enqueued nothing').toBeGreaterThan(0)
     const after = dirtyQueue()
     expect(after.length, 'nothing reached the dirty queue').toBeGreaterThan(beforeQueue)
-    // Absolute paths, because the worker's SHA gate keys on the canonical absolute form: a relative
-    // entry here would fill the queue with keys nothing can ever match, and the symptom would be a
-    // queue that grows while the index silently never updates.
+    // Absolute paths, because the worker's SHA gate keys on the canonical absolute form: a relative entry here would fill the queue with keys nothing can ever match, and the symptom would be a queue that grows while the index silently never updates.
     for (const p of after) {
       expect(p, `dirty queue holds a non-absolute path: ${p}`).toMatch(/^([a-zA-Z]:[/\\]|\/)/)
     }
@@ -178,9 +163,7 @@ describe('reconcile', () => {
   })
 
   it('reports no deletions at all when the budget cut the sweep short', () => {
-    // A budget-limited pass never visited some tracked files, and each of those looks exactly like
-    // "indexed but not on disk". Guessing there would queue live files for removal, so the sweep
-    // reports nothing rather than a guess -- and says that it did.
+    // A budget-limited pass never visited some tracked files, and each of those looks exactly like "indexed but not on disk". Guessing there would queue live files for removal, so the sweep reports nothing rather than a guess -- and says that it did.
     const r = json(['reconcile', '--dry-run', '--budget-ms', '0'])
     expect(r.budgetExhausted, 'a 0ms budget did not truncate the sweep; this case proves nothing').toBe(true)
     expect(r.removed, 'a truncated sweep reported deletions it could not have known about').toEqual([])
@@ -204,14 +187,9 @@ describe('reconcile', () => {
 /**
  * A directory git cannot enumerate is the one input where a deletion cannot be inferred at all.
  *
- * `getTrackedFiles` returns an empty list for a non-repository, for a missing git, and for a git
- * that errored -- and an empty tracked list against a populated index is numerically identical to
- * a project whose every file was deleted. Measured against the built bundle before the guard
- * existed: two live files on disk, both reported "indexed but gone from disk", both queued for
- * removal. Nothing failed; the index just lost working rows.
+ * `getTrackedFiles` returns an empty list for a non-repository, for a missing git, and for a git that errored -- and an empty tracked list against a populated index is numerically identical to a project whose every file was deleted. Measured against the built bundle before the guard existed: two live files on disk, both reported "indexed but gone from disk", both queued for removal. Nothing failed; the index just lost working rows.
  *
- * Provenance: CAPTURE. The fixture is built here and the expectations come from running the real
- * bundle against it, not from reading `reconcile.ts`.
+ * Provenance: CAPTURE. The fixture is built here and the expectations come from running the real bundle against it, not from reading `reconcile.ts`.
  */
 describe('reconcile in a directory git cannot enumerate', () => {
   let dir: string
@@ -238,8 +216,7 @@ describe('reconcile in a directory git cannot enumerate', () => {
   })
 
   it('has a populated index, so the assertions below are testing something', () => {
-    // Calibration, and the exact trap this fixture invites: with an empty index there is nothing
-    // to mistake for a deletion, and a broken guard would look perfect.
+    // Calibration, and the exact trap this fixture invites: with an empty index there is nothing to mistake for a deletion, and a broken guard would look perfect.
     const r = runHere(['symbol', 'alpha'])
     expect(r.out, 'the fixture index is empty; the deletion cases below prove nothing').toContain('alpha')
   })
@@ -253,8 +230,7 @@ describe('reconcile in a directory git cannot enumerate', () => {
   })
 
   it('queues nothing for removal, which is what actually destroys index rows', () => {
-    // Not --dry-run: the harm is in the queue, and a guard that only held under --dry-run would
-    // leave the real path broken.
+    // Not --dry-run: the harm is in the queue, and a guard that only held under --dry-run would leave the real path broken.
     const r = runHere(['reconcile', '--json'])
     const parsed = JSON.parse(r.out) as { enqueued: number }
     expect(parsed.enqueued, 'a live file was queued for removal').toBe(0)
