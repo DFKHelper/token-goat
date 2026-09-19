@@ -88,14 +88,31 @@ function resolveFilter(
   return { filter: selectFilter(split, cwd), argv }
 }
 
-// Shared spawnSync options for the two run paths: same shell resolution (wrappedShell), timeout, cwd, env. Each caller adds its own stdio (and maxBuffer for the capture path).
-function baseSpawnOptions(
-  timeout: number,
-  cwd: string | undefined,
-  env: NodeJS.ProcessEnv | undefined,
-  nativeShell?: boolean,
-) {
-  return { shell: nativeShell ? true : wrappedShell(), timeout: timeout * 1000, cwd, env }
+// Shared spawnSync options for the two run paths: timeout, cwd. Each caller adds its own stdio (and maxBuffer for the capture path) plus the file/args/shell/env from spawnTarget.
+function baseSpawnOptions(timeout: number, cwd: string | undefined) {
+  return { timeout: timeout * 1000, cwd }
+}
+
+// Resolve what spawnSync should actually invoke, plus any extra env needed to carry the command
+// text intact. On Windows there is no real argv array at the OS level: CreateProcess always takes
+// one command-line string, and Git-Bash's MSYS runtime reconstructs its own argv from that string
+// with its own backslash-unescaping rules -- which fire the same way whether Node built the string
+// via spawnSync's `shell` option or via a literal `['-c', command]` argv element, silently dropping
+// a level of backslashes (`\\` becomes `\`) either way. Environment variables cross the process
+// boundary as raw bytes with no command-line parsing at all, so carrying the command through
+// `TG_CMD` and running `eval "$TG_CMD"` sidesteps the mangling entirely.
+function spawnTarget(
+  command: string,
+  nativeShell: boolean | undefined,
+): { file: string; args: string[]; shell: boolean; cmdEnv?: NodeJS.ProcessEnv } {
+  const shell = nativeShell ? true : wrappedShell()
+  if (typeof shell === 'string') return { file: shell, args: ['-c', 'eval "$TG_CMD"'], shell: false, cmdEnv: { TG_CMD: command } }
+  return { file: command, args: [], shell }
+}
+
+/** Merge the base env with any command-carrying env spawnTarget produced, without dropping the parent's environment when *env* itself is undefined (spawnSync's `env` option, once set, replaces rather than extends `process.env`). */
+function mergeSpawnEnv(env: NodeJS.ProcessEnv | undefined, cmdEnv: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv | undefined {
+  return cmdEnv ? { ...(env ?? process.env), ...cmdEnv } : env
 }
 
 /** Map a Node signal name to `128 + signum`, the shell exit convention. */
@@ -170,7 +187,13 @@ function passthrough(
   env: NodeJS.ProcessEnv | undefined,
   nativeShell?: boolean,
 ): number {
-  const result = spawnSync(command, { ...baseSpawnOptions(timeout, cwd, env, nativeShell), stdio: 'inherit' })
+  const { file, args, shell, cmdEnv } = spawnTarget(command, nativeShell)
+  const result = spawnSync(file, args, {
+    ...baseSpawnOptions(timeout, cwd),
+    shell,
+    env: mergeSpawnEnv(env, cmdEnv),
+    stdio: 'inherit',
+  })
   if (isTimeout(result.error)) return 124
   if (result.status !== null) return result.status
   if (result.signal) return signalExitCode(result.signal)
@@ -199,8 +222,11 @@ function wrapAndCompress(
 ): number {
   const writeStdout = opts.writeStdout ?? ((s: string) => process.stdout.write(s))
   const startTime = Date.now()
-  const result = spawnSync(command, {
-    ...baseSpawnOptions(timeout, opts.cwd, opts.env, opts.nativeShell),
+  const { file, args, shell, cmdEnv } = spawnTarget(command, opts.nativeShell)
+  const result = spawnSync(file, args, {
+    ...baseSpawnOptions(timeout, opts.cwd),
+    shell,
+    env: mergeSpawnEnv(opts.env, cmdEnv),
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: MAX_CAPTURE_BYTES,
   })

@@ -30,4 +30,20 @@ describe('compress runs the inner command under bash on Windows', () => {
     expect(captured).toContain('answer=42')
     expect(captured).not.toContain('$((6*7))')
   })
+
+  // CAPTURE: reproduced directly against Node's spawnSync on this machine — spawnSync(cmd, { shell: bashPath }) drops one backslash from a literal pair (output "p\q") while spawnSync(bashPath, ['-c', cmd]) (this fix) preserves both (output "p\\q"), because passing the command through spawnSync's `shell` option makes Node re-quote it with Windows argv rules before MSYS re-parses it.
+  it.skipIf(process.platform !== 'win32' || resolveWindowsBash() === null)('preserves a literal backslash pair instead of dropping one through Windows argv re-quoting', () => {
+    let captured = ''
+    const exit = bashRunner.run("printf '%s' 'p\\\\q'", {
+      filterName: 'generic',
+      writeStdout: (s) => {
+        captured += s
+      },
+    })
+
+    expect(exit).toBe(0)
+    // The single-quoted bash argument is literally p\\q (two backslashes): `printf %s`
+    // does not interpret backslash escapes, so both must survive byte-for-byte.
+    expect(captured).toContain('p\\\\q')
+  })
 })
