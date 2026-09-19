@@ -29,9 +29,13 @@ import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, r
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell } from './shell.js'
-import { statSync, existsSync } from 'node:fs'
+import { statSync, existsSync, readFileSync } from 'node:fs'
+import * as path from 'node:path'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
+import { isInsideRoot } from './path_containment.js'
+import { projectTranscriptsDir } from './waste.js'
+import { MAX_CAPTURE_BYTES } from './bash_runner.js'
 import {
   stripCdPrefix,
   stripTrailingStderrRedirect,
@@ -1095,9 +1099,35 @@ export function preBashHandler(event: HookEvent): HookOutput {
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
 
 /**
- * Extract the tool response text from a post_tool_use event. Claude Code may send a string or an object with an output/content field.
+ * Read the full text a Bash tool_response points at via `persistedOutputPath`, when Claude Code already wrote the complete output to disk because it exceeded the harness's 20,000-char inline head -- `tool_response.stdout` in that case is only the head, so compressing or caching from it alone silently drops the rest of a larger real result. Confined to this session's own `<claude home>/projects/<slug>/<session id>/tool-results/` directory (resolved through symlinks via isInsideRoot, so a link escaping that directory cannot be followed), bounded to MAX_CAPTURE_BYTES, and sanity-checked against `persistedOutputSize`. Any failure returns null so the caller falls back to the head.
  */
-function extractBashOutput(raw: Record<string, unknown>): string {
+export function readPersistedBashOutput(resp: Record<string, unknown>, cwd: string | null, sessionId: string): string | null {
+  const persistedPath = resp['persistedOutputPath']
+  if (typeof persistedPath !== 'string' || persistedPath === '' || sessionId === '') return null
+  const root = path.join(projectTranscriptsDir(cwd ?? process.cwd()), sessionId, 'tool-results')
+  if (!isInsideRoot(persistedPath, root)) return null
+  try {
+    const stat = statSync(persistedPath)
+    if (!stat.isFile() || stat.size > MAX_CAPTURE_BYTES) return null
+    const persistedSize = resp['persistedOutputSize']
+    // A few bytes of slack for a trailing newline the reported size may or may not count -- this is a sanity check against a mismatched or stale path, not an exact accounting.
+    if (typeof persistedSize === 'number' && Math.abs(stat.size - persistedSize) > 8) return null
+    return readFileSync(persistedPath, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Extract the tool response text from a post_tool_use event. Claude Code may send a string or an object with an output/content field. Prefers the on-disk persisted output over the payload's own (possibly head-truncated) field when one is present and confined to this session's tool-results directory.
+ */
+function extractBashOutput(event: HookEvent): string {
+  const raw = event.raw
+  const resp = raw['tool_response']
+  if (resp !== null && typeof resp === 'object') {
+    const persisted = readPersistedBashOutput(resp as Record<string, unknown>, getCwd(event) ?? null, event.sessionId)
+    if (persisted !== null) return persisted
+  }
   return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
 }
 
@@ -1271,7 +1301,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const isUnwrapped = unwrapCompressCommand(rawCmdRaw) === null
     const rawCmd = unwrapCompressCommand(rawCmdRaw) ?? rawCmdRaw
     const cmd = stripCdPrefix(rawCmd)
-    const output = extractBashOutput(event.raw)
+    const output = extractBashOutput(event)
     const exitCode = extractExitCode(event.raw)
     const cwd = getCwd(event) ?? null
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
