@@ -2075,6 +2075,27 @@ describe('preBashHandler — task output file interception', () => {
     }
   })
 
+  // CAPTURE: real tool-results filenames use Claude Code's tool_use id shape, `toolu_` plus a
+  // mixed-case alphanumeric id (e.g. `toolu_01UGdBrbnv2yATVaMR4ZYPkQ.txt`) -- the underscore and
+  // mixed case a bare `[a-z0-9-]+` class missed, silently dropping the recall hint for those files.
+  it('emits bash-output hint for cat on a tool-results file with a toolu_ id', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tool-results-'))
+    const toolResultsDir = join(tmpDir, 'tool-results')
+    mkdirSync(toolResultsDir, { recursive: true })
+    const toolResultFile = join(toolResultsDir, 'toolu_01UGdBrbnv2yATVaMR4ZYPkQ.txt')
+    writeFileSync(toolResultFile, 'Tool output result\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${toolResultFile}"`))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('bash-output')
+        expect(result.context).toContain('--file')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('emits bash-output hint for tail on a tool-results plain-text file', () => {
     // Bug B: tail on tool-results/*.txt should suggest bash-output recall
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tool-results-'))

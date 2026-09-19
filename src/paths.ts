@@ -119,6 +119,9 @@ export function shellMountToWindowsPath(p: string): string {
   return s
 }
 
+/** Character class for a `tool-results/*.txt` filename stem, shared so both matchers of it stay in sync. CAPTURE: real tool-results filenames include the `toolu_...` shape (an underscore plus mixed-case id), which a bare `[a-z0-9-]+` class misses. */
+export const TOOL_RESULTS_ID_CHARS = '[a-z0-9_-]+'
+
 export function normalizePath(p: string): string {
   let s = p
 

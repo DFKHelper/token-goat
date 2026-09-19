@@ -3461,6 +3461,23 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     }
   })
 
+  // CAPTURE: real tool-results filenames use Claude Code's tool_use id shape, `toolu_` plus a
+  // mixed-case alphanumeric id (e.g. `toolu_01UGdBrbnv2yATVaMR4ZYPkQ.txt`) -- the underscore that
+  // shape needs was missing from the matcher, so this file fell through as an ordinary large read.
+  it('recognizes a toolu_-shaped tool-results filename as a session artifact', () => {
+    const sessionDir = path.join(os.tmpdir(), `tg-session-${process.pid}-${Math.random().toString(36).slice(2)}`)
+    const toolResultsDir = path.join(sessionDir, 'tool-results')
+    fs.mkdirSync(toolResultsDir, { recursive: true })
+    const p = path.join(toolResultsDir, 'toolu_01UGdBrbnv2yATVaMR4ZYPkQ.txt')
+    fs.writeFileSync(p, 'x'.repeat(25 * 1024))
+    tmpFiles.push(p)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
+    }
+  })
+
   it('denies re-read of tasks/*.output when content unchanged since last read', () => {
     const content = 'task output data\nline two\n'
     const p = makeTasksOutputFile(content)

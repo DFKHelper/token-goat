@@ -5,7 +5,7 @@ import { statSync, openSync, readSync, closeSync } from 'node:fs'
 
 import { isUnderSystemTemp, escapesOntoNetworkThroughLinks } from './project.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
-import { resolveIndexPath, normalizePath } from './paths.js'
+import { resolveIndexPath, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import type { HookEvent } from './hook_registry.js'
 import { hasBareBackgroundOrNewline, hasUnquotedOperator } from './tool_filters/index.js'
 import { detectLanguage } from './parser_types.js'
@@ -978,7 +978,7 @@ export function extractTasksOutput(cmd: string): { id: string; path: string; n?:
 
 /** Extracts file path from `cat`, `tail` commands on tool-results/*.txt. Returns { path } for valid matches. */
 export function extractToolResultsFile(cmd: string): { path: string } | null {
-  const toolResultsRe = /[/\\]tool-results[/\\]([a-z0-9-]+)\.txt$/i
+  const toolResultsRe = new RegExp('[/\\\\]tool-results[/\\\\](' + TOOL_RESULTS_ID_CHARS + ')\\.txt$', 'i')
 
   // cat command (same regex structure as extractCatFile, checked before isTempPath)
   const catM = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)

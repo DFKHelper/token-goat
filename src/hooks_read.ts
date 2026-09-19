@@ -12,7 +12,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
-import { displaySafePath, displaySafeText, normalizePath, toDisplayPath } from './paths.js'
+import { displaySafePath, displaySafeText, normalizePath, toDisplayPath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
@@ -156,7 +156,7 @@ function _isDocFile(filePath: string): boolean {
  */
 function isSessionArtifactFile(filePath: string): boolean {
   if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(filePath)) return true
-  if (/[/\\]tool-results[/\\][a-z0-9]+\.txt$/i.test(filePath)) return true
+  if (new RegExp('[/\\\\]tool-results[/\\\\]' + TOOL_RESULTS_ID_CHARS + '\\.txt$', 'i').test(filePath)) return true
   return false
 }
 
