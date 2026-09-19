@@ -24,6 +24,7 @@ import {
   SOURCE_OTHER,
   GLOBAL_SCHEMA_SQL,
   rollupAndPruneStats,
+  pruneTestIsolationLeakRows,
 } from '../src/stats.js'
 
 /**
@@ -906,6 +907,48 @@ describe('stats', () => {
       // A window that never reaches the rolled-up day must not pull it in.
       const summaryShortWindow = summarize(1, db)
       expect(summaryShortWindow.total_events).toBe(1)
+      db.close()
+    })
+  })
+
+  // CAPTURE: read via `sqlite3 -readonly` off a real install's global.db. Before
+  // constants.ts's homeFallbackOrGuard started refusing to resolve DATA_DIR against the real
+  // home directory inside a Vitest worker, a Python test harness resolved the real
+  // LOCALAPPDATA/global.db anyway and wrote against it -- ~6,472 rows dated 2026-06-03 through
+  // 06-22, in exactly the two shapes below (image_shrink/large_read_redirect rows naming a
+  // pytest tempdir, hint_backoff_suppressed/session_hint_suppressed/indexed_cat_deny/
+  // indexed_cat_advisory rows naming the literal fixture path /fake/...). Neither shape a real
+  // project path can produce.
+  describe('pruneTestIsolationLeakRows (test-isolation-leak cleanup)', () => {
+    it('deletes only rows whose detail matches a test-harness path shape, leaving real paths alone', () => {
+      const dbPath = path.join(tempDir, 'prune-leak-test.db')
+      const db = openStatsDb(dbPath)
+      const now = Math.floor(Date.now() / 1000)
+      const insert = db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, ?, 0, 0, ?)`)
+      insert.run(now, 'large_read_redirect', 'C:\\Users\\zelys\\AppData\\Local\\Temp\\pytest-of-zelys\\pytest-1333\\popen-gw0\\test_large_image_additional_co0\\large.jpg')
+      insert.run(now, 'session_hint_suppressed', '/fake/src/foo.py')
+      insert.run(now, 'large_read_redirect', 'C:\\Projects\\real-project\\src\\index.ts size=112648') // a genuine project path, must survive
+      insert.run(now, 'indexed_cat_deny', '/home/zelys/real-project/src/foo.py') // contains "real" but not the /fake/ shape, must survive
+
+      pruneTestIsolationLeakRows(db)
+
+      const remaining = db.prepare(`SELECT detail FROM stats ORDER BY id`).all() as Array<{ detail: string }>
+      expect(remaining.map((r) => r.detail)).toEqual(['C:\\Projects\\real-project\\src\\index.ts size=112648', '/home/zelys/real-project/src/foo.py'])
+      db.close()
+    })
+
+    it('running twice deletes nothing further (idempotent)', () => {
+      const dbPath = path.join(tempDir, 'prune-leak-idempotent-test.db')
+      const db = openStatsDb(dbPath)
+      const now = Math.floor(Date.now() / 1000)
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'session_hint_suppressed', 0, 0, '/fake/src/foo.py')`).run(now)
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'large_read_redirect', 0, 0, 'C:\\Projects\\real-project\\src\\index.ts')`).run(now)
+
+      pruneTestIsolationLeakRows(db)
+      pruneTestIsolationLeakRows(db)
+
+      const remaining = db.prepare(`SELECT COUNT(*) as c FROM stats`).get() as { c: number }
+      expect(remaining.c).toBe(1)
       db.close()
     })
   })
