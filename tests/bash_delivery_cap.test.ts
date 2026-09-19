@@ -24,9 +24,10 @@ vi.mock('../src/stats.js', async (importOriginal) => {
 import { postBashHandler } from '../src/hooks_bash.js'
 import { recordStat } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
-import { CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES, bashOutputCapBytes, deliveredOutputBytes } from '../src/delivery_cap.js'
+import { CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES, CLAUDE_CODE_PERSISTED_PREVIEW_BYTES, bashOutputCapBytes, deliveredOutputBytes } from '../src/delivery_cap.js'
 
 const CAP = 20_000
+const PREVIEW = 2048
 
 function makePostBashEvent(command: string, output: string): HookEvent {
   return makeHookEvent({
@@ -66,8 +67,11 @@ describe('Bash savings are credited against the harness delivery cap', () => {
   })
 
   it('caps an above-cap original at the delivered size', () => {
-    expect(deliveredOutputBytes(30_000_000, 'claudecode')).toBe(CAP)
-    expect(deliveredOutputBytes(CAP + 1, 'claudecode')).toBe(CAP)
+    // Above the cap, Claude Code persists the rest and shows only a short preview -- see
+    // CLAUDE_CODE_PERSISTED_PREVIEW_BYTES -- so the counterfactual is that preview size, not the cap.
+    expect(CLAUDE_CODE_PERSISTED_PREVIEW_BYTES).toBe(PREVIEW)
+    expect(deliveredOutputBytes(30_000_000, 'claudecode')).toBe(PREVIEW)
+    expect(deliveredOutputBytes(CAP + 1, 'claudecode')).toBe(PREVIEW)
   })
 
   it('leaves a below-cap original untouched', () => {
@@ -96,8 +100,8 @@ describe('Bash savings are credited against the harness delivery cap', () => {
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
     const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
-    expect(emitted).toBeLessThan(CAP)
-    const expectedBytes = CAP - emitted
+    expect(emitted).toBeLessThan(PREVIEW)
+    const expectedBytes = PREVIEW - emitted
     expect(genericSavings()).toEqual([[expectedBytes, Math.round(expectedBytes / 4)]])
     // Guard the specific over-crediting shape this fix removes, rather than only the exact value:
     // the old figure was the full original minus the emitted body.

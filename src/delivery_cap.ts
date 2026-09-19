@@ -11,16 +11,29 @@ import { detectHarness } from './bridges/registry.js'
 import type { HarnessName } from './bridges/types.js'
 
 /**
- * Bytes of a Bash tool result Claude Code delivers inline before it truncates.
+ * Bytes of a Bash tool result Claude Code delivers inline before it persists the rest to disk.
  *
  * Derived by CAPTURE from the recorded session corpus (174,678 Bash results, 1,935 of them
  * persisted): the smallest output that WAS persisted measured 20,013 bytes and the largest that was
- * NOT measured 19,990 -- a 23-byte gap with nothing in between. Outputs above the cap still deliver
- * ~20,000 bytes inline (p90 20,000, p100 20,046) even when the full text runs past 1 MB, so a
- * rewrite of an oversized output remains net-positive. This constant corrects what gets RECORDED
- * and must never be used to suppress a rewrite.
+ * NOT measured 19,990 -- a 23-byte gap with nothing in between. This is the TRIGGER threshold, not
+ * the delivered size: once crossed, the model does not receive up to this many bytes inline, it
+ * receives a short `<persisted-output>` preview naming the file (see
+ * {@link CLAUDE_CODE_PERSISTED_PREVIEW_BYTES}). A rewrite of an oversized output still remains
+ * net-positive against that smaller preview. This constant corrects what gets RECORDED and must
+ * never be used to suppress a rewrite.
  */
 export const CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES = 20_000
+
+/**
+ * Bytes of its own text Claude Code actually shows the model once an over-cap Bash result is
+ * persisted, not the full {@link CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES} head. CAPTURE: live-tested
+ * against Claude Code 2.1.276 (`claude --print --model haiku --setting-sources ""`, 41-43 KB
+ * outputs), whose own wrapper reads "Preview (first 2KB)" literally -- see memory
+ * project_persisted_bash_output_hook_sees_20k_head_model_sees_2kb.md. Applies whether the
+ * persisted output is the command's own raw text or a token-goat rewrite that kept
+ * `persistedOutputPath`, since the harness re-checks the field it is handed either way.
+ */
+export const CLAUDE_CODE_PERSISTED_PREVIEW_BYTES = 2048
 
 /**
  * Bash-result delivery cap for the given harness, or null when that harness has no measured cap.
@@ -61,10 +74,13 @@ export function clipToDeliveryCap(text: string, reserveBytes: number): { text: s
  *
  * This is the single definition of the counterfactual every Bash saving is measured against. Both
  * the CLI wrapper path (bash_runner) and the hook rewrite path (hooks_bash) route their recorded
- * figure through it, so the two cannot drift apart.
+ * figure through it, so the two cannot drift apart. Crossing the cap does not deliver up to `cap`
+ * bytes inline -- Claude Code persists the rest and shows only CLAUDE_CODE_PERSISTED_PREVIEW_BYTES
+ * of preview, so crediting the full cap there over-counts what the model actually saw.
  */
 export function deliveredOutputBytes(originalBytes: number, harness?: HarnessName): number {
   const cap = bashOutputCapBytes(harness)
   if (cap === null) return Math.max(0, originalBytes)
-  return Math.max(0, Math.min(originalBytes, cap))
+  if (originalBytes <= cap) return Math.max(0, originalBytes)
+  return CLAUDE_CODE_PERSISTED_PREVIEW_BYTES
 }

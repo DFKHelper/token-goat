@@ -242,8 +242,15 @@ export function emitRewrite(
   }
   if (savings !== undefined) {
     const bytesSaved = savings.originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
-    // Only a positive delta is recorded. Every caller sits behind an `isRewriteWorthwhile` gate so this should always hold, but a stat kind that can log a negative saving silently corrupts every total that sums it, and the gate is a separate line a future edit could reorder.
-    if (bytesSaved > 0) recordStat(savings.kind, bytesSaved, savedTokensFromBytes(bytesSaved), undefined, savings.detail)
+    // Floored at 0 rather than skipped: `savings.originalBytes` can be a harness delivery-preview
+    // ceiling far smaller than the raw reduction the `isRewriteWorthwhile` gate cleared (see
+    // deliveredOutputBytes in src/delivery_cap.ts), so a genuinely worthwhile rewrite can still
+    // compute a non-positive capped credit. Recording nothing there would make the rewrite's own
+    // kind invisible to `token-goat stats` and to anything selecting on it, which is a worse
+    // failure than an honest zero -- a stat kind that logs a NEGATIVE saving is what corrupts a
+    // summed total, not one that logs zero.
+    const credited = Math.max(0, bytesSaved)
+    recordStat(savings.kind, credited, savedTokensFromBytes(credited), undefined, savings.detail)
   }
   return { hookType: 'rewriteOutput', updatedOutput }
 }

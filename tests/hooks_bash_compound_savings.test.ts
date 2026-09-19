@@ -15,6 +15,10 @@ import { makeHookEvent } from './helpers/hook-event.js'
 // detectHarness() answers 'claudecode' when the suite runs inside a Claude Code session and
 // something else in CI, so the two would exercise different branches. Pin it.
 const CLAUDE_CODE_BASH_OUTPUT_CAP = 20_000
+// Above CLAUDE_CODE_BASH_OUTPUT_CAP, Claude Code does not deliver up to the cap inline -- it
+// persists the rest and shows only a short preview (src/delivery_cap.ts's
+// CLAUDE_CODE_PERSISTED_PREVIEW_BYTES), so that smaller figure is the real counterfactual.
+const CLAUDE_CODE_PERSISTED_PREVIEW = 2048
 let savedHarnessOverride: string | undefined
 
 function makePostBashEvent(command: string, output: string): HookEvent {
@@ -58,12 +62,13 @@ describe('compound-output compression savings accounting', () => {
     if (result.hookType !== 'rewriteOutput') return
     const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
     const original = Buffer.byteLength(dup, 'utf-8')
-    // The harness truncates a Bash result at CLAUDE_CODE_BASH_OUTPUT_CAP bytes and hands the model
-    // the truncated body plus a pointer to the persisted file, so the bytes this rewrite actually
-    // spared are measured from the delivered slice. Against the full original this expectation used
-    // to credit ~171 KB for an output the model would never have been shown more than 20 KB of.
+    // The harness truncates a Bash result at CLAUDE_CODE_BASH_OUTPUT_CAP bytes, persists the rest,
+    // and shows the model only a short preview of it -- not the full truncated slice -- so the
+    // bytes this rewrite actually spared are measured against that preview. Against the full
+    // original this expectation used to credit ~171 KB for an output the model would never have
+    // been shown more than ~2 KB of.
     expect(original).toBeGreaterThan(CLAUDE_CODE_BASH_OUTPUT_CAP)
-    const expectedBytes = CLAUDE_CODE_BASH_OUTPUT_CAP - emitted
+    const expectedBytes = CLAUDE_CODE_PERSISTED_PREVIEW - emitted
     // The token half of this pair used to restate the producer's own formula, floor(bytes / 3) + 1,
     // which is how this path came to be the only saving in the database credited on a different scale
     // from its siblings: the expectation was written from the code and so agreed with it whatever it
@@ -83,9 +88,9 @@ describe('compound-output compression savings accounting', () => {
     const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
     const [saved] = genericSavings()[0]!
     // Still the bulk of what the model would actually have received -- the under-crediting
-    // direction fails here just as it did before, only now against the delivered slice.
-    expect(saved).toBeGreaterThan(CLAUDE_CODE_BASH_OUTPUT_CAP * 0.9)
-    expect(saved).toBe(CLAUDE_CODE_BASH_OUTPUT_CAP - emitted)
+    // direction fails here just as it did before, only now against the preview it actually sees.
+    expect(saved).toBeGreaterThan(CLAUDE_CODE_PERSISTED_PREVIEW * 0.8)
+    expect(saved).toBe(CLAUDE_CODE_PERSISTED_PREVIEW - emitted)
   })
 
   /** Forty distinct filler lines plus `repeats` copies of one line: the generic filter collapses the run, so the reduction scales one line at a time and can be parked on either side of the 100-byte net-benefit floor. */
