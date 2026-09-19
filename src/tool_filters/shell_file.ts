@@ -53,6 +53,13 @@ export class GrepFilter extends ToolFilter {
 
     const fileCounts = new Map<string, number>()
     let unattributed = 0
+    // grep only prefixes a filename when the search covers more than one file, so a
+    // single-file search (e.g. `grep -n alpha b1.txt`) emits bare `12:text` or `12-text`
+    // lines with nothing to attribute -- every such line used to fall into the
+    // unattributed bucket even though the target file is right there in argv. When the
+    // command names exactly one file, attribute those bare lines to it instead.
+    const searchFiles = positionalArgs(argv.slice(1)).slice(1)
+    const singleFile = searchFiles.length === 1 ? searchFiles[0] : undefined
     for (const line of nonEmpty) {
       if (line.startsWith('Binary file ') && line.includes(' matches')) {
         const fname = line.slice('Binary file '.length).replace(/ matches$/, '')
@@ -73,6 +80,10 @@ export class GrepFilter extends ToolFilter {
           fileCounts.set(candidate, (fileCounts.get(candidate) ?? 0) + 1)
           continue
         }
+      }
+      if (singleFile !== undefined && (/^\d+[:-]/.test(line) || colonIdx <= 0)) {
+        fileCounts.set(singleFile, (fileCounts.get(singleFile) ?? 0) + 1)
+        continue
       }
       unattributed++
     }

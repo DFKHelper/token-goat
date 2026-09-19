@@ -104,6 +104,15 @@ describe('GrepFilter compression', () => {
     expect(out).not.toContain('unattributed')
   })
 
+  it('attributes bare "N:text" lines to the single named file instead of "unattributed" (regression: grep only prefixes a filename across multiple files, so a single-file search left every line unattributable)', () => {
+    // CAPTURE: shape of `grep -n alpha b1.txt` on a single-file target -- GNU grep omits the filename prefix entirely.
+    const singleFileArgv = ['grep', '-n', 'alpha', 'b1.txt']
+    const lines = Array.from({ length: 40 }, (_, i) => `${i + 1}:alpha match`)
+    const out = compress(f, lines.join('\n'), singleFileArgv)
+    expect(out).toContain('b1.txt: 40 match(es)')
+    expect(out).not.toContain('unattributed')
+  })
+
   it('returns empty output for empty stdout', () => {
     expect(compress(f, '', argv)).toBe('')
   })
