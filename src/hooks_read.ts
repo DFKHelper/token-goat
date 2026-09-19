@@ -254,12 +254,6 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   const isHtmlFile = /\.(html|htm)$/i.test(basename)
   const isSectionFile = /\.(css|scss|sass|less|toml)$/i.test(basename)
   const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename) && !basename.toLowerCase().endsWith('-meta.xml')
-  // Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely (the caller's `::HeadingName`/`SymbolName` fallback covers it), keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
-  const escapeHintName = (name: string): string => {
-    const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    const safe = displaySafeText(quoted)
-    return safe !== quoted ? '' : safe.trim()
-  }
 
   if (isXmlFile) {
     return `Use \`token-goat xml-outline "${filePath}"\` for structure or \`token-goat xml-query "${filePath}" "<selector>"\` for nodes.`
@@ -320,6 +314,32 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     }
     return `Use \`token-goat read "${filePath}::${sym}"\`${avail} for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
   }
+}
+
+// Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely, keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
+function escapeHintName(name: string): string {
+  const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  const safe = displaySafeText(quoted)
+  return safe !== quoted ? '' : safe.trim()
+}
+
+/** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when the file has no indexed symbols at all, since a bare `::Symbol` read would just fail. */
+export function realSymbolReadHint(filePath: string, shown: string, range?: { start: number; end: number }): string {
+  let names: string[]
+  try {
+    const all = querySymbols({ filePath, limit: 500 }).map((s) => ({ name: escapeHintName(s.name), lineStart: s.lineStart, lineEnd: s.lineEnd }))
+    const overlapping = range !== undefined ? all.filter((s) => s.lineStart <= range.end && s.lineEnd >= range.start) : []
+    names = (overlapping.length > 0 ? overlapping : all).map((s) => s.name).filter((n) => n !== '').slice(0, 3)
+  } catch {
+    names = []
+  }
+  if (names.length === 0) {
+    return range !== undefined
+      ? '`token-goat read "' + shown + '@' + range.start + '-' + range.end + '"`'
+      : '`token-goat outline "' + shown + '"`'
+  }
+  const rest = names.length > 1 ? ' (or: ' + names.slice(1).join(', ') + ')' : ''
+  return '`token-goat read "' + shown + '::' + names[0] + '"`' + rest
 }
 
 function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): number {
@@ -1061,7 +1081,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(
           'Every line of ' + shown + ' this read would return was already served in this session, byte for byte. ' +
           'Recall it with `token-goat bash-output ' + alreadyServed.id + '`, or pull just the part you need with ' +
-          '`token-goat read "' + shown + '::Symbol"`.',
+          realSymbolReadHint(normalized, shown) + '.',
         )
       }
 
@@ -1079,7 +1099,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             recordStat('session_hint', 0, 0)
             return denyOutput(
               'Lines ' + start + '..' + end + ' of ' + shown + ' was already read this session. ' +
-              'Pull just the part you need with `token-goat read "' + shown + '::Symbol"`.',
+              'Pull just the part you need with ' + realSymbolReadHint(normalized, shown, { start, end }) + '.',
             )
           }
           if (snapDiff.kind === 'unchanged') {
@@ -1197,7 +1217,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const pagingWindow = readRequestedSliceWindow(event)
     const activeRanges = getFileLineRanges(normalized)
     const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2)
-      ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + shown + '` or `token-goat read "' + shown + '::Symbol"`.'
+      ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + shown + '` or ' +
+        realSymbolReadHint(normalized, shown, pagingWindow.offset !== undefined && pagingWindow.limit !== undefined ? { start: pagingWindow.offset, end: pagingWindow.offset + pagingWindow.limit - 1 } : undefined) + '.'
       : ''
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
       recordStat('session_hint', 0, 0)

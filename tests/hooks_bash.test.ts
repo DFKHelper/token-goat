@@ -733,7 +733,7 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
     }
   })
 
@@ -1267,7 +1267,7 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
     }
   })
 
@@ -1300,7 +1300,7 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
     }
   })
 
@@ -1332,7 +1332,7 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(makeBashEvent('cat app/globals.css'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
     }
   })
 
@@ -1362,7 +1362,7 @@ describe('preBashHandler — PowerShell read commands', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
       expect(result.message).toContain('Get-Content')
     }
   })
@@ -1383,7 +1383,7 @@ describe('preBashHandler — PowerShell read commands', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('bat')
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
     }
   })
 
@@ -1426,7 +1426,7 @@ describe('preBashHandler — PowerShell read commands', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "src/auth.ts::SymbolName"')
+      expect(result.context).toContain('token-goat outline "src/auth.ts"')
       expect(result.context).not.toContain('-Path')
     }
   })
@@ -1483,7 +1483,7 @@ describe('preBashHandler — PowerShell read commands', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "src/auth.ts::SymbolName"')
+      expect(result.context).toContain('token-goat outline "src/auth.ts"')
       expect(result.context).not.toContain('-Path')
     }
   })
@@ -1777,7 +1777,7 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
     }
   })
 })
@@ -3307,7 +3307,7 @@ describe('preBashHandler — python heredoc file read', () => {
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('token-goat outline')
     }
   })
 
@@ -3806,7 +3806,7 @@ describe('preBashHandler — powershell-wrapped Get-Content recall (wiring)', ()
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('powershell -Command` wrapper bypasses read hooks')
-      expect(result.message).toContain('token-goat read "src/auth.ts::SymbolName"')
+      expect(result.message).toContain('token-goat outline "src/auth.ts"')
     }
   })
 
@@ -4602,7 +4602,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat src/auth_loop46.ts 2>&1'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toBe('[tg] `cat` loads the entire file into context. Use `token-goat read "src/auth_loop46.ts::SymbolName"` to read one function or class.')
+      expect(result.message).toBe('[tg] `cat` loads the entire file into context. Use `token-goat outline "src/auth_loop46.ts"` to read one function or class.')
     }
   })
 
@@ -4623,7 +4623,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat src/loop46_pipe.ts | head -50'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('`head` bypasses read hooks. Use `token-goat read "src/loop46_pipe.ts::SymbolName"` or `token-goat skeleton "src/loop46_pipe.ts"` to see the file structure.')
+      expect(result.context).toBe('`head` bypasses read hooks. Use `token-goat outline "src/loop46_pipe.ts"` or `token-goat skeleton "src/loop46_pipe.ts"` to see the file structure.')
     }
   })
 
@@ -4838,7 +4838,7 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('PowerShell `[IO.File]::ReadAllText()` bypasses read hooks')
-      expect(result.message).toContain('token-goat read "src/auth.ts::SymbolName"')
+      expect(result.message).toContain('token-goat outline "src/auth.ts"')
     }
   })
 
@@ -4915,7 +4915,7 @@ describe('extractPythonFileRead — PowerShell here-string and multi-format supp
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Python `open()` file reads bypass read hooks')
-      expect(result.message).toContain('token-goat read "src/worker.py::SymbolName"')
+      expect(result.message).toContain('token-goat outline "src/worker.py"')
     }
   })
 

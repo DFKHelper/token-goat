@@ -13,6 +13,11 @@ import { languageHasFlag } from './language_specs.js'
 import { getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 
+// bash_extractors.ts has no index/DB access (adding one pulled index_reader.js's chunk into the eagerly-loaded core bundle, tripping the ceiling tests/guards/core_bundle_stays_split.test.ts enforces), so a whole-file-dump hint built here can never confirm a real symbol name the way hooks_read.ts::realSymbolReadHint can for its own Read-hook deny sites -- `outline` is always true and never claims a specific but possibly-fake `::SymbolName`.
+function genericSurgicalFallback(shown: string): string {
+  return '`token-goat outline "' + shown + '"`'
+}
+
 /**
  * Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL-specific hint and lead-in text, then falls through to this for the rest.
  */
@@ -26,7 +31,7 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
         ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
         : isDoc
           ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
+          : 'Use ' + genericSurgicalFallback(hintPath) + ' to read one function or class.'
 }
 
 /**
@@ -41,7 +46,7 @@ export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, is
         ? 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
         : isDoc
           ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+          : 'Use ' + genericSurgicalFallback(filePath) + ' or `token-goat skeleton "' + filePath + '"` to see the file structure.'
 }
 
 
