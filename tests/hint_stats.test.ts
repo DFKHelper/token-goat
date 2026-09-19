@@ -22,6 +22,7 @@ import {
   shouldSuppress,
   HINT_CATEGORIES,
 } from '../src/hint_stats.js'
+import { recordStat, GLOBAL_SCHEMA_SQL, pruneHintEmissions } from '../src/stats.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath, configPath } from '../src/constants.js'
 import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
@@ -915,6 +916,62 @@ describe('manual marks', () => {
     expect(row?.manualIneffective).toBe(1)
     // Manual marks never feed into the automatic emitted/actedOn counters.
     expect(row?.emitted).toBe(0)
+  })
+})
+
+// HAND-DERIVED: hint_emissions/hint_suppression_probes have no retention policy (resetHintStats
+// only clears everything, on demand) -- recordStat's real maintenance entry point (stats.ts's
+// maybeRunStatsMaintenance, throttled via the shared stats_maintenance row) must age hint_emissions
+// out the same way it already does for `stats`, without changing shouldSuppress's verdict since
+// categoryStats aggregates hint_emissions all-time with no window of its own.
+describe('pruneHintEmissions (retention via the shared stats maintenance throttle)', () => {
+  it('deletes hint_emissions rows older than the retention window and leaves recent rows, keeping shouldSuppress\'s verdict unchanged', () => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 5
+    cfg.hint_stats.suppress_threshold_pct = 15
+    saveConfig(cfg)
+
+    const db = getDb(globalDbPath())
+    db.exec(GLOBAL_SCHEMA_SQL) // idempotent: brings stats/stats_daily_rollup/stats_maintenance onto this same connection, same as production's getGlobalDb()
+    db.prepare('DELETE FROM hint_emissions').run()
+    db.prepare('DELETE FROM stats_maintenance').run() // force maybeRunStatsMaintenance to run on the next recordStat below
+
+    const oldMs = Date.now() - 200 * 86400 * 1000
+    const insertOld = db.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
+       VALUES ('bash_redirect', ?, 'claude-code', NULL, ?, 1, 0, 0, NULL)`,
+    )
+    for (let i = 0; i < 5; i++) insertOld.run(`old-${nonce()}`, oldMs) // old rows alone already cross min_sample_size at 0% efficacy
+
+    for (let i = 0; i < 5; i++) logHintEmission('bash_redirect', nonce(), null) // fresh rows, also 0% efficacy -- cross the same threshold on their own
+
+    expect(shouldSuppress('bash_redirect', nonce()), 'setup: suppressed before pruning').toBe(true)
+
+    recordStat('read_replacement', 0, 0, db) // real entry point: recordStat -> maybeRunStatsMaintenance -> pruneHintEmissions, same throttle as rollupAndPruneStats
+
+    const oldSurvivors = db.prepare(`SELECT COUNT(*) as c FROM hint_emissions WHERE emitted_at < ?`).get(oldMs + 1) as { c: number }
+    expect(oldSurvivors.c).toBe(0)
+    const freshSurvivors = db.prepare(`SELECT COUNT(*) as c FROM hint_emissions WHERE category = 'bash_redirect'`).get() as { c: number }
+    expect(freshSurvivors.c).toBe(5)
+    expect(shouldSuppress('bash_redirect', nonce()), 'verdict unchanged after pruning').toBe(true)
+  })
+
+  it('running twice does not error and leaves the surviving rows untouched (idempotent, matching rollupAndPruneStats\' own idempotency)', () => {
+    const db = getDb(globalDbPath())
+    db.prepare('DELETE FROM hint_emissions').run()
+    const oldMs = Date.now() - 200 * 86400 * 1000
+    const insert = db.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
+       VALUES ('bash_redirect', ?, 'claude-code', NULL, ?, 1, 0, 0, NULL)`,
+    )
+    insert.run(nonce(), oldMs) // old: must be pruned
+    insert.run(nonce(), Date.now()) // fresh: must survive
+
+    pruneHintEmissions(db, 180)
+    pruneHintEmissions(db, 180)
+
+    const remaining = db.prepare(`SELECT COUNT(*) as c FROM hint_emissions`).get() as { c: number }
+    expect(remaining.c).toBe(1)
   })
 })
 

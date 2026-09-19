@@ -640,7 +640,17 @@ export function rollupAndPruneStats(db: SqliteDatabase, retentionDays: number = 
   }
 }
 
-/** Run {@link rollupAndPruneStats} if it hasn't run in the last {@link STATS_ROLLUP_INTERVAL_MS}, recorded via the single-row `stats_maintenance` throttle. Fail-soft: any error here (including on a pre-migration database missing the throttle table) never blocks the stat write it accompanies. */
+/** Delete `hint_emissions` rows older than `retentionDays` so hint_stats.ts's per-emission ledger stops growing without bound the same way `stats` already does. The SQL lives here rather than in hint_stats.ts (which owns that table) because hint_stats.ts already imports {@link summarize}/{@link SOURCE_HINT} from this module -- importing back from hint_stats.ts here would make the two modules circular, and a circular import between them reordered the bundle's module init enough to break `registerHook` at startup (confirmed by a full-suite run). Uses the same generous {@link STATS_RETENTION_DAYS} floor as `stats` because hint_stats.ts's `categoryStats`/`shouldSuppress` aggregate `hint_emissions` all-time with no window of their own -- a shorter cutoff risks flipping a verdict by dropping rows still counted in that all-time total. `hint_suppression_probes` is deliberately not pruned: it is a single upserted row per (category, harness) with no timestamp column, already bounded by that key, not a growing log. */
+export function pruneHintEmissions(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
+  try {
+    const cutoffMs = Date.now() - retentionDays * 86400 * 1000
+    db.prepare(`DELETE FROM hint_emissions WHERE emitted_at < ?`).run(cutoffMs)
+  } catch {
+    // Fail-soft: never block the stat write that triggers this (see recordStat's call site).
+  }
+}
+
+/** Run {@link rollupAndPruneStats} and {@link pruneHintEmissions} if it hasn't run in the last {@link STATS_ROLLUP_INTERVAL_MS}, recorded via the single-row `stats_maintenance` throttle shared by both. Fail-soft: any error here (including on a pre-migration database missing the throttle table) never blocks the stat write it accompanies. */
 function maybeRunStatsMaintenance(db: SqliteDatabase): void {
   try {
     const now = Date.now()
@@ -654,6 +664,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
        ON CONFLICT(id) DO UPDATE SET last_rollup_ts = excluded.last_rollup_ts`,
     ).run(now)
     rollupAndPruneStats(db)
+    pruneHintEmissions(db)
   } catch {
     // Fail-soft: see doc comment above.
   }
