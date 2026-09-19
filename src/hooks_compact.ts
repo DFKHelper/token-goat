@@ -21,7 +21,7 @@ import { getBashOutput } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { computeAdaptiveBudget, getContextPressure, loadSessionCache } from './compact.js'
-import { displaySafePath, displaySafeText } from './paths.js'
+import { displaySafePath, displaySafeText, normalizePath } from './paths.js'
 import { neutralizeSpokenMarkers } from './injection_scan.js'
 
 /** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
@@ -376,8 +376,8 @@ export function postCompactHandler(event: HookEvent): HookOutput {
   const summary = typeof raw === 'string' ? raw : ''
   const bytes = Buffer.byteLength(summary, 'utf-8')
   const sample = manifestPathSample(event.sessionId)
-  // Fold both sides on a case-insensitive filesystem so a summary that reproduces a path with different capitalization still counts as a survivor. Folding the needle alone was the first version of this and it matched nothing on Windows, which would have made the canary read "channel dead" on every compaction. The summarizer rewrites the manifest's absolute paths relative to the project root (322 recorded summaries named `src/...` files and none by absolute path), so a path also survives as its cwd-relative spelling; matching the absolute form alone read 0/64 on every compaction and made doctor report a live channel as dead. Separators are unified on both sides because the summary writes `/` whatever the platform.
-  const cwd = getCwd(event) ?? process.cwd()
+  // Fold both sides on a case-insensitive filesystem so a summary that reproduces a path with different capitalization still counts as a survivor. Folding the needle alone was the first version of this and it matched nothing on Windows, which would have made the canary read "channel dead" on every compaction. The summarizer rewrites the manifest's absolute paths relative to the project root (322 recorded summaries named `src/...` files and none by absolute path), so a path also survives as its cwd-relative spelling; matching the absolute form alone read 0/64 on every compaction and made doctor report a live channel as dead. Separators are unified on both sides because the summary writes `/` whatever the platform, and cwd goes through normalizePath like the stored paths did, or a macOS `/var` or Windows 8.3 short-name cwd would relativize every path to `../`.
+  const cwd = normalizePath(getCwd(event) ?? process.cwd())
   const spell = (p: string): string => foldPath(p.replaceAll('\\', '/'))
   const haystack = spell(summary)
   const survived = sample.filter((p) => {
