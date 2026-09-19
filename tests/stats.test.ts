@@ -991,4 +991,34 @@ describe('stats', () => {
       closeAllDbs()
     })
   })
+
+  describe('dropRetiredPythonTables wiring (throttled maintenance only, never per-process schema setup)', () => {
+    it('a fresh per-process db open leaves retired Python-era tables in place; the throttled maintenance pass removes them', () => {
+      const db = getDb(globalDbPath())
+      db.exec(GLOBAL_SCHEMA_SQL) // idempotent: same DDL production's getGlobalDb() applies
+      db.prepare('CREATE TABLE IF NOT EXISTS grep_patterns (id INTEGER PRIMARY KEY)').run()
+      db.prepare('CREATE TABLE IF NOT EXISTS miss_patterns (id INTEGER PRIMARY KEY)').run()
+      db.prepare('CREATE TABLE IF NOT EXISTS wal_bloat (id INTEGER PRIMARY KEY)').run()
+      db.prepare('INSERT INTO grep_patterns (id) VALUES (1)').run()
+      db.prepare('INSERT INTO miss_patterns (id) VALUES (2)').run()
+      db.prepare('INSERT INTO wal_bloat (id) VALUES (3)').run()
+
+      summarize() // real entry point for a per-process open: summarize -> getGlobalDb -> migrateGlobalSchema, no maintenance call
+
+      const afterOpen = db.prepare(`SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND name IN ('grep_patterns', 'miss_patterns', 'wal_bloat')`).get() as { c: number }
+      expect(afterOpen.c, 'per-process schema setup must not drop retired tables').toBe(3)
+
+      db.prepare('DELETE FROM stats_maintenance').run() // force maybeRunStatsMaintenance to run on the next recordStat below
+      recordStat('read_replacement', 0, 0) // real entry point: recordStat -> maybeRunStatsMaintenance -> dropRetiredPythonTables
+
+      const afterMaintenance = db.prepare(`SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND name IN ('grep_patterns', 'miss_patterns', 'wal_bloat')`).get() as { c: number }
+      expect(afterMaintenance.c, 'the throttled maintenance pass must drop the retired tables').toBe(0)
+
+      db.prepare('DELETE FROM stats_maintenance').run() // force the maintenance pass again
+      recordStat('read_replacement', 0, 0) // running again should not throw (DROP TABLE IF EXISTS is idempotent)
+      // If we reach here, the second maintenance pass succeeded without throwing
+
+      closeAllDbs()
+    })
+  })
 })

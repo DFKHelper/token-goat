@@ -532,6 +532,17 @@ export function pruneTestIsolationLeakRows(db: SqliteDatabase): void {
   }
 }
 
+// Retired Python-era tables that should no longer exist in global.db.
+function dropRetiredPythonTables(db: SqliteDatabase): void {
+  try {
+    db.prepare('DROP TABLE IF EXISTS grep_patterns').run()
+    db.prepare('DROP TABLE IF EXISTS miss_patterns').run()
+    db.prepare('DROP TABLE IF EXISTS wal_bloat').run()
+  } catch {
+    // Fail-soft: never block stats maintenance on a cleanup pass.
+  }
+}
+
 /**
  * Does this database's `stats` table carry the `harness` column?
  *
@@ -683,6 +694,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
     rollupAndPruneStats(db)
     pruneHintEmissions(db)
     pruneTestIsolationLeakRows(db)
+    dropRetiredPythonTables(db)
   } catch {
     // Fail-soft: see doc comment above.
   }
