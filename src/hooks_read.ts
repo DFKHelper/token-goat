@@ -117,6 +117,13 @@ function counterfactualCredit(counterfactualBytes: number, emittedBytes = 0): nu
   return Math.max(0, Math.min(counterfactualBytes, PER_FILE_COUNTERFACTUAL_CEILING) - emittedBytes)
 }
 
+/** Counterfactual credit for a diff-hint body actually delivered to the model (fence + surgical-hint suffix included), or null when it doesn't clear hints.diff_hint_min_tokens_saved. Both the floor and the credit must price the same bytes the model receives -- the wrapped body, not the raw diff underneath it -- or a diff hint can pass the floor on the diff alone while its wrapper pushes the true delivered body over what a plain deny would have cost. */
+function diffHintCredit(counterfactualBytes: number, body: string): number | null {
+  const credit = counterfactualCredit(counterfactualBytes, body.length)
+  if (savedTokensFromBytes(credit) < loadConfig().hints.diff_hint_min_tokens_saved) return null
+  return credit
+}
+
 /** Check if a path is under node_modules/. Case-insensitive on case-insensitive filesystems (Windows, macOS by default), case-sensitive elsewhere. */
 function isNodeModulesPath(p: string): boolean {
   const check = foldPath(p)
@@ -724,17 +731,15 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
                 surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
               )
             }
-            if (
-              snapDiff.kind === 'diff' &&
-              savedTokensFromBytes(snapDiff.savedBytes) >= loadConfig().hints.diff_hint_min_tokens_saved
-            ) {
-              recordActualRead(event, normalized)
-              recordStat('session_hint', 0, 0)
-              return denyOutput(
-                ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+            if (snapDiff.kind === 'diff') {
+              const diffBody = ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
                 fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
-                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
-              )
+                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd()
+              if (diffHintCredit(snapDiff.currentContent.length, diffBody) !== null) {
+                recordActualRead(event, normalized)
+                recordStat('session_hint', 0, 0)
+                return denyOutput(diffBody)
+              }
             }
             // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to
             // use (kind 'none'), or a diff that doesn't clear the savings floor --
@@ -813,17 +818,15 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent), memSnapDiff.currentContent)).trimEnd(),
       )
     }
-    if (
-      memSnapDiff.kind === 'diff' &&
-      savedTokensFromBytes(memSnapDiff.savedBytes) >= loadConfig().hints.diff_hint_min_tokens_saved
-    ) {
-      recordActualRead(event, normalized)
-      recordStat('session_hint', 0, 0)
-      return denyOutput(
-        ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+    if (memSnapDiff.kind === 'diff') {
+      const diffBody = ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
         fenceUntrustedFileContent('```diff\n' + memSnapDiff.diff + '\n```') + '\n\n' +
-        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent), memSnapDiff.currentContent)).trimEnd(),
-      )
+        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent), memSnapDiff.currentContent)).trimEnd()
+      if (diffHintCredit(memSnapDiff.currentContent.length, diffBody) !== null) {
+        recordActualRead(event, normalized)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(diffBody)
+      }
     }
     // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use
     // (kind 'none'), or a diff that doesn't clear the savings floor -- fall
@@ -887,13 +890,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         )
       }
       if (snapDiff.kind === 'diff') {
-        recordActualRead(event, normalized)
-        const artifactDiffCredit = counterfactualCredit(snapDiff.currentContent.length, snapDiff.diff.length)
-        recordStat('session_hint', artifactDiffCredit, savedTokensFromBytes(artifactDiffCredit), undefined, 'artifact-snapshot-diff')
-        return denyOutput(
-          'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-          fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' + sessionArtifactRecall(normalized),
-        )
+        const diffBody = 'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+          fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' + sessionArtifactRecall(normalized)
+        const artifactDiffCredit = diffHintCredit(snapDiff.currentContent.length, diffBody)
+        if (artifactDiffCredit !== null) {
+          recordActualRead(event, normalized)
+          recordStat('session_hint', artifactDiffCredit, savedTokensFromBytes(artifactDiffCredit), undefined, 'artifact-snapshot-diff')
+          return denyOutput(diffBody)
+        }
       }
       // No snapshot or file too large — generic re-read denial
       recordActualRead(event, normalized)
@@ -951,18 +955,18 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
 
     if (snapDiff.kind === 'diff') {
-      // Savings guard, uniform for doc and source files: only serve the diff if it
-      // clears the configured token-savings floor (hints.diff_hint_min_tokens_saved).
-      // The gate prices the saving with savedTokensFromBytes, the same function the credit three lines below uses, so a change to the divisor can never leave the threshold that admits the hint and the figure booked for it on two different scales.
-      if (savedTokensFromBytes(snapDiff.savedBytes) >= loadConfig().hints.diff_hint_min_tokens_saved) {
+      // Savings guard, uniform for doc and source files: only serve the diff if the full body it
+      // wraps (fence + surgical-hint suffix, not the raw diff alone) clears the configured
+      // token-savings floor (hints.diff_hint_min_tokens_saved). diffHintCredit prices the floor
+      // and the credit from the same bytes, so they can never disagree on scale.
+      const diffBody = ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+        fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
+        surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd()
+      const diffCredit = diffHintCredit(snapDiff.currentContent.length, diffBody)
+      if (diffCredit !== null) {
         recordActualRead(event, normalized)
-        const diffCredit = counterfactualCredit(snapDiff.currentContent.length, snapDiff.diff.length)
         recordStat('diff_hint', diffCredit, savedTokensFromBytes(diffCredit))
-        return denyOutput(
-          ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-          fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
-          surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
-        )
+        return denyOutput(diffBody)
       }
       // Diff is not a good savings — fall through to generic deny block below
     }

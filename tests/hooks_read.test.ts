@@ -3181,6 +3181,37 @@ content here` },
     })
   })
 
+  // HAND-DERIVED: the floor and credit must price the model-visible body (prefix + fence + surgical-hint suffix), not the raw diff underneath it. Probes floor=0 once to measure the real overhead the wrapper adds beyond the diff, then picks a floor strictly between the diff-only and body-priced savings so a pre-fix run (pricing the diff alone) would still emit the hint while a fixed run (pricing the full body) must not.
+  it('prices the diff-hint floor against the full wrapped body, not the diff alone (regression: overhead-blind floor let an over-priced hint through)', () => {
+    withDiffFlag(true, () => {
+      const content1 = bigSource(5)
+      const content2 = bigSource(555)
+      let diffBody = ''
+      withMinTokensSaved(0, () => {
+        const p = tmpFileExt(content1, '.tsx')
+        snapshotFirstRead(p, content1)
+        fs.writeFileSync(p, content2)
+        const probe = preReadHandler(readEvent(p))
+        if (probe.hookType === 'deny') diffBody = probe.message
+      })
+      expect(diffBody).toContain('```diff')
+      const diffOnly = diffBody.slice(diffBody.indexOf('```diff\n') + '```diff\n'.length, diffBody.lastIndexOf('\n```'))
+      const diffOnlySaved = Math.round(Math.max(0, content2.length - diffOnly.length) / 4)
+      const bodySaved = Math.round(Math.max(0, content2.length - diffBody.length) / 4)
+      expect(bodySaved).toBeLessThan(diffOnlySaved) // the wrapper genuinely costs more than the diff alone
+      const floor = bodySaved + 1 // clears the diff-only price, misses the body-priced one
+      expect(floor).toBeLessThanOrEqual(diffOnlySaved)
+
+      withMinTokensSaved(floor, () => {
+        const p2 = tmpFileExt(content1, '.tsx')
+        snapshotFirstRead(p2, content1)
+        fs.writeFileSync(p2, content2)
+        const result = preReadHandler(readEvent(p2))
+        if (result.hookType === 'deny') expect(result.message).not.toContain('```diff')
+      })
+    })
+  })
+
   // A .md file needs no serve_diff_on_reread flag (isDocDiffable is unconditional), so this exercises shipped default behavior. buildLineDiff caps its body at 50 changed lines; because savedBytes was derived from the already-truncated diff text, withholding MORE content made the computed saving LARGER, so the widest changes cleared the savings floor most easily and were served as "Here is what changed" while hiding most of what changed.
   function manyLineDoc(midValue: string): string {
     const head = Array.from({ length: 100 }, (_, i) => `Stable heading line ${i} with enough text to give the file real byte weight.`)
@@ -3458,31 +3489,47 @@ describe('preReadHandler — session artifact re-read dedup', () => {
   })
 
   it('injects diff in deny when tasks/*.output content changed since last read', () => {
-    const content1 = 'task output line 1\ntask output line 2\n'
-    const content2 = 'task output line 1\ntask output line 2\ntask output line 3 (added)\n'
-    const p = makeTasksOutputFile(content1)
-    const normalized = normalizePath(p)
+    // This tiny fixture's diff itself is real savings, but the floor now prices the full
+    // wrapped body (see diffHintCredit in hooks_read.ts), so a near-zero floor is needed to
+    // observe the diff branch here rather than the fallback generic re-read denial.
+    const cfg = defaultConfig()
+    cfg.hints.diff_hint_min_tokens_saved = 0
+    saveConfig(cfg)
+    invalidateConfigCache()
+    try {
+      const content1 = 'task output line 1\ntask output line 2\n'
+      const content2 = 'task output line 1\ntask output line 2\ntask output line 3 (added)\n'
+      const p = makeTasksOutputFile(content1)
+      const normalized = normalizePath(p)
 
-    preReadHandler(readEvent(p))
-    const postEvent: HookEvent = {
-      eventName: 'post_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: p },
-      sessionId: 'test',
-      agentId: undefined,
-      raw: { tool_response: content1 },
-    }
-    postReadHandler(postEvent)
-    recordFileRead(normalized)
+      preReadHandler(readEvent(p))
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        agentId: undefined,
+        raw: { tool_response: content1 },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalized)
 
-    fs.writeFileSync(p, content2)
+      fs.writeFileSync(p, content2)
 
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('Content changed since last read')
-      expect(result.message).toContain('```diff')
-      expect(result.message).toContain('token-goat bash-output --file "' + normalized + '"')
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+        expect(result.message).toContain('token-goat bash-output --file "' + normalized + '"')
+      }
+    } finally {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
     }
   })
 })
