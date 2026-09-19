@@ -1403,6 +1403,56 @@ describe('html adapter', () => {
     expect(sections).toHaveLength(0)
   })
 
+  it('spans an html_id symbol from its opening tag to its matching close tag, not just the opening tag\'s own line (HAND-DERIVED: shape of a classic dashboard template, from a user report)', () => {
+    const content = [
+      '<!doctype html>',
+      '<html>',
+      '<head><title>Dash</title></head>',
+      '<body>',
+      '  <header id="top-bar"><h1>Spend</h1></header>',
+      '  <section id="chart1-panel" class="panel">',
+      '    <h2>Chart 1</h2>',
+      '    <canvas id="chart1"></canvas>',
+      '    <div id="legend"></div>',
+      '  </section>',
+      '  <section id="baseline-panel">',
+      '    <h2>Daily baseline</h2>',
+      '    <table id="baseline-table"><tr><td>x</td></tr></table>',
+      '  </section>',
+      '  <script src="dashboard.js"></script>',
+      '</body>',
+      '</html>',
+    ].join('\n')
+    const { symbols } = extractHtml(content, 'dashboard_template.html')
+    const chart1Panel = symbols.find((s) => s.kind === 'html_id' && s.name === 'chart1-panel')
+    expect(chart1Panel?.lineStart).toBe(6)
+    expect(chart1Panel?.lineEnd).toBe(10)
+    // A void element (canvas has a close tag so is not void, but the self-closing-shaped `<canvas id="chart1"></canvas>` still has a real close tag on the same line) keeps a one-line span when open and close sit on one line.
+    const chart1Canvas = symbols.find((s) => s.kind === 'html_id' && s.name === 'chart1')
+    expect(chart1Canvas?.lineStart).toBe(chart1Canvas?.lineEnd)
+    // A nested <script> inside the tree does not desync the tag-balance scan for an ancestor element.
+    const baselinePanel = symbols.find((s) => s.kind === 'html_id' && s.name === 'baseline-panel')
+    expect(baselinePanel?.lineStart).toBe(11)
+    expect(baselinePanel?.lineEnd).toBe(14)
+  })
+
+  it('keeps a self-closing/void element id as a one-line span instead of scanning for a close tag that will never exist', () => {
+    const content = '<div id="wrap">\n  <input id="qty" type="number">\n  <br id="spacer" />\n</div>'
+    const { symbols } = extractHtml(content, 'void.html')
+    const qty = symbols.find((s) => s.name === 'qty')
+    const spacer = symbols.find((s) => s.name === 'spacer')
+    expect(qty?.lineStart).toBe(qty?.lineEnd)
+    expect(spacer?.lineStart).toBe(spacer?.lineEnd)
+  })
+
+  it('does not let raw CSS text inside a <style> body desync the tag-balance scan for an ancestor element', () => {
+    const content = '<section id="hero">\n  <style>.x { content: "<section>"; }</style>\n  <p>hi</p>\n</section>'
+    const { symbols } = extractHtml(content, 'style.html')
+    const hero = symbols.find((s) => s.name === 'hero')
+    expect(hero?.lineStart).toBe(1)
+    expect(hero?.lineEnd).toBe(4)
+  })
+
   it('detects .html language via parseFile', async () => {
     const result = await parseFixture('page.html', '<h1>Hello</h1>')
     expect(result.language).toBe('html')

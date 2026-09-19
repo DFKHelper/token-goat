@@ -4,6 +4,7 @@ import { loadConfig } from './config.js'
 import { globalDbPath } from './constants.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { querySymbols } from './index_reader.js'
+import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
@@ -227,15 +228,21 @@ export function fileConfinementRefusal(label: string, file: string, projectRoot:
   return confinementRefusal(label, resolveIndexPath(file, projectRoot ?? process.cwd()), root)
 }
 
+/** `#id` is the CSS-selector spelling an agent reaches for; accept it as a spelling of the html_id symbol name in read/section/symbol alike, for html files only. */
+export function stripHtmlIdSpelling(name: string, filePath: string): string {
+  return name.startsWith('#') && detectLanguage(filePath) === 'html' ? name.slice(1) : name
+}
+
 export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
   const { file, symbol: rawSymbol } = parseReadSpec(spec)
   if (rawSymbol === undefined || rawSymbol === '') return { kind: 'none' }
 
   const anchorMatch = /^(.+)@(\d+)$/.exec(rawSymbol)
-  const symbol = anchorMatch !== null ? anchorMatch[1]! : rawSymbol
+  const anchorSymbol = anchorMatch !== null ? anchorMatch[1]! : rawSymbol
   const lineAnchor = anchorMatch !== null ? parseInt(anchorMatch[2]!, 10) : undefined
 
   const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
+  const symbol = stripHtmlIdSpelling(anchorSymbol, resolved)
   const confined = confinementRefusal('This file', resolved, confinedProjectRoot(projectRoot))
   if (confined !== null) return { kind: 'confined', message: confined }
   if (forceRefresh === true) {

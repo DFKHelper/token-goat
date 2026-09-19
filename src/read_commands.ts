@@ -87,6 +87,7 @@ import {
   parseReadSpec,
   resolveSymbolSpec,
   runLineRange,
+  stripHtmlIdSpelling,
 } from './read_spec.js'
 import {
   formatStatsSuffix,
@@ -817,12 +818,12 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
 
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
-  if (opts.name !== undefined) queryOpts.name = opts.name
   if (opts.file !== undefined) {
     queryOpts.filePath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
     // Self-heal before querying so a stale index serves fresh data instead of a warning.
     healStaleIndex(queryOpts.filePath)
   }
+  if (opts.name !== undefined) queryOpts.name = queryOpts.filePath !== undefined ? stripHtmlIdSpelling(opts.name, queryOpts.filePath) : opts.name
   if (opts.kind !== undefined) queryOpts.kind = opts.kind
   // `--grep` filters client-side on NAME (no regex support in SQL), so the SQL `LIMIT` must
   // scan well past the caller's requested --limit -- otherwise a project whose matching symbols

@@ -58,6 +58,65 @@ function isNoise(name: string): boolean {
 // framework-generated HTML can otherwise emit thousands of duplicate symbol rows.
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
+const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'])
+
+// Matches one open/close/self-closing tag, consuming quoted attribute values as a unit so an embedded `>` inside an attribute (`title="a > b"`) can't end the match early. The attribute section is gated behind a mandatory leading `\s`, so it can never overlap with the preceding tag-name quantifier -- self-closing is read off the raw match text afterward rather than a trailing `(\/?)` capture, which would otherwise be ambiguous with the same attribute section swallowing that `/` first.
+const TAG_RE = /<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:\s(?:"[^"]*"|'[^']*'|[^'">])*)?>/g
+
+// Total bytes of `code` a single extractHtml call will spend computing element spans, bounding the cost on a pathological file (deeply malformed or enormous markup) the same way MAX_SYMBOLS bounds the id/class loops below.
+const ELEMENT_SPAN_SCAN_CAP = 2_000_000
+
+/**
+ * One forward pass over `code` giving, for every non-void element whose close tag was found, the offset from its opening `<tag` to the end of its matching `</tag>`, keyed by the opening tag's own start offset. An id/class match sitting inside an opening tag looks up that tag's start in {@link openTagRanges} to find which element owns it, then in this map for the element's real end; a void element, a self-closing tag, or one whose close tag is never found (or the scan cap is hit first) is simply absent, so its id/class falls back to today's one-line span. `<style>` bodies are skipped whole rather than walked, since raw CSS is not masked by {@link maskHtmlNoise} and could otherwise contain `<`/`>` text that desyncs the tag balance.
+ */
+function buildElementSpans(code: string): { spans: Map<number, number>; openTagRanges: { start: number; end: number }[] } {
+  const spans = new Map<number, number>()
+  const openTagRanges: { start: number; end: number }[] = []
+  const stack: { name: string; start: number }[] = []
+  TAG_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = TAG_RE.exec(code)) !== null) {
+    if (m.index > ELEMENT_SPAN_SCAN_CAP) break
+    const isClose = m[1] === '/'
+    const name = (m[2] ?? '').toLowerCase()
+    const selfClosing = m[0][m[0].length - 2] === '/'
+    const tagEnd = m.index + m[0].length
+    if (isClose) {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i]!.name === name) {
+          spans.set(stack[i]!.start, tagEnd)
+          stack.length = i
+          break
+        }
+      }
+      continue
+    }
+    openTagRanges.push({ start: m.index, end: tagEnd })
+    if (selfClosing || VOID_ELEMENTS.has(name)) continue
+    if (name === 'style') {
+      const closeMatch = /<\/style\s*>/gi.exec(code.slice(tagEnd))
+      if (closeMatch !== null) TAG_RE.lastIndex = tagEnd + closeMatch.index + closeMatch[0].length
+      continue
+    }
+    stack.push({ name, start: m.index })
+  }
+  return { spans, openTagRanges }
+}
+
+// Binary search for the open tag whose own `<name attrs>` text contains `offset` (where an id/class attribute match always lands), so its start can key into `spans`. Tag ranges are non-overlapping and strictly increasing, since one tag's own attribute text cannot legally contain another tag's `<`.
+function findEnclosingTagStart(openTagRanges: readonly { start: number; end: number }[], offset: number): number | null {
+  let lo = 0
+  let hi = openTagRanges.length - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const range = openTagRanges[mid]!
+    if (offset < range.start) hi = mid - 1
+    else if (offset >= range.end) lo = mid + 1
+    else return range.start
+  }
+  return null
+}
+
 export function extractHtml(
   content: string,
   filePath: string,
@@ -108,7 +167,8 @@ export function extractHtml(
   const seenId = new Set<string>()
   const seenClass = new Set<string>()
 
-  // id attributes
+  // id attributes. Spans the whole element (open tag through its matching close tag), found by buildElementSpans's tag-balance scan, so `read`/`section "file.html::someId"` returns the element instead of just the line its opening tag's id sits on; a void element, a self-closing tag, or one with no discoverable close tag keeps today's one-line span.
+  const { spans: elementSpans, openTagRanges } = buildElementSpans(code)
   for (const m of code.matchAll(ID_RE)) {
     if (symbols.length >= MAX_SYMBOLS) break
     const idVal = m[2] ?? ''
@@ -117,7 +177,10 @@ export function extractHtml(
       const key = `${idVal}\0${line}`
       if (!seenId.has(key)) {
         seenId.add(key)
-        symbols.push({ filePath, name: idVal, kind: 'html_id', lineStart: line, lineEnd: line, body: '', docstring: '', parent: '' })
+        const tagStart = findEnclosingTagStart(openTagRanges, m.index ?? 0)
+        const elementEnd = tagStart !== null ? elementSpans.get(tagStart) : undefined
+        const lineEnd = elementEnd !== undefined ? offsetToLine(lineIndex, elementEnd - 1) : line
+        symbols.push({ filePath, name: idVal, kind: 'html_id', lineStart: line, lineEnd, body: '', docstring: '', parent: '' })
       }
     }
   }

@@ -1,19 +1,35 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { querySymbols } from './index_reader.js'
+import { detectLanguage } from './parser_types.js'
 import { displaySafeJson } from './paths.js'
 import {
   findSpecSeparator,
   guardText,
+  healStaleIndex,
   parseCrossFileMultiSpec,
   readFileText,
   recordReadStat,
   resolveAgainstProjectRoot,
   sumFileSizes,
 } from './read_commands.js'
+import { stripHtmlIdSpelling } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
-import { listSections, readSection } from './section_reader.js'
+import { listSections, readSection, type SectionResult } from './section_reader.js'
 import { countNoun } from './util.js'
+
+// `readSection` only ever resolves headings from the file's own text; a non-heading html element (`<section id="chart1-panel">`) is invisible to it even after the extractor spans its whole element (html.ts::extractHtml), because that span lives in the symbols table, not in the file's heading list. Fall back to an html_id symbol lookup for html files only, so `section "file.html::chart1-panel"` (or the `#chart1-panel` spelling) resolves the same element `read`/`symbol` already do.
+function htmlIdSectionFallback(filePath: string, heading: string): SectionResult | null {
+  if (detectLanguage(filePath) !== 'html') return null
+  healStaleIndex(filePath)
+  const hit = querySymbols({ name: stripHtmlIdSpelling(heading, filePath), filePath, kind: 'html_id', limit: 1 })[0]
+  if (hit === undefined) return null
+  const text = readFileText(filePath)
+  if (text === null) return null
+  const lines = text.split('\n')
+  return { heading: hit.name, content: lines.slice(hit.lineStart - 1, hit.lineEnd).join('\n'), lineStart: hit.lineStart, lineEnd: hit.lineEnd }
+}
 
 export const AMBIGUOUS_HEADING_LIMIT = 10
 
@@ -50,7 +66,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     if (multiHeadings.length > 1) return runSectionMulti(specFilePath, filePath, multiHeadings, opts)
   }
 
-  const result = readSection(filePath, heading, readFileText)
+  const result = readSection(filePath, heading, readFileText) ?? htmlIdSectionFallback(filePath, heading)
   if (result === null) {
     if (!fs.existsSync(filePath)) {
       return { text: `File not found: '${filePath}'`, code: 1 }
