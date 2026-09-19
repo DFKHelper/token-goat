@@ -1,12 +1,4 @@
-// `token-goat index` (manual run) used to print nothing at all until the very end, which looks
-// hung on a real terminal when parsing + embedding a large repo takes minutes. cmdIndex now
-// writes a throttled progress line to stderr, gated by the exact _useRichStats rule stats.ts
-// already uses for rich vs plain output (NO_COLOR wins, CI is non-rich, Claude Code's own
-// terminal reports isTTY===undefined and counts as rich). This file proves: (1) the byte-identical
-// stdout regression never happens regardless of TTY state, (2) progress only appears on stderr
-// when the rich-terminal gate is on, (3) it stays silent under CI/pipe/NO_COLOR, (4) NO_COLOR
-// wins even on a real TTY (mirroring _useRichStats itself), matching the documented "skip-to-green
-// blind spot" lesson: the TTY-on path gets its own assertion, never only a skipIf.
+// `token-goat index` (manual run) used to print nothing at all until the very end, which looks hung on a real terminal when parsing + embedding a large repo takes minutes. cmdIndex now writes a throttled progress line to stderr, gated by the exact _useRichStats rule stats.ts already uses for rich vs plain output (NO_COLOR wins, only isTTY===true or an explicit FORCE_COLOR counts as rich; every non-TTY stdout, including a pipe/file/agent harness, stays plain). This file proves: (1) the byte-identical stdout regression never happens regardless of TTY state, (2) progress only appears on stderr when the rich-terminal gate is on, (3) it stays silent under CI/pipe/NO_COLOR, (4) NO_COLOR wins even on a real TTY (mirroring _useRichStats itself), matching the documented "skip-to-green blind spot" lesson: the TTY-on path gets its own assertion, never only a skipIf.
 
 import * as fs from 'fs'
 import * as os from 'os'
@@ -85,7 +77,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     }
   })
 
-  it('emits no progress output under CI even when isTTY is undefined (Claude Code shape)', async () => {
+  it('emits no progress output under CI even when isTTY is undefined (non-terminal stdout)', async () => {
     origCi = process.env['CI']
     process.env['CI'] = '1'
     restoreTty = setTty(undefined)
@@ -134,10 +126,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     }
   })
 
-  it('emits no progress output when isTTY is undefined and CI is unset (Claude Code terminal, still stays clean because progress is throttled and files finish before the 100ms window)', async () => {
-    // Claude Code's own terminal (isTTY undefined, CI unset) is treated as rich by _useRichStats,
-    // so progress IS eligible here; this test documents that a tiny 2-file run may legitimately
-    // produce zero repaints (finishes inside one throttle window) while the summary line is intact.
+  it('emits no progress output when isTTY is undefined and CI is unset (a pipe, a redirected file, or an agent harness reading stdout -- none of these are a real terminal, so none are eligible for rich output)', async () => {
     origCi = process.env['CI']
     delete process.env['CI']
     restoreTty = setTty(undefined)

@@ -990,11 +990,12 @@ function _totalsLines(summary: StatsSummary): string[] {
   ]
 }
 
-/** Whether stats output should use the rich, ANSI-colored renderer. `isTTY === true` is an explicit, unambiguous terminal -- always rich. When `isTTY` is `undefined` (Claude Code's own terminal, which sets no isTTY at all -- see 9f8589a5) treat it as rich too, but not when `CI` is set: CI runners are also non-TTY and would otherwise be misread as Claude Code's terminal, sending colorized box-table output through what test/log consumers expect to be plain text. */
+/** Whether stats output should use the rich, ANSI-colored renderer. `isTTY === true` is an explicit, unambiguous terminal -- always rich. `isTTY` is `undefined` for every non-TTY stdout (a pipe, a redirected file, or an agent harness reading the child's stdout, not just a real terminal -- Node leaves the property unset on any stream that isn't a TTY), so treating `undefined` as rich sent 80KB of ANSI box-table output through `token-goat stats --full | ...` and overflowed a harness's output cap; only an explicit `FORCE_COLOR` (set and not `'0'`) can opt a non-TTY stream into rich output. */
 export function _useRichStats(): boolean {
   if (process.env['NO_COLOR']) return false
   if (process.stdout.isTTY === true) return true
-  return process.stdout.isTTY === undefined && !process.env['CI']
+  const forceColor = process.env['FORCE_COLOR']
+  return forceColor !== undefined && forceColor !== '0'
 }
 
 function _renderShortTotals(summary: StatsSummary): void {

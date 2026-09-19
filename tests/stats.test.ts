@@ -25,6 +25,7 @@ import {
   GLOBAL_SCHEMA_SQL,
   rollupAndPruneStats,
   pruneTestIsolationLeakRows,
+  _useRichStats,
 } from '../src/stats.js'
 
 /**
@@ -1020,5 +1021,56 @@ describe('stats', () => {
 
       closeAllDbs()
     })
+  })
+})
+
+describe('_useRichStats', () => {
+  let origIsTty: boolean | undefined
+  let origNoColor: string | undefined
+  let origForceColor: string | undefined
+
+  beforeEach(() => {
+    origIsTty = process.stdout.isTTY
+    origNoColor = process.env['NO_COLOR']
+    origForceColor = process.env['FORCE_COLOR']
+    delete process.env['NO_COLOR']
+    delete process.env['FORCE_COLOR']
+  })
+
+  afterEach(() => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+    if (origNoColor === undefined) delete process.env['NO_COLOR']
+    else process.env['NO_COLOR'] = origNoColor
+    if (origForceColor === undefined) delete process.env['FORCE_COLOR']
+    else process.env['FORCE_COLOR'] = origForceColor
+  })
+
+  // Regression: Node leaves isTTY unset (not false) for every non-TTY stdout -- a pipe, a redirected file, or an agent harness reading the child's stdout -- and the old gate treated that undefined the same as a real terminal, sending `token-goat stats --full`'s 80KB ANSI box renderer through what a harness expects to be plain, capped output. HAND-DERIVED: Node's own documented isTTY contract (set only on a real TTY stream, absent otherwise).
+  it('is plain, not rich, when isTTY is undefined (a pipe/file/harness, not a real terminal)', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true })
+    expect(_useRichStats()).toBe(false)
+  })
+
+  it('is rich on an explicit real terminal (isTTY === true)', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    expect(_useRichStats()).toBe(true)
+  })
+
+  it('is plain on a non-TTY stream even with FORCE_COLOR=0', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true })
+    process.env['FORCE_COLOR'] = '0'
+    expect(_useRichStats()).toBe(false)
+  })
+
+  it('is rich on a non-TTY stream when FORCE_COLOR is explicitly set and not 0', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true })
+    process.env['FORCE_COLOR'] = '1'
+    expect(_useRichStats()).toBe(true)
+  })
+
+  it('NO_COLOR wins over isTTY === true', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    process.env['NO_COLOR'] = '1'
+    expect(_useRichStats()).toBe(false)
   })
 })

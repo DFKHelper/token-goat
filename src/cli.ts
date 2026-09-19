@@ -278,7 +278,7 @@ export async function cmdIndex(
   let failed = 0
   let skipped = 0
   const failureGroups = new Map<string, { example: string; count: number }>()
-  // Manual `index` runs can take minutes on a real repo with nothing printed until the very end, which looks hung on a real terminal but must stay perfectly silent for pipes/CI/hook invocations that parse stdout -- reuse _useRichStats' exact TTY/NO_COLOR/CI gate (Claude Code's own terminal reports isTTY===undefined, not false) so the same rule that governs rich stats output governs this progress line. Progress is written to stderr only and throttled to ~10 repaints/sec so a large repo does not hammer the terminal with one line per file.
+  // Manual `index` runs can take minutes on a real repo with nothing printed until the very end, which looks hung on a real terminal but must stay perfectly silent for pipes/CI/hook invocations that parse stdout -- reuse _useRichStats' exact TTY/NO_COLOR/FORCE_COLOR gate so the same rule that governs rich stats output governs this progress line. Progress is written to stderr only and throttled to ~10 repaints/sec so a large repo does not hammer the terminal with one line per file.
   const showProgress = _useRichStats()
   const progressStart = Date.now()
   let lastProgressPaintAt = 0
