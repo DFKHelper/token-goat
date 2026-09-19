@@ -84,10 +84,7 @@ export interface StatsSummary {
   window_days: number
 }
 
-/**
- * Bucket for stat rows that predate the `harness` column. Deliberately not a harness name: it
- * marks the absence of a measurement, and any renderer showing it must not let it read as one.
- */
+/** Bucket for stat rows that predate the `harness` column. Deliberately not a harness name: it marks the absence of a measurement, and any renderer showing it must not let it read as one. */
 export const HARNESS_UNRECORDED = 'unrecorded (pre-2.8.1)'
 
 /** Same role as {@link HARNESS_UNRECORDED}, for `tg_version`: marks a row written before that column existed (or that failed to record it) rather than the empty string or the running version. */
@@ -129,22 +126,7 @@ const _BYTES_MODE_ONLY_KINDS = new Set(['webfetch_image', 'gdrive_image'])
  */
 export const COUNT_ONLY_KINDS: ReadonlySet<string> = new Set(['secret_redacted'])
 
-/**
- * Tokens to credit for `bytes` of text removed from what reaches the model.
- *
- * One function because the divisor is an assumption, and an assumption spelled out at each of forty
- * callsites drifts without anyone noticing. It drifted here: `bash_compress:generic` credited itself
- * through `estimateTokensFromLength`, which divides by three rather than four, so one kind was booked
- * roughly a third richer than every sibling inside a column that sums them all. On real data that was
- * 469,422 tokens over 520 events.
- *
- * Four, not three, and deliberately the more conservative of the two. `estimateTokensFromLength` is
- * an overflow guard's estimator, where over-estimating is the safe direction because the cost of
- * guessing low is blowing a budget. A saving is the mirror: over-estimating credits work that was
- * never done, so the safe direction reverses and the larger number is the wrong one to reach for.
- * Neither figure is a real tokenizer, and this is text only -- an image is billed in 28x28 pixel
- * patches and must go through `visionTokens` instead.
- */
+/** Tokens to credit for `bytes` of text removed from what reaches the model. One function because the divisor is an assumption, and an assumption spelled out at each of forty callsites drifts without anyone noticing. It drifted here: `bash_compress:generic` credited itself through `estimateTokensFromLength`, which divides by three rather than four, so one kind was booked roughly a third richer than every sibling inside a column that sums them all. On real data that was 469,422 tokens over 520 events. Four, not three, and deliberately the more conservative of the two. `estimateTokensFromLength` is an overflow guard's estimator, where over-estimating is the safe direction because the cost of guessing low is blowing a budget. A saving is the mirror: over-estimating credits work that was never done, so the safe direction reverses and the larger number is the wrong one to reach for. Neither figure is a real tokenizer, and this is text only -- an image is billed in 28x28 pixel patches and must go through `visionTokens` instead. */
 export function savedTokensFromBytes(bytes: number): number {
   return Math.round(Math.max(0, bytes) / 4)
 }
@@ -234,11 +216,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   compact_doc: SOURCE_READ,
   note_read: SOURCE_READ,
   note_list: SOURCE_READ,
-  // note-add is a write (like insert-section/replace, which record no stat at all -- neither
-  // has a "full source it replaces" savings concept). It still gets an event-only entry here
-  // (no bytesSaved/tokensSaved argument, same as skill_load) purely so `token-goat note-add`
-  // usage is visible in `token-goat stats --full` at all -- SOURCE_OTHER, not SOURCE_READ,
-  // since it is not a token-savings substitute for a read.
+  // note-add is a write (like insert-section/replace, which record no stat at all -- neither has a "full source it replaces" savings concept). It still gets an event-only entry here (no bytesSaved/tokensSaved argument, same as skill_load) purely so `token-goat note-add` usage is visible in `token-goat stats --full` at all -- SOURCE_OTHER, not SOURCE_READ, since it is not a token-savings substitute for a read.
   note_write: SOURCE_OTHER,
   web_fetch: SOURCE_WEB,
   injection_detected: SOURCE_WEB,
@@ -268,12 +246,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Lossless re-layout of Grep content-mode output (hooks_grep.ts foldGrepContentHandler). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as agent_report_compact above: its sibling grep_dedup_hint is advisory and saves nothing directly, whereas this is a real rewrite with real bytes removed. Filing it under the advisory bucket would silently add non-hint savings to hint_stats.ts's savedBytes (which reads by_source[SOURCE_HINT] wholesale) and overstate the hint ledger's net benefit.
   'grep:fold': SOURCE_CONTENT,
 
-  // Withholding of already-served stretches from a completed Read (hooks_read.ts
-  // elideAlreadyServedLines). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as
-  // grep:fold above: its siblings read_count_deny and read_served_deny are decisions about
-  // whether a read happens at all, whereas this is a rewrite of a result that did happen,
-  // with real bytes removed from it. Filing it under the advisory bucket would add non-hint
-  // savings to hint_stats.ts's savedBytes, which reads by_source[SOURCE_HINT] wholesale.
+  // Withholding of already-served stretches from a completed Read (hooks_read.ts elideAlreadyServedLines). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as grep:fold above: its siblings read_count_deny and read_served_deny are decisions about whether a read happens at all, whereas this is a rewrite of a result that did happen, with real bytes removed from it. Filing it under the advisory bucket would add non-hint savings to hint_stats.ts's savedBytes, which reads by_source[SOURCE_HINT] wholesale.
   'read:served_elide': SOURCE_CONTENT,
   // Same bucket and same reasoning as read:served_elide directly above: a rewrite of a Read that did happen, with real bytes removed, not an advisory about whether to read at all.
   'read:body_fold': SOURCE_CONTENT,
@@ -400,8 +373,7 @@ export function toLocalDateKey(d: Date): string {
   return `${year}-${month}-${day}`
 }
 
-// Same local-timezone rationale as toLocalDateKey, extended with a wall-clock time-of-day
-// (HH:MM:SS) for timestamp displays that need more than just the calendar day.
+// Same local-timezone rationale as toLocalDateKey, extended with a wall-clock time-of-day (HH:MM:SS) for timestamp displays that need more than just the calendar day.
 export function formatLocalTimestamp(d: Date): string {
   const hours = String(d.getHours()).padStart(2, '0')
   const minutes = String(d.getMinutes()).padStart(2, '0')
@@ -501,13 +473,7 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
   }
-  // Which token-goat wrote this row. Left nullable with no default rather than backfilled with
-  // the running version: rows written before this column existed came from an unknown release,
-  // and stamping today's version onto them would manufacture a provenance that was never
-  // measured -- the same reasoning as hint_emissions.bytes_emitted's deliberate NULL in db.ts.
-  // Without it, a change to how a kind computes bytes_saved (such as the counterfactual cap in
-  // util.ts's cappedSourceBytesSaved) silently mixes old and new accounting in one column, and
-  // no query can separate them after the fact.
+  // Which token-goat wrote this row. Left nullable with no default rather than backfilled with the running version: rows written before this column existed came from an unknown release, and stamping today's version onto them would manufacture a provenance that was never measured -- the same reasoning as hint_emissions.bytes_emitted's deliberate NULL in db.ts. Without it, a change to how a kind computes bytes_saved (such as the counterfactual cap in util.ts's cappedSourceBytesSaved) silently mixes old and new accounting in one column, and no query can separate them after the fact.
   try {
     db.exec('ALTER TABLE stats ADD COLUMN tg_version TEXT')
   } catch (err) {
@@ -519,9 +485,7 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
 const TEST_ISOLATION_LEAK_WINDOW_START_TS = 1780406895
 const TEST_ISOLATION_LEAK_WINDOW_END_TS = 1782119331
 
-/**
- * One-time (but idempotent on every call, since the DELETE simply matches nothing once run) cleanup for `stats` rows written by a Python test harness that, before constants.ts's `homeFallbackOrGuard` started refusing to resolve `DATA_DIR` against the real home directory inside a test worker, resolved the real `LOCALAPPDATA`/`global.db` anyway and wrote against it. A live install measured ~6,472 such rows dated 2026-06-03 through 06-22, in `detail` shapes a real session can also produce: a pytest temp directory (`...pytest-of-<user>\pytest-<N>\...`, from `image_shrink`/`large_read_redirect` rows, which a real session touches when reading pytest's own output) or a path containing `/fake/` (from `hint_backoff_suppressed`/`session_hint_suppressed`/`indexed_cat_deny`/`indexed_cat_advisory` rows, which a real project can legitimately have as a directory name). The shape alone is too broad to key a DELETE on, so this narrows to the leak's actual fingerprint: every leaked row has `tg_version IS NULL` (a real row from any release after `tg_version` shipped always carries one) and falls inside the measured `ts` window above, and a real row can only coincidentally match the shape, never both the shape and the fingerprint. Called only from the throttled `maybeRunStatsMaintenance` pass, never from per-process schema setup, since every hook invocation is its own process and an unindexed-by-detail DELETE on every call would take a write lock on the hot path for no further effect once the leak is gone.
- */
+/** One-time (but idempotent on every call, since the DELETE simply matches nothing once run) cleanup for `stats` rows written by a Python test harness that, before constants.ts's `homeFallbackOrGuard` started refusing to resolve `DATA_DIR` against the real home directory inside a test worker, resolved the real `LOCALAPPDATA`/`global.db` anyway and wrote against it. A live install measured ~6,472 such rows dated 2026-06-03 through 06-22, in `detail` shapes a real session can also produce: a pytest temp directory (`...pytest-of-<user>\pytest-<N>\...`, from `image_shrink`/`large_read_redirect` rows, which a real session touches when reading pytest's own output) or a path containing `/fake/` (from `hint_backoff_suppressed`/`session_hint_suppressed`/`indexed_cat_deny`/`indexed_cat_advisory` rows, which a real project can legitimately have as a directory name). The shape alone is too broad to key a DELETE on, so this narrows to the leak's actual fingerprint: every leaked row has `tg_version IS NULL` (a real row from any release after `tg_version` shipped always carries one) and falls inside the measured `ts` window above, and a real row can only coincidentally match the shape, never both the shape and the fingerprint. Called only from the throttled `maybeRunStatsMaintenance` pass, never from per-process schema setup, since every hook invocation is its own process and an unindexed-by-detail DELETE on every call would take a write lock on the hot path for no further effect once the leak is gone. */
 export function pruneTestIsolationLeakRows(db: SqliteDatabase): void {
   try {
     db.prepare(
@@ -612,35 +576,12 @@ function getGlobalDb(homeDir?: string): SqliteDatabase {
   return db
 }
 
-/**
- * Raw `stats` rows older than this are aggregated into `stats_daily_rollup` and deleted -- `stats`
- * accumulates for the life of the install with no size cap of its own (411,208 rows / ~54 MB with
- * indexes measured on one real install), and every actual consumer of raw rows either only needs
- * day/kind/harness/tg_version totals (summarize(), which folds the rollup back in below) or only
- * ever reads the newest few thousand rows by rowid regardless of calendar age
- * (checkCompactionChannel in cli_doctor.ts, COMPACTION_STATS_SCAN_CEILING). `token-goat stats`
- * defaults to --window-days 30; 180 days is 6x that default window, generous headroom for anyone
- * who types a larger --window-days without keeping the table unbounded. Exported so a guard/test
- * can assert against the same number the rollup actually runs with instead of a restated literal.
- */
+/** Raw `stats` rows older than this are aggregated into `stats_daily_rollup` and deleted -- `stats` accumulates for the life of the install with no size cap of its own (411,208 rows / ~54 MB with indexes measured on one real install), and every actual consumer of raw rows either only needs day/kind/harness/tg_version totals (summarize(), which folds the rollup back in below) or only ever reads the newest few thousand rows by rowid regardless of calendar age (checkCompactionChannel in cli_doctor.ts, COMPACTION_STATS_SCAN_CEILING). `token-goat stats` defaults to --window-days 30; 180 days is 6x that default window, generous headroom for anyone who types a larger --window-days without keeping the table unbounded. Exported so a guard/test can assert against the same number the rollup actually runs with instead of a restated literal. */
 export const STATS_RETENTION_DAYS = 180
 /** How often the rollup+prune pass (a full aggregate scan) is allowed to run, regardless of how often recordStat() itself fires. */
 const STATS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-/**
- * Aggregate every `stats` row older than `retentionDays` into `stats_daily_rollup` (summed by
- * day/kind/harness/tg_version) and delete those rows from `stats`, in one transaction.
- *
- * Transactional, not two independent statements: the INSERT...ON CONFLICT accumulates onto
- * whatever a prior rollup already summed for that day, so if the DELETE ran without the matching
- * INSERT already having committed, the next run's aggregation over the still-present rows would
- * double-count them into the rollup. Wrapping both in one transaction means an interruption
- * (crash, SIGTERM) rolls back to before either ran -- the next scheduled pass sees the exact same
- * un-rolled-up rows and redoes the same work, never double-counts, and never loses a row. Bounded
- * by `ts < cutoff` on both statements, so it is safe to run against a database this function has
- * never seen before (no schema-version assumption beyond the two tables this module already owns).
- * Fail-soft, matching every other write path in this module.
- */
+/** Aggregate every `stats` row older than `retentionDays` into `stats_daily_rollup` (summed by day/kind/harness/tg_version) and delete those rows from `stats`, in one transaction. Transactional, not two independent statements: the INSERT...ON CONFLICT accumulates onto whatever a prior rollup already summed for that day, so if the DELETE ran without the matching INSERT already having committed, the next run's aggregation over the still-present rows would double-count them into the rollup. Wrapping both in one transaction means an interruption (crash, SIGTERM) rolls back to before either ran -- the next scheduled pass sees the exact same un-rolled-up rows and redoes the same work, never double-counts, and never loses a row. Bounded by `ts < cutoff` on both statements, so it is safe to run against a database this function has never seen before (no schema-version assumption beyond the two tables this module already owns). Fail-soft, matching every other write path in this module. */
 export function rollupAndPruneStats(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
   try {
     const cutoffTs = Math.floor(Date.now() / 1000) - retentionDays * 86400
@@ -700,24 +641,13 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
   }
 }
 
-/**
- * Record a stat event in the global database.
- *
- * Silently no-ops on any error so hook paths are never blocked.
- * Pass `_testDb` in tests to inject a pre-initialized database.
- */
-// Distinguishes "genuinely no stats ever recorded" from "stats exist but every one falls outside
-// the requested --window-days" -- same empty-vs-filtered-store distinction already made for
-// dead/types (--exclude-tests, --grep) so a caller sees a bare "no stats" as a filter artifact
-// rather than a broken telemetry pipeline. Only queried once summarize() already found zero rows
-// in-window, so the common (non-empty) path pays nothing extra.
+/** Record a stat event in the global database. Silently no-ops on any error so hook paths are never blocked. Pass `_testDb` in tests to inject a pre-initialized database. */
+// Distinguishes "genuinely no stats ever recorded" from "stats exist but every one falls outside the requested --window-days" -- same empty-vs-filtered-store distinction already made for dead/types (--exclude-tests, --grep) so a caller sees a bare "no stats" as a filter artifact rather than a broken telemetry pipeline. Only queried once summarize() already found zero rows in-window, so the common (non-empty) path pays nothing extra.
 function noStatsMessage(windowDays: number, homeDir?: string): string {
   if (windowDays <= 0) return 'No stats recorded yet.'
   const db = getGlobalDb(homeDir)
   let total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
-  // Events rollupAndPruneStats already aggregated-and-deleted still happened -- omitting them here
-  // would silently shrink this count every time the rollup runs, which is exactly the kind of
-  // drift a self-measurement surface must not show.
+  // Events rollupAndPruneStats already aggregated-and-deleted still happened -- omitting them here would silently shrink this count every time the rollup runs, which is exactly the kind of drift a self-measurement surface must not show.
   try {
     const rollupTable = db
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stats_daily_rollup'`)
@@ -745,10 +675,7 @@ export function recordStat(
     const db = _testDb ?? getGlobalDb()
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null
-    // Built from whichever optional columns this database actually has rather than one branch per
-    // combination: with harness, traceparent and tg_version all optional that would be eight
-    // arms, and the arm for any un-exercised combination is exactly where a silently-dropped
-    // column hides. Column names here are literals, never caller input.
+    // Built from whichever optional columns this database actually has rather than one branch per combination: with harness, traceparent and tg_version all optional that would be eight arms, and the arm for any un-exercised combination is exactly where a silently-dropped column hides. Column names here are literals, never caller input.
     const cols = ['ts', 'kind', 'bytes_saved', 'tokens_saved', 'detail']
     const vals: unknown[] = [ts, kind, bytesSaved, tokensSaved, detail ?? null]
     if (statsHasHarnessColumn(db)) {
@@ -786,19 +713,7 @@ export interface UnmappedToolRow {
 /** Longest tool name stored. The name comes from the harness, so it is bounded here rather than trusted. */
 const MAX_TOOL_NAME_CHARS = 200
 
-/**
- * Note that a tool name reached a hook event for which token-goat registers named handlers, and
- * matched none of them.
- *
- * This is the one detector in the codebase that does not encode a belief about a harness. Every
- * other check -- the bridge capability matrix, the hook/harness fixture matrix, even the derived
- * Copilot shape manifest -- describes what this repo thinks a harness sends. This records what
- * actually arrived. That matters most for the nine bridges nobody can dogfood: the histogram is
- * the only ground truth about their real tool vocabulary.
- *
- * Keyed rather than appended, so the table is bounded by the number of *distinct* names ever seen
- * (tens of rows) instead of growing one row per tool call.
- */
+/** Note that a tool name reached a hook event for which token-goat registers named handlers, and matched none of them. This is the one detector in the codebase that does not encode a belief about a harness. Every other check -- the bridge capability matrix, the hook/harness fixture matrix, even the derived Copilot shape manifest -- describes what this repo thinks a harness sends. This records what actually arrived. That matters most for the nine bridges nobody can dogfood: the histogram is the only ground truth about their real tool vocabulary. Keyed rather than appended, so the table is bounded by the number of *distinct* names ever seen (tens of rows) instead of growing one row per tool call. */
 export function recordUnmappedTool(
   toolName: string,
   eventName: string,
@@ -875,9 +790,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   let totalTokens = 0
 
   const db = testDb ?? getGlobalDb(homeDir)
-  // Selected only when the column is actually there: an injected `testDb` may carry a table this
-  // module never migrated, and naming a missing column would throw out of summarize() entirely
-  // rather than degrading to "harness not recorded".
+  // Selected only when the column is actually there: an injected `testDb` may carry a table this module never migrated, and naming a missing column would throw out of summarize() entirely rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)
   const hasVersion = statsHasVersionColumn(db)
   const cols = [
@@ -903,8 +816,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
     const bytesSaved = (row as { bytes_saved?: number }).bytes_saved ?? 0
     const recorded = (row as { tokens_saved?: number }).tokens_saved ?? 0
     const kind = (row as { kind: string }).kind
-    // A count-only kind contributes its number to `counts` and zero tokens to everything else, so no
-    // aggregate below has to remember to exclude it. See COUNT_ONLY_KINDS for why.
+    // A count-only kind contributes its number to `counts` and zero tokens to everything else, so no aggregate below has to remember to exclude it. See COUNT_ONLY_KINDS for why.
     const isCount = COUNT_ONLY_KINDS.has(kind)
     if (isCount) counts[kind] = (counts[kind] ?? 0) + recorded
     const tokensSaved = isCount ? 0 : recorded
@@ -929,9 +841,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
     }
     incBucket(byDay[dateKey], bytesSaved, tokensSaved)
 
-    // A NULL harness is a row written before the column existed. It is bucketed as unrecorded
-    // rather than dropped (which would make the per-harness events undercount the total) or
-    // attributed to the current harness (which would invent a measurement that was never taken).
+    // A NULL harness is a row written before the column existed. It is bucketed as unrecorded rather than dropped (which would make the per-harness events undercount the total) or attributed to the current harness (which would invent a measurement that was never taken).
     const harness = (row as { harness?: string | null }).harness || HARNESS_UNRECORDED
     if (!byHarness[harness]) {
       byHarness[harness] = zeroBucket()
@@ -945,12 +855,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
     incBucket(byPricingVersion[pricingVersion], bytesSaved, tokensSaved)
   }
 
-  // Fold in stats_daily_rollup for any day this window reaches that rollupAndPruneStats already
-  // aggregated-and-deleted out of the raw `stats` table above. The two sources are disjoint by
-  // construction (rollup only ever holds rows that were literally deleted from `stats` at the
-  // moment they were summed), so adding both into the same buckets can never double-count --
-  // including the one day that can straddle the retention cutoff, where some of that day's rows
-  // are still raw (already counted above) and the rest were already rolled up (counted here).
+  // Fold in stats_daily_rollup for any day this window reaches that rollupAndPruneStats already aggregated-and-deleted out of the raw `stats` table above. The two sources are disjoint by construction (rollup only ever holds rows that were literally deleted from `stats` at the moment they were summed), so adding both into the same buckets can never double-count -- including the one day that can straddle the retention cutoff, where some of that day's rows are still raw (already counted above) and the rest were already rolled up (counted here).
   try {
     const rollupTable = db
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stats_daily_rollup'`)
@@ -971,8 +876,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
         tokens_saved: number
       }>
 
-      // Adds an already-aggregated rollup row's totals onto a bucket, in contrast to incBucket
-      // (which increments events by exactly 1 per raw row).
+      // Adds an already-aggregated rollup row's totals onto a bucket, in contrast to incBucket (which increments events by exactly 1 per raw row).
       const addBucket = (bucket: StatsBucket, events: number, bytesSaved: number, tokensSaved: number): void => {
         bucket.events += events
         bucket.bytes_saved += bytesSaved
@@ -1005,9 +909,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
       }
     }
   } catch {
-    // The rollup table is an optimization, not a correctness requirement for a database that
-    // predates it -- a query failure here degrades to "rows pruned before rollup existed are
-    // simply gone from long-window reports", never an error out of summarize().
+    // The rollup table is an optimization, not a correctness requirement for a database that predates it -- a query failure here degrades to "rows pruned before rollup existed are simply gone from long-window reports", never an error out of summarize().
   }
 
   const bySourceDict: Record<string, StatsBucket> = {}
@@ -1072,12 +974,7 @@ function _totalsLines(summary: StatsSummary): string[] {
     `Total events:   ${summary.total_events}`,
     `Bytes saved:    ${fmtBytes(summary.total_bytes_saved)}`,
     `Tokens saved:   ${summary.total_tokens_saved}`,
-    // Disclosure, not a correction: `total_tokens_saved` above sums rows written under whichever
-    // pricing formula was live when each was recorded, and `tg_version` cannot be read back into
-    // "which formula" for a row from before this disclosure existed (PRICING_VERSION_UNRECORDED is
-    // the overwhelming majority of all-time rows). Excluding those rows from the headline would
-    // discard nearly the whole figure rather than fix it, so the honest move is to keep the sum and
-    // say plainly that it spans more than one era, not to quietly present a mixed total as single-formula.
+    // Disclosure, not a correction: `total_tokens_saved` above sums rows written under whichever pricing formula was live when each was recorded, and `tg_version` cannot be read back into "which formula" for a row from before this disclosure existed (PRICING_VERSION_UNRECORDED is the overwhelming majority of all-time rows). Excluding those rows from the headline would discard nearly the whole figure rather than fix it, so the honest move is to keep the sum and say plainly that it spans more than one era, not to quietly present a mixed total as single-formula.
     ...(hasMixedPricingEras(summary)
       ? [
           `Pricing note:   totals mix ${countNoun(Object.keys(summary.by_pricing_version).length, 'tg_version era')} ` +
@@ -1085,9 +982,7 @@ function _totalsLines(summary: StatsSummary): string[] {
             `see 'token-goat stats --json' -> by_pricing_version for the breakdown`,
         ]
       : []),
-    // Printed on its own line, below the token total and never inside it, because it counts
-    // placeholders rather than tokens. Omitted entirely when nothing was redacted, so the line is
-    // information rather than a permanent zero. See COUNT_ONLY_KINDS.
+    // Printed on its own line, below the token total and never inside it, because it counts placeholders rather than tokens. Omitted entirely when nothing was redacted, so the line is information rather than a permanent zero. See COUNT_ONLY_KINDS.
     ...(summary.counts['secret_redacted']
       ? [`Secrets hidden: ${summary.counts['secret_redacted']} (a count, not tokens)`]
       : []),
@@ -1095,15 +990,7 @@ function _totalsLines(summary: StatsSummary): string[] {
   ]
 }
 
-/**
- * Whether stats output should use the rich, ANSI-colored renderer.
- * `isTTY === true` is an explicit, unambiguous terminal -- always rich. When
- * `isTTY` is `undefined` (Claude Code's own terminal, which sets no isTTY at
- * all -- see 9f8589a5) treat it as rich too, but not when `CI` is set: CI
- * runners are also non-TTY and would otherwise be misread as Claude Code's
- * terminal, sending colorized box-table output through what test/log
- * consumers expect to be plain text.
- */
+/** Whether stats output should use the rich, ANSI-colored renderer. `isTTY === true` is an explicit, unambiguous terminal -- always rich. When `isTTY` is `undefined` (Claude Code's own terminal, which sets no isTTY at all -- see 9f8589a5) treat it as rich too, but not when `CI` is set: CI runners are also non-TTY and would otherwise be misread as Claude Code's terminal, sending colorized box-table output through what test/log consumers expect to be plain text. */
 export function _useRichStats(): boolean {
   if (process.env['NO_COLOR']) return false
   if (process.stdout.isTTY === true) return true
@@ -1134,9 +1021,7 @@ function _plainTextStats(summary: StatsSummary): void {
     }
   }
 
-  // Only worth printing once there is something to compare. A single-harness install would just
-  // read "claudecode: 100% of the total already printed above", and a lone `unrecorded` bucket
-  // says only that these rows predate the column -- neither is information.
+  // Only worth printing once there is something to compare. A single-harness install would just read "claudecode: 100% of the total already printed above", and a lone `unrecorded` bucket says only that these rows predate the column -- neither is information.
   const harnesses = Object.entries(summary.by_harness)
     .filter(([, b]) => b.events > 0)
     .sort((a, b) => b[1].tokens_saved - a[1].tokens_saved)
@@ -1157,8 +1042,7 @@ function _plainTextStats(summary: StatsSummary): void {
       )
     }
   } else {
-    // Hints fired but no direct command was ever invoked -- surface this as a
-    // gap instead of letting the section vanish silently (see CHANGELOG).
+    // Hints fired but no direct command was ever invoked -- surface this as a gap instead of letting the section vanish silently (see CHANGELOG).
     const hintBucket = summary.by_source[SOURCE_HINT]
     if (hintBucket && hintBucket.events > 0) {
       lines.push(
@@ -1257,12 +1141,7 @@ function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
   }
 }
 
-/**
- * Bare ``token-goat stats`` default: totals + hints only, no by-source/
- * by-command/by-day breakdown. On a TTY this uses the same rich header + KPI
- * section as ``--full`` (just without the detail sections); on a pipe it
- * stays flat plain text.
- */
+/** Bare ``token-goat stats`` default: totals + hints only, no by-source/ by-command/by-day breakdown. On a TTY this uses the same rich header + KPI section as ``--full`` (just without the detail sections); on a pipe it stays flat plain text. */
 export function renderShortStats(opts?: { windowDays?: number; homeDir?: string; force?: boolean }): void {
   const windowDays = opts?.windowDays ?? 30
   const summary = summarize(windowDays, undefined, opts?.homeDir)

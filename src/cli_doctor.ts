@@ -1,8 +1,4 @@
-/**
- * Doctor CLI helpers — diagnose token-goat health.
- *
- * Provides check utilities and the runDoctor() entrypoint for the doctor command.
- */
+/** Doctor CLI helpers — diagnose token-goat health. Provides check utilities and the runDoctor() entrypoint for the doctor command. */
 
 import * as fs from 'fs'
 import * as path from 'path'
@@ -100,9 +96,7 @@ export {
   dataDirPermissionResult,
 }
 
-/**
- * Size at which the index DB stops being merely large and starts being a functional problem: write transactions scale with it, and once one outlasts db.ts's 15s `busy_timeout` the failure reaches the user as "database is locked" rather than as anything mentioning size. A healthy index for a large multi-project tree is tens of MB, so 1 GB is well clear of normal use and still catches the pathology early.
- */
+/** Size at which the index DB stops being merely large and starts being a functional problem: write transactions scale with it, and once one outlasts db.ts's 15s `busy_timeout` the failure reaches the user as "database is locked" rather than as anything mentioning size. A healthy index for a large multi-project tree is tens of MB, so 1 GB is well clear of normal use and still catches the pathology early. */
 const DB_SIZE_WARN_BYTES = 1024 * 1024 * 1024
 
 /** Bytes a VACUUM would return: the page size (offset 16, where 1 means 65536) times the freelist page count (offset 36), both big-endian fields of the database header described at https://www.sqlite.org/fileformat.html#the_database_header. */
@@ -119,10 +113,7 @@ export interface CategoryByteShare {
   command: string
 }
 
-// Columns actually worth summing: everything else in these tables is fixed-width integers that
-// cannot explain a multi-GB file. `LENGTH()` on a whole table is a full scan, but measured at
-// 0.3-0.5s each against a live 2.4 GB / 1.87M-row global.db (well under doctor's own gating,
-// which only runs this when the size warning has already fired), so no sampling is needed.
+// Columns actually worth summing: everything else in these tables is fixed-width integers that cannot explain a multi-GB file. `LENGTH()` on a whole table is a full scan, but measured at 0.3-0.5s each against a live 2.4 GB / 1.87M-row global.db (well under doctor's own gating, which only runs this when the size warning has already fired), so no sampling is needed.
 const CATEGORY_COLUMNS: Array<{ name: string; table: string; column: string; command: string }> = [
   { name: 'symbol bodies', table: 'symbols', column: 'body', command: "'token-goat reclaim-index --rebuild' drops and re-derives them under the current parser's size cap" },
   { name: 'refs', table: 'refs', column: 'context', command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
@@ -178,9 +169,7 @@ export function oversizeDbMessage(dbPath: string, sizeBytes: number, freeBytes: 
   return `${head}Only ${mb(freeBytes)} MB of it is free pages and none of it is temp-dir scratch, so it is live index data that neither 'reclaim-index' nor 'project prune' will shrink.${breakdown}`
 }
 
-/**
- * Check if the data directory and database files exist.
- */
+/** Check if the data directory and database files exist. */
 export function checkDbExists(dataDir: string): DoctorResult {
   const dbPath = path.join(dataDir, 'global.db')
   if (!fs.existsSync(dbPath)) {
@@ -238,13 +227,7 @@ export function checkDbExists(dataDir: string): DoctorResult {
   }
 }
 
-/**
- * Check that the index actually contains symbols when it has indexed files.
- *
- * Guards against the worker-draining-to-a-stub-callback failure mode (see CLAUDE.md's "Critical path" section): a release once shipped with the queue drain wired to a default stub, so files were marked indexed in the `files` table while the parser never ran and `symbols` stayed permanently empty — every surgical-read command (`symbol`, `read`, `skeleton`, `outline`, `semantic`) silently returned nothing, and the test suite stayed green because every worker test injected its own callback. Caller passes the same `dbPath` `checkDbExists` validated; if the database doesn't exist yet (or isn't openable), this check quietly no-ops rather than duplicating that failure.
- *
- * `rootDir`, when given, scopes both counts to files under that project root via `getProjectIndexCounts` (index_health.ts), which uses sql_path.ts's `projectScopeClause` -- the same helper map/semantic/find/dead already use (see commit 6a5ac228). Without it, `global.db`'s machine-wide sharing across every project ever indexed means an unrelated project's symbols can mask this exact project's own parser being broken: fileCount/symbolCount would count every project's rows, so a project with 0 of its own symbols still reads as healthy as long as some other indexed project has symbols. Omitting `rootDir` falls back to the prior unscoped (whole-database) behavior for callers that genuinely want a global figure.
- */
+/** Check that the index actually contains symbols when it has indexed files. Guards against the worker-draining-to-a-stub-callback failure mode (see CLAUDE.md's "Critical path" section): a release once shipped with the queue drain wired to a default stub, so files were marked indexed in the `files` table while the parser never ran and `symbols` stayed permanently empty — every surgical-read command (`symbol`, `read`, `skeleton`, `outline`, `semantic`) silently returned nothing, and the test suite stayed green because every worker test injected its own callback. Caller passes the same `dbPath` `checkDbExists` validated; if the database doesn't exist yet (or isn't openable), this check quietly no-ops rather than duplicating that failure. `rootDir`, when given, scopes both counts to files under that project root via `getProjectIndexCounts` (index_health.ts), which uses sql_path.ts's `projectScopeClause` -- the same helper map/semantic/find/dead already use (see commit 6a5ac228). Without it, `global.db`'s machine-wide sharing across every project ever indexed means an unrelated project's symbols can mask this exact project's own parser being broken: fileCount/symbolCount would count every project's rows, so a project with 0 of its own symbols still reads as healthy as long as some other indexed project has symbols. Omitting `rootDir` falls back to the prior unscoped (whole-database) behavior for callers that genuinely want a global figure. */
 export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult {
   if (!fs.existsSync(dbPath)) {
     return { name: 'Symbols', status: 'ok', message: 'no database yet' }
@@ -280,18 +263,10 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
   }
 }
 
-/**
- * Fraction of indexed files that must be reachable by vector search before embedding coverage is reported as healthy. Set low deliberately: some files never embed by design (over `indexing.large_file_symbol_only_kb`, .profile-meta.xml, oversized Salesforce metadata, documents with no extractable text), so a perfectly healthy index is not at 100% and a strict threshold would warn forever on a correct install. A quarter is far enough below any normal install to mean something is systematically excluding files rather than a few skips landing.
- */
+/** Fraction of indexed files that must be reachable by vector search before embedding coverage is reported as healthy. Set low deliberately: some files never embed by design (over `indexing.large_file_symbol_only_kb`, .profile-meta.xml, oversized Salesforce metadata, documents with no extractable text), so a perfectly healthy index is not at 100% and a strict threshold would warn forever on a correct install. A quarter is far enough below any normal install to mean something is systematically excluding files rather than a few skips landing. */
 const EMBED_COVERAGE_WARN_FRACTION = 0.25
 
-/**
- * Check that `semantic` can actually see the corpus, not just that the corpus was parsed.
- *
- * The symbol side has had `checkSymbolCount` for exactly this reason; the embedding side had nothing, and the two fail independently. Every terminal skip in indexFileEmbeddings (parser.ts) stamps a real embed_sha so the worker stops re-reading the file -- correct individually, and it also means a skipped file is indistinguishable from an embedded one at the freshness gate and will never be retried. Nothing summed those skips, so an index where almost nothing embedded looked identical to a healthy one, and `semantic` answered from the remainder using the same "no matches" wording it uses after searching everything. That is the failure this reports.
- *
- * A low number here is not automatically a defect -- it is usually a threshold doing its job -- so the message names `indexing.large_file_symbol_only_kb` and its current value rather than asserting a cause, because that setting is the dominant reason files land in the skip branches and is the one the reader can act on.
- */
+/** Check that `semantic` can actually see the corpus, not just that the corpus was parsed. The symbol side has had `checkSymbolCount` for exactly this reason; the embedding side had nothing, and the two fail independently. Every terminal skip in indexFileEmbeddings (parser.ts) stamps a real embed_sha so the worker stops re-reading the file -- correct individually, and it also means a skipped file is indistinguishable from an embedded one at the freshness gate and will never be retried. Nothing summed those skips, so an index where almost nothing embedded looked identical to a healthy one, and `semantic` answered from the remainder using the same "no matches" wording it uses after searching everything. That is the failure this reports. A low number here is not automatically a defect -- it is usually a threshold doing its job -- so the message names `indexing.large_file_symbol_only_kb` and its current value rather than asserting a cause, because that setting is the dominant reason files land in the skip branches and is the one the reader can act on. */
 export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): DoctorResult {
   if (!fs.existsSync(dbPath)) {
     return { name: 'Embedding coverage', status: 'ok', message: 'no database yet' }
@@ -335,18 +310,10 @@ export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): Doctor
   }
 }
 
-/**
- * Fraction of a project's indexed files that may predate the running parser before it is worth saying so.
- *
- * Not zero: a mismatch is self-healing (the next `index` or worker drain reparses the file), so a handful of rows behind after a fresh upgrade is the mechanism working, not a fault. Set at a quarter, matching the embedding-coverage fraction beside it, because both answer the same question -- has enough of this project silently dropped out of an index-backed feature that the feature's answers no longer describe the project.
- */
+/** Fraction of a project's indexed files that may predate the running parser before it is worth saying so. Not zero: a mismatch is self-healing (the next `index` or worker drain reparses the file), so a handful of rows behind after a fresh upgrade is the mechanism working, not a fault. Set at a quarter, matching the embedding-coverage fraction beside it, because both answer the same question -- has enough of this project silently dropped out of an index-backed feature that the feature's answers no longer describe the project. */
 const PARSER_FRESHNESS_WARN_FRACTION = 0.25
 
-/**
- * How much of this project's index was written by the parser this build runs.
- *
- * The other two index checks ask whether rows exist and whether they are embedded. Neither can see a row that is present, embedded, and produced by a previous version of the extraction logic. Those rows are stale by every gate's own definition -- `token-goat index` reparses them, the worker reparses them, the read-hook body fold refuses to fold them -- and until something touches the file, the project keeps answering from the older extractor with nothing to say so. Measured on a real index before this check existed: 95.1% of one project's files.
- */
+/** How much of this project's index was written by the parser this build runs. The other two index checks ask whether rows exist and whether they are embedded. Neither can see a row that is present, embedded, and produced by a previous version of the extraction logic. Those rows are stale by every gate's own definition -- `token-goat index` reparses them, the worker reparses them, the read-hook body fold refuses to fold them -- and until something touches the file, the project keeps answering from the older extractor with nothing to say so. Measured on a real index before this check existed: 95.1% of one project's files. */
 export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorResult {
   if (!fs.existsSync(dbPath)) {
     return { name: 'Parser freshness', status: 'ok', message: 'no database yet' }
@@ -388,9 +355,7 @@ export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorRe
 const DIRTY_QUEUE_BACKLOG_WARN_THRESHOLD = 500
 
 /** How stale the drain-heartbeat marker (touched at the end of every drainOnce cycle, see drainHeartbeatPathFor) can get before a running worker process is flagged as possibly wedged -- 30x the 2s default poll interval, generous margin against a slow cycle on a large repo. */
-/**
- * Check the health of the dirty-reindex queue: how many files are pending, and -- when the worker is running -- whether it's actually still completing drain cycles or has gone quiet without exiting (deadlock, stuck lock, crash loop that keeps restarting the pid but never reaching the end of drainOnce). A worker that's simply not running is already reported by the 'Worker' check; this check focuses on backlog size and on distinguishing "alive" from "actually draining".
- */
+/** Check the health of the dirty-reindex queue: how many files are pending, and -- when the worker is running -- whether it's actually still completing drain cycles or has gone quiet without exiting (deadlock, stuck lock, crash loop that keeps restarting the pid but never reaching the end of drainOnce). A worker that's simply not running is already reported by the 'Worker' check; this check focuses on backlog size and on distinguishing "alive" from "actually draining". */
 export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
   let pendingCount = 0
   try {
@@ -433,9 +398,7 @@ export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
   return { name: 'Dirty queue', status: 'ok', message: `${pendingCount} file(s) pending, worker actively draining` }
 }
 
-/**
- * Check if token-goat binary is installed and accessible.
- */
+/** Check if token-goat binary is installed and accessible. */
 export function checkInstall(): DoctorResult {
   // Resolved against PATH and then executed by absolute path. This used to be `execSync('token-goat --version')`: a bare name in a shell string, which on Windows `cmd.exe` resolves from the current directory before PATH, so running `token-goat doctor` inside a repository containing a `token-goat.bat` ran that file and printed its output as the installed version. Demonstrated end to end against the shipped bundle. `resolveOnPath` skips the current directory, and spawnSync with an argv array never reaches a shell, so neither half of the original shape remains.
   const resolved = resolveOnPath('token-goat')
@@ -452,9 +415,7 @@ export function checkInstall(): DoctorResult {
   return { name: 'Installation', status: 'fail', message: `token-goat command not found; run: npm install -g ${PACKAGE_NAME}` }
 }
 
-/**
- * Check whether the optional `typescript` compiler API loaded (`ts_refs.ts`'s type-resolved exact-refs tier needs it). Missing/failed load only degrades `refs` to its name-based tier, so this is a warn, not a fail.
- */
+/** Check whether the optional `typescript` compiler API loaded (`ts_refs.ts`'s type-resolved exact-refs tier needs it). Missing/failed load only degrades `refs` to its name-based tier, so this is a warn, not a fail. */
 export function checkTsCompiler(): DoctorResult {
   if (tsRefsAvailable()) {
     return { name: 'TypeScript compiler', status: 'ok', message: 'available' }
@@ -470,9 +431,7 @@ export function checkTsCompiler(): DoctorResult {
 /** Why the core `tree-sitter` binding failed to load, as far as the error says. */
 export type TreeSitterFailure = 'absent' | 'no-prebuild' | 'dlopen' | 'other'
 
-/**
- * Classify a `tree-sitter` load error. `absent`: Node's resolver found no `tree-sitter` package (a nested dependency missing inside it names that dependency instead, so it is `other`). `no-prebuild`: the package is there but node-gyp-build found neither a shipped prebuild for this platform/ABI nor a local compile (node-gyp-build.js throws "No native build was found for ..."). `dlopen`: a binary was found but the OS loader refused it (Node's ERR_DLOPEN_FAILED).
- */
+/** Classify a `tree-sitter` load error. `absent`: Node's resolver found no `tree-sitter` package (a nested dependency missing inside it names that dependency instead, so it is `other`). `no-prebuild`: the package is there but node-gyp-build found neither a shipped prebuild for this platform/ABI nor a local compile (node-gyp-build.js throws "No native build was found for ..."). `dlopen`: a binary was found but the OS loader refused it (Node's ERR_DLOPEN_FAILED). */
 export function classifyTreeSitterLoadError(err: Error | null): TreeSitterFailure {
   if (err === null) return 'other'
   const code = (err as NodeJS.ErrnoException).code
@@ -482,9 +441,7 @@ export function classifyTreeSitterLoadError(err: Error | null): TreeSitterFailur
   return 'other'
 }
 
-/**
- * Check whether tree-sitter (the core native binding plus its language grammars) is available. When it is not, the source skeleton fold, the code body fold's disk-parse fallback, and tree-sitter indexing are all silently disabled -- this is the single largest structural lever in the product, so a plain warn (not a fail, since the product is designed to still run degraded on the regex-based fallback) is the right severity, matching `checkTsCompiler` and `checkEmbeddings` above for the same "optional native dependency missing" shape.
- */
+/** Check whether tree-sitter (the core native binding plus its language grammars) is available. When it is not, the source skeleton fold, the code body fold's disk-parse fallback, and tree-sitter indexing are all silently disabled -- this is the single largest structural lever in the product, so a plain warn (not a fail, since the product is designed to still run degraded on the regex-based fallback) is the right severity, matching `checkTsCompiler` and `checkEmbeddings` above for the same "optional native dependency missing" shape. */
 export function checkTreeSitter(): DoctorResult {
   const name = 'Tree-sitter'
   if (!treeSitterCoreAvailable()) {
@@ -534,13 +491,7 @@ export function checkTreeSitter(): DoctorResult {
   }
 }
 
-/**
- * The embedding model is the one optional package a default install no longer carries.
- *
- * It used to arrive with everyone, and it brought the whole `onnxruntime-web` -> `onnx-proto` -> `protobufjs` chain plus its own nested, older `sharp` with it -- five high advisories and one critical, none of them fixable from here, on a feature that most installs never invoke. So it is opt-in now, and the cost of that trade is discoverability: `semantic` keeps working either way, because it always consults keyword search as well, so nothing errors and nothing is empty. The failure is silent by construction, which is exactly the kind doctor exists to make loud.
- *
- * Three states, three different answers. Off by config is not a problem and is reported as fine. Absent is one command away, and the command is the whole point of the line. Present but throwing is a different fault with a different fix, which is why this reads the error rather than the boolean -- see `embeddingBackendLoadError`.
- */
+/** The embedding model is the one optional package a default install no longer carries. It used to arrive with everyone, and it brought the whole `onnxruntime-web` -> `onnx-proto` -> `protobufjs` chain plus its own nested, older `sharp` with it -- five high advisories and one critical, none of them fixable from here, on a feature that most installs never invoke. So it is opt-in now, and the cost of that trade is discoverability: `semantic` keeps working either way, because it always consults keyword search as well, so nothing errors and nothing is empty. The failure is silent by construction, which is exactly the kind doctor exists to make loud. Three states, three different answers. Off by config is not a problem and is reported as fine. Absent is one command away, and the command is the whole point of the line. Present but throwing is a different fault with a different fix, which is why this reads the error rather than the boolean -- see `embeddingBackendLoadError`. */
 export function checkEmbeddings(config: Config): DoctorResult {
   const name = 'Embeddings'
   // `?? true` rather than `=== true`: the rest of the codebase reads an absent flag as enabled (src/cli.ts and src/worker.ts both spell it this way), and a doctor line that reported "disabled by config" for a config that never mentioned the setting would be a false all-clear.
@@ -570,9 +521,7 @@ export function checkEmbeddings(config: Config): DoctorResult {
   }
 }
 
-/**
- * Check whether the pinned embedding model files are present on disk.
- */
+/** Check whether the pinned embedding model files are present on disk. */
 export function checkEmbeddingModel(config: Config): DoctorResult {
   const name = 'Embedding model'
   if ((config.indexing?.embeddings_enabled ?? true) === false) {
@@ -597,9 +546,7 @@ export function checkEmbeddingModel(config: Config): DoctorResult {
   return { name, status: 'ok', message: 'model files verified and ready' }
 }
 
-/**
- * Check if config file is valid and readable.
- */
+/** Check if config file is valid and readable. */
 export function checkConfigValid(configPath: string): DoctorResult {
   if (!fs.existsSync(configPath)) {
     return {
@@ -626,9 +573,7 @@ export function checkConfigValid(configPath: string): DoctorResult {
   }
 }
 
-/**
- * Format a byte count as a human-readable disk-space string (e.g. "650.0 GB").
- */
+/** Format a byte count as a human-readable disk-space string (e.g. "650.0 GB"). */
 function formatDiskSpace(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let value = bytes
@@ -640,16 +585,10 @@ function formatDiskSpace(bytes: number): string {
   return `${value.toFixed(1)} ${units[unitIndex]}`
 }
 
-/**
- * Below this many free bytes in the data directory (1 GiB), flag `warn` instead of `ok`. The indexer, embeddings DB, and worker queue all live here, and a near-full disk fails writes to any of them silently from this check's point of view otherwise -- without a threshold, `checkDiskSpace` always reported `ok` as long as it could read *some* available figure, even at a few MB free, making it a "check" that could never actually flag the problem it exists to catch. 1 GiB is comfortably above global.db's typical size for a mid-sized project while still well below "nothing to worry about" territory.
- */
+/** Below this many free bytes in the data directory (1 GiB), flag `warn` instead of `ok`. The indexer, embeddings DB, and worker queue all live here, and a near-full disk fails writes to any of them silently from this check's point of view otherwise -- without a threshold, `checkDiskSpace` always reported `ok` as long as it could read *some* available figure, even at a few MB free, making it a "check" that could never actually flag the problem it exists to catch. 1 GiB is comfortably above global.db's typical size for a mid-sized project while still well below "nothing to worry about" territory. */
 const LOW_DISK_WARN_BYTES = 1024 * 1024 * 1024
 
-/**
- * Check available disk space in data directory.
- *
- * Prefers Node's built-in `fs.statfsSync` (Node 18.15+): no subprocess, and it works on stock Windows where there is no `df` binary. Falls back to shelling out to `df` on platforms/Node versions where `statfsSync` isn't available. If neither path works -- notably plain Windows without Git Bash/WSL on PATH and an old Node -- reports that explicitly instead of silently claiming "could not determine" every single time.
- */
+/** Check available disk space in data directory. Prefers Node's built-in `fs.statfsSync` (Node 18.15+): no subprocess, and it works on stock Windows where there is no `df` binary. Falls back to shelling out to `df` on platforms/Node versions where `statfsSync` isn't available. If neither path works -- notably plain Windows without Git Bash/WSL on PATH and an old Node -- reports that explicitly instead of silently claiming "could not determine" every single time. */
 export function checkDiskSpace(dataDir: string): DoctorResult {
   if (typeof fs.statfsSync === 'function') {
     try {
@@ -689,11 +628,7 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
   return { name: 'Disk Space', status: 'warn', message: 'disk space check unavailable on this platform' }
 }
 
-/**
- * Checks the installed Copilot CLI hook end-to-end: config is valid JSON with a preToolUse entry, the node binary baked into that entry's command still exists on disk (it goes stale after an nvm/fnm/volta node upgrade removes the old version -- a silent deny-all trigger, since Copilot's command hooks fail closed on a process that never launches), and running the exact command Copilot itself would run -- through a shell, the same win32 cmd.exe path Copilot uses -- against a synthetic preToolUse payload returns exit 0 and parseable JSON.
- *
- * Returns null (not a result) when Copilot CLI integration isn't installed: this is an opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is correct for users who have never touched `--copilot`.
- */
+/** Checks the installed Copilot CLI hook end-to-end: config is valid JSON with a preToolUse entry, the node binary baked into that entry's command still exists on disk (it goes stale after an nvm/fnm/volta node upgrade removes the old version -- a silent deny-all trigger, since Copilot's command hooks fail closed on a process that never launches), and running the exact command Copilot itself would run -- through a shell, the same win32 cmd.exe path Copilot uses -- against a synthetic preToolUse payload returns exit 0 and parseable JSON. Returns null (not a result) when Copilot CLI integration isn't installed: this is an opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is correct for users who have never touched `--copilot`. */
 
 export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
   if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
@@ -771,15 +706,9 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
   return { name: 'Copilot CLI', status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' }
 }
 
-/**
- * Run all doctor checks and return results.
- */
+/** Run all doctor checks and return results. */
 
-/**
- * Runs every diagnostic check and returns the results.
- *
- * `processes` exists so a caller that does not care about MCP process health can skip gathering it: on Windows that gather shells out to PowerShell for a full `Win32_Process` listing, which measured 1.2 s of this function's 1.5 s. Leave it undefined and the listing happens as normal -- that is what the CLI does, and `tests/cli_doctor.test.ts` covers that default path explicitly so the gather cannot rot behind an argument every test supplies.
- */
+/** Runs every diagnostic check and returns the results. `processes` exists so a caller that does not care about MCP process health can skip gathering it: on Windows that gather shells out to PowerShell for a full `Win32_Process` listing, which measured 1.2 s of this function's 1.5 s. Leave it undefined and the listing happens as normal -- that is what the CLI does, and `tests/cli_doctor.test.ts` covers that default path explicitly so the gather cannot rot behind an argument every test supplies. */
 /** How many recent compactions must all show zero surviving manifest paths before the channel is called broken. One is noise -- a summary can legitimately paraphrase every path away when the session barely touched any files. */
 const COMPACTION_CHANNEL_WINDOW = 5
 
@@ -864,26 +793,14 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
 /** How many unrecognized names to name in the informational line before summarizing the rest. */
 const UNMAPPED_TOOL_SAMPLE = 5
 
-/**
- * Report the tool names that reached token-goat's hooks and matched no handler.
- *
- * This is the only bridge check here that is not a restatement of a belief. `bridges-status` says which events a bridge *should* wire; the harness fixture matrix says what a payload *should* look like; the Copilot shape manifest says what the vendor *declares*. Each of those was written from the same understanding that produced the bridge, so a bridge built on a misunderstanding agrees with all three -- which is exactly how four separate features shipped wired, tested, green and inert. This one reads back what a harness actually sent.
- *
- * A warning fires only for a *near miss*: a name that differs from one token-goat handles by case or separators alone, e.g. `bash` arriving where `Bash` is handled. That is the fingerprint of a bridge's tool-rename step not being applied, and it is the only inference available without knowing what the harness meant. Everything else is reported as-is rather than judged: a name with no handler is usually just a tool token-goat has nothing to say about.
- *
- * A row whose near miss equals its own tool name is not a near miss at all -- the dispatcher returns before recording when a handler asked for that exact spelling, so such a row can only come from a database written by an older or in-development build. Warning on it would print a sentence that contradicts itself (sent "Bash" where "Bash" is handled) and would never clear, so it falls through to the informational line instead.
- */
+/** Report the tool names that reached token-goat's hooks and matched no handler. This is the only bridge check here that is not a restatement of a belief. `bridges-status` says which events a bridge *should* wire; the harness fixture matrix says what a payload *should* look like; the Copilot shape manifest says what the vendor *declares*. Each of those was written from the same understanding that produced the bridge, so a bridge built on a misunderstanding agrees with all three -- which is exactly how four separate features shipped wired, tested, green and inert. This one reads back what a harness actually sent. A warning fires only for a *near miss*: a name that differs from one token-goat handles by case or separators alone, e.g. `bash` arriving where `Bash` is handled. That is the fingerprint of a bridge's tool-rename step not being applied, and it is the only inference available without knowing what the harness meant. Everything else is reported as-is rather than judged: a name with no handler is usually just a tool token-goat has nothing to say about. A row whose near miss equals its own tool name is not a near miss at all -- the dispatcher returns before recording when a handler asked for that exact spelling, so such a row can only come from a database written by an older or in-development build. Warning on it would print a sentence that contradicts itself (sent "Bash" where "Bash" is handled) and would never clear, so it falls through to the informational line instead. */
 export function checkUnmappedTools(dbPath: string): DoctorResult {
   const name = 'Tool names'
   if (!fs.existsSync(dbPath)) {
     return { name, status: 'ok', message: 'no database yet' }
   }
   try {
-    // Clean up rows recorded before noteUnrecognizedTool (hook_registry.ts) learned to check a
-    // handler's toolPattern, not just its exact toolName -- a pattern-covered tool name (every
-    // MCP tool preMcpHandler/postMcpHandler's '^mcp__' pattern already covers) was never actually
-    // unmapped. Only reached from an explicit `token-goat doctor` run, not on every process, so
-    // this needs no throttle of its own.
+    // Clean up rows recorded before noteUnrecognizedTool (hook_registry.ts) learned to check a handler's toolPattern, not just its exact toolName -- a pattern-covered tool name (every MCP tool preMcpHandler/postMcpHandler's '^mcp__' pattern already covers) was never actually unmapped. Only reached from an explicit `token-goat doctor` run, not on every process, so this needs no throttle of its own.
     pruneStalePatternCoveredUnmappedTools(getDb(dbPath), [MCP_TOOL_PATTERN])
     const rows = readUnmappedTools(dbPath)
     if (rows.length === 0) {
@@ -977,9 +894,7 @@ export interface DoctorRepairResult {
   errors: string[]
 }
 
-/**
- * Automatically repairs known issues such as restrictive security posture and missing semantic models due to offline rollout.
- */
+/** Automatically repairs known issues such as restrictive security posture and missing semantic models due to offline rollout. */
 export async function runDoctorRepair(opts?: {
   dataDir?: string | undefined
   configPath?: string | undefined
@@ -1042,9 +957,7 @@ export async function runDoctorRepair(opts?: {
   return { repairs, errors }
 }
 
-/**
- * Format and print doctor results to stdout.
- */
+/** Format and print doctor results to stdout. */
 export function printDoctorResults(results: DoctorResult[]): void {
   console.log('\ntoken-goat doctor\n')
 
@@ -1160,9 +1073,7 @@ export function printDoctorResults(results: DoctorResult[]): void {
   console.log()
 }
 
-/**
- * Run doctor and return exit code (0 for success, 1 for failures).
- */
+/** Run doctor and return exit code (0 for success, 1 for failures). */
 export async function runDoctorAndExit(opts?: string | {
   dataDir?: string
   configPath?: string

@@ -37,23 +37,11 @@ export interface HookEvent {
   readonly toolName: string | undefined
   readonly toolInput: Record<string, unknown>
   readonly sessionId: string
-  /**
-   * Unique per-subagent-invocation id (Claude Code's `agent_id` field), present only
-   * when this hook fired inside a subagent call. `undefined` for main-thread events.
-   * All subagents spawned by one parent share the parent's `session_id`, so this is
-   * the only signal that distinguishes a subagent's own reads/edits from a sibling
-   * subagent's or the parent's -- used to salt the persisted session-state key so
-   * sibling agents get independent re-read dedup ledgers instead of conflating them.
-   */
+  /** Unique per-subagent-invocation id (Claude Code's `agent_id` field), present only when this hook fired inside a subagent call. `undefined` for main-thread events. All subagents spawned by one parent share the parent's `session_id`, so this is the only signal that distinguishes a subagent's own reads/edits from a sibling subagent's or the parent's -- used to salt the persisted session-state key so sibling agents get independent re-read dedup ledgers instead of conflating them. */
   readonly agentId: string | undefined
-  /**
-   * W3C Trace Context traceparent header (e.g. `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`),
-   * passed by Claude Code / OpenTelemetry-instrumented harnesses to correlate hook execution spans.
-   */
+  /** W3C Trace Context traceparent header (e.g. `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`), passed by Claude Code / OpenTelemetry-instrumented harnesses to correlate hook execution spans. */
   readonly traceparent?: string | undefined
-  /**
-   * W3C Trace Context tracestate header containing vendor-specific routing / state information.
-   */
+  /** W3C Trace Context tracestate header containing vendor-specific routing / state information. */
   readonly tracestate?: string | undefined
   readonly raw: Record<string, unknown>
 }
@@ -85,23 +73,11 @@ export type HookHandler = (event: HookEvent) => HookOutput | Promise<HookOutput>
 interface Registration {
   readonly handler: HookHandler
   readonly toolName: string | undefined
-  // Matcher fragment for a handler that filters tools itself rather than via
-  // `toolName` (MCP dedup, browser image shrink, screenshot redirect all match
-  // dynamic `mcp__*` names by regex). Purely declarative: runHook still relies on
-  // the handler's own check. It exists so installHooks can narrow the settings.json
-  // matcher without a hand-written list going stale -- see toolMatcherFor.
+  // Matcher fragment for a handler that filters tools itself rather than via `toolName` (MCP dedup, browser image shrink, screenshot redirect all match dynamic `mcp__*` names by regex). Purely declarative: runHook still relies on the handler's own check. It exists so installHooks can narrow the settings.json matcher without a hand-written list going stale -- see toolMatcherFor.
   readonly toolPattern: string | undefined
-  // An unfiltered handler that nonetheless accepts whatever matcher its event already
-  // needs, instead of forcing the catch-all. Set only where seeing strictly fewer tool
-  // calls is a documented, accepted behaviour change for that handler -- it is a
-  // deliberate opt-out of the safety rule below, not a default.
+  // An unfiltered handler that nonetheless accepts whatever matcher its event already needs, instead of forcing the catch-all. Set only where seeing strictly fewer tool calls is a documented, accepted behaviour change for that handler -- it is a deliberate opt-out of the safety rule below, not a default.
   readonly followsMatcher: boolean
-  // Advisory handlers are never authoritative for their event: a non-pass result from
-  // one is remembered as a fallback but never short-circuits runHook, so later
-  // (non-advisory) handlers for the same event still always run. This lets a
-  // side-effect-only handler (e.g. one that just writes an index snapshot) keep that
-  // guarantee true even if its own logic changes later, without depending on
-  // registration/import order across files.
+  // Advisory handlers are never authoritative for their event: a non-pass result from one is remembered as a fallback but never short-circuits runHook, so later (non-advisory) handlers for the same event still always run. This lets a side-effect-only handler (e.g. one that just writes an index snapshot) keep that guarantee true even if its own logic changes later, without depending on registration/import order across files.
   readonly advisory: boolean
 }
 
@@ -184,11 +160,7 @@ export function toolMatcherFor(eventName: HookEventName): string | null {
     if (followsMatcher) continue
     // Neither filter: this handler wants every tool, so no narrowing is safe.
     if (toolName === undefined && toolPattern === undefined) return null
-    // Anchor exact names. Claude Code evaluates this matcher as an *unanchored*
-    // regex (the `^mcp__` fragment guarantees regex mode), so a bare `Write`
-    // alternative would also match `TodoWrite` and spawn a process for a tool with
-    // no handler -- the exact waste this narrowing exists to remove. Patterns are
-    // used verbatim: they carry their own anchoring.
+    // Anchor exact names. Claude Code evaluates this matcher as an *unanchored* regex (the `^mcp__` fragment guarantees regex mode), so a bare `Write` alternative would also match `TodoWrite` and spawn a process for a tool with no handler -- the exact waste this narrowing exists to remove. Patterns are used verbatim: they carry their own anchoring.
     for (const part of [toolName === undefined ? undefined : `^${toolName}$`, toolPattern]) {
       if (part !== undefined && part !== '' && !parts.includes(part)) parts.push(part)
     }
@@ -197,50 +169,19 @@ export function toolMatcherFor(eventName: HookEventName): string | null {
   return parts.join('|')
 }
 
-/**
- * Run every registered handler for `event.eventName` in registration order.
- *
- * Short-circuits and returns the first `deny`/`context`/`update` result; once
- * a handler claims the event, later handlers do not run (they cannot see or
- * override a decision already made). Returns `{ hookType: 'pass' }` when no
- * handler is registered or every handler passes.
- *
- * A handler whose `toolName` filter does not match `event.toolName` is skipped
- * without being called.
- */
-/**
- * Fold a tool name to the form that survives a bridge's renaming step: lower case, no separators.
- *
- * The class this catches is narrow and deliberate. A bridge that fails to rename an inbound tool
- * passes the harness's own spelling straight through -- Copilot's `bash` instead of `Bash`,
- * `web_fetch` instead of `WebFetch` -- and that is a difference of case and underscores only. A
- * bridge whose mapping is *semantic* (Copilot's `view` -> `Read`) produces a name this cannot
- * relate to anything, and it does not pretend otherwise: such a name is simply recorded as
- * unrecognized, with no near-miss claimed.
- */
+/** Run every registered handler for `event.eventName` in registration order. Short-circuits and returns the first `deny`/`context`/`update` result; once a handler claims the event, later handlers do not run (they cannot see or override a decision already made). Returns `{ hookType: 'pass' }` when no handler is registered or every handler passes. A handler whose `toolName` filter does not match `event.toolName` is skipped without being called. */
+/** Fold a tool name to the form that survives a bridge's renaming step: lower case, no separators. The class this catches is narrow and deliberate. A bridge that fails to rename an inbound tool passes the harness's own spelling straight through -- Copilot's `bash` instead of `Bash`, `web_fetch` instead of `WebFetch` -- and that is a difference of case and underscores only. A bridge whose mapping is *semantic* (Copilot's `view` -> `Read`) produces a name this cannot relate to anything, and it does not pretend otherwise: such a name is simply recorded as unrecognized, with no near-miss claimed. */
 function foldToolName(name: string): string {
   return name.toLowerCase().replace(/[_-]/g, '')
 }
 
-/**
- * Record that `event.toolName` reached an event whose handlers name the tools they want, and
- * matched none of them.
- *
- * Cheap and side-band: the observation never changes what runs. Skipped entirely when the event
- * has no name-filtered handler at all (a non-tool event, or one whose handlers all take every
- * tool), because there is nothing for a name to be unrecognized *against* there.
- */
+/** Record that `event.toolName` reached an event whose handlers name the tools they want, and matched none of them. Cheap and side-band: the observation never changes what runs. Skipped entirely when the event has no name-filtered handler at all (a non-tool event, or one whose handlers all take every tool), because there is nothing for a name to be unrecognized *against* there. */
 function noteUnrecognizedTool(event: HookEvent, list: readonly Registration[]): void {
   const toolName = event.toolName
   if (typeof toolName !== 'string' || toolName === '') return
   const named: string[] = []
   for (const { toolName: want, toolPattern } of list) {
-    // A pattern-filtered handler (MCP dedup, browser image shrink, screenshot redirect -- see
-    // Registration's own doc comment) genuinely wants this tool just as much as an exact
-    // toolName match does; it just expresses that as a regex instead of a literal name because
-    // the tool names it matches are dynamic. Skipping it here was the actual bug: a real MCP
-    // call reached preMcpHandler/postMcpHandler exactly as designed, but this recorder still
-    // logged it as unmapped because neither handler declares an exact toolName.
+    // A pattern-filtered handler (MCP dedup, browser image shrink, screenshot redirect -- see Registration's own doc comment) wants this tool just as much as an exact toolName match does, expressed as a regex because the tool names it matches are dynamic, so it counts as recognized too.
     if (toolPattern !== undefined) {
       let matches = false
       try {
@@ -264,11 +205,7 @@ export async function runHook(event: HookEvent): Promise<HookOutput> {
   const list = _handlers.get(event.eventName)
   if (list === undefined) return { hookType: 'pass' }
   noteUnrecognizedTool(event, list)
-  // Advisory handlers never short-circuit: their non-pass results are remembered as a
-  // fallback, but the loop always continues so every later, non-advisory handler for
-  // this event still runs and can still return its own result. This keeps a
-  // side-effect-only handler from ever silently suppressing another handler's output,
-  // regardless of registration order.
+  // Advisory handlers never short-circuit: their non-pass results are remembered as a fallback, but the loop always continues so every later, non-advisory handler for this event still runs and can still return its own result. This keeps a side-effect-only handler from ever silently suppressing another handler's output, regardless of registration order.
   let advisoryResult: HookOutput | undefined
   for (const { handler, toolName, advisory } of list) {
     if (toolName !== undefined && toolName !== event.toolName) continue
@@ -308,11 +245,7 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
   session_start: 'SessionStart',
-  // Claude Code has no separate failure event -- a failed tool arrives on PostToolUse there,
-  // and only Copilot splits it out. This entry exists because the map is exhaustive over
-  // HookEventName, and it is a spelling for the response envelope rather than a claim that
-  // Claude Code will ever send this event. Nothing iterates this map to build install config,
-  // so naming an event Claude Code does not have cannot register one.
+  // Claude Code has no separate failure event -- a failed tool arrives on PostToolUse there, and only Copilot splits it out. This entry exists because the map is exhaustive over HookEventName, and it is a spelling for the response envelope rather than a claim that Claude Code will ever send this event. Nothing iterates this map to build install config, so naming an event Claude Code does not have cannot register one.
   post_tool_use_failure: 'PostToolUseFailure',
 }
 
@@ -338,29 +271,7 @@ const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
   'pre_compact',
 ])
 
-/**
- * Events whose `context` must be written to stdout as plain text rather than wrapped in wire JSON,
- * because the harness forwards that stdout somewhere an envelope is only noise.
- *
- * `pre_compact` on Claude Code is the whole set, and the reason is a piece of the harness that its
- * hook documentation does not describe. Reading `claude.exe` 2.1.240: a command hook that exits 0
- * has its result's `output` field set to `R.stdout` verbatim -- the JSON is parsed alongside it into
- * a separate value, and `systemMessage` is lifted onto its own separate field, but `output` itself
- * is the raw text either way. The PreCompact runner then joins every succeeded hook's `output` into
- * `newCustomInstructions`, and the four compaction call sites pass that straight to the summarising
- * model as `customInstructions`. Nothing in that chain ever reads `systemMessage`.
- *
- * So on this event the bytes we print are not an envelope the harness unpacks; they are a message to
- * a model. Emitting `{"systemMessage":"..."}` sent it the serialized object -- braces, escaped
- * newlines and all -- while the field we meant it to read was dropped. Verified live as well as by
- * reading the binary: a PreCompact hook printing an instruction had that instruction obeyed in the
- * resulting compact summary.
- *
- * Scoped to Claude Code deliberately. This behaviour is undocumented and may not survive an update,
- * and no other harness wants raw text here: Copilot CLI's reference marks `preCompact` output
- * "notification only" and its shim discards the response, while the Codex shim `JSON.parse`s our
- * stdout and degrades to `{}` on anything else. Both are unharmed by the JSON form, so they keep it.
- */
+/** Events whose `context` must be written to stdout as plain text rather than wrapped in wire JSON, because the harness forwards that stdout somewhere an envelope is only noise. `pre_compact` on Claude Code is the whole set, and the reason is a piece of the harness that its hook documentation does not describe. Reading `claude.exe` 2.1.240: a command hook that exits 0 has its result's `output` field set to `R.stdout` verbatim -- the JSON is parsed alongside it into a separate value, and `systemMessage` is lifted onto its own separate field, but `output` itself is the raw text either way. The PreCompact runner then joins every succeeded hook's `output` into `newCustomInstructions`, and the four compaction call sites pass that straight to the summarising model as `customInstructions`. Nothing in that chain ever reads `systemMessage`. So on this event the bytes we print are not an envelope the harness unpacks; they are a message to a model. Emitting `{"systemMessage":"..."}` sent it the serialized object -- braces, escaped newlines and all -- while the field we meant it to read was dropped. Verified live as well as by reading the binary: a PreCompact hook printing an instruction had that instruction obeyed in the resulting compact summary. Scoped to Claude Code deliberately. This behaviour is undocumented and may not survive an update, and no other harness wants raw text here: Copilot CLI's reference marks `preCompact` output "notification only" and its shim discards the response, while the Codex shim `JSON.parse`s our stdout and degrades to `{}` on anything else. Both are unharmed by the JSON form, so they keep it. */
 const EVENTS_WITH_RAW_STDOUT_CONTEXT: ReadonlySet<HookEventName> = new Set(['pre_compact'])
 
 /**
@@ -419,23 +330,13 @@ const EVENTS_WITH_RAW_STDOUT_CONTEXT: ReadonlySet<HookEventName> = new Set(['pre
  */
 const BODY_FIRST_REWRITE_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'Skill'])
 
-/**
- * Shape `updatedOutput` to whatever the tool's own result shape was.
- *
- * A string `tool_response` (MCP) stays a bare string -- that path is accepted by the harness today
- * and must not regress. An object response is cloned with its one text-bearing field replaced. If
- * nothing resolves, the bare string is emitted: the harness will reject it and use the original,
- * which is strictly better than injecting the body into a field that never held it.
- */
+/** Shape `updatedOutput` to whatever the tool's own result shape was. A string `tool_response` (MCP) stays a bare string -- that path is accepted by the harness today and must not regress. An object response is cloned with its one text-bearing field replaced. If nothing resolves, the bare string is emitted: the harness will reject it and use the original, which is strictly better than injecting the body into a field that never held it. */
 function shapedUpdatedToolOutput(
   updatedOutput: string,
   harness: HarnessName,
   event?: HookEvent,
 ): string | Record<string, unknown> {
-  // Claude Code alone imposes the schema check. Every other harness token-goat bridges to takes a
-  // plain string result here -- opencode and the pi extension read it straight into a text block,
-  // Copilot maps it to `modifiedResult` -- so shaping it into an object would break them exactly
-  // the way the bare string breaks Claude Code.
+  // Claude Code alone imposes the schema check. Every other harness token-goat bridges to takes a plain string result here -- opencode and the pi extension read it straight into a text block, Copilot maps it to `modifiedResult` -- so shaping it into an object would break them exactly the way the bare string breaks Claude Code.
   if (harness !== 'claudecode') return updatedOutput
   const resp = event?.raw['tool_response']
   if (resp === null || resp === undefined || typeof resp !== 'object') return updatedOutput

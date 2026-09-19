@@ -71,11 +71,7 @@ function postMcpHandler(event: HookEvent): HookOutput {
         'mcp',
       ),
     )
-  // Unconditional: an MCP result is a remote server's output by provenance, so it is fenced
-  // whether or not the eight deliberately-narrow patterns matched. It used to pass through
-  // unfenced on a clean scan, which meant any payload those patterns miss reached the model
-  // unmarked -- the fence's whole job is to survive a miss. The scan result now only decides
-  // whether the notice names pattern(s).
+  // Unconditional: an MCP result is a remote server's output by provenance, so it is fenced whether or not the eight deliberately-narrow patterns matched. It used to pass through unfenced on a clean scan, which meant any payload those patterns miss reached the model unmarked -- the fence's whole job is to survive a miss. The scan result now only decides whether the notice names pattern(s).
   const passOrFence = (): HookOutput => fenced()
 
   if (!event.sessionId) return passOrFence()
@@ -92,21 +88,13 @@ function postMcpHandler(event: HookEvent): HookOutput {
   }
   // Deterministic structural compression (see mcp_compress.ts and mcp_compress_packs.ts) is gated on compressibility, not on cache-eligibility: it used to require id !== null (i.e. the call was already read-only-cached), which silently excluded every non-idempotent tool a compression pack was written for -- e.g. chrome-devtools-mcp's take_snapshot, which trips MUTATING_VERBS_RE's `snapshot` token, never reached mcp_compress_packs.ts's dedicated browser-snapshot pack in production even though that pack exists specifically for it. Size-gated so small results are never touched, and opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match TOKEN_GOAT_BASH_COMPRESS's existing convention elsewhere in this codebase. Per-server packs run first (GitHub, browser-automation): a schema-aware pack strips known boilerplate before handing the result to the same generic table-ifying pass. When no pack matches or pays off, the generic pass runs on the untransformed text exactly as before the packs existed.
   if (resultText.length >= MCP_COMPRESS_MIN_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
-    // Compress the already-redacted text (redactedResult, computed above before every early
-    // return), not raw resultText. mcp_compress_packs.ts's truncateSnapshotLine (and any other
-    // per-field truncation inside a pack or the generic compressor) can cut a credential mid-value;
-    // if that truncation runs on raw text before redaction, the surviving fragment can fall under a
-    // pattern's minimum-length floor and ship raw on this live, model-visible rewrite -- the same
-    // mechanism as the confirmed mcpInputPreview/tool_filters bugs. Feeding compression the
-    // pre-redacted text means every truncation point inside it only ever cuts placeholder text.
+    // Compress the already-redacted text (redactedResult, computed above before every early return), not raw resultText. mcp_compress_packs.ts's truncateSnapshotLine (and any other per-field truncation inside a pack or the generic compressor) can cut a credential mid-value; if that truncation runs on raw text before redaction, the surviving fragment can fall under a pattern's minimum-length floor and ship raw on this live, model-visible rewrite -- the same mechanism as the confirmed mcpInputPreview/tool_filters bugs. Feeding compression the pre-redacted text means every truncation point inside it only ever cuts placeholder text.
     const compressed = compressMcpResultWithPacks(toolName, redactedResult.text) ?? compressMcpResult(redactedResult.text)
     if (compressed !== null) {
       // A mutating/non-idempotent call was never cached above (readOnly is false), but the "full via mcp-output <id>" label still needs somewhere to resolve, so store it now purely for recall -- this never feeds preMcpHandler's dedup check, which independently re-gates on isMcpReadOnly.
       if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
       if (id !== null) {
-        // Defense-in-depth re-pass, normally a no-op now that compression consumes already-redacted
-        // text above: neither mcp_compress.ts nor mcp_compress_packs.ts run their own redaction, so
-        // this still catches any redaction-shaped text a pack's own transform might introduce.
+        // Defense-in-depth re-pass, normally a no-op now that compression consumes already-redacted text above: neither mcp_compress.ts nor mcp_compress_packs.ts run their own redaction, so this still catches any redaction-shaped text a pack's own transform might introduce.
         const redactedBody = redactSecrets(compressed).text
         const notice = `[token-goat: compressed, full via mcp-output ${id}]\n`
         // Net-benefit gate (shared with bash_runner's filter pipeline, see tool_filters/base.ts::isRewriteWorthwhile): a rewrite that barely beats the original after paying for its own notice destabilises bytes that could otherwise be served from the provider's cached prefix for no real gain -- below the floor, ship resultText untouched instead.
@@ -125,9 +113,7 @@ function postMcpHandler(event: HookEvent): HookOutput {
             const preview = clipToDeliveryCap(redactedBody, Buffer.byteLength(notice, 'utf-8') + 500)
             finalBody = preview.text + (preview.clipped ? '\n\n...[preview truncated by token-goat; use mcp-output above to query full payload]...' : '')
           }
-          // MCP compression shipped for releases without recording anything, so the whole mechanism was invisible in `token-goat stats` even though the `mcp:` prefix was already registered in KIND_TO_SOURCE. Credited through emitRewrite's savings parameter rather than a hand-written recordStat beside the emit, because that parameter measures the emitted string itself -- notice, fence and redaction placeholders included -- which is the only figure that describes what the model was actually spared. A recordStat here would have to re-derive that per branch and would drift the moment either branch changed, which is exactly how the WebFetch over-report happened.
-          // Fenced on the same unconditional provenance rule as passOrFence above: a compressed
-          // result is still the remote server's text, and a clean scan is not evidence it is safe.
+          // MCP compression shipped for releases without recording anything, so the whole mechanism was invisible in `token-goat stats` even though the `mcp:` prefix was already registered in KIND_TO_SOURCE. Credited through emitRewrite's savings parameter rather than a hand-written recordStat beside the emit, because that parameter measures the emitted string itself -- notice, fence and redaction placeholders included -- which is the only figure that describes what the model was actually spared. A recordStat here would have to re-derive that per branch and would drift the moment either branch changed, which is exactly how the WebFetch over-report happened. Fenced on the same unconditional provenance rule as passOrFence above: a compressed result is still the remote server's text, and a clean scan is not evidence it is safe.
           return preserve(
             emitRewrite(
               `${notice}${fenceWithMatches(finalBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`,
@@ -139,12 +125,7 @@ function postMcpHandler(event: HookEvent): HookOutput {
       }
     }
   }
-  // Reached when compression did not fire or did not pay off.
-  // Oversized MCP result recovery: when a raw result is >= MCP_OVERSIZED_THRESHOLD_BYTES,
-  // Claude Code's internal harness will spill it to disk (e.g. content.json) and recommend
-  // reading it with read_file, bypassing surgical read discipline. Intercept by storing the
-  // full raw payload in the cache and returning a recovery notice with exact mcp-output
-  // query commands plus a clipped preview.
+  // Reached when compression did not fire or did not pay off. Oversized MCP result recovery: when a raw result is >= MCP_OVERSIZED_THRESHOLD_BYTES, Claude Code's internal harness will spill it to disk (e.g. content.json) and recommend reading it with read_file, bypassing surgical read discipline. Intercept by storing the full raw payload in the cache and returning a recovery notice with exact mcp-output query commands plus a clipped preview.
   const rawBytes = Buffer.byteLength(resultText, 'utf-8')
   if (rawBytes >= MCP_OVERSIZED_THRESHOLD_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
     if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
