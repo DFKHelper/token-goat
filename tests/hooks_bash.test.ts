@@ -455,6 +455,41 @@ describe('preBashHandler — Codex on Windows skips the compress rewrite', () =>
   })
 })
 
+// FORMAT-DERIVED: Copilot CLI's own shellConfig?.shellToolName ?? "bash" resolution (bridges/copilot_cli.ts's shellToolName comment) defaults to "powershell" on Windows -- the same PowerShell executor Codex uses -- so a rewrite quoted for POSIX bash hits the identical quoting hazard captured above for Codex.
+describe('preBashHandler — Copilot CLI on Windows skips the compress rewrite', () => {
+  const realPlatform = process.platform
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+  })
+
+  it('does not rewrite when the harness is copilot_cli and the platform is win32', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    const event = makeHookEvent({
+      toolName: 'Bash',
+      toolInput: { command: 'rg "TODO" src/foo.ts' },
+      sessionId: 'test-session-copilot-win',
+      agentId: undefined,
+      raw: { tool_name: 'Bash', tool_input: { command: 'rg "TODO" src/foo.ts' }, _tg_harness: 'copilot_cli' },
+    })
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still rewrites for copilot_cli on a non-Windows platform', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    const event = makeHookEvent({
+      toolName: 'Bash',
+      toolInput: { command: 'rg "TODO" src/foo.ts' },
+      sessionId: 'test-session-copilot-linux',
+      agentId: undefined,
+      raw: { tool_name: 'Bash', tool_input: { command: 'rg "TODO" src/foo.ts' }, _tg_harness: 'copilot_cli' },
+    })
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('rewriteInput')
+  })
+})
+
 describe('preBashHandler — test-run budget advice', () => {
   it('advises once for an unscoped pytest command', () => {
     const original = process.env['TOKEN_GOAT_BASH_COMPRESS']

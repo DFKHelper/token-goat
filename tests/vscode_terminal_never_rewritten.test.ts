@@ -66,8 +66,13 @@ describe('the same command is still rewritten where the shell is known to be bas
     expect(input?.['description']).toBe('build')
   })
 
-  it('Copilot CLI wraps npm run build in token-goat compress', async () => {
+  // Copilot CLI's shell tool defaults to bash everywhere except Windows, where it runs through PowerShell instead (see the shellToolName comment in src/bridges/copilot_cli.ts) -- the same reason Codex is skipped on win32 in tests/hooks_bash.test.ts, so this test is platform-aware rather than spoofing one.
+  it('Copilot CLI wraps npm run build in token-goat compress, except on Windows where its shell tool is PowerShell', async () => {
     const input = updatedInput(await preToolUse('copilot_cli', 'npm run build'))
-    expect(input?.['command']).toMatch(WRAPPED)
+    if (process.platform === 'win32') {
+      expect(input).toBeUndefined()
+    } else {
+      expect(input?.['command']).toMatch(WRAPPED)
+    }
   })
 })
