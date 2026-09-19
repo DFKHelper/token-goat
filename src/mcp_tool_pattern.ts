@@ -1,0 +1,2 @@
+/** The `toolPattern` every MCP tool name matches, shared by hooks_mcp.ts's registerHook calls and cli_doctor.ts's unmapped-tools cleanup so the two can never drift into two different spellings of "is this tool MCP". A standalone leaf module (no other token-goat import) so a consumer that only needs the literal -- unlike registerHook itself -- never pulls in hooks_mcp.ts's full dependency graph (mcp_compress_packs.ts, secret_redact.ts, injection_scan.ts, etc.) or re-runs its module-load-time registerHook side effects. */
+export const MCP_TOOL_PATTERN = '^mcp__'

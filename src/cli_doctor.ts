@@ -34,7 +34,8 @@ import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable
 import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
-import { readUnmappedTools } from './stats.js'
+import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
+import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import type { DoctorResult } from './doctor_result.js'
 
 // Both live outside this module so hooks_session_start.ts can run the one check it needs without pulling cli_doctor.ts's dependency graph into the hook bundle -- see symbol_body_probe.ts. They are re-exported here because the doctor command and its tests are the rest of their audience.
@@ -878,6 +879,12 @@ export function checkUnmappedTools(dbPath: string): DoctorResult {
     return { name, status: 'ok', message: 'no database yet' }
   }
   try {
+    // Clean up rows recorded before noteUnrecognizedTool (hook_registry.ts) learned to check a
+    // handler's toolPattern, not just its exact toolName -- a pattern-covered tool name (every
+    // MCP tool preMcpHandler/postMcpHandler's '^mcp__' pattern already covers) was never actually
+    // unmapped. Only reached from an explicit `token-goat doctor` run, not on every process, so
+    // this needs no throttle of its own.
+    pruneStalePatternCoveredUnmappedTools(getDb(dbPath), [MCP_TOOL_PATTERN])
     const rows = readUnmappedTools(dbPath)
     if (rows.length === 0) {
       return { name, status: 'ok', message: 'every tool name seen so far reached a handler that wanted it' }

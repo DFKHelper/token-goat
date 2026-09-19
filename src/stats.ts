@@ -837,6 +837,30 @@ export function readUnmappedTools(dbPath?: string, homeDir?: string): UnmappedTo
   }
 }
 
+/**
+ * Deletes `unmapped_tools` rows whose tool_name matches a pattern in `patterns` -- rows recorded
+ * before {@link noteUnrecognizedTool} (hook_registry.ts) learned to check a handler's
+ * `toolPattern`, not just its exact `toolName`. Such a row was never actually unmapped: the
+ * pattern-filtered handler (e.g. preMcpHandler/postMcpHandler's `^mcp__`) always ran for it, only
+ * this table's own bookkeeping missed that. Called only from checkUnmappedTools (cli_doctor.ts),
+ * itself only reached by an explicit `token-goat doctor` run -- not on every process the way
+ * `stats`/`hint_emissions` pruning had to be moved onto the shared throttle after running per
+ * schema-open (see pruneTestIsolationLeakRows), so this needs no throttle of its own.
+ */
+export function pruneStalePatternCoveredUnmappedTools(db: SqliteDatabase, patterns: readonly string[]): void {
+  if (patterns.length === 0) return
+  const regexes = patterns.map((p) => new RegExp(p))
+  try {
+    const rows = db.prepare('SELECT DISTINCT tool_name FROM unmapped_tools').all() as { tool_name: string }[]
+    const stale = rows.filter((r) => regexes.some((re) => re.test(r.tool_name)))
+    if (stale.length === 0) return
+    const del = db.prepare('DELETE FROM unmapped_tools WHERE tool_name = ?')
+    for (const r of stale) del.run(r.tool_name)
+  } catch {
+    // No table yet, or an unreadable one -- nothing to clean up.
+  }
+}
+
 export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, homeDir?: string): StatsSummary {
   const t0 = Date.now()
   const sinceTs =

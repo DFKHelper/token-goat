@@ -7,8 +7,9 @@ import Database from '../src/sqlite_driver.js'
 import { closeAllDbs } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { registerHook, runHook } from '../src/hook_registry.js'
-import { readUnmappedTools, GLOBAL_SCHEMA_SQL } from '../src/stats.js'
+import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools, GLOBAL_SCHEMA_SQL } from '../src/stats.js'
 import { checkUnmappedTools } from '../src/cli_doctor.js'
+import { MCP_TOOL_PATTERN } from '../src/mcp_tool_pattern.js'
 
 /**
  * The unrecognized-tool histogram, driven through the real `runHook` rather than around it.
@@ -65,6 +66,28 @@ describe('unrecognized tool-name histogram', () => {
     await dispatch('tgtest_wholly_unrelated')
 
     const row = rowFor('tgtest_wholly_unrelated')
+    expect(row).toBeDefined()
+    expect(row?.near_miss).toBeNull()
+  })
+
+  // Regression: a real GitHub MCP tool call reached preMcpHandler exactly as designed (it
+  // registers with toolPattern '^mcp__', not an exact toolName), but noteUnrecognizedTool only
+  // checked the exact-toolName list, so the call was logged as unmapped anyway. CAPTURE: a live
+  // global.db's unmapped_tools table held mcp__plugin_github_github__get_file_contents with 244
+  // pre_tool_use hits despite the GitHub compression pack and preMcpHandler both covering it.
+  it('does not flag a tool name covered by a registered toolPattern', async () => {
+    registerHook('pre_tool_use', async () => ({ hookType: 'pass' }), { toolPattern: MCP_TOOL_PATTERN })
+    await dispatch('mcp__plugin_github_github__get_file_contents')
+
+    expect(rowFor('mcp__plugin_github_github__get_file_contents')).toBeUndefined()
+  })
+
+  it('still flags a plain unknown tool name alongside a registered toolPattern handler', async () => {
+    registerHook('pre_tool_use', async () => ({ hookType: 'pass' }), { toolPattern: MCP_TOOL_PATTERN })
+    registerHook('pre_tool_use', async () => ({ hookType: 'pass' }), { toolName: 'TgTestKnown' })
+    await dispatch('tgtest_genuinely_unmapped')
+
+    const row = rowFor('tgtest_genuinely_unmapped')
     expect(row).toBeDefined()
     expect(row?.near_miss).toBeNull()
   })
@@ -154,14 +177,42 @@ describe('doctor reads the histogram', () => {
   })
 
   it('lists a tool seen on both hook events once, not once per event', () => {
-    // CAPTURE: a live global.db held mcp__plugin_github_github__get_file_contents as a pre_tool_use row (244 hits) and a post_tool_use row (241), and doctor printed the name twice.
-    insert('mcp__plugin_github_github__get_file_contents', null, 244, 'pre_tool_use')
-    insert('mcp__plugin_github_github__get_file_contents', null, 241, 'post_tool_use')
+    // Uses a non-MCP name deliberately: the real captured example this once used
+    // (mcp__plugin_github_github__get_file_contents) is now pruned as pattern-covered before
+    // this dedup logic even runs -- see 'drops a pre-existing pattern-covered row' below, which
+    // keeps that real fixture and its provenance note.
+    insert('tgtest_dual_event_tool', null, 244, 'pre_tool_use')
+    insert('tgtest_dual_event_tool', null, 241, 'post_tool_use')
     const { message } = checkUnmappedTools(dbPath)
 
-    expect(message.split('get_file_contents').length - 1).toBe(1)
+    expect(message.split('tgtest_dual_event_tool').length - 1).toBe(1)
     expect(message).toContain('1 tool name(s)')
     expect(message).toContain('(244x)')
+  })
+
+  // Regression: a stale row written before noteUnrecognizedTool checked toolPattern (see the
+  // real-dispatch tests above) survives forever in unmapped_tools unless cleaned, so doctor kept
+  // reporting an MCP tool as unmapped even after the recorder itself was fixed.
+  it('drops a pre-existing pattern-covered row instead of reporting it forever', () => {
+    insert('mcp__plugin_github_github__get_file_contents', null, 244, 'pre_tool_use')
+    insert('mcp__plugin_github_github__get_file_contents', null, 241, 'post_tool_use')
+    insert('tgtest_genuinely_unmapped', null, 5)
+
+    const result = checkUnmappedTools(dbPath)
+
+    expect(result.message).not.toContain('get_file_contents')
+    expect(result.message).toContain('tgtest_genuinely_unmapped')
+  })
+
+  it('pruneStalePatternCoveredUnmappedTools leaves a non-matching row untouched', () => {
+    insert('mcp__plugin_github_github__get_file_contents', null, 244)
+    insert('tgtest_genuinely_unmapped', null, 5)
+    const db = new Database(dbPath)
+
+    pruneStalePatternCoveredUnmappedTools(db, [MCP_TOOL_PATTERN])
+    db.close()
+
+    expect(readUnmappedTools(dbPath).map((r) => r.tool_name)).toEqual(['tgtest_genuinely_unmapped'])
   })
 
   it('reports an untouched database as clean rather than as an unread table', () => {

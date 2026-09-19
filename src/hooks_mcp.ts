@@ -25,6 +25,7 @@ import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { clipToDeliveryCap } from './delivery_cap.js'
+import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 
 export const MCP_OVERSIZED_THRESHOLD_BYTES = 25_000
 
@@ -172,5 +173,5 @@ function postMcpHandler(event: HookEvent): HookOutput {
 }
 
 // Both handlers no-op unless the tool name starts with `mcp__` (preMcpHandler via isMcpReadOnly, postMcpHandler via its own startsWith check), so declaring that prefix lets installHooks narrow the settings.json matcher without losing them.
-registerHook('pre_tool_use', preMcpHandler, { toolPattern: '^mcp__' })
-registerHook('post_tool_use', postMcpHandler, { toolPattern: '^mcp__' })
+registerHook('pre_tool_use', preMcpHandler, { toolPattern: MCP_TOOL_PATTERN })
+registerHook('post_tool_use', postMcpHandler, { toolPattern: MCP_TOOL_PATTERN })

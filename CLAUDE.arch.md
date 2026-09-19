@@ -410,6 +410,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/mcp_compress.ts`](src/mcp_compress.ts) | Deterministic, structural compression for MCP tool results. |
 | [`src/mcp_jsonrpc.ts`](src/mcp_jsonrpc.ts) | A minimal Model Context Protocol server, in-house. |
 | [`src/mcp_stdio.ts`](src/mcp_stdio.ts) | The stdio transport for token-goat's MCP server -- newline-delimited JSON over the process's own stdin and stdout, which is the only transport `token-goat mcp-serve` has ever offer |
+| [`src/mcp_tool_pattern.ts`](src/mcp_tool_pattern.ts) | The `toolPattern` every MCP tool name matches, shared by hooks_mcp.ts's registerHook calls and cli_doctor.ts's unmapped-tools cleanup so the two can never drift into two different |
 | [`src/memory_prune.ts`](src/memory_prune.ts) | Automatic pruning and analysis of Claude Code's native auto-memory store. |
 | [`src/modules.ts`](src/modules.ts) | Module detection over the project's internal import graph. |
 | [`src/notebook_compact.ts`](src/notebook_compact.ts) | Strip cell outputs from Jupyter notebooks to reduce token burn. |

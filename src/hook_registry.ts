@@ -234,7 +234,22 @@ function noteUnrecognizedTool(event: HookEvent, list: readonly Registration[]): 
   const toolName = event.toolName
   if (typeof toolName !== 'string' || toolName === '') return
   const named: string[] = []
-  for (const { toolName: want } of list) {
+  for (const { toolName: want, toolPattern } of list) {
+    // A pattern-filtered handler (MCP dedup, browser image shrink, screenshot redirect -- see
+    // Registration's own doc comment) genuinely wants this tool just as much as an exact
+    // toolName match does; it just expresses that as a regex instead of a literal name because
+    // the tool names it matches are dynamic. Skipping it here was the actual bug: a real MCP
+    // call reached preMcpHandler/postMcpHandler exactly as designed, but this recorder still
+    // logged it as unmapped because neither handler declares an exact toolName.
+    if (toolPattern !== undefined) {
+      let matches = false
+      try {
+        matches = new RegExp(toolPattern).test(toolName)
+      } catch {
+        // an unparseable pattern can't cover anything -- fall through to the named-list check
+      }
+      if (matches) return
+    }
     if (want === undefined) continue
     if (want === toolName) return
     named.push(want)
