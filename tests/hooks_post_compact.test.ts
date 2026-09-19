@@ -1,25 +1,13 @@
 /**
  * post_compact measurement handler (src/hooks_compact.ts postCompactHandler).
  *
- * Compaction summaries were the one large thing token-goat could not see: every other number in
- * `stats` came from a tool call a hook intercepted, and a summary arrives through none of them.
- * Claude Code's PostCompact event hands the finished summary to a hook verbatim -- confirmed by
- * reading the installed binary, whose hook-input schema declares
- * `{hook_event_name: "PostCompact", trigger, compact_summary}` -- so this handler counts it.
+ * Compaction summaries were the one large thing token-goat could not see: every other number in `stats` came from a tool call a hook intercepted, and a summary arrives through none of them. Claude Code's PostCompact event hands the finished summary to a hook verbatim -- confirmed by reading the installed binary, whose hook-input schema declares `{hook_event_name: "PostCompact", trigger, compact_summary}` -- so this handler counts it.
  *
- * It also doubles as the canary for the undocumented channel preCompactHandler depends on. The
- * manifest reaches the summarizing model as a PreCompact hook's raw stdout, which Claude Code's
- * own hooks reference describes as going to a debug log. If that stops working it stops silently:
- * the hook still succeeds, the manifest is still built, nothing fails. Counting how many manifest
- * paths survive into the summary is what makes the failure visible.
+ * It also doubles as the canary for the undocumented channel preCompactHandler depends on. The manifest reaches the summarizing model as a PreCompact hook's raw stdout, which Claude Code's own hooks reference describes as going to a debug log. If that stops working it stops silently: the hook still succeeds, the manifest is still built, nothing fails. Counting how many manifest paths survive into the summary is what makes the failure visible.
  *
- * The assertions below therefore pin three separate things, because each has its own way of going
- * quietly wrong: that a row is recorded at all, that it is recorded at ZERO savings (a measurement
- * credited as a saving is this project's most-repeated accounting bug), and that the survival
- * count actually discriminates -- a counter that always reports 0/0, or always reports every path
- * as surviving, would pass a test that only checked the row exists.
+ * The assertions below therefore pin three separate things, because each has its own way of going quietly wrong: that a row is recorded at all, that it is recorded at ZERO savings (a measurement credited as a saving is this project's most-repeated accounting bug), and that the survival count actually discriminates -- a counter that always reports 0/0, or always reports every path as surviving, would pass a test that only checked the row exists.
  */
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -82,9 +70,7 @@ afterEach(() => {
 
 describe('postCompactHandler', () => {
   it('returns pass, because a PostCompact hook has no context channel to write to', () => {
-    // Claude Code's PostCompact runner (read from claude.exe 2.1.240) builds its return value from
-    // `userDisplayMessage` alone -- a line echoed to the user's terminal. Anything emitted here
-    // would be noise in front of a person, never context for a model.
+    // Claude Code's PostCompact runner (read from claude.exe 2.1.240) builds its return value from `userDisplayMessage` alone -- a line echoed to the user's terminal. Anything emitted here would be noise in front of a person, never context for a model.
     expect(postCompactHandler(postCompactEvent('a summary'))).toEqual({ hookType: 'pass' })
   })
 
@@ -106,9 +92,7 @@ describe('postCompactHandler', () => {
   })
 
   it('records zero bytes and zero tokens saved, because measuring a summary saves nothing', () => {
-    // The summary was written whether or not token-goat was watching. Crediting its size as a
-    // saving would add roughly 21 KB per compaction to a total that is supposed to mean "tokens
-    // that did not reach the model because of token-goat".
+    // The summary was written whether or not token-goat was watching. Crediting its size as a saving would add roughly 21 KB per compaction to a total that is supposed to mean "tokens that did not reach the model because of token-goat".
     postCompactHandler(postCompactEvent('y'.repeat(9000)))
     const row = latestCompactSummaryRow()
     expect(row?.bytes_saved).toBe(0)
@@ -121,11 +105,7 @@ describe('postCompactHandler', () => {
     recordFileRead(kept)
     recordFileEdit(dropped)
 
-    // Take the path spelling out of the real manifest rather than re-deriving it here. The two
-    // must agree on normalization (case folding, separators, the folded ~ form) or the survival
-    // count silently reads zero forever: the summary would quote what the manifest printed while
-    // the handler looked for something else. Re-implementing foldPath in the test would assert
-    // the handler agrees with the test, not that it agrees with the manifest.
+    // Take the path spelling out of the real manifest rather than re-deriving it here. The two must agree on normalization (case folding, separators, the folded ~ form) or the survival count silently reads zero forever: the summary would quote what the manifest printed while the handler looked for something else. Re-implementing foldPath in the test would assert the handler agrees with the test, not that it agrees with the manifest.
     const manifest = buildManifest()
     const keptAsPrinted = manifest
       .split('\n')
@@ -140,15 +120,9 @@ describe('postCompactHandler', () => {
   })
 
   it('still counts a path the summary reproduced with different capitalization, on a filesystem where that is the same file', () => {
-    // The first version of this handler folded the needle but not the haystack, so on Windows it
-    // compared a lowercased path against the manifest's real spelling and matched nothing --
-    // reporting "channel dead" on every single compaction, which is exactly the false alarm a
-    // canary must not raise. Both sides are folded now, and only where the filesystem says case
-    // does not distinguish two files.
+    // The first version of this handler folded the needle but not the haystack, so on Windows it compared a lowercased path against the manifest's real spelling and matched nothing -- reporting "channel dead" on every single compaction, which is exactly the false alarm a canary must not raise. Both sides are folded now, and only where the filesystem says case does not distinguish two files.
     recordFileRead(makeTmpFile('MixedCaseName.ts'))
-    // Uppercase the manifest's own spelling rather than the raw temp path: session state stores
-    // paths with forward slashes, so uppercasing the raw path would change the separators too and
-    // this would end up testing separator handling under a case-drift name.
+    // Uppercase the manifest's own spelling rather than the raw temp path: session state stores paths with forward slashes, so uppercasing the raw path would change the separators too and this would end up testing separator handling under a case-drift name.
     const asPrinted = buildManifest()
       .split('\n')
       .map((line) => /^- (\S+)/.exec(line)?.[1])
@@ -157,6 +131,24 @@ describe('postCompactHandler', () => {
     postCompactHandler(postCompactEvent(`The session read ${(asPrinted ?? '').toUpperCase()} at some point.`))
     const detail = latestCompactSummaryRow()?.detail ?? ''
     expect(detail).toContain(isCaseInsensitiveFs() ? 'manifest_paths=1/1' : 'manifest_paths=0/1')
+  })
+
+  it('counts a path the summary rewrote relative to the project root, which is how real summaries name files', () => {
+    // CAPTURE: 322 recorded compaction summaries of one project named its files as `src/...` and `tests/...` and never by the absolute path the manifest printed; matching the absolute form alone recorded 0/64 on every one of them.
+    const root = mkdtempSync(join(tmpdir(), 'tg-postcompact-'))
+    tmpDirs.push(root)
+    mkdirSync(join(root, 'src'))
+    const file = join(root, 'src', 'relative-in-summary.ts')
+    writeFileSync(file, 'data')
+    recordFileRead(file)
+    const event = postCompactEvent('Edited `src/relative-in-summary.ts` and moved on.')
+
+    postCompactHandler({ ...event, raw: { ...event.raw, cwd: root } })
+    expect(latestCompactSummaryRow()?.detail).toContain('manifest_paths=1/1')
+
+    // Control: from a directory the file is not under, the relative spelling is not this file, so nothing survives.
+    postCompactHandler({ ...event, raw: { ...event.raw, cwd: tmpdir() + '-elsewhere' } })
+    expect(latestCompactSummaryRow()?.detail).toContain('manifest_paths=0/1')
   })
 
   it('reports zero survivors when the summary paraphrases every path away, which is the signal the channel died', () => {
@@ -172,9 +164,7 @@ describe('postCompactHandler', () => {
   })
 
   it('treats a missing or non-string compact_summary as empty instead of throwing', () => {
-    // A harness that fires post_compact without the field, or with a null, must not break the
-    // hook -- the relay would swallow the throw and the row would simply never appear, which is
-    // the invisible-failure shape this handler exists to prevent elsewhere.
+    // A harness that fires post_compact without the field, or with a null, must not break the hook -- the relay would swallow the throw and the row would simply never appear, which is the invisible-failure shape this handler exists to prevent elsewhere.
     const event: HookEvent = {
       eventName: 'post_compact',
       toolName: undefined,

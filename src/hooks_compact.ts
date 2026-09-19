@@ -1,17 +1,13 @@
 /**
  * pre_compact session-manifest hook.
  *
- * Ports the intent of `hooks_compact.py` / `build_manifest`: before Claude Code
- * compacts the conversation, inject a concise summary of what this session
- * touched (files read, files edited, web URLs fetched) so the compaction
- * preserves that context instead of dropping it. The manifest is intentionally
- * compact — aim well under 2000 chars — and is emitted as a `context` output.
+ * Ports the intent of `hooks_compact.py` / `build_manifest`: before Claude Code compacts the conversation, inject a concise summary of what this session touched (files read, files edited, web URLs fetched) so the compaction preserves that context instead of dropping it. The manifest is intentionally compact — aim well under 2000 chars — and is emitted as a `context` output.
  *
- * Also carries the `post_compact` counterpart, which measures what compaction
- * actually produced. See {@link postCompactHandler}.
+ * Also carries the `post_compact` counterpart, which measures what compaction actually produced. See {@link postCompactHandler}.
  */
 
 import { spawnSync } from 'node:child_process'
+import * as path from 'node:path'
 
 import { WEB_FETCH_KEY_SEP, getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns, markCompacted } from './session.js'
 import type { FileEntry } from './session.js'
@@ -35,9 +31,7 @@ const MEM_EPOCH_TIMEOUT_MS = 800
 const MAX_ROWS = 40
 
 /**
- * Appends a blank line, `header`, up to `cap` of `rows` verbatim, and an `- ...and N more`
- * overflow line when `rows` exceeds `cap`. No-op when `rows` is empty. Shared by every
- * capped-list section in {@link buildManifest} and {@link buildSafeToDiscardSection}.
+ * Appends a blank line, `header`, up to `cap` of `rows` verbatim, and an `- ...and N more` overflow line when `rows` exceeds `cap`. No-op when `rows` is empty. Shared by every capped-list section in {@link buildManifest} and {@link buildSafeToDiscardSection}.
  */
 function appendCappedSection(lines: string[], header: string, rows: readonly string[], cap: number): void {
   if (rows.length === 0) return
@@ -61,20 +55,7 @@ function renderSymbolReadRow(entry: FileEntry): string {
 }
 
 /**
- * Fold sibling subagent file entries into the parent's own file list, keyed
- * by {@link foldPath} (case-insensitive-filesystem-safe path identity, same
- * key session_store.ts's own merge logic uses). A file counts as edited if
- * ANY blob — parent or any subagent — marked it edited; readCount/lastReadAt
- * take the max across blobs and sizeBytes comes from whichever view is most
- * recent. symbols_read unions both blobs' lists (deduplicated) so a file that
- * was surgically read by one blob and whole-read or edited by the other keeps
- * its symbol list rather than losing it on collision, which previously made
- * such a file vanish from every buildManifest section: readFiles/editedFiles
- * require readCount>0/wasEdited, and symbolOnlyFiles required a non-empty
- * symbols_read that this merge was silently dropping. This is a display-only
- * merge for the compaction manifest, not the persisted-state merge in
- * session_store.ts (that one tracks per-process read-count baselines that
- * don't apply to blobs read cold off disk here).
+ * Fold sibling subagent file entries into the parent's own file list, keyed by {@link foldPath} (case-insensitive-filesystem-safe path identity, same key session_store.ts's own merge logic uses). A file counts as edited if ANY blob — parent or any subagent — marked it edited; readCount/lastReadAt take the max across blobs and sizeBytes comes from whichever view is most recent. symbols_read unions both blobs' lists (deduplicated) so a file that was surgically read by one blob and whole-read or edited by the other keeps its symbol list rather than losing it on collision, which previously made such a file vanish from every buildManifest section: readFiles/editedFiles require readCount>0/wasEdited, and symbolOnlyFiles required a non-empty symbols_read that this merge was silently dropping. This is a display-only merge for the compaction manifest, not the persisted-state merge in session_store.ts (that one tracks per-process read-count baselines that don't apply to blobs read cold off disk here).
  */
 function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): FileEntry[] {
   const byPath = new Map<string, FileEntry>()
@@ -103,31 +84,14 @@ function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): Fil
 /**
  * Build the session manifest string.
  *
- * Counts reads and edits, then lists read files, an edited-files section (only
- * when edits exist), and any fetched web URLs with their cache ids. Rows are
- * capped at {@link MAX_ROWS} per section with a truncation note.
+ * Counts reads and edits, then lists read files, an edited-files section (only when edits exist), and any fetched web URLs with their cache ids. Rows are capped at {@link MAX_ROWS} per section with a truncation note.
  *
- * `sessionId`, when provided, is the *unsalted* parent session id (relay.ts
- * only salts `sessionStateKey` when `agentId` is set, which is never true on
- * the main thread that runs pre_compact). Every subagent spawned during this
- * session persisted its reads/edits into its own agent-salted blob (see
- * relay.ts's `sessionStateKey`), separate from the parent's plain-keyed blob
- * that {@link getSessionFiles} was just hydrated from — so without this,
- * a subagent's edits are invisible to the compaction manifest that is
- * supposed to preserve exactly that context across compaction. Sibling blobs
- * are read straight off disk and merged in; nothing is written back.
+ * `sessionId`, when provided, is the *unsalted* parent session id (relay.ts only salts `sessionStateKey` when `agentId` is set, which is never true on the main thread that runs pre_compact). Every subagent spawned during this session persisted its reads/edits into its own agent-salted blob (see relay.ts's `sessionStateKey`), separate from the parent's plain-keyed blob that {@link getSessionFiles} was just hydrated from — so without this, a subagent's edits are invisible to the compaction manifest that is supposed to preserve exactly that context across compaction. Sibling blobs are read straight off disk and merged in; nothing is written back.
  *
- * `cwd`, when provided, is passed through to {@link capManifestChars} so its
- * {@link adaptiveCharBonus} can check real git dirty state for this project
- * before capping -- omitted (e.g. a harness that doesn't send `cwd` on
- * `pre_compact`), the cap falls back to the fixed configured value unchanged.
+ * `cwd`, when provided, is passed through to {@link capManifestChars} so its {@link adaptiveCharBonus} can check real git dirty state for this project before capping -- omitted (e.g. a harness that doesn't send `cwd` on `pre_compact`), the cap falls back to the fixed configured value unchanged.
  */
 /*
- * Paths and symbol names below go through displaySafePath/displaySafeText rather than being
- * interpolated raw. They are file-derived and a repository names its own files, while this
- * manifest is emitted under a preamble instructing the summarizing model to reproduce these
- * rows exactly as written -- the most persistent place in the tool where an unescaped `[tg]`
- * marker could sit, since it survives compaction into the next context.
+ * Paths and symbol names below go through displaySafePath/displaySafeText rather than being interpolated raw. They are file-derived and a repository names its own files, while this manifest is emitted under a preamble instructing the summarizing model to reproduce these rows exactly as written -- the most persistent place in the tool where an unescaped `[tg]` marker could sit, since it survives compaction into the next context.
  */
 export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?: string): string {
   const ownFiles = [...getSessionFiles().values()]
@@ -172,15 +136,7 @@ export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?:
 }
 
 /**
- * Detect real, pre-compaction git dirty state for `cwd` -- `hasPendingDiff` mirrors the
- * Python predecessor's `_get_git_diff_stat_summary()` signal (`git diff --stat HEAD`
- * non-empty: tracked working-tree/staged changes vs HEAD), `hasUncommittedChanges` mirrors
- * `_get_uncommitted_changes()` (`git status --porcelain` non-empty: also catches untracked
- * files `diff --stat HEAD` misses). Both feed {@link computeAdaptiveBudget}'s git-derived
- * bonuses via {@link adaptiveCharBonus}. Uses {@link runGit} (the only git spawn site in the
- * codebase) with `hints.git_hint_max_ms` (same bound `hooks_session.ts`'s own git-hint calls
- * use) so a slow/hung git can never block compaction; any spawn failure or non-zero exit
- * fails soft to `false` for that signal.
+ * Detect real, pre-compaction git dirty state for `cwd` -- `hasPendingDiff` mirrors the Python predecessor's `_get_git_diff_stat_summary()` signal (`git diff --stat HEAD` non-empty: tracked working-tree/staged changes vs HEAD), `hasUncommittedChanges` mirrors `_get_uncommitted_changes()` (`git status --porcelain` non-empty: also catches untracked files `diff --stat HEAD` misses). Both feed {@link computeAdaptiveBudget}'s git-derived bonuses via {@link adaptiveCharBonus}. Uses {@link runGit} (the only git spawn site in the codebase) with `hints.git_hint_max_ms` (same bound `hooks_session.ts`'s own git-hint calls use) so a slow/hung git can never block compaction; any spawn failure or non-zero exit fails soft to `false` for that signal.
  */
 function gitDirtySignals(cwd: string): { hasPendingDiff: boolean; hasUncommittedChanges: boolean } {
   const timeoutMs = loadConfig().hints.git_hint_max_ms
@@ -202,24 +158,11 @@ function gitDirtySignals(cwd: string): { hasPendingDiff: boolean; hasUncommitted
 }
 
 /**
- * Extra manifest-char budget to add on top of the configured
- * `compact_assist.max_manifest_chars` cap, driven by real git dirty state right before this
- * compaction fires.
+ * Extra manifest-char budget to add on top of the configured `compact_assist.max_manifest_chars` cap, driven by real git dirty state right before this compaction fires.
  *
- * Reuses `compact.ts`'s `computeAdaptiveBudget` -- ported from the Python predecessor's
- * `build_manifest_adaptive` (see `eb119425`) but never wired to this, the real production
- * PreCompact path, until now -- rather than reimplementing its bonus formula here. Calls it
- * twice with identical cache/age/pressure inputs, toggling only the git-derived opts, and
- * returns the *delta* between the two (in chars, at `estimateTokens`'s ~3 chars/token, floored
- * at 0). Using the delta -- instead of using `computeAdaptiveBudget`'s absolute result as the
- * cap outright -- guarantees the common case (a clean working tree: no pending diff, no
- * uncommitted changes) adds exactly 0 and therefore reproduces today's fixed
- * `max_manifest_chars` cap unchanged; a dirty tree only ever grows the cap, giving the
- * compaction LLM more room for the "Pending Changes"-equivalent git context precisely when
- * there is git state worth preserving, without ever shrinking below the configured default.
+ * Reuses `compact.ts`'s `computeAdaptiveBudget` -- ported from the Python predecessor's `build_manifest_adaptive` (see `eb119425`) but never wired to this, the real production PreCompact path, until now -- rather than reimplementing its bonus formula here. Calls it twice with identical cache/age/pressure inputs, toggling only the git-derived opts, and returns the *delta* between the two (in chars, at `estimateTokens`'s ~3 chars/token, floored at 0). Using the delta -- instead of using `computeAdaptiveBudget`'s absolute result as the cap outright -- guarantees the common case (a clean working tree: no pending diff, no uncommitted changes) adds exactly 0 and therefore reproduces today's fixed `max_manifest_chars` cap unchanged; a dirty tree only ever grows the cap, giving the compaction LLM more room for the "Pending Changes"-equivalent git context precisely when there is git state worth preserving, without ever shrinking below the configured default.
  *
- * No-op (returns 0) when `cwd` is unavailable (harness didn't send one) -- fails soft rather
- * than guessing a working directory for the git spawns.
+ * No-op (returns 0) when `cwd` is unavailable (harness didn't send one) -- fails soft rather than guessing a working directory for the git spawns.
  */
 function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefined, transcriptPath: string | undefined): number {
   if (!cwd) return 0
@@ -236,18 +179,7 @@ function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefine
 }
 
 /**
- * Enforce `compact_assist.max_manifest_chars` (default 1600) on the fully-built manifest --
- * this module's own doc comment promises the manifest stays "well under 2000 chars", but
- * nothing previously bounded the actual string: MAX_ROWS only caps rows *per section*, not the
- * manifest's total length, so a session with many populated sections (reads, edits, web
- * fetches, SAFE_TO_DISCARD, mem epoch) could still produce an arbitrarily large manifest.
- * `max_manifest_chars <= 0` means "no cap" (mirrors max_section_lines's own 0-means-unlimited
- * convention), so a 0 value never truncates -- and never spends the git-spawn cost of
- * {@link adaptiveCharBonus} either, since there is no cap for it to adjust. Likewise, when the
- * manifest already fits under the base (non-adaptive) cap, there is nothing for the bonus to
- * widen room for, so the two `git diff`/`git status` spawns in {@link adaptiveCharBonus} are
- * skipped entirely rather than paid on every compaction regardless of whether truncation could
- * ever happen.
+ * Enforce `compact_assist.max_manifest_chars` (default 1600) on the fully-built manifest -- this module's own doc comment promises the manifest stays "well under 2000 chars", but nothing previously bounded the actual string: MAX_ROWS only caps rows *per section*, not the manifest's total length, so a session with many populated sections (reads, edits, web fetches, SAFE_TO_DISCARD, mem epoch) could still produce an arbitrarily large manifest. `max_manifest_chars <= 0` means "no cap" (mirrors max_section_lines's own 0-means-unlimited convention), so a 0 value never truncates -- and never spends the git-spawn cost of {@link adaptiveCharBonus} either, since there is no cap for it to adjust. Likewise, when the manifest already fits under the base (non-adaptive) cap, there is nothing for the bonus to widen room for, so the two `git diff`/`git status` spawns in {@link adaptiveCharBonus} are skipped entirely rather than paid on every compaction regardless of whether truncation could ever happen.
  */
 function capManifestChars(manifest: string, sessionId?: string, cwd?: string, transcriptPath?: string): string {
   const cap = loadConfig().compact_assist.max_manifest_chars
@@ -260,10 +192,7 @@ function capManifestChars(manifest: string, sessionId?: string, cwd?: string, tr
 }
 
 /**
- * Build the SAFE_TO_DISCARD manifest section: provably-inert prior context that
- * compaction can drop without losing data, because it is recoverable through an
- * existing recall command. Conservative by construction -- only three classes,
- * each backed by an explicit session-state signal (never inferred):
+ * Build the SAFE_TO_DISCARD manifest section: provably-inert prior context that compaction can drop without losing data, because it is recoverable through an existing recall command. Conservative by construction -- only three classes, each backed by an explicit session-state signal (never inferred):
  *
  * 1. Superseded identical-command bash reruns: a store call this session
  *    overwrote an already-cached entry under the exact same command key (see
@@ -280,9 +209,7 @@ function capManifestChars(manifest: string, sessionId?: string, cwd?: string, tr
  *    Reruns already itemized under (1) are excluded here to avoid double
  *    counting the same command under two headings.
  *
- * Always labels the section with an explicit item count and the recall
- * command needed to get each item's data back -- never implies data is gone,
- * only that the inline copy is a redundant duplicate of something recallable.
+ * Always labels the section with an explicit item count and the recall command needed to get each item's data back -- never implies data is gone, only that the inline copy is a redundant duplicate of something recallable.
  */
 function buildSafeToDiscardSection(files: FileEntry[]): string[] {
   const rerunHashes = getSessionBashReruns()
@@ -330,23 +257,11 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
 }
 
 /**
- * Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into
- * the compaction manifest, so a resumed session can tell whether mem's fact store has advanced
- * since this transcript was captured.
+ * Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into the compaction manifest, so a resumed session can tell whether mem's fact store has advanced since this transcript was captured.
  *
- * FINDING (searched for at implementation time): this codebase has no existing tracking of a
- * "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem
- * currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web
- * fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state.
- * Per spec, that gap is reported rather than papered over with a fabricated block-tracking
- * mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that
- * no live TGMEM block is tracked in this session.
+ * FINDING (searched for at implementation time): this codebase has no existing tracking of a "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state. Per spec, that gap is reported rather than papered over with a fabricated block-tracking mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that no live TGMEM block is tracked in this session.
  *
- * Must fail open: `mem` may be absent from PATH, may error, or may hang. `spawnSync` bounds the
- * wait to {@link MEM_EPOCH_TIMEOUT_MS} (same spawnSync-with-timeout pattern as
- * checkCopilotCli in cli_doctor.ts) and any failure -- ENOENT, non-zero exit, timeout kill,
- * unparsable stdout -- silently omits the section. No error is ever surfaced and compaction
- * never blocks or fails because of this.
+ * Must fail open: `mem` may be absent from PATH, may error, or may hang. `spawnSync` bounds the wait to {@link MEM_EPOCH_TIMEOUT_MS} (same spawnSync-with-timeout pattern as checkCopilotCli in cli_doctor.ts) and any failure -- ENOENT, non-zero exit, timeout kill, unparsable stdout -- silently omits the section. No error is ever surfaced and compaction never blocks or fails because of this.
  */
 function buildMemEpochSection(): string[] {
   let result: ReturnType<typeof spawnSync>
@@ -374,30 +289,16 @@ function buildMemEpochSection(): string[] {
 /**
  * pre_compact handler: hand the session manifest to the model that writes the compaction summary.
  *
- * On Claude Code this hook's stdout reaches that model as `customInstructions`, so the manifest is
- * addressed to a reader rather than filed as an attachment -- see EVENTS_WITH_RAW_STDOUT_CONTEXT in
- * hook_registry.ts for how that was established and why it is scoped to one harness. {@link
- * MANIFEST_PREAMBLE} is what turns a block of facts into something a summarizer can act on.
+ * On Claude Code this hook's stdout reaches that model as `customInstructions`, so the manifest is addressed to a reader rather than filed as an attachment -- see EVENTS_WITH_RAW_STDOUT_CONTEXT in hook_registry.ts for how that was established and why it is scoped to one harness. {@link MANIFEST_PREAMBLE} is what turns a block of facts into something a summarizer can act on.
  *
- * Returns `pass` (no-op) when `compact_assist.enabled` is off -- the config field is fully
- * wired through TOML parsing/validation/env-override (TOKEN_GOAT_COMPACT_ASSIST) and `config
- * export`, but nothing previously read it, so setting it false had zero effect on this hook.
- * Otherwise always returns a `context` output so the manifest reaches the compaction summary
- * even for an otherwise empty session (the counts confirm nothing was dropped).
+ * Returns `pass` (no-op) when `compact_assist.enabled` is off -- the config field is fully wired through TOML parsing/validation/env-override (TOKEN_GOAT_COMPACT_ASSIST) and `config export`, but nothing previously read it, so setting it false had zero effect on this hook. Otherwise always returns a `context` output so the manifest reaches the compaction summary even for an otherwise empty session (the counts confirm nothing was dropped).
  */
 /**
  * Framing in front of the manifest, addressed to whoever writes the compaction summary.
  *
- * Reaches the summarizer as raw `customInstructions`: `hook_registry.ts` lists `pre_compact` in
- * EVENTS_WITH_RAW_STDOUT_CONTEXT, so this text is handed over unwrapped rather than rendered as a
- * tool result. That is the only lever token-goat holds on the compaction channel.
+ * Reaches the summarizer as raw `customInstructions`: `hook_registry.ts` lists `pre_compact` in EVENTS_WITH_RAW_STDOUT_CONTEXT, so this text is handed over unwrapped rather than rendered as a tool result. That is the only lever token-goat holds on the compaction channel.
  *
- * An earlier revision asked for preservation and deliberately not for brevity, reasoning that
- * trading a summary's completeness for tokens was a bad trade to make on a user's behalf without
- * being asked. The budget below exists because the user asked. It does not replace that reasoning:
- * preservation stays the first instruction, the budget is a target rather than a cap, and
- * {@link BUDGET_ESCALATION_MARKER} lets a session that genuinely cannot fit exceed it on the
- * record instead of silently dropping state.
+ * An earlier revision asked for preservation and deliberately not for brevity, reasoning that trading a summary's completeness for tokens was a bad trade to make on a user's behalf without being asked. The budget below exists because the user asked. It does not replace that reasoning: preservation stays the first instruction, the budget is a target rather than a cap, and {@link BUDGET_ESCALATION_MARKER} lets a session that genuinely cannot fit exceed it on the record instead of silently dropping state.
  */
 const MANIFEST_PREAMBLE =
   'When summarizing this session, keep the file paths and symbol names below exactly as written -- they are the handles the next turn needs to resume work. Do not paraphrase them into prose.'
@@ -405,20 +306,14 @@ const MANIFEST_PREAMBLE =
 /**
  * Opening token a summary uses to declare it exceeded its budget on purpose.
  *
- * One constant for both voices: {@link summaryBudgetDirective} asks for it and
- * {@link postCompactHandler} counts it. Two literals would let the emitter drift from the
- * detector, and that failure is silent -- every escalation would read as an ordinary overrun.
+ * One constant for both voices: {@link summaryBudgetDirective} asks for it and {@link postCompactHandler} counts it. Two literals would let the emitter drift from the detector, and that failure is silent -- every escalation would read as an ordinary overrun.
  */
 export const BUDGET_ESCALATION_MARKER = 'TG-BUDGET-ESCALATION:'
 
 /**
  * The length target appended to {@link MANIFEST_PREAMBLE}, or an empty string when budgeting is off.
  *
- * Measured before it was chosen: 847 summaries over 7 days on the machine this was built on ran
- * 24.56 MB in total, p50 26,240 characters, max 145,587. A 24,000 target binds 504 of those 847.
- * The trim that implies is a ceiling on the mechanism's reach and never a prediction -- whether a
- * summarizer honors a length request in `customInstructions` is exactly what the `budget=` and
- * `over=` fields recorded by {@link postCompactHandler} exist to answer.
+ * Measured before it was chosen: 847 summaries over 7 days on the machine this was built on ran 24.56 MB in total, p50 26,240 characters, max 145,587. A 24,000 target binds 504 of those 847. The trim that implies is a ceiling on the mechanism's reach and never a prediction -- whether a summarizer honors a length request in `customInstructions` is exactly what the `budget=` and `over=` fields recorded by {@link postCompactHandler} exist to answer.
  */
 export function summaryBudgetDirective(budgetChars: number): string {
   if (budgetChars <= 0) return ''
@@ -426,8 +321,7 @@ export function summaryBudgetDirective(budgetChars: number): string {
 }
 
 export function preCompactHandler(event: HookEvent): HookOutput {
-  // Order is load-bearing: buildManifest reads getSessionFiles(), and markCompacted stamps the epoch that makes every one of those reads count as no-longer-in-context. Stamping first would not corrupt the manifest today (it reads readCount/wasEdited directly rather than going through wasFileReadThisSession), but the dependency is real -- any future manifest input that asks "is this still in context" would silently render empty. Build first, stamp second.
-  // The stamp is NOT gated on compact_assist.enabled: compaction happens whether or not we inject a manifest, so the read ledger must be invalidated either way. Gating it would leave hooks_read.ts serving diffs and "unchanged" denials against content the model can no longer see, for every user who turned the manifest off.
+  // Order is load-bearing: buildManifest reads getSessionFiles(), and markCompacted stamps the epoch that makes every one of those reads count as no-longer-in-context. Stamping first would not corrupt the manifest today (it reads readCount/wasEdited directly rather than going through wasFileReadThisSession), but the dependency is real -- any future manifest input that asks "is this still in context" would silently render empty. Build first, stamp second. The stamp is NOT gated on compact_assist.enabled: compaction happens whether or not we inject a manifest, so the read ledger must be invalidated either way. Gating it would leave hooks_read.ts serving diffs and "unchanged" denials against content the model can no longer see, for every user who turned the manifest off.
   const out = loadConfig().compact_assist.enabled
     ? contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(loadConfig().compact_assist.summary_budget_chars)}\n\n${buildManifest(event.sessionId, getCwd(event), getTranscriptPath(event))}`)
     : passOutput()
@@ -438,32 +332,18 @@ export function preCompactHandler(event: HookEvent): HookOutput {
 registerHook('pre_compact', preCompactHandler)
 
 /**
- * Distinct path-shaped tokens to sample from the manifest when checking whether it survived
- * compaction.
+ * Distinct path-shaped tokens to sample from the manifest when checking whether it survived compaction.
  *
- * Was 12, which is too narrow to answer the question a summary budget raises. Twelve paths taken
- * from the head of an insertion-ordered map sample the session's *earliest* files, so the ratio
- * can read healthy while later state evaporates, and on a session that compacts hundreds of times
- * that loss compounds invisibly. 64 covers a typical session's whole touched set; the cost is 64
- * substring scans over a ~26 KB summary, once per compaction.
+ * Was 12, which is too narrow to answer the question a summary budget raises. Twelve paths taken from the head of an insertion-ordered map sample the session's *earliest* files, so the ratio can read healthy while later state evaporates, and on a session that compacts hundreds of times that loss compounds invisibly. 64 covers a typical session's whole touched set; the cost is 64 substring scans over a ~26 KB summary, once per compaction.
  */
 const MANIFEST_SURVIVAL_SAMPLE = 64
 
 /**
- * Paths this session touched, in the same order and from the same source {@link buildManifest}
- * draws them from, capped to {@link MANIFEST_SURVIVAL_SAMPLE}.
+ * Paths this session touched, in the same order and from the same source {@link buildManifest} draws them from, capped to {@link MANIFEST_SURVIVAL_SAMPLE}.
  *
- * Deliberately re-derived from session state rather than stashed at pre_compact time. Nothing
- * mutates the file ledger between the two events -- no tool call can run while the harness is
- * compacting -- so the list is the same one the manifest was built from, and re-deriving it
- * avoids adding a field that would need all six of the session-state touch points (interface,
- * serialize, deserialize, reset, coerce, merge) to carry a value that is only ever read
- * milliseconds after it is written.
+ * Deliberately re-derived from session state rather than stashed at pre_compact time. Nothing mutates the file ledger between the two events -- no tool call can run while the harness is compacting -- so the list is the same one the manifest was built from, and re-deriving it avoids adding a field that would need all six of the session-state touch points (interface, serialize, deserialize, reset, coerce, merge) to carry a value that is only ever read milliseconds after it is written.
  *
- * The one imprecision is in the safe direction: `capManifestChars` may have cut the tail off the
- * emitted manifest, so a path here might never have been sent. That can only make survival look
- * worse than it was, never better, which is the bias a canary wants -- it cannot falsely report
- * that the channel is alive.
+ * The one imprecision is in the safe direction: `capManifestChars` may have cut the tail off the emitted manifest, so a path here might never have been sent. That can only make survival look worse than it was, never better, which is the bias a canary wants -- it cannot falsely report that the channel is alive.
  */
 function manifestPathSample(sessionId?: string): string[] {
   const ownFiles = [...getSessionFiles().values()]
@@ -479,41 +359,32 @@ function manifestPathSample(sessionId?: string): string[] {
 }
 
 /**
- * post_compact handler: measure the summary compaction produced, and check whether the manifest
- * we sent into it survived.
+ * post_compact handler: measure the summary compaction produced, and check whether the manifest we sent into it survived.
  *
  * Two things make this worth wiring even though it changes nothing the model sees.
  *
- * The measurement: compaction summaries are the single largest thing token-goat could not see.
- * Every other number in `stats` came from a tool call token-goat intercepted, and a summary
- * arrives through none. Across 22 sessions on one machine they totalled roughly 27.5 MB, and
- * until now nothing counted a byte of it. Claude Code hands the finished summary to a PostCompact
- * hook verbatim, so counting it costs one `length` read of a string already in memory.
+ * The measurement: compaction summaries are the single largest thing token-goat could not see. Every other number in `stats` came from a tool call token-goat intercepted, and a summary arrives through none. Across 22 sessions on one machine they totalled roughly 27.5 MB, and until now nothing counted a byte of it. Claude Code hands the finished summary to a PostCompact hook verbatim, so counting it costs one `length` read of a string already in memory.
  *
- * The canary: {@link preCompactHandler}'s manifest reaches the summarizing model through an
- * undocumented channel -- Claude Code feeds a PreCompact hook's raw stdout in as the summarizer's
- * customInstructions, which its own hooks reference describes as going to a debug log. That can
- * stop working on any release, and it would stop silently: the hook would keep succeeding, the
- * manifest would keep being built, and nothing would fail. So this counts how many of the paths
- * the manifest named actually appear in the summary. A run of compactions where none survive is
- * the signal that the channel died.
+ * The canary: {@link preCompactHandler}'s manifest reaches the summarizing model through an undocumented channel -- Claude Code feeds a PreCompact hook's raw stdout in as the summarizer's customInstructions, which its own hooks reference describes as going to a debug log. That can stop working on any release, and it would stop silently: the hook would keep succeeding, the manifest would keep being built, and nothing would fail. So this counts how many of the paths the manifest named actually appear in the summary. A run of compactions where none survive is the signal that the channel died.
  *
- * Recorded at zero bytes and zero tokens, always. Nothing here saves anything -- the summary was
- * written whether or not token-goat was watching -- and crediting a measurement as a saving is
- * the exact accounting mistake this project keeps having to undo.
+ * Recorded at zero bytes and zero tokens, always. Nothing here saves anything -- the summary was written whether or not token-goat was watching -- and crediting a measurement as a saving is the exact accounting mistake this project keeps having to undo.
  *
- * Returns `pass`. A PostCompact hook's stdout is not context: Claude Code's runner returns only
- * `userDisplayMessage`, a line echoed to the user's terminal, so anything printed here would be
- * noise in front of a person rather than help for a model.
+ * Returns `pass`. A PostCompact hook's stdout is not context: Claude Code's runner returns only `userDisplayMessage`, a line echoed to the user's terminal, so anything printed here would be noise in front of a person rather than help for a model.
  */
 export function postCompactHandler(event: HookEvent): HookOutput {
   const raw = event.raw['compact_summary']
   const summary = typeof raw === 'string' ? raw : ''
   const bytes = Buffer.byteLength(summary, 'utf-8')
   const sample = manifestPathSample(event.sessionId)
-  // Fold both sides on a case-insensitive filesystem so a summary that reproduces a path with different capitalization still counts as a survivor. Folding the needle alone was the first version of this and it matched nothing on Windows, which would have made the canary read "channel dead" on every compaction.
-  const haystack = foldPath(summary)
-  const survived = sample.filter((p) => haystack.includes(foldPath(p))).length
+  // Fold both sides on a case-insensitive filesystem so a summary that reproduces a path with different capitalization still counts as a survivor. Folding the needle alone was the first version of this and it matched nothing on Windows, which would have made the canary read "channel dead" on every compaction. The summarizer rewrites the manifest's absolute paths relative to the project root (322 recorded summaries named `src/...` files and none by absolute path), so a path also survives as its cwd-relative spelling; matching the absolute form alone read 0/64 on every compaction and made doctor report a live channel as dead. Separators are unified on both sides because the summary writes `/` whatever the platform.
+  const cwd = getCwd(event) ?? process.cwd()
+  const spell = (p: string): string => foldPath(p.replaceAll('\\', '/'))
+  const haystack = spell(summary)
+  const survived = sample.filter((p) => {
+    const rel = path.relative(cwd, p)
+    const forms = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) ? [p, rel] : [p]
+    return forms.some((f) => haystack.includes(spell(f)))
+  }).length
   const trigger = typeof event.raw['trigger'] === 'string' ? event.raw['trigger'] : 'unknown'
   const budget = loadConfig().compact_assist.summary_budget_chars
   // Characters against characters: the directive asks for a character count, so a summary carrying non-ASCII would overrun a byte comparison it never actually broke. `bytes` stays byte-length because the token estimate is derived from it.
