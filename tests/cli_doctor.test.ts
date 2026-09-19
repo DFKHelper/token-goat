@@ -16,7 +16,7 @@ import { GLOBAL_SCHEMA_SQL } from '../src/stats.js'
 import { PARSER_FINGERPRINT } from '../src/parser_fingerprint.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { OVERSIZED_BODY_PROBE_SQL } from '../src/cli_doctor.js'
-import { PACKAGE_NAME } from '../src/version.js'
+import { PACKAGE_NAME, VERSION } from '../src/version.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
@@ -496,11 +496,13 @@ describe('cli_doctor', () => {
   // something a person sees. Its whole difficulty is not crying wolf, so most of what is pinned
   // here is the cases where it must stay quiet.
   describe('checkCompactionChannel', () => {
-    function seedDetails(dbPath: string, details: string[]): void {
+    // Every existing caller below seeds rows at the current (post-fix) VERSION by default, since
+    // they mean to exercise the ordinary working/dead-channel logic, not the version gate itself.
+    function seedDetails(dbPath: string, details: string[], tgVersion: string | null = VERSION): void {
       const db = getDb(dbPath)
       db.exec(GLOBAL_SCHEMA_SQL)
-      const stmt = db.prepare("INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'compact_summary', 0, 0, ?)")
-      for (const d of details) stmt.run(Date.now(), d)
+      const stmt = db.prepare("INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, tg_version) VALUES (?, 'compact_summary', 0, 0, ?, ?)")
+      for (const d of details) stmt.run(Date.now(), d, tgVersion)
     }
 
     it('returns ok when there is no database yet', () => {
@@ -583,6 +585,36 @@ describe('cli_doctor', () => {
       const result = checkCompactionChannel(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('PreCompact')
+    })
+
+    // FORMAT-DERIVED: manifest_paths=0/N is the exact shape d30a8055 documented every pre-fix
+    // compaction recorded (322 real summaries, all 0/64), because the survival check only
+    // accepted an absolute-path match and every real summarizer rewrites paths relative to the
+    // project root. A row from before that fix is not evidence the channel is dead; it is a row
+    // the old matcher could never have marked alive regardless of whether the channel worked.
+    it('does not report the channel dead on pre-fix rows that could only ever read 0/N', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'), '2.9.17')
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no post-fix compaction evidence yet')
+    })
+
+    it('reports healthy from older post-fix rows instead of being condemned by more recent pre-fix 0/N rows', () => {
+      // The 5 most recent rows (highest rowid, scanned first) are pre-fix and would, unfiltered,
+      // fill the window with "dead" evidence on their own and report warn. The 5 older rows
+      // behind them are post-fix and genuinely healthy; the fix must skip past the recent
+      // pre-fix rows to reach them rather than stopping at the first COMPACTION_CHANNEL_WINDOW
+      // rows regardless of version.
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      db.exec(GLOBAL_SCHEMA_SQL)
+      const stmt = db.prepare("INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, tg_version) VALUES (?, 'compact_summary', 0, 0, ?, ?)")
+      for (let i = 0; i < 5; i++) stmt.run(Date.now(), 'trigger=auto bytes=700 est_tokens=240 manifest_paths=4/6', VERSION)
+      for (let i = 0; i < 5; i++) stmt.run(Date.now(), 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6', '2.9.17')
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('20/30 sampled paths survived')
     })
 
     it('is wired into runDoctor rather than only being callable', () => {

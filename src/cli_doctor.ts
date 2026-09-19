@@ -12,6 +12,7 @@ import { countNoun, extractErrorMessage, toKB, resolveOnPath } from './util.js'
 import { findSystemTempFiles } from './index_prune.js'
 import { displaySafeText } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
+import { compareSemver } from './cli_upgrade.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
@@ -726,6 +727,9 @@ const COMPACTION_STATS_BATCH_SIZE = 50
 /** Hard ceiling on total compact_summary rows read across all pages in one doctor run. stats accumulates for the life of the install across every project with no size cap of its own, so an unbounded scan back to row 1 on a years-old global.db is the wrong trade for one diagnostic line; 2000 rows covers many hundreds of real compactions even if the great majority are sample.length === 0 (sessions that touched no files), and if the scan hits this ceiling without finding COMPACTION_CHANNEL_WINDOW conclusive rows the result is reported as inconclusive rather than as a false warn or false ok. */
 const COMPACTION_STATS_SCAN_CEILING = 2000
 
+/** The release that fixed d30a8055's survival matcher: before it, a summary that named a manifest path relative to the project root (the only form a real summarizer produces) never matched the absolute-path-only check, so every compaction recorded manifest_paths=0/N regardless of whether the channel actually worked. A row written by an older build carries no signal either way and must not be counted toward "dead" or "working" -- see {@link checkCompactionChannel}. */
+const COMPACTION_MANIFEST_FIX_VERSION = '2.9.18'
+
 /**
  * Is the manifest token-goat sends ahead of a compaction still reaching the summary?
  *
@@ -749,10 +753,11 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
     const conclusive: Array<{ survived: number; sampled: number }> = []
     let offset = 0
     let scanned = 0
+    let preFixConclusive = 0
     for (;;) {
       const batch = db
-        .prepare("SELECT detail FROM stats WHERE kind = 'compact_summary' ORDER BY rowid DESC LIMIT ? OFFSET ?")
-        .all(COMPACTION_STATS_BATCH_SIZE, offset) as Array<{ detail: string | null }>
+        .prepare("SELECT detail, tg_version FROM stats WHERE kind = 'compact_summary' ORDER BY rowid DESC LIMIT ? OFFSET ?")
+        .all(COMPACTION_STATS_BATCH_SIZE, offset) as Array<{ detail: string | null; tg_version: string | null }>
       if (batch.length === 0) break
       offset += batch.length
       scanned += batch.length
@@ -761,6 +766,11 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
         if (m === null) continue
         const sampled = Number(m[2])
         if (sampled === 0) continue
+        // A row written before COMPACTION_MANIFEST_FIX_VERSION carries no signal either way (see that constant's doc comment) -- count it separately so an install with only pre-fix history is told "no evidence yet" rather than "the channel is dead".
+        if (row.tg_version === null || compareSemver(row.tg_version, COMPACTION_MANIFEST_FIX_VERSION) < 0) {
+          preFixConclusive++
+          continue
+        }
         conclusive.push({ survived: Number(m[1]), sampled })
         if (conclusive.length >= COMPACTION_CHANNEL_WINDOW) break
       }
@@ -768,6 +778,9 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
       if (scanned >= COMPACTION_STATS_SCAN_CEILING) break
     }
     if (conclusive.length === 0) {
+      if (preFixConclusive > 0) {
+        return { name, status: 'ok', message: `no post-fix compaction evidence yet -- ${preFixConclusive} compaction(s) found predate ${COMPACTION_MANIFEST_FIX_VERSION}'s manifest-survival fix and are not counted` }
+      }
       return { name, status: 'ok', message: 'no compaction has been measured yet' }
     }
     const dead = conclusive.filter((c) => c.survived === 0).length
