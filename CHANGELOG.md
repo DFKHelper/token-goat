@@ -2,6 +2,20 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.18] - 2026-09-19
+
+### Fixed
+
+- **Scratch files written by shell commands under the OS temp dir no longer enter the index**: only edits made through the Edit and Write tools skipped the temp dir, so a file written by a shell redirect, `tee`, `sed -i` or a git command became a permanent index row. One real index held 3,186 of them. Every enqueue path now skips the temp dir, and `token-goat project prune` removes rows already indexed.
+
+- **`token-goat doctor` says which command will shrink an oversized index, or that none will**: the over-1GB warning always recommended a reclaim, which on a 2,250 MB index freed 1.3 MB. It now reads the free-page count and the number of indexed temp-dir files and points to `reclaim-index`, to `project prune`, or to neither when the size is live index data.
+
+- **`doctor`'s unmapped-tool list shows each tool once**: a tool seen by both the pre and post hooks was listed twice.
+
+- **Compressed command output no longer starts with "[early-exit: normalisation alone sufficient]"**: the line named the filter's internal branch and appeared on 773 outputs across 159 recorded sessions without telling the model anything it could use.
+
+- **`doctor` no longer reports the compaction manifest channel as dead while it works**: summaries name files relative to the project root, and the check only counted paths repeated in full, so every compaction scored zero. Relative paths now count.
+
 ## [2.9.17] - 2026-09-18
 
 ### Added
