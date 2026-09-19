@@ -3,8 +3,8 @@ import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import Database from '../src/sqlite_driver.js'
-import { closeAllDbs } from '../src/db.js'
-import { dataDirForHome } from '../src/constants.js'
+import { closeAllDbs, getDb } from '../src/db.js'
+import { dataDirForHome, globalDbPath } from '../src/constants.js'
 import {
   summarize,
   renderStats as _renderStats,
@@ -55,6 +55,10 @@ function makeStatsHome(prefix: string): { customHome: string; dbPath: string } {
   fs.mkdirSync(homeDataDir, { recursive: true })
   return { customHome, dbPath: path.join(homeDataDir, 'global.db') }
 }
+
+// Shared with both the predicate test and the wiring test below: the measured 2026-06-03..06-22 test-isolation leak window (1780406895..1782119331), see pruneTestIsolationLeakRows's doc comment.
+const windowTs = 1780406895 + 1000 // inside the measured leak window
+const outsideWindowTs = 1782119331 + 86400 // one day past the window's end
 
 describe('stats', () => {
   let tempDir: string
@@ -917,32 +921,40 @@ describe('stats', () => {
   // LOCALAPPDATA/global.db anyway and wrote against it -- ~6,472 rows dated 2026-06-03 through
   // 06-22, in exactly the two shapes below (image_shrink/large_read_redirect rows naming a
   // pytest tempdir, hint_backoff_suppressed/session_hint_suppressed/indexed_cat_deny/
-  // indexed_cat_advisory rows naming the literal fixture path /fake/...). Neither shape a real
-  // project path can produce.
+  // indexed_cat_advisory rows naming the literal fixture path /fake/...). A real session can
+  // produce both shapes too (reading pytest's own output, or a project with a fake/ directory),
+  // so the fix keys the DELETE on the leak's actual fingerprint instead: tg_version IS NULL (every
+  // real row after that column shipped carries one) and ts inside the measured 2026-06-03..06-22
+  // window (1780406895..1782119331), never on shape alone.
   describe('pruneTestIsolationLeakRows (test-isolation-leak cleanup)', () => {
-    it('deletes only rows whose detail matches a test-harness path shape, leaving real paths alone', () => {
+    it('deletes only rows matching both the leak window and a NULL tg_version, leaving a real session\'s same-shaped rows alone', () => {
       const dbPath = path.join(tempDir, 'prune-leak-test.db')
       const db = openStatsDb(dbPath)
-      const now = Math.floor(Date.now() / 1000)
-      const insert = db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, ?, 0, 0, ?)`)
-      insert.run(now, 'large_read_redirect', 'C:\\Users\\zelys\\AppData\\Local\\Temp\\pytest-of-zelys\\pytest-1333\\popen-gw0\\test_large_image_additional_co0\\large.jpg')
-      insert.run(now, 'session_hint_suppressed', '/fake/src/foo.py')
-      insert.run(now, 'large_read_redirect', 'C:\\Projects\\real-project\\src\\index.ts size=112648') // a genuine project path, must survive
-      insert.run(now, 'indexed_cat_deny', '/home/zelys/real-project/src/foo.py') // contains "real" but not the /fake/ shape, must survive
+      const insert = db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, tg_version) VALUES (?, ?, 0, 0, ?, ?)`)
+      insert.run(windowTs, 'large_read_redirect', 'C:\\Users\\zelys\\AppData\\Local\\Temp\\pytest-of-zelys\\pytest-1333\\popen-gw0\\test_large_image_additional_co0\\large.jpg', null)
+      insert.run(windowTs, 'session_hint_suppressed', '/fake/src/foo.py', null)
+      insert.run(windowTs, 'large_read_redirect', 'C:\\Users\\zelys\\pytest-of-zelys\\real-read.log', '2.9.20') // in-window, pytest-of- shape, but a real row (tg_version set) -- must survive
+      insert.run(outsideWindowTs, 'session_hint_suppressed', '/fake/src/bar.py', null) // /fake/ shape, NULL tg_version, but outside the window -- must survive
+      insert.run(windowTs, 'large_read_redirect', 'C:\\Projects\\real-project\\src\\index.ts size=112648', '2.9.20') // a genuine project path, must survive
+      insert.run(windowTs, 'indexed_cat_deny', '/home/zelys/real-project/src/foo.py', '2.9.20') // contains "real" but not the /fake/ shape, must survive
 
       pruneTestIsolationLeakRows(db)
 
       const remaining = db.prepare(`SELECT detail FROM stats ORDER BY id`).all() as Array<{ detail: string }>
-      expect(remaining.map((r) => r.detail)).toEqual(['C:\\Projects\\real-project\\src\\index.ts size=112648', '/home/zelys/real-project/src/foo.py'])
+      expect(remaining.map((r) => r.detail)).toEqual([
+        'C:\\Users\\zelys\\pytest-of-zelys\\real-read.log',
+        '/fake/src/bar.py',
+        'C:\\Projects\\real-project\\src\\index.ts size=112648',
+        '/home/zelys/real-project/src/foo.py',
+      ])
       db.close()
     })
 
     it('running twice deletes nothing further (idempotent)', () => {
       const dbPath = path.join(tempDir, 'prune-leak-idempotent-test.db')
       const db = openStatsDb(dbPath)
-      const now = Math.floor(Date.now() / 1000)
-      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'session_hint_suppressed', 0, 0, '/fake/src/foo.py')`).run(now)
-      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'large_read_redirect', 0, 0, 'C:\\Projects\\real-project\\src\\index.ts')`).run(now)
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'session_hint_suppressed', 0, 0, '/fake/src/foo.py')`).run(windowTs)
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, tg_version) VALUES (?, 'large_read_redirect', 0, 0, 'C:\\Projects\\real-project\\src\\index.ts', '2.9.20')`).run(windowTs)
 
       pruneTestIsolationLeakRows(db)
       pruneTestIsolationLeakRows(db)
@@ -950,6 +962,33 @@ describe('stats', () => {
       const remaining = db.prepare(`SELECT COUNT(*) as c FROM stats`).get() as { c: number }
       expect(remaining.c).toBe(1)
       db.close()
+    })
+  })
+
+  // A per-process open (getGlobalDb via migrateGlobalSchema, which every hook invocation runs
+  // exactly once since each is its own process) must never run this DELETE -- it used to, making
+  // an unindexed-by-detail full scan of the whole stats table part of the hot path with no
+  // further effect once the leak was gone. Only the throttled maintenance pass (recordStat ->
+  // maybeRunStatsMaintenance, the same gate rollupAndPruneStats and pruneHintEmissions share)
+  // should ever run it.
+  describe('pruneTestIsolationLeakRows wiring (throttled maintenance only, never per-process schema setup)', () => {
+    it('a fresh per-process db open leaves a leak-shaped row alone; the throttled maintenance pass removes it', () => {
+      const db = getDb(globalDbPath())
+      db.exec(GLOBAL_SCHEMA_SQL) // idempotent: same DDL production's getGlobalDb() applies
+      db.prepare('DELETE FROM stats').run()
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'session_hint_suppressed', 0, 0, '/fake/src/foo.py')`).run(windowTs)
+
+      summarize() // real entry point for a per-process open: summarize -> getGlobalDb -> migrateGlobalSchema, no maintenance call
+
+      const afterOpen = db.prepare(`SELECT COUNT(*) as c FROM stats`).get() as { c: number }
+      expect(afterOpen.c, 'per-process schema setup must not delete the leak row').toBe(1)
+
+      db.prepare('DELETE FROM stats_maintenance').run() // force maybeRunStatsMaintenance to run on the next recordStat below
+      recordStat('read_replacement', 0, 0) // real entry point: recordStat -> maybeRunStatsMaintenance -> pruneTestIsolationLeakRows
+
+      const afterMaintenance = db.prepare(`SELECT COUNT(*) as c FROM stats WHERE detail = '/fake/src/foo.py'`).get() as { c: number }
+      expect(afterMaintenance.c, 'the throttled maintenance pass must delete the leak row').toBe(0)
+      closeAllDbs()
     })
   })
 })

@@ -513,17 +513,22 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
   }
-  pruneTestIsolationLeakRows(db)
 }
 
+// The exact ts range (epoch seconds) a live install measured for the 2026-06-03..06-22 test-isolation leak below -- see pruneTestIsolationLeakRows's doc comment. Bounding the DELETE to this window lets it use the existing index on stats(ts) instead of a full-table LIKE scan, and keeps a real user's own pytest-tempdir or fake/-named path (both are legal content a real session can produce) safe outside it.
+const TEST_ISOLATION_LEAK_WINDOW_START_TS = 1780406895
+const TEST_ISOLATION_LEAK_WINDOW_END_TS = 1782119331
+
 /**
- * One-time (but idempotent on every call, since the DELETE simply matches nothing once run) cleanup for `stats` rows written by a Python test harness that, before constants.ts's `homeFallbackOrGuard` started refusing to resolve `DATA_DIR` against the real home directory inside a test worker, resolved the real `LOCALAPPDATA`/`global.db` anyway and wrote against it. A live install measured ~6,472 such rows dated 2026-06-03 through 06-22, in `detail` shapes only a test harness produces: a pytest temp directory (`...pytest-of-<user>\pytest-<N>\...`, from `image_shrink`/`large_read_redirect` rows) or the literal synthetic path `/fake/...` (from `hint_backoff_suppressed`/`session_hint_suppressed`/`indexed_cat_deny`/`indexed_cat_advisory` rows). Neither shape is a path a real project can produce -- `pytest-of-` is pytest's own tempdir naming scheme and `/fake/` is a fixture literal with no real filesystem root -- so this can never remove a genuine event. Left unpruned, these rows inflate every report reading `stats.detail`/`stats` totals (`token-goat stats`, `checkCompactionChannel`'s `compact_summary` scan, etc.) with fabricated activity that was never a real session.
+ * One-time (but idempotent on every call, since the DELETE simply matches nothing once run) cleanup for `stats` rows written by a Python test harness that, before constants.ts's `homeFallbackOrGuard` started refusing to resolve `DATA_DIR` against the real home directory inside a test worker, resolved the real `LOCALAPPDATA`/`global.db` anyway and wrote against it. A live install measured ~6,472 such rows dated 2026-06-03 through 06-22, in `detail` shapes a real session can also produce: a pytest temp directory (`...pytest-of-<user>\pytest-<N>\...`, from `image_shrink`/`large_read_redirect` rows, which a real session touches when reading pytest's own output) or a path containing `/fake/` (from `hint_backoff_suppressed`/`session_hint_suppressed`/`indexed_cat_deny`/`indexed_cat_advisory` rows, which a real project can legitimately have as a directory name). The shape alone is too broad to key a DELETE on, so this narrows to the leak's actual fingerprint: every leaked row has `tg_version IS NULL` (a real row from any release after `tg_version` shipped always carries one) and falls inside the measured `ts` window above, and a real row can only coincidentally match the shape, never both the shape and the fingerprint. Called only from the throttled `maybeRunStatsMaintenance` pass, never from per-process schema setup, since every hook invocation is its own process and an unindexed-by-detail DELETE on every call would take a write lock on the hot path for no further effect once the leak is gone.
  */
 export function pruneTestIsolationLeakRows(db: SqliteDatabase): void {
   try {
-    db.prepare(`DELETE FROM stats WHERE detail LIKE '%pytest-of-%' OR detail LIKE '%/fake/%'`).run()
+    db.prepare(
+      `DELETE FROM stats WHERE tg_version IS NULL AND ts BETWEEN ? AND ? AND (detail LIKE '%pytest-of-%' OR detail LIKE '%/fake/%')`,
+    ).run(TEST_ISOLATION_LEAK_WINDOW_START_TS, TEST_ISOLATION_LEAK_WINDOW_END_TS)
   } catch {
-    // Fail-soft: never block schema migration on a cleanup pass (same pattern as the ALTER TABLE steps above).
+    // Fail-soft: never block stats maintenance on a cleanup pass (same pattern as pruneHintEmissions below).
   }
 }
 
@@ -677,6 +682,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
     ).run(now)
     rollupAndPruneStats(db)
     pruneHintEmissions(db)
+    pruneTestIsolationLeakRows(db)
   } catch {
     // Fail-soft: see doc comment above.
   }
