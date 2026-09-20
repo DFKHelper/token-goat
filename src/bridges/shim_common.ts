@@ -117,3 +117,13 @@ function isAsyncDetachEligible(eventName, input) {
     return false
   }
 }`
+
+/** Claude Code only: a `pre_tool_use` Bash call that is token-goat's own CLI has nothing for the pre-hook pipeline to say -- none of preBashHandlerInner's file-read/build/search extractors match a `token-goat` invocation, so it always falls through to `passOutput()` (measured: 2,899 such calls since Sep 6, 16 emitted anything -- 0.55%, mostly the generic unbalanced-quoting warning, which this bypass forfeits on the rare malformed one in exchange for skipping the bundle import on the other 99.45%). `CD_PREFIX_RE` mirrors `stripCdPrefix` in hooks_bash_commands.ts so a leading `cd ... &&` is stripped the same way before classifying. The chain-operator check is deliberately coarse -- reject on any of `; & | \`` or `$(` appearing anywhere, not just unquoted, the way `detectFromCommand`'s `hasUnquotedOperator` does -- because a false negative here only costs a missed bypass, while a false positive would skip real handling for a compound command that merely contains a token-goat call among others. */
+export const SHIM_OWN_COMMAND_BYPASS = `const TG_CD_PREFIX_RE = /^(?:cd\\s+(?:"[^"]*"|'[^']*'|\\S+)[ \\t]*(?:&&|;|\\r?\\n)\\s*)+/
+const TG_OWN_COMMAND_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\\S+\\s+)*(?:token-goat\\b|node(?:\\.exe)?\\s+["']?(?:\\S*[\\\\/])?token-goat(?:\\.mjs)?["']?\\b)/i
+function isOwnTokenGoatCommand(cmd) {
+  if (typeof cmd !== 'string' || cmd.trim() === '') return false
+  const body = (cmd.replace(TG_CD_PREFIX_RE, '') || cmd).trim()
+  if (/[;&|\`]|\\$\\(/.test(body)) return false
+  return TG_OWN_COMMAND_RE.test(body)
+}`
