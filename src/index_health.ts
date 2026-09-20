@@ -75,27 +75,32 @@ export function getEmbeddingCoverage(dbPath: string, rootDir?: string): { indexe
  *
  * A NULL or empty `parser_sha` is a row written before the column existed and counts as stale, which is what every gate already does with it.
  *
+ * `expectedFor` resolves a row's stored language to the stamp a current parse of that language would have written, the same way every per-file gate does -- the digest is per-language, so there is no single value to compare against in SQL. Counting is grouped by (language, parser_sha), which is a handful of rows however large the index is, rather than by reading every row.
+ *
  * Throws on a DB error, matching the two above -- callers own their own fallback.
  */
 export function getParserFreshness(
   dbPath: string,
-  parserSha: string,
+  expectedFor: (language: string) => string,
   rootDir?: string,
 ): { indexedFiles: number; currentFiles: number } {
   const db = getDb(dbPath)
-  const count = (extra: string, params: unknown[]): number => {
-    if (rootDir === undefined) {
-      return (db.prepare(`SELECT COUNT(*) as c FROM files${extra === '' ? '' : ` WHERE ${extra}`}`).get(...params) as {
-        c: number
-      }).c
-    }
-    const scope = projectScopeClause('path')
-    const where = extra === '' ? scope.clause : `${scope.clause} AND ${extra}`
-    return (db.prepare(`SELECT COUNT(*) as c FROM files WHERE ${where}`).get(...scope.params(rootDir), ...params) as {
-      c: number
-    }).c
+  const scope = rootDir === undefined ? undefined : projectScopeClause('path')
+  const rows = db
+    .prepare(`SELECT language, parser_sha, COUNT(*) as c FROM files${scope === undefined ? '' : ` WHERE ${scope.clause}`} GROUP BY language, parser_sha`)
+    .all(...(scope === undefined || rootDir === undefined ? [] : scope.params(rootDir))) as {
+    language: string | null
+    parser_sha: string | null
+    c: number
+  }[]
+  let indexedFiles = 0
+  let currentFiles = 0
+  for (const row of rows) {
+    indexedFiles += row.c
+    // `?? 'unknown'` matches how getFileEntry reads the same column, so the two resolve a language-less row to the same stamp.
+    if (row.parser_sha !== null && row.parser_sha === expectedFor(row.language ?? 'unknown')) currentFiles += row.c
   }
-  return { indexedFiles: count('', []), currentFiles: count('parser_sha = ?', [parserSha]) }
+  return { indexedFiles, currentFiles }
 }
 
 /**

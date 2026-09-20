@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors } from './parser.js'
-import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
+import { parserFingerprintForLanguage } from './parser_types.js'
 import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath, displaySafeText } from './paths.js'
@@ -523,10 +523,10 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
       if (depsAvailable) ensureEmbeddingProvenance(getDb(dbPath))
       const entry = getFileEntry(absPath, dbPath)
-      // Skip the syntactic reparse when content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. ...and not when the row's own spelling has gone stale under a case-only rename, which leaves the content identical and would otherwise pin the old spelling in place forever. See indexedPathSpellingIsStale. ...and not when the rows were written by a different version of the extraction logic. files.sha answers "has the content changed", which is only half the question: a parser change alters what gets extracted from content that never moved, and before parser_sha existed those files kept their old symbol set for as long as nobody edited them. Measured on a real index, 37 of 237 source files disagreed with what the same binary produced from scratch. An empty parserSha is a row written before the column existed and is correctly stale. See PARSER_FINGERPRINT.
+      // Skip the syntactic reparse when content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. ...and not when the row's own spelling has gone stale under a case-only rename, which leaves the content identical and would otherwise pin the old spelling in place forever. See indexedPathSpellingIsStale. ...and not when the rows were written by a different version of the extraction logic. files.sha answers "has the content changed", which is only half the question: a parser change alters what gets extracted from content that never moved, and before parser_sha existed those files kept their old symbol set for as long as nobody edited them. Measured on a real index, 37 of 237 source files disagreed with what the same binary produced from scratch. An empty parserSha is a row written before the column existed and is correctly stale. The expected stamp is the one for the language the row itself records, so a fix to one adapter reparses that language's files and leaves every other language's rows alone. See parserFingerprintForLanguage.
       const parseUnchanged =
         entry?.sha === sha &&
-        entry.parserSha === PARSER_FINGERPRINT &&
+        entry.parserSha === parserFingerprintForLanguage(entry.language) &&
         !indexedPathSpellingIsStale(entry.filePath, absPath)
       if (!parseUnchanged) {
         indexFileSync(absPath, dbPath)

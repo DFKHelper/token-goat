@@ -203,8 +203,9 @@ describe('every files-table write site is classified for embed_sha handling (rep
       `writeParseResult's INSERT statement no longer names embed_sha as a column: "${site!.sql}"`,
     ).toBe(true)
     const src = fs.readFileSync(path.join(SRC_DIR, 'parser.ts'), 'utf8')
+    // One level of nesting is allowed inside the argument list: the parser fingerprint argument beside it is itself a call, parserFingerprintForLanguage(result.language), and a `[^)]*` run stops at its closing paren and reports the carry-forward missing when it is right there.
     expect(
-      /\.run\([^)]*embedShaToCarry/.test(src),
+      /\.run\((?:[^()]|\([^()]*\))*embedShaToCarry/.test(src),
       'writeParseResult defines embedShaToCarry but no .run(...) call in parser.ts passes it as a bound parameter -- it is computed and then dropped on the floor.',
     ).toBe(true)
   })

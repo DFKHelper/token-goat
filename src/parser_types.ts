@@ -15,6 +15,7 @@ import * as path from 'node:path'
 
 import { isAblSource, isLatexClassFile, isMatlabSource, isObjcHeader, isObjcSource, isPascalSource, isPerlSource, isPrologSource } from './languages/sniff.js'
 import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
+import { LANGUAGE_PARSER_FINGERPRINTS, PARSER_FINGERPRINT } from './parser_fingerprint.js'
 
 /** One extracted definition: function, class, method, type, variable, etc. */
 export interface SymbolEntry {
@@ -184,6 +185,17 @@ export function detectLanguage(filePath: string): Language {
 
   const ext = path.extname(base).toLowerCase()
   return EXTENSION_LANGUAGE.get(ext) ?? 'unknown'
+}
+
+/**
+ * The parser fingerprint a file of `language` must carry in `files.parser_sha` to count as parsed by the extraction logic this build runs. The three freshness gates (cli.ts's cmdIndex, worker.ts's makeIndexer, reconcile.ts's sweep) and the read hook's fold gate all resolve a row's expected stamp through here, and parser.ts writes it.
+ *
+ * Keyed on the id stored in `files.language` rather than on a second resolution of the path. {@link detectLanguage} is path-only and {@link refineLanguageByContent} can move its verdict, so a VB6 `.cls` -- stored, correctly, as `vb` -- would be checked against Apex's digest, and a fix to the VB adapter would leave its rows stale with nothing to say so. The stored column is the language the extractor actually ran as, written by the same INSERT as the stamp itself, so the two cannot disagree.
+ *
+ * A language with no adapter module of its own (the tree-sitter languages, the structured-document formats parser.ts extracts inline), and an unrecognized or missing one, falls back to the shared digest. That is safe in the direction that matters: every decision that maps a path or its content to a language -- {@link detectLanguage}'s tables, {@link CONTENT_SNIFFS}, `languages/sniff.ts` -- is hashed into the shared digest, so a file can only become some adapter's business through a change that moves every stamp anyway.
+ */
+export function parserFingerprintForLanguage(language: string): string {
+  return LANGUAGE_PARSER_FINGERPRINTS.get(language) ?? PARSER_FINGERPRINT
 }
 
 /**

@@ -28,9 +28,8 @@ import { buildEmbeddingBoundaries } from './embedding_boundaries.js'
 import { isEmbeddableDocument, extractEmbeddableDocumentText, isDocumentRefusal, isTransientDocumentRefusal } from './doc_embed_extract.js'
 import { MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { fingerprintContent } from './fingerprint.js'
-import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { pathEqClause } from './sql_path.js'
-import { detectLanguage, refineLanguageByContent, TREE_SITTER_LANGUAGES } from './parser_types.js'
+import { detectLanguage, parserFingerprintForLanguage, refineLanguageByContent, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
 import type { RegexLanguage } from './language_specs.js'
 import type * as RegexAdapters from './languages/registry.js'
@@ -672,10 +671,10 @@ function writeParseResult(
   const writeAll = db.transaction(() => {
     deleteFileRows(db, filePath)
 
-    // parser_sha records WHICH extraction logic produced the symbol and ref rows written just below, so a later parser change can tell that these rows are stale even though the content sha still matches. Without it, files.sha was the only freshness key and answered only "has the content changed", which left an unedited file pinned to the symbol set an older parser gave it for as long as nobody touched it. Stamped here rather than in the gates so it is written by exactly the transaction that writes the rows it describes.
+    // parser_sha records WHICH extraction logic produced the symbol and ref rows written just below, so a later parser change can tell that these rows are stale even though the content sha still matches. Without it, files.sha was the only freshness key and answered only "has the content changed", which left an unedited file pinned to the symbol set an older parser gave it for as long as nobody touched it. Stamped here rather than in the gates so it is written by exactly the transaction that writes the rows it describes -- and derived from the same result.language that goes into the row beside it, so the gates, which look the expected stamp up by that stored column, can never be asking about a different language than the one that actually parsed the file.
     db.prepare(
       'INSERT INTO files (path, sha, mtime, language, indexed_at, parser_sha, embed_sha) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(filePath, sha, mtime, result.language, now, PARSER_FINGERPRINT, embedShaToCarry)
+    ).run(filePath, sha, mtime, result.language, now, parserFingerprintForLanguage(result.language), embedShaToCarry)
 
     const insSym = db.prepare(
       'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent) ' +

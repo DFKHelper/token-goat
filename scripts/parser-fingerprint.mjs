@@ -16,24 +16,28 @@ import { fileURLToPath } from 'node:url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PARSER_OUT = path.join(ROOT, 'src', 'parser_fingerprint.ts')
 const EMBED_OUT = path.join(ROOT, 'src', 'embed_fingerprint.ts')
+const LANGUAGES_DIR = path.join(ROOT, 'src', 'languages')
+
+/** The extraction sources outside src/languages/: the driver plus every module that decides which extractor runs and what it yields, for every language at once. None of these belongs to one language, so a change to any of them moves every file's stamp. */
+const DECISION_SOURCES = [
+  path.join(ROOT, 'src', 'parser.ts'),
+  path.join(ROOT, 'src', 'parser_types.ts'),
+  path.join(ROOT, 'src', 'parser_refs.ts'),
+  path.join(ROOT, 'src', 'parser_treesitter.ts'),
+  path.join(ROOT, 'src', 'parser_structured.ts'),
+  path.join(ROOT, 'src', 'language_specs.ts'),
+  path.join(ROOT, 'src', 'doc_comment.ts'),
+  path.join(ROOT, 'src', 'markdown_lines.ts'),
+  path.join(ROOT, 'src', 'section_reader.ts'),
+  path.join(ROOT, 'src', 'encoding.ts'),
+  path.join(ROOT, 'src', 'constants.ts'),
+  path.join(ROOT, 'src', 'util.ts'),
+]
 
 /** Every source that decides what a parse extracts: the driver, every language adapter, and the modules that pick which extractor runs and what it yields (language/extraction-method detection, tree-sitter node-kind mapping, structured-config extraction, ref extraction, doc comments, and source-encoding decoding, since decodeSource's output is the text every extractor parses). Two grab-bags are in for one export each and cost a reparse on every unrelated edit to them, which is the cheaper half of the trade: constants.ts for SYMBOL_BODY_CHAR_CAP, which bounds every stored symbol body (src/parser.ts's boundSymbolBody and the tree-sitter fan-out elision), and util.ts for countContentLines, which sets line_end for fourteen regex adapters, and escapeRegExp, which builds their patterns. Deliberately excludes: install/bridge/config/db/version/path-identity/env infrastructure that never shapes extracted content, type-only declaration files (erased at compile time), and the document/embedding pipeline (pdf/docx/pptx/xlsx extraction, OCR, chunking, dotenv redaction for embeddings) because that output is gated by files.embed_sha, a freshness key this fingerprint does not feed -- see embedFingerprintSources() below and tests/guards/parser_fingerprint_covers_extraction_sources.test.ts for the exhaustive classification of every other module reachable from parser.ts. */
 export function extractionSources() {
-  const files = [
-    path.join(ROOT, 'src', 'parser.ts'),
-    path.join(ROOT, 'src', 'parser_types.ts'),
-    path.join(ROOT, 'src', 'parser_refs.ts'),
-    path.join(ROOT, 'src', 'parser_treesitter.ts'),
-    path.join(ROOT, 'src', 'parser_structured.ts'),
-    path.join(ROOT, 'src', 'language_specs.ts'),
-    path.join(ROOT, 'src', 'doc_comment.ts'),
-    path.join(ROOT, 'src', 'markdown_lines.ts'),
-    path.join(ROOT, 'src', 'section_reader.ts'),
-    path.join(ROOT, 'src', 'encoding.ts'),
-    path.join(ROOT, 'src', 'constants.ts'),
-    path.join(ROOT, 'src', 'util.ts'),
-  ]
-  const dir = path.join(ROOT, 'src', 'languages')
+  const files = [...DECISION_SOURCES]
+  const dir = LANGUAGES_DIR
   const walk = (d) => {
     for (const entry of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const full = path.join(d, entry.name)
@@ -43,6 +47,125 @@ export function extractionSources() {
   }
   walk(dir)
   return files.sort()
+}
+
+function readSource(file) {
+  return fs.readFileSync(file, 'utf8').split('\r\n').join('\n')
+}
+
+/** Every `from './x.js'` specifier in `file` that resolves to a src/languages/ module, as absolute .ts paths. Relative specifiers pointing out of the directory (`'../parser_types.js'`) resolve to nothing here, which is right: those modules are already decision sources. */
+function localImportsOf(file) {
+  const out = []
+  for (const m of readSource(file).matchAll(/from '(\.[^']*)\.js'/g)) {
+    const resolved = path.resolve(path.dirname(file), `${m[1]}.ts`)
+    if (resolved.startsWith(`${LANGUAGES_DIR}${path.sep}`) && fs.existsSync(resolved)) out.push(resolved)
+  }
+  return out
+}
+
+/** The two src/languages/ modules that name every adapter by construction -- the dispatch table and the re-export barrel. Both are shared (nothing one language owns), but their import edges are followed only when the walk starts inside ADAPTER_EXTRACTORS: expanding them from the shared side would drag the whole directory into the shared digest and put the stamp straight back to one global value. */
+const HUB_MODULES = [path.join(LANGUAGES_DIR, 'registry.ts'), path.join(LANGUAGES_DIR, 'index.ts')]
+
+/** `seeds` plus everything they import, transitively, within src/languages/. An extractor's reach is what decides whether an edit under that directory can change what it produces, so the closure -- not the one module named at the call site -- is what a language owns. `stopAt` members are included but not expanded. */
+function closureOf(seeds, stopAt = []) {
+  const seen = new Set()
+  const queue = [...seeds]
+  while (queue.length > 0) {
+    const file = queue.pop()
+    if (seen.has(file)) continue
+    seen.add(file)
+    if (!stopAt.includes(file)) queue.push(...localImportsOf(file))
+  }
+  return seen
+}
+
+/** Imported identifier -> the src/languages/ module it came from, for one module's own import statements. Aliased and `type`-only specifiers included: an identifier that turns out to be neither reachable nor used costs an entry nobody looks up. */
+function importedIdentifierModules(file) {
+  const out = new Map()
+  for (const m of readSource(file).matchAll(/import (?:type )?\{([^}]*)\} from '(\.[^']*)\.js'/g)) {
+    const resolved = path.resolve(path.dirname(file), `${m[2]}.ts`)
+    if (!resolved.startsWith(`${LANGUAGES_DIR}${path.sep}`) || !fs.existsSync(resolved)) continue
+    for (const spec of m[1].split(',')) {
+      const name = spec.trim().replace(/^type /, '').split(/ as /).pop()?.trim()
+      if (name !== undefined && name !== '') out.set(name, resolved)
+    }
+  }
+  return out
+}
+
+/** `[language, valueText]` for each top-level property of an object literal declared as `name`, scanned with string and comment awareness so a brace inside a string or a comma inside a nested call does not split an entry. Throws rather than guessing when the literal cannot be found: a silently empty result would attribute every adapter to nobody and quietly widen every digest back to today's global one. */
+function objectLiteralEntries(text, name) {
+  const declared = text.indexOf(`export const ${name}`)
+  if (declared === -1) throw new Error(`${name} not found`)
+  const open = text.indexOf('{', text.indexOf('=', declared))
+  const entries = []
+  let depth = 0
+  let start = open + 1
+  for (let i = open; i < text.length; i++) {
+    const c = text[i]
+    if (c === "'" || c === '"' || c === '`') {
+      for (i++; i < text.length && text[i] !== c; i++) if (text[i] === '\\') i++
+      continue
+    }
+    if (c === '/' && text[i + 1] === '/') {
+      i = text.indexOf('\n', i)
+      continue
+    }
+    if (c === '/' && text[i + 1] === '*') {
+      i = text.indexOf('*/', i) + 1
+      continue
+    }
+    if (c === '{' || c === '(' || c === '[') depth++
+    else if (c === '}' || c === ')' || c === ']') {
+      depth--
+      if (depth === 0) {
+        entries.push(text.slice(start, i))
+        return entries.map(splitProperty).filter((e) => e !== null)
+      }
+    } else if (c === ',' && depth === 1) {
+      entries.push(text.slice(start, i))
+      start = i + 1
+    }
+  }
+  throw new Error(`${name} object literal is unterminated`)
+}
+
+function splitProperty(chunk) {
+  const body = chunk.replace(/^(\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*/, '')
+  const colon = body.indexOf(':')
+  if (colon === -1) return null
+  const key = body.slice(0, colon).trim().replace(/^'|'$/g, '')
+  return /^\w+$/.test(key) ? [key, body.slice(colon + 1)] : null
+}
+
+/** Every `language: extractor` property of ADAPTER_EXTRACTORS, as read out of src/languages/registry.ts. Exported so a test can check the keys this parse found against the keys the compiled object really has: a split that silently dropped an entry would attribute that adapter to nobody and widen its language's digest back to the shared one, which is invisible in the generated file. */
+export function adapterDispatchEntries() {
+  return objectLiteralEntries(readSource(path.join(LANGUAGES_DIR, 'registry.ts')), 'ADAPTER_EXTRACTORS')
+}
+
+/** Which src/languages/ modules exactly one language's extractor can reach, keyed by the id stored in `files.language`. Derived from ADAPTER_EXTRACTORS in src/languages/registry.ts -- the table the parser actually dispatches through -- rather than from a second hand-written mapping, because a stamp that attributes a file differently from the parser that indexed it is how a row keeps stale symbols with nothing to signal it. Three kinds of module are deliberately left out and fall to sharedExtractionSources() instead: one two or more extractors reach (common.ts, shader.ts, templates_idx.ts), one no extractor reaches (registry.ts's own dispatch table, index.ts), and one a decision source imports directly -- sniff.ts is the load-bearing case, since parser_types.ts's refineLanguageByContent calls it to decide whether a .cls is Apex, VB6 or ABL, so an edit there changes which adapter parses a file already stamped for another. Over-invalidating costs a reparse; under-invalidating leaves wrong symbols in the index indefinitely, which is the failure files.parser_sha exists to close. */
+export function languageExtractionSources() {
+  const registry = path.join(LANGUAGES_DIR, 'registry.ts')
+  const identifierModules = importedIdentifierModules(registry)
+  const reach = new Map()
+  for (const [language, value] of adapterDispatchEntries()) {
+    const seeds = [...value.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => identifierModules.get(m[0])).filter((m) => m !== undefined)
+    for (const file of closureOf(seeds)) reach.set(file, (reach.get(file) ?? new Set()).add(language))
+  }
+  const sharedReach = closureOf(DECISION_SOURCES.flatMap((f) => localImportsOf(f)), HUB_MODULES)
+  const owned = new Map()
+  for (const [file, languages] of [...reach].sort()) {
+    if (languages.size !== 1 || sharedReach.has(file)) continue
+    const language = [...languages][0]
+    owned.set(language, [...(owned.get(language) ?? []), file])
+  }
+  return new Map([...owned].sort())
+}
+
+/** The extraction sources no single language owns: {@link DECISION_SOURCES} plus every src/languages/ module {@link languageExtractionSources} left unattributed. This is what PARSER_FINGERPRINT digests, so it is also the stamp a file gets when its language has no adapter of its own -- tree-sitter languages, the structured-document formats parser.ts extracts inline, and `unknown`. */
+export function sharedExtractionSources() {
+  const owned = new Set([...languageExtractionSources().values()].flat())
+  return extractionSources().filter((f) => !owned.has(f))
 }
 
 /** Every source that decides how a file's bytes become embedding chunk text and chunk boundaries: the chunker and search/rerank driver (embeddings.ts), the module that turns already-written symbol/heading rows into chunk boundaries (embedding_boundaries.ts, split out of parser.ts precisely so this fingerprint can hash it without dragging in parse-only code), the dispatcher and every format-specific extractor for binary documents (doc_embed_extract.ts and its pdf/docx/pptx/xlsx/xlsx-reader/ooxml/xml readers -- note csv_query.ts is deliberately NOT in this list, since xlsx_extract.ts's embedding-path function, allSheetsHeadText, never calls queryCsv; that function is reachable only from the CLI-only xlsx-query surface, so hashing it here would be over-broad rather than under-broad), the markdown fence/heading scanning that decides both markdown section boundaries and where a heading is (markdown_lines.ts, hints/markdown_hints.ts), the raw-bytes-to-string decode indexFileEmbeddings runs before redaction and chunking (encoding.ts), dotenv redaction applied before chunking and the language classifier that gates whether it runs at all (dotenv_redact.ts, and parser_types.ts/language_specs.ts/languages/sniff.ts, since detectLanguage()'s 'env_file'/'markdown' verdicts decide both whether redaction applies and which chunk-boundary branch embedding_boundaries.ts takes), the INI quote-continuation helpers dotenv_redact.ts calls to decide which lines a multi-line secret value spans (languages/ini_idx.ts), the base document-refusal type and the one shared work-clock bound it carries (document_refusal.ts, since raising or lowering that bound changes whether a slow-but-completable document is embedded at all), the tokenizer that truncates chunk text to the model's max sequence length before embedding (embed_tokenizer.ts, since a truncation-point change alters what text actually got embedded even though the stored chunk text itself did not move), index_reader.ts's querySymbols, since it is embedding_boundaries.ts's only source of symbol rows and a bug in the query it builds changes which rows a file's boundaries are drawn from, and sql_path.ts's pathEqClause, since it is the equality rule querySymbols filters on and a changed rule yields different or no boundaries even though querySymbols itself did not move. Also hashed: embed_model.ts, specifically because poolAndNormalize (its mean-pool-and-unit-scale step) is the final vector-shaping code that runs after the model's own hidden-state output, living in this repo rather than in the model weights or the backend -- a bug there changes every stored vector while modelName/revision/backendId stay identical, so provenance alone cannot catch it; zip_bounds.ts, whose two limits (enforced by readOoxmlZip in ooxml_extract.ts) decide whether an oversized docx/pptx/xlsx is refused or extracted, i.e. whether it yields chunk text at all; and lazy_module.ts's createLazyModuleLoader, which gates whether the PDF and OOXML extractors load at all, so an edit there can turn document extraction -- and therefore embedding -- on or off. Every other module reachable from these entry points, plus src/parser.ts (indexFileEmbeddings, the real production driver that dispatches to all of the above), is either hashed here or is already hashed by PARSER_FINGERPRINT -- and embedUnchanged in src/worker.ts and src/cli.ts requires parseUnchanged, so a parse-invalidating edit re-embeds the file too, which is why those parse-side modules do not also need a place in this list. See tests/guards/embed_fingerprint_covers_embedding_sources.test.ts for the exhaustive classification. */
@@ -93,7 +216,13 @@ function computeFingerprintFor(files) {
 }
 
 export function computeFingerprint() {
-  return computeFingerprintFor(extractionSources())
+  return computeFingerprintFor(sharedExtractionSources())
+}
+
+/** Language id -> the digest of that language's own adapter modules together with every shared source, so an edit under src/languages/<lang> moves this one entry and leaves every other language's digest byte-identical. Only languages with a module of their own appear; every other language is stamped with {@link computeFingerprint}'s shared digest. */
+export function computeLanguageFingerprints() {
+  const shared = sharedExtractionSources()
+  return new Map([...languageExtractionSources()].map(([language, files]) => [language, computeFingerprintFor([...shared, ...files].sort())]))
 }
 
 export function computeEmbedFingerprint() {
@@ -110,8 +239,22 @@ function render(name, comment, fingerprint) {
   ].join('\n')
 }
 
+function renderParser(fingerprint, languageFingerprints) {
+  return [
+    render('PARSER_FINGERPRINT', PARSER_COMMENT, fingerprint).trimEnd(),
+    '',
+    LANGUAGE_COMMENT,
+    'export const LANGUAGE_PARSER_FINGERPRINTS: ReadonlyMap<string, string> = new Map([',
+    ...[...languageFingerprints].map(([language, digest]) => `  ['${language}', '${digest}'],`),
+    '])',
+    '',
+  ].join('\n')
+}
+
 const PARSER_COMMENT =
-  "// A digest of the extraction-decision sources returned by extractionSources() in scripts/parser-fingerprint.mjs, stamped into files.parser_sha alongside the content sha every time a file is indexed. The freshness gates treat a mismatch as changed, so an extraction-logic change invalidates already-indexed files whose content never moved. Before this existed those files kept their old symbols indefinitely, because content was the only key."
+  "// A digest of the shared extraction-decision sources returned by sharedExtractionSources() in scripts/parser-fingerprint.mjs -- the driver and every module that decides extraction for all languages at once. It is the stamp files.parser_sha carries for a file whose language has no adapter module of its own (the tree-sitter languages, the structured-document formats parser.ts extracts inline, and 'unknown'), and the fallback for any language missing from LANGUAGE_PARSER_FINGERPRINTS below. The freshness gates treat a mismatch as changed, so an extraction-logic change invalidates already-indexed files whose content never moved. Before this existed those files kept their old symbols indefinitely, because content was the only key."
+const LANGUAGE_COMMENT =
+  "// Per-language digests, each over the shared sources above plus that language's own adapter modules under src/languages/. Keyed by the id stored in files.language, which is what the gates look a stamp up by -- see parserFingerprintForLanguage() in src/parser_types.ts. A fix to one adapter moves one entry here, so only that language's already-indexed files are reparsed; before this was per-language, a Dart adapter fix reparsed every file in every project, including projects holding no Dart at all."
 const EMBED_COMMENT =
   "// A digest of the embedding-decision sources returned by embedFingerprintSources() in scripts/parser-fingerprint.mjs, folded into embeddingProvenance() (src/embeddings.ts) alongside the model name, its pinned revision, and the inference backend. A mismatch in this half alone keeps the stored vectors serving, since the model and runtime still share their space, and marks every embedded file stale so reconcile and `token-goat index` re-embed it. Before this existed, a chunker or document-extractor change left every already-embedded file's vectors built by the old code indefinitely, because content and model identity were the only keys."
 
@@ -123,7 +266,7 @@ const invokedDirectly =
 
 const parserFingerprint = invokedDirectly ? computeFingerprint() : ''
 const embedFingerprint = invokedDirectly ? computeEmbedFingerprint() : ''
-const wantedParser = render('PARSER_FINGERPRINT', PARSER_COMMENT, parserFingerprint)
+const wantedParser = renderParser(parserFingerprint, invokedDirectly ? computeLanguageFingerprints() : new Map())
 const wantedEmbed = render('EMBED_FINGERPRINT', EMBED_COMMENT, embedFingerprint)
 
 function readNormalized(file) {

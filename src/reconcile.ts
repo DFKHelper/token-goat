@@ -17,7 +17,7 @@ import { enqueueDirtyPathsSafe } from './hooks_index.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
-import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
+import { parserFingerprintForLanguage } from './parser_types.js'
 import { getDisplayRoot } from './project.js'
 import { getTrackedFiles } from './repomap.js'
 import { projectScopeClause } from './sql_path.js'
@@ -79,7 +79,7 @@ export interface ReconcileResult {
   removed: string[]
   /** Files whose mtime moved but whose content did not: measured, not estimated. */
   mtimeOnly: number
-  /** Tracked files (a subset of {@link changed}) enqueued purely because their rows carry a `parser_sha` other than {@link PARSER_FINGERPRINT} -- content on disk never moved, but the extractor that produced their symbol/ref rows did. Reported separately from the rest of `changed` because it is the one bucket a content-only diff (`diskSha !== entry.sha`) could never have found on its own. */
+  /** Tracked files (a subset of {@link changed}) enqueued purely because their rows carry a `parser_sha` other than the one a current parse of their own language would write (see {@link parserFingerprintForLanguage}) -- content on disk never moved, but the extractor that produced their symbol/ref rows did. Reported separately from the rest of `changed` because it is the one bucket a content-only diff (`diskSha !== entry.sha`) could never have found on its own. */
   parserStale: number
   /** Tracked files (a subset of {@link changed}) enqueued because they still hold embedding chunks but no `embed_sha`: ensureEmbeddingProvenance clears it after a chunker change while keeping the old vectors serving, so content and parse are both current and only this enqueue gets a file nobody edits re-embedded. */
   embedStale: number
@@ -227,8 +227,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       continue
     }
 
-    // Checked before the mtime shortcut below, and unconditionally: a parser upgrade changes what gets extracted from content that never moved, so the mtime/content diff below -- which only ever compares this file's bytes against themselves -- can never notice it. Without this, a file nobody edits after a parser bump keeps the old parser's rows forever (this is the same failure shape files.parser_sha exists to close on the per-file gates in worker.ts/cli.ts; reconcileProject is the sweep that is supposed to find drift nothing edited, so it is the one place a content-only key silently misses this bucket entirely). An empty parserSha is a row written before the column existed and is correctly stale, same as the per-file gates.
-    if (entry.parserSha !== PARSER_FINGERPRINT) {
+    // Checked before the mtime shortcut below, and unconditionally: a parser upgrade changes what gets extracted from content that never moved, so the mtime/content diff below -- which only ever compares this file's bytes against themselves -- can never notice it. Without this, a file nobody edits after a parser bump keeps the old parser's rows forever (this is the same failure shape files.parser_sha exists to close on the per-file gates in worker.ts/cli.ts; reconcileProject is the sweep that is supposed to find drift nothing edited, so it is the one place a content-only key silently misses this bucket entirely). An empty parserSha is a row written before the column existed and is correctly stale, same as the per-file gates. The expected stamp is the one for the language the row itself records, so a fix to one adapter sweeps that language's files back into the queue and leaves every other language's rows alone.
+    if (entry.parserSha !== parserFingerprintForLanguage(entry.language)) {
       changed.push(file)
       parserStale++
       continue

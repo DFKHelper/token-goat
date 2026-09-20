@@ -11,7 +11,6 @@ import { PACKAGE_NAME } from './version.js'
 import { compareSemver } from './cli_upgrade.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
-import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { loadConfig, readConfigSource, saveConfig, invalidateConfigCache } from './config.js'
 import type { Config } from './config.js'
@@ -27,7 +26,7 @@ import { zedSettingsPath } from './bridges/zed_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
-import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
+import { nonTreeSitterLanguageCount, parserFingerprintForLanguage, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
 import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
@@ -328,7 +327,7 @@ export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorRe
     return { name: 'Parser freshness', status: 'ok', message: 'no database yet' }
   }
   try {
-    const { indexedFiles, currentFiles } = getParserFreshness(dbPath, PARSER_FINGERPRINT, rootDir)
+    const { indexedFiles, currentFiles } = getParserFreshness(dbPath, parserFingerprintForLanguage, rootDir)
     if (indexedFiles === 0) {
       // Already reported by the Symbols check; saying it twice adds nothing.
       return { name: 'Parser freshness', status: 'ok', message: 'no indexed files yet' }

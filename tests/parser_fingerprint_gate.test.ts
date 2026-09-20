@@ -128,24 +128,26 @@ describe('parser fingerprint freshness gate', () => {
     expect(row.parser_sha, 'no backfill: an unknown parser must not be recorded as the current one').toBeNull()
   })
 
-  it('is consulted by both freshness gates, not just the one with behavioural coverage here', () => {
-    // The tests above drive worker.ts's makeIndexer. `token-goat index` has its own copy of the
-    // same gate in cli.ts, and it is the one that printed "Skipped 1 unchanged file(s)" for a file
-    // whose rows were stale. A missing clause there is silent: the command still succeeds, it just
-    // never reparses. Structural, because the alternative is a second full CLI harness for one line.
-    for (const file of ['src/worker.ts', 'src/cli.ts']) {
+  it('is consulted by every freshness gate, not just the one with behavioural coverage here', () => {
+    // The tests above drive worker.ts's makeIndexer. `token-goat index` has its own copy of the same gate in cli.ts, and it is the one that printed "Skipped 1 unchanged file(s)" for a file whose rows were stale. reconcile.ts holds the third, the sweep that is supposed to find drift nothing edited. A missing clause on any of them is silent: the command still succeeds, it just never reparses. All three must also agree on the granularity -- comparing against the per-language stamp rather than one global digest -- or a gate left on the old comparison reparses files the other two spared. Structural, because the alternative is a second full CLI harness for one line.
+    for (const file of ['src/worker.ts', 'src/cli.ts', 'src/reconcile.ts']) {
       const text = fs.readFileSync(path.join(process.cwd(), file), 'utf8')
       expect(
-        /parserSha === PARSER_FINGERPRINT/.test(text),
-        `${file} decides parse freshness and must compare parserSha against PARSER_FINGERPRINT, or a parser change stops invalidating anything on that path`,
+        /parserSha [!=]== parserFingerprintForLanguage\(entry\.language\)/.test(text),
+        `${file} decides parse freshness and must compare parserSha against parserFingerprintForLanguage(entry.language), or a parser change stops invalidating anything on that path`,
       ).toBe(true)
+      expect(
+        /parserSha [!=]== PARSER_FINGERPRINT\b/.test(text),
+        `${file} still compares parserSha against the shared digest directly, which reparses every language on a one-adapter change`,
+      ).toBe(false)
     }
   })
 
   it('has a checked-in fingerprint that still matches the extraction sources', () => {
     // The forcing function. Editing src/parser.ts or any language adapter changes what a parse
     // extracts, so it must change the stamped fingerprint too, or the gate above silently stops
-    // invalidating anything. Exit code, not stdout text.
+    // invalidating anything. Exit code, not stdout text. The value-level recompute, including the
+    // per-language map, lives in tests/parser_fingerprint_per_language.test.ts.
     const run = spawnSync(process.execPath, ['scripts/parser-fingerprint.mjs', '--check'], {
       cwd: process.cwd(),
       encoding: 'utf8',
