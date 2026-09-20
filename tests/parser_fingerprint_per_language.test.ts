@@ -164,7 +164,9 @@ describe('per-language parser fingerprint', () => {
         const run = db.prepare('UPDATE files SET parser_sha = ? WHERE path = ?').run(other.get(language), file)
         expect(run.changes, `restamping ${file} must hit its row, or the sweep below is reading stamps nothing moved`).toBe(1)
       }
-      const result = reconcileProject({ cwd: dir, dbPath })
+      // An explicit budget, and an assertion that it was not spent: reconcileProject is wall-clock bounded and returns budgetExhausted with a short `changed` when it runs out, so on a loaded machine the default 1500 ms could truncate this sweep before it reaches widget.dart and red a correct implementation. Raising the budget alone is not enough -- it leaves the assertion below unable to tell "swept everything, only Dart was stale" from "stopped early and happened to see Dart", which is the same shape as a cap that changes a verdict.
+      const result = reconcileProject({ cwd: dir, dbPath, budgetMs: 60_000 })
+      expect(result.budgetExhausted, 'the sweep must examine every tracked file, or the set below is a truncation artefact rather than the gate\'s verdict').toBe(false)
       expect(result.changed.map(normalizePath).sort(), 'only the Dart file may be enqueued for reparse').toEqual([files.dart])
       expect(result.parserStale, 'and it must be enqueued for the parser-stamp reason, not by a content diff').toBe(1)
     } finally {
