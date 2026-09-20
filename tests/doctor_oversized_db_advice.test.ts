@@ -59,4 +59,22 @@ describe('oversizeDbMessage', () => {
     expect(msg.indexOf('embedding vectors')).toBeLessThan(msg.indexOf('symbol bodies'))
     expect(msg).toContain("reclaim-index --rebuild")
   })
+
+  // HAND-DERIVED: project roots and file counts are constructed by this test, not read off the message's own formatter.
+  it('names top project consumers when present', () => {
+    const msg = oversizeDbMessage('/data/global.db', 2250 * MB, 1.3 * MB, 0, [], [
+      { root: '/repos/large-frontend', fileCount: 8400 },
+      { root: '/repos/backend-service', fileCount: 3120 },
+    ])
+    expect(msg).toContain('Top index consumers:')
+    expect(msg).toContain('large-frontend (8400 files)')
+    expect(msg).toContain('backend-service (3120 files)')
+  })
+
+  // Both halves answer different questions -- which table holds the bytes, and which project put them there -- so the merged message must carry both rather than one displacing the other.
+  it('carries the category breakdown and the top consumers in the same message', () => {
+    const msg = oversizeDbMessage('/data/global.db', 2250 * MB, 1.3 * MB, 0, [{ name: 'symbol bodies', bytes: 160 * MB, command: "'token-goat reclaim-index --rebuild' drops and re-derives them" }], [{ root: '/repos/large-frontend', fileCount: 8400 }])
+    expect(msg).toContain('symbol bodies 160 MB')
+    expect(msg).toContain('large-frontend (8400 files)')
+  })
 })

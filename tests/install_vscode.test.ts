@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { copilotHooksOwnersPath, installCopilotCli, isCopilotCliInstalled, readCopilotHooksOwners, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
 import { installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
-import { checkVscodeClaudeHooks, checkVscodeUserScopeHooks } from '../src/cli_doctor.js'
+import { checkVscodeClaudeHooks, checkVscodeProjectMcp, checkVscodeUserScopeHooks } from '../src/cli_doctor.js'
 
 const savedAppData = process.env['APPDATA']
 const savedHome = process.env['HOME']
@@ -55,6 +55,7 @@ describe('VS Code uninstall leaves no residue, and never deletes a file it did n
       expect(fs.existsSync(mcpPath)).toBe(true)
       expect(uninstallVscode({ project: true, projectRoot: project })).toBe(true)
       expect(fs.existsSync(mcpPath), 'uninstall left behind a file holding nothing but an empty servers object').toBe(false)
+      expect(fs.existsSync(path.dirname(mcpPath)), 'uninstall left behind an empty .vscode directory').toBe(false)
     } finally {
       fs.rmSync(project, { recursive: true, force: true })
     }
@@ -73,6 +74,43 @@ describe('VS Code uninstall leaves no residue, and never deletes a file it did n
       // by uninstall having done nothing at all.
       const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>
       expect((after['servers'] as Record<string, unknown> | undefined)?.['token-goat']).toBeUndefined()
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('detects and warns on deprecated project .vscode/mcp.json', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-mcp-warn-'))
+    try {
+      expect(checkVscodeProjectMcp(project)).toBeNull()
+      const vscodeDir = path.join(project, '.vscode')
+      fs.mkdirSync(vscodeDir, { recursive: true })
+      const mcpPath = path.join(vscodeDir, 'mcp.json')
+      fs.writeFileSync(mcpPath, '{"servers": {}}\n')
+      const emptyRes = checkVscodeProjectMcp(project)
+      expect(emptyRes?.status).toBe('warn')
+      expect(emptyRes?.message).toContain('empty residue file')
+
+      fs.writeFileSync(mcpPath, '{"servers": {"other": {"type": "stdio"}}}\n')
+      const populatedRes = checkVscodeProjectMcp(project)
+      expect(populatedRes?.status).toBe('warn')
+      expect(populatedRes?.message).toContain('deprecated by Copilot CLI')
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('stays quiet on a .vscode/mcp.json token-goat itself installed', () => {
+    // `install --vscode -p` writes the managed server into exactly this file, so a healthy
+    // project install must not read back as "deprecated" -- that would tell the user to delete
+    // a file their own install created.
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-mcp-managed-'))
+    try {
+      const vscodeDir = path.join(project, '.vscode')
+      fs.mkdirSync(vscodeDir, { recursive: true })
+      const mcpPath = path.join(vscodeDir, 'mcp.json')
+      fs.writeFileSync(mcpPath, JSON.stringify({ servers: { 'token-goat': { type: 'stdio', command: 'node', args: [path.join('anywhere', 'token-goat.mjs'), 'mcp-serve'] } } }))
+      expect(checkVscodeProjectMcp(project)).toBeNull()
     } finally {
       fs.rmSync(project, { recursive: true, force: true })
     }

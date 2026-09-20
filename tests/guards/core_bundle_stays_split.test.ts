@@ -33,8 +33,10 @@ const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
  * 3.41 MB output; the pre-split monolith was 3.61 MB in one file. The headroom is deliberate --
  * this is a regression trip-wire for the whole bundle collapsing back into the eager set, not a
  * budget to be tuned on every dependency change.
+ *
+ * 8 KB was added when origin/main's doctor work merged in: findTopIndexedProjects, the age window on checkUnmappedTools, checkVscodeProjectMcp and cleanupDeprecatedVscodeProjectMcp, alongside the local oversized-db category breakdown that now ships beside it rather than instead of it. Measured 3,411,459 bytes after the merge against the 3,407,872-byte line, which it missed by 3,587. The remaining 4,605 bytes of headroom are deliberate: this is still the collapse trip-wire, and a ceiling raised to within a few hundred bytes of the measurement turns the next unrelated change into a red guard rather than a decision.
  */
-const MAX_EAGER_BYTES = 3.25 * 1024 * 1024
+const MAX_EAGER_BYTES = 3.25 * 1024 * 1024 + 8 * 1024
 
 /** Chunk filenames the given built file imports with a static `import ... from "./..."`. */
 function staticChunkImports(file: string): string[] {

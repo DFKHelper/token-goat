@@ -609,6 +609,8 @@ export function getGlobalDb(homeDir?: string): SqliteDatabase {
 
 /** Raw `stats` rows older than this are aggregated into `stats_daily_rollup` and deleted -- `stats` accumulates for the life of the install with no size cap of its own (411,208 rows / ~54 MB with indexes measured on one real install), and every actual consumer of raw rows either only needs day/kind/harness/tg_version totals (summarize(), which folds the rollup back in below) or only ever reads the newest few thousand rows by rowid regardless of calendar age (checkCompactionChannel in cli_doctor.ts, COMPACTION_STATS_SCAN_CEILING). `token-goat stats` defaults to --window-days 30; 180 days is 6x that default window, generous headroom for anyone who types a larger --window-days without keeping the table unbounded. Exported so a guard/test can assert against the same number the rollup actually runs with instead of a restated literal. */
 export const STATS_RETENTION_DAYS = 180
+/** How long an unrecognized tool-name row is kept before the rollup prunes it. Longer than doctor's near-miss window (7 days in cli_doctor.ts) so a row doctor has already dismissed as resolved residue is not deleted out from under it mid-report. */
+export const UNMAPPED_TOOL_RETENTION_DAYS = 30
 /** How often the rollup+prune pass (a full aggregate scan) is allowed to run, regardless of how often recordStat() itself fires. */
 const STATS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 
@@ -633,6 +635,12 @@ export function rollupAndPruneStats(db: SqliteDatabase, retentionDays: number = 
            tokens_saved = tokens_saved + excluded.tokens_saved`,
       ).run(cutoff)
       db.prepare(`DELETE FROM stats WHERE ts < ?`).run(cutoff)
+      try {
+        const unmappedCutoff = Math.floor(Date.now() / 1000) - UNMAPPED_TOOL_RETENTION_DAYS * 86400
+        db.prepare(`DELETE FROM unmapped_tools WHERE last_seen < ?`).run(unmappedCutoff)
+      } catch {
+        // Table may not exist yet on pre-migration database
+      }
     })
     run(cutoffTs)
   } catch {

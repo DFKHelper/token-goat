@@ -11,6 +11,7 @@ import * as path from 'node:path'
 
 import { cursorManagedEntry } from './bridges/cursor_install.js'
 import { findStrayClaudeMdBlocks } from './install.js'
+import { hasManagedServer, isResidueServersJson } from './bridges/mcp_servers_json.js'
 import { visualStudioManagedEntry } from './bridges/visualstudio_install.js'
 import { zedManagedEntry } from './bridges/zed_install.js'
 import type { DoctorResult } from './doctor_result.js'
@@ -220,3 +221,33 @@ export function checkStrayClaudeMdBlocks(searchRoot?: string): DoctorResult {
       `(never refreshed by install, never removed by uninstall, will go stale): ${strays.join(', ')}`,
   }
 }
+
+/**
+ * Warn about deprecated or empty `.vscode/mcp.json`.
+ * Copilot CLI v1.0.84+ removed incomplete support for `.vscode/mcp.json` and prints a migration
+ * banner on every CLI startup if this file exists in the workspace.
+ */
+export function checkVscodeProjectMcp(projectRoot: string = process.cwd()): DoctorResult | null {
+  const mcpPath = path.join(path.resolve(projectRoot), '.vscode', 'mcp.json')
+  if (!fs.existsSync(mcpPath)) return null
+  // A file token-goat itself wrote is not residue: `install --vscode -p` puts the managed server here, and checkVisualStudio already reports that same file as healthy. Warning "deprecated" on a healthy install would tell the user to delete a file their own install created.
+  if (hasManagedServer(mcpPath, 'VS Code')) return null
+  try {
+    const content = fs.readFileSync(mcpPath, 'utf8')
+    if (isResidueServersJson(content)) {
+      return {
+        name: 'VS Code project MCP',
+        status: 'warn',
+        message: `empty residue file at ${displaySafeText(mcpPath)} triggers Copilot CLI deprecation warnings; delete it or run 'token-goat uninstall --vscode'`,
+      }
+    }
+    return {
+      name: 'VS Code project MCP',
+      status: 'warn',
+      message: `${displaySafeText(mcpPath)} is deprecated by Copilot CLI v1.0.84+; migrate configured servers to .mcp.json or .github/mcp.json (https://gh.io/copilotcli-mcpmigrate)`,
+    }
+  } catch {
+    return null
+  }
+}
+

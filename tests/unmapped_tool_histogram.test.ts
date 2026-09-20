@@ -128,11 +128,14 @@ describe('doctor reads the histogram', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
+  // A real, recent epoch, not a placeholder: the doctor's retention filter only applies to rows carrying a real timestamp, so a fixture that wants to be seen as live must look like one -- and "live" means inside the 7-day window measured against the wall clock, not a fixed date that ages out.
+  const FIXTURE_EPOCH = Math.floor(Date.now() / 1000) - 3600
+
   function insert(toolName: string, nearMiss: string | null, hits: number, eventName = 'pre_tool_use'): void {
     const db = new Database(dbPath)
     db.prepare(
       'INSERT INTO unmapped_tools (harness, tool_name, event_name, near_miss, first_seen, last_seen, hits) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run('copilot_cli', toolName, eventName, nearMiss, 1, 2, hits)
+    ).run('copilot_cli', toolName, eventName, nearMiss, FIXTURE_EPOCH - 100, FIXTURE_EPOCH, hits)
     db.close()
   }
 
@@ -219,5 +222,35 @@ describe('doctor reads the histogram', () => {
     // The empty-vs-broken distinction: "nothing recorded" and "could not read" must not print the same way, or a genuinely dead detector reads as a passing check.
     expect(checkUnmappedTools(dbPath).status).toBe('ok')
     expect(checkUnmappedTools(dbPath).message).toContain('reached a handler')
+  })
+
+  it('filters out stale near-misses that have not been observed within the retention window', () => {
+    const now = 1790000000
+    const tenDaysAgo = now - 10 * 86400
+    const db = new Database(dbPath)
+    db.prepare(
+      'INSERT INTO unmapped_tools (harness, tool_name, event_name, near_miss, first_seen, last_seen, hits) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('copilot_cli', 'resolved_tool', 'pre_tool_use', 'ResolvedTool', tenDaysAgo - 100, tenDaysAgo, 20)
+    db.close()
+
+    // When evaluated at `now` with default 7-day window, the 10-day-old near-miss is ignored as resolved residue
+    const result = checkUnmappedTools(dbPath, { nowSecs: now, maxAgeDays: 7 })
+    expect(result.status).toBe('ok')
+    expect(result.message).not.toContain('is very likely not being applied')
+  })
+
+  it('still warns for recent near-misses within the retention window', () => {
+    const now = 1790000000
+    const oneDayAgo = now - 1 * 86400
+    const db = new Database(dbPath)
+    db.prepare(
+      'INSERT INTO unmapped_tools (harness, tool_name, event_name, near_miss, first_seen, last_seen, hits) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('copilot_cli', 'active_broken_tool', 'pre_tool_use', 'ActiveBrokenTool', oneDayAgo - 100, oneDayAgo, 5)
+    db.close()
+
+    const result = checkUnmappedTools(dbPath, { nowSecs: now, maxAgeDays: 7 })
+    expect(result.status).toBe('warn')
+    expect(result.message).toContain('"active_broken_tool"')
+    expect(result.message).toContain('"ActiveBrokenTool"')
   })
 })
