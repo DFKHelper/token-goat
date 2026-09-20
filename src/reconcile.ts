@@ -155,7 +155,7 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     lines.push(`${countNoun(result.embedStale, 'file')} of the above ${result.embedStale === 1 ? 'was' : 'were'} unchanged on disk but held out-of-date embeddings (${reembedVerb}).`)
   }
   if (result.trackedUnavailable) {
-    lines.push('This project has an index but git listed no files in it, so nothing could be compared and no deletions were computed. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
+    lines.push('This project has an index but git listed no files in it, so nothing on disk was compared against it and changed or new files could not be found. Files gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
   if (result.budgetExhausted) {
     lines.push(`Stopped at the ${result.elapsedMs}ms budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more drift; deletions were not computed at all, because an unchecked file is indistinguishable from a deleted one. Raise --budget-ms for a complete sweep.`)
@@ -265,10 +265,10 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     changed.push(file)
   }
 
-  // A deletion is inferred from absence, so it is only sound when the enumeration it is measured against actually produced the population being compared. Two ways it does not: a budget-truncated pass never visited some tracked files, and every unvisited one looks indexed-but-gone here; and `getTrackedFiles` returns an empty list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- which is indistinguishable in the numbers from a project whose every file was deleted (measured against a real non-git project with two live files and a populated index: every one of them was reported gone and queued for removal). In both cases an incomplete sweep reports no deletions at all rather than a guess, because enqueueing a live file for removal is the one mistake here that destroys working index rows.
+  // Reported, not gated on: `getTrackedFiles` returns an empty list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- so `changed`/`added` are computed over nothing and the caller must be told. It used to suppress the deletion pass below as well, from when that pass inferred a deletion from absence from `seenOnDisk` and would therefore have called every live file in a non-git project deleted. The pass now stats each row instead, so absence from a failed enumeration cannot reach `removed` at all, and suppressing it only left deleted files sitting in the index of every non-git root forever.
   const trackedUnavailable = tracked.length === 0 && indexed.size > 0
   const removed: string[] = []
-  if (!budgetExhausted && !trackedUnavailable) {
+  if (!budgetExhausted) {
     for (const [folded, entry] of indexed) {
       if (seenOnDisk.has(folded)) continue
       // The loop above costs one map lookup per row; this one costs a disk stat, so it needs the same clock the scan loop has. Read before the stat rather than after it, because a row that is still on disk takes an early exit: a check placed below that exit is reached only on rows that turn out to be deletions, which lets the contents of the index decide whether the bound is consulted at all. A sweep that runs out here reports no deletions and says so, rather than shipping the prefix it happened to reach as though it were the whole answer.

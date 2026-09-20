@@ -4,10 +4,8 @@
  * Every other freshness mechanism in this repo is hook-driven, so it only sees drift that happened during a session token-goat was part of. This one exists for the rest: a pull in another terminal, an IDE save, a codegen step run outside the harness. The failure it guards against is a stale index answering a `semantic`/`symbol`/`refs` query, none of which name a file and so none of which trip the per-file self-heal -- a stale answer there is shaped exactly like a correct one.
  *
  * Two properties matter more than "it detects a change", and both have cases below:
- *  - it must NOT enqueue on a moved mtime alone, because `git checkout` rewrites mtimes wholesale
- *    and a sweep that trusted them would queue the whole repository on every branch switch;
- *  - a budget-truncated sweep must not report deletions, because every file it never got to looks
- *    exactly like one that is indexed and gone.
+ * - it must NOT enqueue on a moved mtime alone, because `git checkout` rewrites mtimes wholesale and a sweep that trusted them would queue the whole repository on every branch switch;
+ * - a budget-truncated sweep must not report deletions, because every file it never got to looks exactly like one that is indexed and gone.
  *
  * Provenance: CAPTURE. Every expectation is measured from a real run of the built bundle against a real indexed temp project. The drift is created by writing to the file on disk directly, which is the same thing an out-of-session editor does, rather than through any token-goat code path.
  */
@@ -209,8 +207,7 @@ describe('reconcile in a directory git cannot enumerate', () => {
     home = mkdtempSync(join(tmpdir(), 'tg-nongit-home-'))
     writeFileSync(join(dir, 'a.ts'), 'export function alpha(): number {\n  return 1\n}\n')
     writeFileSync(join(dir, 'b.ts'), 'export function beta(): number {\n  return 2\n}\n')
-    // --walk, because the ordinary index path enumerates through git too and would leave the
-    // index empty here -- which would make every assertion below pass for the wrong reason.
+    // --walk, because the ordinary index path enumerates through git too and would leave the index empty here -- which would make every assertion below pass for the wrong reason.
     const indexed = runHere(['index', '.', '--walk'])
     expect(indexed.code, 'indexing the non-git fixture failed').toBe(0)
   })
@@ -241,5 +238,17 @@ describe('reconcile in a directory git cannot enumerate', () => {
     expect(r.code).toBe(0)
     expect(r.out, '"Index matches disk" over a sweep that compared nothing is the confident wrong answer').not.toContain('Index matches disk')
     expect(r.out, 'the reason nothing was compared must be stated').toMatch(/git listed no files/)
+  })
+
+  // Runs last: it deletes one of the two fixture files, and every case above needs both of them live. The empty-enumeration state used to suppress the deletion pass outright, so a file deleted from a non-git root kept its index row forever -- found on this machine as rows for files gone from a scratch directory that `token-goat project prune` also leaves behind, since that command's retroactive cleanup targets system-temp paths.
+  it('reports the file that left disk and leaves the one still on disk alone', () => {
+    rmSync(join(dir, 'b.ts'))
+    const r = runHere(['reconcile', '--dry-run', '--json'])
+    const parsed = JSON.parse(r.out) as { removed: string[]; trackedUnavailable: boolean }
+    expect(parsed.trackedUnavailable, 'the fixture must still be the failed-enumeration case, or this proves nothing').toBe(true)
+    // CAPTURE: `removed` carries the path as the index stored it, which for a `--walk` index of `.` is the bare `b.ts` rather than an absolute path -- it is resolved against cwd only on the way into the dirty queue. Reduced to basenames the same way every other case in this file does.
+    const removed = parsed.removed.map((p) => p.replace(/\\/g, '/').split('/').pop())
+    expect(removed, 'a file gone from disk kept its index row').toContain('b.ts')
+    expect(removed, 'a live file was reported as deleted').not.toContain('a.ts')
   })
 })
