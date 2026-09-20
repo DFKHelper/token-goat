@@ -72,9 +72,7 @@ describe('recordStat when the write to global.db itself fails', () => {
     // Applies the stats schema and creates the file before the lock lands, so the lock below is
     // the only thing standing between recordStat and a table that already exists.
     getGlobalDb()
-    // Shortens the busy_timeout on the cached handle recordStat reuses, so the real 15s db.ts
-    // wait (see db.ts's busy_timeout comment) is not what this test sits through.
-    getDb(dbPath).pragma('busy_timeout = 100')
+    // No busy_timeout override needed here: recordStat now writes through its own short-budget connection rather than this cached one (see stats.ts's STATS_WRITE_BUSY_TIMEOUT_MS), so this observes the real shipped behavior directly. tests/stats_write_fails_fast_under_contention.test.ts additionally asserts the elapsed time this test does not.
 
     const blocker = new Database(dbPath)
     blocker.pragma('busy_timeout = 0')
@@ -106,7 +104,6 @@ describe('recordStat when the write to global.db itself fails', () => {
   it('throttles a second failure inside the window and accepts one outside it', () => {
     const dbPath = path.join(_testDataDir, 'global.db')
     getGlobalDb()
-    getDb(dbPath).pragma('busy_timeout = 100')
 
     const blocker = new Database(dbPath)
     blocker.pragma('busy_timeout = 0')

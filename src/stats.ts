@@ -19,6 +19,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { SqliteDatabase } from './sqlite_driver.js'
+import Database from './sqlite_driver.js'
 import { getDb } from './db.js'
 import { dataDir, dataDirForHome } from './constants.js'
 import { VERSION } from './version.js'
@@ -744,6 +745,9 @@ function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDi
   }
 }
 
+// getDb()'s connection to global.db is shared with the indexer and worker and keeps db.ts's 15000ms busy_timeout on purpose (initConnection); recordStat's contract below is the opposite -- a lost stats row is already logged out of band, so the write goes through its own short-budget connection, opened and closed per call, instead of ever waiting out indexing's contention. 200ms is sized against the hook path's own ~65-92ms synchronous cost, not against 15000ms.
+const STATS_WRITE_BUSY_TIMEOUT_MS = 200
+
 export function recordStat(
   kind: string,
   bytesSaved = 0,
@@ -753,8 +757,11 @@ export function recordStat(
   traceparent?: string,
   durationMs?: number,
 ): void {
+  let db: SqliteDatabase | undefined
   try {
-    const db = _testDb ?? getGlobalDb()
+    // getGlobalDb() ensures schema/migrations exist via the shared, patient connection first -- a rare, idempotent bootstrap step left on db.ts's normal budget rather than given a second timeout regime.
+    if (!_testDb) getGlobalDb()
+    db = _testDb ?? new Database(path.join(dataDir(), 'global.db'), { timeout: STATS_WRITE_BUSY_TIMEOUT_MS })
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null
     // Built from whichever optional columns this database actually has rather than one branch per combination: with harness, traceparent, tg_version and duration_ms all optional that would be sixteen arms, and the arm for any un-exercised combination is exactly where a silently-dropped column hides. Column names here are literals, never caller input.
@@ -783,6 +790,14 @@ export function recordStat(
   } catch (e) {
     // Best-effort — never block the hook path. The write is still lost, but recordStatWriteFailure gives it somewhere to land that does not share fate with the database that just refused it.
     recordStatWriteFailure(kind, e)
+  } finally {
+    if (db && !_testDb) {
+      try {
+        db.close()
+      } catch {
+        // Best-effort: nothing else to do with a close failure on our own connection.
+      }
+    }
   }
 }
 
