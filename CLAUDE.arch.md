@@ -53,6 +53,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 |--------|------|
 | [`src/embed_fingerprint.ts`](src/embed_fingerprint.ts) | Exports: `EMBED_FINGERPRINT` |
 | [`src/embed_model.ts`](src/embed_model.ts) | The embedding backend: fetch the pinned model, verify it, run it, pool it. |
+| [`src/embed_stamp.ts`](src/embed_stamp.ts) | Resolves which extraction kind a file's embedding stamp belongs to, and which digest from `embed_fingerprint.ts` that kind carries. |
 | [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts) | A BERT WordPiece tokenizer for exactly the spec `bge-small-en-v1.5`'s `tokenizer.json` declares: BertNormalizer(clean_text, handle_chinese_chars, strip_accents=null, lowercase=true |
 | [`src/embeddings.ts`](src/embeddings.ts) | [`src/embed_model.ts`](src/embed_model.ts) (pinned `Xenova/bge-small-en-v1.5`, 384 dimensions, over `onnxruntime-node`) and [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts); `chunkFile()` splits source into overlapping windows; `upsertChunks()` writes to `chunks` and `chunk_vectors`; `searchSemantic()` queries `chunk_vectors` via vec0 KNN |
 

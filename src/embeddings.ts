@@ -18,7 +18,8 @@ import {
 import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
-import { EMBED_FINGERPRINT } from './embed_fingerprint.js'
+import { EMBED_FINGERPRINT, EMBED_KIND_FINGERPRINTS, PRE_KIND_EMBED_FINGERPRINT } from './embed_fingerprint.js'
+import { embedKindForPath } from './embed_stamp.js'
 import { MAX_SEQUENCE_TOKENS } from './embed_tokenizer.js'
 
 // Re-exported because the model's identity belongs to the module that fetches and verifies it, and because every existing caller and test reads these three from here.
@@ -1057,7 +1058,52 @@ export function resetAllEmbeddings(db: SqliteDatabase, keepVectors = false): num
 /** A stable identifier for the embedding stack in this process: the model, the exact revision of it that was fetched, the inference runtime's major.minor version, and EMBED_FINGERPRINT, a digest of the chunker and document-extraction sources (see embedFingerprintSources() in scripts/parser-fingerprint.mjs). The runtime version is in here because it changes the numbers. Running the same quantized model through two runtime versions produced final vectors 0.9925-0.9978 cosine apart -- both about equally close to the unquantized model, so neither is wrong, but near-ties reorder between them. Major.minor rather than the full version is a judgement call: int8 kernel changes land in minor releases, and keying on the patch would re-embed every project on the machine for a bug fix that cannot plausibly move a number. It errs toward not re-embedding, so a patch release that DID change a kernel would go unnoticed. EMBED_FINGERPRINT is in here because model/revision/backend alone answer "which model produced these numbers" but not "which chunker sliced this file into the text that got embedded" -- without it, a change to chunkFile, buildEmbeddingBoundaries, or a pdf/docx/pptx/xlsx extractor left every already-embedded file's vectors built by the old code indefinitely, since neither embed_sha (content-only) nor the rest of this string moved. */
 export function embeddingProvenance(modelName: string = DEFAULT_MODEL): string {
   const revision = modelName === DEFAULT_MODEL ? PINNED_MODEL_REVISION.slice(0, 12) : 'unpinned'
-  return `${modelName}@${revision}/${backendId()}/embed-${EMBED_FINGERPRINT}`
+  const kinds = [...EMBED_KIND_FINGERPRINTS].map(([kind, digest]) => `+${kind}-${digest}`).join('')
+  return `${modelName}@${revision}/${backendId()}/embed-${EMBED_FINGERPRINT}${kinds}`
+}
+
+/** The chunking half of a provenance stamp, split into the global digest and the per-kind ones. A stamp written before the split carries the global digest alone and no kinds, which is exactly what {@link resetStaleChunking} keys the upgrade path on. */
+function chunkStampsOf(provenance: string): { globalDigest: string; kinds: Map<string, string> } {
+  const at = provenance.lastIndexOf('/embed-')
+  const kinds = new Map<string, string>()
+  if (at === -1) return { globalDigest: '', kinds }
+  const [globalDigest = '', ...kindParts] = provenance.slice(at + '/embed-'.length).split('+')
+  for (const part of kindParts) {
+    const dash = part.lastIndexOf('-')
+    if (dash !== -1) kinds.set(part.slice(0, dash), part.slice(dash + 1))
+  }
+  return { globalDigest, kinds }
+}
+
+/**
+ * Mark stale exactly the already-embedded files a chunking-half move invalidates, keeping their vectors serving until each is re-embedded, and report how many were marked.
+ *
+ * Three outcomes, in the order they are decided. A stamp carrying the pre-split whole-set digest and no kinds is the upgrade into per-kind stamps itself: the only source change between that digest and this build's is the provenance bookkeeping in this file, which produces no chunk text, so every stored vector already agrees with every stamp this build would write and nothing is re-embedded -- an upgrade must not bill 45 minutes of inference for a change whose entire purpose is to stop billing it. A moved global digest means the chunker or a source every kind reaches moved, so every embedded file is marked, as before the split. Otherwise only the kinds whose digests disagree are marked: an edit to pdf_extract.ts can alter a PDF's chunk text and nothing else's.
+ */
+function resetStaleChunking(db: SqliteDatabase, stored: string, current: string): number {
+  const before = chunkStampsOf(stored)
+  const now = chunkStampsOf(current)
+  if (before.kinds.size === 0 && before.globalDigest === PRE_KIND_EMBED_FINGERPRINT) return 0
+  if (before.globalDigest !== now.globalDigest) return resetAllEmbeddings(db, true)
+  const changed = new Set<string>()
+  for (const kind of new Set([...before.kinds.keys(), ...now.kinds.keys()])) {
+    if (before.kinds.get(kind) !== now.kinds.get(kind)) changed.add(kind)
+  }
+  return changed.size === 0 ? 0 : resetEmbeddingsForKinds(db, changed)
+}
+
+/** {@link resetAllEmbeddings} narrowed to the files whose extraction kind is one of `kinds`, resolved from each path the same way the extractors dispatch on it (see embedKindForPath). Vectors are always kept: a kind digest can only move when chunk text moved, never the vector space. */
+function resetEmbeddingsForKinds(db: SqliteDatabase, kinds: ReadonlySet<string>): number {
+  const paths = (db.prepare('SELECT DISTINCT file_path FROM chunks').pluck().all() as string[]).filter((p) => {
+    const kind = embedKindForPath(p)
+    return kind !== null && kinds.has(kind)
+  })
+  const clearEmbedSha = db.prepare(`UPDATE files SET embed_sha = NULL WHERE ${pathEqClause('path')}`)
+  const tx = db.transaction(() => {
+    for (const p of paths) clearEmbedSha.run(foldPath(p))
+  })
+  tx.immediate()
+  return paths.length
 }
 
 /** Which runtime computes the vectors, at which version -- see the note above on why that is the half of the stamp that moves, and why it is keyed to major.minor. `runtimeVersion()` answers 'unknown' if it cannot find the installed package's manifest, and two installs that both fail that read stamp the same string and are then treated as one stack. That is a real hole and a narrow one: reaching it means the runtime loaded from somewhere with no manifest above it, and every caller is already behind {@link isAvailable}, which only passes once it has loaded. */
@@ -1080,7 +1126,7 @@ function vectorSpaceOf(provenance: string): string {
   return at === -1 ? provenance : provenance.slice(0, at)
 }
 
-/** Make sure the vectors already in this database were produced by the stack running right now. When the stored stamp matches there is nothing to do, the overwhelmingly common path. When only the chunking half (EMBED_FINGERPRINT) moved, the stored vectors still live in the same space as the query vectors and are only cut at old chunk boundaries, so they are kept serving while every embedded file is marked stale: reconcileProject enqueues each one for the worker and `token-goat index` re-embeds them all. Discarding them here instead emptied semantic search in every project on the machine at once, and since embeddings.ts is itself a hashed source, any edit to this file did that. When the model, revision or runtime moved, or nothing is stored but chunks exist (vectors that predate this stamp, whose provenance is unknowable -- the upgrade path for any database written by an earlier release), every vector is discarded, because there is no way to tell which rows came from where once they are in the table and a partially-foreign index gives wrong neighbours quietly; the caller is told how to rebuild. With nothing stored and no chunks, a fresh index, the stamp is just recorded. */
+/** Make sure the vectors already in this database were produced by the stack running right now. When the stored stamp matches there is nothing to do, the overwhelmingly common path. When only the chunking half moved, the stored vectors still live in the same space as the query vectors and are only cut at old chunk boundaries, so they are kept serving while the files that move are marked stale: reconcileProject enqueues each one for the worker and `token-goat index` re-embeds them. Which files those are is {@link resetStaleChunking}'s decision -- every embedded file when the global digest moved, only one document format's when a single kind's digest did. Discarding them here instead emptied semantic search in every project on the machine at once, and since embeddings.ts is itself a hashed source, any edit to this file did that. When the model, revision or runtime moved, or nothing is stored but chunks exist (vectors that predate this stamp, whose provenance is unknowable -- the upgrade path for any database written by an earlier release), every vector is discarded, because there is no way to tell which rows came from where once they are in the table and a partially-foreign index gives wrong neighbours quietly; the caller is told how to rebuild. With nothing stored and no chunks, a fresh index, the stamp is just recorded. */
 export function ensureEmbeddingProvenance(
   db: SqliteDatabase,
   modelName: string = DEFAULT_MODEL,
@@ -1095,7 +1141,7 @@ export function ensureEmbeddingProvenance(
   if (stored === current) return
 
   const keepVectors = stored !== undefined && vectorSpaceOf(stored) === vectorSpaceOf(current)
-  const cleared = resetAllEmbeddings(db, keepVectors)
+  const cleared = stored !== undefined && keepVectors ? resetStaleChunking(db, stored, current) : resetAllEmbeddings(db, false)
   db.prepare(
     'INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET provenance = excluded.provenance',
   ).run(current)

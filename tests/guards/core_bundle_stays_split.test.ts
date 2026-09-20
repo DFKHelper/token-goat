@@ -35,8 +35,10 @@ const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
  * budget to be tuned on every dependency change.
  *
  * 8 KB was added when origin/main's doctor work merged in: findTopIndexedProjects, the age window on checkUnmappedTools, checkVscodeProjectMcp and cleanupDeprecatedVscodeProjectMcp, alongside the local oversized-db category breakdown that now ships beside it rather than instead of it. Measured 3,411,459 bytes after the merge against the 3,407,872-byte line, which it missed by 3,587. The remaining 4,605 bytes of headroom are deliberate: this is still the collapse trip-wire, and a ceiling raised to within a few hundred bytes of the measurement turns the next unrelated change into a red guard rather than a decision.
+ *
+ * 4 KB more was added by the per-kind embedding stamp: src/embed_stamp.ts (which extraction kind a path belongs to) plus the kind-scoped reset in src/embeddings.ts and the generated per-kind digest map, all of them on the already-eager embedding path. Measured 3,416,952 bytes against the 3,416,064-byte line, which it missed by 888. The remaining 3,208 bytes of headroom are deliberate, for the same reason the paragraph above gives: the line moves by a measured amount when a feature lands on the eager path, never to whatever the current build happens to weigh.
  */
-const MAX_EAGER_BYTES = 3.25 * 1024 * 1024 + 8 * 1024
+const MAX_EAGER_BYTES = 3.25 * 1024 * 1024 + 12 * 1024
 
 /** Chunk filenames the given built file imports with a static `import ... from "./..."`. */
 function staticChunkImports(file: string): string[] {

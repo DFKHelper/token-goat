@@ -59,6 +59,7 @@ const NOT_EMBEDDING: Record<string, string> = {
   'src/csv_query.ts': 'queryCsv (its only export xlsx_extract.ts uses) is called only by querySheet, a CLI-only xlsx-query surface; the embedding extraction function xlsx_extract.ts actually feeds into indexFileEmbeddings, allSheetsHeadText, never calls into this file -- hashing it would be over-broad, not under-broad, so it is exempted rather than hashed',
   'src/db.ts': 'database connection/schema infrastructure; excluded per this fingerprint\'s own design, same as src/paths.ts and src/version.ts',
   'src/embed_fingerprint.ts': 'the generated digest constant itself; hashing it into its own digest is self-referential',
+  'src/embed_stamp.ts': 'resolves which EMBED_FINGERPRINT digest an already-embedded row should carry and which extraction kind a path belongs to -- a files.embed_sha bookkeeping concern, read only by ensureEmbeddingProvenance to scope a re-embed; it produces no chunk text and no boundary, and it lives outside embeddings.ts precisely so a stamp-lookup edit does not re-embed every file on the machine',
   'src/env.ts': 'generic env-var parsing helpers that feed runtime config values, same reasoning as src/config.ts',
   'src/fingerprint.ts': 'computes files.sha (content identity) via a generic SHA-256 utility, orthogonal to what gets chunked from that content',
   'src/injection_scan.ts': 'untrusted-content fencing for CLI/hook output display, reached via paths.ts, never applied to chunk text before embedding',
@@ -96,10 +97,7 @@ describe('the embed fingerprint covers every source that decides embedding chunk
   it('classifies every closure member as hashed by embedFingerprintSources(), transitively covered by PARSER_FINGERPRINT, or explicitly exempted with a reason', () => {
     const { closure } = importClosureOf(ENTRY_POINTS)
     const hashed = new Set(embedFingerprintSources().map((f: string) => path.relative(ROOT, f).split(path.sep).join('/')))
-    // A file PARSER_FINGERPRINT already hashes forces a reparse on any change, and embedUnchanged
-    // requires parseUnchanged (src/worker.ts:698, src/cli.ts:342) before it will even consider a
-    // file embed-fresh -- so a parse-invalidating edit to one of these already re-embeds the file
-    // too, transitively, with no separate entry in embedFingerprintSources() needed.
+    // A file PARSER_FINGERPRINT already hashes forces a reparse on any change, and embedUnchanged requires parseUnchanged (src/worker.ts:698, src/cli.ts:342) before it will even consider a file embed-fresh -- so a parse-invalidating edit to one of these already re-embeds the file too, transitively, with no separate entry in embedFingerprintSources() needed.
     const parserHashed = new Set(extractionSources().map((f: string) => path.relative(ROOT, f).split(path.sep).join('/')))
 
     const unclassified: string[] = []

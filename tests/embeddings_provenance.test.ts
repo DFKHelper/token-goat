@@ -62,23 +62,19 @@ describe('embeddingProvenance()', () => {
   it('names the model, its pinned revision, the backend, and the embedding fingerprint, so a change to any one is visible', () => {
     const provenance = embeddingProvenance()
     expect(provenance).toContain(DEFAULT_MODEL)
-    // The pinned revision, abbreviated. Its presence is the point: bumping PINNED_MODEL_REVISION
-    // has to change this string, or a re-pinned model would silently mix with the old one.
+    // The pinned revision, abbreviated. Its presence is the point: bumping PINNED_MODEL_REVISION has to change this string, or a re-pinned model would silently mix with the old one.
     expect(provenance).toMatch(/@[0-9a-f]{12}\//)
-    // Major.minor and no patch, deliberately: int8 kernel changes land in minor releases, so those
-    // must invalidate, while a patch that cannot move a number must not re-embed every project on
-    // the machine. Not `$`-anchored here since EMBED_FINGERPRINT (a chunker/extractor identity,
-    // covered by the dedicated test below) now follows it in the string.
+    // Major.minor and no patch, deliberately: int8 kernel changes land in minor releases, so those must invalidate, while a patch that cannot move a number must not re-embed every project on the machine. Not `$`-anchored here since EMBED_FINGERPRINT (a chunker/extractor identity, covered by the dedicated test below) now follows it in the string.
     expect(provenance).toMatch(/\/onnxruntime-node@\d+\.\d+\//)
-    // EMBED_FINGERPRINT names which chunker/extractor stack produced the chunk text, so a change to
-    // chunkFile or a document extractor is visible here even when the model/revision/backend do not
-    // move. The `$` is what pins that this is the last, not merely present, segment.
-    expect(provenance).toMatch(/\/embed-[0-9a-f]{16}$/)
+    // EMBED_FINGERPRINT names which chunker/extractor stack produced the chunk text, so a change to chunkFile or a document extractor is visible here even when the model/revision/backend do not move. The `$` is what pins that this is the last, not merely present, segment. The global digest is followed by one `+<kind>-<digest>` per extraction kind, which is what lets a stale stamp say WHICH chunk text moved rather than only that some did.
+    expect(provenance).toMatch(/\/embed-[0-9a-f]{16}(\+[a-z]+-[0-9a-f]{16})+$/)
+    for (const kind of ['pdf', 'docx', 'pptx', 'xlsx', 'markdown']) {
+      expect(provenance, `the ${kind} stamp is missing, so a change to that extractor would be invisible in the stamp`).toContain(`+${kind}-`)
+    }
   })
 
   it('distinguishes a non-default model from the pinned one rather than claiming the same revision', () => {
-    // A caller-supplied model has no guarantee of carrying PINNED_MODEL_REVISION, so reusing that
-    // SHA in its provenance would assert something untrue and make two different models collide.
+    // A caller-supplied model has no guarantee of carrying PINNED_MODEL_REVISION, so reusing that SHA in its provenance would assert something untrue and make two different models collide.
     const custom = embeddingProvenance('some-org/some-other-model')
     expect(custom).toContain('some-org/some-other-model')
     expect(custom).toContain('unpinned')
@@ -101,9 +97,7 @@ describe('resetAllEmbeddings()', () => {
   })
 
   it('leaves a deliberate terminal skip alone instead of forcing it to be re-read', () => {
-    // A file stamped with a bare embed_sha but holding no chunks was skipped on purpose -- an empty
-    // file, or a policy exclusion like a multi-megabyte .profile-meta.xml. Clearing its stamp would
-    // make the next drain read that whole file again just to reach the same early return.
+    // A file stamped with a bare embed_sha but holding no chunks was skipped on purpose -- an empty file, or a policy exclusion like a multi-megabyte .profile-meta.xml. Clearing its stamp would make the next drain read that whole file again just to reach the same early return.
     const dbPath = path.join(TMP, 'terminal.db')
     seedIndex(dbPath, { 'embedded.ts': 2 })
     getDb(dbPath)
@@ -137,8 +131,7 @@ describe('ensureEmbeddingProvenance()', () => {
   })
 
   it('discards vectors that predate the stamp, because their provenance is unknowable', () => {
-    // This is the upgrade path: every database written before embedding_provenance existed has
-    // chunks and no stamp, and nothing can say which model or runtime produced them.
+    // This is the upgrade path: every database written before embedding_provenance existed has chunks and no stamp, and nothing can say which model or runtime produced them.
     const dbPath = path.join(TMP, 'unstamped.db')
     seedIndex(dbPath, { 'a.ts': 3, 'b.ts': 1 })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -176,7 +169,7 @@ describe('ensureEmbeddingProvenance()', () => {
     seedIndex(dbPath, { 'a.ts': 3, 'b.ts': 2 })
     getDb(dbPath)
       .prepare('INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?)')
-      .run(embeddingProvenance().replace(/\/embed-[0-9a-f]{16}$/, '/embed-0000000000000000'))
+      .run(embeddingProvenance().replace(/\/embed-[0-9a-f]{16}/, '/embed-0000000000000000'))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     ensureEmbeddingProvenance(getDb(dbPath))
@@ -221,10 +214,7 @@ describe('ensureEmbeddingProvenance()', () => {
   })
 
   it('reads the stored provenance once per connection, so the hot path does not re-query it', () => {
-    // Counting the query rather than observing the outcome, because the outcome cannot tell the
-    // two apart: once the first call has stamped the database, an unmemoized second call also
-    // finds a match and also does nothing. Only the read itself distinguishes them, and the read
-    // is the entire cost this memo exists to avoid on a path that runs per file and per query.
+    // Counting the query rather than observing the outcome, because the outcome cannot tell the two apart: once the first call has stamped the database, an unmemoized second call also finds a match and also does nothing. Only the read itself distinguishes them, and the read is the entire cost this memo exists to avoid on a path that runs per file and per query.
     const dbPath = path.join(TMP, 'memo.db')
     seedIndex(dbPath, { 'a.ts': 1 })
     const db = getDb(dbPath)
@@ -245,9 +235,7 @@ describe('ensureEmbeddingProvenance()', () => {
   })
 
   it('checks a second connection to the same database independently of the first', () => {
-    // The memo is keyed on the connection object, not the file. Two connections are two separate
-    // processes' worth of state as far as this is concerned, and the second one has to make its
-    // own decision rather than inherit a conclusion it never reached.
+    // The memo is keyed on the connection object, not the file. Two connections are two separate processes' worth of state as far as this is concerned, and the second one has to make its own decision rather than inherit a conclusion it never reached.
     const dbPath = path.join(TMP, 'per-connection.db')
     seedIndex(dbPath, { 'a.ts': 2 })
     vi.spyOn(console, 'warn').mockImplementation(() => {})

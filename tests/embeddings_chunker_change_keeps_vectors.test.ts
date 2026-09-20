@@ -90,7 +90,7 @@ describe('a chunker-only embedding change', () => {
     expect(reconcileProject({ cwd: TMP, dbPath: workerDb, dryRun: true }).embedStale).toBe(0)
 
     db.prepare('UPDATE embedding_provenance SET provenance = ? WHERE id = 1').run(
-      embeddingProvenance().replace(/\/embed-[0-9a-f]{16}$/, '/embed-0000000000000000'),
+      embeddingProvenance().replace(/\/embed-[0-9a-f]{16}/, '/embed-0000000000000000'),
     )
     // A new process, which is what an upgrade is: the provenance check is memoized per connection.
     closeAllDbs()

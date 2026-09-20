@@ -199,13 +199,30 @@ export function embedFingerprintSources() {
   ].sort()
 }
 
+/** The embedding-decision sources exactly one extraction kind can reach, keyed by the kind id embedKindForPath() in src/embed_stamp.ts resolves a file to. A kind is a set of files whose only way to change what gets embedded runs through one document format: pdf_extract.ts can only alter a PDF's text, hints/markdown_hints.ts only the heading boundaries embedding_boundaries.ts draws for a file detectLanguage() calls markdown, and the OOXML trio (ooxml_extract.ts, xml_parser.ts, zip_bounds.ts) only the three zip-container formats that read through it -- a standalone .xml file is embedded from its own bytes by encoding.ts, which is global. Everything NOT here stays in {@link embedGlobalSources}, and one class of file must never be moved out of it: anything that can reclassify a file's language. That is the whole safety argument for skipping a re-embed -- a change that could send a file to a different chunker moves the global digest, which moves every kind digest with it -- and it is why the six sources this list's siblings share with sharedExtractionSources() (encoding.ts, language_specs.ts, languages/ini_idx.ts, languages/sniff.ts, markdown_lines.ts, parser_types.ts) are global however kind-specific one of them reads. tests/guards/embed_kind_partition.test.ts fails if any of them turns up here. */
+export function embedKindSources() {
+  const src = (...parts) => path.join(ROOT, 'src', ...parts)
+  const ooxml = [src('ooxml_extract.ts'), src('xml_parser.ts'), src('zip_bounds.ts')]
+  return new Map([
+    ['docx', [src('docx_extract.ts'), ...ooxml]],
+    ['markdown', [src('hints', 'markdown_hints.ts')]],
+    ['pdf', [src('pdf_extract.ts')]],
+    ['pptx', [src('pptx_extract.ts'), ...ooxml]],
+    ['xlsx', [src('xlsx_extract.ts'), src('xlsx_reader.ts'), ...ooxml]],
+  ])
+}
+
+/** The embedding-decision sources no single extraction kind owns: {@link embedFingerprintSources} minus everything {@link embedKindSources} claims. This is what EMBED_FINGERPRINT digests, so it is the stamp carried by every file whose kind has no bucket of its own -- source code, plain text, a standalone .xml or .csv -- and it is folded into each kind's digest as well, so a chunker change still invalidates every kind at once. */
+export function embedGlobalSources() {
+  const owned = new Set([...embedKindSources().values()].flat())
+  return embedFingerprintSources().filter((f) => !owned.has(f))
+}
+
 function computeFingerprintFor(files) {
   const h = createHash('sha256')
   for (const file of files) {
     const rel = path.relative(ROOT, file).split(path.sep).join('/')
-    // Normalise line endings before hashing. A Windows checkout with core.autocrlf=true holds the
-    // same bytes as a Linux one only after that conversion, and a digest that disagreed between a
-    // developer's machine and CI would fail the check test on one platform for no real reason.
+    // Normalise line endings before hashing. A Windows checkout with core.autocrlf=true holds the same bytes as a Linux one only after that conversion, and a digest that disagreed between a developer's machine and CI would fail the check test on one platform for no real reason.
     const text = fs.readFileSync(file, 'utf8').split('\r\n').join('\n')
     h.update(rel)
     h.update('\0')
@@ -226,7 +243,13 @@ export function computeLanguageFingerprints() {
 }
 
 export function computeEmbedFingerprint() {
-  return computeFingerprintFor(embedFingerprintSources())
+  return computeFingerprintFor(embedGlobalSources())
+}
+
+/** Extraction kind -> the digest of that kind's own sources together with every global one, so an edit to a document extractor moves this one entry and leaves every other kind's digest byte-identical, while an edit to the chunker moves all of them. Same shape as {@link computeLanguageFingerprints}, for the same reason. */
+export function computeEmbedKindFingerprints() {
+  const global = embedGlobalSources()
+  return new Map([...embedKindSources()].map(([kind, files]) => [kind, computeFingerprintFor([...global, ...files].sort())]))
 }
 
 function render(name, comment, fingerprint) {
@@ -251,15 +274,36 @@ function renderParser(fingerprint, languageFingerprints) {
   ].join('\n')
 }
 
+function renderEmbed(fingerprint, kindFingerprints) {
+  return [
+    render('EMBED_FINGERPRINT', EMBED_COMMENT, fingerprint).trimEnd(),
+    '',
+    EMBED_KIND_COMMENT,
+    'export const EMBED_KIND_FINGERPRINTS: ReadonlyMap<string, string> = new Map([',
+    ...[...kindFingerprints].map(([kind, digest]) => `  ['${kind}', '${digest}'],`),
+    '])',
+    '',
+    PRE_KIND_COMMENT,
+    `export const PRE_KIND_EMBED_FINGERPRINT = '${PRE_KIND_EMBED_FINGERPRINT}'`,
+    '',
+  ].join('\n')
+}
+
+/** The single whole-set digest EMBED_FINGERPRINT carried before it was split into a global digest plus per-kind ones, frozen as a literal because it cannot be recomputed from these sources: the split itself edited embeddings.ts, one of the files it hashed. It is the value v2.9.18 shipped (`git show v2.9.18:src/embed_fingerprint.ts`), and ensureEmbeddingProvenance reads a database stamped with exactly it as already agreeing with every stamp below -- see the reasoning there. */
+const PRE_KIND_EMBED_FINGERPRINT = 'b7b2ff71de288d13'
+
+const PRE_KIND_COMMENT =
+  "// The single whole-set digest EMBED_FINGERPRINT carried before the split above, shipped by v2.9.18 and every release before it. Frozen as a literal in scripts/parser-fingerprint.mjs rather than computed, because the split edited embeddings.ts, one of the sources that digest hashed. ensureEmbeddingProvenance treats a database stamped with exactly this value, in the same vector space, as already agreeing with every stamp above, so the upgrade re-embeds nothing; any other stored digest is re-embedded as before."
 const PARSER_COMMENT =
   "// A digest of the shared extraction-decision sources returned by sharedExtractionSources() in scripts/parser-fingerprint.mjs -- the driver and every module that decides extraction for all languages at once. It is the stamp files.parser_sha carries for a file whose language has no adapter module of its own (the tree-sitter languages, the structured-document formats parser.ts extracts inline, and 'unknown'), and the fallback for any language missing from LANGUAGE_PARSER_FINGERPRINTS below. The freshness gates treat a mismatch as changed, so an extraction-logic change invalidates already-indexed files whose content never moved. Before this existed those files kept their old symbols indefinitely, because content was the only key."
 const LANGUAGE_COMMENT =
   "// Per-language digests, each over the shared sources above plus that language's own adapter modules under src/languages/. Keyed by the id stored in files.language, which is what the gates look a stamp up by -- see parserFingerprintForLanguage() in src/parser_stamp.ts. A fix to one adapter moves one entry here, so only that language's already-indexed files are reparsed; before this was per-language, a Dart adapter fix reparsed every file in every project, including projects holding no Dart at all."
 const EMBED_COMMENT =
-  "// A digest of the embedding-decision sources returned by embedFingerprintSources() in scripts/parser-fingerprint.mjs, folded into embeddingProvenance() (src/embeddings.ts) alongside the model name, its pinned revision, and the inference backend. A mismatch in this half alone keeps the stored vectors serving, since the model and runtime still share their space, and marks every embedded file stale so reconcile and `token-goat index` re-embed it. Before this existed, a chunker or document-extractor change left every already-embedded file's vectors built by the old code indefinitely, because content and model identity were the only keys."
+  "// A digest of the global embedding-decision sources returned by embedGlobalSources() in scripts/parser-fingerprint.mjs -- the chunker and every module that decides embedding for all kinds at once -- folded into embeddingProvenance() (src/embeddings.ts) alongside the model name, its pinned revision, and the inference backend. A mismatch in this half alone keeps the stored vectors serving, since the model and runtime still share their space, and marks every embedded file stale so reconcile and `token-goat index` re-embed it. Before this existed, a chunker or document-extractor change left every already-embedded file's vectors built by the old code indefinitely, because content and model identity were the only keys."
+const EMBED_KIND_COMMENT =
+  "// Per-kind digests, each over the global sources above plus that extraction kind's own. Keyed by the kind embedKindForPath() in src/embed_stamp.ts resolves a file to, which is what ensureEmbeddingProvenance scopes a re-embed by. A change to one document extractor moves one entry here, so only that format's already-embedded files are re-embedded; before this was per-kind, an edit to pdf_extract.ts re-embedded every file on the machine -- 243,238 chunks across 17,876 files on one real index."
 
-// Only act when run as a command. The guard exists so a test can import computeFingerprint without
-// the import itself rewriting a source file or calling process.exit out from under the runner.
+// Only act when run as a command. The guard exists so a test can import computeFingerprint without the import itself rewriting a source file or calling process.exit out from under the runner.
 const invokedDirectly =
   process.argv[1] !== undefined &&
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
@@ -267,7 +311,7 @@ const invokedDirectly =
 const parserFingerprint = invokedDirectly ? computeFingerprint() : ''
 const embedFingerprint = invokedDirectly ? computeEmbedFingerprint() : ''
 const wantedParser = renderParser(parserFingerprint, invokedDirectly ? computeLanguageFingerprints() : new Map())
-const wantedEmbed = render('EMBED_FINGERPRINT', EMBED_COMMENT, embedFingerprint)
+const wantedEmbed = renderEmbed(embedFingerprint, invokedDirectly ? computeEmbedKindFingerprints() : new Map())
 
 function readNormalized(file) {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\r\n').join('\n') : ''

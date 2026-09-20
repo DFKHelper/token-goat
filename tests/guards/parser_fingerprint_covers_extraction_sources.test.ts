@@ -61,6 +61,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/embed_tokenizer.ts': 'embedding tokenizer, part of the embed_sha-gated pipeline',
   'src/embed_fingerprint.ts': 'the generated EMBED_FINGERPRINT digest constant, folded into embeddingProvenance() by src/embeddings.ts; a files.embed_sha concern, not files.parser_sha',
   'src/embedding_boundaries.ts': 'buildEmbeddingBoundaries derives embedding chunk boundaries (files.embed_sha) from already-written symbol/heading rows; reached from parser.ts only via its re-export, never by indexFileSync\'s symbol/ref extraction. Hashed by EMBED_FINGERPRINT instead, see tests/guards/embed_fingerprint_covers_embedding_sources.test.ts',
+  'src/embed_stamp.ts': 'resolves which EMBED_FINGERPRINT digest a path\'s extraction kind carries, so a re-embed can be scoped to one document format; a files.embed_sha concern that reads no source and extracts nothing',
   'src/embeddings.ts': 'chunk/vector storage for semantic search, gated by files.embed_sha, not files.parser_sha',
   'src/env.ts': 'generic env-var parsing helpers that feed runtime config values, same reasoning as src/config.ts',
   'src/fingerprint.ts': 'computes files.sha (content identity) via a generic SHA-256 utility, orthogonal to what the parser extracts from that content',
