@@ -1342,6 +1342,75 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     }
   })
 
+  /**
+   * A pre-upgrade config file: real saveConfig() output with the one line 5cc2708e added deleted
+   * again, which is exactly what an operator's file looks like after upgrading without editing it.
+   * Provenance: CAPTURE — src/config.ts::saveConfig writes the file in this helper and the strip is
+   * asserted to have actually removed the key, so a renamed key fails here instead of silently
+   * testing the present-key path.
+   */
+  function configureWithoutDefianceKey(suppressPct: number): void {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 2
+    cfg.hint_stats.suppress_threshold_pct = suppressPct
+    saveConfig(cfg)
+    const stripped = fs.readFileSync(configPath(), 'utf8').replace(/^defiance_threshold_pct = .*\n/m, '')
+    expect(stripped, 'the captured file must really lose the key').not.toContain('defiance_threshold_pct')
+    fs.writeFileSync(configPath(), stripped, 'utf8')
+    invalidateConfigCache()
+  }
+
+  /** A suppression category at 0% acted-on: every emission's re-read was observed, so all are defiance. */
+  function seedSuppressionAllDefiance(count: number): void {
+    for (let i = 0; i < count; i++) {
+      const defied = nonce()
+      logHintEmission('read_reread_dedup', defied, `C:/repo/d${i}.ts`)
+      resolvePendingHintsForEvent(readEvent(defied, `C:/repo/d${i}.ts`))
+    }
+  }
+
+  it('derives the absent ceiling from the file that turned suppression off, leaving it off', () => {
+    // suppress_threshold_pct = 0 is how an operator disables auto-suppression: no percentage is
+    // below zero. Falling back to the compiled 85 would re-enable it for the suppression
+    // categories at 0% acted-on (100 - 0 > 85), with no config change and nothing in the output.
+    configureWithoutDefianceKey(0)
+    expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(100)
+    seedSuppressionAllDefiance(3)
+    expect(shouldSuppress('read_reread_dedup', nonce())).toBe(false)
+  })
+
+  it('derives the absent ceiling at a non-default value whose complement is not round', () => {
+    // 37 complements to 63. At 25% acted-on the old single-threshold predicate suppressed
+    // (25 < 37); the compiled 85 would spare it (100 - 25 is not above 85).
+    configureWithoutDefianceKey(37)
+    expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(63)
+    seedSuppressionAllDefiance(3)
+    logHintEmission('read_reread_dedup', nonce(), null)
+    expect(getHintStatsSummary().find((r) => r.category === 'read_reread_dedup')?.efficacyPct).toBe(25)
+    expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
+  })
+
+  it('lets an explicit file value beat the derived complement', () => {
+    configure(0, 40)
+    expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(40)
+    seedSuppressionAllDefiance(3)
+    expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
+  })
+
+  it('lets TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT beat the derived complement too', () => {
+    configureWithoutDefianceKey(0)
+    process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT'] = '50'
+    try {
+      invalidateConfigCache()
+      expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(50)
+      seedSuppressionAllDefiance(3)
+      expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
+    } finally {
+      delete process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT']
+      invalidateConfigCache()
+    }
+  })
+
   it('clamps an out-of-bounds file value to the bounds table rather than honouring it', () => {
     configure(15, 100)
     const cfg = defaultConfig()

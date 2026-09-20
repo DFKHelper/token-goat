@@ -1000,7 +1000,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const hs_raw = section(raw, 'hint_stats')
   const hs = getDefaultConfig('hint_stats') as HintStatsConfig
   hs.suppress_threshold_pct = validatedInt(hs_raw['suppress_threshold_pct'], hs.suppress_threshold_pct, ...boundsOf('hint_stats.suppress_threshold_pct'))
-  hs.defiance_threshold_pct = validatedInt(hs_raw['defiance_threshold_pct'], hs.defiance_threshold_pct, ...boundsOf('hint_stats.defiance_threshold_pct'))
+  // Absent from the file, the defiance ceiling is the complement of the suppress floor THIS file set, not the compiled 85. `pct < suppress_threshold_pct` and `100 - pct > 100 - suppress_threshold_pct` are the same predicate, so splitting one threshold into two leaves every operator's verdicts where they were, not only the shipped 15/85 pair. The complement of the default 15 is still 85, so nothing about the default moves. It has to be read after the line above: `hs.suppress_threshold_pct` is the compiled default until then. No extra clamp: 100 minus a 0..100 value is already in 0..100, and validatedInt bounds the result regardless.
+  hs.defiance_threshold_pct = validatedInt(hs_raw['defiance_threshold_pct'], 100 - hs.suppress_threshold_pct, ...boundsOf('hint_stats.defiance_threshold_pct'))
   hs.defiance_threshold_pct = envInt('TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT', hs.defiance_threshold_pct, ...boundsOf('hint_stats.defiance_threshold_pct'))
   hs.min_sample_size = validatedInt(hs_raw['min_sample_size'], hs.min_sample_size, ...boundsOf('hint_stats.min_sample_size'))
 
