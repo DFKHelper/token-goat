@@ -72,9 +72,11 @@ function modulesIn(files: readonly string[]): Set<string> {
  * behind parser.ts's dynamic import of languages/registry.ts. Measured on one machine across that move: 2.430 MB over
  * 7 chunks before, 2.167 MB over 8 after, and 47-53 ms to import the hook bundle before against 42-43 ms after.
  *
- * The 4 KB above the round 2.25 MB was bought by EXIF orientation correction in image_engine.ts, which has to be eager: the pre-read hook is what shrinks images, so the rotation runs on the hook path or not at all. Measured 2,360,603 bytes over 18 chunks with it, against a 2,359,296-byte line it missed by 1,307. Raise this only for something equally unavoidable, and say here what bought it.
+ * The 4 KB above the round 2.25 MB was bought by EXIF orientation correction in image_engine.ts, which has to be eager: the pre-read hook is what shrinks images, so the rotation runs on the hook path or not at all. Measured 2,360,603 bytes over 18 chunks with it, against a 2,359,296-byte line it missed by 1,307.
+ *
+ * A further 2 KB was bought by the structural-index rewrite in bash_structural_index.ts (batch Q): it decides whether to rewrite an `rg`/`grep` structural search into a `token-goat outline`/`imports` call, and that decision has to run inside the synchronous pre_tool_use Bash hook before the tool executes, so it cannot be deferred behind a dynamic import the way a language adapter can. Every module it imports (paths.js, parser_types.js, language_specs.js, tool_filters/helpers.js, bash_extractors.js, fingerprint.js, index_reader.js) was already eager via an existing hook path; the added bytes are its own ~130 lines of recognizer logic. Measured 2,365,172 bytes over 19 chunks with it, against a 2,363,392-byte line it missed by 1,780. Raise this only for something equally unavoidable, and say here what bought it.
  */
-const MAX_HOOK_EAGER_BYTES = 2.25 * 1024 * 1024 + 4 * 1024
+const MAX_HOOK_EAGER_BYTES = 2.25 * 1024 * 1024 + 4 * 1024 + 2 * 1024
 
 /** Chunk filenames `file` imports with a static `import ... from "./..."`, not a deferred one. */
 function staticChunkImports(file: string): string[] {

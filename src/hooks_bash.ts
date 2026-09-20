@@ -29,6 +29,7 @@ import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, r
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell } from './shell.js'
+import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -892,6 +893,17 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     recordStat('session_hint', 0, 0)
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
+  }
+
+  // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an
+  // exact index answer -- rewrite the command to it instead of just hinting, so the model gets
+  // the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the
+  // hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any
+  // `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape
+  // rather than something this call needs to special-case.
+  const structuralRewrite = detectStructuralIndexRewrite(event, rawCmd, hintCwd)
+  if (structuralRewrite !== null) {
+    return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: structuralRewrite.command } }
   }
 
   if (extractGrepPipeChain(cmd)) {

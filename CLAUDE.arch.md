@@ -247,6 +247,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bash_extractors.ts`](src/bash_extractors.ts) | Command line extractors, classification, and surgical hint builders for bash hook handlers. |
 | [`src/bash_output_cache.ts`](src/bash_output_cache.ts) | Bash stdout/stderr disk store (byte cap plus 4096 file-count cap, oldest-first eviction) |
 | [`src/bash_runner.ts`](src/bash_runner.ts) | Exports: `DEFAULT_TIMEOUT_SECONDS`, `MAX_CAPTURE_BYTES`, `RunOptions`, `run` |
+| [`src/bash_structural_index.ts`](src/bash_structural_index.ts) | Recognizes a plain-enumeration `rg`/`grep` invocation over a single, already-fresh-indexed file whose pattern maps exactly to a token-goat index answer (`outline`/`imports`), and r |
 | [`src/filters.ts`](src/filters.ts) | Shared output-filter helpers |
 | [`src/tool_filters/ai_clis.ts`](src/tool_filters/ai_clis.ts) | Bash output compression and normalization filter for ai_clis |
 | [`src/tool_filters/base.ts`](src/tool_filters/base.ts) | Bash output compression and normalization filter for base |

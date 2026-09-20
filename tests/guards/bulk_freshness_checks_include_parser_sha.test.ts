@@ -138,6 +138,19 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'detectStructuralIndexRewrite',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason:
+        'bash_structural_index.ts checks the one file an rg/grep command already named, against a ' +
+        'fresh disk read -- the same single-named-file scope as staleWarning, reimplemented locally ' +
+        '(getFileEntry + fingerprintFile) instead of importing staleWarning itself, because ' +
+        'read_commands.ts pulls the full parser/language-adapter graph into the pre_tool_use hook\'s ' +
+        'eager bundle (see tests/guards/dist_chunks_deduped.test.ts). A parser-stale-but-content-' +
+        'unchanged file here is caught by reconcile.ts\'s own sweep, not by this function.',
+    },
+  ],
+  [
     'processDirtyBatch',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',

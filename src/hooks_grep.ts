@@ -147,9 +147,10 @@ function foldGrepContentHandler(event: HookEvent): HookOutput {
   }
 }
 
-const DOC_EXT_RE = /\.(?:md|mdx|rst|txt)$/i
+/** Exported for reuse by bash_structural_index.ts, which needs the identical doc-heading test for the Bash-path structural rewrite (see that module's doc comment). */
+export const DOC_EXT_RE = /\.(?:md|mdx|rst|txt)$/i
 
-const STRUCTURAL_DOC_PATTERN_RE = /^(?:\^)?#+\s*/
+export const STRUCTURAL_DOC_PATTERN_RE = /^(?:\^)?#+\s*/
 const STRUCTURAL_SOURCE_PATTERN_RE = /^(?:\^|\s)*(?:def|class|function|async\s+def|async\s+function|export\s+(?:default\s+)?(?:class|function|interface|type|const|enum)|func|fn|struct|interface|impl|type)\b/i
 
 export interface GrepStructuralSearchResult {
