@@ -1640,6 +1640,12 @@ export function buildProgram(): Command {
     // a binary name against, but commands that key off process.cwd() for project
     // resolution still need a way to be told where that root is.
     .option('--cwd <path>', 'run as if invoked from this directory (overrides the real working directory)')
+    // Lets a caller print a disclosure line ahead of the command's own output without composing
+    // two commands through a shell operator -- a rewritten command (see detectStructuralIndexRewrite
+    // in bash_structural_index.ts) needs to say what it substituted, and every shell parses one
+    // command with a global flag identically, where `echo ... &&` does not (no `&&` in PowerShell
+    // 5.1 at all).
+    .option('--notice <text>', 'print this line to stdout before the command\'s own output')
 
   // Applied via a preAction hook (not inside `guard` below) so --cwd works for every
   // command, not only the ones wrapped in `guard` -- the surgical-read commands (symbol,
@@ -1648,7 +1654,8 @@ export function buildProgram(): Command {
   // command's action handler, guard-wrapped or not, and before anything resolves the
   // project root or loads config.
   program.hook('preAction', (thisCommand) => {
-    const cwdOverride = thisCommand.opts<{ cwd?: string }>().cwd
+    const opts = thisCommand.opts<{ cwd?: string; notice?: string }>()
+    const cwdOverride = opts.cwd
     if (cwdOverride !== undefined) {
       try {
         process.chdir(cwdOverride)
@@ -1656,6 +1663,7 @@ export function buildProgram(): Command {
         throw new Error(`--cwd ${cwdOverride}: ${extractErrorMessage(e)}`, { cause: e })
       }
     }
+    if (opts.notice !== undefined) out(opts.notice)
   })
 
   // Each action wraps the (possibly sync) handler so any thrown CliError or unexpected error maps to a stderr line + exit code 1, and success to 0.

@@ -11,6 +11,7 @@ export function generateCompactHelp(): string {
     'Options:',
     '  -v, --version                   print the token-goat version',
     '  --cwd <path>                    run as if invoked from this directory',
+    '  --notice <text>                 print this line before the command\'s own output',
     '  -h, --help                      display help for command',
     '',
     'Reads: symbol, read, brief, section, semantic, skeleton, outline, refs, scope,',

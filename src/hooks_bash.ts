@@ -901,7 +901,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any
   // `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape
   // rather than something this call needs to special-case.
-  const structuralRewrite = detectStructuralIndexRewrite(event, rawCmd, hintCwd)
+  const structuralRewrite = detectStructuralIndexRewrite(rawCmd, hintCwd)
   if (structuralRewrite !== null) {
     return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: structuralRewrite.command } }
   }

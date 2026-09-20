@@ -81,13 +81,13 @@ let MD_FILE = ''
 let NEVER_INDEXED_FILE = ''
 let STALE_FILE = ''
 
-function bashEvent(command: string): HookEvent {
+function bashEvent(command: string, harness?: string): HookEvent {
   return makeHookEvent({
     eventName: 'pre_tool_use',
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 's-structural-index',
-    raw: { cwd: TMP, tool_name: 'Bash', tool_input: { command } },
+    raw: { cwd: TMP, tool_name: 'Bash', tool_input: { command }, ...(harness !== undefined ? { _tg_harness: harness } : {}) },
   })
 }
 
@@ -144,7 +144,8 @@ describe('structural index rewrite -- rewrite cases', () => {
     const out = preBashHandler(bashEvent(`rg '^def ' ${PY_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat outline '${PY_FILE}'`)
+    expect(cmd).toMatch(/^token-goat --notice "/)
+    expect(cmd).toContain(`outline ${PY_FILE}`)
     expect(cmd).toContain('[token-goat: rewrote this rg/grep search to an indexed answer')
     expect(cmd).not.toContain('--grep')
   })
@@ -153,14 +154,14 @@ describe('structural index rewrite -- rewrite cases', () => {
     const out = preBashHandler(bashEvent(`rg 'def test_' ${PY_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat outline '${PY_FILE}' --grep '^test_'`)
+    expect(cmd).toContain(`outline ${PY_FILE} --grep ^test_`)
   })
 
   it('rewrites a whole-file Python class search to outline', () => {
     const out = preBashHandler(bashEvent(`rg '^class ' ${PY_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat outline '${PY_FILE}'`)
+    expect(cmd).toContain(`outline ${PY_FILE}`)
     expect(cmd).not.toContain('--grep')
   })
 
@@ -168,35 +169,75 @@ describe('structural index rewrite -- rewrite cases', () => {
     const out = preBashHandler(bashEvent(`rg 'class Test' ${PY_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat outline '${PY_FILE}' --grep '^Test'`)
+    expect(cmd).toContain(`outline ${PY_FILE} --grep ^Test`)
   })
 
   it('rewrites an anchored import search to the imports command', () => {
     const out = preBashHandler(bashEvent(`rg '^import' ${PY_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat imports '${PY_FILE}'`)
+    expect(cmd).toContain(`imports ${PY_FILE}`)
   })
 
   it('rewrites an anchored import search on a TypeScript file to the imports command', () => {
     const out = preBashHandler(bashEvent(`rg '^import' ${TS_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat imports '${TS_FILE}'`)
+    expect(cmd).toContain(`imports ${TS_FILE}`)
   })
 
   it('rewrites a markdown heading search to outline', () => {
     const out = preBashHandler(bashEvent(`rg '^## ' ${MD_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat outline '${MD_FILE}'`)
+    expect(cmd).toContain(`outline ${MD_FILE}`)
   })
 
   it('rewrites the quantifier-heading form (rg \'^#{1,3} \') to outline', () => {
     const out = preBashHandler(bashEvent(`rg '^#{1,3} ' ${MD_FILE}`))
     const cmd = rewrittenCommand(out)
     expect(cmd).not.toBeNull()
-    expect(cmd).toContain(`token-goat outline '${MD_FILE}'`)
+    expect(cmd).toContain(`outline ${MD_FILE}`)
+  })
+
+  // HAND-DERIVED: the invariant this whole batch rests on -- the emitted command is one
+  // `token-goat` invocation, with the disclosure printed by its own `--notice` flag rather than
+  // shelled out via `echo ... &&`, and its only quoted argument uses double quotes (valid in both
+  // a POSIX shell and PowerShell 5.1), never a POSIX-only single-quoted one.
+  it('emits a command with no shell chaining operator and no single-quoted argument', () => {
+    const out = preBashHandler(bashEvent(`rg 'def test_' ${PY_FILE}`))
+    const cmd = rewrittenCommand(out)
+    expect(cmd).not.toBeNull()
+    expect(cmd).toMatch(/^token-goat --notice "/)
+    expect(cmd).not.toMatch(/&&|\|\||[|;]/)
+    expect(cmd).not.toContain("'")
+  })
+
+  // HAND-DERIVED: `_tg_harness` values `hooks_cli.ts` stamps onto the payload for each bridge
+  // (see src/hooks_cli.ts::result['_tg_harness']). Before this batch, `detectStructuralIndexRewrite`
+  // returned null for all three on this platform (win32) -- see the removed guard this test
+  // replaces coverage for.
+  describe('fires on every harness now that the command is shell-agnostic', () => {
+    it.each(['vscode', 'codex', 'copilot_cli'])('rewrites for _tg_harness=%s', (harness) => {
+      const out = preBashHandler(bashEvent(`rg '^def ' ${PY_FILE}`, harness))
+      expect(rewrittenCommand(out)).not.toBeNull()
+    })
+  })
+})
+
+describe('structural index rewrite -- unsafe path refuses to rewrite', () => {
+  it('passes through a path containing a character with no shared-safe shell form', () => {
+    // `$` starts variable expansion inside a double-quoted string in both a POSIX shell and
+    // PowerShell -- dualShellArg refuses to quote it rather than emit a form only one of the two
+    // would parse as a literal dollar sign. Has no space, so it stays one argv token unquoted in
+    // the raw command line below without needing test-harness-level quoting of its own.
+    const unsafeDir = path.join(TMP, 'has$dollar')
+    fs.mkdirSync(unsafeDir, { recursive: true })
+    const unsafeFile = path.join(unsafeDir, 'service.py').replace(/\\/g, '/')
+    fs.writeFileSync(unsafeFile, PY_SRC, 'utf-8')
+    indexed(unsafeFile)
+    const out = preBashHandler(bashEvent(`rg '^def ' ${unsafeFile}`))
+    expect(rewrittenCommand(out)).toBeNull()
   })
 })
 
