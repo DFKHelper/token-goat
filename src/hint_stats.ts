@@ -591,10 +591,19 @@ function categoryStats(category: HintCategory): EmissionRow {
 
 /**
  * True once (category, current harness) has at least `hint_stats.min_sample_size` emissions AND
- * its acted-on percentage is below `hint_stats.suppress_threshold_pct` — see the module doc
+ * the category has failed the bar its own polarity is measured against — see the module doc
  * comment's "Suppression persistence" section for why this is not literally scoped to only the
  * current `sessionId` despite accepting it as a parameter (kept for interface honesty/future
  * use and because it is the natural key this feature was specified against).
+ *
+ * Two bars, because the two kinds of category measure different quantities. A normal hint names a
+ * substitute command, so `acted_on` counts uptake and the question is whether uptake fell below
+ * `suppress_threshold_pct`. A suppression category asks for an absence and is booked
+ * compliance-first (see {@link SUPPRESSION_HINT_CATEGORIES}), so `100 - efficacy` is its observed
+ * defiance rate and the question is whether that rate rose above `defiance_threshold_pct`. The
+ * defaults are exact complements (15 / 85), so the two branches agree on every verdict until an
+ * operator deliberately separates them; they are separate keys because an uptake rate and a
+ * defiance rate have unrelated base rates and one number cannot be well-calibrated for both.
  */
 export function shouldSuppress(category: HintCategory, _sessionId: string): boolean {
   try {
@@ -602,6 +611,7 @@ export function shouldSuppress(category: HintCategory, _sessionId: string): bool
     const { emitted, actedOn } = categoryStats(category)
     if (emitted < cfg.min_sample_size) return false
     const pct = (100 * (actedOn ?? 0)) / emitted
+    if (isSuppressionCategory(category)) return 100 - pct > cfg.defiance_threshold_pct
     return pct < cfg.suppress_threshold_pct
   } catch {
     return false

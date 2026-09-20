@@ -189,6 +189,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'indexing.large_file_skip_kb': {min: 1, max: 1048576},
   'context.model_window_tokens': {min: 10_000, max: 10_000_000},
   'hint_stats.suppress_threshold_pct': {min: 0, max: 100},
+  'hint_stats.defiance_threshold_pct': {min: 0, max: 100},
   'hint_stats.min_sample_size': {min: 1, max: 10000},
   'semantic.archive_weight': {min: 0.05, max: 1},
   'semantic.docs_weight': {min: 0.05, max: 1},
@@ -999,6 +1000,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const hs_raw = section(raw, 'hint_stats')
   const hs = getDefaultConfig('hint_stats') as HintStatsConfig
   hs.suppress_threshold_pct = validatedInt(hs_raw['suppress_threshold_pct'], hs.suppress_threshold_pct, ...boundsOf('hint_stats.suppress_threshold_pct'))
+  hs.defiance_threshold_pct = validatedInt(hs_raw['defiance_threshold_pct'], hs.defiance_threshold_pct, ...boundsOf('hint_stats.defiance_threshold_pct'))
+  hs.defiance_threshold_pct = envInt('TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT', hs.defiance_threshold_pct, ...boundsOf('hint_stats.defiance_threshold_pct'))
   hs.min_sample_size = validatedInt(hs_raw['min_sample_size'], hs.min_sample_size, ...boundsOf('hint_stats.min_sample_size'))
 
   const sem_raw = section(raw, 'semantic')
@@ -1119,6 +1122,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'redaction.custom_patterns': ['TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS'],
   'redaction.strict': ['TOKEN_GOAT_REDACTION_STRICT'],
   'network.offline': ['TOKEN_GOAT_OFFLINE'],
+  'hint_stats.defiance_threshold_pct': ['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT'],
   'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
   'mcp.allowed_roots': ['TOKEN_GOAT_MCP_ALLOWED_ROOTS'],
   'webfetch.allow': ['TOKEN_GOAT_WEBFETCH_ALLOW'],
@@ -1316,6 +1320,7 @@ export function saveConfig(config: Config): void {
     },
     hint_stats: {
       suppress_threshold_pct: config.hint_stats.suppress_threshold_pct,
+      defiance_threshold_pct: config.hint_stats.defiance_threshold_pct,
       min_sample_size: config.hint_stats.min_sample_size,
     },
     semantic: {

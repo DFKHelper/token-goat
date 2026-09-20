@@ -80,9 +80,11 @@ function modulesIn(files: readonly string[]): Set<string> {
  *
  * A further 1 KB was bought by the fix that stops recordStat holding the hook path for db.ts's full 15s busy_timeout under contention: recordStat now opens its own short-budget connection instead of reusing the shared, patient one getDb() caches for indexing and the worker, and closes it before returning. That connection has to be opened and torn down synchronously inside recordStat, on every hook, same reason as the timing plumbing above -- it cannot be deferred behind a dynamic import. Measured 2,368,665 bytes over 19 chunks with it, against a 2,368,349-byte line it missed by 316.
  *
+ * A further 1 KB was bought by `hint_stats.defiance_threshold_pct` (batch b02 J4): the same five config rows as the entry below, plus the `isSuppressionCategory` branch in shouldSuppress, which unlike checkHookLatency really is eager -- hint_stats.ts runs inside the pre/post tool-use hooks. Measured 2,370,518 bytes over 19 chunks with it, against the 2,370,560-byte line the entry below left, which it cleared by 42. Two config keys in one batch consumed 1,115 of this ceiling's bytes between them, which is the number to plan against.
+ *
  * A further 1 KB was bought by `hooks.latency_budget_ms` (batch b02 J3), and this entry is worth reading before adding any config key at all, because the cost is not obvious from the diff. config.ts is eager on the hook path -- every hook calls loadConfig -- so a key's five rows (its NUMERIC_FIELD_BOUNDS entry, its two _buildConfig lines, its CONFIG_KEY_ENV_OVERRIDES entry and its saveConfig serialize arm) all land in this set even when the only code that reads the key is CLI-only, as checkHookLatency is. Measured on one machine by building both trees: 2,369,403 bytes over 19 chunks at the parent commit against 2,369,870 with the key, so one key costs 467 bytes here and the parent commit had 133 bytes of headroom left. Unavoidable in the sense that matters: the rows are what make the key settable, and there is no deferred-import shape for a table the eager loader indexes. Budget roughly 0.5 KB of this ceiling per future config key rather than discovering it as a red guard.
  */
-const MAX_HOOK_EAGER_BYTES = 2.25 * 1024 * 1024 + 4 * 1024 + 2 * 1024 + 3 * 1024 + 1 * 1024 + 1 * 1024
+const MAX_HOOK_EAGER_BYTES = 2.25 * 1024 * 1024 + 4 * 1024 + 2 * 1024 + 3 * 1024 + 1 * 1024 + 1 * 1024 + 1 * 1024
 
 /** Chunk filenames `file` imports with a static `import ... from "./..."`, not a deferred one. */
 function staticChunkImports(file: string): string[] {

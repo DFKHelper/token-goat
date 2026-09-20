@@ -290,6 +290,8 @@ export interface McpConfig {
  */
 export interface HintStatsConfig {
   suppress_threshold_pct: number
+  // The ceiling a SUPPRESSION category is judged against instead of `suppress_threshold_pct` (see hint_stats.ts's SUPPRESSION_HINT_CATEGORIES). Those categories ask for an absence, so their emissions are booked compliance-first -- `acted_on = 0` is written only when a re-read of the named path is actually observed -- which makes `100 - efficacy` their measured defiance rate. Suppress once that rate exceeds this. Defaults to 85, the exact complement of `suppress_threshold_pct`'s 15, so every verdict is unchanged until the two are deliberately set apart; they are separate knobs because a defiance rate and an uptake rate have different natural base rates and there is no reason one number should serve both.
+  defiance_threshold_pct: number
   min_sample_size: number
 }
 

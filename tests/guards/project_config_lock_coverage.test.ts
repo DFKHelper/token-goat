@@ -64,6 +64,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'compact_assist.wide_session_threshold',
   'compression.profile',
   'context.model_window_tokens',
+  'hint_stats.defiance_threshold_pct',
   'hint_stats.min_sample_size',
   'hint_stats.suppress_threshold_pct',
   'hints.backoff_thresholds',

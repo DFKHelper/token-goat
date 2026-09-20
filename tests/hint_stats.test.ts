@@ -25,7 +25,7 @@ import {
 import { recordStat, GLOBAL_SCHEMA_SQL, pruneHintEmissions } from '../src/stats.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath, configPath } from '../src/constants.js'
-import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
+import { defaultConfig, loadConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
@@ -1173,7 +1173,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     // Recovery does not need those rows rewritten -- the backoff probe schedule already exists to
     // let a muted category earn its way back, and it could not work while compliance was
     // unobservable. One probe the agent obeys is now enough to clear the threshold.
-    saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, min_sample_size: 5 } })
+    saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, defiance_threshold_pct: 85, min_sample_size: 5 } })
     invalidateConfigCache()
     for (let i = 0; i < 5; i++) {
       const stale = nonce()
@@ -1189,7 +1189,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
   })
 
   it('keeps a consistently obeyed dedup category out of auto-suppression', () => {
-    saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, min_sample_size: 5 } })
+    saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, defiance_threshold_pct: 85, min_sample_size: 5 } })
     invalidateConfigCache()
     for (let i = 0; i < 6; i++) {
       const n = nonce()
@@ -1234,5 +1234,125 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     const row = getHintStatsSummary().find((r) => r.category === 'bash_recall')
     expect(row?.suppressed).toBe(false)
     expect(row?.suppressionPermanent).toBe(false)
+  })
+})
+
+/**
+ * hint_stats.defiance_threshold_pct: a suppression category is judged against its own ceiling.
+ *
+ * Provenance HAND-DERIVED for the percentages and CAPTURE for the polarity they rest on. The two
+ * 50% populations below are each built by driving logHintEmission and resolvePendingHintsForEvent
+ * -- the real write path -- rather than by inserting hint_emissions rows, so what `acted_on` means
+ * for each category is whatever the shipping code writes, not whatever this test assumed. The
+ * first test asserts that meaning directly, because the premise this change was specified against
+ * ("a suppression category's stored number counts defiance, so one threshold reads it backwards")
+ * is not what the code does: logHintEmission and the suppression arm of resolvePendingHintsForEvent
+ * already normalise to compliance at write time, booking acted_on=1 for an unobserved re-read and
+ * acted_on=0 only when defiance is actually seen. Both stored percentages are therefore
+ * higher-is-better and the single threshold was never inverted. What differs is the base rate: a
+ * suppression category defaults to compliance when its window simply expires, so it sits near 100%
+ * where an uptake rate sits near 0%, and one number cannot be calibrated for both. Hence a second
+ * ceiling expressed in the units that category is actually about -- its defiance rate, 100 minus
+ * the stored figure -- defaulting to the exact complement of suppress_threshold_pct so no existing
+ * verdict moves.
+ */
+describe('shouldSuppress — defiance_threshold_pct for inverted-polarity categories', () => {
+  /** A normal category at exactly 50% acted-on: one followed pointer, one no-signal emission. */
+  function seedNormalAt50Pct(): void {
+    const acted = nonce()
+    logHintEmission('bash_redirect', acted, 'C:/repo/a.ts')
+    resolvePendingHintsForEvent(bashEvent(acted, 'token-goat skeleton "C:/repo/a.ts"'))
+    logHintEmission('bash_redirect', nonce(), null)
+  }
+
+  /** A suppression category at exactly 50%: one observed re-read of the named path, one emission whose re-read never happened. */
+  function seedSuppressionAt50Pct(): void {
+    const defied = nonce()
+    logHintEmission('read_reread_dedup', defied, 'C:/repo/b.ts')
+    resolvePendingHintsForEvent(readEvent(defied, 'C:/repo/b.ts'))
+    logHintEmission('read_reread_dedup', nonce(), null)
+  }
+
+  function configure(suppressPct: number, defiancePct: number): void {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 2
+    cfg.hint_stats.suppress_threshold_pct = suppressPct
+    cfg.hint_stats.defiance_threshold_pct = defiancePct
+    saveConfig(cfg)
+    invalidateConfigCache()
+  }
+
+  it('stores compliance, not defiance, for a suppression category — both populations read 50%', () => {
+    seedNormalAt50Pct()
+    seedSuppressionAt50Pct()
+    const summary = getHintStatsSummary()
+    const normal = summary.find((r) => r.category === 'bash_redirect')
+    const suppression = summary.find((r) => r.category === 'read_reread_dedup')
+    expect(normal?.emitted).toBe(2)
+    expect(normal?.efficacyPct).toBe(50)
+    expect(suppression?.emitted).toBe(2)
+    // The observed re-read booked 0 and the unobserved one booked 1. Were the column counting
+    // defiance, this would read 50 for the opposite reason and the assertion below on which
+    // emission was which would not hold.
+    expect(suppression?.efficacyPct).toBe(50)
+  })
+
+  it('the defaults are exact complements, so no existing category changes verdict', () => {
+    const cfg = defaultConfig()
+    expect(cfg.hint_stats.suppress_threshold_pct).toBe(15)
+    expect(cfg.hint_stats.defiance_threshold_pct).toBe(85)
+    // 15 and 85 make `pct < 15` and `100 - pct > 85` the same predicate, so every category's
+    // pre-change verdict survives untouched until an operator separates the two.
+    configure(15, 85)
+    seedNormalAt50Pct()
+    seedSuppressionAt50Pct()
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
+    expect(shouldSuppress('read_reread_dedup', nonce())).toBe(false)
+  })
+
+  it('judges the same 50% against different ceilings, reaching opposite verdicts', () => {
+    // Normal suppressed (50 < 60), suppression category spared (50% defiance does not clear 80).
+    configure(60, 80)
+    seedNormalAt50Pct()
+    seedSuppressionAt50Pct()
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
+    expect(shouldSuppress('read_reread_dedup', nonce())).toBe(false)
+  })
+
+  it('reaches the opposite pair of verdicts when the two ceilings are swapped', () => {
+    // Normal spared (50 is not below 40), suppression category suppressed (50% defiance clears 30).
+    configure(40, 30)
+    seedNormalAt50Pct()
+    seedSuppressionAt50Pct()
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
+    expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
+  })
+
+  it('the TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT env override beats the file the consumer reads', () => {
+    configure(40, 90) // file value 90 would spare the suppression category at 50% defiance
+    process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT'] = '30'
+    try {
+      invalidateConfigCache()
+      seedSuppressionAt50Pct()
+      expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(30)
+      expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
+    } finally {
+      delete process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT']
+      invalidateConfigCache()
+    }
+  })
+
+  it('clamps an out-of-bounds file value to the bounds table rather than honouring it', () => {
+    configure(15, 100)
+    const cfg = defaultConfig()
+    cfg.hint_stats.defiance_threshold_pct = 250
+    saveConfig(cfg)
+    invalidateConfigCache()
+    expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(100)
+
+    cfg.hint_stats.defiance_threshold_pct = -5
+    saveConfig(cfg)
+    invalidateConfigCache()
+    expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(0)
   })
 })

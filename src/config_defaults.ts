@@ -260,6 +260,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   },
   hint_stats: {
     suppress_threshold_pct: 15,
+    defiance_threshold_pct: 85,
     min_sample_size: 5,
   },
   semantic: {
