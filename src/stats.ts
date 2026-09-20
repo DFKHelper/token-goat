@@ -231,6 +231,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   dirty_queue_append_failed: SOURCE_OTHER,
   worker_healthcheck_failed: SOURCE_OTHER,
   known_root_record_failed: SOURCE_OTHER,
+  // Same fail-soft shape, from hooks_session_start.ts's reconcileNote: a thrown reconcile sweep must not block session start, but it also must not vanish silently, so the catch that swallows it records why instead of returning null with nothing recorded.
+  reconcile_note_failed: SOURCE_OTHER,
   // Measurement of what a compaction produced (hooks_compact.ts postCompactHandler): summary size and how many manifest paths survived into it. SOURCE_OTHER and always recorded at (0, 0) -- the summary was written whether or not token-goat was watching, so there is no counterfactual in which those bytes were saved. Filing it anywhere with a savings total would credit token-goat for the whole summary, which is the accounting mistake this registry exists to prevent.
   compact_summary: SOURCE_OTHER,
   // Envelope compaction of an oversized subagent report (hooks_agent_spawn.ts). SOURCE_CONTENT, not SOURCE_HINT: the handler's sibling session_hint entry is advisory (it only appends a recall pointer and genuinely saves nothing), whereas this kind records a real rewrite with real bytes removed, so filing it under the advisory bucket would understate the compaction and repeat the zero-savings desync this registry keeps getting bitten by.

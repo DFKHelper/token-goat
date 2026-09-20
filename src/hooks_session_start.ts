@@ -18,7 +18,8 @@ import { buildDeltaCapsule } from './evidence_cache.js'
 import { ENV_KEYS } from './constants.js'
 import { envBool, envInt } from './env.js'
 import { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject } from './reconcile.js'
-import { countNoun } from './util.js'
+import { countNoun, extractErrorMessage } from './util.js'
+import { recordStat } from './stats.js'
 
 /** Generic reminder used when the cwd is missing, unresolvable, or not indexed. */
 const GENERIC_REMINDER =
@@ -91,7 +92,8 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
     if (drifted > 0) clauses.push(`${countNoun(drifted, 'file')} that changed outside this session${breakdown}`)
     if (upgraded > 0) clauses.push(`${countNoun(upgraded, 'file')} unchanged on disk but indexed by an older version of token-goat`)
     return `token-goat: reindexing ${clauses.join(' and ')}${truncated}. Symbol lookups may be briefly stale.`
-  } catch {
+  } catch (e) {
+    recordStat('reconcile_note_failed', 0, 0, undefined, extractErrorMessage(e))
     return null
   }
 }
