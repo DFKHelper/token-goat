@@ -348,9 +348,10 @@ export async function cmdIndex(
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
     // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.
     const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
+    // Embed freshness is decided on its own inputs, never on parseUnchanged: files.parser_sha answers "which extractor wrote the symbol rows", which carries no information about whether the stored vectors match this content, so conjoining it made a parser-stamp bump re-embed the whole index (measured: a stamp-only reparse of 300 unchanged files cost 94% of indexing them from nothing) and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent. isEmbedFresh already answers false for a new file (no stored embed_sha) and for moved content (the stored sha no longer matches), so the sha coupling was redundant -- except for spellingStale, which is kept by name: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever.
     const embedUnchanged =
       !force &&
-      parseUnchanged &&
+      !spellingStale &&
       sha !== null &&
       isEmbedFresh(
         entry?.embedSha,
