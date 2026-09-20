@@ -78,23 +78,41 @@ export const SHIM_SPAWN_LADDER = `    const res = entryPath
 /** 32 MiB, matching `MAX_CAPTURE_BYTES` in bash_runner.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
 export const SHIM_MAX_BUFFER_CONST = `const SHIM_MAX_BUFFER_BYTES = 32 * 1024 * 1024`
 
-/** Claude Code only: classifies a hook call the harness can safely background before the in-process/spawn round trip runs, because the handler it would reach always answers pass. `subagent_stop` always qualifies (subagentStopHandler in hooks_session.ts returns passOutput() on every branch); `post_tool_use` qualifies only for Edit/Write/MultiEdit/NotebookEdit outside the markdown family, because postEditHandler (hooks_edit.ts) answers with real context for md/mdx/markdown/rst and nothing else. Printing `{"async":true}` as the first stdout line lets the harness move on immediately instead of waiting out a response it was always going to get as `{}`. */
+/** Claude Code only: classifies a hook call the harness can safely background before the in-process/spawn round trip runs, because the handler it would reach either always answers pass or, for a tiny Bash result, answers something almost never. `subagent_stop` always qualifies (subagentStopHandler in hooks_session.ts returns passOutput() on every branch); `post_tool_use` qualifies for Edit/Write/MultiEdit/NotebookEdit outside the markdown family (postEditHandler in hooks_edit.ts answers with real context only for md/mdx/markdown/rst), and for a Bash result under 200 bytes (postBashHandler in hooks_bash.ts emitted on 19 of 10,602 such calls measured -- 0.18%). The Bash branch backgrounds rather than skips: resolvePendingHintsForEvent (hint_stats.ts) is registered on every post_tool_use call and must still run to keep hint-efficacy accounting correct. Printing `{"async":true}` as the first stdout line lets the harness move on immediately instead of waiting out a response it was almost always going to get as `{}`. */
 export const SHIM_ASYNC_DETACH = `const ASYNC_DETACH_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const ASYNC_DETACH_SKIP_EXT_RE = /\\.(md|mdx|markdown|rst)$/i
+const ASYNC_DETACH_BASH_MAX_BYTES = 200
+// Same key order as OUTPUT_FIRST_TOOL_RESPONSE_KEYS in hooks_common.ts.
+const ASYNC_DETACH_BASH_TEXT_KEYS = ['output', 'content', 'text', 'body', 'stdout', 'stderr']
+function bashResultByteLength(resp) {
+  if (typeof resp === 'string') return Buffer.byteLength(resp, 'utf8')
+  if (resp && typeof resp === 'object') {
+    if (typeof resp['persistedOutputSize'] === 'number') return resp['persistedOutputSize']
+    for (const key of ASYNC_DETACH_BASH_TEXT_KEYS) {
+      if (typeof resp[key] === 'string' && resp[key] !== '') return Buffer.byteLength(resp[key], 'utf8')
+    }
+    return Buffer.byteLength(JSON.stringify(resp), 'utf8')
+  }
+  return 0
+}
 function isAsyncDetachEligible(eventName, input) {
   if (eventName === 'subagent_stop') return true
   if (eventName !== 'post_tool_use') return false
   try {
     const payload = JSON.parse(input)
-    if (!ASYNC_DETACH_TOOLS.has(payload['tool_name'])) return false
-    const toolInput = payload['tool_input'] || {}
-    const filePath =
-      typeof toolInput['file_path'] === 'string'
-        ? toolInput['file_path']
-        : typeof toolInput['notebook_path'] === 'string'
-          ? toolInput['notebook_path']
-          : ''
-    return !ASYNC_DETACH_SKIP_EXT_RE.test(filePath)
+    const toolName = payload['tool_name']
+    if (ASYNC_DETACH_TOOLS.has(toolName)) {
+      const toolInput = payload['tool_input'] || {}
+      const filePath =
+        typeof toolInput['file_path'] === 'string'
+          ? toolInput['file_path']
+          : typeof toolInput['notebook_path'] === 'string'
+            ? toolInput['notebook_path']
+            : ''
+      return !ASYNC_DETACH_SKIP_EXT_RE.test(filePath)
+    }
+    if (toolName === 'Bash') return bashResultByteLength(payload['tool_response']) < ASYNC_DETACH_BASH_MAX_BYTES
+    return false
   } catch {
     return false
   }

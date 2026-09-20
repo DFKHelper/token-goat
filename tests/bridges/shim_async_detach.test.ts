@@ -5,8 +5,11 @@
  * postEditHandlerInner in hooks_edit.ts, which answers with real context only for md/mdx/
  * markdown/rst -- covered directly by tests/hooks_edit.test.ts) and every subagent_stop call
  * (subagentStopHandler in hooks_session.ts returns passOutput() on every branch -- covered
- * directly by tests/hooks_session.test.ts). These tests exercise the shim's own classification,
- * run as a real subprocess exactly as the harness invokes it, not the handlers it defers to.
+ * directly by tests/hooks_session.test.ts). A Bash post_tool_use call with a result under 200
+ * bytes also qualifies: postBashHandler emits something on only 0.18% of such calls measured, and
+ * this branch backgrounds rather than skips, since resolvePendingHintsForEvent still needs to run.
+ * These tests exercise the shim's own classification, run as a real subprocess exactly as the
+ * harness invokes it, not the handlers it defers to.
  */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -63,8 +66,11 @@ describe('Claude Code shim async-detach classification', () => {
     expect(stdout).not.toContain('"async":true')
   })
 
-  it('never backgrounds a Bash post_tool_use call', () => {
-    const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' } }))
+  it('never backgrounds a Bash call whose result is large', () => {
+    const stdout = runShim(
+      'post_tool_use',
+      JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: 'x'.repeat(5000) } }),
+    )
     expect(stdout).not.toContain('"async":true')
   })
 
@@ -77,5 +83,33 @@ describe('Claude Code shim async-detach classification', () => {
     const stdout = runShim('post_tool_use', 'not json at all')
     expect(stdout).not.toContain('"async":true')
     expect(stdout.trim()).toBe('{}')
+  })
+
+  it('backgrounds a Bash call whose tool_response is a string under 200 bytes', () => {
+    const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_response: 'x'.repeat(50) }))
+    expect(stdout.split('\n')[0]).toBe('{"async":true}')
+  })
+
+  it('backgrounds a Bash call whose tool_response.stdout is under 200 bytes', () => {
+    const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_response: { stdout: 'x'.repeat(199) } }))
+    expect(stdout.split('\n')[0]).toBe('{"async":true}')
+  })
+
+  it('never backgrounds a Bash call whose tool_response.stdout is 200 bytes or more', () => {
+    const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_response: { stdout: 'x'.repeat(200) } }))
+    expect(stdout).not.toContain('"async":true')
+  })
+
+  it('trusts a numeric persistedOutputSize over reading the response text', () => {
+    const stdout = runShim(
+      'post_tool_use',
+      JSON.stringify({ tool_name: 'Bash', tool_response: { persistedOutputPath: '/x', persistedOutputSize: 5000 } }),
+    )
+    expect(stdout).not.toContain('"async":true')
+  })
+
+  it('never backgrounds a Bash call with no tool_response at all', () => {
+    const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash' }))
+    expect(stdout.split('\n')[0]).toBe('{"async":true}')
   })
 })
