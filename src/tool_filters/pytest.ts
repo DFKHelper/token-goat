@@ -262,3 +262,11 @@ export class PytestFilter extends ToolFilter {
 }
 
 export const pytestFilter: ToolFilter = new PytestFilter()
+
+/** Content sniff for a BashOutput/read_bash poll delta, which arrives with no command/argv for {@link ToolFilter.matches} to key on -- a delta made almost entirely of pure progress lines (dots, xdist-prefixed dots, or a session-header line) is pytest streaming its progress bar across polls, the exact shape the brief for this fix calls out. Requires a majority of the delta's non-blank lines to match rather than just one, since a single coincidental dot-line is common in unrelated output but a delta that is MOSTLY dot lines is not. */
+export function looksLikePytestOutput(text: string): boolean {
+  const lines = text.split('\n').filter((line) => line.trim() !== '')
+  if (lines.length === 0) return false
+  const progressLines = lines.filter((line) => DOTS_RE.test(line) || FILE_DOTS_RE.test(line) || HEADER_RE.test(line) || XDIST_PREFIX_RE.test(line))
+  return progressLines.length / lines.length >= 0.5
+}

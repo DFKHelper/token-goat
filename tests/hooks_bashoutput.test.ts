@@ -141,6 +141,32 @@ describe('BashOutput poll-delta hook (real runHook dispatch)', () => {
     }
   })
 
+  // HAND-DERIVED: shaped from PytestFilter's own DOTS_RE/FILE_DOTS_RE/HEADER_RE, computed independently of this test's must-not-drop assertions. Regression: a long-running pytest run polled repeatedly via BashOutput streamed the same dots/percentage-row noise in every delta, since the handler only stripped the already-seen prefix and never filtered the new suffix at all.
+  it('collapses pytest progress-row noise in a repeated poll delta while keeping the FAILED/traceback/summary lines intact', async () => {
+    const first = await runHook(buildEvent('post_tool_use', postPayload(bigChunk)))
+    expect(first.hookType).toBe('pass')
+
+    const dotsLine = 'tests/test_foo.py .......................................... [ 50%]'
+    const delta =
+      Array.from({ length: 40 }, () => dotsLine).join('\n') + '\n' +
+      '===== FAILURES =====\n' +
+      '____ test_something ____\n' +
+      'Traceback (most recent call last):\n' +
+      '    assert 1 == 2\n' +
+      'FAILED tests/test_foo.py::test_something\n' +
+      '===== 1 failed, 199 passed in 12.34s =====\n'
+
+    const second = await runHook(buildEvent('post_tool_use', postPayload(bigChunk + delta)))
+    expect(second.hookType).toBe('rewriteOutput')
+    if (second.hookType === 'rewriteOutput') {
+      expect(second.updatedOutput).toContain('FAILED tests/test_foo.py::test_something')
+      expect(second.updatedOutput).toContain('Traceback (most recent call last):')
+      expect(second.updatedOutput).toContain('1 failed, 199 passed in 12.34s')
+      expect(second.updatedOutput).not.toContain(dotsLine)
+      expect(second.updatedOutput.length).toBeLessThan(delta.length)
+    }
+  })
+
   it('does not act on a call with no sessionId', async () => {
     const payload = { tool_name: toolName, tool_input: { bash_id: bashId }, tool_response: { output: bigChunk }, session_id: '' }
     const res = await runHook(buildEvent('post_tool_use', payload))

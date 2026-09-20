@@ -34,7 +34,7 @@ import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { redactSecrets } from './secret_redact.js'
-import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes, pytestFilter, looksLikePytestOutput } from './tool_filters/index.js'
 import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 
@@ -125,6 +125,11 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     const delta = output.slice(prior.output.length)
     storePollSnapshot(event.sessionId, bashId, output)
     if (Buffer.byteLength(delta, 'utf-8') < minBytes) return passOutput()
+    // A long-running pytest run polled repeatedly delivers each delta as more dots/percentage rows, never the whole run again -- reuse the same pytest filter real `pytest` commands compress through, gated on a content sniff (no argv is available here to match ToolFilter.matches against) so this only fires on a delta that actually looks like pytest progress noise, not an arbitrary background command's output.
+    const compressedDelta = looksLikePytestOutput(delta) ? pytestFilter.apply(delta, '', 0, []) : null
+    const deltaBody = compressedDelta !== null && compressedDelta.worthApplying(resolveMinNetSavingsBytes())
+      ? compressedDelta.withMarker(resolveMinNetSavingsBytes())
+      : delta
     const deltaNotice = `[token-goat: bash_id ${bashId} delta since last poll]\n`
     // The delta is the shell's own bytes and the notice above them is ours, so the two need a
     // boundary the model can see: without one, a background process that prints a line in the
@@ -132,7 +137,7 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     // opening tag, matching every other substitution site -- our voice never rides inside the
     // fence, both because that is the ambiguity the fence exists to remove and because the marker
     // neutraliser would escape it.
-    const fenced = fenceUntrusted(delta, UNTRUSTED_TOOL_TAG)
+    const fenced = fenceUntrusted(deltaBody, UNTRUSTED_TOOL_TAG)
     const body = `${deltaNotice}${fenced}`
     // Priced on the string actually emitted rather than on the delta plus the notice: the fence is
     // ~120 bytes this rewrite now spends, and pricing it as though it were free is how a rewrite
