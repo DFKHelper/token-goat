@@ -64,8 +64,7 @@ export function sessionSidecarPath(sessionId: string, suffix: string): string | 
   if (!sessionId) return null
   const safe = sessionFileStem(sessionId)
   if (!safe) return null
-  // A suffix is chosen by calling code, never by a session id, but it still lands in a filename:
-  // reject anything that could climb out of the directory rather than trusting the call site.
+  // A suffix is chosen by calling code, never by a session id, but it still lands in a filename: reject anything that could climb out of the directory rather than trusting the call site.
   if (suffix.includes('/') || suffix.includes('\\') || suffix.includes('..')) return null
   const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
   const candidate = path.join(dir, `${safe}${suffix}`)
@@ -294,8 +293,7 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   const newFullReadsThisProcess = Math.max(0, (b.fullReadCount ?? 0) - fullReadBaseline)
   const fullReadCount = (a.fullReadCount ?? 0) + newFullReadsThisProcess
   if (fullReadCount > 0) merged = { ...merged, fullReadCount }
-  // Union the surgical-read tokens from both views so a concurrent process's
-  // symbol reads are not clobbered by whichever save lands last.
+  // Union the surgical-read tokens from both views so a concurrent process's symbol reads are not clobbered by whichever save lands last.
   const symbols = Array.from(new Set([...(a.symbols_read ?? []), ...(b.symbols_read ?? [])]))
   if (symbols.length > 0) merged = { ...merged, symbols_read: symbols }
   return merged
@@ -429,7 +427,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   // Same epoch filter, same reason: a served body recorded before the winning compaction may no longer be in the model's context, so it must not justify withholding a later read of that file.
   const rawDiskServed = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileServedOutputs ?? []) : []
   const memServed = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileServedOutputs ?? []) : []
-  // recordFileEdit clears a single file's ranges/served-output history in-memory (an edit invalidates both), but that per-file deletion carries no epoch of its own, so the compaction filter above cannot see it -- an unrelated disk read from before the edit would otherwise resurrect the exact entry this process just cleared. Drop those files from the disk side before the union so the clearing actually sticks.
+  // recordFileEdit clears a single file's line-range history in-memory (an edit moves the numbers those ranges are matched on; the served-output ids are matched on bytes instead and survive), but that per-file deletion carries no epoch of its own, so the compaction filter above cannot see it -- an unrelated disk read from before the edit would otherwise resurrect the exact entry this process just cleared. Drop those files from the disk side before the union so the clearing actually sticks.
   const clearedRangeFiles = new Set(consumedFileLineRangeKeys())
   const clearedServedFiles = new Set(consumedFileServedOutputKeys())
   const diskRanges = rawDiskRanges.filter(([path]) => !clearedRangeFiles.has(path))
@@ -450,10 +448,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
     globQueries: mergePairs(disk.globQueries ?? [], mem.globQueries ?? []),
     outstandingAgentSpawns: mergeOutstandingAgentSpawns(disk.outstandingAgentSpawns ?? [], mem.outstandingAgentSpawns ?? []),
-    // An accumulating collection, so union rather than pick a winner: two hook processes can
-    // each see a screenshot the other never did. Disk first, then mem, so the order stays
-    // oldest-to-newest and the cap evicts the oldest -- the same policy recordSeenImage applies
-    // in memory, applied again here because a union of two capped lists can exceed the cap.
+    // An accumulating collection, so union rather than pick a winner: two hook processes can each see a screenshot the other never did. Disk first, then mem, so the order stays oldest-to-newest and the cap evicts the oldest -- the same policy recordSeenImage applies in memory, applied again here because a union of two capped lists can exceed the cap.
     seenImageHashes: mergeSeenImageHashes(disk.seenImageHashes ?? [], mem.seenImageHashes ?? []),
     // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
     ...(mem.lastTabContextDigest !== undefined
@@ -508,16 +503,9 @@ export function readSessionStateFile(sessionId: string): SerializedSession | nul
  */
 export function listSiblingSessionStates(sessionId: string): SerializedSession[] {
   if (!sessionId) return []
-  // Built by the same helper the writer uses, so the two can never disagree about how much
-  // of the session id survived the 64-char cap. This used to sanitize the id with NO length
-  // limit and match `startsWith` against filenames that had been capped at 64, so once the id
-  // reached 58 sanitized characters no filename could possibly start with the prefix and the
-  // scan silently returned nothing -- indistinguishable from "no subagents ran". The
-  // pre_compact manifest, whose whole purpose is to carry session context across a compaction,
-  // reported "Files read: 0" while real work had been done.
+  // Built by the same helper the writer uses, so the two can never disagree about how much of the session id survived the 64-char cap. This used to sanitize the id with NO length limit and match `startsWith` against filenames that had been capped at 64, so once the id reached 58 sanitized characters no filename could possibly start with the prefix and the scan silently returned nothing -- indistinguishable from "no subagents ran". The pre_compact manifest, whose whole purpose is to carry session context across a compaction, reported "Files read: 0" while real work had been done.
   const prefix = saltedStemPrefix(sessionId)
-  // An id that sanitizes to nothing leaves the bare marker, which would match every salted blob
-  // on disk regardless of which session wrote it.
+  // An id that sanitizes to nothing leaves the bare marker, which would match every salted blob on disk regardless of which session wrote it.
   if (prefix === AGENT_SALT_MARKER) return []
   const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
   const out: SerializedSession[] = []
@@ -563,15 +551,7 @@ export function saveSessionState(sessionId: string): void {
       const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
       // Stamp the cache's creation time exactly once, on the first write that produces no inherited value (disk had none and mem carries none). Every later write inherits it via readDiskState -> coerce -> mergeSessionState, so it represents creation, not last-modification. Unit: seconds, matching compact.ts's `Date.now() / 1000 - created_ts` age computation.
       if (merged.created_ts === undefined) merged.created_ts = Date.now() / 1000
-      // Defense-in-depth backstop, not the primary control: individual fields (e.g.
-      // recordOutstandingAgentSpawn in session.ts) redact at their own write sites, but
-      // CLAUDE.arch.md documents that this file is the one place a *new* SerializedSession field
-      // does not automatically inherit redaction -- relying on every future field's author to
-      // remember a redactSecrets() call is exactly the gap that shipped outstandingAgentSpawns
-      // unredacted. Sweeping the fully-serialized JSON here, at the sole place this state ever
-      // reaches disk, means a future field is covered whether or not its author remembered.
-      // Fail-safe like storeBlob(): if redaction itself throws, skip this write rather than risk
-      // persisting unredacted content -- the next successful save still merges from disk.
+      // Defense-in-depth backstop, not the primary control: individual fields (e.g. recordOutstandingAgentSpawn in session.ts) redact at their own write sites, but CLAUDE.arch.md documents that this file is the one place a *new* SerializedSession field does not automatically inherit redaction -- relying on every future field's author to remember a redactSecrets() call is exactly the gap that shipped outstandingAgentSpawns unredacted. Sweeping the fully-serialized JSON here, at the sole place this state ever reaches disk, means a future field is covered whether or not its author remembered. Fail-safe like storeBlob(): if redaction itself throws, skip this write rather than risk persisting unredacted content -- the next successful save still merges from disk.
       let json: string
       try {
         json = redactSecrets(JSON.stringify(merged)).text

@@ -102,13 +102,7 @@ describe('case-insensitive filesystem path matching (#47)', () => {
     else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
   })
 
-  // Regression: recordFileRead/wasFileReadThisSession/markFileTruncated/recordLargeFileHintPending
-  // keyed their maps by normalizePath(filePath) alone. normalizePath only lowercases the drive
-  // letter, so a second Read of the SAME physical file under different casing beyond the drive
-  // letter (e.g. "Worker.ts" vs "worker.ts" -- Windows/macOS filesystems are case-insensitive)
-  // missed the existing cache entry entirely and the "already read this session" dedup hint
-  // silently failed to fire. Fold the map key with foldPath(), matching the established pattern
-  // in worker.ts/index_prune.ts/sql_path.ts/walk_index.ts/read_commands.ts.
+  // Regression: recordFileRead/wasFileReadThisSession/markFileTruncated/recordLargeFileHintPending keyed their maps by normalizePath(filePath) alone. normalizePath only lowercases the drive letter, so a second Read of the SAME physical file under different casing beyond the drive letter (e.g. "Worker.ts" vs "worker.ts" -- Windows/macOS filesystems are case-insensitive) missed the existing cache entry entirely and the "already read this session" dedup hint silently failed to fire. Fold the map key with foldPath(), matching the established pattern in worker.ts/index_prune.ts/sql_path.ts/walk_index.ts/read_commands.ts.
   it('recognizes a re-read of the same file under different casing as the same entry', () => {
     process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
     const p = makeTmpFile()
@@ -135,11 +129,7 @@ describe('case-insensitive filesystem path matching (#47)', () => {
     expect(wasFileReadThisSession(differentlyCased)).toBe(false)
   })
 
-  // The read-dedup map is round-tripped to disk between hook process invocations via
-  // exportSessionState/importSessionState (see session_store.ts::loadSessionState /
-  // saveSessionState). If importSessionState rebuilt the in-memory map keyed by the raw,
-  // case-preserved FileEntry.path instead of a folded key, the fold fix above would only hold
-  // for the lifetime of a single process and silently regress on the very next hook invocation.
+  // The read-dedup map is round-tripped to disk between hook process invocations via exportSessionState/importSessionState (see session_store.ts::loadSessionState / saveSessionState). If importSessionState rebuilt the in-memory map keyed by the raw, case-preserved FileEntry.path instead of a folded key, the fold fix above would only hold for the lifetime of a single process and silently regress on the very next hook invocation.
   it('preserves the case-fold across an exportSessionState/importSessionState round-trip', () => {
     process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
     const p = makeTmpFile()
@@ -183,29 +173,24 @@ describe('recordFileEdit preserves other tracked flags (#M20)', () => {
     recordFileEdit(p)
     files = [...getSessionFiles().values()]
     expect(files[0]?.wasEdited).toBe(true)
-    // recordFileEdit used to rebuild the entry field-by-field, silently dropping wasTruncated
-    // instead of preserving it like the sibling read/truncate functions do.
+    // recordFileEdit used to rebuild the entry field-by-field, silently dropping wasTruncated instead of preserving it like the sibling read/truncate functions do.
     expect(files[0]?.wasTruncated).toBe(true)
   })
 })
 
 describe('served-output index invalidation', () => {
-  it('drops served outputs for a file when it is edited', () => {
-    // The index is what justifies withholding a later read's body on the grounds the model already
-    // holds those bytes. An edit changes the bytes, so every id recorded before it stops being
-    // evidence of anything -- and unlike a stale line range, acting on a stale id here deletes
-    // content from the transcript rather than just producing a wrong hint.
+  it('keeps served outputs for a file when it is edited', () => {
+    // The index is what justifies withholding a later read's body on the grounds the model already holds those bytes, and every consumer decides that on the served bytes (containsLineRun / planServedElisions), never on line position. A line the edit rewrote therefore stops matching by itself; a line it left alone was still served verbatim this session. Dropping the whole file's history on edit threw that evidence away for the untouched remainder and made the next read of an edit-read-edit loop ship whole. The line-range ledger, matched on numbers the edit moves, is the one that must still be cleared -- pinned separately below.
     const p = normalizePath(makeTmpFile())
     recordFileServedOutput(p, 'blob-1')
     expect(getFileServedOutputs(p)).toEqual(['blob-1'])
 
     recordFileEdit(p)
-    expect(getFileServedOutputs(p)).toEqual([])
+    expect(getFileServedOutputs(p)).toEqual(['blob-1'])
   })
 
   it('drops served outputs for every file on compaction', () => {
-    // Same assumption at whole-body granularity as the line-range ledger markCompacted already
-    // clears: after a compaction the served text is no longer in context.
+    // Same assumption at whole-body granularity as the line-range ledger markCompacted already clears: after a compaction the served text is no longer in context.
     const a = normalizePath(makeTmpFile())
     const b = normalizePath(makeTmpFile())
     recordFileServedOutput(a, 'blob-a')
@@ -235,8 +220,7 @@ describe('served-output index invalidation', () => {
   })
 
   it('a genuine file path can never fold to the reserved generic-served-output key', () => {
-    // recordFileServedOutput/getFileServedOutputs key everything on foldPath(normalizePath(...)),
-    // so the collision check must run on that folded form, not on the raw strings.
+    // recordFileServedOutput/getFileServedOutputs key everything on foldPath(normalizePath(...)), so the collision check must run on that folded form, not on the raw strings.
     const realPaths = [makeTmpFile(), 'C:\\Projects\\token-goat\\src\\session.ts', '/home/user/project/file.ts']
     for (const raw of realPaths) {
       expect(normalizePath(raw)).not.toBe(GENERIC_SERVED_OUTPUT_KEY)
@@ -244,16 +228,12 @@ describe('served-output index invalidation', () => {
   })
 
   it('retains more than the per-file cap under the reserved generic key, and a match against the 9th-most-recent id is still found', () => {
-    // The bug this guards: MAX_SERVED_OUTPUTS_PER_FILE=8 was sized for one path per key. Reused
-    // unmodified for the single session-wide generic key, it means only the last 8 Bash outputs in
-    // the WHOLE session stay searchable. This must fail against the pre-fix code (cap shared with
-    // MAX_SERVED_OUTPUTS_PER_FILE=8) and pass once the generic key gets its own, larger cap.
+    // The bug this guards: MAX_SERVED_OUTPUTS_PER_FILE=8 was sized for one path per key. Reused unmodified for the single session-wide generic key, it means only the last 8 Bash outputs in the WHOLE session stay searchable. This must fail against the pre-fix code (cap shared with MAX_SERVED_OUTPUTS_PER_FILE=8) and pass once the generic key gets its own, larger cap.
     expect(MAX_GENERIC_SERVED_OUTPUTS).toBeGreaterThan(MAX_SERVED_OUTPUTS_PER_FILE)
     for (let i = 0; i < MAX_GENERIC_SERVED_OUTPUTS; i++) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, 'gblob-' + i)
     const ids = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY)
     expect(ids).toHaveLength(MAX_GENERIC_SERVED_OUTPUTS)
-    // The 9th-most-recent of MAX_GENERIC_SERVED_OUTPUTS ids -- past where the old per-file cap of 8
-    // would have already evicted it -- must still be present and findable.
+    // The 9th-most-recent of MAX_GENERIC_SERVED_OUTPUTS ids -- past where the old per-file cap of 8 would have already evicted it -- must still be present and findable.
     const ninthMostRecent = 'gblob-' + (MAX_GENERIC_SERVED_OUTPUTS - 9)
     expect(ids).toContain(ninthMostRecent)
   })
@@ -313,11 +293,7 @@ describe('recordFileEdit clears stale line ranges', () => {
   })
 })
 
-// Regression (mutation-testing gap): MAX_RANGES_PER_FILE's own doc comment says
-// MAX_OUTSTANDING_AGENT_SPAWNS mirrors this cap's "cap-then-evict" shape, and that sibling cap
-// has a dedicated bound test (hooks_agent_spawn.test.ts), but this cap itself had none. A
-// mutation dropping the eviction splice entirely still passed the full suite -- a long session
-// issuing many distinct sed/read-range calls on the same file would grow this list unboundedly.
+// Regression (mutation-testing gap): MAX_RANGES_PER_FILE's own doc comment says MAX_OUTSTANDING_AGENT_SPAWNS mirrors this cap's "cap-then-evict" shape, and that sibling cap has a dedicated bound test (hooks_agent_spawn.test.ts), but this cap itself had none. A mutation dropping the eviction splice entirely still passed the full suite -- a long session issuing many distinct sed/read-range calls on the same file would grow this list unboundedly.
 describe('recordFileLineRange bounds ranges per file (mutation-testing gap)', () => {
   it('never exceeds MAX_RANGES_PER_FILE, keeping the most recently recorded ranges', () => {
     const p = normalizePath(makeTmpFile())
@@ -525,12 +501,7 @@ describe('outstanding agent spawn tracking (mutation-testing gap)', () => {
     expect(consumedOutstandingAgentSpawnKeys().length).toBe(1)
   })
 
-  // Regression (HAND-DERIVED credentials): recordOutstandingAgentSpawn stored the raw prompt with
-  // no redaction call at all -- not a truncate/redact ordering bug like the other three sites, a
-  // field that never called redactSecrets anywhere. A prompt carrying a live credential survived
-  // verbatim in memory, in exportSessionState()'s output (what session_store.ts persists to disk),
-  // and in the duplicate-spawn advisory display. Asserts absence of FRAGMENTS (a partial AKIA/
-  // sk-ant- match), not just the full secret, matching this repo's fixture-provenance discipline.
+  // Regression (HAND-DERIVED credentials): recordOutstandingAgentSpawn stored the raw prompt with no redaction call at all -- not a truncate/redact ordering bug like the other three sites, a field that never called redactSecrets anywhere. A prompt carrying a live credential survived verbatim in memory, in exportSessionState()'s output (what session_store.ts persists to disk), and in the duplicate-spawn advisory display. Asserts absence of FRAGMENTS (a partial AKIA/ sk-ant- match), not just the full secret, matching this repo's fixture-provenance discipline.
   it('redacts a credential in the spawn prompt before it is ever stored', () => {
     recordOutstandingAgentSpawn('Use this key to call the billing API: sk-ant-A1b2C3d4E5f6G7h8I9J0K1L2M3N4O5P6Q7R8S9T0 and report back')
     const spawns = getOutstandingAgentSpawns()

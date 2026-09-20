@@ -10,6 +10,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 **Upgrading to this version reindexes once.** Every existing row carries the old single stamp, so the first run after the upgrade treats the whole index as stale and rebuilds it. Stored embeddings survive: the content has not moved and neither has the embedding digest, so a reparsed file keeps the vectors it already had. That happens one time. After it, a release that touches a single language adapter only reparses files in that language.
 
+### Fixed
+
+- **Editing a file keeps the already-read evidence for the parts of it the edit did not touch**: a Write or Edit cleared that file's entire served-body index, so the next read of it shipped whole. In one edit-read-edit loop over a changelog, fourteen repeated reads of the same opening block cost roughly 274,000 tokens. The index is matched on the served bytes and never on line position, so a line the edit rewrote stops matching by itself while the untouched lines around it still come back withheld behind a recall pointer. The `sed` line-range ledger, matched on numbers an edit does move, is still cleared on every edit.
+
 ## [2.9.18] - 2026-09-19
 
 ### Fixed

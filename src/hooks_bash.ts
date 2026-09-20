@@ -344,7 +344,7 @@ async function maybeCollapseIdenticalRead(
   const originalBytes = Buffer.byteLength(output, 'utf-8')
   if (originalBytes < Math.max(cacheMinBytes, IDENTICAL_READ_MIN_BODY_BYTES)) return null
 
-  // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the session, but this rewrite's whole claim is that the model already holds these bytes -- which is only true if the earlier read happened in THIS conversation. Keying on the session's own per-file index (serialized per session id, and cleared on edit and on compaction) rather than on the blob cache alone is what makes the claim true: a first read in a fresh session finds nothing here and passes through whole, even when an identical body from yesterday is still sitting in the blob cache.
+  // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the session, but this rewrite's whole claim is that the model already holds these bytes -- which is only true if the earlier read happened in THIS conversation. Keying on the session's own per-file index (serialized per session id, and cleared on compaction) rather than on the blob cache alone is what makes the claim true: a first read in a fresh session finds nothing here and passes through whole, even when an identical body from yesterday is still sitting in the blob cache.
   //
   // Keyed by file rather than by command, because the measured waste is not one command repeated: it is several spellings of overlapping reads of one file, which hash differently and return different bytes. Newest first, since a later body is the more likely container and stopping at the first hit bounds how many blobs get read. Against the directory a leading `cd DIR` actually leaves the shell in, not this hook's own cwd: `cd docs` then a read of `README.md` is a different file from the `README.md` beside it, and two files can hold identical text. `cmd` arrives with the prefix already stripped, so the raw form is what still knows where the shell went.
   const fileKey = resolveIndexPath(filePath, cdPrefixCwd(rawCmd, cwd ?? process.cwd()))
@@ -457,9 +457,7 @@ async function maybeCompressCompoundOutput(
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
   // Single commands were handled by the pre-hook's wrapper if wrapped; unwrapped single commands (e.g. in environments without pre-hook rewriting) reach here and are eligible for compression.
   if (!isUnwrapped && isCompressibleSingleCommand(cmd)) return null
-  // A recall of already-delivered full output must survive verbatim, or a piped/chained
-  // read of it (e.g. `bash-output <id> --full | head -300`) gets recompressed into a new,
-  // smaller pointer -- the model asked for the full text back and got another summary.
+  // A recall of already-delivered full output must survive verbatim, or a piped/chained read of it (e.g. `bash-output <id> --full | head -300`) gets recompressed into a new, smaller pointer -- the model asked for the full text back and got another summary.
   if (isFullRecallCommand(cmd)) return null
   // Don't compact a command that reported a non-zero exit: a failing compound pipeline's diagnostics must reach the model in full on its first read, not behind a `--full` recall. An unknown exit (null -- common on harnesses that do not report one) is treated as non-failure, matching the success gates elsewhere in this handler.
   if (exitCode !== null && exitCode !== 0) return null
@@ -895,12 +893,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
-  // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an
-  // exact index answer -- rewrite the command to it instead of just hinting, so the model gets
-  // the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the
-  // hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any
-  // `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape
-  // rather than something this call needs to special-case.
+  // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an exact index answer -- rewrite the command to it instead of just hinting, so the model gets the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape rather than something this call needs to special-case.
   const structuralRewrite = detectStructuralIndexRewrite(rawCmd, hintCwd)
   if (structuralRewrite !== null) {
     return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: structuralRewrite.command } }

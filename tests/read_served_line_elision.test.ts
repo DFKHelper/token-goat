@@ -36,6 +36,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { recordFileEdit } from '../src/session.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { rewrittenBody, rewrittenKeys } from './helpers/updated-tool-output.js'
 
@@ -110,8 +111,7 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-elide-'))
     target = path.join(dir, 'sample.ts')
     const lines = writeTarget('alpha')
-    // Size assertions, so a later change to the shipped floors fails here instead of silently
-    // turning every case below into a decline that still reads as a pass.
+    // Size assertions, so a later change to the shipped floors fails here instead of silently turning every case below into a decline that still reads as a pass.
     expect(Buffer.byteLength(lines.slice(0, 20).join('\n'), 'utf-8')).toBeGreaterThan(512)
   })
 
@@ -127,8 +127,7 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     expect(out.hookType).toBe('rewriteOutput')
     if (out.hookType !== 'rewriteOutput') return
     expect(out.updatedOutput).toContain(NOTICE)
-    // Must-not-drop: the twenty lines nobody has seen are the whole reason this is a rewrite and
-    // not a deny. An over-collapse would shrink the output further and pass a size-only check.
+    // Must-not-drop: the twenty lines nobody has seen are the whole reason this is a rewrite and not a deny. An over-collapse would shrink the output further and pass a size-only check.
     for (const n of [21, 30, 40]) expect(out.updatedOutput).toContain(bodyLine(n, 'alpha'))
     // And the served ones are actually gone, so the rewrite did something.
     for (const n of [1, 10, 20]) expect(out.updatedOutput).not.toContain(bodyLine(n, 'alpha'))
@@ -136,15 +135,12 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
   })
 
   it('leaves a first read of a file completely untouched', () => {
-    // The ordering guard. `postReadHandler` records this read into the store the elision consults;
-    // recording before eliding would make every line match itself, and a first read would come
-    // back as a notice with the file's entire content withheld.
+    // The ordering guard. `postReadHandler` records this read into the store the elision consults; recording before eliding would make every line match itself, and a first read would come back as a notice with the file's entire content withheld.
     const original = rendered()
     const out = readBack(original)
     expect(out.hookType).not.toBe('rewriteOutput')
 
-    // Positive control: the identical result, once something HAS been served, is rewritten -- so
-    // the pass above is the store being empty rather than the branch being unreachable.
+    // Positive control: the identical result, once something HAS been served, is rewritten -- so the pass above is the store being empty rather than the branch being unreachable.
     clearModuleCaches()
     deliver({ offset: 1, limit: 20 })
     const second = readBack(original)
@@ -157,22 +153,15 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     if (out.hookType !== 'rewriteOutput') throw new Error('expected a rewrite')
 
     expect(out.updatedOutput).toContain('lines 1-20')
-    // Row 21 still calls itself 21. A rewrite that renumbered from the top would leave every later
-    // reference in the conversation pointing at the wrong line.
+    // Row 21 still calls itself 21. A rewrite that renumbered from the top would leave every later reference in the conversation pointing at the wrong line.
     expect(out.updatedOutput).toContain('21\t' + bodyLine(21, 'alpha'))
     expect(out.updatedOutput).toContain('40\t' + bodyLine(40, 'alpha'))
   })
 
   it('emits surviving rows byte-for-byte on both sides of a cut, pad included', () => {
-    // The parser tolerates a leading pad; Claude Code does not emit one. This asserts the rewrite
-    // is purely subtractive either way -- if surviving rows were re-rendered from the parsed number
-    // and text, the pad would vanish and part of the "saving" would be silent reformatting of lines
-    // that were never withheld.
+    // The parser tolerates a leading pad; Claude Code does not emit one. This asserts the rewrite is purely subtractive either way -- if surviving rows were re-rendered from the parsed number and text, the pad would vanish and part of the "saving" would be silent reformatting of lines that were never withheld.
     //
-    // The served window sits in the MIDDLE of the read on purpose. Rows before a cut and rows after
-    // it are emitted by two separate loops, and a window at the head of the file leaves the first
-    // loop with nothing to do -- so either loop could drift on its own and the assertion would
-    // still pass. Lines 10-29 are withheld; 1-9 and 30-40 have to come back untouched.
+    // The served window sits in the MIDDLE of the read on purpose. Rows before a cut and rows after it are emitted by two separate loops, and a window at the head of the file leaves the first loop with nothing to do -- so either loop could drift on its own and the assertion would still pass. Lines 10-29 are withheld; 1-9 and 30-40 have to come back untouched.
     deliver({ offset: 10, limit: 20 })
     const out = readBack(rendered(1, LINE_COUNT, '   '))
     if (out.hookType !== 'rewriteOutput') throw new Error('expected a rewrite')
@@ -184,8 +173,7 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
   })
 
   it('preserves harness text that follows the numbered block', () => {
-    // Real results carry trailers -- truncation notices, "(N lines total)", system reminders. The
-    // block ends where the numbering stops, and everything after it is not ours to drop.
+    // Real results carry trailers -- truncation notices, "(N lines total)", system reminders. The block ends where the numbering stops, and everything after it is not ours to drop.
     const trailer = '\n... (40 lines total) ...\nUse Read with offset and limit to see more.'
     deliver({ offset: 1, limit: 20 })
     const out = readBack(rendered() + trailer)
@@ -207,12 +195,30 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     expect(readBack(rendered()).hookType).toBe('rewriteOutput')
   })
 
+  it('keeps withholding the stretches an edit did not touch, and delivers the stretch it did', () => {
+    // Regression: `recordFileEdit` (what `hooks_edit.ts::postEditHandler` calls on every Write/Edit) used to delete the whole file's served-output history. The store is matched on the served bytes, never on line position, so the delete threw away valid evidence about every region the edit left alone -- in an edit-read-edit loop that turned each following read of the same file into a first read that shipped whole. Fixture provenance: HAND-DERIVED, the same generated lines the rest of this file uses; the edit is applied on disk and recorded through the production function rather than by poking session state.
+    deliver({ offset: 1, limit: 20 })
+
+    const edited = writeTarget('alpha')
+    edited[4] = bodyLine(5, 'REWRITTEN-BY-THE-EDIT')
+    fs.writeFileSync(target, edited.join('\n') + '\n', 'utf8')
+    recordFileEdit(target)
+
+    const out = readBack(rendered())
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType !== 'rewriteOutput') return
+    expect(out.updatedOutput).toContain(NOTICE)
+    // Calibration, and the half that matters: the one line the edit changed is NOT withheld. Without it this passes for a build that withholds everything.
+    expect(out.updatedOutput).toContain('5\t' + bodyLine(5, 'REWRITTEN-BY-THE-EDIT'))
+    // The untouched lines on both sides of the edit are still withheld -- they were served verbatim this session and the edit did not move a byte of them.
+    for (const n of [2, 10, 20]) expect(out.updatedOutput).not.toContain(bodyLine(n, 'alpha'))
+    // Must-not-drop: the twenty lines nobody has seen still come back whole.
+    for (const n of [21, 40]) expect(out.updatedOutput).toContain(bodyLine(n, 'alpha'))
+    expect(out.updatedOutput).toContain('token-goat bash-output ')
+  })
+
   it('makes only the cuts that pay for their own notice', () => {
-    // A short block at the head of this file repeats near its end, so one served window produces two
-    // separate runs in the same read: fifty-five wide lines, a cut that clearly pays, and five
-    // four-character ones, ~40 bytes against a ~130-byte notice -- a cut that loses. The first cut
-    // saves thousands of bytes, so the whole-rewrite gate below still sees a large net saving and
-    // cannot tell that the second cut is losing money inside it. Only a per-cut check can.
+    // A short block at the head of this file repeats near its end, so one served window produces two separate runs in the same read: fifty-five wide lines, a cut that clearly pays, and five four-character ones, ~40 bytes against a ~130-byte notice -- a cut that loses. The first cut saves thousands of bytes, so the whole-rewrite gate below still sees a large net saving and cannot tell that the second cut is losing money inside it. Only a per-cut check can.
     const repeated = ['aa1', 'aa2', 'aa3', 'aa4', 'aa5']
     const mixed = [
       ...repeated,
@@ -226,8 +232,7 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     const out = readBack(rendered(1, 65))
     if (out.hookType !== 'rewriteOutput') throw new Error('expected a rewrite')
 
-    // Exactly one notice: the long run went, and the five short lines it could not pay to withhold
-    // stayed. A second notice here would mean the rewrite spent ~130 bytes to remove ~40.
+    // Exactly one notice: the long run went, and the five short lines it could not pay to withhold stayed. A second notice here would mean the rewrite spent ~130 bytes to remove ~40.
     expect((out.updatedOutput ?? '').split(NOTICE)).toHaveLength(2)
     expect(out.updatedOutput).toContain('61\taa1')
     expect(out.updatedOutput).toContain('65\taa5')
@@ -235,9 +240,7 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
   })
 
   it('leaves a long overlap whose bytes cannot pay for the notice', () => {
-    // A run of five lines is a real overlap by any line count, but five lines of four characters is
-    // ~50 bytes against a ~130-byte notice, so withholding them would make the result LARGER. A
-    // rewrite that decided on run length alone would ship a negative saving here.
+    // A run of five lines is a real overlap by any line count, but five lines of four characters is ~50 bytes against a ~130-byte notice, so withholding them would make the result LARGER. A rewrite that decided on run length alone would ship a negative saving here.
     const narrow = Array.from({ length: 200 }, (_, i) => 'L' + (i + 1))
     fs.writeFileSync(target, narrow.join('\n') + '\n', 'utf8')
     expect(Buffer.byteLength(narrow.slice(0, 150).join('\n'), 'utf-8')).toBeGreaterThan(512)
@@ -253,11 +256,7 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
   })
 
   it('declines when the whole rewrite clears the per-cut bar but not the net floor', () => {
-    // The two gates are different bars and this is the band between them. One cut of eight
-    // medium-width lines removes ~224 bytes and its notice costs ~145, so the cut pays for itself
-    // and is made -- but ~79 bytes of net saving is under the 100-byte floor a rewrite has to clear
-    // to be worth handing the model a different result at all. Only the whole-rewrite gate declines
-    // here, and without it token-goat would spend a rewrite to save less than it charges for one.
+    // The two gates are different bars and this is the band between them. One cut of eight medium-width lines removes ~224 bytes and its notice costs ~145, so the cut pays for itself and is made -- but ~79 bytes of net saving is under the 100-byte floor a rewrite has to clear to be worth handing the model a different result at all. Only the whole-rewrite gate declines here, and without it token-goat would spend a rewrite to save less than it charges for one.
     const lines = Array.from({ length: 200 }, (_, i) => 'm' + (i + 1) + ':' + 'x'.repeat(20))
     fs.writeFileSync(target, lines.join('\n') + '\n', 'utf8')
     expect(Buffer.byteLength(lines.slice(0, 60).join('\n'), 'utf-8')).toBeGreaterThan(512)
@@ -266,8 +265,7 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     const thin = readBack(rendered(53, 82), { offset: 53, limit: 30 })
     expect(thin.hookType).not.toBe('rewriteOutput')
 
-    // Positive control: the same file and served window, overlapped by twenty lines instead of
-    // eight, so the identical machinery clears the floor and does rewrite.
+    // Positive control: the same file and served window, overlapped by twenty lines instead of eight, so the identical machinery clears the floor and does rewrite.
     clearModuleCaches()
     fs.writeFileSync(target, lines.join('\n') + '\n', 'utf8')
     deliver({ offset: 1, limit: 60 })
@@ -277,14 +275,12 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
   })
 
   it('declines when the result carries anything the redactor would strip', () => {
-    // On a pass-through the harness's own text reaches the model. Rewriting here would hand back a
-    // redacted copy of the user's own file, so the branch steps aside instead.
+    // On a pass-through the harness's own text reaches the model. Rewriting here would hand back a redacted copy of the user's own file, so the branch steps aside instead.
     deliver({ offset: 1, limit: 20 })
     const withSecret = rendered() + '\n41\tconst k = "AKIAQQQQQQQQQQQQQQQQ"'
     expect(readBack(withSecret).hookType).not.toBe('rewriteOutput')
 
-    // Positive control: the same read without that line is rewritten, so the decline above is the
-    // redaction check and not the appended row breaking the parse.
+    // Positive control: the same read without that line is rewritten, so the decline above is the redaction check and not the appended row breaking the parse.
     clearModuleCaches()
     deliver({ offset: 1, limit: 20 })
     expect(readBack(rendered() + '\n41\tconst k = "not-a-key"').hookType).toBe('rewriteOutput')
@@ -357,8 +353,7 @@ describe('built bundle: the elision survives the hook process boundary', () => {
     const parsed = JSON.parse(res.stdout) as {
       hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: unknown }
     }
-    // The cross-process assertion: if the served body lived only in module state, this separate
-    // process would find an empty store and emit `{}`.
+    // The cross-process assertion: if the served body lived only in module state, this separate process would find an empty store and emit `{}`.
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
     // Read's result shape, with only the body field replaced -- a bare string here is discarded.
     expect(rewrittenKeys(parsed.hookSpecificOutput?.updatedToolOutput)).toContain('content')
@@ -369,8 +364,7 @@ describe('built bundle: the elision survives the hook process boundary', () => {
   })
 
   it('does not withhold a first read in a fresh session', () => {
-    // The same payload, in a session that was served nothing. A store keyed on anything wider than
-    // the session would replace a first read with a pointer at a body it never saw.
+    // The same payload, in a session that was served nothing. A store keyed on anything wider than the session would replace a first read with a pointer at a body it never saw.
     const sid = 'e2e-elide-fresh'
     const whole = { file_path: e2eTarget }
     expect(runHook('pre_tool_use', sid, whole, 'ok').status).toBe(0)

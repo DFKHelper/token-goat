@@ -27,10 +27,7 @@ import {
 } from '../src/session.js'
 import { shortFingerprint } from '../src/fingerprint.js'
 
-// The persisted key is a digest of the url, not the url itself: a download url routinely carries
-// a credential and this file is written without the redaction pass every other cache gets (see
-// session.ts::curlDownloadKey). The merge semantics below are unchanged and are what these tests
-// are about; `curlKey` just spells the stored key so the assertions stay exact.
+// The persisted key is a digest of the url, not the url itself: a download url routinely carries a credential and this file is written without the redaction pass every other cache gets (see session.ts::curlDownloadKey). The merge semantics below are unchanged and are what these tests are about; `curlKey` just spells the stored key so the assertions stay exact.
 const curlKey = (url: string): string => shortFingerprint(url)
 
 let tmpHome: string
@@ -139,9 +136,7 @@ describe('save/load round-trip', () => {
   })
 
   it('persists and restores seenImageHashes across a save/load round-trip, so screenshot dedup survives between hook processes', () => {
-    // Same six touch points lastTabContext needed, and the test above records what happens when two
-    // of them are missed: the feature works inside one process, every test passes, and the thing it
-    // exists for -- recognising a repeat sent by the NEXT hook process -- never happens once.
+    // Same six touch points lastTabContext needed, and the test above records what happens when two of them are missed: the feature works inside one process, every test passes, and the thing it exists for -- recognising a repeat sent by the NEXT hook process -- never happens once.
     importSessionState({ ...empty(), seenImageHashes: ['aaa', 'bbb'] })
     saveSessionState('sid-seenimages')
 
@@ -153,8 +148,7 @@ describe('save/load round-trip', () => {
   })
 
   it('unions seenImageHashes from two concurrent writers instead of letting the later save clobber the earlier', () => {
-    // Unlike lastTabContext this is an accumulating collection: two hook processes can each see a
-    // screenshot the other never did, and picking one writer's list would forget the other's.
+    // Unlike lastTabContext this is an accumulating collection: two hook processes can each see a screenshot the other never did, and picking one writer's list would forget the other's.
     importSessionState({ ...empty(), seenImageHashes: ['aaa'] })
     saveSessionState('sid-seenimages-merge')
 
@@ -250,10 +244,7 @@ describe('merge-on-save (concurrent writer not clobbered)', () => {
 
 describe('concurrent readCount increments are not lost on merge (task #110)', () => {
   it('sums two processes genuine reads instead of collapsing them via Math.max', () => {
-    // Two processes both start from the same on-disk baseline (readCount 5 for the same
-    // file) and each independently records exactly one new, real read via recordFileRead --
-    // the actual production increment path, not a hand-built FileEntry -- simulating a
-    // realistic race where two hook invocations read the same file close together.
+    // Two processes both start from the same on-disk baseline (readCount 5 for the same file) and each independently records exactly one new, real read via recordFileRead -- the actual production increment path, not a hand-built FileEntry -- simulating a realistic race where two hook invocations read the same file close together.
     const filePath = path.join(tmpHome, 'shared.ts')
     fs.writeFileSync(filePath, 'export const x = 1\n')
     const normalized = normalizePath(filePath)
@@ -264,15 +255,12 @@ describe('concurrent readCount increments are not lost on merge (task #110)', ()
     recordFileRead(filePath)
     saveSessionState('sid-race')
 
-    // Process B: independently loads the SAME baseline -- unaware of A's write -- records
-    // its own genuine new read, and saves after A.
+    // Process B: independently loads the SAME baseline -- unaware of A's write -- records its own genuine new read, and saves after A.
     importSessionState(baseline)
     recordFileRead(filePath)
     saveSessionState('sid-race')
 
-    // Two distinct real reads happened (one per process) on top of a shared baseline of 5,
-    // so the correct total is 7. Math.max(a.readCount, b.readCount) collapses this to 6,
-    // silently losing process B's read.
+    // Two distinct real reads happened (one per process) on top of a shared baseline of 5, so the correct total is 7. Math.max(a.readCount, b.readCount) collapses this to 6, silently losing process B's read.
     const disk = JSON.parse(fs.readFileSync(sessionFile('sid-race'), 'utf8')) as SerializedSession
     const entry = disk.files.find((f) => f.path === normalized)
     expect(entry?.readCount).toBe(7)
@@ -311,12 +299,7 @@ describe('case-insensitive filesystem path matching (#48)', () => {
     else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
   })
 
-  // Regression: mergeSessionState keyed its byPath Map by the raw, case-preserved FileEntry.path.
-  // A file recorded under one literal casing on disk (from an earlier save) and the SAME physical
-  // file recorded under different casing in the fresh in-memory snapshot (case-insensitive
-  // filesystems -- Windows/macOS) were treated as two distinct entries, producing duplicate
-  // FileEntry rows for one physical file on every saveSessionState() call. Fold the merge key with
-  // foldPath(), matching the fix already applied in session.ts (#47) and compact.ts.
+  // Regression: mergeSessionState keyed its byPath Map by the raw, case-preserved FileEntry.path. A file recorded under one literal casing on disk (from an earlier save) and the SAME physical file recorded under different casing in the fresh in-memory snapshot (case-insensitive filesystems -- Windows/macOS) were treated as two distinct entries, producing duplicate FileEntry rows for one physical file on every saveSessionState() call. Fold the merge key with foldPath(), matching the fix already applied in session.ts (#47) and compact.ts.
   it('merges disk and in-memory entries for the same physical file recorded under different casing', () => {
     process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
 
@@ -324,8 +307,7 @@ describe('case-insensitive filesystem path matching (#48)', () => {
     importSessionState({ ...empty(), files: [file('C:/foo/Bar.ts', 10)] })
     saveSessionState('sid-case-1')
 
-    // Process 2 starts cold, records the SAME physical file under different casing, and saves.
-    // readDiskState() at save time still sees process 1's entry under its original casing.
+    // Process 2 starts cold, records the SAME physical file under different casing, and saves. readDiskState() at save time still sees process 1's entry under its original casing.
     importSessionState({ ...empty(), files: [file('c:/foo/bar.ts', 20)] })
     saveSessionState('sid-case-1')
 
@@ -357,9 +339,7 @@ describe('pendingLargeFileHints merge (consumed hints stay consumed)', () => {
     const diskAfterA = JSON.parse(fs.readFileSync(sessionFile('sid-pending-1'), 'utf8')) as SerializedSession
     expect(diskAfterA.pendingLargeFileHints).toEqual([['/big.md', 999999]])
 
-    // Process B: a fresh hook process loads that session, resolves the hint (the CLI read that
-    // followed it), and saves. Nothing else touches the file in between, so the disk read at B's
-    // save time still shows the entry — the merge must still drop it, not resurrect it.
+    // Process B: a fresh hook process loads that session, resolves the hint (the CLI read that followed it), and saves. Nothing else touches the file in between, so the disk read at B's save time still shows the entry — the merge must still drop it, not resurrect it.
     importSessionState(empty())
     loadSessionState('sid-pending-1')
     expect(takePendingLargeFileHint('/big.md')).toBe(999999)
@@ -400,15 +380,13 @@ describe('pendingLargeFileHints merge does not resurrect an untouched carried ke
     recordLargeFileHintPending('/k.md', 555)
     saveSessionState(sid)
 
-    // Process A: loads the disk snapshot (sees /k.md) but never touches it — it's just
-    // carried along in memory, unconsumed and unmodified.
+    // Process A: loads the disk snapshot (sees /k.md) but never touches it — it's just carried along in memory, unconsumed and unmodified.
     importSessionState(empty())
     loadSessionState(sid)
     expect(exportSessionState().pendingLargeFileHints).toEqual([['/k.md', 555]])
     const aSnapshot = exportSessionState()
 
-    // Process B: independently loads the same disk snapshot, legitimately consumes /k.md
-    // (resolves the hint), and saves — removing it from disk.
+    // Process B: independently loads the same disk snapshot, legitimately consumes /k.md (resolves the hint), and saves — removing it from disk.
     importSessionState(empty())
     loadSessionState(sid)
     expect(takePendingLargeFileHint('/k.md')).toBe(555)
@@ -416,10 +394,7 @@ describe('pendingLargeFileHints merge does not resurrect an untouched carried ke
     const afterB = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
     expect(afterB.pendingLargeFileHints ?? []).toEqual([])
 
-    // Process A now saves its own (stale) view. Its own bookkeeping correctly shows it never
-    // consumed /k.md (it never touched it, so the key is not in its own "consumed since load"
-    // set) — a plain union-of-entries overlay would still resurrect it from A's stale
-    // in-memory copy. It must not: B already legitimately removed the key.
+    // Process A now saves its own (stale) view. Its own bookkeeping correctly shows it never consumed /k.md (it never touched it, so the key is not in its own "consumed since load" set) — a plain union-of-entries overlay would still resurrect it from A's stale in-memory copy. It must not: B already legitimately removed the key.
     importSessionState(aSnapshot)
     saveSessionState(sid)
 
@@ -456,9 +431,7 @@ describe('curlDownloads merge (cleared downloads stay cleared)', () => {
     const diskAfterA = JSON.parse(fs.readFileSync(sessionFile('sid-curl-1'), 'utf8')) as SerializedSession
     expect(diskAfterA.curlDownloads).toEqual([[curlKey('http://x/f.zip'), '/repo/a/downloads/f.zip']])
 
-    // Process B: a fresh hook process loads that session, clears the download (its saved file
-    // is gone), and saves. Nothing else touches the file in between, so the disk read at B's
-    // save time still shows the entry — the merge must still drop it, not resurrect it.
+    // Process B: a fresh hook process loads that session, clears the download (its saved file is gone), and saves. Nothing else touches the file in between, so the disk read at B's save time still shows the entry — the merge must still drop it, not resurrect it.
     importSessionState(empty())
     loadSessionState('sid-curl-1')
     clearCurlDownload('http://x/f.zip')
@@ -476,15 +449,13 @@ describe('curlDownloads merge (cleared downloads stay cleared)', () => {
     recordCurlDownload('http://y/g.zip', '/repo/a/downloads/g.zip')
     saveSessionState(sid)
 
-    // Process A: loads the disk snapshot (sees the URL) but never touches it — it's just
-    // carried along in memory, unconsumed and unmodified.
+    // Process A: loads the disk snapshot (sees the URL) but never touches it — it's just carried along in memory, unconsumed and unmodified.
     importSessionState(empty())
     loadSessionState(sid)
     expect(exportSessionState().curlDownloads).toEqual([[curlKey('http://y/g.zip'), '/repo/a/downloads/g.zip']])
     const aSnapshot = exportSessionState()
 
-    // Process B: independently loads the same disk snapshot, legitimately clears the URL
-    // (its saved file is gone), and saves — removing it from disk.
+    // Process B: independently loads the same disk snapshot, legitimately clears the URL (its saved file is gone), and saves — removing it from disk.
     importSessionState(empty())
     loadSessionState(sid)
     clearCurlDownload('http://y/g.zip')
@@ -492,9 +463,7 @@ describe('curlDownloads merge (cleared downloads stay cleared)', () => {
     const afterB = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
     expect(afterB.curlDownloads).toEqual([])
 
-    // Process A now saves its own (stale) view. A plain union-of-entries overlay would still
-    // resurrect the URL from A's stale in-memory copy. It must not: B already legitimately
-    // cleared it.
+    // Process A now saves its own (stale) view. A plain union-of-entries overlay would still resurrect the URL from A's stale in-memory copy. It must not: B already legitimately cleared it.
     importSessionState(aSnapshot)
     saveSessionState(sid)
 
@@ -575,24 +544,17 @@ describe('line-range merge cap eviction fairness (#M6)', () => {
       JSON.stringify({ ...empty(), fileLineRanges: [['big.ts', diskRanges]] }),
     )
 
-    // This process only saw one brand-new, small range for the same file — far less than what
-    // another process already had confirmed on disk.
+    // This process only saw one brand-new, small range for the same file — far less than what another process already had confirmed on disk.
     importSessionState({ ...empty(), fileLineRanges: [['big.ts', [[9999, 10005]]]] })
     saveSessionState(sid)
 
     const disk = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
     const savedRanges = disk.fileLineRanges!.find(([f]) => f === 'big.ts')![1]
-    // Every one of the other process's already-persisted ranges must survive the merge — none
-    // may be evicted just to make room for this process's own not-yet-persisted contribution.
+    // Every one of the other process's already-persisted ranges must survive the merge — none may be evicted just to make room for this process's own not-yet-persisted contribution.
     for (const r of diskRanges) {
       expect(savedRanges).toContainEqual(r)
     }
-    // Regression (mutation-testing gap): the cap itself must actually be enforced -- the merge
-    // was already at MAX_RANGES_PER_FILE from disk alone, so this process's new range must be
-    // REJECTED, not silently appended past the cap. A mutation dropping the
-    // `prev.length >= MAX_RANGES_PER_FILE` guard still passed every prior assertion here since
-    // they only checked survival of the disk ranges, never the total count or the new range's
-    // absence.
+    // Regression (mutation-testing gap): the cap itself must actually be enforced -- the merge was already at MAX_RANGES_PER_FILE from disk alone, so this process's new range must be REJECTED, not silently appended past the cap. A mutation dropping the `prev.length >= MAX_RANGES_PER_FILE` guard still passed every prior assertion here since they only checked survival of the disk ranges, never the total count or the new range's absence.
     expect(savedRanges.length).toBe(MAX_RANGES_PER_FILE)
     expect(savedRanges).not.toContainEqual([9999, 10005])
   })
@@ -724,10 +686,7 @@ describe('Python-format session file compatibility', () => {
 })
 
 describe('created_ts (session-cache creation timestamp)', () => {
-  // Regression: compact.ts::buildManifestAdaptive derives the session-age budget
-  // multiplier from `created_ts`, but nothing ever wrote it, so age was always 0
-  // and the multiplier was permanently stuck at the young/0.6 tier. saveSessionState
-  // must stamp it once, in seconds, and never bump it on later writes.
+  // Regression: compact.ts::buildManifestAdaptive derives the session-age budget multiplier from `created_ts`, but nothing ever wrote it, so age was always 0 and the multiplier was permanently stuck at the young/0.6 tier. saveSessionState must stamp it once, in seconds, and never bump it on later writes.
   it('stamps created_ts once on first save and preserves it across later saves', () => {
     importSessionState(empty())
     const before = Date.now() / 1000
@@ -742,8 +701,7 @@ describe('created_ts (session-cache creation timestamp)', () => {
     expect(first!.created_ts!).toBeLessThanOrEqual(after)
 
     const originalTs = first!.created_ts!
-    // A later save (even after more activity and wall-clock movement) must not
-    // move created_ts forward — it marks creation, not last modification.
+    // A later save (even after more activity and wall-clock movement) must not move created_ts forward — it marks creation, not last modification.
     recordFileRead('/proj/y.ts')
     saveSessionState('sid-created')
     const second = readSessionStateFile('sid-created')
@@ -752,8 +710,7 @@ describe('created_ts (session-cache creation timestamp)', () => {
 
   it('does not resurrect created_ts as "now" after a write that inherits an older value', () => {
     importSessionState(empty())
-    // Pre-seed a backdated created_ts on disk, then drive a real save; the merge
-    // must keep the old value rather than overwrite it with the current time.
+    // Pre-seed a backdated created_ts on disk, then drive a real save; the merge must keep the old value rather than overwrite it with the current time.
     recordFileRead('/proj/z.ts')
     saveSessionState('sid-backdate')
     const p = sessionFile('sid-backdate')
@@ -769,10 +726,7 @@ describe('created_ts (session-cache creation timestamp)', () => {
 })
 
 describe('symbols_read (surgical-read tokens) persistence', () => {
-  // Regression: compact.ts::computeAdaptiveBudget rewards files with a non-empty
-  // symbols_read via symbolsBonus, but the field was never written and, even if
-  // present, asFileEntry/mergeFileEntry dropped it — so the bonus was always 0.
-  // Drive the real writer (recordSymbolRead) through the real store round-trip.
+  // Regression: compact.ts::computeAdaptiveBudget rewards files with a non-empty symbols_read via symbolsBonus, but the field was never written and, even if present, asFileEntry/mergeFileEntry dropped it — so the bonus was always 0. Drive the real writer (recordSymbolRead) through the real store round-trip.
   it('preserves symbols_read across a save -> load round-trip', () => {
     importSessionState(empty())
     recordSymbolRead('/proj/src/foo.ts', 'myFunc')
@@ -793,8 +747,7 @@ describe('symbols_read (surgical-read tokens) persistence', () => {
     recordSymbolRead('/proj/src/foo.ts', 'a')
     saveSessionState('sid-symbols-merge')
 
-    // This process starts fresh and records a different symbol for the same file,
-    // then saves — the merge must keep both, not drop the disk one.
+    // This process starts fresh and records a different symbol for the same file, then saves — the merge must keep both, not drop the disk one.
     importSessionState(empty())
     recordSymbolRead('/proj/src/foo.ts', 'b')
     saveSessionState('sid-symbols-merge')
@@ -822,16 +775,9 @@ describe('rangeFileIdentity persistence', () => {
   })
 })
 
-// Bug: recordFileEdit clears a file's line-range/served-output history in memory (an edit
-// invalidates both), but mergeLineRanges/mergeServedOutputs did a plain per-file union against
-// whatever was already on disk, so the very next save resurrected the cleared entries straight off
-// the disk copy written before the edit -- the clearing never actually persisted. Simulates two
-// writer processes through the real save path: the first process records ranges/served output for
-// two files and saves; the second process loads that disk state (as a fresh process would), edits
-// one of the two files, and saves again. The edited file's history must be gone from disk while the
-// other file's, which no process touched after the first save, must survive untouched.
+// Bug: recordFileEdit clears a file's line-range history in memory (an edit moves the numbers those ranges are matched on), but mergeLineRanges did a plain per-file union against whatever was already on disk, so the very next save resurrected the cleared entries straight off the disk copy written before the edit -- the clearing never actually persisted. Simulates two writer processes through the real save path: the first process records ranges/served output for two files and saves; the second process loads that disk state (as a fresh process would), edits one of the two files, and saves again. The edited file's ranges must be gone from disk while the other file's, which no process touched after the first save, must survive untouched. The served-output ids are matched on the served bytes rather than on line position, so they are deliberately NOT cleared by an edit and must survive on both files -- asserted here so a re-introduced delete cannot pass this merge test.
 describe('recordFileEdit clearing survives the merge-on-save', () => {
-  it('drops an edited file\'s line ranges and served outputs from disk instead of resurrecting them from a stale read', () => {
+  it('drops an edited file\'s line ranges from disk instead of resurrecting them from a stale read, and keeps its served outputs', () => {
     const editedFile = path.join(tmpHome, 'edited.ts')
     const untouchedFile = path.join(tmpHome, 'untouched.ts')
     fs.writeFileSync(editedFile, 'export const a = 1\n')
@@ -855,7 +801,7 @@ describe('recordFileEdit clearing survives the merge-on-save', () => {
     const editedKey = normalizePath(editedFile).toLowerCase()
     const untouchedKey = normalizePath(untouchedFile).toLowerCase()
     expect((diskAfterEdit?.fileLineRanges ?? []).some(([f]) => f.toLowerCase() === editedKey)).toBe(false)
-    expect((diskAfterEdit?.fileServedOutputs ?? []).some(([f]) => f.toLowerCase() === editedKey)).toBe(false)
+    expect((diskAfterEdit?.fileServedOutputs ?? []).find(([f]) => f.toLowerCase() === editedKey)?.[1]).toEqual(['id-before-edit'])
     expect((diskAfterEdit?.fileLineRanges ?? []).find(([f]) => f.toLowerCase() === untouchedKey)?.[1]).toEqual([[1, 5]])
     expect((diskAfterEdit?.fileServedOutputs ?? []).find(([f]) => f.toLowerCase() === untouchedKey)?.[1]).toEqual(['id-untouched'])
   })
@@ -875,15 +821,7 @@ describe('file cap', () => {
 })
 
 describe('saveSessionState redaction backstop (CLAUDE.arch.md Security Boundaries)', () => {
-  // Regression (HAND-DERIVED credential): a new SerializedSession field (outstandingAgentSpawns)
-  // shipped holding a raw, unredacted prompt with no redaction call anywhere in its path -- not a
-  // truncate-before-redact ordering bug, a field that never called redactSecrets at all. Rather
-  // than trust every future field's author to remember redaction at its own construction site,
-  // saveSessionState now sweeps the fully-serialized JSON through redactSecrets immediately before
-  // the one atomicWriteText call that ever writes this file, so a field is covered whether or not
-  // its author remembered. Reads the raw bytes actually on disk, not the parsed/re-imported
-  // object, and asserts absence of a FRAGMENT, matching this repo's own fixture-provenance
-  // discipline (a full-key-only assertion would pass even while a fragment leaks).
+  // Regression (HAND-DERIVED credential): a new SerializedSession field (outstandingAgentSpawns) shipped holding a raw, unredacted prompt with no redaction call anywhere in its path -- not a truncate-before-redact ordering bug, a field that never called redactSecrets at all. Rather than trust every future field's author to remember redaction at its own construction site, saveSessionState now sweeps the fully-serialized JSON through redactSecrets immediately before the one atomicWriteText call that ever writes this file, so a field is covered whether or not its author remembered. Reads the raw bytes actually on disk, not the parsed/re-imported object, and asserts absence of a FRAGMENT, matching this repo's own fixture-provenance discipline (a full-key-only assertion would pass even while a fragment leaks).
   it('never leaves a raw credential fragment in the on-disk session state file', () => {
     importSessionState(empty())
     recordOutstandingAgentSpawn('billing key sk-ant-A1b2C3d4E5f6G7h8I9J0K1L2M3N4O5P6Q7R8S9T0 rotate it')

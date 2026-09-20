@@ -52,8 +52,7 @@ let _filesFullReadCountAtLoad = new Map<string, number>()
 // Hint fingerprints already emitted this session (dedup, matches session.py mark_hint_seen / has_hint_fingerprint).
 let _hintsShown = new Set<string>()
 
-// sessionId -> number of scheduled prompts observed. The prompt marker is a scheduler identifier
-// in some hosts, so it cannot reliably represent the number of deliveries.
+// sessionId -> number of scheduled prompts observed. The prompt marker is a scheduler identifier in some hosts, so it cannot reliably represent the number of deliveries.
 let _scheduledPromptCounts = new Map<string, number>()
 
 // url -> cacheId index for web-fetch dedup.
@@ -62,12 +61,10 @@ let _webFetches = new Map<string, string>()
 // commandHash -> outputId index for bash-output dedup.
 let _bashOutputs = new Map<string, string>()
 
-// `${pattern}::${path}::${outputMode}::${glob}` signature -> match count, for Grep dedup-hint
-// recall (an identical Grep repeated later in the session, above hints.grep_dedup_min_matches).
+// `${pattern}::${path}::${outputMode}::${glob}` signature -> match count, for Grep dedup-hint recall (an identical Grep repeated later in the session, above hints.grep_dedup_min_matches).
 let _grepQueries = new Map<string, number>()
 
-// `[pattern, path]` signature -> match count, for Glob dedup-hint recall (an identical Glob
-// repeated later in the session, above hints.glob_dedup_min_matches). Mirrors _grepQueries.
+// `[pattern, path]` signature -> match count, for Glob dedup-hint recall (an identical Glob repeated later in the session, above hints.glob_dedup_min_matches). Mirrors _grepQueries.
 let _globQueries = new Map<string, number>()
 
 // Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
@@ -80,17 +77,10 @@ export interface OutstandingAgentSpawn {
   readonly ts: number
 }
 
-// Prompts of Agent-tool spawns fired this session whose matching post_tool_use has not yet
-// arrived. Populated by recordOutstandingAgentSpawn (pre_tool_use), cleared by
-// removeOutstandingAgentSpawn (post_tool_use) once the corresponding spawn completes.
+// Prompts of Agent-tool spawns fired this session whose matching post_tool_use has not yet arrived. Populated by recordOutstandingAgentSpawn (pre_tool_use), cleared by removeOutstandingAgentSpawn (post_tool_use) once the corresponding spawn completes.
 let _outstandingAgentSpawns: OutstandingAgentSpawn[] = []
 
-// Snapshot of _outstandingAgentSpawns at hydration time, so session_store.ts's merge can tell
-// "this process explicitly removed an entry that was here at load" apart from "this process
-// never saw it" -- a plain disk-union merge (like the other pair-list fields use) would silently
-// resurrect a removed entry from the pre-update disk snapshot, since removal, unlike every other
-// field here, is not a monotonic set-union operation. Mirrors pendingLargeFileHintsAtLoad's role
-// for the exact same class of problem.
+// Snapshot of _outstandingAgentSpawns at hydration time, so session_store.ts's merge can tell "this process explicitly removed an entry that was here at load" apart from "this process never saw it" -- a plain disk-union merge (like the other pair-list fields use) would silently resurrect a removed entry from the pre-update disk snapshot, since removal, unlike every other field here, is not a monotonic set-union operation. Mirrors pendingLargeFileHintsAtLoad's role for the exact same class of problem.
 let _outstandingAgentSpawnsAtLoad: OutstandingAgentSpawn[] = []
 
 // Command hashes (same key space as _bashOutputs, i.e. the stripped-command hash used by recordBashOutput/getBashOutputId) for which a store call overwrote an already-present entry this session -- i.e. an older cached run under this exact key was beaten by a newer one. Used only by hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw transcript copies that are provably superseded by the surviving cached id.
@@ -99,11 +89,7 @@ let _bashReruns = new Set<string>()
 // url -> saved file path for curl -o download dedup (Item 2).
 let _curlDownloads = new Map<string, string>()
 
-// Snapshot of `_curlDownloads` at hydration time, so `consumedCurlDownloadKeys` can tell "this
-// process explicitly cleared it" apart from "this process never saw it" -- mirrors
-// `_pendingLargeFileHintsAtLoad`/`_outstandingAgentSpawnsAtLoad`'s role for the same
-// removal-is-not-a-union-op reason: clearCurlDownload's deletion must actually stick, so
-// session_store.ts's merge needs this to avoid resurrecting a cleared entry from a stale disk read.
+// Snapshot of `_curlDownloads` at hydration time, so `consumedCurlDownloadKeys` can tell "this process explicitly cleared it" apart from "this process never saw it" -- mirrors `_pendingLargeFileHintsAtLoad`/`_outstandingAgentSpawnsAtLoad`'s role for the same removal-is-not-a-union-op reason: clearCurlDownload's deletion must actually stick, so session_store.ts's merge needs this to avoid resurrecting a cleared entry from a stale disk read.
 let _curlDownloadsAtLoad = new Map<string, string>()
 
 // path (as written on the sed command line) -> served inclusive line ranges this session, for overlap detection across repeated `sed -n 'N,Mp'` reads.
@@ -112,7 +98,7 @@ let _fileLineRanges = new Map<string, Array<[number, number]>>()
 // path -> bash-output cache ids whose body this session was actually shown for that file, oldest first. Distinct from `_fileLineRanges`, which stores only line numbers: numbers cannot prove a later read's bytes were already served, because a change token-goat never observed (an external editor, a pull in another terminal) leaves the recorded range in place while the lines behind it move. These ids point at the served text itself, so containment can be decided on the bytes and a stale entry simply fails to match.
 let _fileServedOutputs = new Map<string, string[]>()
 
-// Snapshots of the two maps above at hydration time, so `consumedFileLineRangeKeys`/`consumedFileServedOutputKeys` can tell "this process explicitly cleared this file's history" (recordFileEdit) apart from "this process never touched it" -- same removal-is-not-a-union-op reason as `_curlDownloadsAtLoad`: without this, session_store.ts's plain per-file union would resurrect an edited file's pre-edit ranges/served ids straight off a stale disk read.
+// Snapshots of the two maps above at hydration time, so `consumedFileLineRangeKeys`/`consumedFileServedOutputKeys` can tell "this process explicitly cleared this file's history" (recordFileEdit for the ranges, markCompacted for either) apart from "this process never touched it" -- same removal-is-not-a-union-op reason as `_curlDownloadsAtLoad`: without this, session_store.ts's plain per-file union would resurrect the cleared ranges/served ids straight off a stale disk read.
 let _fileLineRangesAtLoad = new Map<string, Array<[number, number]>>()
 let _fileServedOutputsAtLoad = new Map<string, string[]>()
 
@@ -238,8 +224,7 @@ export function recordFileEdit(filePath: string): void {
   const normalized = normalizePath(filePath)
   const key = resolveFilesKey(normalized)
   _fileLineRanges.delete(foldPath(normalized))
-  // Same reason as the line ranges above: an edit changes the bytes, so a body served before it is no longer evidence of what the file now holds.
-  _fileServedOutputs.delete(foldPath(normalized))
+  // Deliberately NOT `_fileServedOutputs.delete(...)`: that index is matched on the served bytes, never on line position, so an edit needs no invalidation here. A line the edit rewrote stops matching on its own; a line it left alone was still served verbatim this session, and dropping the whole file's history throws that evidence away for the (usually large) untouched remainder -- measured as repeated whole re-reads of one file's opening block across an edit-read-edit loop.
   const prev = _files.get(key)
   if (prev === undefined) {
     _files.set(key, {
@@ -488,9 +473,7 @@ export const MAX_OUTSTANDING_AGENT_SPAWNS = 30
 
 /** Record that an Agent-tool spawn with `prompt` (the original prompt text, before any briefing/advisory is appended) is now outstanding this session. Caps the tracked list at * {@link MAX_OUTSTANDING_AGENT_SPAWNS}, evicting the oldest entries first. */
 export function recordOutstandingAgentSpawn(prompt: string): void {
-  // Redact before storing: this prompt lands in SerializedSession.outstandingAgentSpawns and, on a
-  // later hooks_agent_spawn.ts truncateForWarning read, is echoed back model-ward -- a raw secret
-  // pasted into a spawned agent's prompt must never survive into either surface.
+  // Redact before storing: this prompt lands in SerializedSession.outstandingAgentSpawns and, on a later hooks_agent_spawn.ts truncateForWarning read, is echoed back model-ward -- a raw secret pasted into a spawned agent's prompt must never survive into either surface.
   _outstandingAgentSpawns.push({ prompt: redactSecrets(prompt).text, ts: Date.now() })
   if (_outstandingAgentSpawns.length > MAX_OUTSTANDING_AGENT_SPAWNS) {
     _outstandingAgentSpawns.splice(0, _outstandingAgentSpawns.length - MAX_OUTSTANDING_AGENT_SPAWNS)
@@ -577,7 +560,7 @@ export function consumedFileLineRangeKeys(): string[] {
   return consumed
 }
 
-/** Same as {@link consumedFileLineRangeKeys}, for the served-output index {@link recordFileEdit} also clears on edit. */
+/** Same as {@link consumedFileLineRangeKeys}, for the served-output index {@link markCompacted} clears wholesale. Unlike the line ranges, {@link recordFileEdit} does not clear this one -- it is matched on the served bytes, so a stale id simply fails to match. */
 export function consumedFileServedOutputKeys(): string[] {
   const consumed: string[] = []
   for (const key of _fileServedOutputsAtLoad.keys()) {
@@ -678,9 +661,7 @@ export function markFileTruncated(filePath: string, isFullRead: boolean = true):
     })
     return
   }
-  // An existing entry already went through recordFileRead for this same read (pre_tool_use runs
-  // before post_tool_use lands here), so readCount/lastFullReadAt/fullReadCount are already
-  // correct -- only the truncation flag is new information here.
+  // An existing entry already went through recordFileRead for this same read (pre_tool_use runs before post_tool_use lands here), so readCount/lastFullReadAt/fullReadCount are already correct -- only the truncation flag is new information here.
   _files.set(key, { ...prev, wasTruncated: true })
 }
 
