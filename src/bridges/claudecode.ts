@@ -32,7 +32,7 @@
  * token-goat `.cmd`/`.bat` shim), so it is validated against `VALID_HOOK_EVENTS` first — a
  * closed set that must be kept in sync with `HOOK_EVENTS` in src/types.ts.
  */
-import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+import { SHIM_ASYNC_DETACH, SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 export const CLAUDECODE_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Claude Code hook shim. Reads the hook payload on stdin, forwards it to \`token-goat hook <event>\`, and relays the response on stdout.
@@ -61,6 +61,8 @@ ${SHIM_TRY_IN_PROCESS}
 
 ${SHIM_MAX_BUFFER_CONST}
 
+${SHIM_ASYNC_DETACH}
+
 async function main() {
   const eventName = process.argv[2] || ''
   if (!VALID_HOOK_EVENTS.has(eventName)) {
@@ -73,6 +75,12 @@ async function main() {
   } catch {
     process.stdout.write('{}')
     return
+  }
+  // Print this before the in-process/spawn round trip below, not after: the harness detaches on
+  // the first stdout line it sees, and the whole point is not waiting out that round trip for a
+  // call that was always going to answer '{}'.
+  if (isAsyncDetachEligible(eventName, input)) {
+    process.stdout.write('{"async":true}\\n')
   }
   // process.argv[3], when present, is the absolute path to the running token-goat CLI
   // entry (mirrors the same argv[3]-baked-entry convention used by the Codex/Copilot

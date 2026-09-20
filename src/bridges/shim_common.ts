@@ -77,3 +77,25 @@ export const SHIM_SPAWN_LADDER = `    const res = entryPath
 
 /** 32 MiB, matching `MAX_CAPTURE_BYTES` in bash_runner.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
 export const SHIM_MAX_BUFFER_CONST = `const SHIM_MAX_BUFFER_BYTES = 32 * 1024 * 1024`
+
+/** Claude Code only: classifies a hook call the harness can safely background before the in-process/spawn round trip runs, because the handler it would reach always answers pass. `subagent_stop` always qualifies (subagentStopHandler in hooks_session.ts returns passOutput() on every branch); `post_tool_use` qualifies only for Edit/Write/MultiEdit/NotebookEdit outside the markdown family, because postEditHandler (hooks_edit.ts) answers with real context for md/mdx/markdown/rst and nothing else. Printing `{"async":true}` as the first stdout line lets the harness move on immediately instead of waiting out a response it was always going to get as `{}`. */
+export const SHIM_ASYNC_DETACH = `const ASYNC_DETACH_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+const ASYNC_DETACH_SKIP_EXT_RE = /\\.(md|mdx|markdown|rst)$/i
+function isAsyncDetachEligible(eventName, input) {
+  if (eventName === 'subagent_stop') return true
+  if (eventName !== 'post_tool_use') return false
+  try {
+    const payload = JSON.parse(input)
+    if (!ASYNC_DETACH_TOOLS.has(payload['tool_name'])) return false
+    const toolInput = payload['tool_input'] || {}
+    const filePath =
+      typeof toolInput['file_path'] === 'string'
+        ? toolInput['file_path']
+        : typeof toolInput['notebook_path'] === 'string'
+          ? toolInput['notebook_path']
+          : ''
+    return !ASYNC_DETACH_SKIP_EXT_RE.test(filePath)
+  } catch {
+    return false
+  }
+}`
