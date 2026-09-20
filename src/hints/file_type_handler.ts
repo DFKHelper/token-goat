@@ -15,6 +15,9 @@ export interface FileTypeResult {
   message: string
 }
 
+/** A symbol spanning more lines than this (or more than half its file) is too big to recommend for a whole-body `read "file::Symbol"`: the model would get back nearly the whole file under a symbol-shaped name. Hint text should point at a `grep -C --symbol` slice or `scope file:line` instead. */
+export const LARGE_SYMBOL_LINE_THRESHOLD = 200
+
 /** Size thresholds (bytes) — configurable via config but these are defaults. */
 export const FILE_TYPE_THRESHOLDS = {
   pdf: 0,              // always intercept (any size)

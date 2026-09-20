@@ -4134,6 +4134,26 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
+    // HAND-DERIVED: a 400-line function body computed independently of the threshold this test pins. Regression: surgicalHint's fileContent-available branch (extractQuickSymbolSamples) named a real symbol for `token-goat read "file::Symbol"` with no size check at all, even though the DB already knew the symbol's true span -- so a file this large in the large-file quietContextOutput channel pointed at a whole-body read of a symbol nearly as big as the file itself. The fix consults the index as a size check even on this content-derived path and swaps in a grep -C slice once the named symbol clears the large-symbol threshold.
+    it('swaps a whole-body read for a grep -C slice when the fileContent-derived symbol name resolves to an oversized indexed span', () => {
+      const p = path.join(os.tmpdir(), `tg-large-symbol-content-${process.pid}-${Math.random().toString(36).slice(2)}.js`)
+      const bodyLines = Array.from({ length: 400 }, (_, i) => `  step${i}()`).join('\n')
+      const content = `function bigFn() {\n${bodyLines}\n}\n` + '// ' + 'x'.repeat(150 * 1024)
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+      indexFileSync(normalizePath(p), globalDbPath())
+      indexedFiles.push(p)
+
+      const result = preReadHandler(readEvent(p))
+
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('read "' + normalizePath(p) + '::bigFn"')
+        expect(result.context).toContain('grep "<pattern>" ' + normalizePath(p) + ' -C 15 --symbol')
+        expect(result.context).toContain('scope ' + normalizePath(p) + ':')
+      }
+    })
+
     it('detects and denies redundant line-range re-read when lines were already served', () => {
       const p = path.join(os.tmpdir(), `tg-range-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `const x${i} = ${i};`).join('\n'))

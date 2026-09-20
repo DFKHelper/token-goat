@@ -18,6 +18,7 @@ import { indexFileSync } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
+import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
 import { extractExportNames, extractImports, importsExtensionFor } from './import_export_extract.js'
 export { extractExportNames, extractImports, importsExtensionFor }
 import { getDb } from './db.js'
@@ -1256,7 +1257,11 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     body,
   ]
   const warning = staleWarning(match.filePath)
-  const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol')
+  // Appended after the overflow guard, not folded into the guarded lines, so this advisory note never shifts the "showing N of M lines" count the guard reports for the actual body.
+  const narrowerSliceHint = bodyLen > LARGE_SYMBOL_LINE_THRESHOLD
+    ? `\n# for a narrower slice: token-goat grep "<pattern>" ${file} -C 15 --symbol`
+    : ''
+  const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol') + narrowerSliceHint
   if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
   return { text, code: 0 }
 }

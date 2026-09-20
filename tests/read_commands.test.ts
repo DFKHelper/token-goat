@@ -1078,6 +1078,24 @@ describe('read_commands', () => {
       expect(stdout).toContain('# 6 lines')
     })
 
+    // HAND-DERIVED: a 400-line body computed independently of the header this test pins, to confirm a whole-symbol read this large names the narrower grep -C slice instead of leaving the model to page through the whole body next time.
+    it('adds a narrower-slice header when the read body spans more than the large-symbol threshold', () => {
+      const body = Array.from({ length: 400 }, (_, i) => `  line${i + 1}()`).join('\n')
+      const sym: MockSymbol = { name: 'bigFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 400, body, docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { text: stdout } = runRead({ spec: 'src/foo.ts::bigFn' })
+      expect(stdout).toContain('# for a narrower slice: token-goat grep "<pattern>" src/foo.ts -C 15 --symbol')
+    })
+
+    it('does not add the narrower-slice header for a symbol under the large-symbol threshold', () => {
+      const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 5, lineEnd: 10, body: 'function myFn() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
+      expect(stdout).not.toContain('narrower slice')
+    })
+
     it('looks up the leaf segment for a two-part dotted symbol', () => {
       mockQuerySymbols.mockReturnValue([])
       runRead({ spec: 'src/foo.ts::Session.refresh' })

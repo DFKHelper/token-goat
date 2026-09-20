@@ -53,7 +53,7 @@ import {
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
 } from './hints/markdown_hints.js'
-import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
+import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
@@ -312,6 +312,17 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     if (isShellScript && samples.length > 0) {
       return `Use \`token-goat section "${filePath}::${sym}"\`${avail} for a section, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
     }
+    // The DB, not fileContent's naive regex scan, is what knows a symbol's real line span -- consulted here purely as a size check even on the fileContent-available path, so a symbol this large is never recommended for a whole-body read regardless of which branch found its name.
+    if (samples.length > 0) {
+      try {
+        const indexed = querySymbols({ filePath, name: sym, limit: 1 })[0]
+        if (indexed !== undefined && isLargeSymbolSpan(indexed.lineStart, indexed.lineEnd, filePath)) {
+          return `\`${sym}\` spans ${indexed.lineEnd - indexed.lineStart + 1} lines -- use \`token-goat grep "<pattern>" ${filePath} -C 15 --symbol\` for a slice inside it, or \`token-goat scope ${filePath}:${indexed.lineStart}\` to confirm the enclosing symbol.`
+        }
+      } catch {
+        // The index is advisory; retain the plain read recommendation when it is unavailable.
+      }
+    }
     return `Use \`token-goat read "${filePath}::${sym}"\`${avail} for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
   }
 }
@@ -323,21 +334,36 @@ function escapeHintName(name: string): string {
   return safe !== quoted ? '' : safe.trim()
 }
 
-/** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when the file has no indexed symbols at all, since a bare `::Symbol` read would just fail. */
+/** True when a symbol spanning `lineStart`-`lineEnd` is too big to recommend for a whole-body `read "file::Symbol"`: more than LARGE_SYMBOL_LINE_THRESHOLD lines, or more than half of `filePath`'s own line count. Shared by every hint site that names a real indexed symbol, so a whole-body read is never pointed at a symbol that would just hand back nearly the whole file under a symbol-shaped name. */
+function isLargeSymbolSpan(lineStart: number, lineEnd: number, filePath: string): boolean {
+  const span = lineEnd - lineStart + 1
+  if (span > LARGE_SYMBOL_LINE_THRESHOLD) return true
+  const totalLines = lineCountForSurgicalHint(filePath)
+  return totalLines > 0 && span > totalLines / 2
+}
+
+/** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when the file has no indexed symbols at all, since a bare `::Symbol` read would just fail. When the top pick is a large symbol (see {@link isLargeSymbolSpan}), the hint points at a `grep -C --symbol` slice (or `scope` to confirm the enclosing symbol) instead of naming it for a whole-body read. */
 export function realSymbolReadHint(filePath: string, shown: string, range?: { start: number; end: number }): string {
-  let names: string[]
+  let candidates: { name: string; lineStart: number; lineEnd: number }[]
   try {
     const all = querySymbols({ filePath, limit: 500 }).map((s) => ({ name: escapeHintName(s.name), lineStart: s.lineStart, lineEnd: s.lineEnd }))
     const overlapping = range !== undefined ? all.filter((s) => s.lineStart <= range.end && s.lineEnd >= range.start) : []
-    names = (overlapping.length > 0 ? overlapping : all).map((s) => s.name).filter((n) => n !== '').slice(0, 3)
+    candidates = (overlapping.length > 0 ? overlapping : all).filter((s) => s.name !== '')
   } catch {
-    names = []
+    candidates = []
   }
-  if (names.length === 0) {
+  const top = candidates[0]
+  if (top === undefined) {
     return range !== undefined
       ? '`token-goat read "' + shown + '@' + range.start + '-' + range.end + '"`'
       : '`token-goat outline "' + shown + '"`'
   }
+  if (isLargeSymbolSpan(top.lineStart, top.lineEnd, filePath)) {
+    const line = range !== undefined ? range.start : top.lineStart
+    const span = top.lineEnd - top.lineStart + 1
+    return '`token-goat grep "<pattern>" ' + shown + ' -C 15 --symbol` for a slice inside `' + top.name + '` (' + span + ' lines), or `token-goat scope ' + shown + ':' + line + '` to confirm the enclosing symbol'
+  }
+  const names = candidates.map((s) => s.name).slice(0, 3)
   const rest = names.length > 1 ? ' (or: ' + names.slice(1).join(', ') + ')' : ''
   return '`token-goat read "' + shown + '::' + names[0] + '"`' + rest
 }
