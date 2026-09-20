@@ -31,6 +31,8 @@ import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from '../../src/bridges/openclaw.js'
 import { OPENCODE_PLUGIN_SCRIPT } from '../../src/bridges/opencode.js'
 import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
+import { dataDir } from '../../src/constants.js'
+import { getDb } from '../../src/db.js'
 import { expandShortPath } from '../../src/paths.js'
 import { summarize } from '../../src/stats.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
@@ -171,6 +173,57 @@ describe('codex/claude code shims: in-process hook call replaces the second node
       // The poisoned fallback entry was never spawned for either call.
       expect(existsSync(markerPath)).toBe(false)
     })
+  })
+})
+
+/** Latest `hook:<event>` row's duration_ms, read straight from this test file's own isolated global.db (tests/setup/isolate-home.ts points LOCALAPPDATA at a per-file temp dir before constants.ts caches DATA_DIR, so no per-test override is needed here). */
+function latestHookDurationMs(kindLike: string): number | null | undefined {
+  const db = getDb(join(dataDir(), 'global.db'))
+  const row = db.prepare("SELECT duration_ms FROM stats WHERE kind LIKE ? ORDER BY rowid DESC LIMIT 1").get(kindLike) as
+    | { duration_ms: number | null }
+    | undefined
+  return row?.duration_ms
+}
+
+describe('Claude Code shim: async-detach makes duration_ms report what the harness waited on, not the full handler lifetime (Batch V)', () => {
+  it('records a far smaller duration_ms for an async-detached post_tool_use Write than for a synchronous post_tool_use Edit in the same run', () => {
+    // Both calls run the real shim against the real hook lib, so any gap between a spawned child's own performance.now() and this test's Date.now()-wrapped spawnSync (V8 bootstrap, OS process creation) applies equally to both and cancels out of the async/sync comparison below -- an absolute duration_ms-vs-totalWallMs ratio does not cancel that gap and was measured to pass even against the unfixed code (102ms of 147ms totalWallMs, a 0.69 ratio already under a naive 0.85 bound), which is why this asserts the relative relationship between the two calls instead.
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    const scriptPath = join(cwd, 'shim.js')
+    writeFileSync(scriptPath, CLAUDECODE_HOOK_SCRIPT, 'utf8')
+
+    const asyncFilePath = join(cwd, 'touched.ts')
+    writeFileSync(asyncFilePath, 'export const x = 1\n', 'utf8')
+    const asyncPayload = JSON.stringify({
+      tool_name: 'Write',
+      tool_input: { file_path: asyncFilePath },
+      session_id: 'batch-v-async-' + Math.random().toString(36).slice(2),
+    })
+    const asyncRes = spawnSync(process.execPath, [scriptPath, 'post_tool_use', entryPath], { cwd, input: asyncPayload, encoding: 'utf8', timeout: 15000 })
+    expect(asyncRes.status).toBe(0)
+    expect((asyncRes.stdout ?? '').split('\n')[0]).toBe('{"async":true}')
+    expect(existsSync(markerPath)).toBe(false)
+    const asyncDurationMs = latestHookDurationMs('hook:post_tool_use')
+    expect(asyncDurationMs).not.toBeNull()
+
+    // A markdown file is explicitly excluded from async-detach (ASYNC_DETACH_SKIP_EXT_RE in shim_common.ts), so this Edit runs the ordinary synchronous path and its duration_ms is this call's own full round trip -- the number the async-detached call above used to be indistinguishable from before this fix.
+    const syncFilePath = join(cwd, 'NOTES.md')
+    writeFileSync(syncFilePath, '# notes\n', 'utf8')
+    const syncPayload = JSON.stringify({
+      tool_name: 'Edit',
+      tool_input: { file_path: syncFilePath },
+      session_id: 'batch-v-sync-' + Math.random().toString(36).slice(2),
+    })
+    const syncRes = spawnSync(process.execPath, [scriptPath, 'post_tool_use', entryPath], { cwd, input: syncPayload, encoding: 'utf8', timeout: 15000 })
+    expect(syncRes.status).toBe(0)
+    expect(syncRes.stdout ?? '').not.toContain('"async":true')
+    expect(existsSync(markerPath)).toBe(false)
+    const syncDurationMs = latestHookDurationMs('hook:post_tool_use')
+    expect(syncDurationMs).not.toBeNull()
+
+    // Measured on this fix: async 14ms vs sync 63ms (a 0.22 ratio). Measured against the unfixed code with the same two calls: async 102ms vs sync 65ms (a 1.57 ratio -- the async call was not smaller at all). 0.5 sits well inside the gap between those two outcomes.
+    expect(asyncDurationMs!).toBeLessThan(syncDurationMs! * 0.5)
   })
 })
 

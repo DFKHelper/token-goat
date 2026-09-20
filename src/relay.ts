@@ -176,15 +176,21 @@ function safeSuggestions(output: HookOutput): HookOutput {
  * run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn
  * their own shim process (Codex, Claude Code, Copilot CLI) can call straight
  * into the hook registry via `import()` instead of `spawnSync`-ing a second
- * `token-goat hook <event>` process. On *any* error — invalid event name,
+ * `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually
+ * waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and
+ * prints its early `{"async":true}` marker before this function ever runs, so the shim's own
+ * `performance.now()` at that print is the true harness-visible latency; without it, the `finally`
+ * below would keep recording this call's own full process lifetime even though the harness stopped
+ * listening long before that. Omitted for every synchronous call, where process lifetime and
+ * harness wait are the same number. On *any* error — invalid event name,
  * malformed payload, handler throw — it resolves to `'{}'` so the caller's
  * tool call proceeds unchanged. This function never throws and never rejects.
  */
-export async function relayInProcess(eventName: string, rawPayload: unknown): Promise<string> {
+export async function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'
   }
-  // Wall-clock from process start, not from this line: what a harness actually waits on is everything since `node` began -- module load and import resolution included -- not just dispatch, which used to be all this recorded (~28ms of an ~89ms real wait, confirmed against an external stopwatch on the production shim). `performance.now()` reads elapsed time since `performance.timeOrigin` (process start), so reading it once in the finally block below, rather than diffing two timestamps taken inside this function, is what makes the total include everything before this function ever ran.
+  // Wall-clock from process start, not from this line: what a harness actually waits on is everything since `node` began -- module load and import resolution included -- not just dispatch, which used to be all this recorded (~28ms of an ~89ms real wait, confirmed against an external stopwatch on the production shim). `performance.now()` reads elapsed time since `performance.timeOrigin` (process start), so reading it once in the finally block below, rather than diffing two timestamps taken inside this function, is what makes the total include everything before this function ever ran -- true for every synchronous call, and for an async-detached one whose caller did not pass `harnessWaitMs`.
   try {
     // Read before the CLAUDE_CODE_SESSION_ID seeding below, which sets that variable for every harness and would make a later detection answer 'claudecode' everywhere. serializeOutput needs the true harness to decide the pre_compact wire form, so capture it while the environment still says who we are.
     const harness = detectHarness()
@@ -230,8 +236,8 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     // Pass-through on every failure path — a hook must never block the caller's tool call.
     return '{}'
   } finally {
-    // recordStat() is its own already-open, already-fail-soft synchronous write (the same one every other hook-path stat in this codebase makes), so this adds no new blocking behavior -- including on the async-detach path (shim_common.ts), which prints its early marker before this module ever runs and does not wait for relayInProcess to return either way.
-    recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, performance.now())
+    // recordStat() is its own already-open, already-fail-soft synchronous write (the same one every other hook-path stat in this codebase makes), so this adds no new blocking behavior -- including on the async-detach path (shim_common.ts), which prints its early marker before this module ever runs and does not wait for relayInProcess to return either way. duration_ms means one thing everywhere it is read (token-goat stats --hooks, doctor's latency check): what the caller waited on. For an async-detached call that is harnessWaitMs, captured by the shim at the moment it printed the marker and handed in by the caller; for every other call it is this call's own full elapsed time, which is also what the caller waited on since nothing detached early.
+    recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, harnessWaitMs ?? performance.now())
   }
 }
 

@@ -127,3 +127,41 @@ describe('relayInProcess records total wall-clock since process start, not just 
     expect(row?.duration_ms).toBe(Math.round(fakeElapsedSinceProcessStart))
   })
 })
+
+describe('relayInProcess records what the harness actually waited on, not always its own lifetime (Batch V)', () => {
+  it('records the caller-supplied harnessWaitMs as duration_ms, ignoring this call\'s own elapsed time', async () => {
+    registerHook('subagent_stop', () => ({ hookType: 'pass' }))
+    // FORMAT-DERIVED: harnessWaitMs models the Claude Code shim's own performance.now() reading at the instant it printed the `{"async":true}` marker (src/bridges/claudecode.ts's CLAUDECODE_HOOK_SCRIPT), taken from the batch brief's measured fastest-of-8 figure for a detached post_tool_use Write (26.4ms); relayInProcess itself never reads the shim's clock, only the number it is handed.
+    const harnessWaitMs = 26.4
+    const recordStatSpy = vi.spyOn(statsModule, 'recordStat')
+    const originalNow = performance.now.bind(performance)
+    // A value far from harnessWaitMs and easy to tell apart in the assertion below: if this call's own elapsed time leaked through instead of the argument, the row would read 9999, not 26.
+    performance.now = () => 9999
+    try {
+      await relayInProcess('subagent_stop', { session_id: 's1' }, harnessWaitMs)
+    } finally {
+      performance.now = originalNow
+    }
+
+    expect(recordStatSpy).toHaveBeenCalledWith('hook:subagent_stop', 0, 0, undefined, undefined, undefined, harnessWaitMs)
+    const row = latestHookRow()
+    expect(row?.duration_ms).toBe(Math.round(harnessWaitMs))
+  })
+
+  it('still records its own full elapsed time when no harnessWaitMs is given -- the synchronous population this fix must leave alone', async () => {
+    registerHook('notification', () => ({ hookType: 'pass' }))
+    const fakeElapsed = 555.2
+    const recordStatSpy = vi.spyOn(statsModule, 'recordStat')
+    const originalNow = performance.now.bind(performance)
+    performance.now = () => fakeElapsed
+    try {
+      await relayInProcess('notification', { session_id: 's1' })
+    } finally {
+      performance.now = originalNow
+    }
+
+    expect(recordStatSpy).toHaveBeenCalledWith('hook:notification', 0, 0, undefined, undefined, undefined, fakeElapsed)
+    const row = latestHookRow()
+    expect(row?.duration_ms).toBe(Math.round(fakeElapsed))
+  })
+})

@@ -95,8 +95,13 @@ async function main() {
   }
   // Print this before the in-process/spawn round trip below, not after: the harness detaches on
   // the first stdout line it sees, and the whole point is not waiting out that round trip for a
-  // call that was always going to answer '{}'.
+  // call that was always going to answer '{}'. asyncDetachAtMs, taken at this exact print, is the
+  // last instant this process's elapsed time and the harness's own wait are the same number --
+  // record it now so the finally block in relayInProcess (relay.ts) can report what Claude Code
+  // actually waited on instead of this call's full lifetime.
+  let asyncDetachAtMs
   if (isAsyncDetachEligible(eventName, input)) {
+    asyncDetachAtMs = performance.now()
     process.stdout.write('{"async":true}\\n')
   }
   // process.argv[3], when present, is the absolute path to the running token-goat CLI
@@ -109,8 +114,15 @@ async function main() {
   // timeout/killSignal on both spawnSync fallbacks means token-goat degrades to its own
   // fail-open '{}' rather than being force-killed by Claude Code's own hook timeout.
   const entryPath = process.argv[3]
-  let stdout = await tryInProcess(entryPath, eventName, input)
+  let stdout = await tryInProcess(entryPath, eventName, input, asyncDetachAtMs)
   if (stdout === undefined) {
+    // Reaching here with asyncDetachAtMs set means tryInProcess failed after
+    // isAsyncDetachEligible had already parsed this same input successfully, so the cause is an
+    // install missing its dist/token-goat-hook.mjs sibling or a broken import -- never a bad
+    // payload. asyncDetachAtMs is this process's own elapsed time and has no meaning in the
+    // spawned child's clock, so it is deliberately not threaded across that boundary; the child
+    // falls back to timing its own lifetime, the same already-approximate number every hook got
+    // on this fallback path before async-detach existed.
 ${SHIM_SPAWN_LADDER}
       : spawnSync('token-goat hook ' + eventName, {
           input,

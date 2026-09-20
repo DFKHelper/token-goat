@@ -51,15 +51,18 @@ export const SHIM_TRY_IN_PROCESS = `// Attempts the in-process hook call: import
 // loaded) and calls its exported relayInProcess() directly, avoiding a second node
 // process spawn entirely. Returns undefined (triggering the spawnSync fallback below)
 // when entryPath is absent, the sibling file doesn't exist (an older install predating
-// this file), or anything else goes wrong -- this must never throw.
-async function tryInProcess(entryPath, eventName, input) {
+// this file), or anything else goes wrong -- this must never throw. harnessWaitMs, when
+// the caller has one (Claude Code's async-detach marker time -- see SHIM_ASYNC_DETACH),
+// is forwarded straight through: this runs in the same process as the caller, so its
+// performance.now() reading shares the same origin and needs no conversion.
+async function tryInProcess(entryPath, eventName, input, harnessWaitMs) {
   if (!entryPath) return undefined
   try {
     const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
     if (!require('node:fs').existsSync(hookLibPath)) return undefined
     const mod = await import(pathToFileURL(hookLibPath).href)
     const payload = JSON.parse(input)
-    return await mod.relayInProcess(eventName, payload)
+    return await mod.relayInProcess(eventName, payload, harnessWaitMs)
   } catch {
     return undefined
   }

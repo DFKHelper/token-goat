@@ -482,7 +482,7 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
   }
-  // How long relayInProcess (relay.ts) took to process the hook end to end, in whole milliseconds. Nullable: a row from before this column existed, or one written for an event the caller could not time without re-blocking, carries no measurement rather than a manufactured zero.
+  // What the caller actually waited on, in whole milliseconds: relayInProcess's (relay.ts) own end-to-end processing time for a synchronous call, or the Claude Code shim's async-detach marker time for a call the harness stopped waiting on early (see relayInProcess's harnessWaitMs parameter) -- one meaning for every row this column holds, never a mix of the two per row. Nullable: a row from before this column existed, or one written for an event the caller could not time without re-blocking, carries no measurement rather than a manufactured zero.
   try {
     db.exec('ALTER TABLE stats ADD COLUMN duration_ms INTEGER')
   } catch (err) {
