@@ -237,6 +237,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['util.ts::atomicWriteCore', 'generic write primitive, same reasoning as ensureDirSync'],
   ['util.ts::withFileLock', 'generic lockfile primitive, same reasoning as ensureDirSync'],
   ['db.ts::getDb', 'reached from relayInProcess via recordStat -> getGlobalDb (Batch S hook-latency timing); the dbPath it existsSync-checks is always dataDir()/dataDirForHome(homeDir) + \'global.db\', never a value from the hook payload'],
+  ['stats.ts::recordStatWriteFailure', 'reached from relayInProcess via recordStat\'s own catch when the global.db write fails; the marker and log paths it stats/writes/appends are always dataDir() + \'stats-write-failed.marker\'/\'stats-write-failed.log\', never a value from the hook payload -- same shape as db.ts::getDb above'],
 ])
 
 describe('the pre-dispatch call graph is real', () => {

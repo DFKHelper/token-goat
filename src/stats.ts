@@ -16,6 +16,7 @@
  * - renderStats(opts?) — compute and print the full formatted breakdown to stdout.
  */
 
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { SqliteDatabase } from './sqlite_driver.js'
 import { getDb } from './db.js'
@@ -26,7 +27,8 @@ import { fmtBytes } from './render/ansi.js'
 import type { StatsData } from './render/types.js'
 import { registerReset } from './reset.js'
 import { getHarnessName } from './bridges/registry.js'
-import { countNoun } from './util.js'
+import { countNoun, ensureDirSync, extractErrorMessage } from './util.js'
+import { displaySafeText } from './paths.js'
 
 interface StatsBucket {
   events: number
@@ -713,6 +715,35 @@ function noStatsMessage(windowDays: number, homeDir?: string): string {
   return `No stats in the last ${countNoun(windowDays, 'day')} (${total} recorded outside this window; use --window-days 0 for all time).`
 }
 
+/** Minimum time between {@link recordStatWriteFailure} log lines, so a genuinely down global.db -- every recordStat call on every hook of every tool call failing -- produces one line per window instead of one per call. One marker for the whole data dir rather than per-kind or per-project (contrast index_prune.ts's recordKnownRootThrottled, which is deliberately per-directory): the database itself is what failed, and every recordStat call anywhere shares that one fate, so there is nothing to key the window on but the failure itself. */
+const STATS_WRITE_FAILURE_LOG_MIN_INTERVAL_MS = 60 * 1000
+
+function statsWriteFailureMarkerPath(dir: string): string {
+  return path.join(dir, 'stats-write-failed.marker')
+}
+
+function statsWriteFailureLogPath(dir: string): string {
+  return path.join(dir, 'stats-write-failed.log')
+}
+
+/** Out-of-band record of a {@link recordStat} write that never reached `global.db`, mirroring worker.ts's `worker-errors.log` pattern (a plain appended file, one line per event) rather than inventing a new mechanism -- but into its own file, not that one, since worker-errors.log is the worker daemon's own log and this failure can happen from any process that calls recordStat. Writing the failure back into `global.db` itself would be circular: that database is what just refused the write. Records the kind and the error, not the lost bytes/tokens/detail payload -- the diagnostic value here is "the stats database is refusing writes", not a reconstruction of the row that was lost. Throttled by {@link STATS_WRITE_FAILURE_LOG_MIN_INTERVAL_MS} so an actual outage does not turn this file into its own unbounded-growth incident. Best-effort: never throws, matching recordStat's own contract that it must never block or slow the hook path. */
+function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDir()): void {
+  try {
+    const markerPath = statsWriteFailureMarkerPath(dir)
+    try {
+      if (Date.now() - fs.statSync(markerPath).mtimeMs < STATS_WRITE_FAILURE_LOG_MIN_INTERVAL_MS) return
+    } catch {
+      // No marker yet, or unreadable: treat as outside the window.
+    }
+    ensureDirSync(dir)
+    fs.writeFileSync(markerPath, '')
+    const line = `${new Date().toISOString()} recordStat write failed for kind=${kind}: ${extractErrorMessage(err)}`
+    fs.appendFileSync(statsWriteFailureLogPath(dir), displaySafeText(line.replace(/[\n\r]+$/, '')) + '\n')
+  } catch {
+    // Best-effort out-of-band sink -- if even this fails, there is nowhere else for it to go.
+  }
+}
+
 export function recordStat(
   kind: string,
   bytesSaved = 0,
@@ -749,8 +780,9 @@ export function recordStat(
       `INSERT INTO stats (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
     ).run(...vals)
     maybeRunStatsMaintenance(db)
-  } catch {
-    // Best-effort — never block the hook path.
+  } catch (e) {
+    // Best-effort — never block the hook path. The write is still lost, but recordStatWriteFailure gives it somewhere to land that does not share fate with the database that just refused it.
+    recordStatWriteFailure(kind, e)
   }
 }
 
