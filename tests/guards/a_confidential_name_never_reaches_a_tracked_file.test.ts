@@ -6,6 +6,8 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { trackedFiles } from '../helpers/tracked-files.js'
+
 const REPO_ROOT = join(__dirname, '..', '..')
 
 /** Overridable so a machine that keeps its list elsewhere can point at it without editing this file. `userInfo().homedir` rather than `homedir()`: the latter reads `HOME`, which tests/setup/isolate-home.ts repoints at a per-run temp directory, so this guard went looking for the denylist inside the sandbox and failed on its absence every time. `userInfo` asks the operating system for the account's directory and is unaffected by that isolation, which is what a file deliberately kept outside the repository needs. */
@@ -43,9 +45,8 @@ function trackedFilesMatching(pattern: string): string[] {
 /** Tracked file paths matching `pattern`, case-insensitively. A filename alone can leak a client name even if its content is clean or binary. */
 function trackedPathsMatching(pattern: string): string[] {
   try {
-    const out = execFileSync('git', ['ls-files', '--cached'], { cwd: REPO_ROOT, encoding: 'utf-8' })
     const lower = pattern.toLowerCase()
-    return out.split('\n').filter((p) => p !== '' && p.toLowerCase().includes(lower))
+    return trackedFiles({ repo: REPO_ROOT }).filter((p) => p.toLowerCase().includes(lower))
   } catch {
     return []
   }

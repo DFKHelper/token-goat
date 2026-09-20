@@ -7,11 +7,12 @@
  *
  * CAPTURE: the file list is `git ls-files`, the repository's own record of what is tracked, not a directory walk -- a walk would also see untracked drafts and build output, which is exactly what the include patterns are meant to leave out.
  */
-import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
+
+import { trackedFiles } from '../helpers/tracked-files.js'
 
 /**
  * The `include` patterns, read out of the config's source rather than imported from it.
@@ -25,10 +26,7 @@ function includePatterns(): string[] {
 }
 
 function trackedTestFiles(): string[] {
-  return execFileSync('git', ['ls-files', '*.test.ts'], { encoding: 'utf8' })
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
+  return trackedFiles({ pathspec: ['*.test.ts'] })
 }
 
 /** Minimal glob match for the two shapes used in the include list: a `**` segment matching any number of path segments, and `*` matching within one segment. */

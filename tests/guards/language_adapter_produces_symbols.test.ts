@@ -24,7 +24,6 @@
  * that decision belongs in this file's exemption list, made explicitly and reviewably -- not as
  * a silent fallthrough.
  */
-import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -37,6 +36,7 @@ import { querySymbols } from '../../src/index_reader.js'
 import { LANGUAGE_SPECS } from '../../src/language_specs.js'
 import { detectLanguage, refineLanguageByContent, type Language } from '../../src/parser_types.js'
 import { indexFileSync, isTreeSitterAvailable } from '../../src/parser.js'
+import { trackedFiles } from '../helpers/tracked-files.js'
 import { pinnedPopulation } from './population.js'
 
 /** Self-exclusion token so this guard's own source never satisfies a scan of itself. Never appears in real code: /NOSUCH[X]TOKEN/. */
@@ -207,10 +207,7 @@ describe('every registered language adapter produces symbols on a real file, thr
     // runner. `git ls-files` is asked once for the whole set, and its answer is checked to be
     // non-empty so a git failure cannot read as "all tracked".
     const tracked = new Set(
-      execFileSync('git', ['ls-files', '-z', '--', ...CASES.map((c) => path.relative(REPO_ROOT, c.source))], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 24 })
-        .split('\0')
-        .filter((s) => s !== '')
-        .map((s) => path.resolve(REPO_ROOT, s)),
+      trackedFiles({ repo: REPO_ROOT, pathspec: CASES.map((c) => path.relative(REPO_ROOT, c.source)) }).map((s) => path.resolve(REPO_ROOT, s)),
     )
     expect(tracked.size, 'git ls-files returned nothing, so this check would certify every source as untracked-but-unnoticed').toBeGreaterThan(0)
     expect(

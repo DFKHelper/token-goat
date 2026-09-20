@@ -139,6 +139,11 @@ process.on('exit', () => {
   }
 })
 
+// `git commit --only <paths>` (and `git commit -- <pathspec>`) does not use the real index: it builds a temporary one holding HEAD plus the named paths and points GIT_INDEX_FILE at it for the duration, hooks included. The pre-commit guard suite inherits that variable, and every git invocation in this process then answers for a truncated repository instead of the real one. Two distinct failures follow, and the suite is the only place either can be fixed once: an enumeration reads a subset (tests/helpers/tracked-files.ts deletes the variable itself for that reason, so a guard is correct even when run outside this setup), and -- worse -- a test that builds its own throwaway repo runs `git add` against git's in-flight commit index, so its fixture paths are written INTO the commit being prepared. Measured on this repo: `git add f1.ts` in a scratch repo took the shared index from 1519 entries to 1520, and the guards then failed with `ENOENT ... C:\Projects\token-goat\f1.ts`.
+//
+// Deleting it is not an escape hatch: nothing is skipped and no assertion is relaxed. It makes every git call in the suite read the repository's real `.git/index`, which is the question the guards mean to ask, and it stops the suite mutating the commit git is about to write.
+delete process.env['GIT_INDEX_FILE']
+
 // Embeddings generation (indexing.embeddings_enabled) defaults to true in production so a
 // real `token-goat index` populates chunks/chunk_vectors for `token-goat semantic` out of the
 // box, but that means every test in this suite that touches indexFileSync/cmdIndex/the worker

@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
+import { trackedFiles } from '../helpers/tracked-files.js'
+
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 /** `git check-attr <attr>` for each path, as a `path -> value` map. */
@@ -49,9 +51,7 @@ describe('every tracked text file checks out with LF', () => {
   })
 
   it('pins it for every tracked text file, not only the named ones', () => {
-    const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 })
-      .split('\0')
-      .filter((s) => s !== '' && !s.endsWith('.pdf'))
+    const tracked = trackedFiles({ repo: REPO }).filter((s) => !s.endsWith('.pdf'))
     expect(tracked.length, 'no tracked files found -- a vacuous pass').toBeGreaterThan(500)
     const attrs = eolAttr(tracked)
     // The named-list case above already pins this; without it here, a `check-attr` invocation that
@@ -73,9 +73,7 @@ describe('every tracked text file checks out with LF', () => {
     // on a PDF -- `binary` is the macro `-diff -merge -text`, and it is the unset `text` that stops
     // any conversion, whatever `eol` says. Asserting on `eol` here would have been a guard that can
     // only fail, which is how this calibration was first written.
-    const pdf = execFileSync('git', ['ls-files', '-z', '--', '*.pdf'], { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 20 })
-      .split('\0')
-      .filter((s) => s !== '')
+    const pdf = trackedFiles({ repo: REPO, pathspec: ['*.pdf'] })
     expect(pdf.length, 'no tracked PDF to calibrate against').toBeGreaterThan(0)
     const attrs = attrOf('text', pdf)
     expect([...attrs].filter(([, v]) => v !== 'unset').map(([p, v]) => `${p}: text=${v}`), 'PDFs must have `text` unset, or git converts their bytes').toEqual([])

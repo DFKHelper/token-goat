@@ -36,12 +36,13 @@
  * own suite were all invisible. Hence: no hardcoded receiver anywhere below, and a population
  * taken from the whole repository rather than from two directories.
  */
-import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+
+import { trackedFiles } from '../helpers/tracked-files.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -79,9 +80,7 @@ const NEEDLES: readonly RegExp[] = [
 
 /** Every tracked source file in the repository, whatever directory or extension it lives under. */
 function trackedSources(): string[] {
-  return execFileSync('git', ['ls-files', '-z'], { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 })
-    .split('\0')
-    .filter((p) => /\.[cm]?[jt]sx?$/.test(p))
+  return trackedFiles({ repo: REPO }).filter((p) => /\.[cm]?[jt]sx?$/.test(p))
 }
 
 describe('a scratch root is resolved the way the OS spells it', () => {
