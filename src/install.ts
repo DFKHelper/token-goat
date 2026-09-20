@@ -141,12 +141,17 @@ function probeClaudeExecFormHooksSupported(): boolean {
       ? spawnSync(fs.existsSync(comspec) ? comspec : 'cmd.exe', ['/d', '/s', '/c', resolved, '--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true })
       : spawnSync(resolved, ['--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true })
     if (result.status !== 0) return false
-    const m = /(\d+\.\d+\.\d+)/.exec(result.stdout ?? '')
-    if (!m) return false
-    return compareSemver(m[1]!, CLAUDE_EXEC_FORM_MIN_VERSION) >= 0
+    return execFormSupportedForVersionOutput(result.stdout ?? '')
   } catch {
     return false
   }
+}
+
+/** The version decision inside {@link probeClaudeExecFormHooksSupported}, split out so it is testable without a `claude` binary on PATH: the spawn plumbing around it can only be exercised by a real install, but the parse and the comparison are where a silent wrong answer would come from. Output with no `x.y.z` in it is unparsable and answers false, so an unrecognised future format falls back to string form rather than guessing. */
+export function execFormSupportedForVersionOutput(stdout: string): boolean {
+  const m = /(\d+\.\d+\.\d+)/.exec(stdout)
+  if (!m) return false
+  return compareSemver(m[1]!, CLAUDE_EXEC_FORM_MIN_VERSION) >= 0
 }
 
 /** The hook entry this build wires for `event`: exec-form when {@link claudeExecFormHooksSupported}, string-form otherwise. */
