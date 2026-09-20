@@ -63,6 +63,7 @@ const NOT_EMBEDDING: Record<string, string> = {
   'src/fingerprint.ts': 'computes files.sha (content identity) via a generic SHA-256 utility, orthogonal to what gets chunked from that content',
   'src/injection_scan.ts': 'untrusted-content fencing for CLI/hook output display, reached via paths.ts, never applied to chunk text before embedding',
   'src/ocr_languages.ts': 'OCR language selection, reached only via config.ts\'s loadConfig; none of the document extractors on this path (pdf/docx/pptx/xlsx) perform OCR',
+  'src/parser_stamp.ts': 'resolves which PARSER_FINGERPRINT digest an already-indexed row should carry -- a files.parser_sha concern that decides nothing about chunk text or chunk boundaries, and it lives outside parser_types.ts precisely so a stamp-lookup edit cannot move EMBED_FINGERPRINT',
   'src/parser_ts_types.ts': 'type-only tree-sitter node/parser interface declarations, erased at compile time',
   'src/path_containment.ts': 'path canonicalization/case-folding for containment security checks and path identity; decides path identity, not chunk text or boundary shape',
   'src/parser_fingerprint.ts': 'the generated PARSER_FINGERPRINT digest constant, imported by parser.ts to gate reparse -- a files.parser_sha concern, not files.embed_sha, and hashing a fingerprint constant into a different fingerprint would be circular',

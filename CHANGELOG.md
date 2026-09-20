@@ -8,7 +8,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **A fix to one language's parser no longer reindexes every file in every project**: the stamp recorded against each indexed file was a single digest covering all extraction logic, so a change to the Dart adapter invalidated a project that contains no Dart at all. Over the last 90 days, 26 of 79 parser changes touched only one or two languages, and on one real index those languages accounted for 161 of 17,855 files while every one of those changes reparsed all 17,855. Each file is now stamped with a digest for its own language, so an adapter fix reparses that language and leaves the rest of the index alone. Changes to shared extraction logic still invalidate everything, which is deliberate: reparsing a file that did not need it costs seconds, while skipping one that did leaves wrong symbols in the index indefinitely.
 
-**Upgrading to this version reindexes once.** Every existing row carries the old single stamp, so the first run after the upgrade treats the whole index as stale and rebuilds it, and re-embeds it. That happens one time. After it, a release that touches a single language adapter only reparses files in that language.
+**Upgrading to this version reindexes once.** Every existing row carries the old single stamp, so the first run after the upgrade treats the whole index as stale and rebuilds it. Stored embeddings survive: the content has not moved and neither has the embedding digest, so a reparsed file keeps the vectors it already had. That happens one time. After it, a release that touches a single language adapter only reparses files in that language.
 
 ## [2.9.18] - 2026-09-19
 

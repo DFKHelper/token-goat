@@ -71,6 +71,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/ocr_languages.ts': 'OCR language selection for image/PDF text extraction, part of the embed_sha-gated document pipeline',
   'src/ooxml_extract.ts': 'shared zip/XML helpers for docx/pptx/xlsx extraction, part of the embed_sha-gated pipeline',
   'src/parser_fingerprint.ts': 'the generated digest constant itself; hashing it into its own digest is self-referential',
+  'src/parser_stamp.ts': 'reads back which digest an already-indexed row should carry from the generated map in parser_fingerprint.ts; it resolves a stamp rather than deciding what a parse extracts, so hashing it would make every edit here invalidate every file for nothing',
   'src/parser_ts_types.ts': 'type-only tree-sitter node/parser interface declarations, erased at compile time',
   'src/path_containment.ts': 'path canonicalization/case-folding for containment security checks and path identity; does not choose an extractor or shape extracted content',
   'src/paths.ts': 'cross-platform path normalization (WSL/MSYS/UNC) and display-time content fencing; affects path identity, not what is extracted from a file\'s content',

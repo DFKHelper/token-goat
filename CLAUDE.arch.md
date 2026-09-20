@@ -28,6 +28,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/index_prune.ts`](src/index_prune.ts) | `pruneDeletedFiles()` deletes file/symbol/ref/chunk rows under a root prefix for paths no longer on disk (used by `token-goat index` and the worker sweep); `recordKnownRootThrottled()` (called from `postEditHandler`) upserts the edited file's project root into the `known_roots` table; `sweepKnownRoots()` prunes dead rows for reachable known roots, tombstones unreachable roots for `KNOWN_ROOT_MISSING_GRACE_MS` (7 days) before forgetting them, and flags rather than prunes a root where the deletion would remove an anomalous share of its rows |
 | [`src/parser_fingerprint.ts`](src/parser_fingerprint.ts) | Exports: `PARSER_FINGERPRINT` |
 | [`src/parser_refs.ts`](src/parser_refs.ts) | Call-site reference extraction via tree-sitter AST traversal. |
+| [`src/parser_stamp.ts`](src/parser_stamp.ts) | Resolves the `files.parser_sha` stamp a row of a given language is expected to carry, from the generated digests in `parser_fingerprint.ts`. |
 | [`src/parser_structured.ts`](src/parser_structured.ts) | Extractors for structured textual formats (Markdown, JSON, YAML, TOML, CSS, Dockerfile) and fallback regex symbol recovery. |
 | [`src/parser_treesitter.ts`](src/parser_treesitter.ts) | Tree-sitter symbol extractors for typed and compiled languages (TS/JS, Python, Go, Rust, Ruby, Java, C/C++). |
 | [`src/parser_ts_types.ts`](src/parser_ts_types.ts) | Minimal structural typings for the node-tree-sitter API surface we touch. |
