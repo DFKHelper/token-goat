@@ -4205,6 +4205,39 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
+    // HAND-DERIVED: a 600-line function computed independently of the 1/3-span ratio this test pins. Regression: the 4th+ ranged read of a file denied on slice count alone (Item 2.5), even when every slice sat well inside one indexed symbol many times bigger than each window -- exactly the case where the ranged read is already the narrowest handle available, since `read "file::bigFn"` would hand back the whole 600-line body instead. Real transcripts show this firing on token-goat's own src/hooks_read.ts while paging a 906-line function in 100-280 line windows.
+    it('does not deny the 4th ranged read once every slice sits well inside one much-larger indexed symbol', () => {
+      const p = path.join(os.tmpdir(), `tg-paging-inside-symbol-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      const bodyLines = Array.from({ length: 598 }, (_, i) => `  step${i}()`).join('\n')
+      fs.writeFileSync(p, `function bigFn() {\n${bodyLines}\n}\n`)
+      tmpFiles.push(p)
+      indexFileSync(normalizePath(p), globalDbPath())
+      indexedFiles.push(p)
+
+      // Four 50-line slices, each well under bigFn's 600-line span / 3.
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 50] }, sessionId: 'test' }))
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [60, 110] }, sessionId: 'test' }))
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [120, 170] }, sessionId: 'test' }))
+      const r4 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [180, 230] }, sessionId: 'test' }))
+      expect(r4.hookType).not.toBe('deny')
+    })
+
+    // Control for the test above: the same 4-slices-of-one-file shape, but with no enclosing symbol anywhere near 3x each window (a file with no indexed symbols at all), so the paging deny must still fire.
+    it('still denies the 4th ranged read when no enclosing symbol is much larger than the window', () => {
+      const p = path.join(os.tmpdir(), `tg-paging-no-symbol-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      fs.writeFileSync(p, Array.from({ length: 250 }, (_, i) => `const x${i} = ${i};`).join('\n'))
+      tmpFiles.push(p)
+
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 50] }, sessionId: 'test' }))
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [60, 110] }, sessionId: 'test' }))
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [120, 170] }, sessionId: 'test' }))
+      const r4 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [180, 230] }, sessionId: 'test' }))
+      expect(r4.hookType).toBe('deny')
+      if (r4.hookType === 'deny') {
+        expect(r4.message).toContain('Sequential line-range paging detected')
+      }
+    })
+
     // FORMAT-DERIVED: raw tool_name 'view' + tool_input.path/view_range is Copilot CLI's actual wire shape, per src/bridges/copilot_cli.ts's remapToolInput (the real bridge's view_range -> offset/limit conversion) and hooks_cli.ts's COPILOT_CLI_TOOL_NAME_MAP ('view' -> 'Read'). Driven through normalizePayload(..., 'copilot_cli') + buildEvent, the same normalization the real hook entry point (relay.ts's relayInProcess) applies, rather than handed to preReadHandler with a raw toolName: 'view' that no real payload reaching this file ever carries (isNarrowViewRange's dead-code trap).
     function copilotViewEvent(p: string, sessionId: string, start: number, end: number): HookEvent {
       const raw = { tool_name: 'view', tool_input: { path: p, view_range: [start, end] }, session_id: sessionId }

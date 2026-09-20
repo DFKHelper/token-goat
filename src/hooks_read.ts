@@ -342,6 +342,19 @@ function isLargeSymbolSpan(lineStart: number, lineEnd: number, filePath: string)
   return totalLines > 0 && span > totalLines / 2
 }
 
+/** True when [start, end] lies entirely inside one indexed symbol whose span is at least 3x the window's own line count. At that ratio the ranged read is already the narrowest handle available -- paging through a symbol this much bigger than each slice should not be redirected at reading the whole symbol instead. */
+function isWindowInsideMuchLargerSymbol(filePath: string, start: number, end: number): boolean {
+  try {
+    const windowLines = end - start + 1
+    return querySymbols({ filePath, limit: 500 }).some((s) => {
+      const span = s.lineEnd - s.lineStart + 1
+      return s.lineStart <= start && s.lineEnd >= end && windowLines * 3 <= span
+    })
+  } catch {
+    return false
+  }
+}
+
 /** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when the file has no indexed symbols at all, since a bare `::Symbol` read would just fail. When the top pick is a large symbol (see {@link isLargeSymbolSpan}), the hint points at a `grep -C --symbol` slice (or `scope` to confirm the enclosing symbol) instead of naming it for a whole-body read. */
 export function realSymbolReadHint(filePath: string, shown: string, range?: { start: number; end: number }): string {
   let candidates: { name: string; lineStart: number; lineEnd: number }[]
@@ -1155,13 +1168,19 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // Item 2.5: sequential line-range paging on source files and docs/XML (3+ slices read so far)
       const isPagingTracked = isSourceExt || /\.(md|mdx|markdown|rst|xml|dtsx|ampkg|xaml)$/i.test(basename)
       if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3) {
-        recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
-        recordStat('session_hint', 0, 0)
-        return denyOutput(
-          'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' +
-          surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) +
-          ' Inspect structure directly without manual chunk paging.',
-        )
+        // A window this narrow relative to the symbol it sits inside (see isWindowInsideMuchLargerSymbol) is already the narrowest handle available -- denying it in favor of reading the whole symbol would hand back a much bigger body than the window ever asked for, so this specific deny is skipped and the read proceeds.
+        const pagingWindowSpan = window.offset !== undefined && window.limit !== undefined
+          ? { start: window.offset, end: window.offset + window.limit - 1 }
+          : undefined
+        if (pagingWindowSpan === undefined || !isWindowInsideMuchLargerSymbol(normalized, pagingWindowSpan.start, pagingWindowSpan.end)) {
+          recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
+          recordStat('session_hint', 0, 0)
+          return denyOutput(
+            'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' +
+            surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) +
+            ' Inspect structure directly without manual chunk paging.',
+          )
+        }
       }
     }
 
