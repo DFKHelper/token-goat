@@ -21,6 +21,7 @@ import {
   isCatCommand,
   normalizeCommandForCacheKey,
   commandHash,
+  bashOutputIdSync,
   depLockfileFingerprint,
   computeBashFingerprints,
   isBashEntryStale,
@@ -172,16 +173,24 @@ describe('commandHash', () => {
 })
 
 describe('storeBashOutput', () => {
-  it('returns an id equal to the command hash', async () => {
+  // The id was the command hash alone until a rerun with different output was shown to overwrite the body an already-emitted recall pointer described (tests/bash_recall_pointer_survives_rerun.test.ts). It is now bashOutputIdSync -- the command hash folded with the output -- and the command hash keeps resolving, through a redirect, to the newest entry for callers that know only the command.
+  it('returns the content-addressed id, and leaves the command hash resolving to the same entry', async () => {
     const id = await storeBashOutput('echo hi', 'hi\n', 0)
-    expect(id).toBe(await commandHash('echo hi', null))
+    expect(id).toBe(bashOutputIdSync('echo hi', 'hi\n', null))
+    expect(id).not.toBe(await commandHash('echo hi', null))
+    expect(getBashOutput(await commandHash('echo hi', null))?.id).toBe(id)
   })
 
-  // Regression (secret-redaction bypass): storeBashOutput indexed the raw, pre-redaction
-  // output into both the in-memory _byId cache and the cache_recall table even though
-  // storeBlob() redacted the same text before writing it to disk -- a same-process
-  // getBashOutput() read, or `token-goat recall`/FTS search, could surface a secret the
-  // blob-store redaction was specifically built to strip.
+  it('gives a rerun with different output its own id, leaving the earlier entry recallable', async () => {
+    const first = await storeBashOutput('echo hi', 'first\n', 0)
+    const second = await storeBashOutput('echo hi', 'second\n', 0)
+    expect(second).not.toBe(first)
+    expect(getBashOutput(first)?.output).toBe('first\n')
+    expect(getBashOutput(second)?.output).toBe('second\n')
+    expect(getBashOutput(await commandHash('echo hi', null))?.output).toBe('second\n')
+  })
+
+  // Regression (secret-redaction bypass): storeBashOutput indexed the raw, pre-redaction output into both the in-memory _byId cache and the cache_recall table even though storeBlob() redacted the same text before writing it to disk -- a same-process getBashOutput() read, or `token-goat recall`/FTS search, could surface a secret the blob-store redaction was specifically built to strip.
   it('never surfaces a raw secret via in-memory getBashOutput or the recall table', async () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE'
     const id = await storeBashOutput('deploy', `before ${secret} after`, 0)
@@ -190,11 +199,7 @@ describe('storeBashOutput', () => {
     expect(hits).toHaveLength(0)
   })
 
-  // Regression: the command line itself can carry a secret too (e.g. a curl -H
-  // "Authorization: Bearer sk-ant-..." header), not just its output. storeBlob()'s
-  // whole-JSON redaction strips it from the on-disk blob, but entry.command (in-memory)
-  // and the recall index's label/content both bypassed that pass entirely for the
-  // command text specifically -- only the output half of this fix was ever applied.
+  // Regression: the command line itself can carry a secret too (e.g. a curl -H "Authorization: Bearer sk-ant-..." header), not just its output. storeBlob()'s whole-JSON redaction strips it from the on-disk blob, but entry.command (in-memory) and the recall index's label/content both bypassed that pass entirely for the command text specifically -- only the output half of this fix was ever applied.
   it('never surfaces a raw secret embedded in the command itself', async () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE'
     const id = await storeBashOutput(`curl -H "Authorization: Bearer ${secret}" https://example.com`, 'ok', 0)
@@ -242,14 +247,7 @@ describe('TTL expiry (regression: getBashOutput had no read-time staleness check
 })
 
 describe('coerceBashEntry disk-blob validation (mutation-testing gap)', () => {
-  // Regression: loadBlob's own docstring says "the caller validates the parsed
-  // shape" -- coerceBashEntry is that validator, gating every field the disk
-  // blob must carry (id/command/output/exitCode/storedAt/sizeBytes) behind a
-  // typeof check before trusting it. No test exercised a blob missing one of
-  // those required fields (e.g. written by a stale on-disk format, or hand-
-  // corrupted), so a mutation dropping one field's check from the guard still
-  // passed the full suite. A blob missing a required field must be rejected
-  // (getBashOutput -> null), not silently coerced with an undefined field.
+  // Regression: loadBlob's own docstring says "the caller validates the parsed shape" -- coerceBashEntry is that validator, gating every field the disk blob must carry (id/command/output/exitCode/storedAt/sizeBytes) behind a typeof check before trusting it. No test exercised a blob missing one of those required fields (e.g. written by a stale on-disk format, or hand- corrupted), so a mutation dropping one field's check from the guard still passed the full suite. A blob missing a required field must be rejected (getBashOutput -> null), not silently coerced with an undefined field.
   it('getBashOutput returns null when the persisted blob is missing a required field', async () => {
     const id = await storeBashOutput('echo placeholder', 'placeholder', 0)
     const blobPath = path.join(tokenGoatHome(), 'bash_outputs', `${id}.json`)
@@ -284,10 +282,7 @@ describe('depLockfileFingerprint', () => {
     expect(result).toBeNull()
   })
 
-  // Regression (mutation-testing gap): DEP_LOCKFILES['npm'] lists two candidate
-  // lockfiles (package-lock.json, then yarn.lock as a fallback). No test exercised
-  // the fallback itself -- a mutation that returned null on the first missing
-  // candidate instead of trying the next one still passed the full suite.
+  // Regression (mutation-testing gap): DEP_LOCKFILES['npm'] lists two candidate lockfiles (package-lock.json, then yarn.lock as a fallback). No test exercised the fallback itself -- a mutation that returned null on the first missing candidate instead of trying the next one still passed the full suite.
   it('falls back to the next candidate lockfile when the first is absent', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockfile-fallback-'))
     try {
@@ -320,12 +315,7 @@ describe('extractLsTarget cwd resolution (m32 regression)', () => {
     try {
       const hash1 = await commandHash('ls sub', tmpDir)
 
-      // Add a file to the subdirectory. This is only observable in the hash if
-      // the dir-state fingerprint is computed against `resolve(tmpDir, 'sub')`
-      // (the command's own cwd) -- resolving against `process.cwd()` instead
-      // (the test runner's real cwd, which has no 'sub' dir) would fingerprint
-      // as null both times and the hash would stay identical regardless of
-      // what happens to `subDir`.
+      // Add a file to the subdirectory. This is only observable in the hash if the dir-state fingerprint is computed against `resolve(tmpDir, 'sub')` (the command's own cwd) -- resolving against `process.cwd()` instead (the test runner's real cwd, which has no 'sub' dir) would fingerprint as null both times and the hash would stay identical regardless of what happens to `subDir`.
       fs.writeFileSync(path.join(subDir, 'new-file.txt'), 'new\n')
 
       const hash2 = await commandHash('ls sub', tmpDir)
@@ -340,8 +330,7 @@ describe('normalizeCommandForCacheKey — quote-aware normalization (M41 regress
   it('does not collapse whitespace runs inside a double-quoted argument', () => {
     const a = normalizeCommandForCacheKey('echo "a   b"')
     const b = normalizeCommandForCacheKey('echo "a b"')
-    // Two genuinely different commands (different quoted content) must not
-    // collapse to the same normalized cache key.
+    // Two genuinely different commands (different quoted content) must not collapse to the same normalized cache key.
     expect(a).not.toBe(b)
     expect(a).toBe('echo "a   b"')
     expect(b).toBe('echo "a b"')
@@ -381,11 +370,7 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
     expect(isBashEntryStale(entry, 'echo hi', null)).toBe(false)
   })
 
-  // Regression (mutation-testing gap): computeBashFingerprints must return undefined,
-  // not an empty object, when no fingerprint kind matched. `{}` is truthy in JS, so
-  // storeBashOutput's `...(fingerprints ? { fingerprints } : {})` spread would still
-  // attach an empty `fingerprints: {}` to every entry -- a shape change no prior test
-  // caught because isBashEntryStale behaves identically for `{}` and `undefined`.
+  // Regression (mutation-testing gap): computeBashFingerprints must return undefined, not an empty object, when no fingerprint kind matched. `{}` is truthy in JS, so storeBashOutput's `...(fingerprints ? { fingerprints } : {})` spread would still attach an empty `fingerprints: {}` to every entry -- a shape change no prior test caught because isBashEntryStale behaves identically for `{}` and `undefined`.
   it('returns undefined (not an empty object) for a command that matches no fingerprint kind', () => {
     expect(computeBashFingerprints('echo hi', null)).toBeUndefined()
     expect(computeBashFingerprints('echo hi', '/some/cwd')).toBeUndefined()
@@ -434,10 +419,7 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
     }
   })
 
-  // Regression: isNpmAuditCommand/isNpmOutdatedCommand (bash_output_cache.ts) had a purpose-built
-  // regex pattern and classifier each, but zero call sites anywhere -- npm audit/outdated results
-  // never got a lockfile fingerprint, so a cached `npm audit` run before `npm install` added a
-  // vulnerable package would be served as fresh forever after, with no invalidation signal.
+  // Regression: isNpmAuditCommand/isNpmOutdatedCommand (bash_output_cache.ts) had a purpose-built regex pattern and classifier each, but zero call sites anywhere -- npm audit/outdated results never got a lockfile fingerprint, so a cached `npm audit` run before `npm install` added a vulnerable package would be served as fresh forever after, with no invalidation signal.
   it.each(['npm audit', 'npm outdated'])(
     'detects a stale `%s` entry once package-lock.json changes',
     async (cmd) => {
@@ -491,9 +473,7 @@ describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regr
       expect(entry?.fingerprints?.git).toBeDefined()
       expect(isBashEntryStale(entry!, 'git diff', tmpDir)).toBe(false)
 
-      // Edit a tracked file WITHOUT staging or committing -- HEAD sha and
-      // .git/index mtime are both untouched by this, so a fingerprint based
-      // only on those two never changes and the stale check misses the edit.
+      // Edit a tracked file WITHOUT staging or committing -- HEAD sha and .git/index mtime are both untouched by this, so a fingerprint based only on those two never changes and the stale check misses the edit.
       fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'two\n')
 
       expect(isBashEntryStale(entry!, 'git diff', tmpDir)).toBe(true)
@@ -556,11 +536,7 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
     }
   })
 
-  // Regression: extractCatTarget/extractLsTarget naively split on whitespace, so a quoted
-  // path with a space (e.g. `cat "release notes.txt"`) resolved to the literal token
-  // `"release` -- a nonexistent path. Fingerprinting that bogus path fails silently, leaving
-  // the entry with NO file fingerprint at all, and isBashEntryStale treats a fingerprint-less
-  // entry as unconditionally fresh -- so the stale pre-edit content would be served forever.
+  // Regression: extractCatTarget/extractLsTarget naively split on whitespace, so a quoted path with a space (e.g. `cat "release notes.txt"`) resolved to the literal token `"release` -- a nonexistent path. Fingerprinting that bogus path fails silently, leaving the entry with NO file fingerprint at all, and isBashEntryStale treats a fingerprint-less entry as unconditionally fresh -- so the stale pre-edit content would be served forever.
   it('computes a file fingerprint for `cat "<quoted path with a space>"` and flags it stale once the file changes', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-cat-quoted-'))
     try {
@@ -579,11 +555,7 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
     }
   })
 
-  // Regression (mutation-testing gap): tokenizeShellArgs handles both `"` and `'` as quote
-  // delimiters, but every existing quoted-path test here used double quotes only, so a
-  // mutation that dropped single-quote handling entirely still passed the full suite. A
-  // single-quoted path (a common POSIX-shell quoting style, e.g. `cat 'release notes.txt'`)
-  // must resolve identically to the double-quoted case.
+  // Regression (mutation-testing gap): tokenizeShellArgs handles both `"` and `'` as quote delimiters, but every existing quoted-path test here used double quotes only, so a mutation that dropped single-quote handling entirely still passed the full suite. A single-quoted path (a common POSIX-shell quoting style, e.g. `cat 'release notes.txt'`) must resolve identically to the double-quoted case.
   it('computes a file fingerprint for `cat \'<single-quoted path with a space>\'` and flags it stale once the file changes', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-cat-squoted-'))
     try {

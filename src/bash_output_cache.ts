@@ -1,17 +1,9 @@
 /**
  * Bash-output cache with cross-process disk persistence.
  *
- * Ports the bash-output dedup concept from `session.py` / `bash_cache.py`
- * (mark_bash_run / lookup_bash_entry): a command's full stdout is kept so a
- * later identical command can be served from cache, and so surgical re-reads
- * (`token-goat bash-output <id>`) can extract a slice without re-running it.
+ * Ports the bash-output dedup concept from `session.py` / `bash_cache.py` (mark_bash_run / lookup_bash_entry): a command's full stdout is kept so a later identical command can be served from cache, and so surgical re-reads (`token-goat bash-output <id>`) can extract a slice without re-running it.
  *
- * A per-process `id -> entry` map fronts a content-addressed disk store
- * (`~/.token-goat/bash_outputs/<id>.json`). The hooks run as a fresh process per
- * tool call, so the disk layer is what lets a value cached by the post_tool_use
- * hook be recalled by a later pre_tool_use process and by the session-less CLI.
- * The in-memory map is cleared between tests via {@link registerReset}; the disk
- * store is pruned by age/count on each write.
+ * A per-process `id -> entry` map fronts a content-addressed disk store (`~/.token-goat/bash_outputs/<id>.json`). The hooks run as a fresh process per tool call, so the disk layer is what lets a value cached by the post_tool_use hook be recalled by a later pre_tool_use process and by the session-less CLI. The in-memory map is cleared between tests via {@link registerReset}; the disk store is pruned by age/count on each write.
  */
 
 import { readdirSync, readFileSync, statSync } from 'fs'
@@ -100,16 +92,7 @@ export const isLintCommand = (cmd: string) => isCommandOfType(cmd, 'lintCommand'
 export const isNpmRunScriptCommand = (cmd: string) => isCommandOfType(cmd, 'npmRunScript')
 export const isCatCommand = (cmd: string) => isCommandOfType(cmd, 'catCommand')
 
-/**
- * A `git status` or `git diff --stat` scoped to a specific path (`... -- <path>`) is
- * byte-identical on every rerun until either HEAD changes or the working tree changes —
- * exactly the condition the `gitMutable` fingerprint (HEAD sha + `git status --porcelain`
- * hash, see gitStateFingerprintSync below) already invalidates on. `git diff` without
- * `--stat` is excluded: a full unified diff can legitimately grow/shrink in ways a byte-exact
- * recall would misrepresent as unchanged, so only the compact `--stat` summary form is
- * considered cacheable here. Plain `git status` (no `--stat` flag exists for it) is always
- * eligible once scoped.
- */
+/** A `git status` or `git diff --stat` scoped to a specific path (`... -- <path>`) is byte-identical on every rerun until either HEAD changes or the working tree changes — exactly the condition the `gitMutable` fingerprint (HEAD sha + `git status --porcelain` hash, see gitStateFingerprintSync below) already invalidates on. `git diff` without `--stat` is excluded: a full unified diff can legitimately grow/shrink in ways a byte-exact recall would misrepresent as unchanged, so only the compact `--stat` summary form is considered cacheable here. Plain `git status` (no `--stat` flag exists for it) is always eligible once scoped. */
 export function isScopedGitStatusOrDiffStatCommand(cmd: string): boolean {
   if (!isCommandOfType(cmd, 'gitMutable')) return false
   if (!isCommandOfType(cmd, 'gitDiffScoped')) return false
@@ -118,19 +101,9 @@ export function isScopedGitStatusOrDiffStatCommand(cmd: string): boolean {
 }
 
 /**
- * Fingerprint HEAD plus uncommitted working-tree state: HEAD sha and a hash
- * of `git status --porcelain` (staged, unstaged, and untracked changes).
- * HEAD sha alone only changes on a commit, so a plain edit to a tracked file
- * -- never staged -- would otherwise leave the fingerprint unchanged and a
- * cached git-diff/-status (or test/lint) result would keep being served as
- * fresh after the tree it was computed against had already changed.
+ * Fingerprint HEAD plus uncommitted working-tree state: HEAD sha and a hash of `git status --porcelain` (staged, unstaged, and untracked changes). HEAD sha alone only changes on a commit, so a plain edit to a tracked file -- never staged -- would otherwise leave the fingerprint unchanged and a cached git-diff/-status (or test/lint) result would keep being served as fresh after the tree it was computed against had already changed.
  *
- * Deliberately does NOT fold in `.git/index`'s mtime: `git status` can
- * itself refresh the index's on-disk stat cache as a side effect (with no
- * porcelain-visible change), so reading the index mtime around a `status`
- * call is racy and would self-invalidate on the very next check even though
- * nothing real changed. `git status --porcelain`'s output is the stable,
- * logical signal and already a superset of what the index mtime covered.
+ * Deliberately does NOT fold in `.git/index`'s mtime: `git status` can itself refresh the index's on-disk stat cache as a side effect (with no porcelain-visible change), so reading the index mtime around a `status` call is racy and would self-invalidate on the very next check even though nothing real changed. `git status --porcelain`'s output is the stable, logical signal and already a superset of what the index mtime covered.
  */
 function gitStateFingerprintSync(cwd: string): string | null {
   try {
@@ -151,9 +124,7 @@ function gitStateFingerprintSync(cwd: string): string | null {
   }
 }
 
-/** Directories at/under this many entries are fingerprinted by their entry-name listing (exact,
- *  immune to the same-mtime-tick race a fast successive write/rm inside the dir can trigger);
- *  larger directories fall back to mtime to avoid a full readdir on every staleness check. */
+/** Directories at/under this many entries are fingerprinted by their entry-name listing (exact, immune to the same-mtime-tick race a fast successive write/rm inside the dir can trigger); larger directories fall back to mtime to avoid a full readdir on every staleness check. */
 const DIR_FINGERPRINT_LISTING_CAP_ENTRIES = 10_000
 
 function dirStateFingerprintSync(path: string): string | null {
@@ -170,9 +141,7 @@ function dirStateFingerprintSync(path: string): string | null {
   }
 }
 
-/** Files at/under this size are fingerprinted by content hash (exact, immune to the
- *  same-mtime-tick/same-size race a fast successive write can trigger); larger files fall
- *  back to mtime+size to avoid a full read on every staleness check. */
+/** Files at/under this size are fingerprinted by content hash (exact, immune to the same-mtime-tick/same-size race a fast successive write can trigger); larger files fall back to mtime+size to avoid a full read on every staleness check. */
 const FILE_FINGERPRINT_CONTENT_CAP_BYTES = 2 * 1024 * 1024
 
 function fileStateFingerprintSync(path: string): string | null {
@@ -213,19 +182,9 @@ export async function depLockfileFingerprint(cmd: string, cwd: string | null): P
 }
 
 /**
- * Normalize a command string into a stable cache-key form: collapse
- * whitespace runs to a single space, convert backslashes to forward
- * slashes, strip a leading `./` and a trailing `/` from path-like tokens.
+ * Normalize a command string into a stable cache-key form: collapse whitespace runs to a single space, convert backslashes to forward slashes, strip a leading `./` and a trailing `/` from path-like tokens.
  *
- * Quote-aware: whitespace-collapsing and backslash normalization are only
- * applied to characters outside a single- or double-quoted span, tracked
- * character-by-character (same approach as `isInsideStringLiteral` in
- * text_commands.ts / pack.ts). Applying them inside quotes would mangle
- * quoted argument content -- e.g. `echo "a   b"` and `echo "a b"` are
- * genuinely different commands but would otherwise collapse to the same
- * normalized string, and a quoted regex containing a literal backslash
- * would have it silently rewritten to a slash -- both causing distinct
- * commands to collide on the same cache key.
+ * Quote-aware: whitespace-collapsing and backslash normalization are only applied to characters outside a single- or double-quoted span, tracked character-by-character (same approach as `isInsideStringLiteral` in text_commands.ts / pack.ts). Applying them inside quotes would mangle quoted argument content -- e.g. `echo "a   b"` and `echo "a b"` are genuinely different commands but would otherwise collapse to the same normalized string, and a quoted regex containing a literal backslash would have it silently rewritten to a slash -- both causing distinct commands to collide on the same cache key.
  */
 export function normalizeCommandForCacheKey(cmd: string): string {
   const trimmed = cmd.trim()
@@ -277,13 +236,9 @@ export function normalizeCommandForCacheKey(cmd: string): string {
 }
 
 /**
- * Return the stable hash for a command: 16-hex-char SHA-256 prefix of the
- * normalized command with cwd scoping.
+ * Return the stable hash for a command: 16-hex-char SHA-256 prefix of the normalized command with cwd scoping.
  *
- * The async {@link commandHash} below is the long-standing public name and stays; this is the
- * same body, exposed synchronously for callers that must finish the write before their (very
- * short-lived) hook process exits. Every fingerprint helper it reaches for is already a `*Sync`
- * one, so nothing is lost by dropping the promise.
+ * The async {@link commandHash} below is the long-standing public name and stays; this is the same body, exposed synchronously for callers that must finish the write before their (very short-lived) hook process exits. Every fingerprint helper it reaches for is already a `*Sync` one, so nothing is lost by dropping the promise.
  */
 export function commandHashSync(command: string, cwd: string | null = null): string {
   const normalized = normalizeCommandForCacheKey(command)
@@ -321,21 +276,17 @@ export function commandHash(command: string, cwd: string | null = null): Promise
   return Promise.resolve(commandHashSync(command, cwd))
 }
 
+/** Blob id for one invocation's output: {@link commandHashSync} folded together with the output bytes. The command hash alone collapses every run of one command in one cwd onto a single id, so a later run with different output overwrote the body an already-emitted `bash-output <id> --full` notice described and that notice silently started resolving to text it never named. Folding the output in gives each distinct body its own id, so an older notice keeps resolving to the body it described; {@link storeBashOutputSync} still leaves the command hash resolvable as a lookup key for callers that only know the command. */
+export function bashOutputIdSync(command: string, output: string, cwd: string | null = null): string {
+  return shortFingerprint(`${commandHashSync(command, cwd)}\x00${output}`)
+}
+
 /**
- * Compute current git/dir/lockfile/file state fingerprints for `command` run
- * in `cwd`. Stored on a {@link BashOutputEntry} at write time
- * (`storeBashOutput`) and recomputed at cache-recall time
- * ({@link isBashEntryStale}) so a cached entry whose underlying source state
- * has since changed is not served as if it were still fresh.
+ * Compute current git/dir/lockfile/file state fingerprints for `command` run in `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`) and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached entry whose underlying source state has since changed is not served as if it were still fresh.
  *
- * - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and
- *   any command whose output depends on the whole working tree -- test
- *   runners (pytest/vitest/jest/go test), linters (eslint/ruff), and
- *   `npm run <script>` -- since {@link gitStateFingerprintSync} already
- *   captures staged/unstaged/untracked changes anywhere in the tree.
+ * - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and any command whose output depends on the whole working tree -- test runners (pytest/vitest/jest/go test), linters (eslint/ruff), and `npm run <script>` -- since {@link gitStateFingerprintSync} already captures staged/unstaged/untracked changes anywhere in the tree.
  * - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing.
- * - `lockfile`: dependency-list/install/audit/outdated commands, scoped to
- *   the resolved lockfile's content.
+ * - `lockfile`: dependency-list/install/audit/outdated commands, scoped to the resolved lockfile's content.
  * - `file`: `cat <file>`, scoped to that one file's mtime + size.
  */
 export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
@@ -378,14 +329,7 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
   return Object.keys(fingerprints).length > 0 ? fingerprints : undefined
 }
 
-/**
- * True when `entry`'s stored fingerprints no longer match the current
- * git/dir/lockfile state for `command` run in `cwd` — i.e. the underlying
- * source changed since the output was cached, so it must not be recalled as
- * fresh. An entry with no stored fingerprints (a command that doesn't
- * fingerprint anything, or an entry written before this field existed) is
- * never considered stale.
- */
+/** True when `entry`'s stored fingerprints no longer match the current git/dir/lockfile state for `command` run in `cwd` — i.e. the underlying source changed since the output was cached, so it must not be recalled as fresh. An entry with no stored fingerprints (a command that doesn't fingerprint anything, or an entry written before this field existed) is never considered stale. */
 export function isBashEntryStale(entry: BashOutputEntry, command: string, cwd: string | null): boolean {
   const stored = entry.fingerprints
   if (!stored) return false
@@ -397,13 +341,7 @@ export function isBashEntryStale(entry: BashOutputEntry, command: string, cwd: s
   return false
 }
 
-/**
- * Split a command string into argv-like tokens, quote-aware: whitespace inside a single- or
- * double-quoted span does not split a token, and the surrounding quote characters are stripped
- * from the result. Used by {@link extractFirstPathArg} so a quoted path
- * with a space (e.g. `cat "release notes.txt"`) resolves to the real path instead of a garbage
- * partial token like `"release`.
- */
+/** Split a command string into argv-like tokens, quote-aware: whitespace inside a single- or double-quoted span does not split a token, and the surrounding quote characters are stripped from the result. Used by {@link extractFirstPathArg} so a quoted path with a space (e.g. `cat "release notes.txt"`) resolves to the real path instead of a garbage partial token like `"release`. */
 function tokenizeShellArgs(cmd: string): string[] {
   const trimmed = cmd.trim()
   const tokens: string[] = []
@@ -441,11 +379,7 @@ function tokenizeShellArgs(cmd: string): string[] {
   return tokens
 }
 
-/**
- * First non-flag argument of `cmd`, resolved against `cwd`. `fallback` is returned when no such
- * argument exists -- `ls`'s implicit target is the cwd itself, while `cat` with no file argument
- * reads stdin and has no sensible default target.
- */
+/** First non-flag argument of `cmd`, resolved against `cwd`. `fallback` is returned when no such argument exists -- `ls`'s implicit target is the cwd itself, while `cat` with no file argument reads stdin and has no sensible default target. */
 function extractFirstPathArg(cmd: string, cwd: string, fallback: string | null): string | null {
   const tokens = tokenizeShellArgs(cmd)
   for (let i = 1; i < tokens.length; i++) {
@@ -464,22 +398,11 @@ function extractFirstPathArg(cmd: string, cwd: string, fallback: string | null):
 const ISSUE_LINE_PATTERN = /\b(?:error|fail(?:ed|ure)?|warning)\b/i
 
 /**
- * A generic, structural summary of the difference between a repeat command's
- * cached prior output and its fresh output — folds a large rerun diff (test
- * runner, linter, build tool, ...) into a short delta instead of repeating the
- * full new output. Comparison is exact-line-match only; there is no
- * tool-specific parsing of any particular runner's summary format.
+ * A generic, structural summary of the difference between a repeat command's cached prior output and its fresh output — folds a large rerun diff (test runner, linter, build tool, ...) into a short delta instead of repeating the full new output. Comparison is exact-line-match only; there is no tool-specific parsing of any particular runner's summary format.
  *
- * When the prior output contains at least one line matching a generic
- * error/failure/warning marker ({@link ISSUE_LINE_PATTERN}), reports how many
- * of those exact lines are no longer present verbatim in the new output
- * ("resolved") against how many such lines remain in the new output. This is
- * a conservative approximation — it counts exact line matches, not causally
- * "the same issue" — but requires no knowledge of any specific tool's format.
+ * When the prior output contains at least one line matching a generic error/failure/warning marker ({@link ISSUE_LINE_PATTERN}), reports how many of those exact lines are no longer present verbatim in the new output ("resolved") against how many such lines remain in the new output. This is a conservative approximation — it counts exact line matches, not causally "the same issue" — but requires no knowledge of any specific tool's format.
  *
- * Otherwise (no issue-shaped lines to track) falls back to a plain line-count
- * delta. Returns null when the two outputs are byte-identical (nothing to
- * summarize).
+ * Otherwise (no issue-shaped lines to track) falls back to a plain line-count delta. Returns null when the two outputs are byte-identical (nothing to summarize).
  */
 export function summarizeOutputDelta(oldOutput: string, newOutput: string): string | null {
   if (oldOutput === newOutput) return null
@@ -489,14 +412,7 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
   if (oldIssueLines.length > 0) {
     const newIssueLines = newLines.filter((l) => ISSUE_LINE_PATTERN.test(l))
     const priorTotal = oldIssueLines.length
-    // Multiset (count-aware) matching, not a Set membership check: a Set collapses repeated
-    // identical issue lines (e.g. the same "error: foo.ts:10 unexpected token" reported N times
-    // by a linter across N files) into one entry, so `.has(l)` reports true as long as ANY one
-    // instance survives -- silently undercounting `resolved` (every duplicate instance that
-    // actually disappeared gets counted as "still present" just because a sibling duplicate
-    // remains) whenever a repeat command's issue output contains any duplicate line. Consuming
-    // one available count per old-line match, rather than checking Set membership, correctly
-    // credits each individually-resolved duplicate instance.
+    // Multiset (count-aware) matching, not a Set membership check: a Set collapses repeated identical issue lines (e.g. the same "error: foo.ts:10 unexpected token" reported N times by a linter across N files) into one entry, so `.has(l)` reports true as long as ANY one instance survives -- silently undercounting `resolved` (every duplicate instance that actually disappeared gets counted as "still present" just because a sibling duplicate remains) whenever a repeat command's issue output contains any duplicate line. Consuming one available count per old-line match, rather than checking Set membership, correctly credits each individually-resolved duplicate instance.
     const availableCounts = new Map<string, number>()
     for (const l of newIssueLines) availableCounts.set(l, (availableCounts.get(l) ?? 0) + 1)
     let resolved = 0
@@ -517,24 +433,15 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
 /**
  * Store a command's `output` and `exitCode`, returning its id.
  *
- * The id is {@link commandHash} of the command, so re-running an identical
- * command overwrites the prior entry and keeps the same id.
+ * The id is {@link bashOutputIdSync}, which folds the output into the command hash, so re-running the same command with different output stores a new entry beside the old one rather than overwriting it -- a recall pointer already handed to the model keeps resolving to the body it described. A redirect blob at the plain {@link commandHash} is refreshed to point at the newest entry, so callers that know only the command (cross-run delta folding, `token-goat waste`) still resolve the latest through {@link getBashOutput}.
  */
 export function storeBashOutputSync(command: string, output: string, exitCode: number, cwd: string | null = null): string {
-  const id = commandHashSync(command, cwd)
+  const id = bashOutputIdSync(command, output, cwd)
+  const commandKey = commandHashSync(command, cwd)
   const fingerprints = computeBashFingerprints(command, cwd)
-  // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
-  // redaction pass to the JSON it writes to disk, but the in-memory _byId cache and the
-  // recall index write below both bypassed that pass entirely (served/indexed raw
-  // output), leaking secrets via same-process reads and `token-goat recall`/FTS search.
-  // Redacting here keeps disk, in-memory, and the recall index all consistent.
+  // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth redaction pass to the JSON it writes to disk, but the in-memory _byId cache and the recall index write below both bypassed that pass entirely (served/indexed raw output), leaking secrets via same-process reads and `token-goat recall`/FTS search. Redacting here keeps disk, in-memory, and the recall index all consistent.
   const redactedOutput = redactSecrets(output).text
-  // The command line itself can carry a secret too (e.g. `curl -H "Authorization: Bearer
-  // sk-ant-..."`), not just its output. storeBlob()'s whole-JSON redaction pass would strip
-  // it from the on-disk blob's `command` field, but the in-memory `entry.command` below and
-  // the recall index write both bypassed that pass entirely for the command text specifically
-  // -- only the output half of this same fix was ever applied. Redacting here closes that gap
-  // the same way the output redaction above already did.
+  // The command line itself can carry a secret too (e.g. `curl -H "Authorization: Bearer sk-ant-..."`), not just its output. storeBlob()'s whole-JSON redaction pass would strip it from the on-disk blob's `command` field, but the in-memory `entry.command` below and the recall index write both bypassed that pass entirely for the command text specifically -- only the output half of this same fix was ever applied. Redacting here closes that gap the same way the output redaction above already did.
   const redactedCommand = redactSecrets(command).text
   const entry: BashOutputEntry = {
     id,
@@ -546,11 +453,26 @@ export function storeBashOutputSync(command: string, output: string, exitCode: n
     ...(fingerprints ? { fingerprints } : {}),
   }
   _byId.set(id, entry)
+  _byId.set(commandKey, entry)
   // Persist so a later, separate hook process (and the CLI) can recall it.
   storeBlob(BASH_OUTPUT_SUBDIR, id, entry)
+  // The redirect carries no body of its own, so refreshing it costs a few dozen bytes and never displaces a cached output under the subdir's byte budget.
+  if (commandKey !== id) storeBlob(BASH_OUTPUT_SUBDIR, commandKey, { latestId: id } satisfies BashOutputRedirect)
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
   indexRecallEntry('bash', id, redactedCommand, `${redactedCommand}\n${redactedOutput}`, entry.storedAt)
   return id
+}
+
+/** A blob that names the newest entry for one command hash instead of holding a body itself. See {@link storeBashOutputSync}. */
+interface BashOutputRedirect {
+  latestId: string
+}
+
+/** The redirect target in an untrusted parsed-JSON blob, or null when the blob is not a redirect. */
+function coerceBashRedirect(raw: unknown): string | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const latest = (raw as Record<string, unknown>)['latestId']
+  return typeof latest === 'string' && latest.length > 0 ? latest : null
 }
 
 /** Promise-returning alias for {@link storeBashOutputSync}, kept for existing callers. */
@@ -558,8 +480,7 @@ export function storeBashOutput(command: string, output: string, exitCode: numbe
   return Promise.resolve(storeBashOutputSync(command, output, exitCode, cwd))
 }
 
-/** Coerce an untrusted parsed-JSON value into a {@link BashOutputEntry}, or null
- * when any required field is missing or the wrong type. */
+/** Coerce an untrusted parsed-JSON value into a {@link BashOutputEntry}, or null when any required field is missing or the wrong type. */
 function coerceBashEntry(raw: unknown): BashOutputEntry | null {
   if (raw === null || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
@@ -597,13 +518,7 @@ function coerceBashEntry(raw: unknown): BashOutputEntry | null {
 /**
  * Return the entry for `id`, or null if not present.
  *
- * Falls back to the disk store on an in-memory miss so a value cached by an
- * earlier hook process (or run) resolves; a disk hit is cached in-process.
- * Returns null if the disk entry is older than DEFAULT_MAX_AGE_MS (stale
- * cache) -- pruneBlobs only evicts stale entries when a *new* value is
- * stored to the same subdir, so a quiet period with no new bash-cache
- * writes would otherwise leave an arbitrarily old entry servable, matching
- * the read-time TTL check web_cache.ts's getWebOutput already applies.
+ * Falls back to the disk store on an in-memory miss so a value cached by an earlier hook process (or run) resolves; a disk hit is cached in-process. Returns null if the disk entry is older than DEFAULT_MAX_AGE_MS (stale cache) -- pruneBlobs only evicts stale entries when a *new* value is stored to the same subdir, so a quiet period with no new bash-cache writes would otherwise leave an arbitrarily old entry servable, matching the read-time TTL check web_cache.ts's getWebOutput already applies.
  */
 export function getBashOutput(id: string): BashOutputEntry | null {
   const hit = _byId.get(id)
@@ -611,7 +526,19 @@ export function getBashOutput(id: string): BashOutputEntry | null {
 
   if (isBlobStale(BASH_OUTPUT_SUBDIR, id)) return null
 
-  const entry = coerceBashEntry(loadBlob(BASH_OUTPUT_SUBDIR, id))
+  const raw = loadBlob(BASH_OUTPUT_SUBDIR, id)
+  // A redirect stands where a command hash used to address the body directly, so a caller holding only the command still reaches the newest entry. Followed exactly once, never as a chain: only storeBashOutputSync writes redirects and it always points them at a content-addressed id, which holds an entry.
+  const target = coerceBashRedirect(raw)
+  if (target !== null) {
+    if (isBlobStale(BASH_OUTPUT_SUBDIR, target)) return null
+    const latest = coerceBashEntry(loadBlob(BASH_OUTPUT_SUBDIR, target))
+    if (latest === null) return null
+    _byId.set(target, latest)
+    _byId.set(id, latest)
+    return latest
+  }
+
+  const entry = coerceBashEntry(raw)
   if (entry === null) return null
   _byId.set(id, entry)
   return entry

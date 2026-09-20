@@ -1,7 +1,4 @@
-/**
- * Cache and history commands: bash-history, web-history, clean-cache,
- * prune-cache, cache-audit. D2 appends session / cost commands to this file.
- */
+/** Cache and history commands: bash-history, web-history, clean-cache, prune-cache, cache-audit. D2 appends session / cost commands to this file. */
 
 import { listBlobs, pruneBlobs, DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
@@ -26,15 +23,9 @@ function emitErr(text: string): void {
 /**
  * Cap a listing to `limit` rows and say so on stderr when rows were dropped.
  *
- * These listings serialize a bare JSON array under `--json`, so there is nowhere in-band to put a
- * `truncated` flag without breaking every pipeline that consumes the array. stderr is the only
- * channel left. A pipeline that discards stderr still cannot see the notice -- that residual risk is
- * real, and named rather than hidden. What is not acceptable is disclosure on neither channel,
- * which is what all three listings did: `--limit 10` against 200 cached entries printed ten rows
- * that were byte-identical to a complete answer.
+ * These listings serialize a bare JSON array under `--json`, so there is nowhere in-band to put a `truncated` flag without breaking every pipeline that consumes the array. stderr is the only channel left. A pipeline that discards stderr still cannot see the notice -- that residual risk is real, and named rather than hidden. What is not acceptable is disclosure on neither channel, which is what all three listings did: `--limit 10` against 200 cached entries printed ten rows that were byte-identical to a complete answer.
  *
- * Shared rather than written out three times because the three callers are the same listing with a
- * different row shape, and a notice that exists in two of them is the failure this fixes.
+ * Shared rather than written out three times because the three callers are the same listing with a different row shape, and a notice that exists in two of them is the failure this fixes.
  */
 function capAndNote<T>(rows: readonly T[], limit: number): T[] {
   const shown = rows.slice(0, limit)
@@ -44,14 +35,11 @@ function capAndNote<T>(rows: readonly T[], limit: number): T[] {
   return shown
 }
 
-/** Parses a `--limit` option to a positive int, defaulting to `dflt` when unset. Shared by
- * cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way.
+/**
+ * Parses a `--limit` option to a positive int, defaulting to `dflt` when unset. Shared by cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way.
  *
- * `--limit 0` is rejected rather than accepted-and-sliced-to-empty: each caller's
- * zero-results branch prints an absolute claim ("No bash output entries cached.") that a
- * silently-empty `.slice(0, 0)` result would make even when entries genuinely exist --
- * indistinguishable from a real empty cache. Same false-clean failure mode as runFind's own
- * --limit validation (read_commands.ts) and graph_commands.ts's --top validation. */
+ * `--limit 0` is rejected rather than accepted-and-sliced-to-empty: each caller's zero-results branch prints an absolute claim ("No bash output entries cached.") that a silently-empty `.slice(0, 0)` result would make even when entries genuinely exist -- indistinguishable from a real empty cache. Same false-clean failure mode as runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation.
+ */
 function parseLimitOpt(cmdName: string, limitStr: string | undefined, dflt = 30): number {
   if (limitStr === undefined) return dflt
   let n: number
@@ -71,8 +59,7 @@ function parseLimitOpt(cmdName: string, limitStr: string | undefined, dflt = 30)
 // Confirmed storage subdirs operated on by clean-cache and prune-cache.
 const CACHE_SUBDIRS = [BASH_OUTPUT_SUBDIR, WEB_OUTPUT_SUBDIR, SESSIONS_SUBDIR, SKILLS_OUTPUT_SUBDIR] as const
 
-// skills entries are plain .txt/.meta files, not disk_cache.ts's JSON blob envelope, so
-// they need skill_cache.ts's own eviction pass instead of the generic pruneBlobs.
+// skills entries are plain .txt/.meta files, not disk_cache.ts's JSON blob envelope, so they need skill_cache.ts's own eviction pass instead of the generic pruneBlobs.
 function pruneSubdir(sub: string, maxCount: number, maxAgeMs: number): number {
   return sub === SKILLS_OUTPUT_SUBDIR ? pruneSkillOutputs(maxCount, maxAgeMs) : pruneBlobs(sub, maxCount, maxAgeMs)
 }
@@ -88,24 +75,14 @@ const INDEXING_SKIP_KB_SANITY_FLOOR = 5
 
 
 
-/**
- * List session blobs, excluding agent-salted subagent blobs (see
- * {@link AGENT_SALT_MARKER}) and sorted newest-first. Mirrors compact.ts's
- * `findLatestSessionId` filter: a subagent's blob is often the newest file
- * on disk, so an unfiltered "most recent" pick can surface a narrow
- * subagent-scoped ledger where callers expect the genuine parent session.
- */
+/** List session blobs, excluding agent-salted subagent blobs (see {@link AGENT_SALT_MARKER}) and sorted newest-first. Mirrors compact.ts's `findLatestSessionId` filter: a subagent's blob is often the newest file on disk, so an unfiltered "most recent" pick can surface a narrow subagent-scoped ledger where callers expect the genuine parent session. */
 function listParentSessionBlobs(): Array<{ id: string; mtime: number; value: unknown }> {
   return listBlobs(SESSIONS_SUBDIR)
     .filter((b) => !b.id.includes(AGENT_SALT_MARKER))
     .sort((a, b) => b.mtime - a.mtime)
 }
 
-/**
- * Newest parent session blob's id and its `files` array, normalized against a malformed or
- * missing shape — shared by cmdSessionSummary and cmdCost, which both need exactly this. Returns
- * null when no parent session blob exists at all (callers render their own "no session" message).
- */
+/** Newest parent session blob's id and its `files` array, normalized against a malformed or missing shape — shared by cmdSessionSummary and cmdCost, which both need exactly this. Returns null when no parent session blob exists at all (callers render their own "no session" message). */
 function getNewestSessionFiles(): { id: string; sessionCount: number; filesArr: Array<Record<string, unknown>> } | null {
   const blobs = listParentSessionBlobs()
   if (blobs.length === 0) return null
@@ -124,9 +101,11 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
     .map(({ id, mtime, value }) => {
       if (typeof value !== 'object' || value === null) return null
       const v = value as Record<string, unknown>
+      // The subdir also holds the command-hash redirect blobs storeBashOutputSync writes (a bare `latestId`, no body): they name no command and would list as blank, zero-byte, exit -1 rows beside the entry they point at.
+      if (typeof v['command'] !== 'string') return null
       return {
         id,
-        command: typeof v['command'] === 'string' ? v['command'] : '',
+        command: v['command'],
         storedAt: typeof v['storedAt'] === 'number' ? v['storedAt'] : mtime,
         exitCode: typeof v['exitCode'] === 'number' ? v['exitCode'] : -1,
         sizeBytes: typeof v['sizeBytes'] === 'number' ? v['sizeBytes'] : 0,
@@ -145,11 +124,7 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  ${pad('exit', 4)}  command\n`)
   for (const item of items) {
-    // A multi-line command (heredoc, chained script) embeds literal newlines/tabs into
-    // item.command; printed raw, each embedded line would break this fixed-width table's
-    // one-row-per-entry structure. Same defect class already fixed in mcp_compress.ts's
-    // cellText and resume.ts's bash-command line.
-    // displaySafeText subsumes the old `[\t\r\n]+ -> ' '` flattening: it escapes those same characters (as `\n`, `\r`, `\t`) so a multi-line command still cannot break this table's one-row-per-entry structure, and it additionally neutralizes the `[tg]` and `[token-goat` spellings, which the strip alone left verbatim.
+    // A multi-line command (heredoc, chained script) embeds literal newlines/tabs into item.command; printed raw, each embedded line would break this fixed-width table's one-row-per-entry structure. Same defect class already fixed in mcp_compress.ts's cellText and resume.ts's bash-command line. displaySafeText subsumes the old `[\t\r\n]+ -> ' '` flattening: it escapes those same characters (as `\n`, `\r`, `\t`) so a multi-line command still cannot break this table's one-row-per-entry structure, and it additionally neutralizes the `[tg]` and `[token-goat` spellings, which the strip alone left verbatim.
     const flatCommand = displaySafeText(item.command)
     const preview = flatCommand.length > 80 ? flatCommand.slice(0, 77) + '...' : flatCommand
     process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.sizeBytes), 8)}  ${pad(String(item.exitCode), 4)}  ${preview}\n`)
@@ -192,12 +167,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
 
 // ── mcp-history ───────────────────────────────────────────────────────────────
 
-// MCP results share BASH_OUTPUT_SUBDIR with plain bash-output entries (see
-// mcp_cache.ts's storeMcpOutput), distinguished only by the `mcp_` id prefix it
-// mints; this listing filters bash-history's underlying blob set down to just
-// those. `command` is stored as `mcp:<toolName> <input preview>` (see
-// mcp_cache.ts's mcpInputPreview) — split off the `mcp:` marker and first space
-// to recover the tool name for its own column instead of the raw label.
+// MCP results share BASH_OUTPUT_SUBDIR with plain bash-output entries (see mcp_cache.ts's storeMcpOutput), distinguished only by the `mcp_` id prefix it mints; this listing filters bash-history's underlying blob set down to just those. `command` is stored as `mcp:<toolName> <input preview>` (see mcp_cache.ts's mcpInputPreview) — split off the `mcp:` marker and first space to recover the tool name for its own column instead of the raw label.
 export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
   const limit = parseLimitOpt('mcp-history', opts.limit)
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR).filter((b) => b.id.startsWith('mcp_'))
@@ -241,9 +211,7 @@ export function cmdCleanCache(opts: { json?: boolean }): void {
     removed[sub] = n
     total += n
   }
-  // web_cache (webfetch's own download cache, distinct from the WEB_OUTPUT_SUBDIR entries
-  // pruned above) can accumulate orphaned .tmp files left behind by a process killed mid-download
-  // -- cleanupStaleDownloads existed, fully tested, with zero production callers until this wiring.
+  // web_cache (webfetch's own download cache, distinct from the WEB_OUTPUT_SUBDIR entries pruned above) can accumulate orphaned .tmp files left behind by a process killed mid-download -- cleanupStaleDownloads existed, fully tested, with zero production callers until this wiring.
   const staleDownloads = cleanupStaleDownloads()
   removed['web_cache_tmp'] = staleDownloads
   total += staleDownloads
@@ -287,14 +255,7 @@ export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; j
     removed[sub] = n
     total += n
   }
-  // clean-cache (cmdCleanCache above) sweeps orphaned .tmp download files left behind by a
-  // process killed mid-download (see cleanupStaleDownloads in webfetch.ts); prune-cache is
-  // documented as "clean-cache but with caller-specified eviction bounds", so it must sweep the
-  // same web_cache_tmp files -- cleanupStaleDownloads takes no bounds of its own (it always
-  // removes every .tmp file, unconditionally), so there's nothing maxCount/maxAgeHours could
-  // even apply to here. Regression: this call was added to cmdCleanCache (30e16aee) but never
-  // mirrored onto this sibling command, so `token-goat prune-cache` silently left those files
-  // behind while `token-goat clean-cache` swept them.
+  // clean-cache (cmdCleanCache above) sweeps orphaned .tmp download files left behind by a process killed mid-download (see cleanupStaleDownloads in webfetch.ts); prune-cache is documented as "clean-cache but with caller-specified eviction bounds", so it must sweep the same web_cache_tmp files -- cleanupStaleDownloads takes no bounds of its own (it always removes every .tmp file, unconditionally), so there's nothing maxCount/maxAgeHours could even apply to here. Regression: this call was added to cmdCleanCache (30e16aee) but never mirrored onto this sibling command, so `token-goat prune-cache` silently left those files behind while `token-goat clean-cache` swept them.
   const staleDownloads = cleanupStaleDownloads()
   removed['web_cache_tmp'] = staleDownloads
   total += staleDownloads
@@ -344,11 +305,7 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
       detail: disabled ? `${key}=${val} — disables ${what}` : `${key} unset (feature enabled by default)`,
     })
   }
-  // A large_file_skip_kb this small silently guts indexing project-wide (nearly every real
-  // source file exceeds a few KB, so `token-goat index` would skip almost everything with no
-  // error -- exactly what happened when this session's own config.toml was accidentally
-  // corrupted to large_file_skip_kb=1, and no existing check surfaced it). 5 KB is well below
-  // any file size a legitimate skip-most-large-files config would plausibly choose.
+  // A large_file_skip_kb this small silently guts indexing project-wide (nearly every real source file exceeds a few KB, so `token-goat index` would skip almost everything with no error -- exactly what happened when this session's own config.toml was accidentally corrupted to large_file_skip_kb=1, and no existing check surfaced it). 5 KB is well below any file size a legitimate skip-most-large-files config would plausibly choose.
   const skipKb = loadConfig().indexing.large_file_skip_kb
   const skipKbOk = skipKb >= INDEXING_SKIP_KB_SANITY_FLOOR
   findings.push({

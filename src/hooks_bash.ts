@@ -15,7 +15,7 @@ import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBa
 import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
-import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
+import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
@@ -285,8 +285,7 @@ function foldShellReadStructure(cmd: string, filePath: string, output: string, f
  *
  * Unlike every other rewrite in this handler, this one needs no judgement about which parts of the output matter, because nothing is being summarized: the bytes the model already holds and the bytes it would be handed again are the same bytes. Only a duplicate is dropped, and the original stays whole in the bash-output cache, so a caller that genuinely wants it back can ask.
  *
- * Why a rewrite and not a hint. The advisory channel measurably does not work for bash: the `bash_redirect` and `bash_recall` hint categories sit at 2.7% and 13.8% acted-on and are suppressed by the backoff ledger for that reason, while the two paths that act on the payload instead of asking for cooperation (`read_reread_dedup`, `edit_reread_suggest`) sit at 95.6% and
- * 98.5%. Advice about a redundant read still costs the redundant read.
+ * Why a rewrite and not a hint. The advisory channel measurably does not work for bash: the `bash_redirect` and `bash_recall` hint categories sit at 2.7% and 13.8% acted-on and are suppressed by the backoff ledger for that reason, while the two paths that act on the payload instead of asking for cooperation (`read_reread_dedup`, `edit_reread_suggest`) sit at 95.6% and 98.5%. Advice about a redundant read still costs the redundant read.
  *
  * Returns null -- leaving output untouched -- on a command's first run, when the file changed so the output differs, on a non-zero exit, or when the net-benefit gate declines. The first run is also where the body gets cached, so a later identical run has a baseline to compare against.
  */
@@ -298,14 +297,8 @@ const REWRITE_CLIP_NOTE = '\n[token-goat: rewrite clipped to the harness deliver
  *
  * The single place the tool-output fence is applied to a Bash rewrite, so no call site restates either half of the rule. Both halves are load-bearing:
  *
- * - The fence goes on because these bodies are SUBSTITUTIONS: token-goat splices its own notices in
- *   beside bytes it did not write, so the model needs to see where one voice ends. A pure
- *   pass-through owes no fence and does not come through here (see {@link maybeStripAnsiOnly}).
- * - The clip goes on because the harness truncates a result from the END and PERSISTS the
- *   substitute. An over-long fenced rewrite would therefore ship with its closing tag and its
- *   recall pointer cut off, leaving the model an unterminated fence and no route back to the
- *   original. Overhead is measured off a real fence call rather than assumed, because
- *   `fenceUntrustedSpans` returns the body unchanged when injection fencing is switched off.
+ * - The fence goes on because these bodies are SUBSTITUTIONS: token-goat splices its own notices in beside bytes it did not write, so the model needs to see where one voice ends. A pure pass-through owes no fence and does not come through here (see {@link maybeStripAnsiOnly}).
+ * - The clip goes on because the harness truncates a result from the END and PERSISTS the substitute. An over-long fenced rewrite would therefore ship with its closing tag and its recall pointer cut off, leaving the model an unterminated fence and no route back to the original. Overhead is measured off a real fence call rather than assumed, because `fenceUntrustedSpans` returns the body unchanged when injection fencing is switched off.
  *
  * The caller prices what this RETURNS, never the unfenced body: pricing the body and then fencing it is how a fence silently pushes a rewrite under its own net-benefit gate, at which point the rewrite is declined and the bytes ship unfenced anyway.
  */
@@ -482,8 +475,8 @@ async function maybeCompressCompoundOutput(
   const minNet = resolveMinNetSavingsBytes()
   // Cheap necessary pre-check: the recall pointer below only ever makes the rewrite bigger, so anything failing here can never clear the gate once the pointer is priced in either. Failing fast keeps a hopeless case from paying for a cache write.
   if (!compressed.worthApplying(minNet)) return null
-  // The id is `commandHash(cmd, cwd)`, exactly what storeBashOutput would return, so the pointer's real byte cost is known before committing to the cache write.
-  const id = await commandHash(cmd, cwd)
+  // The id is `bashOutputIdSync(cmd, output, cwd)`, exactly what the storeBashOutput call below returns for this same output, so the pointer's real byte cost is known before committing to the cache write -- and the pointer names this run's body rather than whatever the command last produced.
+  const id = bashOutputIdSync(cmd, output, cwd)
   // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies head/tail elision, so it would return a truncated view, not the complete original. The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall pointer sit outside it. Fold them in and the model loses its one signal for where our voice ends and the command's output begins, and anyone who guesses the marker's wording gets to write text the model reads as ours. Every other rewrite hook already follows this rule -- fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in the codebase that handed the model a replacement body with no fence at all. A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the marker outside the tag rather than riding inside with the command's bytes. Leaving it in was the one case where token-goat's voice really did sit inside its own fence, which is exactly the ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the point it describes is where the body ends, which the closing tag already marks.
   const { body: untrusted, notices } = splitOwnTrailingNotices(compressed.text)
   const marker = compressed.withMarker(minNet).slice(compressed.text.length)
@@ -1103,9 +1096,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
 
-/**
- * Read the full text a Bash tool_response points at via `persistedOutputPath`, when Claude Code already wrote the complete output to disk because it exceeded the harness's 20,000-char inline head -- `tool_response.stdout` in that case is only the head, so compressing or caching from it alone silently drops the rest of a larger real result. Confined to this session's own `<claude home>/projects/<slug>/<session id>/tool-results/` directory (resolved through symlinks via isInsideRoot, so a link escaping that directory cannot be followed), bounded to MAX_CAPTURE_BYTES, and sanity-checked against `persistedOutputSize`. Any failure returns null so the caller falls back to the head.
- */
+/** Read the full text a Bash tool_response points at via `persistedOutputPath`, when Claude Code already wrote the complete output to disk because it exceeded the harness's 20,000-char inline head -- `tool_response.stdout` in that case is only the head, so compressing or caching from it alone silently drops the rest of a larger real result. Confined to this session's own `<claude home>/projects/<slug>/<session id>/tool-results/` directory (resolved through symlinks via isInsideRoot, so a link escaping that directory cannot be followed), bounded to MAX_CAPTURE_BYTES, and sanity-checked against `persistedOutputSize`. Any failure returns null so the caller falls back to the head. */
 export function readPersistedBashOutput(resp: Record<string, unknown>, cwd: string | null, sessionId: string): string | null {
   const persistedPath = resp['persistedOutputPath']
   if (typeof persistedPath !== 'string' || persistedPath === '' || sessionId === '') return null
@@ -1123,9 +1114,7 @@ export function readPersistedBashOutput(resp: Record<string, unknown>, cwd: stri
   }
 }
 
-/**
- * Extract the tool response text from a post_tool_use event. Claude Code may send a string or an object with an output/content field. Prefers the on-disk persisted output over the payload's own (possibly head-truncated) field when one is present and confined to this session's tool-results directory.
- */
+/** Extract the tool response text from a post_tool_use event. Claude Code may send a string or an object with an output/content field. Prefers the on-disk persisted output over the payload's own (possibly head-truncated) field when one is present and confined to this session's tool-results directory. */
 function extractBashOutput(event: HookEvent): string {
   const raw = event.raw
   const resp = raw['tool_response']

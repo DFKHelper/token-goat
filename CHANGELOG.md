@@ -12,6 +12,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **A `bash-output <id>` pointer keeps resolving to the output it was handed for**: ids for cached Bash output now fold the output into the command hash, so two runs of one command with different output land in two entries and an elision notice from earlier in the session still recalls the text it described. The plain command hash stays resolvable and points at the newest entry, so cross-run delta folding and `token-goat waste` are unaffected; `token-goat bash-history` lists one row per stored output.
+
 - **Editing a file keeps the already-read evidence for the parts of it the edit did not touch**: a Write or Edit cleared that file's entire served-body index, so the next read of it shipped whole. In one edit-read-edit loop over a changelog, fourteen repeated reads of the same opening block cost roughly 274,000 tokens. The index is matched on the served bytes and never on line position, so a line the edit rewrote stops matching by itself while the untouched lines around it still come back withheld behind a recall pointer. The `sed` line-range ledger, matched on numbers an edit does move, is still cleared on every edit.
 
 ## [2.9.18] - 2026-09-19
