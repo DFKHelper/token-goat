@@ -47,4 +47,14 @@ describe('oversizeDbMessage', () => {
   it('sends a file that is largely free pages to reclaim-index', () => {
     expect(oversizeDbMessage('/data/global.db', 2000 * MB, 900 * MB, 0)).toContain("'token-goat reclaim-index' returns the 900 MB")
   })
+
+  it('names top project consumers when present', () => {
+    const msg = oversizeDbMessage('/data/global.db', 2250 * MB, 1.3 * MB, 0, [
+      { root: '/repos/large-frontend', fileCount: 8400 },
+      { root: '/repos/backend-service', fileCount: 3120 },
+    ])
+    expect(msg).toContain('Top index consumers:')
+    expect(msg).toContain('large-frontend (8400 files)')
+    expect(msg).toContain('backend-service (3120 files)')
+  })
 })

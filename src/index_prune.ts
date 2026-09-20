@@ -480,3 +480,53 @@ export function recordKnownRootThrottled(
   recordKnownRoot(filePath, dbPath)
 }
 
+export interface ProjectIndexConsumer {
+  root: string
+  fileCount: number
+}
+
+/**
+ * Top project roots by indexed file count in the database.
+ * Used by doctor to name the heaviest projects contributing to an oversized global.db.
+ */
+export function findTopIndexedProjects(dbPath: string = globalDbPath(), limit = 3): ProjectIndexConsumer[] {
+  try {
+    const db = getDb(dbPath)
+    const hasRoots = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='known_roots'").get()
+    if (!hasRoots) return []
+    const rawRoots = (db.prepare('SELECT root FROM known_roots').all() as { root: string }[]).map((r) => r.root)
+    // Canonicalize through the same normalizePath/foldPath the rest of the pruner uses: a root stored with backslashes or a mixed-case drive must still match the forward-slash `files.path` rows, and case-folding must follow the filesystem, not an unconditional lowercase.
+    const seen = new Map<string, string>()
+    for (const r of rawRoots) {
+      const norm = normalizePath(r).replace(/\/+$/, '')
+      const lower = foldPath(norm)
+      if (!seen.has(lower)) seen.set(lower, norm)
+    }
+    const results: ProjectIndexConsumer[] = []
+    for (const root of seen.values()) {
+      const count = (
+        db.prepare("SELECT count(*) as c FROM files WHERE path LIKE ? || '/%' OR path = ?").get(root, root) as {
+          c: number
+        }
+      ).c
+      if (count > 0) results.push({ root, fileCount: count })
+    }
+    results.sort((a, b) => b.fileCount - a.fileCount)
+    // A root nested inside another indexed root is the same tree counted twice; keep the outer one, which already holds the inner files.
+    const unique: ProjectIndexConsumer[] = []
+    for (const res of results) {
+      const isDuplicate = unique.some((u) => {
+        const r1 = foldPath(u.root)
+        const r2 = foldPath(res.root)
+        return r1.startsWith(r2 + '/') || r2.startsWith(r1 + '/')
+      })
+      if (!isDuplicate) unique.push(res)
+      if (unique.length >= limit) break
+    }
+    return unique.slice(0, limit)
+  } catch {
+    return []
+  }
+}
+
+

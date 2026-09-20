@@ -42,4 +42,14 @@ describe('resolveMaxWorkers', () => {
   it('caps a very large machine at the ceiling', () => {
     expect(resolveMaxWorkers('linux', 256, 512)).toBe(WORKER_CEILING)
   })
+
+  it('honors TOKEN_GOAT_TEST_MAX_WORKERS env override when set', () => {
+    process.env['TOKEN_GOAT_TEST_MAX_WORKERS'] = '2'
+    try {
+      expect(resolveMaxWorkers('win32', 26, 128)).toBe(2)
+      expect(resolveMaxWorkers('linux', 4, 16)).toBe(2)
+    } finally {
+      delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+    }
+  })
 })

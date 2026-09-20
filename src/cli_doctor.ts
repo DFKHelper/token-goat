@@ -9,7 +9,7 @@ import * as path from 'path'
 import { spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { countNoun, extractErrorMessage, toKB, resolveOnPath } from './util.js'
-import { findSystemTempFiles } from './index_prune.js'
+import { findSystemTempFiles, findTopIndexedProjects, type ProjectIndexConsumer } from './index_prune.js'
 import { displaySafeText } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
@@ -23,7 +23,7 @@ import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 import { isInstalled } from './install.js'
-import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { cleanupDeprecatedVscodeProjectMcp, vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
 import { cursorMcpPath } from './bridges/cursor_install.js'
 import { zedSettingsPath } from './bridges/zed_install.js'
@@ -61,6 +61,7 @@ import {
   checkZed,
   checkCursor,
   checkStrayClaudeMdBlocks,
+  checkVscodeProjectMcp,
 } from './cli_doctor_platforms.js'
 
 import {
@@ -90,6 +91,7 @@ export {
   checkZed,
   checkCursor,
   checkStrayClaudeMdBlocks,
+  checkVscodeProjectMcp,
   LOCKED_BOOLEAN_SAFE_VALUE,
   lockedEnvOverridableKeys,
   type EnvOverriddenSetting,
@@ -111,14 +113,28 @@ export function freelistBytes(header: Buffer): number {
 }
 
 /** The oversized-index warning, naming only what is measurably there to recover: sending someone to VACUUM a file with no free pages has them wait on a rewrite of gigabytes that frees nothing. */
-export function oversizeDbMessage(dbPath: string, sizeBytes: number, freeBytes: number, tempRows: number): string {
+export function oversizeDbMessage(
+  dbPath: string,
+  sizeBytes: number,
+  freeBytes: number,
+  tempRows: number,
+  topConsumers: ProjectIndexConsumer[] = [],
+): string {
   const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024))
   const advice: string[] = []
   if (freeBytes >= sizeBytes / 10) advice.push(`'token-goat reclaim-index' returns the ${mb(freeBytes)} MB of it that is free pages`)
   if (tempRows > 0) advice.push(`'token-goat project prune' removes ${countNoun(tempRows, 'scratch file')} indexed under the OS temp dir`)
   const head = `global.db is ${mb(sizeBytes)} MB at ${displaySafeText(dbPath)} (larger than recommended). `
-  if (advice.length > 0) return `${head}${advice.join('; ')}.`
-  return `${head}Only ${mb(freeBytes)} MB of it is free pages and none of it is temp-dir scratch, so it is live index data that neither 'reclaim-index' nor 'project prune' will shrink.`
+  let base = advice.length > 0
+    ? `${head}${advice.join('; ')}.`
+    : `${head}Only ${mb(freeBytes)} MB of it is free pages and none of it is temp-dir scratch, so it is live index data that neither 'reclaim-index' nor 'project prune' will shrink.`
+  if (topConsumers.length > 0) {
+    const list = topConsumers
+      .map((c) => `${path.basename(c.root) || c.root} (${countNoun(c.fileCount, 'file')})`)
+      .join(', ')
+    base += ` Top index consumers: ${list}.`
+  }
+  return base
 }
 
 /**
@@ -165,7 +181,9 @@ export function checkDbExists(dataDir: string): DoctorResult {
     } catch {
       // an unreadable files table only loses this half of the advice
     }
-    return { name: 'Database', status: 'warn', message: oversizeDbMessage(dbPath, sizeBytes, freelistBytes(headerBytes), tempRows) }
+    // findTopIndexedProjects catches internally and returns [] on an unreadable index, so no wrapper is needed here.
+    const topConsumers = findTopIndexedProjects(dbPath, 3)
+    return { name: 'Database', status: 'warn', message: oversizeDbMessage(dbPath, sizeBytes, freelistBytes(headerBytes), tempRows, topConsumers) }
   }
   // Name the resolved path even when healthy. The warn branch above already does, and the asymmetry actively misleads: TOKEN_GOAT_HOME and the data dir resolve independently, so exporting both to point at a scratch directory does NOT guarantee a command reads the isolated index. Without the path here, a dogfood run against the real global index is indistinguishable from an isolated one, and "which index am I actually on" is the first question worth answering when a command returns surprising output.
   return {
@@ -788,6 +806,8 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
 
 /** How many unrecognized names to name in the informational line before summarizing the rest. */
 const UNMAPPED_TOOL_SAMPLE = 5
+/** A near-miss not observed within this window is treated as resolved residue (e.g. the mapping was added in a later release), not a live bridge failure. */
+const UNMAPPED_TOOL_MAX_AGE_DAYS = 7
 
 /**
  * Report the tool names that reached token-goat's hooks and matched no handler.
@@ -798,7 +818,10 @@ const UNMAPPED_TOOL_SAMPLE = 5
  *
  * A row whose near miss equals its own tool name is not a near miss at all -- the dispatcher returns before recording when a handler asked for that exact spelling, so such a row can only come from a database written by an older or in-development build. Warning on it would print a sentence that contradicts itself (sent "Bash" where "Bash" is handled) and would never clear, so it falls through to the informational line instead.
  */
-export function checkUnmappedTools(dbPath: string): DoctorResult {
+export function checkUnmappedTools(
+  dbPath: string,
+  options?: { maxAgeDays?: number; nowSecs?: number },
+): DoctorResult {
   const name = 'Tool names'
   if (!fs.existsSync(dbPath)) {
     return { name, status: 'ok', message: 'no database yet' }
@@ -808,9 +831,16 @@ export function checkUnmappedTools(dbPath: string): DoctorResult {
     if (rows.length === 0) {
       return { name, status: 'ok', message: 'every tool name seen so far reached a handler that wanted it' }
     }
-    const nearMisses = rows.filter(
-      (r) => r.near_miss !== null && r.near_miss !== undefined && r.near_miss !== r.tool_name,
-    )
+    const maxAgeDays = options?.maxAgeDays ?? UNMAPPED_TOOL_MAX_AGE_DAYS
+    const nowSecs = options?.nowSecs ?? Math.floor(Date.now() / 1000)
+    const maxAgeSecs = maxAgeDays * 86400
+
+    const nearMisses = rows.filter((r) => {
+      if (r.near_miss === null || r.near_miss === undefined || r.near_miss === r.tool_name) return false
+      // A near-miss not observed within the retention window is historically resolved residue (e.g. the mapping was added in a later release), not a live bridge failure. The guard only applies to rows carrying a real epoch timestamp: a zero or placeholder `last_seen` is "unknown when", and filtering those would silence a live failure forever.
+      if (r.last_seen > 0 && nowSecs - r.last_seen > maxAgeSecs) return false
+      return true
+    })
     if (nearMisses.length > 0) {
       const shown = nearMisses
         .slice(0, UNMAPPED_TOOL_SAMPLE)
@@ -879,6 +909,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (vscodeHooksResult) results.push(vscodeHooksResult)
   const vscodeScopeResult = checkVscodeUserScopeHooks(vscodeHooksInstalled(), vscodeHooksInstalled({ project: true }))
   if (vscodeScopeResult) results.push(vscodeScopeResult)
+  const vscodeProjectMcpResult = checkVscodeProjectMcp(rootDir)
+  if (vscodeProjectMcpResult) results.push(vscodeProjectMcpResult)
   const visualStudioResult = checkVisualStudio([visualStudioUserMcpPath(), visualStudioProjectMcpPath()], [visualStudioSolutionVscodeMcpPath()])
   if (visualStudioResult) results.push(visualStudioResult)
   const zedResult = checkZed(zedSettingsPath())
@@ -956,6 +988,18 @@ export async function runDoctorRepair(opts?: {
     } catch (e) {
       errors.push(`Failed to download embedding model: ${extractErrorMessage(e)}`)
     }
+  }
+
+  // 4. Remove empty deprecated .vscode/mcp.json residue if present.
+  // Same ownership rule as `uninstall --vscode`: only a file token-goat created (created-config ledger) is deleted, and the write is scope-confined so a symlinked .vscode cannot point the unlink outside the project.
+  const rootDir = path.resolve(opts?.rootDir ?? process.cwd())
+  const projectMcp = path.join(rootDir, '.vscode', 'mcp.json')
+  try {
+    if (cleanupDeprecatedVscodeProjectMcp(rootDir)) {
+      repairs.push(`Removed empty deprecated VS Code MCP residue file at ${displaySafeText(projectMcp)}`)
+    }
+  } catch (e) {
+    errors.push(`Failed to clean up ${displaySafeText(projectMcp)}: ${extractErrorMessage(e)}`)
   }
 
   return { repairs, errors }

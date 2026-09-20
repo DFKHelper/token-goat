@@ -10,7 +10,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
@@ -349,6 +349,24 @@ export function removeFileInScope(p: string): boolean {
   try {
     unlinkSync(p)
     return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Remove an empty directory within the project or user scope, e.g. an empty `.vscode` folder
+ * left behind after removing a configuration file.
+ */
+export function removeEmptyDirInScope(dirPath: string): boolean {
+  assertWriteInScope(dirPath)
+  try {
+    const entries = readdirSync(dirPath)
+    if (entries.length === 0) {
+      rmdirSync(dirPath)
+      return true
+    }
+    return false
   } catch {
     return false
   }

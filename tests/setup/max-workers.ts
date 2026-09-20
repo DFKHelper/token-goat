@@ -29,6 +29,11 @@ export const ROOMY_MEMORY_GB = 32
 // at the smallest machine that clears it, `cpus - 2` is 14, so a per-core term could never bind
 // and would only read as if it did. 12 is the largest arm measured green here, not an extrapolation.
 export function resolveMaxWorkers(platform: string, cpus: number, memoryGb: number): number {
+  const envVal = process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+  if (envVal !== undefined && envVal !== '') {
+    const parsed = parseInt(envVal, 10)
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed
+  }
   const base = platform === 'win32' ? 4 : 6
   if (cpus < ROOMY_CPUS || memoryGb < ROOMY_MEMORY_GB) return base
   return WORKER_CEILING

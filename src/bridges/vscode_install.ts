@@ -9,13 +9,13 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
-import { dropEmptyServers, isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
+import { dropEmptyServers, isManagedServer, isResidueServersJson, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */
@@ -379,8 +379,12 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
     if (servers && isManagedServer((servers as Record<string, unknown>)['token-goat'])) {
       // Walking back the entry used to leave an empty `servers` object behind as a residue file. The sibling Visual Studio bridge already dropped the empty key and deleted what it had created; this is the same rule, including the part that matters most: a file left empty is only deleted when this install is the one that made it.
       const next = dropEmptyServers(updateConfig(config.text, undefined))
-      if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) removeFileInScope(mcpPath)
-      else {
+      if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) {
+        removeFileInScope(mcpPath)
+        if (opts.project === true) {
+          removeEmptyDirInScope(path.dirname(mcpPath))
+        }
+      } else {
         backupFile(mcpPath)
         atomicWriteText(mcpPath, next)
       }
@@ -401,3 +405,25 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
   if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode', opts.keepBackups === true)) removed = true
   return removed
 }
+
+/**
+ * Removes empty deprecated `.vscode/mcp.json` residue if present.
+ * Same ownership rule as `uninstall --vscode`: only a file token-goat created (created-config ledger)
+ * is deleted, and the write is scope-confined so a symlinked .vscode cannot point the unlink outside the project.
+ */
+export function cleanupDeprecatedVscodeProjectMcp(projectRoot?: string): boolean {
+  const root = path.resolve(projectRoot ?? process.cwd())
+  return withInstallScope(root, () => {
+    const projectMcp = path.join(root, '.vscode', 'mcp.json')
+    if (!fs.existsSync(projectMcp)) return false
+    const text = fs.readFileSync(projectMcp, 'utf8')
+    if (isResidueServersJson(text) && takeCreatedConfig(projectMcp)) {
+      removeFileInScope(projectMcp)
+      removeEmptyDirInScope(path.dirname(projectMcp))
+      removeCreatedBackups(projectMcp)
+      return true
+    }
+    return false
+  })
+}
+

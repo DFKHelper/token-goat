@@ -596,6 +596,8 @@ function getGlobalDb(homeDir?: string): SqliteDatabase {
  * can assert against the same number the rollup actually runs with instead of a restated literal.
  */
 export const STATS_RETENTION_DAYS = 180
+/** How long an unrecognized tool-name row is kept before the rollup prunes it. Longer than doctor's near-miss window (7 days in cli_doctor.ts) so a row doctor has already dismissed as resolved residue is not deleted out from under it mid-report. */
+export const UNMAPPED_TOOL_RETENTION_DAYS = 30
 /** How often the rollup+prune pass (a full aggregate scan) is allowed to run, regardless of how often recordStat() itself fires. */
 const STATS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 
@@ -633,6 +635,12 @@ export function rollupAndPruneStats(db: SqliteDatabase, retentionDays: number = 
            tokens_saved = tokens_saved + excluded.tokens_saved`,
       ).run(cutoff)
       db.prepare(`DELETE FROM stats WHERE ts < ?`).run(cutoff)
+      try {
+        const unmappedCutoff = Math.floor(Date.now() / 1000) - UNMAPPED_TOOL_RETENTION_DAYS * 86400
+        db.prepare(`DELETE FROM unmapped_tools WHERE last_seen < ?`).run(unmappedCutoff)
+      } catch {
+        // Table may not exist yet on pre-migration database
+      }
     })
     run(cutoffTs)
   } catch {

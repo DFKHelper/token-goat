@@ -120,6 +120,25 @@ export function holdsOnlyManagedServer(value: Record<string, unknown>): boolean 
   return names.length === 1 && names[0] === 'token-goat' && isManagedServer((servers as Record<string, unknown>)['token-goat'])
 }
 
+/**
+ * True when `text` holds no user data at all: blank, or a single empty `rootKey` object.
+ *
+ * This is the one emptiness test the residue cleanup is allowed to make, and it is shared by
+ * every surface that deletes such a file (doctor's check, doctor --repair, and the VS Code
+ * uninstall) so they cannot drift apart. A file that holds anything else -- a second key, a
+ * comment, a user's own server -- is never empty, no matter how it looks.
+ */
+export function isResidueServersJson(text: string, rootKey = 'servers'): boolean {
+  const trimmed = text.trim()
+  if (trimmed === '') return true
+  const parsed = parseObject(trimmed)
+  if (parsed === null) return false
+  const keys = Object.keys(parsed)
+  if (keys.length !== 1 || keys[0] !== rootKey) return false
+  const servers = parsed[rootKey]
+  return servers !== null && typeof servers === 'object' && !Array.isArray(servers) && Object.keys(servers).length === 0
+}
+
 export function dropEmptyServers(text: string, rootKey = 'servers'): string {
   const parsed = parseObject(text)
   if (parsed === null) return text
