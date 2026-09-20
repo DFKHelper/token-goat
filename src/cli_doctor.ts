@@ -791,8 +791,8 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
   }
 }
 
-/** p95 hook duration above which `doctor` flags a bad tail worth investigating. Set well above the ~30-150ms range the async-detach and structural-rewrite latency work measured for a healthy relayInProcess call, so this only fires on a real regression, not routine jitter. */
-const HOOK_LATENCY_WARN_P95_MS = 500
+/** p95 hook duration above which `doctor` flags a bad tail worth investigating. `duration_ms` now reads `performance.now()` inside `relayInProcess`'s finally block, i.e. total time since process start (Node bootstrap and bundle import included), not just dispatch -- on this machine a healthy production-shim call measured ~86-92ms total against a ~28ms dispatch-only figure the old threshold was calibrated for. Scaled by that same ~3x gap (500ms was well above a ~150ms dispatch-only ceiling) so this still only fires on a real regression, not the process-start overhead every call now carries. */
+const HOOK_LATENCY_WARN_P95_MS = 1500
 
 /** Is any single (event, harness) pair's hook latency running hot? Reads the same `stats.duration_ms` rows `token-goat stats --hooks` renders, via {@link hookLatencyBreakdown}, so this and that view can never disagree about what "hot" means. */
 export function checkHookLatency(dbPath: string): DoctorResult {

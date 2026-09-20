@@ -1,13 +1,14 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerHook } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { relayInProcess } from '../src/relay.js'
 import { getDb, closeAllDbs } from '../src/db.js'
+import * as statsModule from '../src/stats.js'
 
 /**
  * Same LOCALAPPDATA/XDG_DATA_HOME isolation as `content_store.test.ts`: `relayInProcess` records
@@ -96,5 +97,33 @@ describe('relayInProcess records its own wall-clock duration (Batch S)', () => {
     await relayInProcess('not_a_real_hook_event', { session_id: 's1' })
 
     expect(hookRowCount()).toBe(before)
+  })
+})
+
+describe('relayInProcess records total wall-clock since process start, not just dispatch (Batch U)', () => {
+  it('passes performance.now() -- elapsed time since process start, per Node\'s perf_hooks contract -- to recordStat, not a delta between two timestamps taken inside this function', async () => {
+    registerHook('notification', () => ({ hookType: 'pass' }))
+    // FORMAT-DERIVED: performance.now()'s contract (ms elapsed since performance.timeOrigin, i.e. process start) is documented in Node's perf_hooks API docs; a large stubbed value simulates a process that took a while to start, which the pre-fix hrtime-delta implementation could never reflect since it only timed the inside of this function.
+    const fakeElapsedSinceProcessStart = 12345.6
+    const originalNow = performance.now.bind(performance)
+    const recordStatSpy = vi.spyOn(statsModule, 'recordStat')
+    performance.now = () => fakeElapsedSinceProcessStart
+    try {
+      await relayInProcess('notification', { session_id: 's1' })
+    } finally {
+      performance.now = originalNow
+    }
+
+    expect(recordStatSpy).toHaveBeenCalledWith(
+      'hook:notification',
+      0,
+      0,
+      undefined,
+      undefined,
+      undefined,
+      fakeElapsedSinceProcessStart,
+    )
+    const row = latestHookRow()
+    expect(row?.duration_ms).toBe(Math.round(fakeElapsedSinceProcessStart))
   })
 })

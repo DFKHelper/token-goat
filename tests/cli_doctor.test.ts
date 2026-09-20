@@ -683,7 +683,7 @@ describe('cli_doctor', () => {
 
     it('warns when a hook is running a p95 above the threshold', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      seedHookDurations(dbPath, 'pre_tool_use', [700, 800, 900, 950, 999])
+      seedHookDurations(dbPath, 'pre_tool_use', [1700, 1800, 1900, 1950, 1999])
       const result = checkHookLatency(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('pre_tool_use')
@@ -691,7 +691,7 @@ describe('cli_doctor', () => {
 
     it('is wired into runDoctor rather than only being callable', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      seedHookDurations(dbPath, 'pre_tool_use', [700, 800, 900, 950, 999])
+      seedHookDurations(dbPath, 'pre_tool_use', [1700, 1800, 1900, 1950, 1999])
       const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
       const row = results.find((r) => r.name === 'Hook latency')
       expect(row, `no Hook latency row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()

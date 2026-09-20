@@ -139,10 +139,7 @@ function harnessForNormalization(): Harness {
   if (detected === 'kimi') return 'kimi'
   // Qwen Code's install wires `token-goat hook <event> --harness qwen` (qwen_install.ts), which sets TOKEN_GOAT_HARNESS_OVERRIDE=qwen, so detectHarness() resolves 'qwen' here. Before this branch existed, 'qwen' fell through to 'claude' and Qwen's runtime tool ids (read_file/run_shell_command/grep_search/...) reached dispatch unrenamed, matching no registered handler -- every tool-scoped hook was silently dead on Qwen (see QWEN_TOOL_NAME_MAP in hooks_cli.ts for the full producer-side derivation).
   if (detected === 'qwen') return 'qwen'
-  // Copilot CLI's shim (src/bridges/copilot_cli.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli,
-  // so detectHarness() resolves it here. Its branch in normalizePayload() exists only to translate
-  // Copilot's `<server>-<tool>` MCP tool names into the `mcp__<server>__<tool>` spelling the MCP
-  // handlers gate on; the shim has already canonicalised every built-in name, so nothing else changes.
+  // Copilot CLI's shim (src/bridges/copilot_cli.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli, so detectHarness() resolves it here. Its branch in normalizePayload() exists only to translate Copilot's `<server>-<tool>` MCP tool names into the `mcp__<server>__<tool>` spelling the MCP handlers gate on; the shim has already canonicalised every built-in name, so nothing else changes.
   if (detected === 'copilot_cli') return 'copilot_cli'
   // VS Code's agent hooks run through the shared Copilot shim, which sets TOKEN_GOAT_HARNESS_OVERRIDE=vscode when the payload carries VS Code's `hook_event_name`; its model-facing tool names (read_file, run_in_terminal, ...) need VSCODE_TOOL_NAME_MAP.
   if (detected === 'vscode') return 'vscode'
@@ -187,12 +184,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
   if (!isHookEventName(eventName)) {
     return '{}'
   }
-  // Wall-clock, not CPU time: everything below (session load/save, every registered handler,
-  // serialization) is what a caller actually waits on, and that is what `token-goat stats
-  // --hooks`/`doctor` need to answer "how slow is token-goat itself". Started after the
-  // isHookEventName check so an unrecognized event -- a wiring mistake logged by relay() below,
-  // never a real invocation -- records nothing rather than a duration for work that never ran.
-  const hookStart = process.hrtime.bigint()
+  // Wall-clock from process start, not from this line: what a harness actually waits on is everything since `node` began -- module load and import resolution included -- not just dispatch, which used to be all this recorded (~28ms of an ~89ms real wait, confirmed against an external stopwatch on the production shim). `performance.now()` reads elapsed time since `performance.timeOrigin` (process start), so reading it once in the finally block below, rather than diffing two timestamps taken inside this function, is what makes the total include everything before this function ever ran.
   try {
     // Read before the CLAUDE_CODE_SESSION_ID seeding below, which sets that variable for every harness and would make a later detection answer 'claudecode' everywhere. serializeOutput needs the true harness to decide the pre_compact wire form, so capture it while the environment still says who we are.
     const harness = detectHarness()
@@ -202,10 +194,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
         ? normalizePayload(rawPayload, harnessForNormalization())
         : rawPayload
     const event = buildEvent(eventName, payload)
-    // VS Code runs every hooks file it discovers, so one event can arrive here two or more times
-    // (user scope alongside project scope, or once per workspace folder). Stand down when another
-    // copy is already handling this exact event; see vscode_duplicate.ts for which cases are
-    // elected here and which the path gate already settles. Fails open by construction.
+    // VS Code runs every hooks file it discovers, so one event can arrive here two or more times (user scope alongside project scope, or once per workspace folder). Stand down when another copy is already handling this exact event; see vscode_duplicate.ts for which cases are elected here and which the path gate already settles. Fails open by construction.
     if (shouldSuppressDuplicateVscodeHook(event, harness)) return '{}'
     // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually.
     if (!process.env['CLAUDE_CODE_SESSION_ID'] && event.sessionId) {
@@ -241,12 +230,8 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     // Pass-through on every failure path — a hook must never block the caller's tool call.
     return '{}'
   } finally {
-    // recordStat() is its own already-open, already-fail-soft synchronous write (the same one
-    // every other hook-path stat in this codebase makes), so this adds no new blocking behavior
-    // -- including on the async-detach path (shim_common.ts), which prints its early marker
-    // before this module ever runs and does not wait for relayInProcess to return either way.
-    const durationMs = Number(process.hrtime.bigint() - hookStart) / 1e6
-    recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, durationMs)
+    // recordStat() is its own already-open, already-fail-soft synchronous write (the same one every other hook-path stat in this codebase makes), so this adds no new blocking behavior -- including on the async-detach path (shim_common.ts), which prints its early marker before this module ever runs and does not wait for relayInProcess to return either way.
+    recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, performance.now())
   }
 }
 
@@ -275,14 +260,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
 export async function relay(eventName: string): Promise<void> {
   try {
     if (!isHookEventName(eventName)) {
-      // Still a pass on stdout -- the cardinal rule above holds and a hook must never wedge the
-      // tool call. But this branch is a wiring mistake, not a runtime hazard: a settings.json left
-      // behind by an older build, a hand-edited entry, or a bridge shim passing its own spelling
-      // means every hook for that event does nothing at all. Nothing failed, nothing was logged,
-      // and the exit code stayed 0, so image shrinking, read dedup and the dirty-queue enqueue all
-      // quietly stopped while the index went stale with no way to see why. Say so on stderr, where
-      // normalizePayload already reports a bad payload and where the harness will not mistake it
-      // for the response.
+      // Still a pass on stdout -- the cardinal rule above holds and a hook must never wedge the tool call. But this branch is a wiring mistake, not a runtime hazard: a settings.json left behind by an older build, a hand-edited entry, or a bridge shim passing its own spelling means every hook for that event does nothing at all. Nothing failed, nothing was logged, and the exit code stayed 0, so image shrinking, read dedup and the dirty-queue enqueue all quietly stopped while the index went stale with no way to see why. Say so on stderr, where normalizePayload already reports a bad payload and where the harness will not mistake it for the response.
       console.error(
         `[relay] unknown hook event '${eventName}'; nothing ran. Valid events: ${HOOK_EVENTS.join(', ')}`,
       )
