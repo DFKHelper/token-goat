@@ -179,6 +179,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hints.cross_session_read_dedup_ttl_secs': {min: 1, max: 86400},
   'hints.mcp_dedup_ttl_secs': {min: 1, max: 3600},
   'hooks.watchdog_ms': {min: 100, max: 30000},
+  'hooks.latency_budget_ms': {min: 1, max: 600000},
   'webfetch.max_file_count': {min: 0, max: 10_000_000},
   'webfetch.max_bytes': {min: 0, max: 100 * 1024 * 1024 * 1024},
   'webfetch.compress_min_bytes': {min: 1024, max: 10 * 1024 * 1024},
@@ -905,6 +906,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const hk = getDefaultConfig('hooks') as HooksConfig
   hk.watchdog_ms = validatedInt(hk_raw['watchdog_ms'], hk.watchdog_ms, ...boundsOf('hooks.watchdog_ms'))
   hk.watchdog_ms = envInt('TOKEN_GOAT_HOOK_WATCHDOG_MS', hk.watchdog_ms, ...boundsOf('hooks.watchdog_ms'))
+  hk.latency_budget_ms = validatedInt(hk_raw['latency_budget_ms'], hk.latency_budget_ms, ...boundsOf('hooks.latency_budget_ms'))
+  hk.latency_budget_ms = envInt('TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS', hk.latency_budget_ms, ...boundsOf('hooks.latency_budget_ms'))
 
   const wf_raw = section(raw, 'webfetch')
   const wf = getDefaultConfig('webfetch') as WebFetchConfig
@@ -1101,6 +1104,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.pre_skill_advisory': ['TOKEN_GOAT_PRE_SKILL_ADVISORY'],
   'hints.quiet_hours': ['TOKEN_GOAT_QUIET_HOURS'],
   'hooks.watchdog_ms': ['TOKEN_GOAT_HOOK_WATCHDOG_MS'],
+  'hooks.latency_budget_ms': ['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS'],
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
@@ -1264,6 +1268,7 @@ export function saveConfig(config: Config): void {
     },
     hooks: {
       watchdog_ms: config.hooks.watchdog_ms,
+      latency_budget_ms: config.hooks.latency_budget_ms,
     },
     webfetch: {
       allow: config.webfetch.allow,

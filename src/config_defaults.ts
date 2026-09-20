@@ -202,6 +202,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   },
   hooks: {
     watchdog_ms: 700,
+    latency_budget_ms: 1500,
   },
   webfetch: {
     allow: [],

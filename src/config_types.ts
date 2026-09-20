@@ -180,6 +180,8 @@ export interface HintsConfig {
 
 export interface HooksConfig {
   watchdog_ms: number
+  // p95 hook duration, in milliseconds, above which `token-goat doctor`'s "Hook latency" check reports a warn instead of an ok. A ceiling meant to catch a genuine regression, not a tight bound on the normal range -- see cli_doctor.ts's checkHookLatency for the measured populations this default sits above.
+  latency_budget_ms: number
 }
 
 export interface WebFetchConfig {

@@ -17,6 +17,7 @@ import { PARSER_FINGERPRINT } from '../src/parser_fingerprint.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { OVERSIZED_BODY_PROBE_SQL } from '../src/cli_doctor.js'
 import { PACKAGE_NAME, VERSION } from '../src/version.js'
+import { defaultConfig, invalidateConfigCache, loadConfig, saveConfig, type Config } from '../src/config.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
@@ -696,6 +697,64 @@ describe('cli_doctor', () => {
       const row = results.find((r) => r.name === 'Hook latency')
       expect(row, `no Hook latency row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()
       expect(row?.status).toBe('warn')
+    })
+
+    // hooks.latency_budget_ms replaced a hardcoded 1500. These assert on the verdict checkHookLatency actually reached for a fixed population, which is the only thing that proves the consumer read the key rather than the key merely parsing.
+    // HAND-DERIVED: the same 20-40ms durations the healthy case above uses, whose p95 is far below the 1500 default and far above a 10ms budget, so the verdict is decided by the budget alone and by nothing about the data.
+    describe('hooks.latency_budget_ms', () => {
+      const HEALTHY_DURATIONS = [20, 25, 30, 35, 40]
+
+      function verdictWithConfig(mutate: (c: Config) => void): { status: string; message: string } {
+        const cfg = defaultConfig()
+        mutate(cfg)
+        saveConfig(cfg)
+        invalidateConfigCache()
+        const dbPath = path.join(tempDir, 'global.db')
+        seedHookDurations(dbPath, 'pre_tool_use', HEALTHY_DURATIONS)
+        return checkHookLatency(dbPath)
+      }
+
+      afterEach(() => {
+        delete process.env['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS']
+        saveConfig(defaultConfig())
+        invalidateConfigCache()
+      })
+
+      it('the default leaves the pre-change verdict unchanged for a population the old 1500 constant called healthy', () => {
+        expect(defaultConfig().hooks.latency_budget_ms).toBe(1500)
+        const result = verdictWithConfig(() => {})
+        expect(result.status).toBe('ok')
+      })
+
+      it('lowering it through config flips the same population to warn', () => {
+        const result = verdictWithConfig((c) => {
+          c.hooks.latency_budget_ms = 10
+        })
+        expect(result.status).toBe('warn')
+        expect(result.message).toContain('pre_tool_use')
+      })
+
+      it('the TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS env override beats the file the consumer would otherwise have read', () => {
+        process.env['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS'] = '10'
+        const result = verdictWithConfig((c) => {
+          c.hooks.latency_budget_ms = 100000
+        })
+        expect(loadConfig().hooks.latency_budget_ms).toBe(10)
+        expect(result.status).toBe('warn')
+      })
+
+      it('clamps an out-of-bounds file value to the bounds table rather than honouring it', () => {
+        const cfg = defaultConfig()
+        cfg.hooks.latency_budget_ms = 10_000_000
+        saveConfig(cfg)
+        invalidateConfigCache()
+        expect(loadConfig().hooks.latency_budget_ms).toBe(600000)
+
+        cfg.hooks.latency_budget_ms = 0
+        saveConfig(cfg)
+        invalidateConfigCache()
+        expect(loadConfig().hooks.latency_budget_ms).toBe(1)
+      })
     })
   })
 

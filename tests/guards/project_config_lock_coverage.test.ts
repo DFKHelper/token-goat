@@ -97,6 +97,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.web_dedup_min_bytes',
   'hints.write_rewrite_min_lines',
   'hints.write_rewrite_unchanged_pct',
+  'hooks.latency_budget_ms',
   'hooks.watchdog_ms',
   'image_shrink.enabled',
   'image_shrink.jpeg_quality',

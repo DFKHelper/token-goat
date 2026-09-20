@@ -791,10 +791,7 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
   }
 }
 
-/** p95 hook duration above which `doctor` flags a bad tail worth investigating. `duration_ms` reads `performance.now()` inside `relayInProcess`'s finally block for a synchronous call -- total time since process start, Node bootstrap and bundle import included, not just dispatch -- which measured ~86-92ms total on this machine against a ~28ms dispatch-only figure the old threshold was calibrated for. Re-examined after the fix that made a Claude Code async-detached call (post_tool_use on Edit/Write/MultiEdit/NotebookEdit outside markdown, and every subagent_stop) record what the harness actually waited on instead: that population now measures ~20-30ms, since the harness stops waiting at the shim's early `{"async":true}` marker rather than at process exit. Left at 1500ms rather than lowered for that smaller floor: this is a ceiling meant to catch a genuine regression, not a tight bound on either population's normal range, and 1500ms is already 16-60x either one -- lowering it would only invite false positives from ordinary variance in the still-larger synchronous population, which this column measures unchanged. */
-const HOOK_LATENCY_WARN_P95_MS = 1500
-
-/** Is any single (event, harness) pair's hook latency running hot? Reads the same `stats.duration_ms` rows `token-goat stats --hooks` renders, via {@link hookLatencyBreakdown}, so this and that view can never disagree about what "hot" means. */
+/** Is any single (event, harness) pair's hook latency running hot? Reads the same `stats.duration_ms` rows `token-goat stats --hooks` renders, via {@link hookLatencyBreakdown}, so this and that view can never disagree about what "hot" means. The p95 ceiling is `hooks.latency_budget_ms`, whose 1500ms default was measured as follows. `duration_ms` reads `performance.now()` inside `relayInProcess`'s finally block for a synchronous call -- total time since process start, Node bootstrap and bundle import included, not just dispatch -- which measured ~86-92ms total on this machine against a ~28ms dispatch-only figure the old threshold was calibrated for. Re-examined after the fix that made a Claude Code async-detached call (post_tool_use on Edit/Write/MultiEdit/NotebookEdit outside markdown, and every subagent_stop) record what the harness actually waited on instead: that population now measures ~20-30ms, since the harness stops waiting at the shim's early `{"async":true}` marker rather than at process exit. Left at 1500ms rather than lowered for that smaller floor: this is a ceiling meant to catch a genuine regression, not a tight bound on either population's normal range, and 1500ms is already 16-60x either one -- lowering it would only invite false positives from ordinary variance in the still-larger synchronous population, which this column measures unchanged. */
 export function checkHookLatency(dbPath: string): DoctorResult {
   const name = 'Hook latency'
   if (!fs.existsSync(dbPath)) {
@@ -814,7 +811,8 @@ export function checkHookLatency(dbPath: string): DoctorResult {
     const worst = rows[0]! // hookLatencyBreakdown sorts worst p95 first.
     const totalCount = rows.reduce((n, r) => n + r.count, 0)
     const worstLabel = `${worst.event} (${worst.harness || 'unrecorded harness'})`
-    if (worst.p95_ms > HOOK_LATENCY_WARN_P95_MS) {
+    const budgetMs = loadConfig().hooks.latency_budget_ms
+    if (worst.p95_ms > budgetMs) {
       return {
         name,
         status: 'warn',
