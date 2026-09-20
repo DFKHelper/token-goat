@@ -2030,12 +2030,13 @@ export const cases: Record<string, () => void | Promise<void>> = {
 
     // The generated hook shim must actually be written and wired -- through the BUILT bundle, not source. It sat fully built and fully unit-tested but never written by any install path for months (the injected-seam trap CLAUDE.md calls out), which no source-level test caught.
     const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) as {
-      hooks: Record<string, Array<{ matcher?: string; hooks?: Array<{ command: string }> }>>
+      hooks: Record<string, Array<{ matcher?: string; hooks?: Array<{ command: string; args?: string[] }> }>>
     }
-    const preCommand = settings.hooks['PreToolUse']?.[0]?.hooks?.[0]?.command ?? ''
-    expect(preCommand).toMatch(/token-goat-shim\.js/)
-    const shimPath = preCommand.match(/"([^"]*token-goat-shim\.js)"/)?.[1]
-    expect(shimPath, `no quoted shim path in wired command: ${preCommand}`).toBeDefined()
+    const preHook = settings.hooks['PreToolUse']?.[0]?.hooks?.[0]
+    const preCommand = preHook?.command ?? ''
+    // Exec form (Claude Code >= 2.1.139, gated on the real `claude --version`) carries the shim path in `args`, not the quoted `command` string that string form uses -- whichever the machine running this suite triggers, the shim itself must still be wired and exist on disk.
+    const shimPath = preHook?.args?.find((a) => a.includes('token-goat-shim.js')) ?? preCommand.match(/"([^"]*token-goat-shim\.js)"/)?.[1]
+    expect(shimPath, `no shim path wired (string or exec form): command=${preCommand} args=${JSON.stringify(preHook?.args)}`).toBeDefined()
     expect(fs.existsSync(shimPath!)).toBe(true)
 
     // The narrowed PreToolUse/PostToolUse matcher must cover every tool with a real handler,

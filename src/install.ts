@@ -22,19 +22,22 @@
  * plus the generated shim, leaving any user-authored hooks intact.
  */
 
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './bridges/guidance_block.js'
+import { compareSemver } from './cli_upgrade.js'
 import { loadConfig } from './config.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
+import { resolveOnPath } from './process_util.js'
 import type { HookEventName } from './types.js'
 import { removeCreatedBackups } from './bridges/created_configs.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -106,9 +109,57 @@ export function anchoredMarkerPattern(marker: string): RegExp {
 
 const HOOK_MARKER_PATTERNS = [SHIM_COMMAND_MARKER, COMMAND_MARKER, ...LEGACY_COMMAND_MARKERS].map(anchoredMarkerPattern)
 
-/** True when `command` is any token-goat hook invocation: current shim, pre-shim, or legacy alias. */
-function isTokenGoatHookCommand(command: string): boolean {
-  return HOOK_MARKER_PATTERNS.some((pattern) => pattern.test(command))
+/** True when `command`/`args` is any token-goat hook invocation: current shim (string- or exec-form), pre-shim, or legacy alias. Exec-form carries the shim path in `args` rather than `command`, so both are joined before testing the markers. */
+function isTokenGoatHookCommand(command: string, args?: readonly string[]): boolean {
+  const haystack = args !== undefined && args.length > 0 ? `${command} ${args.join(' ')}` : command
+  return HOOK_MARKER_PATTERNS.some((pattern) => pattern.test(haystack))
+}
+
+/** Minimum Claude Code version whose hook schema accepts the `args` array (exec form). Below this the key is unknown and a hook carrying it may be ignored outright -- disabling token-goat silently -- so any probe failure below falls back to string form. */
+const CLAUDE_EXEC_FORM_MIN_VERSION = '2.1.139'
+
+let _claudeExecFormHooksSupported: boolean | undefined
+
+/** True when the installed `claude` binary is new enough to accept exec-form hooks ({@link CLAUDE_EXEC_FORM_MIN_VERSION}). Probed via `claude --version` and cached for the life of the process -- so an install run that writes many event keys shells out at most once, not once per hook. `TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS` (`'1'`/`'0'`) overrides the probe entirely, for tests and for a user working around a bad detection. */
+export function claudeExecFormHooksSupported(): boolean {
+  const override = process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS']
+  if (override === '1') return true
+  if (override === '0') return false
+  if (_claudeExecFormHooksSupported !== undefined) return _claudeExecFormHooksSupported
+  _claudeExecFormHooksSupported = probeClaudeExecFormHooksSupported()
+  return _claudeExecFormHooksSupported
+}
+
+/** The actual probe behind {@link claudeExecFormHooksSupported}: absent binary, a spawn error, a non-zero exit, or unparsable output all fall back to `false` (string form) rather than risk registering a hook the running Claude Code might silently drop. Mirrors cli_doctor.ts's checkInstall: a global npm install puts a `.cmd` shim on PATH, which node 20.12+/21.7+ refuses to spawn directly, so a batch shim is run through an explicit cmd.exe instead. */
+function probeClaudeExecFormHooksSupported(): boolean {
+  const resolved = resolveOnPath('claude')
+  if (resolved === null) return false
+  try {
+    const isBatch = /\.(?:cmd|bat)$/i.test(resolved)
+    const comspec = path.join(process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows', 'System32', 'cmd.exe')
+    const result = isBatch
+      ? spawnSync(fs.existsSync(comspec) ? comspec : 'cmd.exe', ['/d', '/s', '/c', resolved, '--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true })
+      : spawnSync(resolved, ['--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true })
+    if (result.status !== 0) return false
+    const m = /(\d+\.\d+\.\d+)/.exec(result.stdout ?? '')
+    if (!m) return false
+    return compareSemver(m[1]!, CLAUDE_EXEC_FORM_MIN_VERSION) >= 0
+  } catch {
+    return false
+  }
+}
+
+/** The hook entry this build wires for `event`: exec-form when {@link claudeExecFormHooksSupported}, string-form otherwise. */
+export function expectedHookEntryFor(scriptPath: string, event: string): { command: string; args?: string[] } {
+  return claudeExecFormHooksSupported() ? hookExecPartsFor(scriptPath, event) : { command: hookCommandFor(scriptPath, event) }
+}
+
+/** True when `command`/`args` is exactly the hook `expected` describes -- same `command` AND the same `args` (order and length), never `command` alone: an exec-form entry's `command` is just `"node"`, shared by every event and by a stale entry whose `args` point at a deleted shim. */
+function hookEntryMatches(command: string, args: readonly string[] | undefined, expected: { command: string; args?: string[] }): boolean {
+  if (command !== expected.command) return false
+  const a = args ?? []
+  const b = expected.args ?? []
+  return a.length === b.length && a.every((v, i) => v === b[i])
 }
 
 /**
@@ -143,7 +194,8 @@ function anyScopeReferencesShim(
     for (const groups of Object.values(map ?? {})) {
       for (const group of groups) {
         for (const h of group.hooks ?? []) {
-          if (h.command.includes(scriptPath)) return true
+          // Exec form carries the shim path in `args`, not `command` (which is just the node binary).
+          if (h.command.includes(scriptPath) || (h.args ?? []).some((a) => a.includes(scriptPath))) return true
         }
       }
     }
@@ -171,6 +223,8 @@ export function settingsPath(scope: HookScope): string {
 interface HookCommandEntry {
   type: string
   command: string
+  /** Exec-form argv (Claude Code >= {@link CLAUDE_EXEC_FORM_MIN_VERSION}). Absent for a string-form entry. */
+  args?: string[]
 }
 
 /** A matcher group: an optional matcher plus the list of hook commands. */
@@ -238,12 +292,12 @@ function readSettings(p: string, opts: { strict?: boolean } = {}): Settings {
 /** True when `groups` contains a hook command matching `predicate`. */
 function groupHasTokenGoat(
   groups: HookMatcherGroup[] | undefined,
-  predicate: (command: string) => boolean,
+  predicate: (command: string, args?: readonly string[]) => boolean,
 ): boolean {
   if (groups === undefined) return false
   for (const group of groups) {
     for (const h of group.hooks ?? []) {
-      if (predicate(h.command)) return true
+      if (predicate(h.command, h.args)) return true
     }
   }
   return false
@@ -295,15 +349,15 @@ function installHooksScoped(scope: HookScope): InstallResult {
 
   let settingsChanged = false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
-    const expectedCommand = hookCommandFor(scriptPath, eventArg)
+    const expected = expectedHookEntryFor(scriptPath, eventArg)
     const existingGroups = hooks[eventKey] ?? []
 
-    // Strip every token-goat entry that is not byte-identical to what this build wires, whether or not a correct entry also already exists -- a wrong entry coexisting with a right one violates "exactly one, working, entry per event key" just as much as a wrong entry sitting alone does. Exact-match rather than marker-match is what makes this cover all three staleness shapes at once: a legacy alias (tokenwise/token_goat/tg-hook), a pre-shim bare `token-goat hook <event>`, and a shim command whose baked absolute paths have since moved (node upgraded, token-goat reinstalled elsewhere). A marker check would call that last one "already installed" and leave the hook pointing at a binary that no longer exists.
+    // Strip every token-goat entry that is not byte-identical to what this build wires, whether or not a correct entry also already exists -- a wrong entry coexisting with a right one violates "exactly one, working, entry per event key" just as much as a wrong entry sitting alone does. Exact-match rather than marker-match is what makes this cover all four staleness shapes at once: a legacy alias (tokenwise/token_goat/tg-hook), a pre-shim bare `token-goat hook <event>`, a shim command whose baked absolute paths have since moved (node upgraded, token-goat reinstalled elsewhere), and a string-form entry once exec form becomes available (or vice versa, if a user downgrades Claude Code). A marker check would call any of those "already installed" and leave the hook pointing at a binary that no longer exists, or in a form the running Claude Code can't use.
     const groups: HookMatcherGroup[] = []
     let strippedStale = false
     for (const group of existingGroups) {
       const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isStale = isTokenGoatHookCommand(h.command) && h.command !== expectedCommand
+        const isStale = isTokenGoatHookCommand(h.command, h.args) && !hookEntryMatches(h.command, h.args, expected)
         if (isStale) strippedStale = true
         return !isStale
       })
@@ -315,7 +369,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
       }
     }
 
-    const isOurs = (command: string): boolean => command === expectedCommand
+    const isOurs = (command: string, args?: readonly string[]): boolean => hookEntryMatches(command, args, expected)
     if (groupHasTokenGoat(groups, isOurs)) {
       // Re-narrow an already-installed entry. Without this the matcher improvement
       // below would only ever reach brand-new installs: every existing user would
@@ -329,7 +383,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
           const group = groups[i]
           if (group === undefined) continue
           const ownHooks = group.hooks ?? []
-          const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOurs(h.command))
+          const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOurs(h.command, h.args))
           if (isOwnGroup && group.matcher !== narrowed) {
             groups[i] = { ...group, matcher: narrowed }
             renarrowed = true
@@ -350,7 +404,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
     // non-tool event, or a handler that really does want everything -- and the
     // catch-all is the correct answer then.
     const matcher = toolMatcherFor(eventArg as HookEventName) ?? ''
-    groups.push({ matcher, hooks: [{ type: 'command', command: expectedCommand }] })
+    groups.push({ matcher, hooks: [{ type: 'command', command: expected.command, ...(expected.args !== undefined ? { args: expected.args } : {}) }] })
     hooks[eventKey] = groups
     settingsChanged = true
   }
@@ -432,8 +486,8 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
   // A wired command whose baked shim path no longer exists on disk cannot fire, so it must read as not-installed and let installHooks regenerate it -- otherwise a user who deleted ~/.claude/hooks would be told they are installed while every hook silently no-ops.
   if (!fs.existsSync(scriptPath)) return false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
-    const expectedCommand = hookCommandFor(scriptPath, eventArg)
-    if (!groupHasTokenGoat(hooks[eventKey], (c) => c === expectedCommand)) return false
+    const expected = expectedHookEntryFor(scriptPath, eventArg)
+    if (!groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected))) return false
   }
   return true
 }

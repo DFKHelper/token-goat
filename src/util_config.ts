@@ -15,6 +15,8 @@ import { atomicWriteText, backupFile, ensureDirSync } from './util.js'
  */
 export interface HookEntryLike {
   readonly command: string
+  /** Exec-form argv, when the harness's hook schema supports it (Claude Code >= 2.1.139). Absent for a string-form entry. */
+  readonly args?: readonly string[]
 }
 
 /**
@@ -43,7 +45,7 @@ export interface MatcherGroupWithMatcher<H extends HookEntryLike> extends Matche
  */
 export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherGroupLike<H>>(
   hooks: Record<string, G[] | undefined>,
-  isOurs: (command: string) => boolean,
+  isOurs: (command: string, args?: readonly string[]) => boolean,
 ): boolean {
   let removed = false
   for (const eventKey of Object.keys(hooks)) {
@@ -52,7 +54,7 @@ export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherG
     const kept: G[] = []
     for (const group of groups) {
       const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isOur = isOurs(h.command)
+        const isOur = isOurs(h.command, h.args)
         if (isOur) removed = true
         return !isOur
       })
@@ -79,7 +81,7 @@ export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherG
  */
 export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherGroupWithMatcher<H>>(
   groups: readonly G[],
-  isOurs: (command: string) => boolean,
+  isOurs: (command: string, args?: readonly string[]) => boolean,
   matcherFilter?: { readonly matcher: string | undefined },
 ): G[] {
   const list: readonly G[] = Array.isArray(groups) ? groups : []
@@ -89,7 +91,7 @@ export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherG
       next.push(group)
       continue
     }
-    const keptHooks = (group.hooks ?? []).filter((h) => !isOurs(h.command))
+    const keptHooks = (group.hooks ?? []).filter((h) => !isOurs(h.command, h.args))
     if (keptHooks.length > 0) {
       next.push({ ...group, hooks: keptHooks })
     } else if ((group.hooks ?? []).length === 0) {

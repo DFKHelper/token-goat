@@ -919,6 +919,12 @@ export function hookCommandFor(scriptPath: string, event: string): string {
   return `${quoteShellPath(process.execPath)} ${quoteShellPath(scriptPath)} ${event}${entryArg}`
 }
 
+/** hookCommandFor's exec-form parts, for a harness whose hook schema accepts an `args` array alongside `command` (Claude Code >= 2.1.139): the harness spawns `command` directly with that argv, so nothing needs shell-quoting and no shell process sits in front of every hook call. */
+export function hookExecPartsFor(scriptPath: string, event: string): { command: string; args: string[] } {
+  const entryPath = process.argv[1]
+  return { command: process.execPath, args: entryPath ? [scriptPath, event, entryPath] : [scriptPath, event] }
+}
+
 /** hookCommandFor's PowerShell form: the same shape, single-quoted so PowerShell cannot expand a `$` in any embedded path. */
 export function hookPowershellCommand(scriptPath: string, event: string): string {
   const entryPath = process.argv[1]

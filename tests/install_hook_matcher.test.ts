@@ -47,6 +47,7 @@ let TMP: string
 let origCwd: string
 let origHome: string | undefined
 let origUserProfile: string | undefined
+let origExecFormOverride: string | undefined
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-install-matcher-'))
@@ -59,6 +60,9 @@ beforeEach(() => {
   fs.mkdirSync(fakeHome, { recursive: true })
   process.env['HOME'] = fakeHome
   process.env['USERPROFILE'] = fakeHome
+  // Matcher narrowing is orthogonal to the exec-form/string-form choice; pin string form so this suite's command-shape assertions hold regardless of the local `claude` binary's version.
+  origExecFormOverride = process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS']
+  process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
 })
 
 afterEach(() => {
@@ -66,6 +70,8 @@ afterEach(() => {
   else process.env['HOME'] = origHome
   if (origUserProfile === undefined) delete process.env['USERPROFILE']
   else process.env['USERPROFILE'] = origUserProfile
+  if (origExecFormOverride === undefined) delete process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS']
+  else process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = origExecFormOverride
   process.chdir(origCwd)
   fs.rmSync(TMP, { recursive: true, force: true })
 })

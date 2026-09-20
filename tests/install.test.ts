@@ -14,6 +14,7 @@ let TMP: string
 let origCwd: string
 let origHome: string | undefined
 let origUserProfile: string | undefined
+let origExecFormOverride: string | undefined
 
 /** The exact command installHooks is expected to wire for `eventArg`, derived rather than hard-coded: it bakes in this node binary, this shim path, and this entry path, none of which a literal string in a test can know. */
 function expectedCommand(eventArg: string): string {
@@ -32,6 +33,9 @@ beforeEach(() => {
   fs.mkdirSync(fakeHome, { recursive: true })
   process.env['HOME'] = fakeHome
   process.env['USERPROFILE'] = fakeHome
+  // This suite is about legacy-marker stripping, matcher narrowing, and idempotency, not the exec-form/string-form choice -- pin it to string form so it asserts the same thing whether or not the machine running it has a `claude` binary on PATH new enough to trigger exec form. Exec-form wiring itself is covered by install_hook_exec_form.test.ts.
+  origExecFormOverride = process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS']
+  process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
 })
 
 afterEach(() => {
@@ -39,6 +43,8 @@ afterEach(() => {
   else process.env['HOME'] = origHome
   if (origUserProfile === undefined) delete process.env['USERPROFILE']
   else process.env['USERPROFILE'] = origUserProfile
+  if (origExecFormOverride === undefined) delete process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS']
+  else process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = origExecFormOverride
   process.chdir(origCwd)
   fs.rmSync(TMP, { recursive: true, force: true })
 })
