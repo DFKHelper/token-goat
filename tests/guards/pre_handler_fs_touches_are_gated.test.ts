@@ -236,6 +236,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['util.ts::ensureDirSync', 'generic mkdir primitive: it touches only the path its caller supplies, so the caller is where a payload path has to be classified'],
   ['util.ts::atomicWriteCore', 'generic write primitive, same reasoning as ensureDirSync'],
   ['util.ts::withFileLock', 'generic lockfile primitive, same reasoning as ensureDirSync'],
+  ['db.ts::getDb', 'reached from relayInProcess via recordStat -> getGlobalDb (Batch S hook-latency timing); the dbPath it existsSync-checks is always dataDir()/dataDirForHome(homeDir) + \'global.db\', never a value from the hook payload'],
 ])
 
 describe('the pre-dispatch call graph is real', () => {
@@ -244,9 +245,9 @@ describe('the pre-dispatch call graph is real', () => {
     pinnedPopulation({
       what: 'functions reachable from relayInProcess before handler dispatch',
       items: closure.map((v) => v.key),
-      // Measured, not believed. This was pinned at 40 against a BELIEVED population of 45; the real one is 112, so the floor could have lost 72 members -- 64% of the closure -- before saying anything. The ceiling is what makes the belief falsifiable: a 45-sized belief implies a ceiling around 55, which goes red at 112 instead of passing silently. Measure both (raise the floor to 9999, read the count out of the failure) whenever the traversal or the shared parser in reachability.ts changes -- widening that parser moves this number. Moved 140 -> 141 when relay.ts, delivery_cap.ts and compact.ts stopped importing detectHarness through the bridges barrel: the call was always made, but a re-export hid it from this traversal, so the single new member is bridges/registry.ts::detectHarness becoming visible rather than new code entering the pre-dispatch path.
-      floor: 100,
-      ceiling: 150,
+      // Measured, not believed. This was pinned at 40 against a BELIEVED population of 45; the real one is 112, so the floor could have lost 72 members -- 64% of the closure -- before saying anything. The ceiling is what makes the belief falsifiable: a 45-sized belief implies a ceiling around 55, which goes red at 112 instead of passing silently. Measure both (raise the floor to 9999, read the count out of the failure) whenever the traversal or the shared parser in reachability.ts changes -- widening that parser moves this number. Moved 140 -> 141 when relay.ts, delivery_cap.ts and compact.ts stopped importing detectHarness through the bridges barrel: the call was always made, but a re-export hid it from this traversal, so the single new member is bridges/registry.ts::detectHarness becoming visible rather than new code entering the pre-dispatch path. Moved 141 -> 168 when relayInProcess started importing recordStat (Batch S's hook-latency timing) from stats.ts, which transitively reaches db.ts::getDb and its own dependency graph -- genuinely new code on the pre-dispatch path this time, not a re-export; see db.ts::getDb's EXEMPT entry below for why its one fs touch is not a pre-approval hazard.
+      floor: 150,
+      ceiling: 190,
       mustInclude: ['relay.ts::relayInProcess', 'relay.ts::buildEvent', 'vscode_duplicate.ts::shouldSuppressDuplicateVscodeHook', 'vscode_duplicate.ts::userScopeCopyIsRedundant'],
     })
   })

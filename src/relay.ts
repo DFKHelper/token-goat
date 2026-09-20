@@ -28,6 +28,7 @@ import { normalizePayload, type Harness } from './hooks_cli.js'
 import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
 import { setTranscriptPath } from './session.js'
+import { recordStat } from './stats.js'
 // Re-exported below: this was defined here until it was split out (see stdin_json.ts's own note).
 import { MAX_STDIN_BYTES, readStdinJson } from './stdin_json.js'
 import { shouldSuppressDuplicateVscodeHook } from './vscode_duplicate.js'
@@ -183,10 +184,16 @@ function safeSuggestions(output: HookOutput): HookOutput {
  * tool call proceeds unchanged. This function never throws and never rejects.
  */
 export async function relayInProcess(eventName: string, rawPayload: unknown): Promise<string> {
+  if (!isHookEventName(eventName)) {
+    return '{}'
+  }
+  // Wall-clock, not CPU time: everything below (session load/save, every registered handler,
+  // serialization) is what a caller actually waits on, and that is what `token-goat stats
+  // --hooks`/`doctor` need to answer "how slow is token-goat itself". Started after the
+  // isHookEventName check so an unrecognized event -- a wiring mistake logged by relay() below,
+  // never a real invocation -- records nothing rather than a duration for work that never ran.
+  const hookStart = process.hrtime.bigint()
   try {
-    if (!isHookEventName(eventName)) {
-      return '{}'
-    }
     // Read before the CLAUDE_CODE_SESSION_ID seeding below, which sets that variable for every harness and would make a later detection answer 'claudecode' everywhere. serializeOutput needs the true harness to decide the pre_compact wire form, so capture it while the environment still says who we are.
     const harness = detectHarness()
     // Codex and Gemini send harness-native tool names (e.g. `bash`, `read_file`) that never match the canonical names (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }). Normalization is scoped to the two tool-scoped events: normalizePayload() treats a payload with no tool_name as invalid and returns {}, which would silently drop session_id off pre_compact/stop/notification payloads if run unconditionally.
@@ -233,6 +240,13 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
   } catch {
     // Pass-through on every failure path — a hook must never block the caller's tool call.
     return '{}'
+  } finally {
+    // recordStat() is its own already-open, already-fail-soft synchronous write (the same one
+    // every other hook-path stat in this codebase makes), so this adds no new blocking behavior
+    // -- including on the async-detach path (shim_common.ts), which prints its early marker
+    // before this module ever runs and does not wait for relayInProcess to return either way.
+    const durationMs = Number(process.hrtime.bigint() - hookStart) / 1e6
+    recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, durationMs)
   }
 }
 

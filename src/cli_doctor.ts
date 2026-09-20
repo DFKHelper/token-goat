@@ -31,6 +31,7 @@ import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_type
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
 import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
+import { hookLatencyBreakdown } from './hook_latency.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import type { DoctorResult } from './doctor_result.js'
 
@@ -790,6 +791,42 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
   }
 }
 
+/** p95 hook duration above which `doctor` flags a bad tail worth investigating. Set well above the ~30-150ms range the async-detach and structural-rewrite latency work measured for a healthy relayInProcess call, so this only fires on a real regression, not routine jitter. */
+const HOOK_LATENCY_WARN_P95_MS = 500
+
+/** Is any single (event, harness) pair's hook latency running hot? Reads the same `stats.duration_ms` rows `token-goat stats --hooks` renders, via {@link hookLatencyBreakdown}, so this and that view can never disagree about what "hot" means. */
+export function checkHookLatency(dbPath: string): DoctorResult {
+  const name = 'Hook latency'
+  if (!fs.existsSync(dbPath)) {
+    return { name, status: 'ok', message: 'no database yet' }
+  }
+  try {
+    const db = getDb(dbPath)
+    // Same lazy-table guard as checkCompactionChannel above: a fresh install has an index schema and no `stats` table at all until the first recordStat() call creates it.
+    const present = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stats'").get()
+    if (present === undefined) {
+      return { name, status: 'ok', message: 'no hooks measured yet' }
+    }
+    const rows = hookLatencyBreakdown(db)
+    if (rows.length === 0) {
+      return { name, status: 'ok', message: 'no hook latency recorded yet (or this database predates the duration_ms column)' }
+    }
+    const worst = rows[0]! // hookLatencyBreakdown sorts worst p95 first.
+    const totalCount = rows.reduce((n, r) => n + r.count, 0)
+    const worstLabel = `${worst.event} (${worst.harness || 'unrecorded harness'})`
+    if (worst.p95_ms > HOOK_LATENCY_WARN_P95_MS) {
+      return {
+        name,
+        status: 'warn',
+        message: `${worstLabel} is running a p95 of ${worst.p95_ms}ms across ${totalCount} recent hook(s); see 'token-goat stats --hooks' for the full breakdown`,
+      }
+    }
+    return { name, status: 'ok', message: `worst p95 ${worst.p95_ms}ms (${worstLabel}) across ${totalCount} recent hook(s)` }
+  } catch (e) {
+    return { name, status: 'warn', message: `could not read hook latency stats: ${extractErrorMessage(e)}` }
+  }
+}
+
 /** How many unrecognized names to name in the informational line before summarizing the rest. */
 const UNMAPPED_TOOL_SAMPLE = 5
 
@@ -853,6 +890,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))
   results.push(checkCompactionChannel(path.join(actualDataDir, 'global.db')))
+  results.push(checkHookLatency(path.join(actualDataDir, 'global.db')))
   results.push(checkUnmappedTools(path.join(actualDataDir, 'global.db')))
 
   const actualConfigPath = configPath || defaultConfigPath()

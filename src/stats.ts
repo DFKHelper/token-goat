@@ -268,6 +268,8 @@ const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [
   ['skill_compact:', SOURCE_SKILL],
   ['bashoutput:', SOURCE_BASH],
   ['taskoutput:', SOURCE_CONTENT],
+  // Hook wall-clock timing (relay.ts's relayInProcess), one row per invocation, always 0 bytes/0 tokens: it measures token-goat's own overhead, not a saving. See hook_latency.ts's hookLatencyBreakdown() for the dedicated read path and pruneHookStats() below for its own (shorter) retention.
+  ['hook:', SOURCE_OTHER],
 ]
 
 const COMMAND_KINDS: Record<string, Set<string>> = {
@@ -402,7 +404,8 @@ CREATE TABLE IF NOT EXISTS stats (
   detail TEXT,
   harness TEXT,
   traceparent TEXT,
-  tg_version TEXT
+  tg_version TEXT,
+  duration_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
@@ -479,6 +482,12 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
   }
+  // How long relayInProcess (relay.ts) took to process the hook end to end, in whole milliseconds. Nullable: a row from before this column existed, or one written for an event the caller could not time without re-blocking, carries no measurement rather than a manufactured zero.
+  try {
+    db.exec('ALTER TABLE stats ADD COLUMN duration_ms INTEGER')
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+  }
 }
 
 // The exact ts range (epoch seconds) a live install measured for the 2026-06-03..06-22 test-isolation leak below -- see pruneTestIsolationLeakRows's doc comment. Bounding the DELETE to this window lets it use the existing index on stats(ts) instead of a full-table LIKE scan, and keeps a real user's own pytest-tempdir or fake/-named path (both are legal content a real session can produce) safe outside it.
@@ -516,7 +525,7 @@ function dropRetiredPythonTables(db: SqliteDatabase): void {
  * into a swallowed exception.
  */
 const _harnessColumnByDb = new WeakMap<object, boolean>()
-function statsHasHarnessColumn(db: SqliteDatabase): boolean {
+export function statsHasHarnessColumn(db: SqliteDatabase): boolean {
   const cached = _harnessColumnByDb.get(db as unknown as object)
   if (cached !== undefined) return cached
   let present: boolean
@@ -564,7 +573,24 @@ function statsHasVersionColumn(db: SqliteDatabase): boolean {
   return present
 }
 
-function getGlobalDb(homeDir?: string): SqliteDatabase {
+/** Same capability probe as {@link statsHasHarnessColumn}, for the `duration_ms` hook-timing column. */
+const _durationColumnByDb = new WeakMap<object, boolean>()
+export function statsHasDurationColumn(db: SqliteDatabase): boolean {
+  const cached = _durationColumnByDb.get(db as unknown as object)
+  if (cached !== undefined) return cached
+  let present: boolean
+  try {
+    present = (db.prepare('PRAGMA table_info(stats)').all() as { name?: string }[]).some(
+      (c) => c.name === 'duration_ms',
+    )
+  } catch {
+    present = false
+  }
+  _durationColumnByDb.set(db as unknown as object, present)
+  return present
+}
+
+export function getGlobalDb(homeDir?: string): SqliteDatabase {
   const basePath = homeDir ? dataDirForHome(homeDir) : dataDir()
   const dbPath = path.join(basePath, 'global.db')
   const db = getDb(dbPath)
@@ -619,7 +645,28 @@ export function pruneHintEmissions(db: SqliteDatabase, retentionDays: number = S
   }
 }
 
-/** Run {@link rollupAndPruneStats} and {@link pruneHintEmissions} if it hasn't run in the last {@link STATS_ROLLUP_INTERVAL_MS}, recorded via the single-row `stats_maintenance` throttle shared by both. Fail-soft: any error here (including on a pre-migration database missing the throttle table) never blocks the stat write it accompanies. */
+/**
+ * `hook:*` rows (relay.ts's per-invocation duration_ms) fire on every hook call the running
+ * install makes -- an order of magnitude more often than any other kind in this table -- and
+ * {@link rollupAndPruneStats}'s day/kind/harness/tg_version rollup keeps only a summed count for
+ * whatever it aggregates, throwing away the individual durations hook_latency.ts's
+ * hookLatencyBreakdown() needs for a median/p95. A percentile over month-old latencies answers a question nobody asks
+ * ("was token-goat slow last quarter"), so raw rows are deleted outright at a much shorter window
+ * than {@link STATS_RETENTION_DAYS} rather than carried into the rollup at all.
+ */
+export const HOOK_STATS_RETENTION_DAYS = 7
+
+/** Delete `hook:*` rows older than `retentionDays` -- see {@link HOOK_STATS_RETENTION_DAYS}'s doc comment for why this runs ahead of the general rollup instead of feeding it. */
+export function pruneHookStats(db: SqliteDatabase, retentionDays: number = HOOK_STATS_RETENTION_DAYS): void {
+  try {
+    const cutoffTs = Math.floor(Date.now() / 1000) - retentionDays * 86400
+    db.prepare(`DELETE FROM stats WHERE kind LIKE 'hook:%' AND ts < ?`).run(cutoffTs)
+  } catch {
+    // Fail-soft: never block the stat write that triggers this (see recordStat's call site).
+  }
+}
+
+/** Run {@link rollupAndPruneStats}, {@link pruneHintEmissions} and {@link pruneHookStats} if it hasn't run in the last {@link STATS_ROLLUP_INTERVAL_MS}, recorded via the single-row `stats_maintenance` throttle shared by all three. Fail-soft: any error here (including on a pre-migration database missing the throttle table) never blocks the stat write it accompanies. */
 function maybeRunStatsMaintenance(db: SqliteDatabase): void {
   try {
     const now = Date.now()
@@ -632,6 +679,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
       `INSERT INTO stats_maintenance (id, last_rollup_ts) VALUES (1, ?)
        ON CONFLICT(id) DO UPDATE SET last_rollup_ts = excluded.last_rollup_ts`,
     ).run(now)
+    pruneHookStats(db)
     rollupAndPruneStats(db)
     pruneHintEmissions(db)
     pruneTestIsolationLeakRows(db)
@@ -670,12 +718,13 @@ export function recordStat(
   _testDb?: SqliteDatabase,
   detail?: string,
   traceparent?: string,
+  durationMs?: number,
 ): void {
   try {
     const db = _testDb ?? getGlobalDb()
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null
-    // Built from whichever optional columns this database actually has rather than one branch per combination: with harness, traceparent and tg_version all optional that would be eight arms, and the arm for any un-exercised combination is exactly where a silently-dropped column hides. Column names here are literals, never caller input.
+    // Built from whichever optional columns this database actually has rather than one branch per combination: with harness, traceparent, tg_version and duration_ms all optional that would be sixteen arms, and the arm for any un-exercised combination is exactly where a silently-dropped column hides. Column names here are literals, never caller input.
     const cols = ['ts', 'kind', 'bytes_saved', 'tokens_saved', 'detail']
     const vals: unknown[] = [ts, kind, bytesSaved, tokensSaved, detail ?? null]
     if (statsHasHarnessColumn(db)) {
@@ -689,6 +738,10 @@ export function recordStat(
     if (statsHasVersionColumn(db)) {
       cols.push('tg_version')
       vals.push(VERSION)
+    }
+    if (durationMs !== undefined && statsHasDurationColumn(db)) {
+      cols.push('duration_ms')
+      vals.push(Math.round(durationMs))
     }
     db.prepare(
       `INSERT INTO stats (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,

@@ -23,6 +23,12 @@ vi.mock('../src/stats.js', () => ({
   },
 }))
 
+vi.mock('../src/hook_latency.js', () => ({
+  renderHookLatencyStats: (_testDb?: unknown, homeDir?: string) => {
+    process.stdout.write(`MOCK_HOOK_LATENCY_STATS(${homeDir ?? ''})\n`)
+  },
+}))
+
 // Stub session module so renderTopSessionFiles is deterministic
 vi.mock('../src/session.js', () => {
   let _files = new Map<string, { path: string; readCount: number; lastReadAt: number; wasEdited: boolean; sizeBytes: number }>()
@@ -198,6 +204,23 @@ describe('cli_stats', () => {
       const parsed = JSON.parse(output) as { methodology: { billing: string; byte_derived_formula: string } }
       expect(parsed.methodology.billing).toContain('billing data')
       expect(parsed.methodology.byte_derived_formula).toContain('Math.round(bytes_saved / 4)')
+    })
+
+    it('routes --hooks to the hook latency breakdown instead of the savings summary', () => {
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runStats({ hooks: true, homeDir: '/fake/home' })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+
+      expect(output).toContain('MOCK_HOOK_LATENCY_STATS(/fake/home)')
+      expect(output).not.toContain('MOCK_SHORT_STATS')
+      expect(output).not.toContain('MOCK_FULL_STATS')
     })
 
     it('emits JSON when json flag is set', () => {

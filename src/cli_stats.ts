@@ -11,6 +11,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { summarize, renderStats, renderShortStats, type StatsSummary } from './stats.js'
+import { renderHookLatencyStats } from './hook_latency.js'
 import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
@@ -126,6 +127,8 @@ export interface StatsOptions {
   short?: boolean
   /** Explain how local savings estimates are calculated. */
   methodology?: boolean
+  /** Show the per-event/per-harness hook latency breakdown (median/p95/slowest/last-seen) instead of the savings summary. */
+  hooks?: boolean
 }
 
 const METHODOLOGY = {
@@ -189,6 +192,10 @@ export function statsJsonPayload(summary: StatsSummary): Record<string, unknown>
 export function runStats(opts: StatsOptions = {}): void {
   if (opts.methodology === true) {
     renderMethodology(opts.json === true)
+    return
+  }
+  if (opts.hooks === true) {
+    renderHookLatencyStats(undefined, opts.homeDir)
     return
   }
   const window = opts.windowDays ?? 30

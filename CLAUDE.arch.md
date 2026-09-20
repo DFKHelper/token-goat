@@ -396,6 +396,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hint_stats.ts`](src/hint_stats.ts) | Efficacy tracking + auto-suppression for token-goat's discretionary hint hooks (`token-goat hint-stats`). |
 | [`src/hint_suggestion_guard.ts`](src/hint_suggestion_guard.ts) | Strip shell commands that a path broke out of, from hint and deny text on its way to the model. |
 | [`src/hints.ts`](src/hints.ts) | Session-hint text builder |
+| [`src/hook_latency.ts`](src/hook_latency.ts) | Read/render side of Batch S's hook wall-clock timing: `token-goat stats --hooks` and `doctor`'s Hook latency check both go through hookLatencyBreakdown(). |
 | [`src/hook_lib.ts`](src/hook_lib.ts) | In-process hook library entry point. |
 | [`src/html_query.ts`](src/html_query.ts) | HTML structure inspection, querying, and structural linting for token-goat. |
 | [`src/import_export_extract.ts`](src/import_export_extract.ts) | Language-specific import and export extractors. |

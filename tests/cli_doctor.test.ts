@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
 import { classifyTreeSitterLoadError } from '../src/cli_doctor.js'
 import { missingTreeSitterGrammarPackages, setTreeSitterCoreForTesting } from '../src/parser.js'
 import { createRequire } from 'node:module'
@@ -643,6 +643,58 @@ describe('cli_doctor', () => {
       const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
       const row = results.find((r) => r.name === 'Compaction channel')
       expect(row, `no Compaction channel row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()
+      expect(row?.status).toBe('warn')
+    })
+  })
+
+  describe('checkHookLatency', () => {
+    function seedHookDurations(dbPath: string, event: string, durations: number[], harness = 'claudecode'): void {
+      const db = getDb(dbPath)
+      db.exec(GLOBAL_SCHEMA_SQL)
+      const stmt = db.prepare(
+        "INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, harness, duration_ms) VALUES (?, ?, 0, 0, ?, ?)",
+      )
+      durations.forEach((d) => stmt.run(Date.now(), `hook:${event}`, harness, d))
+    }
+
+    it('returns ok when there is no database yet', () => {
+      const result = checkHookLatency(path.join(tempDir, 'global.db'))
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no database yet')
+    })
+
+    it('returns ok when no hook has ever been measured', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      getDb(dbPath)
+      const result = checkHookLatency(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no hooks measured yet')
+    })
+
+    // HAND-DERIVED: fixed durations chosen so the p95 sits unambiguously on one side of the warn threshold.
+    it('reports ok with the worst p95 when latency is healthy', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedHookDurations(dbPath, 'post_tool_use', [20, 25, 30, 35, 40])
+      const result = checkHookLatency(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('post_tool_use')
+      expect(result.message).toContain('claudecode')
+    })
+
+    it('warns when a hook is running a p95 above the threshold', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedHookDurations(dbPath, 'pre_tool_use', [700, 800, 900, 950, 999])
+      const result = checkHookLatency(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('pre_tool_use')
+    })
+
+    it('is wired into runDoctor rather than only being callable', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedHookDurations(dbPath, 'pre_tool_use', [700, 800, 900, 950, 999])
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
+      const row = results.find((r) => r.name === 'Hook latency')
+      expect(row, `no Hook latency row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()
       expect(row?.status).toBe('warn')
     })
   })
