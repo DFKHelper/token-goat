@@ -112,15 +112,35 @@ describe('every direct appendDirtyPath call site also revives a dead worker (enq
     expect(stale, 'these files are exempted but the scan no longer finds a direct appendDirtyPath call in them').toEqual([])
   })
 
-  it('enqueueDirtyPathSafe itself (the safe wrapper every other enqueue path is expected to use) still calls ensureWorkerAlive', () => {
+  // Both safe wrappers, not just the single-path one: `enqueueDirtyPathSafe` delegates to `enqueueDirtyPathsSafe`, so a body check keyed on the single-path name alone would go green the moment the revive call moved into the batch form -- and equally green if it were deleted from both. A wrapper counts as reviving when it calls ensureWorkerAlive itself or hands the whole job to the sibling wrapper that does.
+  it.each(['enqueueDirtyPathSafe', 'enqueueDirtyPathsSafe'])(
+    '%s (a safe wrapper other enqueue paths are expected to use) still revives a dead worker',
+    (name) => {
+      const src = fs.readFileSync(path.join(SRC_DIR, 'hooks_index.ts'), 'utf8')
+      const fns = parseTopLevelFunctions(src)
+      const fn = fns.find((f) => f.name === name)
+      expect(fn, `${name} was not found in hooks_index.ts -- renamed or removed`).toBeDefined()
+      const body = stripComments(fn!.body)
+      const siblings = ['enqueueDirtyPathSafe', 'enqueueDirtyPathsSafe'].filter((s) => s !== name)
+      expect(
+        body.includes('ensureWorkerAlive(') || siblings.some((s) => body.includes(`${s}(`)),
+        `${name} neither calls ensureWorkerAlive nor delegates to the other safe wrapper -- every ` +
+          'caller of the "safe" wrappers (read_commands.ts, cli.ts, reconcile.ts, fold_delivery.ts, ' +
+          "hooks_bash.ts, and this test's own EXEMPTIONS reasoning) relies on one of them reviving " +
+          'the worker.',
+      ).toBe(true)
+    },
+  )
+
+  it('at least one safe wrapper calls ensureWorkerAlive directly (non-firing delegation guard)', () => {
     const src = fs.readFileSync(path.join(SRC_DIR, 'hooks_index.ts'), 'utf8')
-    const fn = parseTopLevelFunctions(src).find((f) => f.name === 'enqueueDirtyPathSafe')
-    expect(fn, 'enqueueDirtyPathSafe was not found in hooks_index.ts -- renamed or removed').toBeDefined()
+    const wrappers = parseTopLevelFunctions(src).filter((f) =>
+      ['enqueueDirtyPathSafe', 'enqueueDirtyPathsSafe'].includes(f.name),
+    )
+    expect(wrappers.length).toBeGreaterThan(0)
+    // Without this, the delegation clause above would pass for a pair of wrappers that only ever point at each other and never reach ensureWorkerAlive at all.
     expect(
-      stripComments(fn!.body).includes('ensureWorkerAlive('),
-      'enqueueDirtyPathSafe no longer calls ensureWorkerAlive -- every caller of the "safe" wrapper ' +
-        '(read_commands.ts, cli.ts, reconcile.ts, fold_delivery.ts, hooks_bash.ts, and this test\'s ' +
-        'own EXEMPTIONS reasoning) relies on this call being here.',
-    ).toBe(true)
+      wrappers.filter((f) => stripComments(f.body).includes('ensureWorkerAlive(')).map((f) => f.name).length,
+    ).toBeGreaterThan(0)
   })
 })

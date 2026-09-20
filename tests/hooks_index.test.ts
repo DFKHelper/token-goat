@@ -32,7 +32,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   }
 })
 
-const { appendDirtyPath, clearDirtyQueue, dirtyQueuePath, getDirtyPaths, preCompactIndexHandler } =
+const { appendDirtyPath, appendDirtyPaths, clearDirtyQueue, dirtyQueuePath, getDirtyPaths, preCompactIndexHandler } =
   await import('../src/hooks_index.js')
 const { clearModuleCaches } = await import('../src/reset.js')
 const { globalDbPath } = await import('../src/constants.js')
@@ -212,5 +212,55 @@ describe('preCompactIndexHandler', () => {
 
     expect(result.hookType).toBe('pass')
     expect(getDirtyPaths()).toEqual(['/a/one.ts', '/a/concurrent.ts'])
+  })
+})
+
+// Provenance: HAND-DERIVED. Every expected queue body below is the line-per-path format spelled out in appendDirtyPaths' own contract ("one path per line", newline-terminated) computed by hand from the input array, never read back off the implementation. The mechanism assertion is against Node's documented `fs.readFileSync` entry point, not against any token-goat string.
+describe('dirty queue append cost', () => {
+  const queueBody = (): string => fs.readFileSync(dirtyQueuePath(), 'utf8')
+
+  it('torn last line from a crashed write stays a separate entry from the appended path', () => {
+    const qp = dirtyQueuePath()
+    fs.mkdirSync(path.dirname(qp), { recursive: true })
+    fs.writeFileSync(qp, '/a/complete.ts\n/a/torn.ts')
+    appendDirtyPath('/a/fresh.ts')
+    expect(queueBody()).toBe('/a/complete.ts\n/a/torn.ts\n/a/fresh.ts\n')
+    expect(getDirtyPaths()).toEqual(['/a/complete.ts', '/a/torn.ts', '/a/fresh.ts'])
+  })
+
+  it('torn last line stays separate from the first path of a batch append', () => {
+    const qp = dirtyQueuePath()
+    fs.mkdirSync(path.dirname(qp), { recursive: true })
+    fs.writeFileSync(qp, '/a/complete.ts\n/a/torn.ts')
+    appendDirtyPaths(['/a/b1.ts', '/a/b2.ts'])
+    expect(queueBody()).toBe('/a/complete.ts\n/a/torn.ts\n/a/b1.ts\n/a/b2.ts\n')
+    expect(getDirtyPaths()).toEqual(['/a/complete.ts', '/a/torn.ts', '/a/b1.ts', '/a/b2.ts'])
+  })
+
+  it('torn-line guard is non-firing on a cleanly terminated queue', () => {
+    const paths = ['/a/one.ts', '/a/two.ts', '/a/three.ts']
+    expect(paths.length).toBeGreaterThan(0)
+    for (const p of paths) appendDirtyPath(p)
+    // A spurious leading newline would show up as a blank line between entries, which getDirtyPaths silently skips -- so assert on the raw bytes, not the parsed list.
+    expect(queueBody()).toBe('/a/one.ts\n/a/two.ts\n/a/three.ts\n')
+    expect(queueBody()).not.toContain('\n\n')
+    expect(getDirtyPaths()).toEqual(paths)
+  })
+
+  it('a batch append writes the same bytes as the same paths appended one at a time', () => {
+    const paths = ['/a/one.ts', '/a/two ws.ts', '/a/three.ts', '/a/four.ts']
+    expect(paths.length).toBeGreaterThan(0)
+    for (const p of paths) appendDirtyPath(p)
+    const oneAtATime = queueBody()
+    clearDirtyQueue()
+    fs.rmSync(dirtyQueuePath(), { force: true })
+    appendDirtyPaths(paths)
+    expect(queueBody()).toBe(oneAtATime)
+  })
+
+  it('appendDirtyPaths on an empty array leaves the queue untouched', () => {
+    appendDirtyPath('/a/one.ts')
+    appendDirtyPaths([])
+    expect(queueBody()).toBe('/a/one.ts\n')
   })
 })

@@ -25,11 +25,40 @@ export function dirtyQueuePath(): string {
 }
 
 /**
- * Append `normalizedPath` to the dirty queue, one path per line.
+ * Guard against a torn last line left by a previous crashed write: if the queue file already exists and does not end in a newline, the next append has to start with one so the partial line never merges with the appended path into a single garbage entry.
  *
- * Creates the `queue/` directory and the file on first use. Uses append mode so concurrent edits accumulate; a trailing newline terminates each entry so {@link getDirtyPaths} can split cleanly.
+ * Answers that question from the file's size and its final byte alone. Reading the whole file to look at one byte made every append cost the length of the queue, so enqueueing N paths read 1 + 2 + ... + N lines -- quadratic on a queue that routinely reaches four figures at session start.
  */
-export function appendDirtyPath(normalizedPath: string): void {
+function dirtyQueueLeadingNewline(queuePath: string): string {
+  let fd: number | undefined
+  try {
+    const size = fs.statSync(queuePath).size
+    if (size === 0) return ''
+    fd = fs.openSync(queuePath, 'r')
+    const tail = Buffer.allocUnsafe(1)
+    fs.readSync(fd, tail, 0, 1, size - 1)
+    return tail[0] === 0x0a ? '' : '\n'
+  } catch {
+    // File doesn't exist yet (first append) -- nothing to guard against.
+    return ''
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // Nothing to do about a failed close of a read-only handle.
+      }
+    }
+  }
+}
+
+/**
+ * Append every path in `normalizedPaths` to the dirty queue, one path per line, in one filesystem append.
+ *
+ * Creates the `queue/` directory and the file on first use. Uses append mode so concurrent edits accumulate; a trailing newline terminates each entry so {@link getDirtyPaths} can split cleanly. The torn-line guard is consulted once for the whole batch, which is correct because the batch is written as a single append: only the first line of it can ever meet a partial line.
+ */
+export function appendDirtyPaths(normalizedPaths: string[]): void {
+  if (normalizedPaths.length === 0) return
   const queuePath = dirtyQueuePath()
   const dir = path.dirname(queuePath)
   try {
@@ -37,15 +66,17 @@ export function appendDirtyPath(normalizedPath: string): void {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
   }
-  // Guard against a torn last line left by a previous crashed write: if the queue file already exists and does not end in a newline, start this append with one so the partial line never merges with the new path into a single garbage entry.
-  let leadingNewline = ''
-  try {
-    const existing = fs.readFileSync(queuePath, 'utf8')
-    if (existing.length > 0 && !existing.endsWith('\n')) leadingNewline = '\n'
-  } catch {
-    // File doesn't exist yet (first append) -- nothing to guard against.
-  }
-  fs.appendFileSync(queuePath, `${leadingNewline}${encodeDirtyQueueLine(normalizedPath)}\n`)
+  const body = normalizedPaths.map((p) => `${encodeDirtyQueueLine(p)}\n`).join('')
+  fs.appendFileSync(queuePath, `${dirtyQueueLeadingNewline(queuePath)}${body}`)
+}
+
+/**
+ * Append `normalizedPath` to the dirty queue, one path per line.
+ *
+ * The single-path form of {@link appendDirtyPaths}, kept for the one-at-a-time callers (`hooks_edit.ts` and the CLI write paths).
+ */
+export function appendDirtyPath(normalizedPath: string): void {
+  appendDirtyPaths([normalizedPath])
   // Deliberately NOT calling worker.ts's clearRetryCount here anymore: doing so unconditionally opened a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension load attempt) via getDb() on every single edit hook invocation -- and could even create global.db from scratch if it did not exist yet -- just to run a retry-counter reset that is a no-op for virtually every file. The daemon's own dequeue logic already covers this: every path whose fingerprintFile read succeeds during a drain has its retry_count cleared right there (see processDirtyBatch's clearRetryCount call in worker.ts), so a freshly-edited file gets its retry budget restored automatically the next time it is read successfully -- no separate reset needed on the hot hook path. The only case this trades away is a file whose retry budget was already exhausted from an earlier transient-lock episode AND that fails to fingerprint again on the very first drain immediately following this edit: it will not be requeued that one cycle, but the next edit re-enqueues it and the cycle repeats -- it is never permanently lost, only occasionally slower to recover a mid-collision retry.
 }
 
@@ -55,10 +86,25 @@ export function appendDirtyPath(normalizedPath: string): void {
  * A path under the OS temp dir is dropped here, once, for every caller: nothing there should become a permanent index row (see isUnderSystemTemp), and when only the edit hook refused it, shell redirects, `tee` and `sed -i` into scratch files filled one real index with 3,186 of them.
  */
 export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?: boolean }): void {
+  enqueueDirtyPathsSafe([filePath], opts)
+}
+
+/**
+ * Batch form of {@link enqueueDirtyPathSafe}: the same `resolveIndexPath` + `isUnderSystemTemp` filter over the whole array, then one queue append and one `ensureWorkerAlive()` for the set rather than one of each per path.
+ *
+ * `reconcileProject` fans a whole sweep's changed/added/removed set through here. Calling the single-path form in a loop made the append cost grow with the queue it was filling.
+ */
+export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResolved?: boolean }): void {
   try {
-    const resolved = opts?.alreadyResolved === true ? filePath : resolveIndexPath(filePath)
-    if (isUnderSystemTemp(resolved)) return
-    appendDirtyPath(resolved)
+    const resolved: string[] = []
+    for (const filePath of filePaths) {
+      const r = opts?.alreadyResolved === true ? filePath : resolveIndexPath(filePath)
+      // A path under the OS temp dir is dropped without disqualifying the rest of the batch, and an all-temp batch takes the same early return the single-path form always has: nothing was queued, so there is nothing to wake a worker for.
+      if (isUnderSystemTemp(r)) continue
+      resolved.push(r)
+    }
+    if (resolved.length === 0) return
+    appendDirtyPaths(resolved)
   } catch {
     // Fail-soft: the file write/reparse already landed either way, just not reindexed until the next `token-goat index` or edit touches this file again.
     return

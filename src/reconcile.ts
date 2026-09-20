@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
-import { enqueueDirtyPathSafe } from './hooks_index.js'
+import { enqueueDirtyPathsSafe } from './hooks_index.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
@@ -288,11 +288,11 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
 
   let enqueued = 0
   if (opts.dryRun !== true) {
-    for (const p of [...changed, ...added, ...removed]) {
-      // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
-      enqueueDirtyPathSafe(resolveIndexPath(p, cwd), { alreadyResolved: true })
-      enqueued++
-    }
+    // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
+    const toEnqueue = [...changed, ...added, ...removed].map((p) => resolveIndexPath(p, cwd))
+    // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately.
+    enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true })
+    enqueued = toEnqueue.length
     // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (budget already gone before the first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
     if (budgetExhausted) {
       if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)
