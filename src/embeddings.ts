@@ -18,7 +18,7 @@ import {
 import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
-import { EMBED_FINGERPRINT, EMBED_KIND_FINGERPRINTS, PRE_KIND_EMBED_FINGERPRINT } from './embed_fingerprint.js'
+import { EMBED_FINGERPRINT, EMBED_KIND_FINGERPRINTS, PRE_KIND_EMBED_FINGERPRINT, SPLIT_EMBED_FINGERPRINT } from './embed_fingerprint.js'
 import { embedKindForPath } from './embed_stamp.js'
 import { MAX_SEQUENCE_TOKENS } from './embed_tokenizer.js'
 
@@ -1075,15 +1075,11 @@ function chunkStampsOf(provenance: string): { globalDigest: string; kinds: Map<s
   return { globalDigest, kinds }
 }
 
-/**
- * Mark stale exactly the already-embedded files a chunking-half move invalidates, keeping their vectors serving until each is re-embedded, and report how many were marked.
- *
- * Three outcomes, in the order they are decided. A stamp carrying the pre-split whole-set digest and no kinds is the upgrade into per-kind stamps itself: the only source change between that digest and this build's is the provenance bookkeeping in this file, which produces no chunk text, so every stored vector already agrees with every stamp this build would write and nothing is re-embedded -- an upgrade must not bill 45 minutes of inference for a change whose entire purpose is to stop billing it. A moved global digest means the chunker or a source every kind reaches moved, so every embedded file is marked, as before the split. Otherwise only the kinds whose digests disagree are marked: an edit to pdf_extract.ts can alter a PDF's chunk text and nothing else's.
- */
+/** Mark stale exactly the already-embedded files a chunking-half move invalidates, keeping their vectors serving until each is re-embedded, and report how many were marked. Three outcomes, in the order they are decided. A stamp carrying the pre-split whole-set digest and no kinds, read by a build whose own global digest is still SPLIT_EMBED_FINGERPRINT, is the upgrade into per-kind stamps itself: no source that produces chunk text moved between those two digests, so every stored vector already agrees with every stamp this build would write and nothing is re-embedded -- an upgrade must not bill 45 minutes of inference for a change whose entire purpose is to stop billing it. Both halves of that test are load-bearing. The stored digest alone does not expire: a database still carrying it is a user who skipped a release, which is the exact population the clause exists for, so once a later build genuinely moves the chunker the stored-only test would grandfather those vectors past the change that invalidated them, permanently and silently. Pinning the current digest too makes the clause lapse the moment EMBED_FINGERPRINT leaves the value it was written against, and the full-reset path below takes over on its own. A moved global digest means the chunker or a source every kind reaches moved, so every embedded file is marked, as before the split. Otherwise only the kinds whose digests disagree are marked: an edit to pdf_extract.ts can alter a PDF's chunk text and nothing else's. */
 function resetStaleChunking(db: SqliteDatabase, stored: string, current: string): number {
   const before = chunkStampsOf(stored)
   const now = chunkStampsOf(current)
-  if (before.kinds.size === 0 && before.globalDigest === PRE_KIND_EMBED_FINGERPRINT) return 0
+  if (before.kinds.size === 0 && before.globalDigest === PRE_KIND_EMBED_FINGERPRINT && now.globalDigest === SPLIT_EMBED_FINGERPRINT) return 0
   if (before.globalDigest !== now.globalDigest) return resetAllEmbeddings(db, true)
   const changed = new Set<string>()
   for (const kind of new Set([...before.kinds.keys(), ...now.kinds.keys()])) {

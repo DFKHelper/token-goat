@@ -286,14 +286,22 @@ function renderEmbed(fingerprint, kindFingerprints) {
     PRE_KIND_COMMENT,
     `export const PRE_KIND_EMBED_FINGERPRINT = '${PRE_KIND_EMBED_FINGERPRINT}'`,
     '',
+    SPLIT_COMMENT,
+    `export const SPLIT_EMBED_FINGERPRINT = '${SPLIT_EMBED_FINGERPRINT}'`,
+    '',
   ].join('\n')
 }
 
 /** The single whole-set digest EMBED_FINGERPRINT carried before it was split into a global digest plus per-kind ones, frozen as a literal because it cannot be recomputed from these sources: the split itself edited embeddings.ts, one of the files it hashed. It is the value v2.9.18 shipped (`git show v2.9.18:src/embed_fingerprint.ts`), and ensureEmbeddingProvenance reads a database stamped with exactly it as already agreeing with every stamp below -- see the reasoning there. */
 const PRE_KIND_EMBED_FINGERPRINT = 'b7b2ff71de288d13'
 
+/** The value EMBED_FINGERPRINT took when the per-kind split landed, frozen by hand rather than emitted as `embedFingerprint` so that it stops tracking it: resetStaleChunking grandfathers a {@link PRE_KIND_EMBED_FINGERPRINT} database only while the running build still carries this digest, which is the premise the clause rests on (nothing between those two digests produces chunk text). The first edit to a global embedding source moves EMBED_FINGERPRINT away from this literal, the clause lapses, and those databases are re-embedded by the ordinary moved-global-digest path. Deliberately not recomputed after an unrelated edit to a hashed source: that only retires the clause early, which costs one re-embed and is the safe direction. Both constants can be deleted, along with the first conjunct of that clause, once no database stamped by v2.9.18 or earlier is plausible. */
+const SPLIT_EMBED_FINGERPRINT = '2310db32d9bc8a2b'
+
 const PRE_KIND_COMMENT =
   "// The single whole-set digest EMBED_FINGERPRINT carried before the split above, shipped by v2.9.18 and every release before it. Frozen as a literal in scripts/parser-fingerprint.mjs rather than computed, because the split edited embeddings.ts, one of the sources that digest hashed. ensureEmbeddingProvenance treats a database stamped with exactly this value, in the same vector space, as already agreeing with every stamp above, so the upgrade re-embeds nothing; any other stored digest is re-embedded as before."
+const SPLIT_COMMENT =
+  "// The value EMBED_FINGERPRINT held when the split above landed, frozen as a literal in scripts/parser-fingerprint.mjs so that it does not follow it. resetStaleChunking grandfathers a PRE_KIND_EMBED_FINGERPRINT database only while this build's global digest is still this one, because that is what makes the grandfathering true: nothing that produces chunk text changed between the two. The first edit to a global embedding source moves EMBED_FINGERPRINT off this value, the clause lapses on its own, and a database that skipped the intervening releases is re-embedded by the ordinary moved-global-digest path instead of keeping vectors the new chunker invalidated. This constant and PRE_KIND_EMBED_FINGERPRINT can both be deleted once no database stamped by v2.9.18 or earlier is plausible."
 const PARSER_COMMENT =
   "// A digest of the shared extraction-decision sources returned by sharedExtractionSources() in scripts/parser-fingerprint.mjs -- the driver and every module that decides extraction for all languages at once. It is the stamp files.parser_sha carries for a file whose language has no adapter module of its own (the tree-sitter languages, the structured-document formats parser.ts extracts inline, and 'unknown'), and the fallback for any language missing from LANGUAGE_PARSER_FINGERPRINTS below. The freshness gates treat a mismatch as changed, so an extraction-logic change invalidates already-indexed files whose content never moved. Before this existed those files kept their old symbols indefinitely, because content was the only key."
 const LANGUAGE_COMMENT =
