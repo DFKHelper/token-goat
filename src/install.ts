@@ -24,11 +24,11 @@
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './bridges/guidance_block.js'
+import { claudeConfigDir } from './claude_config_dir.js'
 import { compareSemver } from './cli_upgrade.js'
 import { loadConfig } from './config.js'
 import { toolMatcherFor } from './hook_registry.js'
@@ -178,7 +178,7 @@ function hookEntryMatches(command: string, args: readonly string[] | undefined, 
  * points at the home-scoped shim by absolute path.
  */
 export function claudeHookScriptPath(): string {
-  return path.join(os.homedir(), '.claude', 'hooks', 'token-goat-shim.js')
+  return path.join(claudeConfigDir(), 'hooks', 'token-goat-shim.js')
 }
 
 /**
@@ -216,11 +216,10 @@ function anyScopeReferencesShim(
   return false
 }
 
-/** Return the `~/.claude` or `<cwd>/.claude` settings path for `scope`. */
+/** Return the `~/.claude` (or `$CLAUDE_CONFIG_DIR`) or `<cwd>/.claude` settings path for `scope`. */
 export function settingsPath(scope: HookScope): string {
-  // Only fix the macOS /var vs /private/var alias split (os.tmpdir() vs process.cwd() disagree on this after chdir) — not the full resolveIndexPath pipeline, whose unconditional drive-letter lowercasing would otherwise leak into this user-visible, printed-to-the-console path on Windows.
-  const root = scope === 'user' ? os.homedir() : normalizeDarwinSystemAlias(process.cwd())
-  const base = path.join(root, '.claude')
+  // User scope resolves through claudeConfigDir() because that is where Claude Code reads its user settings.json from; project scope stays relative to the cwd, which Claude Code resolves independently of the config home. Only fix the macOS /var vs /private/var alias split (os.tmpdir() vs process.cwd() disagree on this after chdir) — not the full resolveIndexPath pipeline, whose unconditional drive-letter lowercasing would otherwise leak into this user-visible, printed-to-the-console path on Windows.
+  const base = scope === 'user' ? claudeConfigDir() : path.join(normalizeDarwinSystemAlias(process.cwd()), '.claude')
   return path.join(base, 'settings.json')
 }
 
@@ -505,7 +504,7 @@ const CLAUDE_MD_END = '<!-- token-goat-end -->'
 
 /** Absolute path to `~/.claude/CLAUDE.md`. */
 export function claudeMdPath(): string {
-  return path.join(os.homedir(), '.claude', 'CLAUDE.md')
+  return path.join(claudeConfigDir(), 'CLAUDE.md')
 }
 
 function buildClaudeMdBlock(): string {
@@ -567,7 +566,7 @@ export function uninstallClaudeMd(): boolean {
  * (`Dirent.isDirectory()` is false for a symlink), so it cannot loop.
  */
 export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
-  const root = searchRoot ?? path.join(os.homedir(), '.claude')
+  const root = searchRoot ?? claudeConfigDir()
   const canonical = path.resolve(claudeMdPath())
   const found: string[] = []
   if (!fs.existsSync(root)) return found
@@ -653,7 +652,7 @@ function skillMdContent(): string {
 
 /** Absolute path to the token-goat skill directory, `~/.claude/skills/token-goat`. */
 export function skillDir(): string {
-  return path.join(os.homedir(), '.claude', 'skills', 'token-goat')
+  return path.join(claudeConfigDir(), 'skills', 'token-goat')
 }
 
 /** Absolute path to `~/.claude/skills/token-goat/SKILL.md`. */

@@ -14,7 +14,7 @@
 
 import * as fs from 'fs/promises'
 import { resolve } from 'path'
-import { homedir } from 'os'
+import { claudeConfigDir } from './claude_config_dir.js'
 import { dataDir } from './constants.js'
 import { shortFingerprint } from './fingerprint.js'
 import { atomicWriteText, ensureDirSync, isCodeFenceDelimiter, stripLower } from './util.js'
@@ -80,10 +80,10 @@ export function skillOutputsDir(): string {
   return resolve(dataDir(), SKILLS_OUTPUT_SUBDIR)
 }
 
-// The on-disk source directory where Claude Code installs skills, one dir per skill containing a SKILL.md. Lazy homedir() so a test override (or spy) takes effect per call. This is the install location, distinct from skillOutputsDir() which is token-goat's body cache.
+// The on-disk source directory where Claude Code installs skills, one dir per skill containing a SKILL.md. Resolved through claudeConfigDir() rather than a bare homedir() because Claude Code installs skills under `$CLAUDE_CONFIG_DIR` when that is set, and lazily so a test override (or spy) takes effect per call. This is the install location, distinct from skillOutputsDir() which is token-goat's body cache.
 function skillsSourceDir(): string {
   if (_skillsSourceDirOverride) return _skillsSourceDirOverride
-  return resolve(homedir(), '.claude', 'skills')
+  return resolve(claudeConfigDir(), 'skills')
 }
 
 async function ensureSkillsDir(): Promise<void> {
@@ -878,7 +878,7 @@ export async function getSkillFilePath(skillName: string): Promise<string | null
 
 // Resolve a `plugin:skill`-scoped name's on-disk SKILL.md via `~/.claude/plugins/installed_plugins.json`. Plugin skills live at `<installPath>/skills/<skillSlug>/SKILL.md`, where `<installPath>` (e.g. `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>`) is only discoverable through this manifest -- unlike ~/.claude/skills/<name>/, there is no fixed directory shape to guess. The manifest's `plugins` map is keyed `<pluginName>@<marketplace>`, one or more entries per key (one per install scope); every entry whose plugin-name segment matches is tried until one resolves. Fails soft (null) on a missing/malformed manifest or an unmatched plugin, matching every other cache-reading path in this file.
 async function resolvePluginSkillPath(pluginName: string, skillSlug: string): Promise<string | null> {
-  const manifestPath = _pluginsManifestPathOverride ?? resolve(homedir(), '.claude', 'plugins', 'installed_plugins.json')
+  const manifestPath = _pluginsManifestPathOverride ?? resolve(claudeConfigDir(), 'plugins', 'installed_plugins.json')
   let raw: string
   try {
     raw = await fs.readFile(manifestPath, 'utf8')

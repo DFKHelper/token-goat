@@ -2,11 +2,11 @@ import { Command } from 'commander'
 import { attemptedCommandName, suggestForUnknownCommand } from './command_intent.js'
 import * as fs from 'fs'
 import * as path from 'path'
-import { homedir } from 'os'
 // Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively the whole MCP protocol layer and zod) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
 
+import { claudeConfigDir } from './claude_config_dir.js'
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { recordStat, savedTokensFromBytes, _useRichStats } from './stats.js'
 import { UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
@@ -811,7 +811,7 @@ async function cmdInstall(opts: {
 
   // Pre-generate compacts for all installed skills.
   try {
-    const skillDir = path.join(homedir(), '.claude', 'skills')
+    const skillDir = path.join(claudeConfigDir(), 'skills')
     if (fs.existsSync(skillDir)) {
       const entries = fs.readdirSync(skillDir, { withFileTypes: true })
       const skillNames: string[] = []

@@ -12,8 +12,8 @@
 
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
+import { claudeConfigDir } from './claude_config_dir.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { emitRewrite, passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
@@ -403,7 +403,7 @@ export function parseAgentDefinition(text: string, fallbackName: string): { name
 export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   // The project roster is scanned alongside the home one because a repo's own .claude/agents holds exactly the definitions a spawn in that repo should be reaching for, and a home-only default made them invisible to the advisory: this repo carries three such definitions and the advisory named none of them. Duplicate roots are harmless, since the visited set below folds them.
   const projectAgentsRoot = path.join(process.cwd(), '.claude', 'agents')
-  const scanRoots = roots ?? [path.join(os.homedir(), '.claude', 'agents'), projectAgentsRoot]
+  const scanRoots = roots ?? [path.join(claudeConfigDir(), 'agents'), projectAgentsRoot]
   const names = new Set<string>()
   const visited = new Set<string>()
   let filesSeen = 0

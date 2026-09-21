@@ -91,10 +91,13 @@ if (!process.env['TOKEN_GOAT_HOME']) {
 
 // Data-dir isolation is unconditional: the system LOCALAPPDATA is always set on Windows, so a presence guard would never isolate it and tests would keep hitting the real global.db. Point both platform env vars at a per-worker temp dir before any token-goat module caches DATA_DIR (setupFiles run before the test module graph imports constants.ts, so the cached value picks this up).
 // Chrome refuses to start when HOME/USERPROFILE/LOCALAPPDATA point at the sandbox below (it cannot set up its user-data/crashpad dirs), so the real values are stashed under TG_REAL_* for the one test that must launch a real browser (screenshot_redirect_ssrf) to restore around its launch and put back afterwards. Nothing else should read these.
-for (const key of ['LOCALAPPDATA', 'XDG_DATA_HOME', 'APPDATA', 'XDG_CONFIG_HOME', 'HOME', 'USERPROFILE'] as const) {
+for (const key of ['LOCALAPPDATA', 'XDG_DATA_HOME', 'APPDATA', 'XDG_CONFIG_HOME', 'HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR'] as const) {
   const real = process.env[key]
   if (real !== undefined && !process.env[`TG_REAL_${key}`]) process.env[`TG_REAL_${key}`] = real
 }
+
+// CLAUDE_CONFIG_DIR is Claude Code's own config-home override and it OUTRANKS the HOME/USERPROFILE redirection below, so an inherited one reopens exactly the escape that redirecting HOME closed -- for the installer's writes, not only for reads. Deleted rather than pointed at the sandbox because the suite's ~40 home-overriding tests build their expectations as `<their own fake home>/.claude`, which only holds while this variable is unset; the fallback through HOME is what keeps them isolated. A test that wants to exercise the variable assigns it itself, after this file runs, and still wins.
+delete process.env['CLAUDE_CONFIG_DIR']
 
 const dataHome = path.join(runRoot(), `tg-test-data-${workerScope}`)
 try {

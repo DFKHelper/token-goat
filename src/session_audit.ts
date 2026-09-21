@@ -30,6 +30,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { claudeConfigDir } from './claude_config_dir.js'
 import { displaySafeText } from './paths.js'
 import * as readline from 'node:readline'
 
@@ -582,7 +583,7 @@ export function listCorpusTranscripts(corpusDir: string): string[] {
 }
 
 export function defaultCorpusDir(): string {
-  const claudeDir = path.join(os.homedir(), '.claude', 'projects')
+  const claudeDir = path.join(claudeConfigDir(), 'projects')
   if (fs.existsSync(claudeDir) && listCorpusTranscripts(claudeDir).length > 0) {
     return claudeDir
   }

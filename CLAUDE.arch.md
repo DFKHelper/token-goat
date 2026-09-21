@@ -343,6 +343,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bridges_status.ts`](src/bridges_status.ts) | Bridge hook-event parity matrix. |
 | [`src/cache_session_commands.ts`](src/cache_session_commands.ts) | Cache and history commands: bash-history, web-history, clean-cache, prune-cache, cache-audit. |
 | [`src/capabilities.ts`](src/capabilities.ts) | A machine-readable statement of every capability token-goat has that can send data off the machine or leave data on it, with its effective state and the place that state is enforce |
+| [`src/claude_config_dir.ts`](src/claude_config_dir.ts) | Where Claude Code keeps its own per-user configuration, and nothing else. |
 | [`src/cli_bench.ts`](src/cli_bench.ts) | Exports: `BenchCase`, `BenchCaseResult`, `BenchReport`, `loadCorpus` |
 | [`src/cli_bootstrap_audit.ts`](src/cli_bootstrap_audit.ts) | Exports: `BootstrapAuditOptions`, `BootstrapAuditResult`, `buildBootstrapAudit`, `runBootstrapAudit` |
 | [`src/cli_commands.ts`](src/cli_commands.ts) | Machine-readable command manifest. |

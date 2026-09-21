@@ -11,6 +11,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { claudeConfigDir } from './claude_config_dir.js'
 import { confirmAndApply } from './confirm_apply.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { pruneIndex } from './memory_prune.js'
@@ -51,7 +52,7 @@ export function findClaudeMdFiles(projectRoot: string, homeDir = os.homedir()): 
     current = parent
   }
 
-  const globalMd = path.join(homeDir, '.claude', 'CLAUDE.md')
+  const globalMd = path.join(claudeConfigDir(homeDir), 'CLAUDE.md')
   if (!seen.has(globalMd) && fs.existsSync(globalMd)) {
     found.push(globalMd)
   }
@@ -69,7 +70,7 @@ export function findMemoryMd(
   alternateRoots: readonly string[] = [],
 ): string | null {
   try {
-    const projectsDir = path.join(homeDir, '.claude', 'projects')
+    const projectsDir = path.join(claudeConfigDir(homeDir), 'projects')
     if (!fs.existsSync(projectsDir)) return null
 
     const rootStr = path.resolve(projectRoot)

@@ -21,14 +21,18 @@ const CWD = process.cwd()
 let fakeHome: string
 let prevHome: string | undefined
 let prevUserProfile: string | undefined
+let prevClaudeConfigDir: string | undefined
 let toolResultsDir: string
 
 beforeEach(() => {
   fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persisted-home-'))
   prevHome = process.env['HOME']
   prevUserProfile = process.env['USERPROFILE']
+  prevClaudeConfigDir = process.env['CLAUDE_CONFIG_DIR']
   process.env['HOME'] = fakeHome
   process.env['USERPROFILE'] = fakeHome
+  // CLAUDE_CONFIG_DIR outranks HOME/USERPROFILE in claudeConfigDir(), so setting only the home variables stopped isolating this fixture the moment projectTranscriptsDir started honouring it: a developer who exports the variable would have had these cases build their tool-results directory inside their real Claude Code config tree.
+  process.env['CLAUDE_CONFIG_DIR'] = path.join(fakeHome, '.claude')
   toolResultsDir = path.join(projectTranscriptsDir(CWD), SESSION_ID, 'tool-results')
   fs.mkdirSync(toolResultsDir, { recursive: true })
 })
@@ -38,6 +42,8 @@ afterEach(() => {
   else process.env['HOME'] = prevHome
   if (prevUserProfile === undefined) delete process.env['USERPROFILE']
   else process.env['USERPROFILE'] = prevUserProfile
+  if (prevClaudeConfigDir === undefined) delete process.env['CLAUDE_CONFIG_DIR']
+  else process.env['CLAUDE_CONFIG_DIR'] = prevClaudeConfigDir
   fs.rmSync(fakeHome, { recursive: true, force: true })
 })
 

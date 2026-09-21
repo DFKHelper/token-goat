@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as readline from 'node:readline'
+import { claudeConfigDir } from './claude_config_dir.js'
 import { buildStats } from './cli_context_stats.js'
 import { resolveProjectRoot } from './project.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
@@ -215,8 +216,8 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
   const top = opts.top === undefined ? 10 : parseBudget('--top', opts.top) ?? 10
   const visitedDirs = new Set<string>()
   const seenFiles = new Set<string>()
-  const agents = await scanMetadataRoot(path.join(home, '.claude', 'agents'), 'agent', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
-  const skills = await scanMetadataRoot(path.join(home, '.claude', 'skills'), 'skill', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
+  const agents = await scanMetadataRoot(path.join(claudeConfigDir(home), 'agents'), 'agent', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
+  const skills = await scanMetadataRoot(path.join(claudeConfigDir(home), 'skills'), 'skill', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
   const rankedEntries = [...agents, ...skills]
     .sort((a, b) => b.metadata_bytes - a.metadata_bytes || a.path.localeCompare(b.path))
   // Counted before --top slices. `metadata_bytes` below is already a whole-set aggregate, so the

@@ -14,9 +14,9 @@
  */
 
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { claudeConfigDir } from './claude_config_dir.js'
 import { estimateTokens } from './overflow_guard.js'
 import { commandHash, getBashOutput, normalizeCommandForCacheKey } from './bash_output_cache.js'
 import {
@@ -28,15 +28,6 @@ import {
 } from './resident_context.js'
 
 // ---- transcript discovery ----------------------------------------------------
-
-/**
- * Root directory Claude Code keeps its per-user state under: `CLAUDE_CONFIG_DIR` when that is set to a non-empty value, otherwise `~/.claude`. This is Claude Code's own resolution rather than one token-goat invented, read off the shipping `@anthropic-ai/claude-code` CLI binary, which resolves its config home as `process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')` and builds the transcript root as `join(configHome, 'projects')`. Honouring it is what lets an isolated run -- a test, a sandbox, a scratch reproduction -- stop reading the real transcripts of whoever is at the keyboard; `os.homedir()` alone answers to no form of isolation a caller can apply without moving the whole home directory.
- */
-export function claudeConfigDir(): string {
-  const override = process.env['CLAUDE_CONFIG_DIR']
-  if (override !== undefined && override !== '') return override
-  return path.join(os.homedir(), '.claude')
-}
 
 /**
  * Directory Claude Code stores this project's session transcripts under.
