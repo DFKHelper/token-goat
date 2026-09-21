@@ -20,7 +20,7 @@ import type { SearchHit } from '../src/embeddings.js'
 
 import { closeAllDbs, getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
-import { indexFileSync } from '../src/parser.js'
+import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
 import { querySymbols } from '../src/index_reader.js'
 
 const searchSemanticMock = vi.fn()
@@ -154,7 +154,8 @@ describe('runSemantic enclosing-symbol resolution', () => {
   it('resolves the enclosing symbol for a hit past a 100,000-symbol single-file scan cap, not null', async () => {
     const hugeFile = path.join(TMP, 'huge.ts')
     fs.writeFileSync(hugeFile, '// generated fixture, content unused by this test\n', 'utf8')
-    // file_path stored exactly as the mocked hit spells it (native separators): the WHERE clause folds case only (TG_LOWER), never separators, so a forward-slash insert against a backslash query would silently match zero rows regardless of this test's actual target (the 100,000-row cap).
+    // file_path stored under `canonicalizeIndexPath`, which is the key the real writer mints, because the query side resolves the mocked hit's spelling through the same normaliser: inserting the raw path instead matches zero rows wherever that path is reached through an alias, and the test then fails for a reason that has nothing to do with its actual target (the 100,000-row cap).
+    const hugeKey = canonicalizeIndexPath(hugeFile)
     const db = getDb(globalDbPath())
     const insert = db.prepare(
       'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -162,7 +163,7 @@ describe('runSemantic enclosing-symbol resolution', () => {
     const insertMany = db.transaction((count: number) => {
       for (let i = 1; i <= count; i++) {
         const isLast = i === count
-        insert.run(hugeFile, isLast ? 'tail' : `sym${i}`, isLast ? 'function' : 'const', i, i, '', '')
+        insert.run(hugeKey, isLast ? 'tail' : `sym${i}`, isLast ? 'function' : 'const', i, i, '', '')
       }
     })
     insertMany(100_051)

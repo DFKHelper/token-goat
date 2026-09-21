@@ -26,11 +26,11 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
-import { indexFileEmbeddings, indexFileSync } from '../src/parser.js'
+import { canonicalizeIndexPath, indexFileEmbeddings, indexFileSync } from '../src/parser.js'
 import { isAvailable, mergeNearbyHits, searchSemantic } from '../src/embeddings.js'
 import { modelFilesPresent } from '../src/embed_model.js'
 import { BertWordPiece, MAX_SEQUENCE_TOKENS } from '../src/embed_tokenizer.js'
-import { querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
+import { getFileEntry, querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
 import { fingerprintFile } from '../src/fingerprint.js'
 import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
 import Database from '../src/sqlite_driver.js'
@@ -155,12 +155,14 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
     await indexFileEmbeddings(filePath, dbPath)
 
     const db = getDb(dbPath)
+    // Queried by `canonicalizeIndexPath` rather than the raw `filePath`: both `indexFileSync` and `indexFileEmbeddings` key their rows on the canonicalized spelling, so a literal `file_path = ?` against `filePath` matches nothing wherever the temp dir is reached through an alias.
+    const key = canonicalizeIndexPath(filePath)
     const symRow = db
       .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND name = 'gatedSymbol'")
-      .get(filePath) as { c: number }
+      .get(key) as { c: number }
     expect(symRow.c).toBe(1)
 
-    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {
       c: number
     }
     expect(chunkRow.c).toBe(0)
@@ -177,17 +179,19 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
 
     indexFileSync(filePath, dbPath)
     const db = getDb(dbPath)
+    // Keyed on `canonicalizeIndexPath` rather than the raw `filePath`: `indexFileEmbeddings` deletes stale chunks by the canonical spelling it mints internally, so a native-spelling insert here would survive the delete and the "removes stale chunks" half of this test would pass for the wrong reason.
+    const key = canonicalizeIndexPath(filePath)
     db.prepare(
       "INSERT INTO chunks(file_path, start_line, end_line, text, kind) VALUES (?, 1, 1, 'stale', 'symbol')",
-    ).run(filePath)
+    ).run(key)
 
     await indexFileEmbeddings(filePath, dbPath)
 
     const symbolRow = db
       .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND kind = 'sf_profile'")
-      .get(filePath) as { c: number }
+      .get(key) as { c: number }
     expect(symbolRow.c).toBe(1)
-    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {
       c: number
     }
     expect(chunkRow.c).toBe(0)
@@ -206,11 +210,13 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
     await indexFileEmbeddings(filePath, dbPath)
 
     const db = getDb(dbPath)
+    // Queried by `canonicalizeIndexPath` rather than the raw `filePath`, same reason as above: both writers key on the canonical spelling.
+    const key = canonicalizeIndexPath(filePath)
     const symbolRow = db
       .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND kind = 'sf_permission_set'")
-      .get(filePath) as { c: number }
+      .get(key) as { c: number }
     expect(symbolRow.c).toBe(1)
-    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {
       c: number
     }
     expect(chunkRow.c).toBe(0)
@@ -235,9 +241,10 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
     indexFileSync(filePath, dbPath)
     await expect(indexFileEmbeddings(filePath, dbPath)).resolves.toBeUndefined()
 
+    // Queried by `canonicalizeIndexPath` rather than the raw `filePath`, same reason as above: `indexFileSync` keys the row on the canonical spelling.
     const symRow = db
       .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND name = 'degradedSymbol'")
-      .get(filePath) as { c: number }
+      .get(canonicalizeIndexPath(filePath)) as { c: number }
     expect(symRow.c).toBe(1)
   })
 })
@@ -360,11 +367,8 @@ describe('indexFileSync indexes Jupyter notebook (.ipynb) code cells as real sym
     expect(helperSymbols[0]?.body).toContain('return 42')
 
     // The stored language is still 'ipynb', not 'python' -- distinguishing a notebook from a plain .py file.
-    const db = getDb(dbPath)
-    const fileRow = db.prepare('SELECT language FROM files WHERE path = ?').get(filePath) as
-      | { language: string }
-      | undefined
-    expect(fileRow?.language).toBe('ipynb')
+    // Read through `getFileEntry` rather than raw SQL on the caller's own spelling of `filePath`: the files row is keyed on the canonicalized path `indexFileSync` writes, and `getFileEntry` resolves through that same normalizer.
+    expect(getFileEntry(filePath, dbPath)?.language).toBe('ipynb')
 
     const refs = queryRefs({ name: 'helper', filePath }, dbPath)
     // helper() is called exactly once, by notebook_main -- pin the exact count and enclosing

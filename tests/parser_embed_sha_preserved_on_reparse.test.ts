@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { fingerprintFile } from '../src/fingerprint.js'
 import { indexFileSync } from '../src/parser.js'
+import { normalizePath } from '../src/paths.js'
 import { pathEqClause } from '../src/sql_path.js'
 import { foldPath } from '../src/util.js'
 
@@ -47,7 +48,8 @@ afterEach(() => {
 
 function readEmbedSha(): string | null {
   const db = getDb(dbPath)
-  const row = db.prepare(`SELECT embed_sha FROM files WHERE ${pathEqClause('path')}`).get(foldPath(filePath)) as
+  // `foldPath(normalizePath(filePath))`, not `foldPath(filePath)` alone: the row is keyed on the canonicalized spelling `indexFileSync` writes (normalizePath, then case-fold for the SQL clause), same as `getFileEntry`'s own `indexKey`; folding case over the raw native-separator path never matches it.
+  const row = db.prepare(`SELECT embed_sha FROM files WHERE ${pathEqClause('path')}`).get(foldPath(normalizePath(filePath))) as
     | { embed_sha: string | null }
     | undefined
   return row?.embed_sha ?? null
@@ -67,7 +69,7 @@ describe('writeParseResult preserves embed_sha across a content-unchanged repars
     // Seed the embed_sha a prior, successful embedding pass would have stamped -- the fixture's
     // real sha, not a placeholder, since the fix's condition is `priorRow.sha === sha`.
     const db = getDb(dbPath)
-    db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(sha, foldPath(filePath))
+    db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(sha, foldPath(normalizePath(filePath))) // Same canonicalization as readEmbedSha: the UPDATE must target the row's actual key, or it silently affects zero rows.
     expect(readEmbedSha()).toBe(sha)
 
     // Reparse with identical bytes on disk (a parser-fingerprint bump, or a touched mtime).
@@ -80,7 +82,7 @@ describe('writeParseResult preserves embed_sha across a content-unchanged repars
     indexFileSync(filePath, dbPath)
     const oldSha = fingerprintFile(filePath)
     const db = getDb(dbPath)
-    db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(oldSha, foldPath(filePath))
+    db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(oldSha, foldPath(normalizePath(filePath))) // Same canonicalization as readEmbedSha, applied here for the same reason.
 
     fs.writeFileSync(filePath, 'export function widget(): number {\n  return 2\n}\n')
     indexFileSync(filePath, dbPath)

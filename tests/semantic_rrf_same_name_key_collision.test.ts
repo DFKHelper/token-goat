@@ -22,7 +22,7 @@ import type { SearchHit } from '../src/embeddings.js'
 
 import { closeAllDbs } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
-import { indexFileSync } from '../src/parser.js'
+import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
 import { querySymbols } from '../src/index_reader.js'
 
 const searchSemanticMock = vi.fn()
@@ -89,9 +89,11 @@ describe('runSemantic RRF fusion key does not collapse two distinct same-named s
     expect(renderSyms).toHaveLength(2)
     const [first, second] = renderSyms.sort((a, b) => a.lineStart - b.lineStart)
 
+    // filePath is `canonicalizeIndexPath`d, not the raw `fixtureFile`: a real dense hit's filePath comes from the chunks table, which is keyed on that same canonical spelling, and the fusion key below compares it directly against the canonical spelling `resolveEnclosingSymbol`'s FTS-row branch already uses -- a native-spelling mock here would fuse against neither and produce an extra, spurious row.
+    const canonicalFixture = canonicalizeIndexPath(fixtureFile)
     const hits: SearchHit[] = [
-      { filePath: fixtureFile, startLine: first!.lineStart, endLine: first!.lineEnd, kind: 'window', distance: 0.1, text: "return 'alpha'" },
-      { filePath: fixtureFile, startLine: second!.lineStart, endLine: second!.lineEnd, kind: 'window', distance: 0.2, text: "return 'beta'" },
+      { filePath: canonicalFixture, startLine: first!.lineStart, endLine: first!.lineEnd, kind: 'window', distance: 0.1, text: "return 'alpha'" },
+      { filePath: canonicalFixture, startLine: second!.lineStart, endLine: second!.lineEnd, kind: 'window', distance: 0.2, text: "return 'beta'" },
     ]
     searchSemanticMock.mockResolvedValue(hits)
 
@@ -118,9 +120,11 @@ describe('runSemantic RRF fusion keeps the best of several dense hits inside one
     const longFile = path.join(TMP, 'long.ts')
     fs.writeFileSync(longFile, ['export function planRollout(): number {', ...Array.from({ length: 60 }, (_, i) => `  const step${i} = ${i}`), '  return 0', '}', ''].join('\n'), 'utf8')
     indexFileSync(longFile, globalDbPath())
+    // Same canonicalization as the fixture above: without it, this dense-pass key (raw `longFile`) never matches the FTS-pass key (built from the stored symbol's canonical file_path), so `runSemantic` treats them as two unrelated rows instead of fusing them into the one this test is about.
+    const canonicalLongFile = canonicalizeIndexPath(longFile)
     const hits: SearchHit[] = [
-      { filePath: longFile, startLine: 45, endLine: 55, kind: 'symbol', distance: 0.1, text: 'const step44 = 44' },
-      { filePath: longFile, startLine: 2, endLine: 12, kind: 'symbol', distance: 0.4, text: 'const step1 = 1' },
+      { filePath: canonicalLongFile, startLine: 45, endLine: 55, kind: 'symbol', distance: 0.1, text: 'const step44 = 44' },
+      { filePath: canonicalLongFile, startLine: 2, endLine: 12, kind: 'symbol', distance: 0.4, text: 'const step1 = 1' },
     ]
     searchSemanticMock.mockResolvedValue(hits)
 

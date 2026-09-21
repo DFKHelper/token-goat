@@ -23,7 +23,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
-import { assetEmbedSha, indexFileEmbeddings, indexFileSync, isEmbedFresh, maxChunksEmbedSha } from '../src/parser.js'
+import { assetEmbedSha, canonicalizeIndexPath, indexFileEmbeddings, indexFileSync, isEmbedFresh, maxChunksEmbedSha } from '../src/parser.js'
 import { isAvailable, searchSemantic } from '../src/embeddings.js'
 import { modelFilesPresent } from '../src/embed_model.js'
 import { encodeJpeg } from '../src/image_engine.js'
@@ -145,7 +145,8 @@ describe('indexFileEmbeddings refuses files with no embeddable text', () => {
     expect(getFileEntry(jsonPath, dbPath)?.embedSha).toBe(maxChunksEmbedSha(sha, 600))
 
     // The file is still fully indexed for symbols: the gate takes it out of `semantic`, never out of `symbol`/`read`/`refs`.
-    const symbols = db.prepare('SELECT COUNT(*) c FROM symbols WHERE file_path = ?').get(jsonPath) as { c: number }
+    // Queried by `canonicalizeIndexPath` rather than the raw `jsonPath`: symbol rows are keyed on the canonical spelling `indexFileSync` mints, so a literal `file_path = ?` against `jsonPath` matches nothing wherever the temp dir is reached through an alias.
+    const symbols = db.prepare('SELECT COUNT(*) c FROM symbols WHERE file_path = ?').get(canonicalizeIndexPath(jsonPath)) as { c: number }
     expect(symbols.c).toBeGreaterThan(600)
   })
 

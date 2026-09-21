@@ -939,7 +939,9 @@ export function maxChunksEmbedSha(sha: string, maxChunks: number): string {
  * returns the caller's path untouched. `fs.realpathSync` (without `.native`) is useless for this:
  * on Windows it echoes the caller's own spelling back.
  */
-export function canonicalizeIndexPath(absPath: string): string {
+export function canonicalizeIndexPath(rawPath: string): string {
+  // Every reader addresses a row through `normalizePath` (resolveIndexPath, getFileEntry, querySymbols), so the writer has to mint the key with that same function or the two never meet. Two of its steps rewrite the DIRECTORY prefix -- `expandShortPath` turns a Windows 8.3 segment into its long form, and `normalizeDarwinSystemAlias` turns `/var/...` into `/private/var/...` -- and the writer used to skip both, keeping "exactly as the caller spelled it". On any machine whose temp or project path is reached through an 8.3 alias or the macOS `/var` symlink, that wrote rows under a spelling no lookup can ever produce: the file indexed, and `symbol`, `read`, `refs` and `section` all answered as if it had not. Normalizing the caller's spelling here costs nothing where the path is already canonical, which is the common case and why this went unseen. It still does not adopt realpath's answer for the directory, which is the churn the paragraph above warns about: `normalizePath` rewrites the prefix the same way for every caller, so the spellings converge rather than following whoever happened to call first. The drive letter is the one piece of directory case it touches, and it lowercases it for every caller alike.
+  const absPath = normalizePath(rawPath)
   if (!isCaseInsensitiveFs()) return absPath
   let real: string
   try {

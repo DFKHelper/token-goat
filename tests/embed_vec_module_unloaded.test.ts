@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { getFileEntry } from '../src/index_reader.js'
 import { removeFileFromIndex } from '../src/index_prune.js'
-import { indexFileSync } from '../src/parser.js'
+import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
 import { foldCase } from '../src/util.js'
 
 let TMP: string
@@ -88,9 +88,10 @@ describe('removeFileFromIndex does not leak rows when the vec0 module is unloade
       expect((raw.prepare('SELECT COUNT(*) c FROM files').get() as { c: number }).c).toBe(1)
       expect((raw.prepare('SELECT COUNT(*) c FROM symbols').get() as { c: number }).c).toBe(1)
 
+      // Passed through `canonicalizeIndexPath` rather than the raw `file`: the row this deletes was written under the canonical key `indexFileSync` mints, and `deleteFileRows`'s equality clause folds case but does not normalize separators, so the native (backslash) spelling would match zero rows here on Windows.
       // The fix makes this complete instead of aborting the transaction. Pre-fix this throws
       // ("no such module: vec0") from the chunk_vectors DELETE inside the transaction.
-      expect(() => removeFileFromIndex(raw, file)).not.toThrow()
+      expect(() => removeFileFromIndex(raw, canonicalizeIndexPath(file))).not.toThrow()
 
       // No row leak: only one file was ever indexed, so after pruning it the symbols/files
       // tables are empty. Pre-fix the aborted transaction left both fully populated.

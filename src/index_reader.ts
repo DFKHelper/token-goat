@@ -3,8 +3,14 @@
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
+import { normalizePath } from './paths.js'
 import { pathEqClause as pathEq, pathSuffixClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
+
+/** A caller's spelling of a path, rewritten to the one the index is keyed on. Rows are written under `canonicalizeIndexPath`, which mints the key with `normalizePath`, so a query has to arrive through the same function or it compares two different names for one file. Folding case and trying both separators, which is all this layer used to do, bridges neither of the two rewrites `normalizePath` applies to a directory: a Windows 8.3 segment and the macOS `/var` link are different names, not different spellings of one. `getFileEntry` already normalized and these did not, so the same file answered found through one reader and missing through another. Costs nothing where the path is already canonical: the only filesystem call is inside the 8.3 branch, which a path with no short-name segment never enters. */
+function indexKey(p: string): string {
+  return normalizePath(p)
+}
 
 /** Raw `symbols` row as returned by SQLite (snake_case columns). */
 interface SymbolRow {
@@ -71,7 +77,7 @@ function applyRootDirScope(
   if (rootDir === undefined) return
   const { clause, params: bounds } = projectScopeClause(column)
   where.push(clause)
-  params.push(...bounds(rootDir))
+  params.push(...bounds(indexKey(rootDir)))
 }
 
 interface SymbolQueryOpts {
@@ -94,13 +100,14 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
     params.push(opts.name)
   }
   if (opts.filePath !== undefined) {
-    if (opts.filePath.includes('/') || opts.filePath.includes('\\')) {
-      const alt = opts.filePath.includes('/') ? opts.filePath.replace(/\//g, '\\') : opts.filePath.replace(/\\/g, '/')
+    const key = indexKey(opts.filePath)
+    if (key.includes('/') || key.includes('\\')) {
+      const alt = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
       where.push(`(${pathEq('file_path')} OR ${pathEq('file_path')})`)
-      params.push(foldPath(opts.filePath), foldPath(alt))
+      params.push(foldPath(key), foldPath(alt))
     } else {
       where.push(pathEq('file_path'))
-      params.push(foldPath(opts.filePath))
+      params.push(foldPath(key))
     }
   }
   if (opts.kind !== undefined) {
@@ -173,7 +180,7 @@ function buildRefsWhere(opts: { name: string; filePath?: string; rootDir?: strin
 
   if (opts.filePath !== undefined) {
     where.push(pathEq('file_path'))
-    params.push(foldPath(opts.filePath))
+    params.push(foldPath(indexKey(opts.filePath)))
   }
   applyRootDirScope(opts.rootDir, 'file_path', where, params)
 
@@ -211,7 +218,7 @@ export function countRefs(opts: { name: string; filePath?: string; rootDir?: str
 export function queryRefsByContext(context: string, filePath: string, dbPath: string = globalDbPath()): RefEntry[] {
   const sql = `SELECT file_path, name, line, col, context FROM refs WHERE context = ? AND ${pathEq('file_path')} ORDER BY line LIMIT 20`
   const db = getDb(dbPath)
-  const rows = db.prepare(sql).all(context, foldPath(filePath)) as RefRow[]
+  const rows = db.prepare(sql).all(context, foldPath(indexKey(filePath))) as RefRow[]
   return rows.map(toRefEntry)
 }
 
@@ -261,7 +268,7 @@ export function getProjectFileEntries(
   const { clause, params } = projectScopeClause('path')
   const rows = db
     .prepare(`SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${clause}`)
-    .all(...params(rootDir)) as FileRow[]
+    .all(...params(indexKey(rootDir))) as FileRow[]
 
   const out = new Map<string, FileIndexEntry>()
   for (const row of rows) {
@@ -284,14 +291,15 @@ export function getFileEntry(
   dbPath: string = globalDbPath(),
 ): FileIndexEntry | null {
   const db = getDb(dbPath)
+  const key = indexKey(filePath)
   let row = db
     .prepare(
       `SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${pathEq('path')}`,
     )
-    .get(foldPath(filePath)) as FileRow | undefined
+    .get(foldPath(key)) as FileRow | undefined
 
-  if (row === undefined && (filePath.includes('/') || filePath.includes('\\'))) {
-    const altPath = filePath.includes('/') ? filePath.replace(/\//g, '\\') : filePath.replace(/\\/g, '/')
+  if (row === undefined && (key.includes('/') || key.includes('\\'))) {
+    const altPath = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
     row = db
       .prepare(
         `SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${pathEq('path')}`,

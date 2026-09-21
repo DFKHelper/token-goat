@@ -115,7 +115,8 @@ beforeAll(() => {
   // escape syntax during shlexSplit's quote-aware parsing -- forward slashes work fine as file
   // paths on Windows and sidestep that ambiguity entirely.
   const posix = (p: string): string => p.replace(/\\/g, '/')
-  TMP = posix(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-structural-index-')))
+  // Resolved with `realpathSync.native` so the base is already the OS's own spelling, the same reason tests/helpers/containment_matrix.ts resolves its base. The rewrite names the path the index holds, and the index holds a canonical one: where `os.tmpdir()` is reached through a Windows 8.3 alias (`C:/Users/RUNNER~1`, which is what GitHub's Windows runner reports) or the macOS `/var` symlink, a TMP taken straight from `mkdtempSync` is a spelling the rewrite never emits, so every assertion below compared two different names for one file.
+  TMP = posix(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-structural-index-'))))
   PY_FILE = posix(path.join(TMP, 'service.py'))
   TS_FILE = posix(path.join(TMP, 'service.ts'))
   MD_FILE = posix(path.join(TMP, 'doc.md'))

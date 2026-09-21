@@ -101,7 +101,8 @@ describe('indexFileSync read-failure handling (regression)', () => {
   it('silently no-ops on ENOENT (deleted between fingerprint and read) without throwing', () => {
     const file = path.join(TMP, 'deleted.ts')
     fs.writeFileSync(file, 'export function goneSoon(): number {\n  return 1\n}\n')
-    mockState.target = file
+    // indexFileSync reads through the canonicalized spelling of `file` (same as `resolveIndexPath`), not the raw native one, so the mock must guard that same target or the injected failure never fires and the real read succeeds.
+    mockState.target = resolveIndexPath(file)
     mockState.errorCode = 'ENOENT'
 
     expect(() => indexFileSync(file, dbPath)).not.toThrow()
@@ -112,7 +113,8 @@ describe('indexFileSync read-failure handling (regression)', () => {
   it('rethrows a non-ENOENT read failure (e.g. a Windows AV/editor lock) instead of swallowing it', () => {
     const file = path.join(TMP, 'locked.ts')
     fs.writeFileSync(file, 'export function neverIndexed(): number {\n  return 1\n}\n')
-    mockState.target = file
+    // Same canonicalization as the ENOENT case above: the mock must guard the target indexFileSync actually reads through.
+    mockState.target = resolveIndexPath(file)
     mockState.errorCode = 'EBUSY'
 
     let caught: unknown
@@ -138,7 +140,9 @@ describe('indexFileSync read-failure handling (regression)', () => {
     fs.writeFileSync(bad, 'export function neverIndexedSymbol(): number {\n  return 2\n}\n')
     writeQueue(TMP, [good, bad])
 
+    // `fingerprintFile` (processDirtyBatch's own gate-read) reads the raw `bad` spelling straight, unlike `indexFileSync`, which reads through the canonicalized one -- so the two reads this test depends on ordering (skip the first, fail the second) are two different strings, and the mock needs both: `target` catches fingerprintFile's raw-spelling call, `extraTargets` catches indexFileSync's canonical one.
     mockState.target = bad
+    mockState.extraTargets = [resolveIndexPath(bad)]
     mockState.errorCode = 'EBUSY'
     // processDirtyBatch's own fingerprintFile(bad) gate-read must succeed (call #1) so the sha
     // comparison proceeds normally; only indexFileSync's own subsequent read (call #2) should hit

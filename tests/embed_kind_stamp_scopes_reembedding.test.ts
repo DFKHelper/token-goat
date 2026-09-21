@@ -103,14 +103,7 @@ describe('a moved global digest', () => {
 })
 
 describe('the upgrade into per-kind stamps', () => {
-  it('re-embeds nothing for a database stamped by the release before the split', () => {
-    // The whole point of the change is to stop billing a full re-embed for a change that cannot have altered most files' chunk text. An upgrade that itself re-embedded all 17,876 files would cost every user roughly 45 minutes up front, more than the change saves for months.
-    const preSplit = `${embeddingProvenance().replace(/\/embed-.*$/, '')}/embed-b7b2ff71de288d13`
-    const r = afterStamp('presplit', preSplit)
-    expect(r.stale, 'upgrading to per-kind stamps re-embedded files whose chunk text no source change could have moved').toEqual([])
-    expect(r.chunks).toBe(8)
-    expect(r.provenance, 'the upgraded stamp was not recorded, so every later run would repeat this decision').toBe(embeddingProvenance())
-  })
+  // The grandfather branch itself is covered in tests/embed_grandfather_expires_with_the_chunker.test.ts, which pins the running global digest to SPLIT_EMBED_FINGERPRINT. A second copy lived here and read that digest off the shipped constant instead, so it asserted the branch only while the branch happened to still be live and turned red the moment the designed lapse fired. Two copies of one case, one of which rots on a legitimate event, is worse coverage than one that does not.
 
   it('does not grandfather a stamp from some other build just because it carries no kinds', () => {
     // The pre-split digest identifies one exact source set. Any other whole-set digest names a build whose extractors are unknown, and those files must be re-embedded as they always were.

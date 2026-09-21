@@ -30,6 +30,7 @@ import { cmdIndex } from '../src/cli.js'
 import { closeAllDbs } from '../src/db.js'
 import { querySymbols } from '../src/index_reader.js'
 import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
+import { normalizePath } from '../src/paths.js'
 import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 let TMP: string
@@ -114,11 +115,11 @@ describe('cmdIndex and a case-only rename git has not seen', () => {
 })
 
 describe('canonicalizeIndexPath', () => {
-  it('returns the caller path untouched when the file cannot be resolved', () => {
-    // A git-tracked file deleted from the worktree still reaches the indexer on every run. It has
-    // to keep the name callers know it by, or the deletion sweep can no longer find its rows.
+  it('invents no name for a file that cannot be resolved', () => {
+    // A git-tracked file deleted from the worktree still reaches the indexer on every run. It has to keep the name callers know it by, or the deletion sweep can no longer find its rows. The name callers know it by is the normalised one: every reader resolves a path through `normalizePath` before it queries, and the sweep reads its paths back out of the database and deletes by that same string. What must not happen is a name appearing that the caller never supplied a basename for.
     const missing = path.join(TMP, 'NoSuchFile.ts')
-    expect(canonicalizeIndexPath(missing)).toBe(missing)
+    expect(path.basename(canonicalizeIndexPath(missing)), 'a name was invented for a file with no directory entry to read one from').toBe('NoSuchFile.ts')
+    expect(canonicalizeIndexPath(missing), 'the key is one no reader can produce').toBe(normalizePath(missing))
   })
 
   it.skipIf(!hostFsIsCaseInsensitive())('adopts the filesystem spelling of the final segment', () => {
@@ -134,7 +135,8 @@ describe('canonicalizeIndexPath', () => {
     fs.writeFileSync(path.join(TMP, 'real', 'Alias.ts'), 'export const z = 1\n')
     const link = path.join(TMP, 'alias.ts')
     fs.symlinkSync(path.join(TMP, 'real', 'Alias.ts'), link, 'file')
-    expect(canonicalizeIndexPath(link), 'a symlink target renamed the link').toBe(link)
+    expect(path.basename(canonicalizeIndexPath(link)), 'a symlink target renamed the link').toBe(path.basename(link))
+    expect(canonicalizeIndexPath(link), 'the key is one no reader can produce').toBe(normalizePath(link))
   })
 
   it.skipIf(!hostFsIsCaseInsensitive())('leaves the directory prefix exactly as the caller spelled it', () => {

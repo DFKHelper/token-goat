@@ -5,6 +5,8 @@
  *
  * All three cases are needed. Without the first, a build that had moved its chunker would still grandfather. Without the second, a clause that grandfathered nothing at all would pass -- and it would bill every upgrading user roughly 45 minutes of inference. Without the third, a clause that grandfathered every kind-less stamp would pass.
  *
+ * The clause is retired as of v2.9.19, which moved `EMBED_FINGERPRINT` off the split digest, so the branch no longer fires on a shipped build. That is the lapse working, not a failure, and the code stays because the population it was written for still exists. The second case therefore pins the running digest instead of reading it, so it keeps covering the branch rather than turning red the moment the lapse it documents actually happens.
+ *
  * Provenance: HAND-DERIVED. Every stored stamp is the running stack's own stamp with one digest field substituted, which is the state a source edit leaves behind, and each substitution is asserted to have actually moved the string. The pre-split digest is the literal v2.9.18 shipped (`git show v2.9.18:src/embed_fingerprint.ts`). The build whose chunker moved is simulated by substituting the generated digests in `src/embed_fingerprint.ts` -- the one thing a chunking-source edit changes -- so `embeddingProvenance` and `resetStaleChunking` run their real code against it; nothing in the path under test is stubbed.
  */
 import * as fs from 'node:fs'
@@ -18,7 +20,7 @@ import { PRE_KIND_EMBED_FINGERPRINT, SPLIT_EMBED_FINGERPRINT } from '../src/embe
 import type * as EmbedFingerprint from '../src/embed_fingerprint.js'
 import { embeddingProvenance, ensureEmbeddingProvenance } from '../src/embeddings.js'
 
-const build = vi.hoisted(() => ({ chunkerMoved: false }))
+const build = vi.hoisted(() => ({ chunkerMoved: false, atSplit: false }))
 
 vi.mock('../src/embed_fingerprint.js', async (importOriginal) => {
   const real = await importOriginal<typeof EmbedFingerprint>()
@@ -27,6 +29,7 @@ vi.mock('../src/embed_fingerprint.js', async (importOriginal) => {
   return {
     ...real,
     get EMBED_FINGERPRINT() {
+      if (build.atSplit) return real.SPLIT_EMBED_FINGERPRINT
       return build.chunkerMoved ? move(real.EMBED_FINGERPRINT) : real.EMBED_FINGERPRINT
     },
     get EMBED_KIND_FINGERPRINTS() {
@@ -51,8 +54,8 @@ function seedIndex(dbPath: string): void {
   }
 }
 
-/** Runs the real gate against a database stamped with `stored`, and reports which files it marked stale and how many chunk rows survived. */
-function afterStamp(name: string, stored: string): { stale: string[]; chunks: number } {
+/** Runs the real gate against a database stamped with `stored`, and reports which files it marked stale, how many chunk rows survived, and the stamp left behind. */
+function afterStamp(name: string, stored: string): { stale: string[]; chunks: number; provenance: string } {
   const dbPath = path.join(TMP, `${name}.db`)
   seedIndex(dbPath)
   getDb(dbPath).prepare('INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?)').run(stored)
@@ -61,6 +64,7 @@ function afterStamp(name: string, stored: string): { stale: string[]; chunks: nu
   return {
     stale: getDb(dbPath).prepare('SELECT path FROM files WHERE embed_sha IS NULL ORDER BY path').pluck().all() as string[],
     chunks: getDb(dbPath).prepare('SELECT COUNT(*) FROM chunks').pluck().get() as number,
+    provenance: getDb(dbPath).prepare('SELECT provenance FROM embedding_provenance WHERE id = 1').pluck().get() as string,
   }
 }
 
@@ -71,11 +75,13 @@ function preSplitStamp(): string {
 
 beforeEach(() => {
   build.chunkerMoved = false
+  build.atSplit = false
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-embed-grandfather-'))
 })
 
 afterEach(() => {
   build.chunkerMoved = false
+  build.atSplit = false
   closeAllDbs()
   fs.rmSync(TMP, { recursive: true, force: true })
   vi.restoreAllMocks()
@@ -94,8 +100,14 @@ describe('a pre-split database read by a build whose chunker has since moved', (
 
 describe('a pre-split database read by the build the clause was written against', () => {
   it('re-embeds nothing', () => {
-    expect(SPLIT_EMBED_FINGERPRINT, 'the frozen split digest is not this build\'s, so the clause is already retired and the case above proves nothing').toBe(embeddingProvenance().split('/embed-')[1]?.split('+')[0])
-    expect(afterStamp('unmoved', preSplitStamp()).stale, 'upgrading to per-kind stamps re-embedded files whose chunk text no source change could have moved').toEqual([])
+    // The running build's global digest is pinned to SPLIT_EMBED_FINGERPRINT rather than read from it. Keyed on the shipped constant this case tested the clause only while the clause happened to still be live, and it stopped being live the first time an unrelated edit to a hashed embedding source moved EMBED_FINGERPRINT -- the designed lapse, not a regression. A case that turns red on a legitimate lapse is a case that gets deleted under time pressure, taking the only coverage of the grandfather branch with it. Pinned, it exercises that branch on any build, retired or not.
+    build.atSplit = true
+    const stored = preSplitStamp()
+    expect(embeddingProvenance(), 'the simulated build does not carry the split digest, so the clause cannot fire and this case asserts nothing').toContain(`/embed-${SPLIT_EMBED_FINGERPRINT}`)
+    const r = afterStamp('unmoved', stored)
+    expect(r.stale, 'upgrading to per-kind stamps re-embedded files whose chunk text no source change could have moved').toEqual([])
+    expect(r.chunks, 'the vectors were discarded rather than kept serving').toBe(8)
+    expect(r.provenance, 'the upgraded stamp was not recorded, so every later run would repeat this decision').toBe(embeddingProvenance())
   })
 })
 

@@ -34,10 +34,10 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { closeAllDbs, getDb } from '../src/db.js'
+import { closeAllDbs } from '../src/db.js'
 import { buildEmbeddingBoundaries, indexFileSync } from '../src/parser.js'
 import { chunkFile, type ChunkBoundary } from '../src/embeddings.js'
-import { querySymbols } from '../src/index_reader.js'
+import { countSymbols, querySymbols } from '../src/index_reader.js'
 
 // One more than the historical buildEmbeddingBoundaries cap of 10,000, so the fixture actually
 // crosses the boundary this test exists to cover (2,000 symbols, this repo's own earlier sweep
@@ -81,12 +81,9 @@ describe('buildEmbeddingBoundaries symbol cap (src/parser.ts)', () => {
 
       indexFileSync(filePath, dbPath)
 
-      const db = getDb(dbPath)
-      const row = db.prepare('SELECT COUNT(*) c FROM symbols WHERE file_path = ?').get(filePath) as {
-        c: number
-      }
+      // Counted through `countSymbols` rather than raw SQL on `filePath`: rows are keyed on the canonicalized spelling of a path, so a literal `file_path = ?` against whatever `mkdtempSync` handed back matches nothing wherever the temp root is reached through an alias. `countSymbols` applies no limit, so it still reads the whole table rather than the capped window this test is about.
       expect(SYMBOL_COUNT).toBeGreaterThan(CAP_UNDER_TEST)
-      expect(row.c).toBe(SYMBOL_COUNT)
+      expect(countSymbols({ filePath }, dbPath)).toBe(SYMBOL_COUNT)
     } finally {
       closeAllDbs()
       fs.rmSync(TMP, { recursive: true, force: true })

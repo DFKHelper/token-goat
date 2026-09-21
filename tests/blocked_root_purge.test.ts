@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
 import { findFilesUnderBlockedRoot, pruneBlockedRoot } from '../src/index_prune.js'
-import { indexFileSync } from '../src/parser.js'
+import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
 
 let root: string
 let dbPath: string
@@ -79,9 +79,10 @@ describe('pruneBlockedRoot', () => {
   // leaves every other assertion in this file green.
   it('takes the embedding chunks with it too, not just the parsed rows', () => {
     const secret = seed(path.join('secretdir', 'creds.ts'), 'export function tokenValue() { return "sk" }\n')
+    // Keyed on `canonicalizeIndexPath` rather than the raw `secret` spelling: the files row this chunk belongs to was written under the canonical key by `indexFileSync`, and `pruneBlockedRoot` deletes chunks by matching that same key, so a native-spelling insert here would never be found and the assertion below would pass for the wrong reason (nothing to delete).
     getDb(dbPath)
       .prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, 1, 1, ?, ?)')
-      .run(secret, 'sk-live-42', 'code')
+      .run(canonicalizeIndexPath(secret), 'sk-live-42', 'code')
     const chunks = (): number =>
       (getDb(dbPath).prepare('SELECT COUNT(*) AS n FROM chunks').get() as { n: number }).n
     expect(chunks()).toBe(1)

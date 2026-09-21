@@ -16,7 +16,8 @@ import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 const tempRoots: string[] = []
 
 function mkTemp(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  // `realpathSync.native` for the OS's own spelling, as tests/helpers/containment_matrix.ts resolves its base. The slug below is built from `projectRoot`, and the bundle builds the same slug from the path it resolved: where `os.tmpdir()` is reached through a Windows 8.3 alias or the macOS `/var` symlink the two slugs differ, so the command looked in a directory this test never wrote to and exited 1.
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
   tempRoots.push(dir)
   return dir
 }
