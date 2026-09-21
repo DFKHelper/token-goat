@@ -93,6 +93,9 @@ export const LANGUAGE_SPECS = [
   // Oracle PL/SQL sources: package spec and body, standalone procedure/function, trigger, and object type spec and body.
   { id: 'sql', extraction: 'regex', extensions: ['.sql', '.pks', '.pkb', '.pls', '.plsql', '.pck', '.prc', '.fnc', '.trg', '.tps', '.tpb'], label: 'SQL', ...DATA, symbolBearing: true, diffable: true, fence: 'sql' },
   { id: 'ini', extraction: 'regex', extensions: ['.ini', '.cfg', '.conf'], label: 'INI', ...DATA, fence: 'ini' },
+  { id: 'nginx', extraction: 'regex', extensions: ['.nginx'], basenames: ['nginx.conf'], label: 'Nginx', ...DATA, fence: 'nginx' },
+  { id: 'caddy', extraction: 'regex', extensions: ['.caddy'], basenames: ['Caddyfile', 'caddy.conf'], label: 'Caddyfile', ...DATA, symbolBearing: true, diffable: true, fence: 'caddy' },
+  { id: 'apache', extraction: 'regex', extensions: ['.apache', '.apache2'], basenames: ['httpd.conf', 'apache2.conf', '.htaccess'], label: 'Apache Config', ...DATA, symbolBearing: true, diffable: true, fence: 'apache' },
   // `.mk` fragments (config.mk, rules.mk) share a bare Makefile's syntax.
   { id: 'makefile', extraction: 'regex', extensions: ['.mk'], basenames: ['makefile', 'gnumakefile', 'bsdmakefile'], ...DATA, fence: 'makefile', basenameImportsExtension: '.mk' },
   { id: 'proto', extraction: 'regex', extensions: ['.proto'], label: 'Protocol Buffers', ...DATA, symbolBearing: true, fence: 'protobuf' },

@@ -47,6 +47,9 @@ import { extractR } from './r.js'
 import { extractGraphql } from './graphql_idx.js'
 import { extractSql } from './sql_idx.js'
 import { extractIni, extractEnv } from './ini_idx.js'
+import { extractNginx } from './nginx.js'
+import { extractCaddy } from './caddy.js'
+import { extractApache } from './apache.js'
 import { extractBash } from './bash_idx.js'
 import { extractMakefile } from './makefile_idx.js'
 import { extractProto } from './proto_idx.js'
@@ -151,6 +154,9 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
   sql: extractSql,
   ini: extractIni,
+  nginx: extractNginx,
+  caddy: extractCaddy,
+  apache: extractApache,
   makefile: extractMakefile,
   proto: (content, filePath) => extractProto(content, filePath).symbols,
   terraform: extractTerraform,

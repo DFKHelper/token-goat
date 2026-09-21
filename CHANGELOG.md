@@ -2,6 +2,16 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Added
+
+- Added native configuration language symbol extractors for Nginx (`nginx.conf`, `.nginx`), Caddyfile (`Caddyfile`, `.caddy`), and Apache HTTP Server (`httpd.conf`, `apache2.conf`, `.htaccess`). Anonymous server, location, upstream, virtual host, directory, and proxy blocks can now be addressed directly with `token-goat read "file::symbol"`.
+
+### Changed
+
+- Extended the SQL extractor with DuckDB macros (`CREATE MACRO`) and secrets (`CREATE SECRET`), PostgreSQL extensions, domains, aggregates, policies, rules, and operators, plus Oracle synonyms, database links, clusters, and contexts.
+
 ## [2.9.20] - 2026-09-21
 
 This release changes no stored data, so upgrading and downgrading are both free: no reindex, no re-embed, and no schema move.

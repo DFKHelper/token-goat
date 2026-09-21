@@ -57,6 +57,18 @@ const TYPE_BODY_RE = makeCreateRe('TYPE\\s+BODY', `(?:OR\\s+REPLACE\\s+)?${EDITI
 const PACKAGE_RE = makeCreateRe('PACKAGE(?!\\s+BODY\\b)', `(?:OR\\s+REPLACE\\s+)?${EDITIONING}`)
 const PACKAGE_BODY_RE = makeCreateRe('PACKAGE\\s+BODY', `(?:OR\\s+REPLACE\\s+)?${EDITIONING}`)
 const SCHEMA_RE = makeCreateRe('SCHEMA')
+const MACRO_RE = makeCreateRe('MACRO', `${OR_REPLACE}(?:TEMP(?:ORARY)?\\s+)?`)
+const SECRET_RE = makeCreateRe('SECRET', `${OR_REPLACE}(?:PERSISTENT\\s+)?`)
+const EXTENSION_RE = makeCreateRe('EXTENSION')
+const DOMAIN_RE = makeCreateRe('DOMAIN')
+const AGGREGATE_RE = makeCreateRe('AGGREGATE', OR_REPLACE)
+const POLICY_RE = makeCreateRe('POLICY')
+const RULE_RE = makeCreateRe('RULE', OR_REPLACE)
+const OPERATOR_RE = makeCreateRe('OPERATOR(?!\\s+(?:CLASS|FAMILY)\\b)', OR_REPLACE)
+const SYNONYM_RE = makeCreateRe('SYNONYM', `${OR_REPLACE}(?:PUBLIC\\s+)?`)
+const DATABASE_LINK_RE = makeCreateRe('DATABASE\\s+LINK', '(?:PUBLIC\\s+)?')
+const CLUSTER_RE = makeCreateRe('CLUSTER')
+const CONTEXT_RE = makeCreateRe('CONTEXT', `${OR_REPLACE}`)
 
 const PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [TABLE_RE, 'sql_table'],
@@ -72,6 +84,18 @@ const PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [PACKAGE_BODY_RE, 'sql_package_body'],
   [SCHEMA_RE, 'sql_schema'],
   [SEQUENCE_RE, 'sql_sequence'],
+  [MACRO_RE, 'sql_macro'],
+  [SECRET_RE, 'sql_secret'],
+  [EXTENSION_RE, 'sql_extension'],
+  [DOMAIN_RE, 'sql_domain'],
+  [AGGREGATE_RE, 'sql_aggregate'],
+  [POLICY_RE, 'sql_policy'],
+  [RULE_RE, 'sql_rule'],
+  [OPERATOR_RE, 'sql_operator'],
+  [SYNONYM_RE, 'sql_synonym'],
+  [DATABASE_LINK_RE, 'sql_database_link'],
+  [CLUSTER_RE, 'sql_cluster'],
+  [CONTEXT_RE, 'sql_context'],
 ]
 
 // PL/SQL units that close with `END name;`, and the ones among them whose subprograms are indexed as children.

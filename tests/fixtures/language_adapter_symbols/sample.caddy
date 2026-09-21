@@ -1,0 +1,19 @@
+# HAND-DERIVED fixture: representative Caddyfile syntax.
+{
+	email admin@example.com
+	acme_ca https://acme.example.test
+}
+
+(secure_headers) {
+	header {
+		X-Content-Type-Options nosniff
+	}
+}
+
+example.com {
+	import secure_headers
+
+	handle /api/* {
+		reverse_proxy localhost:8080
+	}
+}

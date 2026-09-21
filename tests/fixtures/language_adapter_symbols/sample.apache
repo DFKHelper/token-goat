@@ -1,0 +1,15 @@
+# HAND-DERIVED fixture: representative Apache HTTP Server configuration syntax.
+Listen 80
+
+<VirtualHost *:80>
+	ServerName example.com
+	DocumentRoot /srv/www
+
+	<Directory /srv/www>
+		Require all granted
+	</Directory>
+
+	<Location /api>
+		ProxyPass http://127.0.0.1:8080
+	</Location>
+</VirtualHost>

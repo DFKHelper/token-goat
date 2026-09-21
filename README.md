@@ -21,6 +21,8 @@ permalink: /
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Open a PDF, a large Markdown doc, or a CSV? The hook intercepts it — heading tree, page count, or column preview — so the model never pays for the full file. Run `gh run watch` or `next dev` a second time? Prior output is recalled rather than re-run. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
 
+The symbol index also understands native Nginx, Caddyfile, and Apache HTTP Server configuration blocks, so `token-goat read "file::symbol"` can jump directly to them.
+
 Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Visual Studio** (Copilot agent, MCP tools and instructions only), **Zed** (MCP tools only), **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
 **Ask your AI to install it fully (give it this GitHub link), or install in one command:**

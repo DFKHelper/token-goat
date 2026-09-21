@@ -178,11 +178,13 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 |--------|------|
 | [`src/languages/abap.ts`](src/languages/abap.ts) | ABAP adapter: the REPORT/PROGRAM/FUNCTION-POOL name, local and global classes (DEFINITION and IMPLEMENTATION, each to its ENDCLASS) with their METHOD blocks as children, interfaces |
 | [`src/languages/abl.ts`](src/languages/abl.ts) | Progress OpenEdge ABL adapter: internal PROCEDUREs and FUNCTIONs, CLASS, INTERFACE and ENUM types with their METHODs, CONSTRUCTORs and DESTRUCTORs as children, and DEFINE TEMP-TABL |
+| [`src/languages/apache.ts`](src/languages/apache.ts) | Extracts symbols from Apache HTTP Server configurations (<VirtualHost>, <Directory>, <Location>, etc.). |
 | [`src/languages/apex.ts`](src/languages/apex.ts) | Salesforce Apex extractor (`extractApex`) — class, interface, trigger, method |
 | [`src/languages/asm.ts`](src/languages/asm.ts) | Assembly adapter for GNU as (`.s`, `.S`), NASM (`.asm`, `.nasm`) and IBM High Level Assembler, which share `.asm`: one adapter that picks its dialect from the file's own content. |
 | [`src/languages/bash_idx.ts`](src/languages/bash_idx.ts) | Shell/Bash symbol extractor. |
 | [`src/languages/batch.ts`](src/languages/batch.ts) | Windows batch adapter for `.bat` and `.cmd` files: the labels cmd.exe jumps to, each running to the line before the next label or to the end of the file, with the batch files a `ca |
 | [`src/languages/brace_engine.ts`](src/languages/brace_engine.ts) | Shared scanner for the brace-language adapters (Objective-C, Groovy, Solidity, Thrift, GLSL, HLSL, WGSL, Metal). |
+| [`src/languages/caddy.ts`](src/languages/caddy.ts) | Extracts symbols from Caddyfile configurations (global options, snippets, site blocks, directives). |
 | [`src/languages/clojure.ts`](src/languages/clojure.ts) | Clojure adapter: `defn`, `defn-`, `def`, `defmacro`, `defprotocol`, `defrecord`, `deftype`, `defmulti`, `defmethod`, `definterface`, `ns`. |
 | [`src/languages/cmake.ts`](src/languages/cmake.ts) | CMake adapter for `CMakeLists.txt` and `.cmake` files: `function` and `macro` definitions (closed by `endfunction` and `endmacro`), the targets `add_library`, `add_executable` and |
 | [`src/languages/cobol.ts`](src/languages/cobol.ts) | COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and FD/SD file descriptions, `COPY` imports, and `PERFORM`/`GO TO`/`CALL 'x'` references |
@@ -210,6 +212,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/languages/makefile_idx.ts`](src/languages/makefile_idx.ts) | Makefile extractor (`extractMakefile`) |
 | [`src/languages/matlab.ts`](src/languages/matlab.ts) | MATLAB and Octave adapter: functions (nested and local ones too), classdef classes with their properties, methods, events and enumeration members. |
 | [`src/languages/natural.ts`](src/languages/natural.ts) | Software AG Natural adapter: the object itself (named by its file stem, kind by extension), inline `DEFINE SUBROUTINE` blocks, the `DEFINE DATA` block and its level-1 fields (also |
+| [`src/languages/nginx.ts`](src/languages/nginx.ts) | Nginx configuration language extractor and symbol parser. |
 | [`src/languages/nix.ts`](src/languages/nix.ts) | Nix (Nix Reference Manual, "Syntax" https://nix.dev/manual/nix/latest/language/syntax and "String literals" https://nix.dev/manual/nix/latest/language/string-literals) adapter. |
 | [`src/languages/objc.ts`](src/languages/objc.ts) | Objective-C and Objective-C++ symbol extractor. |
 | [`src/languages/ocaml.ts`](src/languages/ocaml.ts) | OCaml (The OCaml Manual, chapter 11 "The OCaml language", section 1 "Lexical conventions", https://v2.ocaml.org/manual/lex.html) adapter: `module`, `module type`, `type`, `exceptio |
