@@ -4,13 +4,17 @@
  *
  * FIXTURE PROVENANCE
  *
- * CHANGELOG_REQUESTED_BYTES / CHANGELOG_SECTION_BYTES are CAPTURE, from the shipped global binary
- * on 2026-09-20 in this repository:
+ * The standing reason for the gate is CAPTURE, from the shipped global binary on 2026-09-20 in
+ * this repository:
  *   sed -n '1,30p' CHANGELOG.md | wc -c                   -> 10572
  *   token-goat section "CHANGELOG.md::Unreleased" | wc -c  -> 15150
- * The proposal the old hint made was 43% larger than the read it objected to. Asserted here as the
- * standing reason for the gate, computed from the same file the test then exercises so it cannot
- * quietly stop describing this repository.
+ * The proposal the old hint made was 43% larger than the read it objected to. Those two numbers are
+ * a measurement of one day's CHANGELOG.md and are recorded here rather than asserted: the file is
+ * rewritten at every release, so pinning its byte count would fail on the edit rather than on the
+ * defect, and re-capturing it each time turns the check into a rubber stamp. What the tests below
+ * assert instead is the invariant the capture was evidence for, which holds at any file size: the
+ * gate's own accounting of the requested window matches the bytes on disk, and the regions it would
+ * substitute cost more than the window they replace.
  *
  * SED_WINDOW_LINES is CAPTURE: the mean `sed -n 'N,Mp'` window across 50,033 range reads mined from
  * 3,525 real Claude Code transcripts on this machine (191,710 Bash tool_use commands) was 47.2
@@ -39,8 +43,6 @@ import { clearModuleCaches } from '../src/reset.js'
 import { configPath } from '../src/constants.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
-const CHANGELOG_REQUESTED_BYTES = 10572
-const CHANGELOG_SECTION_BYTES = 15150
 const SED_WINDOW_LINES = 43
 
 fs.mkdirSync(path.dirname(configPath()), { recursive: true })
@@ -89,15 +91,14 @@ afterEach(() => {
 })
 
 describe('a range hint must price its own replacement', () => {
-  it('positive control: the captured CHANGELOG figures still describe this repository', () => {
-    expect(windowBytes('CHANGELOG.md', 1, 30)).toBe(CHANGELOG_REQUESTED_BYTES)
-    expect(CHANGELOG_SECTION_BYTES).toBeGreaterThan(CHANGELOG_REQUESTED_BYTES)
+  it('positive control: the CHANGELOG window this case rests on is real and non-trivial', () => {
+    expect(windowBytes('CHANGELOG.md', 1, 30)).toBeGreaterThan(1000)
   })
 
   it('the enclosing regions of a real 30-line CHANGELOG window cost more than the window', () => {
     const sub = rangeSubstituteFor('CHANGELOG.md', process.cwd(), [[1, 30]])
     expect(sub).not.toBeNull()
-    expect(sub!.requestedBytes).toBe(CHANGELOG_REQUESTED_BYTES)
+    expect(sub!.requestedBytes).toBe(windowBytes('CHANGELOG.md', 1, 30))
     expect(sub!.replacementBytes).toBeGreaterThan(sub!.requestedBytes)
   })
 
