@@ -5760,6 +5760,55 @@ describe('runCallers --limit truncation flag', () => {
   })
 })
 
+describe('runCallers text-mode truncation disclosure', () => {
+  // HAND-DERIVED fixture: this test writes the three callers, so "3" is counted from the input, not read off the implementation. The defect it pins was CAPTURE-measured against the built bundle on 2026-09-20: `token-goat callers normalizePath` stopped at exactly 500 rows and `--limit 5` at exactly 5, both with no header and no marker of any kind, so a clipped page read as a complete one. Only the `--json` envelope ever carried `truncated`.
+  it('names the exact total on stderr when the page was clipped, and stays silent when it was not', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-text-trunc-'))
+    try {
+      const defFile = join(root, 'trunc-def.ts')
+      const callerFile = join(root, 'trunc-caller.ts')
+      writeFileSync(defFile, 'export function textTruncFn8w2() { return 1 }\n')
+      writeFileSync(
+        callerFile,
+        'function tcallerA8w2() { textTruncFn8w2() }\nfunction tcallerB8w2() { textTruncFn8w2() }\nfunction tcallerC8w2() { textTruncFn8w2() }\n',
+      )
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      const origErr = process.stderr.write.bind(process.stderr)
+      const captureBoth = (fn: () => void): { out: string; err: string } => {
+        let err = ''
+        process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+          if (typeof chunk === 'string') err += chunk
+          return true
+        }) as typeof process.stderr.write
+        try {
+          const out = captureStdout(fn)
+          return { out, err }
+        } finally {
+          process.stderr.write = origErr
+        }
+      }
+      try {
+        const clipped = captureBoth(() => { expect(runCallers({ symbol: 'textTruncFn8w2', limit: 2 })).toBe(0) })
+        expect(clipped.err).toContain('Showing the first 2 of 3 callers (raise --limit to see the rest).')
+        // stdout must stay a pure row list: the notice rides stderr, mirroring `impact --top`, so piping callers into another tool is unchanged.
+        expect(clipped.out.trim().split('\n').map((l) => l.split('\t')[0])).toEqual(['tcallerA8w2', 'tcallerB8w2'])
+
+        // Control against over-fixing: a limit that exactly equals the caller count withheld nothing, so claiming otherwise would be the same lie in the other direction.
+        const exact = captureBoth(() => { expect(runCallers({ symbol: 'textTruncFn8w2', limit: 3 })).toBe(0) })
+        expect(exact.err).not.toContain('Showing the first')
+        expect(exact.out.trim().split('\n').map((l) => l.split('\t')[0])).toEqual(['tcallerA8w2', 'tcallerB8w2', 'tcallerC8w2'])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('runCallers file::symbol attribution vs --limit', () => {
   it('scans with full headroom so same-name attribution cannot eat slots ahead of the limit', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-attr-limit-'))

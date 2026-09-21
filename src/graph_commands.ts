@@ -11,7 +11,7 @@ import * as path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
-import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
+import { querySymbols, queryRefs, countRefs, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath, toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import {
@@ -177,6 +177,13 @@ export function runCallers(opts: CallersOptions): number {
 
   if (opts.excludeTests === true && suppressed > 0) {
     emit(`${countNoun(entries.length, 'caller')} found (${excludeTestsHiddenNote(suppressed)})`)
+  }
+
+  // Text mode used to stop dead at the bound -- exactly 500 rows by default, exactly --limit N otherwise -- with nothing saying anything was withheld, so a clipped page was indistinguishable from a symbol that genuinely has that many callers. Only `--json` ever carried the `truncated` flag computed above. Mirror `impact --top`'s stderr notice so stdout stays a pure row list (the JSON envelope and the text rows are unchanged), and name the exact total: in the bounded path the client-side filters are all off, so refs map 1:1 to callers and countRefs is that total; in the unbounded path `filtered` already holds every post-filter caller.
+  const overflowed = sqlTruncated || entries.length < filtered.length
+  if (overflowed) {
+    const totalCallers = sqlTruncated ? countRefs({ name, rootDir }) : filtered.length
+    emitErr(`Showing the first ${entries.length} of ${countNoun(totalCallers, 'caller')} (raise --limit to see the rest).`)
   }
 
   for (const e of entries) {

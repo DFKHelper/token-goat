@@ -278,6 +278,9 @@ export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-firs
 /** Intents whose delegate takes a file path; a symbol subject resolves to its defining file. */
 const FILE_INTENTS: ReadonlySet<AnswerIntent> = new Set<AnswerIntent>(['tests', 'exports', 'imports'])
 
+/** Row cap the router puts on every symbol-intent delegate, so an answer stays smaller than the file it exists to save you from reading. Measured against this repo's own index: `callers normalizePath` (500+ refs) emits 24,274 bytes unbounded versus 21,091 for src/paths.ts itself, and 878 bytes at 20 rows; `impact` and `symbol` already default to 20 at the CLI, so this is the bound the whole router shares. Every `via:` line names the flag that reproduces the window it printed, and the delegate discloses whatever it withheld. */
+export const ANSWER_DELEGATE_LIMIT = 20
+
 /** See {@link SubjectMode}: `exports`/`imports` are module-level and take no symbol, `tests` accepts either with the file reading first, everything else is about a definition. */
 function subjectModeFor(intent: AnswerIntent): SubjectMode {
   if (intent === 'exports' || intent === 'imports') return 'file-only'
@@ -379,16 +382,17 @@ export function runAnswer(opts: AnswerOptions): number {
   }
 
   if (cls.intent === 'callers') {
-    emit(`via: token-goat callers ${displaySafeText(resolved.name)}`)
-    return runCallers({ symbol: resolved.name })
+    emit(`via: token-goat callers ${displaySafeText(resolved.name)} --limit ${ANSWER_DELEGATE_LIMIT}`)
+    return runCallers({ symbol: resolved.name, limit: ANSWER_DELEGATE_LIMIT })
   }
   if (cls.intent === 'impact') {
-    emit(`via: token-goat impact ${displaySafeText(resolved.name)}`)
-    return runImpact({ symbol: resolved.name })
+    emit(`via: token-goat impact ${displaySafeText(resolved.name)} --top ${ANSWER_DELEGATE_LIMIT}`)
+    return runImpact({ symbol: resolved.name, top: ANSWER_DELEGATE_LIMIT })
   }
 
-  emit(`via: token-goat symbol ${displaySafeText(resolved.name)}`)
-  const r = runSymbol({ name: resolved.name, projectRoot: rootDir, limit: 20 })
+  // `-p` is not decoration: `symbol` searches the machine-wide index unless the project scope is opted into, while the router always scopes to this project. Without it the pointer named a command whose output includes same-named definitions from every other checkout on the machine -- a `via:` line that does not reproduce its own window is worse than none, since the reader verifies against it and concludes the answer dropped rows.
+  emit(`via: token-goat symbol ${displaySafeText(resolved.name)} -p --exclude-vendored`)
+  const r = runSymbol({ name: resolved.name, projectRoot: rootDir, limit: ANSWER_DELEGATE_LIMIT, excludeVendored: true })
   if (r.text.length > 0) emit(r.text)
   return r.code
 }

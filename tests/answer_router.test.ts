@@ -29,6 +29,8 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { querySymbols } from '../src/index_reader.js'
+import { runCallers } from '../src/graph_commands.js'
+import { runSymbol } from '../src/read_commands.js'
 
 import {
   classify,
@@ -201,7 +203,7 @@ describe('runAnswer against the real index', () => {
   it('resolves a bare symbol subject and answers who-calls via the callers command', () => {
     const r = captureErr(() => runAnswer({ question: 'who calls foldPath' }))
     expect(r.code).toBe(0)
-    expect(r.out.split('\n')[0]).toBe('via: token-goat callers foldPath')
+    expect(r.out.split('\n')[0]).toBe('via: token-goat callers foldPath --limit 20')
     expect(r.out).toMatch(/\bsrc\/[^\s]+\.ts:\d+/)
   })
 
@@ -229,13 +231,13 @@ describe('runAnswer against the real index', () => {
   it('answers what-breaks-if-X-changes via impact', () => {
     const r = captureErr(() => runAnswer({ question: 'what breaks if foldPath changes' }))
     expect(r.code).toBe(0)
-    expect(r.out.split('\n')[0]).toBe('via: token-goat impact foldPath')
+    expect(r.out.split('\n')[0]).toBe('via: token-goat impact foldPath --top 20')
   })
 
   it('answers where-is via symbol', () => {
     const r = captureErr(() => runAnswer({ question: 'where is foldPath' }))
     expect(r.code).toBe(0)
-    expect(r.out.split('\n')[0]).toBe('via: token-goat symbol foldPath')
+    expect(r.out.split('\n')[0]).toBe('via: token-goat symbol foldPath -p --exclude-vendored')
     expect(r.out).toContain('src/path_containment.ts')
   })
 
@@ -426,6 +428,100 @@ describe('runAnswer against the real index', () => {
       expect(resolved?.kind === 'symbol' ? resolved.file : '').toContain('.tg-answer-crowd-fixture.ts')
     } finally {
       rmSync(vendorDir, { recursive: true, force: true })
+      rmSync(realFile, { force: true })
+    }
+  })
+
+  // HAND-DERIVED fixture: the 40 caller functions and the one definition below are written by this test, so the expected counts (40 total, 20 shown) are computed from the input independently of the router's own code. The bound itself was chosen from CAPTURE measurement against this repo's live index on 2026-09-20: `answer "who calls normalizePath"` emitted 24,274 bytes / 501 lines unbounded, against 21,091 bytes for src/paths.ts -- the very file the answer exists to replace -- and 996 bytes at this bound.
+  it('bounds the callers delegate, discloses what it withheld, and prints a via: line that reproduces that exact window', () => {
+    const defFile = join(resolve('tests'), '.tg-answer-bound-def.ts')
+    const callerFile = join(resolve('tests'), '.tg-answer-bound-callers.ts')
+    try {
+      writeFileSync(defFile, 'export function zzAnswerBoundTarget(): number {\n  return 1\n}\n')
+      const callers = Array.from({ length: 40 }, (_, i) => `export function zzAnswerBoundCaller${i}(): number {\n  return zzAnswerBoundTarget()\n}`)
+      writeFileSync(callerFile, `${callers.join('\n')}\n`)
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      // Calibration: the fixture really does have more callers than the bound, so a 20-row page below is the cap biting and not a short index.
+      const unbounded = captureErr(() => runCallers({ symbol: 'zzAnswerBoundTarget' }))
+      expect(unbounded.out.trim().split('\n').length, 'the 40 callers were never indexed').toBe(40)
+      expect(unbounded.err, 'an unbounded page withheld nothing, so it must not claim it did').not.toContain('Showing the first')
+
+      const r = captureErr(() => runAnswer({ question: 'who calls zzAnswerBoundTarget' }))
+      expect(r.code).toBe(0)
+      const lines = r.out.trim().split('\n')
+      expect(lines[0]).toBe('via: token-goat callers zzAnswerBoundTarget --limit 20')
+      // Pre-fix the router passed no bound at all, so this was 40 rows here and 500 against a real symbol.
+      expect(lines.length - 1).toBe(20)
+      // A cap with no disclosure is worse than no cap: the reader cannot tell a complete answer from a clipped one.
+      expect(r.err).toContain('Showing the first 20 of 40 callers (raise --limit to see the rest).')
+    } finally {
+      rmSync(defFile, { force: true })
+      rmSync(callerFile, { force: true })
+    }
+  })
+
+  // HAND-DERIVED fixture: two definitions of one name, one written into node_modules/ and one into tests/, so which row must survive is decided by the fixture layout rather than by any predicate in the implementation.
+  it('drops a vendored definition from the where delegate, and says so in the via: line', () => {
+    const vendorDir = join(resolve('node_modules'), '.tg-answer-vendor-out')
+    const realFile = join(resolve('tests'), '.tg-answer-vendor-out-fixture.ts')
+    try {
+      mkdirSync(vendorDir, { recursive: true })
+      const vendored = join(vendorDir, 'shadow.ts')
+      writeFileSync(vendored, 'export function zzAnswerVendorShadow(): number {\n  return 0\n}\n')
+      writeFileSync(realFile, 'export function zzAnswerVendorShadow(): number {\n  return -1\n}\n')
+      indexFileSync(normalizePath(vendored))
+      indexFileSync(normalizePath(realFile))
+
+      const rootDir = normalizePath(resolve('.'))
+      // Calibration: the vendored row really is in the index and really does reach the unfiltered delegate, so the absence asserted below is the filter working and not a failed write.
+      const unfiltered = runSymbol({ name: 'zzAnswerVendorShadow', projectRoot: rootDir, limit: 20 })
+      expect(unfiltered.text, 'the vendored fixture was never indexed').toContain('node_modules')
+
+      const r = captureErr(() => runAnswer({ question: 'where is zzAnswerVendorShadow' }))
+      expect(r.code).toBe(0)
+      expect(r.out.split('\n')[0]).toBe('via: token-goat symbol zzAnswerVendorShadow -p --exclude-vendored')
+      expect(r.out).not.toContain('node_modules')
+      expect(r.out).toContain('.tg-answer-vendor-out-fixture.ts')
+    } finally {
+      rmSync(vendorDir, { recursive: true, force: true })
+      rmSync(realFile, { force: true })
+    }
+  })
+
+  // HAND-DERIVED fixture: one name defined twice, once inside this project and once in a temp directory that is its own project root, so which definition belongs in the answer is fixed by the layout rather than by any code under test.
+  it('replays its own where-intent via: line to the same bytes it printed, project scope included', () => {
+    const foreignRoot = mkdtempSync(join(tmpdir(), 'tg-answer-foreign-'))
+    const realFile = join(resolve('tests'), '.tg-answer-scope-fixture.ts')
+    try {
+      const foreignFile = join(foreignRoot, 'foreign.ts')
+      writeFileSync(foreignFile, 'export function zzAnswerScopedName(): number {\n  return 7\n}\n')
+      writeFileSync(realFile, 'export function zzAnswerScopedName(): number {\n  return -7\n}\n')
+      indexFileSync(normalizePath(foreignFile))
+      indexFileSync(normalizePath(realFile))
+
+      // Calibration: `symbol` really is machine-wide unless a project scope is passed, so the foreign definition really does reach an unscoped call. Without this the assertions below pass on any machine whose index happens to hold one definition.
+      const unscoped = runSymbol({ name: 'zzAnswerScopedName', limit: 20, excludeVendored: true })
+      expect(unscoped.text, 'the foreign fixture was never indexed').toContain('foreign.ts')
+
+      const r = captureErr(() => runAnswer({ question: 'where is zzAnswerScopedName' }))
+      expect(r.code).toBe(0)
+      const [viaLine, ...body] = r.out.split('\n')
+      expect(r.out).not.toContain('foreign.ts')
+
+      // Pinning the via: line's text is not the contract; the contract is that running what it names reproduces what it introduced. Drive the replay FROM the line, so a flag the router relies on but does not print fails here. `-p` was exactly that: the router always scopes to this project, `symbol` does not unless asked, and the pointer said `symbol <name>`.
+      const flags = (viaLine ?? '').split(' ').slice(4)
+      const replay = runSymbol({
+        name: 'zzAnswerScopedName',
+        limit: 20,
+        ...(flags.includes('-p') ? { projectRoot: normalizePath(resolve('.')) } : {}),
+        ...(flags.includes('--exclude-vendored') ? { excludeVendored: true } : {}),
+      })
+      expect(replay.text.trimEnd(), `re-running '${viaLine}' did not reproduce the answer it introduced`).toBe(body.join('\n').trimEnd())
+      expect(viaLine).toBe('via: token-goat symbol zzAnswerScopedName -p --exclude-vendored')
+    } finally {
+      rmSync(foreignRoot, { recursive: true, force: true })
       rmSync(realFile, { force: true })
     }
   })

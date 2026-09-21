@@ -2255,8 +2255,19 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // Routes to the real callers command through the built bundle, and prints the provenance line naming what it ran.
     const r = run(['answer', 'who calls refHelper'])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout.split('\n')[0]).toBe('via: token-goat callers refHelper')
+    // The router bounds every delegate, and the provenance line names the flag that reproduces exactly the window it printed -- an unnamed bound would make this pointer lie about its own output.
+    expect(r.stdout.split('\n')[0]).toBe('via: token-goat callers refHelper --limit 20')
     expect(r.stdout).toMatch(/refDriver|caller\.ts/)
+    // Pinning the provenance line's TEXT is not the contract; the contract is that running it reproduces the window it introduced. Re-run whatever it names, through the same built bundle, and require byte equality with the answer's body. The `where` intent failed exactly this while its text pin was green: `symbol` searches the machine-wide index unless `-p` opts into the project, so the named command returned same-named definitions from unrelated checkouts the answer had (correctly) scoped away.
+    const viaWhere = run(['answer', 'where is refHelper'])
+    expect(viaWhere.status, viaWhere.stderr).toBe(0)
+    for (const answered of [r, viaWhere]) {
+      const [viaLine, ...body] = answered.stdout.split('\n')
+      const argv = (viaLine ?? '').replace(/^via: token-goat /, '').split(' ')
+      const replay = run(argv)
+      expect(replay.status, replay.stderr).toBe(0)
+      expect(replay.stdout, `re-running '${viaLine}' did not reproduce the answer it introduced`).toBe(body.join('\n'))
+    }
     // The subject is resolved in the index before a command is chosen, so a symbol subject reaches test-for as its defining FILE -- passing the symbol straight to test-for fails.
     const rTests = run(['answer', 'what tests cover refHelper'])
     expect(rTests.status, rTests.stderr).toBe(0)

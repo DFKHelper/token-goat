@@ -9,7 +9,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { SKIP_DIRS } from './baseline.js'
+import { SKIP_DIRS, isIgnoredIndexPath } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
@@ -765,6 +765,8 @@ export interface SymbolOptions {
   grep?: string
   /** `--exclude-tests`: drop symbols DEFINED in a test file (per isTestFile), matching the flag already on refs/callers/dead/semantic. Opt-in; omitted or false leaves output byte-identical to today. Like `--grep`, this filters client-side, so it forces the over-fetch below -- filtering after the SQL LIMIT would let suppressed test symbols occupy slots ahead of the cutoff and silently under-return. */
   excludeTests?: boolean
+  /** `--exclude-vendored`: drop symbols DEFINED under a directory the indexer itself skips (node_modules, dist, site-packages, ... -- the shared `isIgnoredIndexPath` predicate, not a second copy). Older index generations still hold such rows, so a bare name search can answer with a `node_modules/pdfjs-dist/...` definition ahead of the project's own. Opt-in; omitted or false leaves output byte-identical to today. Filters client-side like `--grep`, so it forces the same over-fetch -- filtering after the SQL LIMIT would let vendored rows occupy slots ahead of the cutoff and silently under-return. */
+  excludeVendored?: boolean
   /** `--stats`: add a per-result reference count and doc-coverage flag, same shape as read/skeleton/outline's `--stats`. Opt-in; omitted or false leaves output byte-identical to today, and the extra `queryRefCounts` round trip is only paid when this is set. `symbol` is the one command in the family where this matters most for disambiguation -- it can return several same-named candidates across files -- but that is also where its known limitation bites hardest: `queryRefCounts` keys by symbol NAME (project-wide), not by definition site, so several same-named symbols in different files (e.g. under `--grep`) all show the identical count rather than a per-file one. Documented, not fixed, here for the same reason it is not fixed in read/skeleton/outline. */
   stats?: boolean
 }
@@ -794,6 +796,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const excludeTests = opts.excludeTests === true
+  const excludeVendored = opts.excludeVendored === true
 
   // `symbol` is the one read command that searches the machine-wide index by default, which is
   // documented and useful on a personal machine and a disclosure channel on a shared one: from any
@@ -835,7 +838,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // `--exclude-tests` filters client-side on file path for the same reason and needs the same
   // headroom: with a plain `--limit N`, N test-file symbols could fill the SQL result set and
   // leave nothing to show after filtering, reporting "no matches" for a symbol that is indexed.
-  if (matchesGrep !== undefined || excludeTests) {
+  if (matchesGrep !== undefined || excludeTests || excludeVendored) {
     queryOpts.limit = FIND_SCAN_LIMIT
   } else if (opts.limit !== undefined) {
     queryOpts.limit = opts.limit
@@ -857,9 +860,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
   const preFilterCount = rawResults.length
   const effectiveLimit = opts.limit ?? 100
-  const anyClientFilter = matchesGrep !== undefined || excludeTests
+  const anyClientFilter = matchesGrep !== undefined || excludeTests || excludeVendored
   const filtered = anyClientFilter
-    ? rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(s.name)) && !(excludeTests && isTestFile(s.filePath)))
+    ? rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(s.name)) && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath)))
     : rawResults
   const results = anyClientFilter ? filtered.slice(0, effectiveLimit) : filtered
 
