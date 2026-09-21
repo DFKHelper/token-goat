@@ -24,6 +24,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat stats` shows the top files of the current session again**: the section was read from a directory nothing has ever written to, so it was absent from every run and looked like "nothing worth reporting". It now reads the same session store the hooks write to, and prints the most-read files of the latest session.
 
+- **`token-goat waste` and the Bash hook follow `CLAUDE_CONFIG_DIR`**: transcript discovery was pinned to `~/.claude` whatever Claude Code's own config directory was set to, so a run against a relocated or sandboxed config read the sessions under the home directory instead. Setting `CLAUDE_CONFIG_DIR` now moves the transcript root with it; with the variable unset, `~/.claude` is used exactly as before.
+
 ## [2.9.18] - 2026-09-19
 
 ### Fixed
