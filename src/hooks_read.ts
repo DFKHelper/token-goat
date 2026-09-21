@@ -23,7 +23,7 @@ import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getCon
 import { store as snapshotStore } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput, emitRewrite, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
-import { redactSecrets } from './secret_redact.js'
+import { hasPreciseSecret } from './secret_redact.js'
 import {
   readRequestedSliceWindow,
   readStartLine,
@@ -172,11 +172,7 @@ function isSourceExtension(basename: string): boolean {
   return languageHasFlag(detectLanguage(basename), 'sourceHints')
 }
 
-// Extensions dispatchFileTypeHandler() (hints/file_type_handler.ts) recognizes and gives
-// type-specific advice for (real headers/sample rows for CSV, always-block for PDF, etc).
-// BINARY_FILE_TYPE_EXTS/TEXT_FILE_TYPE_EXTS mirror that dispatcher's own binary/text split
-// (binary ones are never read as utf8 text before dispatch) -- single source of truth for
-// both the early large-file-gate exemption below and the universal handler further down.
+// Extensions dispatchFileTypeHandler() (hints/file_type_handler.ts) recognizes and gives type-specific advice for (real headers/sample rows for CSV, always-block for PDF, etc). BINARY_FILE_TYPE_EXTS/TEXT_FILE_TYPE_EXTS mirror that dispatcher's own binary/text split (binary ones are never read as utf8 text before dispatch) -- single source of truth for both the early large-file-gate exemption below and the universal handler further down.
 const BINARY_FILE_TYPE_EXTS = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp', 'sqlite', 'db', 'sqlite3', 'db3', 'parquet'])
 // svg/xml belong here for the same reason as every other entry: dispatchFileTypeHandler routes them to handlers with their own thresholds (8 KB and 20 KB), and an extension it knows that this list does not is a handler nothing can reach below the 100 KB generic gate, which is past the point where the catch-all would have fired anyway.
 const TEXT_FILE_TYPE_EXTS = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv', 'vtt', 'srt', 'svg', 'xml', 'dtsx', 'ampkg', 'xaml', 'json', 'yaml', 'yml', 'jsonl'])
@@ -410,11 +406,7 @@ function scanCrossSessionManifests(
   try {
     const relPath = relPathWithinRoot(projectRoot, filePath)
     if (relPath === null) return false
-    // Case-insensitive filesystems (Windows, macOS): rel_path is stored case-preserved by
-    // writeSessionManifest/readAllSessionManifests, so a sibling session that read the same
-    // physical file under a different literal casing (e.g. "Worker.ts" vs "worker.ts") must
-    // still fold-match here -- foldPath (util.ts) is already used elsewhere in this file (see
-    // isNodeModulesPath above).
+    // Case-insensitive filesystems (Windows, macOS): rel_path is stored case-preserved by writeSessionManifest/readAllSessionManifests, so a sibling session that read the same physical file under a different literal casing (e.g. "Worker.ts" vs "worker.ts") must still fold-match here -- foldPath (util.ts) is already used elsewhere in this file (see isNodeModulesPath above).
     const foldedRelPath = foldPath(relPath)
     const manifests = readAllSessionManifests(projectHash, ttlSecs)
 
@@ -444,11 +436,7 @@ function scanCrossSessionManifests(
 }
 
 
-// Grep's cost/relevance depends on its search pattern, not the file's total size or content —
-// re-scoping several Greps at the same path is a legitimate workflow, so Grep must never feed
-// the Read-specific read-count that the count-based deny check (and every "already read X"
-// hint below) relies on. Route every recordFileRead call in this handler through here so a
-// Grep on a file can never poison a subsequent single Read's count.
+// Grep's cost/relevance depends on its search pattern, not the file's total size or content — re-scoping several Greps at the same path is a legitimate workflow, so Grep must never feed the Read-specific read-count that the count-based deny check (and every "already read X" hint below) relies on. Route every recordFileRead call in this handler through here so a Grep on a file can never poison a subsequent single Read's count.
 function recordActualRead(event: HookEvent, filePath: string): void {
   if (event.toolName === 'Grep') return
   recordFileRead(filePath, !readRequestedSliceWindow(event).isExplicitSlice)
@@ -495,9 +483,7 @@ function contextPressureAdvisorySuffix(): string {
 function isProtectedRecentRead(normalized: string, n: number): boolean {
   if (n <= 0) return false
   const entry = getSessionFileEntry(normalized)
-  // If the file has already been read repeatedly (4+ reads this session), recency no longer
-  // protects it from re-read dedup. In sessions with <=4 active files, rank < 4 is trivially
-  // true on every call, which would otherwise exempt re-read loops indefinitely.
+  // If the file has already been read repeatedly (4+ reads this session), recency no longer protects it from re-read dedup. In sessions with <=4 active files, rank < 4 is trivially true on every call, which would otherwise exempt re-read loops indefinitely.
   if (entry && entry.readCount >= 4) return false
 
   // Pre-compaction reads are excluded from the ranking entirely, not just from being protected themselves: this exemption is about content the model still holds, so a stale entry must not occupy one of the n protection slots and push a genuinely-recent post-compaction read out of the window.
@@ -620,12 +606,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Stable-doc compact serving: if a fresh extractive compact sidecar exists for
-  // this doc (built via `token-goat compact-doc`), serve its content in place of
-  // the full file — typically 60-95% smaller. Runs ahead of the markdown large-file
-  // intercept below, which is the expensive full-read path this preempts.
-  // Gated by [hints] stable_doc_compacts (default on).
-  // Grep needs to search the doc's live content for a pattern — serving the compact sidecar instead would swap out the actual search target and skip the search entirely, so Grep is exempt from this intercept (same rationale as the count-based re-read dedup and large-file gate exemptions further below). A Read carrying offset/limit is asking for one line window, and the compact is a summary of the whole file: serving it answers a different question and silently drops the requested range. It also costs more than it saves -- a 5-line window of a 100KB doc is ~200 bytes against a ~9KB compact. Same rule the subagent-markdown deny below already applies: a read that is surgical already is left alone.
+  // Stable-doc compact serving: if a fresh extractive compact sidecar exists for this doc (built via `token-goat compact-doc`), serve its content in place of the full file — typically 60-95% smaller. Runs ahead of the markdown large-file intercept below, which is the expensive full-read path this preempts. Gated by [hints] stable_doc_compacts (default on). Grep needs to search the doc's live content for a pattern — serving the compact sidecar instead would swap out the actual search target and skip the search entirely, so Grep is exempt from this intercept (same rationale as the count-based re-read dedup and large-file gate exemptions further below). A Read carrying offset/limit is asking for one line window, and the compact is a summary of the whole file: serving it answers a different question and silently drops the requested range. It also costs more than it saves -- a 5-line window of a 100KB doc is ~200 bytes against a ~9KB compact. Same rule the subagent-markdown deny below already applies: a read that is surgical already is left alone.
   const compactUnrangedRead = !readRequestedSliceWindow(event).isExplicitSlice
   if (
     event.toolName !== 'Grep' &&
@@ -658,18 +639,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Notebook output stripping: .ipynb reads get code-cell `outputs` and
-  // `execution_count` fields stripped before the content reaches the model
-  // (cell source and metadata are preserved). Restores the original
-  // Python-era behavior, which was never config-gated, unlike the
-  // doc-compact block above, which always applies for eligible files.
-  // Falls through unchanged for malformed/non-notebook JSON, binary files,
-  // or when stripping wouldn't save enough to be worth denying the
-  // original Read over.
+  // Notebook output stripping: .ipynb reads get code-cell `outputs` and `execution_count` fields stripped before the content reaches the model (cell source and metadata are preserved). Restores the original Python-era behavior, which was never config-gated, unlike the doc-compact block above, which always applies for eligible files. Falls through unchanged for malformed/non-notebook JSON, binary files, or when stripping wouldn't save enough to be worth denying the original Read over.
   const isNotebook = /\.ipynb$/i.test(basename)
-  // Grep needs to search the notebook's actual content, not the output-stripped
-  // sidecar this intercept would serve instead — exempt it from this intercept
-  // (same rationale as the doc-compact exemption above).
+  // Grep needs to search the notebook's actual content, not the output-stripped sidecar this intercept would serve instead — exempt it from this intercept (same rationale as the doc-compact exemption above).
   if (event.toolName !== 'Grep' && isNotebook) {
     try {
       const rawBytes = fs.readFileSync(normalized)
@@ -688,17 +660,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         )
       }
     } catch {
-      // Malformed JSON, non-notebook JSON shape, or a binary file with an
-      // .ipynb extension: fall through to the normal read path unchanged.
+      // Malformed JSON, non-notebook JSON shape, or a binary file with an .ipynb extension: fall through to the normal read path unchanged.
     }
   }
 
   // Markdown large-file intercept
   const isMarkdown = /\.(md|mdx|markdown|rst)$/i.test(basename)
-  // Grep's operation is a search over the file's content, not a read of the whole
-  // file — the heading-tree deny/hint below only makes sense for an actual Read,
-  // so Grep is exempt from this intercept (same rationale as the doc-compact and
-  // notebook exemptions above).
+  // Grep's operation is a search over the file's content, not a read of the whole file — the heading-tree deny/hint below only makes sense for an actual Read, so Grep is exempt from this intercept (same rationale as the doc-compact and notebook exemptions above).
   if (event.toolName !== 'Grep' && isMarkdown) {
     let fileContent: string | null = null
     let markdownSize: number | null = null
@@ -716,9 +684,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (headings.length >= 3) {
         const alreadyRead = wasFileFullyReadThisSession(normalized)
         const { guidance, sectionsList } = formatHeadingTreeParts(headings, normalized)
-        // Filter the hardcoded per-basename shortcut list down to headings that actually
-        // exist in this file — otherwise a README missing e.g. 'API' or 'Getting Started'
-        // gets a hint recommending a `section` command that will just 404.
+        // Filter the hardcoded per-basename shortcut list down to headings that actually exist in this file — otherwise a README missing e.g. 'API' or 'Getting Started' gets a hint recommending a `section` command that will just 404.
         const headingTextsLower = new Set(headings.map((h) => h.text.trim().toLowerCase()))
         const wellKnown = getWellKnownSections(basename).filter((s) => headingTextsLower.has(s.trim().toLowerCase()))
         const wellKnownText =
@@ -731,22 +697,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
           ? extractChangelogVersionHint(fileContent, normalized)
           : ''
-        // guidance is token-goat's own authored instruction text (the "use token-goat
-        // section" preamble plus the "Sections:" label) and stays OUTSIDE the fence, same
-        // as wellKnownText below. sectionsList (the actual heading text) and changelogExtra
-        // (version headings) are verbatim bytes from the file, so they are fenced as
-        // untrusted data before being spliced into a message the harness attributes to
-        // token-goat. wellKnownText is not fenced either: it is built from token-goat's own
-        // hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing
-        // it would spend markers on nothing.
+        // guidance is token-goat's own authored instruction text (the "use token-goat section" preamble plus the "Sections:" label) and stays OUTSIDE the fence, same as wellKnownText below. sectionsList (the actual heading text) and changelogExtra (version headings) are verbatim bytes from the file, so they are fenced as untrusted data before being spliced into a message the harness attributes to token-goat. wellKnownText is not fenced either: it is built from token-goat's own hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing it would spend markers on nothing.
         let message = guidance + '\n' + fenceUntrustedFileContent(sectionsList + changelogExtra) + wellKnownText
-        // A re-read is always hard-denied. A first read is also hard-denied when the file
-        // is at or above the generic large-file deny threshold: this branch returns before
-        // the size-based deny further below ever runs, so it must enforce that gate itself.
-        // A genuine, bounded offset/limit request gates on the requested slice's size
-        // instead of the whole file's, same as the generic large-file gate and the
-        // file-type dispatcher further below — a small window into a huge markdown file
-        // should be let through rather than hard-denied.
+        // A re-read is always hard-denied. A first read is also hard-denied when the file is at or above the generic large-file deny threshold: this branch returns before the size-based deny further below ever runs, so it must enforce that gate itself. A genuine, bounded offset/limit request gates on the requested slice's size instead of the whole file's, same as the generic large-file gate and the file-type dispatcher further below — a small window into a huge markdown file should be let through rather than hard-denied.
         const slice = estimateRequestedSlice(event, normalized)
         const gateSize =
           slice.kind === 'bytes' && markdownSize !== null
@@ -754,28 +707,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             : markdownSize
         const tooLargeForFirstRead = gateSize !== null && gateSize >= largeFileDenyBytes()
         if (alreadyRead || tooLargeForFirstRead) {
-          // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not
-          // alreadyRead) never actually happened, so don't record it against re-read dedup --
-          // mirrors the generic large-file path's same rule further below. Otherwise a retry
-          // (offset/limit) on the same file hits the "already read this session" 2nd-read deny
-          // instead of this same heading-tree guidance, which a genuinely-unread file should
-          // still get. A deny that IS because of a real prior read (alreadyRead) still records,
-          // same as every other re-read-deny branch in this file.
+          // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not alreadyRead) never actually happened, so don't record it against re-read dedup -- mirrors the generic large-file path's same rule further below. Otherwise a retry (offset/limit) on the same file hits the "already read this session" 2nd-read deny instead of this same heading-tree guidance, which a genuinely-unread file should still get. A deny that IS because of a real prior read (alreadyRead) still records, same as every other re-read-deny branch in this file.
           if (alreadyRead) {
-            // A genuine re-read of a large markdown file: prefer the same
-            // unchanged/diff snapshot machinery the isDocDiffable block further
-            // below uses, rather than re-emitting the (roughly 1.1KB median)
-            // heading tree that says nothing new. This branch is otherwise
-            // unreachable for markdown files large enough to trip the heading-tree
-            // intercept, since that intercept returns before isDocDiffable runs.
-            // Reuses that block's exact message shapes so the session-audit census
-            // (DENY_TEMPLATES in session_audit.ts) recognizes them as
-            // doc_unchanged_deny/doc_diff_deny rather than a new, invisible shape.
-            // recordStat stays session_hint/0 on every branch here (never diff_hint
-            // with a byte credit, unlike the isDocDiffable block) because these
-            // heading-tree denies are measured to be frequently routed around by a
-            // shell re-read anyway, so crediting withheld bytes would book a saving
-            // this path cannot back up.
+            // A genuine re-read of a large markdown file: prefer the same unchanged/diff snapshot machinery the isDocDiffable block further below uses, rather than re-emitting the (roughly 1.1KB median) heading tree that says nothing new. This branch is otherwise unreachable for markdown files large enough to trip the heading-tree intercept, since that intercept returns before isDocDiffable runs. Reuses that block's exact message shapes so the session-audit census (DENY_TEMPLATES in session_audit.ts) recognizes them as doc_unchanged_deny/doc_diff_deny rather than a new, invisible shape. recordStat stays session_hint/0 on every branch here (never diff_hint with a byte credit, unlike the isDocDiffable block) because these heading-tree denies are measured to be frequently routed around by a shell re-read anyway, so crediting withheld bytes would book a saving this path cannot back up.
             const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
             if (snapDiff.kind === 'unchanged') {
               recordActualRead(event, normalized)
@@ -795,29 +729,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
                 return denyOutput(diffBody)
               }
             }
-            // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to
-            // use (kind 'none'), or a diff that doesn't clear the savings floor --
-            // fall back to the heading tree below, unchanged.
+            // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use (kind 'none'), or a diff that doesn't clear the savings floor -- fall back to the heading tree below, unchanged.
             recordActualRead(event, normalized)
             recordStat('session_hint', 0, 0)
           } else {
-            // Only a genuinely-first read leaves Read/Edit's precondition unsatisfied -- a prior
-            // real read (alreadyRead) already satisfied it, so the "edit anyway" escape hatch would
-            // steer toward token-goat replace/write-file when a plain Edit works fine.
+            // Only a genuinely-first read leaves Read/Edit's precondition unsatisfied -- a prior real read (alreadyRead) already satisfied it, so the "edit anyway" escape hatch would steer toward token-goat replace/write-file when a plain Edit works fine.
             message += ' ' + editAnywayHint(normalized)
           }
           return denyOutput(message)
         }
-        // Subagent first-read markdown deny, behind hints.subagent_markdown_first_read_deny
-        // (default false, so the path above is what ships until someone opts in). Reaching here
-        // means: a genuinely-first read of a markdown file with >=3 headings that is under the
-        // generic large-file deny threshold. Narrow it further to the measured pool -- a subagent
-        // lane, an un-ranged Read, a real markdown extension, and at least
-        // SUBAGENT_MD_FIRST_READ_DENY_BYTES -- and hard-deny it with the same heading tree the
-        // advisory branch below would have offered. A read that already carries offset/limit is
-        // surgical already and is left alone. Like the tooLargeForFirstRead branch above, this
-        // deliberately skips recordActualRead: the read never happened, so a retry with
-        // offset/limit must still count as a first read rather than tripping the re-read denies.
+        // Subagent first-read markdown deny, behind hints.subagent_markdown_first_read_deny (default false, so the path above is what ships until someone opts in). Reaching here means: a genuinely-first read of a markdown file with >=3 headings that is under the generic large-file deny threshold. Narrow it further to the measured pool -- a subagent lane, an un-ranged Read, a real markdown extension, and at least SUBAGENT_MD_FIRST_READ_DENY_BYTES -- and hard-deny it with the same heading tree the advisory branch below would have offered. A read that already carries offset/limit is surgical already and is left alone. Like the tooLargeForFirstRead branch above, this deliberately skips recordActualRead: the read never happened, so a retry with offset/limit must still count as a first read rather than tripping the re-read denies.
         const unrangedRead = !readRequestedSliceWindow(event).isExplicitSlice
         if (
           loadConfig().hints.subagent_markdown_first_read_deny &&
@@ -827,13 +748,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           markdownSize !== null &&
           markdownSize >= SUBAGENT_MD_FIRST_READ_DENY_BYTES
         ) {
-          // 0 bytes and 0 tokens, deliberately, exactly as the heading-tree re-read deny above
-          // books itself. There is no first-read deny of this shape anywhere in the transcript
-          // corpus, so its outcome rates (abandoned / substituted / shell-read / retried) are
-          // unknown -- the only figures available are borrowed from the re-read heading-tree
-          // census, and crediting withheld bytes against borrowed rates would book a saving this
-          // path has never demonstrated. The stat exists to make the intervention countable in
-          // `session-audit` so its kill conditions can be checked, not to claim a win.
+          // 0 bytes and 0 tokens, deliberately, exactly as the heading-tree re-read deny above books itself. There is no first-read deny of this shape anywhere in the transcript corpus, so its outcome rates (abandoned / substituted / shell-read / retried) are unknown -- the only figures available are borrowed from the re-read heading-tree census, and crediting withheld bytes against borrowed rates would book a saving this path has never demonstrated. The stat exists to make the intervention countable in `session-audit` so its kill conditions can be checked, not to claim a win.
           recordStat('subagent_markdown_first_read_deny', 0, 0)
           return denyOutput(
             'Subagent first read of a large markdown file (' +
@@ -853,16 +768,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     /[/\\]memory[/\\][^/\\]+\.md$/i.test(normalized)
   )
   if (isMemoryMd && wasFileFullyReadThisSession(normalized)) {
-    // Prefer the same unchanged/diff snapshot machinery the isDocDiffable block
-    // further below uses, rather than the bare denial that says nothing about
-    // whether the file actually changed. Reuses that block's exact message
-    // shapes (see the analogous markdown heading-tree branch above) so the
-    // session-audit census (DENY_TEMPLATES in session_audit.ts) recognizes
-    // them as doc_unchanged_deny/doc_diff_deny rather than a new, invisible
-    // shape. recordStat stays session_hint/0 on every branch here (never a
-    // byte credit) because these denies are measured to be frequently routed
-    // around anyway, so crediting withheld bytes would book a saving this
-    // path cannot back up.
+    // Prefer the same unchanged/diff snapshot machinery the isDocDiffable block further below uses, rather than the bare denial that says nothing about whether the file actually changed. Reuses that block's exact message shapes (see the analogous markdown heading-tree branch above) so the session-audit census (DENY_TEMPLATES in session_audit.ts) recognizes them as doc_unchanged_deny/doc_diff_deny rather than a new, invisible shape. recordStat stays session_hint/0 on every branch here (never a byte credit) because these denies are measured to be frequently routed around anyway, so crediting withheld bytes would book a saving this path cannot back up.
     const memSnapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
     if (memSnapDiff.kind === 'unchanged') {
       recordActualRead(event, normalized)
@@ -882,9 +788,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(diffBody)
       }
     }
-    // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use
-    // (kind 'none'), or a diff that doesn't clear the savings floor -- fall
-    // back to the existing hard deny below, unchanged.
+    // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use (kind 'none'), or a diff that doesn't clear the savings floor -- fall back to the existing hard deny below, unchanged.
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     const isMainMemory = basename.toLowerCase() === 'memory.md'
@@ -985,9 +889,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     wasFileFullyReadThisSession(normalized) &&
     !isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)
   ) {
-    // Truncation takes priority: redirect to skeleton/surgical reads, gated on
-    // hints.truncated_read_min_lines so a small file that happened to trip the token-based
-    // truncation marker doesn't get denied for a redirect that wouldn't help it.
+    // Truncation takes priority: redirect to skeleton/surgical reads, gated on hints.truncated_read_min_lines so a small file that happened to trip the token-based truncation marker doesn't get denied for a redirect that wouldn't help it.
     if (wasFileTruncatedThisSession(normalized)) {
       if (estimateTruncatedLineCount(normalized) >= loadConfig().hints.truncated_read_min_lines) {
         recordActualRead(event, normalized)
@@ -1009,10 +911,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
 
     if (snapDiff.kind === 'diff') {
-      // Savings guard, uniform for doc and source files: only serve the diff if the full body it
-      // wraps (fence + surgical-hint suffix, not the raw diff alone) clears the configured
-      // token-savings floor (hints.diff_hint_min_tokens_saved). diffHintCredit prices the floor
-      // and the credit from the same bytes, so they can never disagree on scale.
+      // Savings guard, uniform for doc and source files: only serve the diff if the full body it wraps (fence + surgical-hint suffix, not the raw diff alone) clears the configured token-savings floor (hints.diff_hint_min_tokens_saved). diffHintCredit prices the floor and the credit from the same bytes, so they can never disagree on scale.
       const diffBody = ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
         fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
         surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd()
@@ -1054,9 +953,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Grep's cost/relevance depends on its pattern, not just the directory/file it's scoped to —
-  // re-scoping several Greps at the same path with different patterns is a legitimate workflow,
-  // so Grep is exempt from the count-based re-read dedup below (unlike a repeated whole-file Read).
+  // Grep's cost/relevance depends on its pattern, not just the directory/file it's scoped to — re-scoping several Greps at the same path with different patterns is a legitimate workflow, so Grep is exempt from the count-based re-read dedup below (unlike a repeated whole-file Read).
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && wasFileReadThisSession(normalized)) {
     const entry = getSessionFileEntry(normalized)
     const reads = entry?.readCount ?? 1
@@ -1065,19 +962,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // Whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on this, not on `reads`, which a slice bumps too. Epoch-scoped like wasFileFullyReadThisSession: a fullReadCount from before the last compaction no longer describes what the model currently holds, so it must not count here either.
     const fullReads = (entry?.lastFullReadAt !== undefined && entry.lastFullReadAt >= getCompactedAt()) ? (entry.fullReadCount ?? 0) : 0
 
-    // Rank must be computed against session state as of the *last* read, before the read
-    // below bumps this file's own lastReadAt -- otherwise every re-read would trivially rank
-    // itself as the most recent and the protection window would be meaningless.
+    // Rank must be computed against session state as of the *last* read, before the read below bumps this file's own lastReadAt -- otherwise every re-read would trivially rank itself as the most recent and the protection window would be meaningless.
     const protectedRead = isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)
 
     recordActualRead(event, normalized)
     const rereadBytes = statSize(normalized) ?? 0
-    // A denied Read that carried offset/limit was only ever going to hand over its requested
-    // window, not the whole file -- crediting rereadBytes (the on-disk file size) unconditionally
-    // here booked every windowed re-read as if it had asked for everything, the same defect the
-    // read_served_deny branch above already avoids via counterfactualCredit(alreadyServed.bytes).
-    // estimateRequestedSlice cheaply sizes just that window when one was requested; anything else
-    // (no offset/limit, or a shape it can't size cheaply) still gates on the whole file.
+    // A denied Read that carried offset/limit was only ever going to hand over its requested window, not the whole file -- crediting rereadBytes (the on-disk file size) unconditionally here booked every windowed re-read as if it had asked for everything, the same defect the read_served_deny branch above already avoids via counterfactualCredit(alreadyServed.bytes). estimateRequestedSlice cheaply sizes just that window when one was requested; anything else (no offset/limit, or a shape it can't size cheaply) still gates on the whole file.
     const requestedSlice = estimateRequestedSlice(event, normalized)
     const rereadCreditBasis = requestedSlice.kind === 'bytes' ? requestedSlice.bytes : rereadBytes
     // What a blocked re-read may claim it saved. Gating below still uses the true size -- only the amount CREDITED is capped, because the counterfactual being priced is "the Read that didn't happen", and that Read would itself have been truncated. See PER_FILE_COUNTERFACTUAL_CEILING.
@@ -1091,23 +981,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
-    // Proof beats the count. Every branch below reasons about how many times this file has been
-    // read, and the recent-read protection window exists because that reasoning can be wrong -- it
-    // waves through the four most recently read files precisely so a legitimate re-read is never
-    // blocked on a guess. Measured over a month of real sessions, 830 Read calls returned a line
-    // range the session had already been given, and the largest reason nothing fired was that the
-    // file sat inside that window: exactly the case where the bytes are most certainly still in
-    // context. So when the bytes are *known* rather than guessed, the guess-protection does not
-    // apply, and the read is answered with a pointer at the copy already delivered.
-    //
-    // Still gated on hints.reread_deny: a user who turned denials off asked for hints, not blocks,
-    // and having proof does not change what they asked for.
+    // Proof beats the count. Every branch below reasons about how many times this file has been read, and the recent-read protection window exists because that reasoning can be wrong -- it waves through the four most recently read files precisely so a legitimate re-read is never blocked on a guess. Measured over a month of real sessions, 830 Read calls returned a line range the session had already been given, and the largest reason nothing fired was that the file sat inside that window: exactly the case where the bytes are most certainly still in context. So when the bytes are *known* rather than guessed, the guess-protection does not apply, and the read is answered with a pointer at the copy already delivered. Still gated on hints.reread_deny: a user who turned denials off asked for hints, not blocks, and having proof does not change what they asked for.
     if (config.hints.reread_deny) {
       const alreadyServed = alreadyServedOutputId(event, normalized)
       if (alreadyServed !== null) {
-        // Credit the bytes this read would actually have delivered, not the whole file: a Read
-        // carrying offset/limit was only ever going to hand over its window, and crediting the file
-        // would book bytes nothing was ever going to spend.
+        // Credit the bytes this read would actually have delivered, not the whole file: a Read carrying offset/limit was only ever going to hand over its window, and crediting the file would book bytes nothing was ever going to spend.
         const blocked = counterfactualCredit(alreadyServed.bytes)
         recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
         recordStat('session_hint', 0, 0)
@@ -1179,22 +1057,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
-    // session_hint is recorded per-branch below, only where a deny actually returns or the
-    // final quietContextOutput will actually be visible -- recording it unconditionally here
-    // (as this used to) over-counted the ledger on every quiet-hours re-read that degraded to
-    // passOutput(), including protected/non-denying re-reads whose only possible output is that
-    // same quiet-hours-degradable fallback note. Session tracking above is unaffected either
-    // way; only this stat's accounting changes.
+    // session_hint is recorded per-branch below, only where a deny actually returns or the final quietContextOutput will actually be visible -- recording it unconditionally here (as this used to) over-counted the ledger on every quiet-hours re-read that degraded to passOutput(), including protected/non-denying re-reads whose only possible output is that same quiet-hours-degradable fallback note. Session tracking above is unaffected either way; only this stat's accounting changes.
 
-    // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read
-    // still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only
-    // hinted via the contextOutput fallback at the bottom of this block.
+    // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only hinted via the contextOutput fallback at the bottom of this block.
     if (config.hints.reread_deny && !protectedRead) {
       const window = readRequestedSliceWindow(event)
-      // Item 1: file was truncated on last read — surgical reads only, gated on
-      // hints.truncated_read_min_lines (same gate as the doc/source diff-on-reread branch
-      // above) so a small file that happened to trip the token-based truncation marker
-      // doesn't get denied for a redirect that wouldn't help it.
+      // Item 1: file was truncated on last read — surgical reads only, gated on hints.truncated_read_min_lines (same gate as the doc/source diff-on-reread branch above) so a small file that happened to trip the token-based truncation marker doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
         if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
           recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-truncated-deny')
@@ -1202,8 +1070,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         }
       }
 
-      // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
-      // Sliced/ranged reads (carrying offset/limit) are surgical already and are left alone. Also requires a prior *whole-file* read (fullReads >= 1): a file touched only by narrow slices so far has never actually been read in full, so this unranged read is its first real full read, not a re-read.
+      // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size Sliced/ranged reads (carrying offset/limit) are surgical already and are left alone. Also requires a prior *whole-file* read (fullReads >= 1): a file touched only by narrow slices so far has never actually been read in full, so this unranged read is its first real full read, not a re-read.
       if (!window.isExplicitSlice && fullReads >= 1 && /\.(md|mdx|markdown|rst)$/i.test(basename)) {
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-doc-deny')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
@@ -1223,11 +1090,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
       if (isSourceExt && fullReads >= 2) {
-        // read_count_deny carries the credit for this blocked read. Both it and session_hint
-        // map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint
-        // row here would double the same blocked bytes into the by_source rollup that
-        // hint-stats reads -- one deny, one blocked read, one credit. session_hint is still
-        // recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
+        // read_count_deny carries the credit for this blocked read. Both it and session_hint map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint row here would double the same blocked bytes into the by_source rollup that hint-stats reads -- one deny, one blocked read, one credit. session_hint is still recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
@@ -1249,11 +1112,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
       )
     }
-    // Only counted when the note actually reaches the caller -- quietContextOutput silently
-    // degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this
-    // used to) over-counted the ledger on every quiet-hours re-read that produced no visible
-    // output at all.
-    // Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
+    // Only counted when the note actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this used to) over-counted the ledger on every quiet-hours re-read that produced no visible output at all. Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     const pagingWindow = readRequestedSliceWindow(event)
     const activeRanges = getFileLineRanges(normalized)
     const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2)
@@ -1271,15 +1130,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   }
 
   const size = statSize(normalized)
-  // Grep never reads/returns the whole file — its cost is the search pattern's match count,
-  // not the file's total size (same rationale as the re-read dedup exemption above), and
-  // estimateRequestedSlice() always reports 'unbounded' for it (no offset/limit on its schema),
-  // which would otherwise gate it on the full file size and hard-deny it with an "edit it
-  // anyway" message that makes no sense for a search operation.
+  // Grep never reads/returns the whole file — its cost is the search pattern's match count, not the file's total size (same rationale as the re-read dedup exemption above), and estimateRequestedSlice() always reports 'unbounded' for it (no offset/limit on its schema), which would otherwise gate it on the full file size and hard-deny it with an "edit it anyway" message that makes no sense for a search operation.
   if (event.toolName !== 'Grep' && size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized) && !isDispatchedFileType(normalized)) {
-    // A genuine, bounded offset/limit request gates on the requested slice's size instead
-    // of the whole file's — a small window into a huge file should be let through. Whole-file
-    // requests (no offset/limit, or an unboundable window) keep gating on the real file size.
+    // A genuine, bounded offset/limit request gates on the requested slice's size instead of the whole file's — a small window into a huge file should be let through. Whole-file requests (no offset/limit, or an unboundable window) keep gating on the real file size.
     const slice = estimateRequestedSlice(event, normalized)
     const gateSize = slice.kind === 'bytes' ? Math.min(slice.bytes, size) : size
 
@@ -1293,10 +1146,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const config = loadConfig()
     const hint = surgicalHint(normalized, basename, 1000)
     if (gateSize >= largeFileDenyBytes()) {
-      // The read is blocked outright, so it never actually happened — don't record it
-      // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
-      // offset/limit params from a plain re-read) hits "already read this session"
-      // instead of this same actionable deny, leaving no way to follow its own advice.
+      // The read is blocked outright, so it never actually happened — don't record it against re-read dedup. Otherwise a retry (this hook doesn't distinguish offset/limit params from a plain re-read) hits "already read this session" instead of this same actionable deny, leaving no way to follow its own advice.
       const denyCredit = counterfactualCredit(size)
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'large-file-deny')
       return denyOutput(
@@ -1312,11 +1162,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (config.hints.log_large_file_hint_outcomes) {
       recordLargeFileHintPending(normalized, size)
     }
-    // Only counted when the hint actually reaches the caller -- quietContextOutput silently
-    // degrades to passOutput() during hints.quiet_hours, and recording unconditionally here
-    // (as this used to, before the deny-gate check above) over-counted the session_hint ledger
-    // on every quiet-hours large-file read that produced no visible hint at all.
-    // Zero bytes for the same reason as the re-read note above: this is advisory, not a block. The Read proceeds and the whole file reaches the model anyway, so the hint is a cost, not a saving; the event is still counted because how often it fires is worth knowing.
+    // Only counted when the hint actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally here (as this used to, before the deny-gate check above) over-counted the session_hint ledger on every quiet-hours large-file read that produced no visible hint at all. Zero bytes for the same reason as the re-read note above: this is advisory, not a block. The Read proceeds and the whole file reaches the model anyway, so the hint is a cost, not a saving; the event is still counted because how often it fires is worth knowing.
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
       recordStat('session_hint', 0, 0)
     }
@@ -1330,23 +1176,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const fileTypeExt = path.extname(normalized).slice(1).toLowerCase()
   const fileStatSize = size ?? statSize(normalized) ?? 0
   const isKnownFileType = DISPATCHED_FILE_TYPE_EXTS.has(fileTypeExt)
-  // Same Grep exemption as the large-file gate above: this catch-all's per-type handlers
-  // (handleTxt/handleCsv/handleHtml/handleGenericLarge/handlePdf/handleOfficeBinary) block
-  // purely on the whole file's size/type, with no notion of a search pattern — without this,
-  // a Grep call would fall through from the exempted gate above straight into an equally
-  // tool-blind deny here for any large .txt/.log/.csv/.html/binary file.
+  // Same Grep exemption as the large-file gate above: this catch-all's per-type handlers (handleTxt/handleCsv/handleHtml/handleGenericLarge/handlePdf/handleOfficeBinary) block purely on the whole file's size/type, with no notion of a search pattern — without this, a Grep call would fall through from the exempted gate above straight into an equally tool-blind deny here for any large .txt/.log/.csv/.html/binary file.
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
-    // Same offset/limit honoring as above: gate the per-type handlers (handleTxt/handleCsv/
-    // handleHtml/handleGenericLarge) on the requested slice's size when one was given.
+    // Same offset/limit honoring as above: gate the per-type handlers (handleTxt/handleCsv/ handleHtml/handleGenericLarge) on the requested slice's size when one was given.
     const ftSlice = estimateRequestedSlice(event, normalized)
     const ftEffectiveLength = ftSlice.kind === 'bytes' ? Math.min(ftSlice.bytes, fileStatSize) : fileStatSize
     let ftContent = ''
-    // Guarded the same way every other full-content fs.readFileSync in this file is (see
-    // SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB
-    // .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read
-    // into a JS string in full on every single call, even a cheap bounded offset/limit
-    // request whose small ftEffectiveLength was always going to pass every handler's
-    // length-gate below without ever touching content.
+    // Guarded the same way every other full-content fs.readFileSync in this file is (see SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read into a JS string in full on every single call, even a cheap bounded offset/limit request whose small ftEffectiveLength was always going to pass every handler's length-gate below without ever touching content.
     if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       try {
         ftContent = fs.readFileSync(normalized, 'utf8')
@@ -1356,16 +1192,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
     const ftResult = dispatchFileTypeHandler(normalized, ftContent, ftEffectiveLength)
     if (ftResult?.shouldBlock) {
-      // Blocked read never happened — don't count it against re-read dedup. These
-      // messages (large txt/log/csv/generic) tell the caller to retry with
-      // offset/limit; recording the read here would make that retry hit the
-      // "already read this session" deny instead, with no way to ever read the file.
+      // Blocked read never happened — don't count it against re-read dedup. These messages (large txt/log/csv/generic) tell the caller to retry with offset/limit; recording the read here would make that retry hit the "already read this session" deny instead, with no way to ever read the file.
       return denyOutput(ftResult.message)
     }
   }
 
-  // Lightweight pre-tool-call check and runtime nudge for indexed and ranged reads on .xml / .dtsx / .ampkg / .xaml, .md, PowerShell (.ps1 / .psm1), and any indexed file where a read spans >80%
-  // Exempt dispatched non-code large file types (e.g. CSV, PDF, Office) that are handled by the universal file type handler.
+  // Lightweight pre-tool-call check and runtime nudge for indexed and ranged reads on .xml / .dtsx / .ampkg / .xaml, .md, PowerShell (.ps1 / .psm1), and any indexed file where a read spans >80% Exempt dispatched non-code large file types (e.g. CSV, PDF, Office) that are handled by the universal file type handler.
   const isXmlNudge = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename)
   const isDocNudge = /\.(md|mdx|markdown)$/i.test(basename)
   const isScriptNudge = /\.(ps1|psm1)$/i.test(basename)
@@ -1516,10 +1348,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
     }
   }
 
-  // Post-read structural-navigation hint: once a just-read source file crosses
-  // post_read_code_compress.min_lines, nudge toward token-goat skeleton/outline instead of
-  // a future full re-read. Only fires for extensions with a tree-sitter language adapter
-  // (the sourceHints column of src/language_specs.ts), where skeleton/outline actually produce structure.
+  // Post-read structural-navigation hint: once a just-read source file crosses post_read_code_compress.min_lines, nudge toward token-goat skeleton/outline instead of a future full re-read. Only fires for extensions with a tree-sitter language adapter (the sourceHints column of src/language_specs.ts), where skeleton/outline actually produce structure.
   if (isSourceExtension(postBasename)) {
     try {
       const sz = statSize(normalized)
@@ -1583,9 +1412,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
     if (filePath === undefined) return
     const normalized = normalizePath(filePath)
     if (isImagePath(normalized)) return
-    // Deliberately re-read from THIS response rather than asking the session whether the file has
-    // ever been truncated: that flag is sticky for the rest of the session, so one truncated Read
-    // would disqualify every later complete Read of the same file, which does deliver its window.
+    // Deliberately re-read from THIS response rather than asking the session whether the file has ever been truncated: that flag is sticky for the rest of the session, so one truncated Read would disqualify every later complete Read of the same file, which does deliver its window.
     const respText = extractReadOutput(event.raw)
     if (isTruncatedReadDelivery(event, respText)) return
     // What the model was actually handed, which is the disk window ONLY when nothing rewrote it. A body fold delivers strictly less than the file holds, and storing the disk copy would tell every later read that the folded lines were served -- so a re-read coming back for exactly those lines would have them elided as "already seen". The store's whole contract is a record of what reached the model, and a rewrite is the one case where that differs from disk.
@@ -1593,8 +1420,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
     const served = deliveredRaw ?? readWindowFromDisk(event, normalized)
     if (served === null) return
 
-    // A stored body can only ever contain a later read that is itself at or above the collapse's
-    // own floor, so anything smaller is dead weight in the cache.
+    // A stored body can only ever contain a later read that is itself at or above the collapse's own floor, so anything smaller is dead weight in the cache.
     if (Buffer.byteLength(served, 'utf-8') < Math.max(cfg.cache_min_bytes, IDENTICAL_READ_MIN_BODY_BYTES)) return
 
     // The synthetic command must carry the requested window, mirroring what the Bash surface gets for free from its literal command line (e.g. `sed -n '120,160p'`); commandHashSync keys only on this string plus cwd, so without the window every offset/limit of one file in one cwd collapses onto the same id and each later Read silently overwrites the previous window's stored body.
@@ -1615,7 +1441,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
  * Replace stretches of a completed Read that the session has already been handed, keeping every line it has not.
  * `alreadyServedOutputId` withholds a read whose window is entirely inside an earlier delivery. The partial case is the larger one and it cannot be denied: measured over a month of real sessions, 589 Read calls carried a mix of new and already-served lines against 400 fully-served ones, and denying any of the 589 would have deleted the new lines along with the old. Rewriting the result keeps the new lines and turns the rest into a pointer at the copy the model holds.
  * Line numbers survive untouched -- an elided run becomes a notice naming the exact range it stood for, and every kept row is emitted verbatim, padding included, so the rewrite is purely subtractive. Nothing downstream has to re-derive a position from a shortened body, and no part of the saving comes from quietly reformatting rows that were not withheld.
- * Skipped, each toward showing the model more rather than less: - anything `redactSecrets` would touch. On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor.
+ * Skipped, each toward showing the model more rather than less: - anything a precise secret pattern matches (`hasPreciseSecret`, not the recall-tuned catch-all, which false-fires on ordinary source and would forfeit the rewrite without protecting anything). On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor.
  */
 function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput | null {
   if (!loadConfig().hints.elide_served_lines) return null
@@ -1630,10 +1456,8 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   const parsed = parseNumberedReadResult(respText, readStartLine(event))
   if (parsed === null) return null
 
-  // Composing a rewrite makes this handler the author of what the model reads, and every sibling
-  // that composes redacts first. Here the honest move is to decline instead: redacting would hand
-  // back less of the user's own file than a plain Read does today.
-  if (redactSecrets(respText).count > 0) return null
+  // Composing a rewrite makes this handler the author of what the model reads, and every sibling that composes redacts first. Here the honest move is to decline instead: redacting would hand back less of the user's own file than a plain Read does today. Asked of the precise patterns only, never the recall-tuned catch-all: because declining passes the file through unredacted, a false positive here protects nothing and costs the whole rewrite -- the opposite of the asymmetry redactSecrets itself is tuned for.
+  if (hasPreciseSecret(respText)) return null
 
   const bodies: ServedBody[] = []
   // Newest first: the most recent delivery is the one most likely still in context.
@@ -1684,7 +1508,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
  */
 /**
  * The gates only a Read can answer, applied ahead of either structural planner below.
- * Untargeted only: a reader who asked for a specific window gets that window, not a map of the file it came from. Never a truncated delivery, or the rewrite would withhold lines the model was never handed in the first place. And never a body whose secrets are still in it: composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted, so declining is the honest move and the same call {@link foldCodeBodies} makes.
+ * Untargeted only: a reader who asked for a specific window gets that window, not a map of the file it came from. Never a truncated delivery, or the rewrite would withhold lines the model was never handed in the first place. And never a body a precise secret pattern matches: composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted, so declining is the honest move and the same call {@link foldCodeBodies} makes.
  * Returns the delivered rows together with the harness text around them, which is the one thing a shell read has no equivalent of and the reason this split falls where it does.
  */
 function structuralFoldInputs(event: HookEvent, respText: string): { rows: readonly NumberedRow[]; header: string[]; trailer: string[]; normalized: string; shown: string; originalBytes: number } | null {
@@ -1692,7 +1516,7 @@ function structuralFoldInputs(event: HookEvent, respText: string): { rows: reado
   if (filePath === undefined) return null
   if (readRequestedSliceWindow(event).isExplicitSlice) return null
   if (isTruncatedReadDelivery(event, respText)) return null
-  if (redactSecrets(respText).count > 0) return null
+  if (hasPreciseSecret(respText)) return null
   const parsed = parseNumberedReadResult(respText, readStartLine(event))
   if (parsed === null) return null
   const normalized = normalizePath(filePath)
@@ -1749,8 +1573,8 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   if (requestedOffset !== undefined && readStartLine(event) !== requestedOffset) return null
   if (isTruncatedReadDelivery(event, respText)) return null
 
-  // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain Read gives the user more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines.
-  if (redactSecrets(respText).count > 0) return null
+  // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain Read gives the user more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines, including its reason for asking only the precise patterns.
+  if (hasPreciseSecret(respText)) return null
 
   const parsed = parseNumberedReadResult(respText, readStartLine(event))
   if (parsed === null) return null
