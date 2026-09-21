@@ -21,6 +21,7 @@ import * as path from 'node:path'
 import { isNonTextAsset, NON_TEXT_ASSET_SET_ID } from './asset_extensions.js'
 import { globalDbPath, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { getDb } from './db.js'
+import type { SqliteDatabase } from './sqlite_driver.js'
 import { loadConfig } from './config.js'
 import type { IndexingConfig } from './config.js'
 import { redactIfDotenv } from './dotenv_redact.js'
@@ -631,6 +632,25 @@ export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): bool
   return false
 }
 
+/** Canonical form of one embedding-boundary set: a sorted multiset of the symbol spans buildEmbeddingBoundaries cuts a non-markdown file on, so the comparison is independent of row order and of rowid. */
+function boundarySpanKey(spans: readonly { start: number; end: number }[]): string {
+  return spans.map((s) => `${s.start}-${s.end}`).sort().join(',')
+}
+
+/** True when the symbol spans `result` is about to write differ from the ones already stored for `filePath` -- i.e. this reparse moves the cuts the file's existing chunks were embedded on. Must be called BEFORE deleteFileRows removes the prior rows. Mirrors writeParseResult's own insert filter so a symbol it declines to store is not counted as a boundary on either side. */
+function embeddingBoundariesMoved(db: SqliteDatabase, filePath: string, result: ParseResult): boolean {
+  const priorSpans = db
+    .prepare(`SELECT line_start, line_end FROM symbols WHERE ${pathEqClause('file_path')}`)
+    .all(foldPath(filePath)) as { line_start: number; line_end: number }[]
+  const prior = boundarySpanKey(priorSpans.map((r) => ({ start: r.line_start, end: r.line_end })))
+  const next = boundarySpanKey(
+    result.symbols
+      .filter((s) => s.name !== '' && s.kind !== '')
+      .map((s) => ({ start: s.lineStart, end: s.lineEnd })),
+  )
+  return prior !== next
+}
+
 /**
  * Write a parsed result's rows into the index DB, replacing any prior rows for
  * the file in a single transaction (DELETE + INSERT, matching the Python
@@ -662,13 +682,16 @@ function writeParseResult(
   const priorRow = db
     .prepare(`SELECT sha, embed_sha FROM files WHERE ${pathEqClause('path')}`)
     .get(foldPath(filePath)) as { sha: string | null; embed_sha: string | null } | undefined
-  // Preserve only when the CONTENT this row describes is unchanged (sha match): a content change
-  // means the old embed_sha was computed from bytes that no longer exist, and carrying it forward
-  // would make makeIndexer's `isEmbedFresh` check believe stale vectors are still valid for the
-  // new content. When sha matches, the chunks embeddings.ts wrote for it are untouched by this
-  // reparse (deleteFileRows never touches chunks/chunk_vectors), so the stamp describing them is
-  // still true and re-embedding identical content for a parser-only bump would be pure waste.
-  const embedShaToCarry = priorRow !== undefined && priorRow.sha === sha ? priorRow.embed_sha : null
+  // Preserve only when the CONTENT this row describes is unchanged (sha match): a content change means the old embed_sha was computed from bytes that no longer exist, and carrying it forward would make makeIndexer's `isEmbedFresh` check believe stale vectors are still valid for the new content. When sha matches, the chunks embeddings.ts wrote for it are untouched by this reparse (deleteFileRows never touches chunks/chunk_vectors), so the stamp describing them is still true and re-embedding identical content for a parser-only bump would be pure waste.
+  const carriedEmbedSha = priorRow !== undefined && priorRow.sha === sha ? priorRow.embed_sha : null
+  // ...unless this reparse MOVED the boundaries those chunks were cut on. buildEmbeddingBoundaries draws a non-markdown file's chunk cuts straight from its symbol rows, and this write is about to replace them, so a reparse that extracts a different symbol set leaves the stored chunks (and their vectors) drawn on cuts that no longer exist. That is what a language adapter edit produces: it moves the language's PARSER_FINGERPRINT and reparses the file, while EMBED_FINGERPRINT deliberately stays put -- the global digest cannot be the answer here, because moving it re-embeds every already-embedded file on the machine for what is a per-language, often per-file change. Comparing the file's own boundary list across the reparse is that per-file answer, and it is exact in both directions: identical boundaries still carry the stamp, moved boundaries drop it so the file is re-embedded exactly once. Markdown is excluded because its boundaries come from headings in the content, which the sha match above has already established is unchanged. Only a bare-sha stamp is examined: every marker stamp (disabled:/unavailable:/oversize:/asset:/...) describes a file that has no boundary-cut chunks at all, so a boundary move says nothing about it, and dropping it would only re-enter indexFileEmbeddings to re-derive the same marker.
+  const embedShaToCarry =
+    carriedEmbedSha !== null &&
+    carriedEmbedSha === sha &&
+    detectLanguage(filePath) !== 'markdown' &&
+    embeddingBoundariesMoved(db, filePath, result)
+      ? null
+      : carriedEmbedSha
 
   const writeAll = db.transaction(() => {
     deleteFileRows(db, filePath)

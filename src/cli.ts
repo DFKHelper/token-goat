@@ -352,12 +352,12 @@ export async function cmdIndex(
     // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.
     const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
     // Embed freshness is decided on its own inputs, never on parseUnchanged: files.parser_sha answers "which extractor wrote the symbol rows", which carries no information about whether the stored vectors match this content, so conjoining it made a parser-stamp bump re-embed the whole index (measured: a stamp-only reparse of 300 unchanged files cost 94% of indexing them from nothing) and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent. isEmbedFresh already answers false for a new file (no stored embed_sha) and for moved content (the stored sha no longer matches), so the sha coupling was redundant -- except for spellingStale, which is kept by name: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever.
-    const embedUnchanged =
+    const embedFreshFor = (embedSha: string | undefined): boolean =>
       !force &&
       !spellingStale &&
       sha !== null &&
       isEmbedFresh(
-        entry?.embedSha,
+        embedSha,
         sha,
         embeddingsEnabled,
         depsAvailable,
@@ -366,6 +366,7 @@ export async function cmdIndex(
         // Same reasoning and same 0 fallback for the chunk-count marker.
         loadConfig().indexing?.max_chunks_per_file ?? 0,
       )
+    const embedUnchanged = embedFreshFor(entry?.embedSha)
     if (parseUnchanged && embedUnchanged) {
       skipped += 1
       continue
@@ -392,7 +393,9 @@ export async function cmdIndex(
       // pre-parse guard above exists to stop, just through a narrower window.
       if (!fs.existsSync(key)) continue
     }
-    if (!embedUnchanged) {
+    // Re-read the stamp the parse above just wrote rather than trusting the one captured before it: writeParseResult clears the carried embed_sha when a reparse moved this file's embedding boundaries (see embeddingBoundariesMoved), and `embedUnchanged` was computed from the pre-parse row. Without this the re-embed is deferred to whatever run happens next, so a single `token-goat index` after an adapter change leaves the file's vectors cut on boundaries that no longer exist.
+    const embedFresh = parseUnchanged ? embedUnchanged : embedFreshFor(getFileEntry(key, dbPath)?.embedSha)
+    if (!embedFresh) {
       paintProgress('embedding')
       // Best-effort semantic-embeddings step for the same file, run right after its syntactic parse; awaited here because this is a one-shot foreground command the caller waits on, unlike the worker's incremental drain which fires this and forgets it. Passing sha lets it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses.
       await indexFileEmbeddings(key, dbPath, sha ?? undefined)
