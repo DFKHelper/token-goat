@@ -774,6 +774,15 @@ export interface SymbolOptions {
 }
 
 /** Handle ``token-goat symbol <name>``. */
+// A destructuring re-bind of an imported name: `const { x } = require('m')`, or the `await import()` form. The parser records one of these as a symbol named `x`, which is true as far as scope goes and wrong as an answer to "where is x defined" -- the definition is in the module being imported from, and this line is a use of it. Matched on the body rather than on `kind` because the kind these land in is `variable`, which is also what a genuine `export const HINT_CATEGORIES = [...]` is: demoting by kind would sink real definitions to fix a shape this regex identifies exactly. Linear-time by construction -- `[^}]*` is bounded by the following `\}` and no quantifier nests inside another.
+const IMPORT_BIND_BODY_RE = /^\s*(?:const|let|var)\s*\{[^}]*\}\s*=\s*(?:await\s+)?(?:import|require)\s*\(/
+
+/** Orders import re-binds after everything else while preserving the incoming order within each group (Array.prototype.sort is stable), so an exact-name lookup leads with a definition when one is present. */
+function stableSortImportBindsLast<T extends { body?: string | null }>(rows: readonly T[]): T[] {
+  const isBind = (r: T): number => (typeof r.body === 'string' && IMPORT_BIND_BODY_RE.test(r.body) ? 1 : 0)
+  return [...rows].sort((a, b) => isBind(a) - isBind(b))
+}
+
 export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
   // rows regardless of whether the symbol exists -- silently reporting "no matches" for a
@@ -866,7 +875,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const filtered = anyClientFilter
     ? rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(s.name)) && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath)))
     : rawResults
-  const results = anyClientFilter ? filtered.slice(0, effectiveLimit) : filtered
+  const unordered = anyClientFilter ? filtered.slice(0, effectiveLimit) : filtered
+  // An exact-name lookup asks where a thing is defined, and `file_path, line_start` answers it by alphabet: `const { ambigProbeFn } = await import('../src/thing.js')` in scripts/ sorts ahead of the real function in src/ purely because "scripts" precedes "src", so the first block a caller reads is an import statement rather than the body it went looking for. Sink the rows that only re-bind an imported name, keeping the query's own order within each group so the existing tie-breaks and paging behaviour are untouched. Nothing is dropped -- every candidate still prints, so a misjudged row costs one position and never an answer, which is the reason this reorders rather than filters. `--grep` listings are deliberately excluded: those are a browse of many different names, where file order is the useful one.
+  const results = opts.name === undefined ? unordered : stableSortImportBindsLast(unordered)
 
   // How many rows `--exclude-tests` alone removed, counted after any `--grep` so the two filters
   // don't double-report the same row. Only used to explain an empty result below.
@@ -2574,6 +2585,26 @@ interface FusedSemanticHit {
   distance: number | null
   previewText: string
   rrf: number
+  // Which of the two retrievals produced this row. Derivable from `distance` for the dense leg alone, but not for the lexical one: a row the dense pass found and the FTS pass also voted for keeps its dense fields and only accumulates rank into `rrf`, so before these flags a both-lists row and a dense-only row rendered identically while sorting differently. That is the whole of what a reader cannot otherwise reconstruct from the printed output.
+  inDense: boolean
+  inLexical: boolean
+}
+
+/** Splits dense hits on the relevance floor, returning what survives and the closest distance that did not. The rejected minimum is what lets the caller say why the half came back empty: a floor is a threshold on a continuum, so "nothing matched" and "the best thing was 0.91 against a floor of 0.9" are different facts and only the second one is actionable. Compares raw `distance` rather than the rerank's `adjustedDistance`, since the floor was measured against raw distances and the rerank's boosts and path penalties are a ranking device with no calibrated scale. */
+export function applyRelevanceFloor(
+  hits: readonly SearchHit[],
+  floor: number,
+): { kept: SearchHit[]; nearestRejected: number | null } {
+  const kept: SearchHit[] = []
+  let nearestRejected: number | null = null
+  for (const h of hits) {
+    if (h.distance <= floor) {
+      kept.push(h)
+    } else if (nearestRejected === null || h.distance < nearestRejected) {
+      nearestRejected = h.distance
+    }
+  }
+  return { kept, nearestRejected }
 }
 
 async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
@@ -2689,13 +2720,37 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       }
     }
   }
+
+  // Relevance floor, applied here rather than inside the scan -- see the max_distance comment on SemanticConfig for why the scan's own bound is the wrong place for it. Reading the nearest rejected distance before filtering is the whole point of the diagnostic below: without it, a floor set too tight for a given corpus removes real answers and says nothing, which is the silent-recall-loss shape this command already had one instance of (an empty dense half only warns when the project is partly unembedded, so on a fully embedded project it warned about nothing at all).
+  let floorNearestRejected: number | null = null
+  if (rawHits.length > 0) {
+    const floor = loadConfig().semantic.max_distance
+    const { kept, nearestRejected } = applyRelevanceFloor(rawHits, floor)
+    floorNearestRejected = nearestRejected
+    // Only when the floor emptied the half outright: trimming a weak tail off a list that still has its best hit is the floor working as intended, and saying so on every ordinary search would be noise.
+    if (kept.length === 0 && nearestRejected !== null) {
+      console.warn(
+        `Matching on meaning found nothing within ${floor} (closest was ${nearestRejected.toFixed(3)}); ` +
+          `these results come from keyword search alone. Raise semantic.max_distance to see weaker matches.`,
+      )
+    }
+    rawHits = kept
+  }
+
   // The dense half contributing nothing is the moment this search is most misleading, because the
   // BM25 pass below still answers and the output looks like a complete result. It is also the only
   // moment worth paying for the coverage query, so it is gated here rather than run every call:
   // with hits, the reader has evidence embeddings are working; with none, they have no way to tell
   // "nothing in your code is similar" from "almost none of your code was ever embedded". Warn only
   // when the model itself is available and didn't fail with an error, since those branches already explain that case.
-  if (rawHits.length === 0 && embeddingModelAvailable() && preflight.status === 'ready' && !searchSemanticError) {
+  // floorNearestRejected guards this: when the floor is what emptied the half, it has already said so with the concrete distance, and following that with a coverage hypothesis would offer a second explanation for something already explained.
+  if (
+    rawHits.length === 0 &&
+    floorNearestRejected === null &&
+    embeddingModelAvailable() &&
+    preflight.status === 'ready' &&
+    !searchSemanticError
+  ) {
     try {
       // Config read and coverage query both inside the try: this whole block is a diagnostic aid,
       // and a diagnostic that can throw is worse than no diagnostic -- it would turn a search that
@@ -2735,6 +2790,8 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       distance: h.distance,
       previewText: h.text,
       rrf: 1 / (RRF_K + denseRank),
+      inDense: true,
+      inLexical: false,
     })
   })
   ftsRows.forEach((s, ftsRank) => {
@@ -2743,6 +2800,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     if (existing !== undefined) {
       // Already present from the dense pass -- keep its dense-sourced fields (distance, containment-derived name/kind) and just add this list's rank contribution to the score.
       existing.rrf += 1 / (RRF_K + ftsRank)
+      existing.inLexical = true
     } else {
       fused.set(key, {
         filePath: s.filePath,
@@ -2753,6 +2811,8 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
         distance: null,
         previewText: s.body,
         rrf: 1 / (RRF_K + ftsRank),
+        inDense: false,
+        inLexical: true,
       })
     }
   })
@@ -2797,12 +2857,16 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   if (hits.length > 0) {
     if (opts.json === true) {
       // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
-      const items = hits.map((h) => ({
+      // `rank`, `rrf` and `retrieval` are what make the ordering reproducible: `distance` is the dense leg's own score and does not explain the order, since the list is sorted by the fused rrf total and an FTS-only row has no distance at all. A consumer given distance alone can only conclude the results are mis-sorted.
+      const items = hits.map((h, i) => ({
         filePath: toDisplayPath(rootDir, h.filePath),
         name: h.name,
         kind: h.kind,
         startLine: h.startLine,
         endLine: h.endLine,
+        rank: i + 1,
+        rrf: h.rrf,
+        retrieval: h.inDense && h.inLexical ? 'both' : h.inDense ? 'dense' : 'lexical',
         distance: h.distance,
         preview: previewLines(h.previewText, 3),
       }))
@@ -2837,12 +2901,14 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       return { text, code: 0 }
     }
     // A dense-sourced row (distance !== null) renders the distance-annotated block the embeddings branch always used, including the "— inside NAME (KIND)" containment suffix when resolved; an FTS-only row (distance === null, always symbol-backed) renders the plain "name (kind) — path" header the FTS fallback always used, with no "distance" or "inside" wording, since it IS the symbol, not a chunk found to be inside one.
-    const blocks = hits.map((h) => {
+    const blocks = hits.map((h, i) => {
+      // The rank prefix is the fix for a list whose printed numbers do not explain its order: rows are sorted by the fused rrf total, so a dense row at distance 0.850 legitimately outranks one at 0.776 when the keyword pass voted for the first as well, and without the position that reads as a sorting bug. `+keyword` marks exactly those rows, and `keyword` marks a row the dense pass never returned -- which is why it carries no distance to print. A dense-only row stays byte-identical to what it always rendered, so the common case costs nothing extra.
+      const mark = h.inDense && h.inLexical ? ', +keyword' : ''
       if (h.distance !== null) {
         const suffix = h.name !== null ? ` — inside ${h.name} (${h.kind})` : ''
-        return `# ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})${suffix}\n${previewLines(h.previewText, 3)}`
+        return `# ${i + 1}. ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)}${mark})${suffix}\n${previewLines(h.previewText, 3)}`
       }
-      return `# ${h.name} (${h.kind}) — ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine}\n${previewLines(h.previewText, 3)}`
+      return `# ${i + 1}. ${h.name} (${h.kind}) — ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (keyword)\n${previewLines(h.previewText, 3)}`
     })
     const text = guardText(blocks.join('\n\n'), 'semantic')
     // stderr rather than appended to `text`: this function returns its text to callers that route

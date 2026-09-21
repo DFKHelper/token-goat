@@ -44,6 +44,8 @@ describe('semantic command output is capped by the overflow guard (#5 follow-up)
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
       overflow_guard: { enabled: true, max_tokens: 20 },
+      // The shipped default, carried here because runSemantic reads it on every call with hits: a stub that omits a key the real config always has does not stand in for the config, it stands in for a config that cannot exist, and the difference surfaces as a TypeError in whatever this file was meant to be testing instead. 1.2 keeps the seeded hits, which is what leaves the overflow guard as the thing under test.
+      semantic: { max_distance: 1.2 },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })

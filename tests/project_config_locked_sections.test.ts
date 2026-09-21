@@ -46,6 +46,7 @@ describe('stripLockedProjectKeys', () => {
       'indexing.max_chunks_per_file',
       'indexing.skip_dirs',
       'indexing.skip_files',
+      'semantic.max_distance',
       'worker.blocked_roots',
     ])
   })
@@ -107,6 +108,8 @@ describe('stripLockedProjectKeys', () => {
       hints: { fold_code_bodies: true, fold_comment_blocks: true, fold_prose_paragraphs: true, outline_large_documents: true, skeleton_large_sources: true },
       // 1 is the attack value, not an arbitrary one: a one-character summary budget is what a hostile repository would set to have the summarizer discard the session at every compaction boundary.
       compact_assist: { summary_budget_chars: 1 },
+      // 0.05 is the floor's own minimum, which is the attack value here: it admits only a near-exact vector match, so the repository's code stops matching in `semantic` while keyword search answers on as though nothing were withheld.
+      semantic: { max_distance: 0.05 },
     })
 
     expect(dropped.sort()).toEqual([...PROJECT_LOCKED_SECTIONS, ...PROJECT_LOCKED_KEYS].sort())

@@ -609,6 +609,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     for (const p of typeof paths === 'string' ? [paths] : paths) logSuppressedDetection('bash_redirect', event.sessionId, p)
     return passOutput()
   }
+  // The size half of the condition each of the five `token-goat bash-output <id>` recall branches below repeated, plus the decline record none of them kept: a candidate that clears the dedup minimum but fails the savings floor was refused on price, which is a decision and has to leave a trace for the same reason declineUnpriced does. Callers still test their own id and entry for null, both to keep TypeScript's narrowing inside the branch and because neither absence is this gate declining anything -- no cached output, or an entry too stale to offer, never reached a price comparison, and recording it would credit the gate with refusing work it never had. The correlator is the cache id, which is what classifyBashHint reads back out of a recall hint that did get shown, so the declined and shown rows key alike.
+  const recallWorthShowing = (outputId: string, entry: { sizeBytes: number }): boolean => {
+    if (entry.sizeBytes < loadConfig().hints.bash_dedup_min_bytes) return false
+    if (meetsSavingsFloor(entry.sizeBytes)) return true
+    logSuppressedDetection('bash_recall', event.sessionId, outputId)
+    return false
+  }
 
   // Check for unbalanced shell quoting or unterminated heredocs
   const cfg = loadConfig()
@@ -974,7 +981,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     // Only emit the recall hint if the content entry is actually present (the session index may name an id whose blob was pruned) and not stale — a matching id whose stored git/dir/lockfile fingerprint no longer matches the current state means the source changed since it was cached, so it must not be recalled as fresh.
     const monEntryRaw = monOutputId !== null ? getBashOutput(monOutputId) : null
     const monEntry = monEntryRaw !== null && !isBashEntryStale(monEntryRaw, cmd, preHookCwd) ? monEntryRaw : null
-    if (monOutputId !== null && monEntry !== null && monEntry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(monEntry.sizeBytes)) {
+    if (monOutputId !== null && monEntry !== null && recallWorthShowing(monOutputId, monEntry)) {
       const monBytes = monEntry.sizeBytes
       const catFile = extractCatSourceFile(cmd)
       if (catFile !== null) {
@@ -1022,7 +1029,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     // Guard on the content entry and its freshness, not just the index (see the monitoring case above).
     const curlEntryRaw = curlOutputId !== null ? getBashOutput(curlOutputId) : null
     const curlEntry = curlEntryRaw !== null && !isBashEntryStale(curlEntryRaw, cmd, preHookCwd) ? curlEntryRaw : null
-    if (curlOutputId !== null && curlEntry !== null && curlEntry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(curlEntry.sizeBytes)) {
+    if (curlOutputId !== null && curlEntry !== null && recallWorthShowing(curlOutputId, curlEntry)) {
       const curlBytes = curlEntry.sizeBytes
       recordStat('bash_compress:recall', curlBytes, savedTokensFromBytes(curlBytes))
       const curlPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
@@ -1040,7 +1047,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const ghOutputId = getBashOutputId(ghHash)
     const ghEntryRaw = ghOutputId !== null ? getBashOutput(ghOutputId) : null
     const ghEntry = ghEntryRaw !== null && !isBashEntryStale(ghEntryRaw, cmd, preHookCwd) ? ghEntryRaw : null
-    if (ghOutputId !== null && ghEntry !== null && ghEntry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(ghEntry.sizeBytes)) {
+    if (ghOutputId !== null && ghEntry !== null && recallWorthShowing(ghOutputId, ghEntry)) {
       const ghBytes = ghEntry.sizeBytes
       recordStat('bash_compress:recall', ghBytes, savedTokensFromBytes(ghBytes))
       const ghPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
@@ -1058,7 +1065,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const gitScopedOutputId = getBashOutputId(gitScopedHash)
     const gitScopedEntryRaw = gitScopedOutputId !== null ? getBashOutput(gitScopedOutputId) : null
     const gitScopedEntry = gitScopedEntryRaw !== null && !isBashEntryStale(gitScopedEntryRaw, cmd, preHookCwd) ? gitScopedEntryRaw : null
-    if (gitScopedOutputId !== null && gitScopedEntry !== null && gitScopedEntry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(gitScopedEntry.sizeBytes)) {
+    if (gitScopedOutputId !== null && gitScopedEntry !== null && recallWorthShowing(gitScopedOutputId, gitScopedEntry)) {
       const gitScopedBytes = gitScopedEntry.sizeBytes
       recordStat('bash_compress:recall', gitScopedBytes, savedTokensFromBytes(gitScopedBytes))
       const gitScopedPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
@@ -1111,7 +1118,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // A cached prior run wins: recall it instead of re-running (and re-compressing). Guard on the content blob and its freshness — a pruned id would make `bash-output <id>` error, and a stale fingerprint means the source changed since the output was cached.
   const entryRaw = outputId !== null ? getBashOutput(outputId) : null
   const entry = entryRaw !== null && !isBashEntryStale(entryRaw, cmd, preHookCwd) ? entryRaw : null
-  if (outputId !== null && entry !== null && entry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(entry.sizeBytes)) {
+  if (outputId !== null && entry !== null && recallWorthShowing(outputId, entry)) {
     const bytes = entry.sizeBytes
     recordStat('bash_compress:recall', bytes, savedTokensFromBytes(bytes))
     return contextOutput(buildRecallHint(cmd, outputId))

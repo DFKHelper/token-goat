@@ -91,6 +91,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   // Same reasoning as the two thresholds above, on the chunk axis: a checked-in `.token-goat.toml` dropping this to 1 would take every file in the repository out of `semantic` for a reviewing agent, and `semantic` would answer "no matches" in the words it uses for a genuine absence.
   'indexing.max_chunks_per_file',
   'indexing.cross_project_symbols',
+  // The same blast radius as the indexing keys above, applied to retrieval rather than to what gets indexed: `semantic` drops a dense hit whose distance exceeds this, so a checked-in `.token-goat.toml` setting it near the floor removes this repository's own code from the vector half of every search a reviewing agent runs, and the command then answers "no matches" in the words it uses for a name that genuinely is not there. The keyword pass would still answer, which makes it worse rather than better -- the result looks like a working search. The user's own global config still sets it freely; only the project-supplied layer is refused.
+  'semantic.max_distance',
   'worker.blocked_roots',
 ]
 

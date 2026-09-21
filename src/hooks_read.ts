@@ -10,7 +10,7 @@ import * as path from 'node:path'
 import { getCwd, getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
-import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
+import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, normalizePath, toDisplayPath, TOOL_RESULTS_ID_CHARS } from './paths.js'
@@ -1157,6 +1157,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordActualRead(event, normalized)
     recordActualSlice(event, normalized)
     if (!meetsSavingsFloor(size)) {
+      // Refused on price, not absence: the file is real, it sits under the deny threshold, and a surgical hint was already composed above, so the only thing that stopped it reaching the caller was the floor. `read_structural_nav` is the category classifyReadHint assigns the text this would have emitted -- it carries none of the "already read" phrasing that routes to read_reread_dedup -- so the declined rows key to the same population as the shown ones.
+      logSuppressedDetection('read_structural_nav', event.sessionId, normalized)
       return passOutput()
     }
     if (config.hints.log_large_file_hint_outcomes) {
@@ -1355,12 +1357,17 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
         const lineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
         const minLines = loadConfig().post_read_code_compress.min_lines
-        if (lineCount >= minLines && meetsSavingsFloor(sz) && !suppressStructuralHint) {
-          // Advisory only -- the read is not blocked, so nothing was saved here either.
-          recordStat('session_hint', 0, 0)
-          return quietContextOutput(
-            shown + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + shown + '"` or `token-goat outline "' + shown + '"` for structural navigation instead of a future full re-read.',
-          )
+        if (lineCount >= minLines && !suppressStructuralHint) {
+          if (!meetsSavingsFloor(sz)) {
+            // Split out of the single condition this used to be so that only the floor's own refusals are recorded: a file under min_lines had no hint to compose, and a suppressed one was already replaced upstream by a better rewrite, and booking either as a decline would credit this gate with refusing work it never had.
+            logSuppressedDetection('read_structural_nav', event.sessionId, normalized)
+          } else {
+            // Advisory only -- the read is not blocked, so nothing was saved here either.
+            recordStat('session_hint', 0, 0)
+            return quietContextOutput(
+              shown + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + shown + '"` or `token-goat outline "' + shown + '"` for structural navigation instead of a future full re-read.',
+            )
+          }
         }
       }
     } catch {
