@@ -180,7 +180,8 @@ describe('indexFileEmbeddings refuses files with no embeddable text', () => {
     }
 
     const db = getDb(dbPath)
-    const countFor = (p: string): number => (db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(p) as { c: number }).c
+    // Canonicalized inside the helper: chunk rows are keyed on the spelling `indexFileEmbeddings` mints, so binding a raw native path would return 0 for every file and the two `toBe(0)` assertions below would pass without the gate they are testing doing anything.
+    const countFor = (p: string): number => (db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(canonicalizeIndexPath(p)) as { c: number }).c
     expect(countFor(jpegPath)).toBe(0)
     expect(countFor(jsonPath)).toBe(0)
     expect(countFor(tsPath)).toBeGreaterThan(0)
@@ -188,7 +189,8 @@ describe('indexFileEmbeddings refuses files with no embeddable text', () => {
     expect((db.prepare('SELECT COUNT(*) c FROM chunks').get() as { c: number }).c).toBe(countFor(tsPath))
 
     const hits = await searchSemantic(db, 'warehouse stock ledger reconciliation', 5)
-    expect(hits.map((h) => h.filePath)).toContain(tsPath)
+    // A hit's `filePath` is read back out of the canonically-keyed chunks table, so it is the canonical spelling and not the native one this test wrote.
+    expect(hits.map((h) => h.filePath)).toContain(canonicalizeIndexPath(tsPath))
   })
 })
 

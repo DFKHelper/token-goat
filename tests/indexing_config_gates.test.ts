@@ -421,7 +421,8 @@ describe('indexFileSync own skip-eligible branch also removes orphaned embedding
       parserModule.indexFileSync(filePath, dbPath)
       await parserModule.indexFileEmbeddings(filePath, dbPath)
 
-      const key = filePath
+      // The canonical spelling both writers key on, not the native path this test wrote: on Windows the stored key carries a lowercased drive letter and forward slashes, so a literal `file_path = ?` against `filePath` matches nothing.
+      const key = parserModule.canonicalizeIndexPath(filePath)
       const db = getDb(dbPath)
       expect(querySymbols({ name: 'lookUpInvoiceByReference', limit: 10 }, dbPath).length).toBeGreaterThan(0)
       const chunksBefore = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {

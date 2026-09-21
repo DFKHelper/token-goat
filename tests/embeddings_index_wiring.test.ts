@@ -99,12 +99,14 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
       await indexFileEmbeddings(filePath, dbPath)
 
       const db = getDb(dbPath)
+      // Queried by `canonicalizeIndexPath` rather than the raw `filePath`: both writers key their rows on the canonical spelling, which on Windows carries a lowercased drive letter and forward slashes, so a literal `file_path = ?` against a native path matches nothing.
+      const key = canonicalizeIndexPath(filePath)
       const symRow = db
         .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND name = 'wiredSymbol'")
-        .get(filePath) as { c: number }
+        .get(key) as { c: number }
       expect(symRow.c).toBe(1)
 
-      const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+      const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {
         c: number
       }
       // Single symbol, one chunk boundary -- confirmed stable across 3 consecutive runs.
@@ -114,7 +116,7 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
         .prepare(
           'SELECT COUNT(*) c FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)',
         )
-        .get(filePath) as { c: number }
+        .get(key) as { c: number }
       expect(vecRow.c).toBe(1)
     },
   )
@@ -133,7 +135,8 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
       await indexFileEmbeddings(filePath, dbPath)
 
       const db = getDb(dbPath)
-      const rows = db.prepare('SELECT start_line, end_line, text FROM chunks WHERE file_path = ? ORDER BY start_line').all(filePath) as Array<{ start_line: number; end_line: number; text: string }>
+      // Keyed on the canonical spelling for the same reason as the case above.
+      const rows = db.prepare('SELECT start_line, end_line, text FROM chunks WHERE file_path = ? ORDER BY start_line').all(canonicalizeIndexPath(filePath)) as Array<{ start_line: number; end_line: number; text: string }>
       expect(rows.length).toBeGreaterThan(1)
       // PROVENANCE: CAPTURE -- the pinned model's own tokenizer.json, checked in for tests/embed_tokenizer_oracle.test.ts.
       const tokenizer = new BertWordPiece(JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'wordpiece', 'tokenizer.json.gz'))).toString('utf8')))
@@ -270,7 +273,9 @@ describe('indexFileEmbeddings extracts and embeds text from binary document form
       await indexFileEmbeddings(filePath, dbPath, sha ?? undefined)
 
       const db = getDb(dbPath)
-      const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+      // Keyed on the canonical spelling, same reason as the earlier cases: the writers mint it, the raw native path is not it.
+      const key = canonicalizeIndexPath(filePath)
+      const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {
         c: number
       }
       // Single section-boundary chunk (one heading) -- confirmed stable across 3 consecutive runs.
@@ -280,10 +285,10 @@ describe('indexFileEmbeddings extracts and embeds text from binary document form
         .prepare(
           'SELECT COUNT(*) c FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)',
         )
-        .get(filePath) as { c: number }
+        .get(key) as { c: number }
       expect(vecRow.c).toBe(1)
 
-      const fileRow = db.prepare('SELECT embed_sha FROM files WHERE path = ?').get(filePath) as
+      const fileRow = db.prepare('SELECT embed_sha FROM files WHERE path = ?').get(key) as
         | { embed_sha: string | null }
         | undefined
       // buildDocxFixture's own zip encoding embeds a timestamp, so embed_sha is NOT stable
@@ -292,7 +297,8 @@ describe('indexFileEmbeddings extracts and embeds text from binary document form
       expect(fileRow?.embed_sha).toMatch(/^[0-9a-f]{64}$/)
 
       const hits = mergeNearbyHits(await searchSemantic(db, 'plan for the rollout across regions', 5))
-      expect(hits.some((h) => h.filePath === filePath && h.text.includes('rollout plan'))).toBe(true)
+      // A hit's `filePath` is read back out of the canonically-keyed chunks table, so it is the canonical spelling and not the native one this test wrote.
+      expect(hits.some((h) => h.filePath === key && h.text.includes('rollout plan'))).toBe(true)
     },
   )
 })
@@ -328,7 +334,8 @@ describe('real embeddings find meaning-based matches plain FTS misses', () => {
 
       // Real embedding-vector search finds it by meaning.
       const hits = mergeNearbyHits(await searchSemantic(db, query, 5))
-      expect(hits.some((h) => h.filePath === filePath && h.text.includes('getUserByEmail'))).toBe(true)
+      // Compared against the canonical spelling, same reason as the docx case above.
+      expect(hits.some((h) => h.filePath === canonicalizeIndexPath(filePath) && h.text.includes('getUserByEmail'))).toBe(true)
     },
   )
 })
