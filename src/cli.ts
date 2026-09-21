@@ -18,7 +18,8 @@ import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors } from './parser.js'
-import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
+import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
+import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { fingerprintFile } from './fingerprint.js'
@@ -273,6 +274,8 @@ export async function cmdIndex(
   // files.embed_sha records WHICH CONTENT was embedded, never WHICH STACK embedded it, so the per-file freshness gate in the loop below cannot see a model or inference-runtime change on its own: it reads a bare sha as fresh and skips the file. ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision, but its only callers were upsertChunks and searchSemantic, both downstream of that gate -- so a whole-index run after an onnxruntime major.minor upgrade printed "Skipped N unchanged file(s)" and left every vector from the previous stack in place, which is exactly what the warning that reset prints tells the user to run this command to fix. It must run here rather than inside the loop: the reset clears each affected file's embed_sha, and by the time the loop has read a file's row into `entry` that clearing is already too late to be seen. Gated on the deps being usable because backendId() cannot name a runtime that did not load, and wiping the index on the strength of an unknowable identity would be worse than the staleness it is guarding against.
   if ((loadConfig().indexing?.embeddings_enabled ?? true) && embeddingsDepsAvailable(getDb(dbPath))) {
     ensureEmbeddingProvenance(getDb(dbPath))
+    // Chunk rows written before the asset and chunk-count gates existed carry a valid embed_sha, so the per-file freshness gate below reads every one of them as current and would leave them searchable forever. Same placement and the same reason as ensureEmbeddingProvenance directly above: it has to run before the loop reads any row. See src/embed_backfill.ts for why this is a version-keyed sweep rather than a fingerprint bump.
+    pruneUnembeddableChunks(getDb(dbPath), ixCfg.max_chunks_per_file, deleteFileEmbeddings)
   }
   let indexed = 0
   let failed = 0
@@ -360,6 +363,8 @@ export async function cmdIndex(
         depsAvailable,
         // See isEmbedFresh: an `oversize:` marker stays fresh only while indexing.large_file_symbol_only_kb is still what it was stamped under, so raising the threshold re-embeds the files it just admitted instead of leaving them permanently skipped. 0 matches no marker (config floors this key at 1), the safe direction for a partially-mocked config.
         loadConfig().indexing?.large_file_symbol_only_kb ?? 0,
+        // Same reasoning and same 0 fallback for the chunk-count marker.
+        loadConfig().indexing?.max_chunks_per_file ?? 0,
       )
     if (parseUnchanged && embedUnchanged) {
       skipped += 1

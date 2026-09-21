@@ -18,12 +18,13 @@ import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
 
+import { isNonTextAsset, NON_TEXT_ASSET_SET_ID } from './asset_extensions.js'
 import { globalDbPath, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { getDb } from './db.js'
 import { loadConfig } from './config.js'
 import type { IndexingConfig } from './config.js'
 import { redactIfDotenv } from './dotenv_redact.js'
-import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
+import { chunkFile, deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import { buildEmbeddingBoundaries } from './embedding_boundaries.js'
 import { isEmbeddableDocument, extractEmbeddableDocumentText, isDocumentRefusal, isTransientDocumentRefusal } from './doc_embed_extract.js'
 import { MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
@@ -853,6 +854,42 @@ export function timeoutEmbedSha(sha: string, workMillis: number): string {
 }
 
 /**
+ * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} skipped a file because its
+ * extension names a format with no text in it (see NON_TEXT_ASSET_EXTENSIONS in asset_extensions.ts).
+ * Bears {@link NON_TEXT_ASSET_SET_ID} for the reason {@link TIMEOUT_EMBED_SHA_PREFIX} bears its work
+ * clock: the bound is a compiled-in list rather than a config value, and a release that edits the
+ * list must re-examine every file stamped under the old one -- otherwise removing an extension from
+ * the set would leave every file that already carried that extension buried forever, the same
+ * permanent-verdict-from-a-changed-condition failure a bare sha causes for the oversize case.
+ */
+export const ASSET_EMBED_SHA_PREFIX = 'asset:'
+
+/** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` when the file is a non-text asset. */
+export function assetEmbedSha(sha: string): string {
+  return `${ASSET_EMBED_SHA_PREFIX}${NON_TEXT_ASSET_SET_ID}:${sha}`
+}
+
+/**
+ * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} skipped a file that would
+ * have contributed more than `indexing.max_chunks_per_file` chunks. Threshold-bearing for the same
+ * reason {@link OVERSIZE_EMBED_SHA_PREFIX} is: the bound is user-tunable, so raising it has to
+ * re-examine every file the old value refused rather than leave them stamped as done.
+ *
+ * Distinct from the oversize marker rather than reusing it because the two measure different axes
+ * and a file can be well under the byte threshold while far over this one. Chunk cuts snap to
+ * structure, so a generated JSON snapshot of a few hundred kilobytes -- thousands of one-line keys,
+ * each its own boundary -- becomes thousands of near-identical chunks, while a source file of the
+ * same size becomes a few hundred meaningful ones. On one real index the twenty-odd worst files
+ * were all under the 500 KB byte threshold and held 22% of every chunk on the machine.
+ */
+export const MAX_CHUNKS_EMBED_SHA_PREFIX = 'maxchunks:'
+
+/** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` when the file exceeds `maxChunks`. */
+export function maxChunksEmbedSha(sha: string, maxChunks: number): string {
+  return `${MAX_CHUNKS_EMBED_SHA_PREFIX}${maxChunks}:${sha}`
+}
+
+/**
  * Return `absPath` with its final segment spelled the way the filesystem actually spells it.
  *
  * The companion of `indexedPathSpellingIsStale`. That guard notices when a stored row's spelling
@@ -1014,12 +1051,17 @@ export function isEmbedFresh(
   embeddingsEnabled: boolean,
   depsAvailable: boolean,
   symbolOnlyKb: number,
+  maxChunksPerFile = 0,
 ): boolean {
   if (storedEmbedSha === undefined) return false
   if (!embeddingsEnabled) return storedEmbedSha === disabledEmbedSha(sha)
   if (storedEmbedSha === sha) return true
   if (!depsAvailable && storedEmbedSha === unavailableEmbedSha(sha)) return true
   if (storedEmbedSha === oversizeEmbedSha(sha, symbolOnlyKb)) return true
+  // Same shape as the oversize clause above: threshold-bearing, so a config change re-examines.
+  if (maxChunksPerFile > 0 && storedEmbedSha === maxChunksEmbedSha(sha, maxChunksPerFile)) return true
+  // Set-id-bearing rather than ignored, for the reason given on ASSET_EMBED_SHA_PREFIX.
+  if (storedEmbedSha === assetEmbedSha(sha)) return true
   // Not a parameter the way symbolOnlyKb is: the document work clock is a compiled-in constant, not a config value, so there is no caller who could know a different one. It is compared rather than ignored so that changing it in a later release invalidates every stamp taken under the old one.
   if (storedEmbedSha === timeoutEmbedSha(sha, MAX_DOCUMENT_WORK_MILLIS)) return true
   return false
@@ -1054,6 +1096,13 @@ export async function indexFileEmbeddings(
     deleteFileEmbeddings(db, filePath)
     // Deliberately-never-embed is a terminal state: stamp the real sha so the freshness gate (worker.ts/cli.ts) treats this file as done and does not re-read its multi-megabyte content into indexFileEmbeddings on every worker drain / index run.
     stampEmbedSha(db, filePath, sha, (s) => s)
+    return
+  }
+  if (isNonTextAsset(filePath)) {
+    // A JPEG, a font, an archive: encoded bytes with no text in them. Nothing below this point checks that, so before this gate existed these files fell straight through to the generic decodeSource() read at the bottom, which does not fail -- it yields mojibake, and the chunker then cuts that into thousands of tiny control-character chunks, each carrying a 384-dimensional vector that competes for neighbours against real source. Gated on extension rather than on a byte sniff deliberately: the extension is what routed the file here (`token-goat index` enumerates via git ls-files, which returns every tracked file regardless of language, so walkProject's detectLanguageOfFile() !== 'unknown' filter never sees these), and an extension test cannot be fooled by a header that happens to decode. Ordered before the isEmbeddableDocument branch so the two lists can never both claim a path; they are disjoint today and this keeps that a property of the code rather than of the lists.
+    const db = getDb(dbPath)
+    deleteFileEmbeddings(db, filePath)
+    stampEmbedSha(db, filePath, sha, assetEmbedSha)
     return
   }
   if (isEmbeddableDocument(filePath)) {
@@ -1141,9 +1190,17 @@ export async function indexFileEmbeddings(
     stampEmbedSha(db, filePath, sha, (s) => s)
     return
   }
+  const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
+  // Count what this file would contribute before embedding any of it. Byte size is already gated above and does not catch this case: chunk cuts snap to structure, so a generated data snapshot of a few hundred kilobytes -- thousands of one-line keys, each its own boundary -- becomes thousands of near-identical chunks, while a source file of the same size becomes a few hundred meaningful ones. On one real index the worst 32 files were nearly all under the byte threshold and held 22% of every chunk on the machine. The cut is repeated inside embedIndexFile, which is pure string work against content already in memory and costs nothing next to the model inference this gate exists to avoid; it is deliberately NOT hoisted into embeddings.ts, because that file is hashed into EMBED_FINGERPRINT and editing it would force every already-embedded file on every machine to be re-embedded.
+  const chunkCount = chunkFile(filePath, content, undefined, undefined, boundaries).length
+  if (chunkCount > ixCfg.max_chunks_per_file) {
+    const db = getDb(dbPath)
+    deleteFileEmbeddings(db, filePath)
+    stampEmbedSha(db, filePath, sha, (s) => maxChunksEmbedSha(s, ixCfg.max_chunks_per_file))
+    return
+  }
   try {
     const db = getDb(dbPath)
-    const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
     const outcome = await embedIndexFile(db, filePath, content, boundaries)
     // When the optional embedding deps were absent, embedIndexFile reports 'unavailable' and no vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
     stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))

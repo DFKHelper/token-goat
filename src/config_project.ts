@@ -88,6 +88,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   'indexing.skip_files',
   'indexing.large_file_skip_kb',
   'indexing.large_file_symbol_only_kb',
+  // Same reasoning as the two thresholds above, on the chunk axis: a checked-in `.token-goat.toml` dropping this to 1 would take every file in the repository out of `semantic` for a reviewing agent, and `semantic` would answer "no matches" in the words it uses for a genuine absence.
+  'indexing.max_chunks_per_file',
   'indexing.cross_project_symbols',
   'worker.blocked_roots',
 ]

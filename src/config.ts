@@ -187,6 +187,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'worker.embed_threads': {min: 1, max: 16},
   'indexing.large_file_symbol_only_kb': {min: 1, max: 1048576, clampTo: 'indexing.large_file_skip_kb'},
   'indexing.large_file_skip_kb': {min: 1, max: 1048576},
+  'indexing.max_chunks_per_file': {min: 1, max: 1_000_000},
   'context.model_window_tokens': {min: 10_000, max: 10_000_000},
   'hint_stats.suppress_threshold_pct': {min: 0, max: 100},
   'hint_stats.defiance_threshold_pct': {min: 0, max: 100},
@@ -946,6 +947,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   // skipped entirely before the symbol-only tier's condition could ever apply. Clamp
   // symbol_only_kb so it never exceeds skip_kb.
   ix.large_file_symbol_only_kb = Math.min(ix.large_file_symbol_only_kb, ix.large_file_skip_kb)
+  ix.max_chunks_per_file = validatedInt(ix_raw['max_chunks_per_file'], ix.max_chunks_per_file, ...boundsOf('indexing.max_chunks_per_file'))
   ix.skip_dirs = validatedStrList(ix_raw['skip_dirs'], ix.skip_dirs)
   ix.skip_files = validatedStrList(ix_raw['skip_files'], ix.skip_files)
   ix.embeddings_enabled = validatedBool(ix_raw['embeddings_enabled'], ix.embeddings_enabled)
@@ -1292,6 +1294,7 @@ export function saveConfig(config: Config): void {
     indexing: {
       large_file_symbol_only_kb: config.indexing.large_file_symbol_only_kb,
       large_file_skip_kb: config.indexing.large_file_skip_kb,
+      max_chunks_per_file: config.indexing.max_chunks_per_file,
       skip_dirs: config.indexing.skip_dirs,
       skip_files: config.indexing.skip_files,
       embeddings_enabled: config.indexing.embeddings_enabled,

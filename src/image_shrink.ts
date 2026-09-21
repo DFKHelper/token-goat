@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { IMAGE_EXTENSIONS, isImagePath } from './asset_extensions.js'
 import { loadConfig, type VisionTier } from './config.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import {
@@ -46,21 +47,6 @@ import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
-
-/** Recognised image extensions (lowercase, leading dot). */
-const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.webp',
-  '.bmp',
-  '.tif',
-  '.tiff',
-  '.avif',
-  '.heic',
-  '.heif',
-])
 
 /** Long-edge resize target. 1568 is Claude's Standard resolution tier maximum; Claude 4.7 and later run a High-resolution tier whose maximum is 2576, so this is a conservative floor that every tier accepts rather than a universal optimum. It also divides evenly into Anthropic's 28px patch grid (56) and OpenAI's 32px one (49). */
 const DEFAULT_MAX_DIMENSION = 1568
@@ -236,10 +222,8 @@ export function formatShrinkSummary(result: ShrinkResult, subject: string): { su
   return { summary, dataUrl }
 }
 
-/** True when `p` has a recognised image extension (case-insensitive). */
-export function isImagePath(p: string): boolean {
-  return IMAGE_EXTENSIONS.has(path.extname(p).toLowerCase())
-}
+// Re-exported rather than defined here: the single list now lives in the leaf module asset_extensions.ts, which src/parser.ts can also import (it cannot import this file). Kept exported from here so the existing importers (hooks_read.ts, read_commands.ts) are unchanged.
+export { IMAGE_EXTENSIONS, isImagePath }
 
 /** Sentinel thrown by {@link probeImageMeta} when bytes will not decode as a valid image or exceed pixel limit. */
 export class ImageDecodeError extends Error {}

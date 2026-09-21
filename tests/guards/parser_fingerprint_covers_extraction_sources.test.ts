@@ -43,6 +43,7 @@ function importClosureOf(entry: string): ClosureResult {
 
 /** Every closure member that is not in extractionSources(), each with a one-line reason a source edit there cannot change what an unchanged file's next parse extracts. Every reason has to survive on its own: "not directly imported by parser.ts" is not a reason, since the whole point of a transitive closure is that indirect reach still counts. */
 const NOT_EXTRACTION: Record<string, string> = {
+  'src/asset_extensions.ts': 'classifies extensions for the image pipeline and for embedding eligibility; parseContent never consults it, so an edit here cannot change a single symbol, ref or section an unchanged file extracts',
   'src/bridges/created_configs.ts': 'installer config-ledger bookkeeping (which config files token-goat created), reached only via util.ts/install.ts/config.ts, never by an extractor',
   'src/bridges/project_scope_guard.ts': 'write-scope confinement for installers, reached only via util.ts/util_config.ts, never by an extractor',
   'src/bridges/registry.ts': 'detects which AI harness is running for hook wiring; irrelevant to parsing file content',

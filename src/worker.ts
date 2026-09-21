@@ -15,7 +15,8 @@ import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
-import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
+import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
+import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath, displaySafeText } from './paths.js'
 import { ensureDirSync, foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
@@ -521,7 +522,11 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       // Same reason as the identical call in cli.ts's cmdIndex: files.embed_sha encodes the content but not the embedding stack that produced the vectors, so the gate below reads a file embedded by a previous model or inference runtime as fresh and returns "nothing to do". ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision. It has to run before getFileEntry below, not beside the gate that consults the result: the reset clears each affected file's embed_sha, and once `entry` holds a row that clearing can no longer be seen. Memoized per database per process, so this costs one Set lookup per drained file after the first. embeddingsEnabled/depsAvailable are hoisted here from beside the gate for the same ordering reason; see their comments there.
       const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
       const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
-      if (depsAvailable) ensureEmbeddingProvenance(getDb(dbPath))
+      if (depsAvailable) {
+        ensureEmbeddingProvenance(getDb(dbPath))
+        // Same placement and the same reason as the call above, for the gates that reject a file rather than the stack that embedded it; see src/embed_backfill.ts. Self-throttling on a ledger row, so after the first drain of a release this is one indexed SELECT per file.
+        pruneUnembeddableChunks(getDb(dbPath), loadConfig().indexing?.max_chunks_per_file ?? 0, deleteFileEmbeddings)
+      }
       const entry = getFileEntry(absPath, dbPath)
       // Skip the syntactic reparse when content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. ...and not when the row's own spelling has gone stale under a case-only rename, which leaves the content identical and would otherwise pin the old spelling in place forever. See indexedPathSpellingIsStale. ...and not when the rows were written by a different version of the extraction logic. files.sha answers "has the content changed", which is only half the question: a parser change alters what gets extracted from content that never moved, and before parser_sha existed those files kept their old symbol set for as long as nobody edited them. Measured on a real index, 37 of 237 source files disagreed with what the same binary produced from scratch. An empty parserSha is a row written before the column existed and is correctly stale. The expected stamp is the one for the language the row itself records, so a fix to one adapter reparses that language's files and leaves every other language's rows alone. See parserFingerprintForLanguage.
       const spellingStale = entry !== null && indexedPathSpellingIsStale(entry.filePath, absPath)
@@ -542,6 +547,8 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
           depsAvailable,
           // Same partial-config defensiveness as embeddingsEnabled above: 0 matches no stamped oversize marker (config floors this key at 1), so a mocked config re-examines the file rather than assuming it current. See isEmbedFresh.
           loadConfig().indexing?.large_file_symbol_only_kb ?? 0,
+          // Same reasoning and same 0 fallback for the chunk-count marker.
+          loadConfig().indexing?.max_chunks_per_file ?? 0,
         )
       if (embedUnchanged) {
         // Nothing left to embed. `false` tells processDirtyBatch the gate found nothing to do at all, so it is only truthful when the parse was skipped too: a parser-stamp bump reparses the file above while correctly leaving its embedding alone, and that is a real index rather than a no-op skip.

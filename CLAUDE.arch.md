@@ -51,6 +51,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
+| [`src/embed_backfill.ts`](src/embed_backfill.ts) | One-time-per-release sweep that deletes chunk rows an already-indexed file would no longer be allowed to contribute. |
 | [`src/embed_fingerprint.ts`](src/embed_fingerprint.ts) | Exports: `EMBED_FINGERPRINT` |
 | [`src/embed_model.ts`](src/embed_model.ts) | The embedding backend: fetch the pinned model, verify it, run it, pool it. |
 | [`src/embed_stamp.ts`](src/embed_stamp.ts) | Resolves which extraction kind a file's embedding stamp belongs to, and which digest from `embed_fingerprint.ts` that kind carries. |
@@ -339,6 +340,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/affected.ts`](src/affected.ts) | `token-goat affected` -- which test files a set of changed source files can reach. |
 | [`src/answer_router.ts`](src/answer_router.ts) | `token-goat answer` -- a deterministic question router. |
 | [`src/archive_query.ts`](src/archive_query.ts) | Entry listing + single-member extraction for `token-goat zip-list` / `zip-read`, so a .zip/.jar/.whl/.vsix/.nupkg (all zip-format containers under the hood) never needs its whole a |
+| [`src/asset_extensions.ts`](src/asset_extensions.ts) | Extension-based classification of files whose bytes are not text, kept in one leaf module with no imports of its own so every consumer shares a single list. |
 | [`src/baseline.ts`](src/baseline.ts) | Project map / overview (`token-goat map`). |
 | [`src/batch_serve.ts`](src/batch_serve.ts) | `--batch-serve`: run many CLI invocations inside one already-started process. |
 | [`src/bridges_status.ts`](src/bridges_status.ts) | Bridge hook-event parity matrix. |

@@ -230,6 +230,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   indexing: {
     large_file_symbol_only_kb: 500,
     large_file_skip_kb: 2048,
+    // 600 comes from a census of one real machine-wide index: 243,603 chunks over 62 projects and roughly 4,400 files. The largest hand-written source file anywhere in it produced 387 chunks (a 4,000-line test file); the next tier up starts at 513 and is entirely generated data snapshots, minified vendor assets and one HTML draft. 600 sits in that gap with about 1.5x headroom over the largest real file, and above it 32 files held 54,674 chunks -- 22% of the whole index from 0.7% of its files.
+    max_chunks_per_file: 600,
     skip_dirs: [],
     skip_files: ['coverage.json', 'coverage-final.json'],
     embeddings_enabled: true,

@@ -32,7 +32,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const PARSER = path.join(REPO_ROOT, 'src', 'parser.ts')
 
 /** Prefix helpers whose presence in a stamp's transform means the stored value encodes the skip's condition. */
-const CONDITION_ENCODING = ['disabledEmbedSha', 'unavailableEmbedSha', 'oversizeEmbedSha'] as const
+const CONDITION_ENCODING = ['disabledEmbedSha', 'unavailableEmbedSha', 'oversizeEmbedSha', 'assetEmbedSha', 'maxChunksEmbedSha'] as const
 
 interface Site {
   /** The full source text of the `stampEmbedSha(...)` call. */

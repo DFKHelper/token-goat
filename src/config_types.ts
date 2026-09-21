@@ -215,6 +215,13 @@ export interface WorkerConfig {
 export interface IndexingConfig {
   large_file_symbol_only_kb: number
   large_file_skip_kb: number
+  // Most chunks one file may contribute to the semantic index before it is indexed for symbols
+  // only, the same outcome large_file_symbol_only_kb produces but measured on the axis that
+  // actually distinguishes generated data from source. Byte size does not: chunk cuts snap to
+  // structure, so a generated JSON snapshot with thousands of one-line keys turns a few hundred
+  // kilobytes into thousands of near-identical chunks while a source file of the same size makes a
+  // few hundred meaningful ones. See maxChunksEmbedSha in parser.ts.
+  max_chunks_per_file: number
   skip_dirs: string[]
   // Basenames (not paths) excluded from the syntactic parse regardless of directory depth --
   // e.g. generated coverage reports. Defaults to the previously-hardcoded coverage.json /
