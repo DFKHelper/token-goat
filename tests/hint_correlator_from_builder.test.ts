@@ -50,7 +50,11 @@ function postBashEvent(sessionId: string, command: string): HookEvent {
 
 function rowsFor(sessionId: string): Array<{ category: string; correlator: string | null; acted_on: number }> {
   return getDb(globalDbPath())
-    .prepare(`SELECT category, correlator, acted_on FROM hint_emissions WHERE session_id = ? ORDER BY id`)
+    // displayed = 1 only: the first sed of each pair below is declined by the priced gate, which
+    // now records a zero-byte undisplayed row naming the same file. That row is real and wanted
+    // (see tests/hint_undisplayed_detections.test.ts), but it is not what this file is about --
+    // the question here is which correlator the *shown* hint was scored against.
+    .prepare(`SELECT category, correlator, acted_on FROM hint_emissions WHERE session_id = ? AND displayed = 1 ORDER BY id`)
     .all(sessionId) as Array<{ category: string; correlator: string | null; acted_on: number }>
 }
 

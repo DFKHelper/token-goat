@@ -58,15 +58,25 @@ function emittedCell(row: CategoryEfficacy): string {
   return row.unobservable > 0 ? `${row.emitted} ~${row.unobservable}` : String(row.emitted)
 }
 
+/**
+ * Renders how often a category's trigger fired, against how often the agent was actually told.
+ *
+ * A suppressed category emits nothing, so every other column on its row freezes and stays frozen. That leaves the two questions a reader has -- has the trigger stopped firing, or is it firing constantly into a mute -- answered identically, and they call for opposite actions. This column counts the zero-byte rows written for detections that never reached the agent: a large figure says the trigger is alive and the mute is doing the work, a 0 says it has gone quiet on its own. Rendered as `-` rather than `0` when there are none, so a column of zeros does not read as a measured absence on the categories that have no gate to decline at.
+ */
+function detectedCell(row: CategoryEfficacy): string {
+  return row.detected === 0 ? '-' : String(row.detected)
+}
+
 function printSummary(rows: readonly CategoryEfficacy[]): void {
   const w = (text: string) => {
     process.stdout.write(text)
   }
-  w(pad('category', 22) + pad('emitted', 9) + pad('acted-on', 10) + pad('efficacy', 12) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent\n')
+  w(pad('category', 22) + pad('emitted', 9) + pad('undisplayed', 13) + pad('acted-on', 10) + pad('efficacy', 12) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent\n')
   for (const row of rows) {
     w(
       pad(row.category, 22) +
         pad(emittedCell(row), 9) +
+        pad(detectedCell(row), 13) +
         pad(String(row.actedOn), 10) +
         pad(efficacyCell(row), 12) +
         pad(suppressedCell(row), 17) +
@@ -128,7 +138,7 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
   // `unobservable` belongs in this test: a store holding only correlator-less rows has recorded
   // plenty, it just scored none of it, and calling that "absence of data" would send a reader to
   // collect more of exactly the data that is already there and still unscoreable.
-  if (rows.every((r) => r.emitted === 0 && r.actedOn === 0 && r.unobservable === 0)) {
+  if (rows.every((r) => r.emitted === 0 && r.actedOn === 0 && r.unobservable === 0 && r.detected === 0)) {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
   printSummary(rows)
@@ -143,6 +153,17 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
   }
   // Without this, the emitted column silently shrinks: 174 of bash_redirect's 698 rows leave the
   // count and nothing says where they went, which looks like data loss rather than a scoping rule.
+  // Same both-halves rule as the markers above: a note that prints whether or not the column has
+  // anything in it is boilerplate, and stops being read.
+  if (rows.some((r) => r.detected > 0)) {
+    process.stdout.write(
+      '\nundisplayed: detections that never reached the agent -- auto-suppressed, or declined by ' +
+      'the hint\'s own net-benefit gate because the substitute it would have proposed was not ' +
+      'smaller than the read it was redirecting. They cost nothing and are scored nowhere. A large ' +
+      'figure against a small emitted count means the trigger is alive and the mute is doing the ' +
+      'work; a `-` means it has gone quiet on its own.\n',
+    )
+  }
   if (rows.some((r) => r.unobservable > 0)) {
     process.stdout.write(
       '\n~N: N further emissions in that category carried no correlator -- no pointer a later ' +

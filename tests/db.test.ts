@@ -383,6 +383,51 @@ describe('getDb schema version', () => {
     expect(inserted.observable).toBe(1)
   })
 
+  it('migrates a v15 DB up to SCHEMA_VERSION, adding hint_emissions.displayed without a backfill', () => {
+    const p = tmpDbPath()
+
+    // A real pre-v16 on-disk database: hint_emissions shaped exactly like v15's SCHEMA_SQL (it has
+    // `observable` but not `displayed`), stamped user_version = 15.
+    const raw = new Database(p)
+    raw.exec(`
+      CREATE TABLE hint_emissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        harness TEXT NOT NULL,
+        correlator TEXT,
+        emitted_at REAL NOT NULL,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        acted_on INTEGER NOT NULL DEFAULT 0,
+        calls_remaining INTEGER NOT NULL DEFAULT 0,
+        bytes_emitted INTEGER,
+        observable INTEGER NOT NULL DEFAULT 1
+      );
+    `)
+    const ins = raw.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted, observable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    ins.run('bash_redirect', 'shown-and-scored', 'claude-code', 'src/paths.ts', Date.now(), 1, 1, 0, 300, 1)
+    ins.run('bash_redirect', 'shown-unscoreable', 'claude-code', null, Date.now(), 1, 0, 0, 300, 0)
+    raw.pragma('user_version = 15')
+    raw.close()
+
+    const db = getDb(p)
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION)
+
+    // Every pre-existing row is displayed=1, and deliberately by the column DEFAULT rather than by
+    // a backfill: until v16 a row only ever existed because a hint was actually shown, so there is
+    // no population for an UPDATE to correct. That includes the unobservable row -- it WAS shown,
+    // it just could not be scored, which is the distinction the two columns now carry separately.
+    const seen = db
+      .prepare('SELECT session_id, displayed, observable FROM hint_emissions ORDER BY id')
+      .all() as Array<{ session_id: string; displayed: number; observable: number }>
+    expect(seen).toEqual([
+      { session_id: 'shown-and-scored', displayed: 1, observable: 1 },
+      { session_id: 'shown-unscoreable', displayed: 1, observable: 0 },
+    ])
+  })
+
   it('refuses to open a DB whose user_version is newer than this build supports', () => {
     const p = tmpDbPath()
     getDb(p)

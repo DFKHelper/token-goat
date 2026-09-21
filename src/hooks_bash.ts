@@ -7,7 +7,7 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
-import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
+import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
@@ -603,6 +603,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const sub = rangeSubstituteFor(hintPath, hintCwd, [[start, end]])
     return sub !== null && meetsSavingsFloor(sub.requestedBytes - sub.replacementBytes) ? sub : null
   }
+  // Falling silent because the substitute was not cheaper is a decision, and it has to leave a trace or it is invisible to every surface: the hook returns the same empty object it returns for a command it never recognized, so without this a gate that declines on every file in the project and a gate that never fires read identically. Zero-byte and never scored -- nothing was shown, so there is nothing to score -- but the correlator records which file kept losing the comparison, which is what tells a reader whether to widen the gate or retire the hint.
+  const declineUnpriced = (paths: string | readonly string[]): HookOutput => {
+    for (const p of typeof paths === 'string' ? [paths] : paths) logSuppressedDetection('bash_redirect', event.sessionId, p)
+    return passOutput()
+  }
 
   // Check for unbalanced shell quoting or unterminated heredocs
   const cfg = loadConfig()
@@ -719,7 +724,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         hints.push(sedRangeHint(hintPath, freshRanges, tool, sub))
       }
     }
-    if (hints.length === 0) return passOutput()
+    if (hints.length === 0) return declineUnpriced(hintPaths)
     recordStat('session_hint', 0, 0)
     return pathHint(hintPaths, hints.join(' '))
   }
@@ -738,7 +743,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, n } = gcSelectResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     const gcSelectHint = leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n))
-    if (gcSelectHint === null) return passOutput()
+    if (gcSelectHint === null) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     return pathHint(hintPath, gcSelectHint)
   }
@@ -870,7 +875,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, n } = headResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     const headHint = leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n))
-    if (headHint === null) return passOutput()
+    if (headHint === null) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     return pathHint(hintPath, headHint)
   }

@@ -717,10 +717,16 @@ describe('applyHintTracking', () => {
     const result = applyHintTracking(event, contextOut, classify)
     expect(result).toEqual({ hookType: 'pass' })
 
-    // The suppressed emission must not itself have been logged.
+    // No DISPLAYED emission: the agent saw nothing, so nothing may be scored against it. The
+    // suppressed detection does now leave a zero-byte displayed=0 row, which is the point of that
+    // column -- without it a category muted into silence and one whose trigger stopped firing are
+    // indistinguishable in the ledger. This assertion moved from "no row" to "no displayed row"
+    // for that reason; tests/hint_undisplayed_detections.test.ts pins the row's own shape.
     const db = getDb(globalDbPath())
-    const row = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ?').get(n) as { n: number }
-    expect(row.n).toBe(0)
+    const shown = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ? AND displayed = 1').get(n) as { n: number }
+    expect(shown.n).toBe(0)
+    const undisplayed = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ? AND displayed = 0 AND bytes_emitted = 0').get(n) as { n: number }
+    expect(undisplayed.n).toBe(1)
   })
 
   it('preserves the full ACTED_ON_WINDOW of genuinely subsequent chances for a pre_tool_use-emitted hint, despite the guaranteed self-resolving post_tool_use pass for the same tool call', () => {
@@ -842,9 +848,12 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
       const contextOut = { hookType: 'context' as const, context: `Use \`token-goat read "C:/repo/skip-${i}.ts::Foo"\` instead.` }
       const result = applyHintTracking(event, contextOut, classify)
       expect(result).toEqual({ hookType: 'pass' })
+      // Silently suppressed means the agent was told nothing, not that the ledger forgot: the
+      // occasion leaves a zero-byte displayed=0 row so the backoff schedule's own denominator is
+      // recoverable later. See the same assertion's sibling above for why it moved.
       const db = getDb(globalDbPath())
-      const row = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ?').get(n) as { n: number }
-      expect(row.n).toBe(0)
+      const shown = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ? AND displayed = 1').get(n) as { n: number }
+      expect(shown.n).toBe(0)
     }
 
     // Occasion 3 matches the schedule -- probes through and is logged.

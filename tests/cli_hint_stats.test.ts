@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { runHintStatsCommand } from '../src/cli_hint_stats.js'
-import { logHintEmission, markCategoryEffective, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
+import { logHintEmission, logSuppressedDetection, markCategoryEffective, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
 import { defaultConfig, saveConfig } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordStat } from '../src/stats.js'
@@ -313,6 +313,40 @@ describe('runHintStatsCommand — unobservable emissions are disclosed, not sile
     expect(line).toBeDefined()
     expect(line).not.toContain('~')
     expect(output).not.toContain('carried no correlator')
+  })
+
+  it('shows an undisplayed count and explains it when detections were suppressed', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/shown.ts')
+    logSuppressedDetection('bash_redirect', sid, 'C:/x/hidden.ts')
+    logSuppressedDetection('bash_redirect', sid, 'C:/x/hidden2.ts')
+
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).toContain('undisplayed')
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line).toBeDefined()
+    // One shown, two never shown. The emitted count stays 1 -- the point of the column is that the
+    // two populations are reported side by side, not pooled.
+    expect(line).toMatch(/^bash_redirect\s+1\s+2\s/)
+    expect(output).toContain('never reached the agent')
+  })
+
+  it('prints a dash, not a zero, and stays silent when nothing was suppressed', () => {
+    logHintEmission('bash_redirect', nonce(), 'C:/x/shown.ts')
+
+    const output = captureStdout(() => runHintStatsCommand())
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line).toBeDefined()
+    // A `0` here would read as a measured absence on a category with no gate to decline at.
+    expect(line).toMatch(/^bash_redirect\s+1\s+-\s/)
+    expect(output).not.toContain('never reached the agent')
+  })
+
+  it('a store holding only undisplayed rows is not reported as absence of data', () => {
+    logSuppressedDetection('bash_redirect', nonce(), 'C:/x/hidden.ts')
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).not.toContain('No hint emissions recorded yet')
+    expect(output).toContain('never reached the agent')
   })
 
   it('a store holding only unobservable rows is not reported as absence of data', () => {

@@ -357,6 +357,7 @@ export function applyHintTracking(event: HookEvent, output: HookOutput, classify
     const occasion = bumpSuppressionStreak(category)
     const thresholds = loadConfig().hints.backoff_thresholds
     if (!isProbeOccasion(occasion, thresholds)) {
+      logSuppressedDetection(category, event.sessionId, correlator)
       return passOutput()
     }
     // Probe occasion: let it through and log it exactly like a normal (non-suppressed) emission
@@ -370,6 +371,36 @@ export function applyHintTracking(event: HookEvent, output: HookOutput, classify
 }
 
 /** Fail-soft: never throws, matching every other hook-path DB write in this codebase (see recall_index.ts's indexRecallEntry doc comment). `bytesEmitted` is the hint text's own length (the real cost of injecting it into context) -- left `null` (never defaulted to 0) when the caller has no figure to give, so a legacy/untracked emission stays honestly distinguishable from a genuine zero-byte spend; see hint_emissions.bytes_emitted's schema comment in db.ts. */
+/**
+ * Record a detection the agent never saw: auto-suppressed, or declined by a hint's own
+ * net-benefit gate.
+ *
+ * Until this existed, a suppressed detection left no trace at all, so the ledger could not tell a
+ * category that had been muted into silence from one that had simply stopped triggering -- and
+ * those call for opposite actions. The row is written zero-byte (nothing was shown, so nothing was
+ * spent), `displayed = 0`, `observable = 0` (no verdict was available about a hint nobody read)
+ * and already resolved, so it never occupies a slot in the pending-resolution scan. It carries its
+ * correlator anyway: what a suppressed category keeps firing on is the first thing worth knowing
+ * when deciding whether to fix it or retire it.
+ *
+ * Retention is hint_emissions' own 180-day window -- pruneHintEmissions (stats.ts) deletes on
+ * emitted_at with no other predicate, so these rows age out with the rest rather than accumulating
+ * the way an unpruned counter table would.
+ */
+export function logSuppressedDetection(category: HintCategory, sessionId: string, correlator: string | null): void {
+  try {
+    getDb(globalDbPath())
+      .prepare(
+        `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted, observable, displayed)
+         VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, 1, 0, 0, 0, 0, 0)`,
+      )
+      .run({ category, sessionId, harness: getHarnessName(), correlator, emittedAt: Date.now() })
+  } catch {
+    // Fail-soft, same contract as logHintEmission: a tracking failure must never change what the
+    // hook returns.
+  }
+}
+
 export function logHintEmission(category: HintCategory, sessionId: string, correlator: string | null, compensateSelfResolve = false, bytesEmitted: number | null = null): void {
   try {
     const db = getDb(globalDbPath())
@@ -585,6 +616,8 @@ export interface CategoryEfficacy {
   efficacyPct: number | null
   /** Count of this category's emissions that carried no correlator, so nothing a later command could do would ever have matched them. Excluded from `emitted`, `actedOn` and `efficacyPct` -- they are the rows no verdict was ever observed for -- but still included in `bytesEmitted`, because an unobservable hint spent its bytes all the same. Surfaced so a category whose efficacy rests on a small observable slice of a large emission count cannot look the same as one that was fully measured. */
   unobservable: number
+  /** Count of this category's detections that were never shown to the agent -- auto-suppressed, or declined by a hint's own net-benefit gate. Zero-byte by construction, so absent from every other count here. Surfaced because a muted category and a category that has stopped triggering print identically otherwise, and they call for opposite actions: one is a throttle to review, the other is a hint whose trigger has gone away. */
+  detected: number
   suppressed: boolean
   /**
    * True only when this category is suppressed *and* `hints.backoff_thresholds` is empty, so no
@@ -607,6 +640,7 @@ interface EmissionRow {
   emitted: number
   actedOn: number | null
   unobservable: number
+  detected: number
   bytesEmitted: number | null
   legacyEmissions: number | null
 }
@@ -615,23 +649,27 @@ function categoryStats(category: HintCategory): EmissionRow {
   const db = getDb(globalDbPath())
   const row = db
     .prepare(
-      // emitted/actedOn count observable rows only: an unobservable row carries no verdict, so
-      // including it would divide a real numerator by a denominator partly made of rows nothing
-      // could ever have satisfied. bytesEmitted and legacyEmissions deliberately span every row --
-      // an unobservable hint still spent its bytes on the agent, and the spend figure would
-      // under-report by exactly the amount the efficacy figure is being protected from.
-      // COALESCE on the two counts that stay `number`: SUM over no rows is NULL where the COUNT(*)
+      // Three populations, deliberately not pooled. `emitted` is what was shown AND could be
+      // scored, so it is the only honest denominator for efficacy: including a row nothing could
+      // ever have satisfied would divide a real numerator by partly-imaginary rows. `unobservable`
+      // was shown but carried no pointer -- it spent bytes and earned no verdict. `detected` was
+      // never shown at all (suppressed, or declined by a net-benefit gate) and spent nothing.
+      // bytesEmitted and legacyEmissions span every row, which is correct in each case: the
+      // unobservable rows really did cost the agent, and the never-displayed ones are zero-byte,
+      // so neither distorts the spend figure.
+      // COALESCE on the counts that stay `number`: SUM over no rows is NULL where the COUNT(*)
       // this replaced was 0, and an aggregate query always returns its row, so the `?? default`
       // below would not have caught it.
-      `SELECT COALESCE(SUM(CASE WHEN observable = 1 THEN 1 ELSE 0 END), 0) AS emitted,
-              SUM(CASE WHEN observable = 1 THEN acted_on ELSE 0 END) AS actedOn,
-              COALESCE(SUM(CASE WHEN observable = 1 THEN 0 ELSE 1 END), 0) AS unobservable,
+      `SELECT COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 1 THEN 1 ELSE 0 END), 0) AS emitted,
+              SUM(CASE WHEN displayed = 1 AND observable = 1 THEN acted_on ELSE 0 END) AS actedOn,
+              COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 0 THEN 1 ELSE 0 END), 0) AS unobservable,
+              COALESCE(SUM(CASE WHEN displayed = 0 THEN 1 ELSE 0 END), 0) AS detected,
               SUM(bytes_emitted) AS bytesEmitted,
               SUM(CASE WHEN bytes_emitted IS NULL THEN 1 ELSE 0 END) AS legacyEmissions
        FROM hint_emissions WHERE category = ? AND harness = ?`,
     )
     .get(category, getHarnessName()) as EmissionRow | undefined
-  return row ?? { emitted: 0, actedOn: 0, unobservable: 0, bytesEmitted: null, legacyEmissions: 0 }
+  return row ?? { emitted: 0, actedOn: 0, unobservable: 0, detected: 0, bytesEmitted: null, legacyEmissions: 0 }
 }
 
 /**
@@ -694,7 +732,7 @@ function manualMarks(category: HintCategory): { effective: number; ineffective: 
 export function getHintStatsSummary(): CategoryEfficacy[] {
   const probeThresholds = loadConfig().hints.backoff_thresholds.filter((t) => t > 0)
   return HINT_CATEGORIES.map((category) => {
-    const { emitted, actedOn, unobservable, bytesEmitted, legacyEmissions } = categoryStats(category)
+    const { emitted, actedOn, unobservable, detected, bytesEmitted, legacyEmissions } = categoryStats(category)
     const marks = manualMarks(category)
     const suppressed = shouldSuppress(category, '')
     return {
@@ -703,6 +741,7 @@ export function getHintStatsSummary(): CategoryEfficacy[] {
       actedOn: actedOn ?? 0,
       efficacyPct: emitted === 0 ? null : Math.round((1000 * (actedOn ?? 0)) / emitted) / 10,
       unobservable,
+      detected,
       suppressed: suppressed,
       suppressionPermanent: suppressed && probeThresholds.length === 0,
       manualEffective: marks.effective,
