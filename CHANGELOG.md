@@ -26,6 +26,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **token-goat follows `CLAUDE_CONFIG_DIR` everywhere Claude Code does**: every path to Claude Code's config home was pinned to `~/.claude`, so a user who relocates that home got an install which reported success and then did nothing. The hooks shim, the user `settings.json` wiring, the CLAUDE.md routing block and the skill all landed in a tree Claude Code never reads. The read side was equally dead: the skill cache, the agent roster the spawn hook advises from, transcript discovery for `waste` and the Bash hook, the bootstrap audit, and the CLAUDE.md and MEMORY.md walks all looked in the wrong place. Setting the variable now moves all of them together, matching how Claude Code resolves its own config home. With the variable unset, `~/.claude` is used exactly as before.
 
+- **The MCP tools read the skills and transcripts of a relocated Claude Code config home**: the root allowlist that lets all 17 MCP tools inspect trees outside a workspace named `~/.claude/skills` and `~/.claude/projects` literally, so a user who sets `CLAUDE_CONFIG_DIR` had every tool refuse the only copy of those trees that exists. Both entries now hang off the same config-home accessor the rest of token-goat uses, and they replace the home-relative pair rather than sit beside it, since an allowlist should not admit a directory Claude Code no longer uses. Only the named children are admitted, never the config home itself, so pointing the variable at a drive root grants that drive's `skills` and `projects` and nothing more. With the variable unset the allowlist is byte-for-byte what it was.
+
 ## [2.9.18] - 2026-09-19
 
 ### Fixed

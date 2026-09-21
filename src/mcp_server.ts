@@ -8,6 +8,7 @@ import * as path from 'path'
 import type { CallToolResult, McpServer } from './mcp_jsonrpc.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseline.js'
+import { claudeConfigDir } from './claude_config_dir.js'
 import { ENV_KEYS, VERSION, dataDir, globalDbPath } from './constants.js'
 import { envStrList } from './env.js'
 import {
@@ -156,13 +157,14 @@ function resolveToolRoot(projectRoot: string | undefined): string {
 class RootNotAllowedError extends Error {}
 
 /** Refuse a resolved root that the operator has not allowed. This check used to live inside {@link confineTargets}, which meant two things it should not have. Four tools -- `semantic`, `index_status`, `map` and `changed` -- resolve a caller-supplied root but read no individual file path, so they never call that function and were never checked at all: naming any directory on the machine returned its file inventory, headline symbols, indexed content chunks, or changed symbols and diff hunks, straight past the allowlist. And `confineTargets` returns early when `confine_reads_to_project_root` is off, so turning off the traversal guard silently voided the root allowlist for the other thirteen tools too, even though they are separate operator policies answering separate questions. Sitting on the one function that resolves a caller's root instead means a tool is covered by construction rather than by remembering, and the allowlist holds whatever the traversal guard is set to. Deliberately loadConfig() with NO argument -- the server's own config, never the caller-chosen root's -- which is the exact INVERSE of what mcp_server_confine_reads_config_scoping.test.ts pins for `confine_reads_to_project_root`. That is intentional: `confine_reads_to_project_root` is a workspace's policy about ITSELF, so it must be read from that workspace, while `allowed_roots` is the operator's policy about WHICH workspaces may be named at all, so reading it from the resolved root would let the root being restricted supply the setting that restricts it -- a repo could ship a project config listing itself and the allowlist would authorise the very root it exists to reject. */
-/** Standard user skill directories, prompt assets, and transcript storage that token-goat permits for cross-workspace inspections. */
+/** Standard user skill directories, prompt assets, and transcript storage that token-goat permits for cross-workspace inspections. The two Claude Code entries hang off {@link claudeConfigDir}, which is `CLAUDE_CONFIG_DIR` when set and `<home>/.claude` otherwise, because that is how Claude Code itself resolves its config home: a user who relocates it keeps skills and transcripts there and nowhere else, so a hardcoded `~/.claude` named a tree the product no longer writes and these tools refused the only copy that exists. The relocated pair REPLACES the home-relative pair rather than joining it -- this is an allowlist on a confinement boundary, and the narrower set is the correct one when the wider one admits a directory Claude Code does not use; with the variable unset the two are the same path anyway. Always the named CHILDREN of the config home, never the config home itself: `CLAUDE_CONFIG_DIR=C:/` must grant `C:/skills` and `C:/projects`, not the whole drive. */
 function getStandardAuxiliaryRoots(targetPath?: string): string[] {
   const home = os.homedir()
+  const claudeHome = claudeConfigDir(home)
   const roots: string[] = [
-    path.join(home, '.claude', 'skills'),
+    path.join(claudeHome, 'skills'),
     path.join(home, '.copilot', 'skills'),
-    path.join(home, '.claude', 'projects'),
+    path.join(claudeHome, 'projects'),
     path.join(home, '.copilot', 'session-state'),
   ]
   const appData = process.env['APPDATA'] || path.join(home, 'AppData', 'Roaming')
