@@ -255,6 +255,8 @@ $ token-goat read "src/auth.py::login"
 out: 38 lines              # ~300 tokens   (97% smaller)
 ```
 
+A line number works in place of a name, which is what you are holding when a grep hit, a stack frame, or a diff hunk points at code: `token-goat read "src/auth.py:142"` returns the symbol enclosing line 142, and `read "src/auth.py:142-190"` returns every symbol the range touches. A Windows drive letter stays part of the path, so `C:/src/auth.py:142` reads line 142 of that file, and a bare `C:142` stays a drive-relative path rather than a line number.
+
 Same applies to `token-goat section "README.md::Install"` — one heading instead of the whole document. Anchor IDs and setext headings resolve too, so `section "doc.md::Quick-start"` works when the file uses `Quick start` as an `<h2>` with an explicit `{#quick-start}` anchor.
 
 ### 3. Compact manifest — preserve what mattered
