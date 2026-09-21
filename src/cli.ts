@@ -1769,7 +1769,7 @@ export function buildProgram(): Command {
   program
     .command('read <spec> [more...]')
     .description(
-      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; a trailing @LINE anchor -- file::symbol@LINE, or combined as file::Parent.symbol@LINE -- picks out a specific candidate by its exact starting line, for the case a Parent qualifier can't reach (e.g. a top-level definition); comma-separated file::a,b for a merged multi-symbol view, or a::x,b::y to merge symbols across several files)",
+      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; a trailing @LINE anchor -- file::symbol@LINE, or combined as file::Parent.symbol@LINE -- picks out a specific candidate by its exact starting line, for the case a Parent qualifier can't reach (e.g. a top-level definition); comma-separated file::a,b for a merged multi-symbol view, or a::x,b::y to merge symbols across several files; file:LINE or file:START-END resolves a line number to the region enclosing it -- the symbol, the file preamble, or the gap between two symbols -- while file@START-END serves those raw lines)",
     )
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')

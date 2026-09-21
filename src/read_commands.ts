@@ -83,11 +83,13 @@ import {
   formatAmbiguity,
   isProjectRootAllowed,
   parseColonLineRange,
+  parseColonLineSpec,
   parseCrossFileMultiSpec,
   parseLineRange,
   parseReadSpec,
   resolveSymbolSpec,
   runLineRange,
+  runLineRegion,
   stripHtmlIdSpelling,
 } from './read_spec.js'
 import {
@@ -1079,32 +1081,16 @@ function truncationNotice(shown: number, limit: number, total: () => TruncationT
 // ---- read (symbol body) -----------------------------------------------------
 
 export interface ReadOptions {
-  /**
-   * `file::symbol`, `file@N-M` / `file@N` (line range), a bare file path, or -- new -- a
-   * comma-separated symbol list (`file::a,b,c`) to fetch several symbol bodies in one call,
-   * mirroring `refs`'s multi-symbol grammar. See {@link runReadMulti}.
-   */
+  /** `file::symbol`, `file@N-M` / `file@N` (raw line range), `file:N-M` / `file:N` (the region enclosing those lines -- see {@link runLineRegion}), a bare file path, or a comma-separated symbol list (`file::a,b,c`) to fetch several symbol bodies in one call, mirroring `refs`'s multi-symbol grammar. See {@link runReadMulti}. */
   spec: string
   json?: boolean
   contextLines?: number
   forceRefresh?: boolean
   /** Add per-symbol reference count and doc-coverage flag, same as `skeleton`/`outline`'s `--stats`. */
   stats?: boolean
-  /**
-   * Project root to scope symbol resolution to. Defaults to `process.cwd()`; same field name
-   * as {@link SemanticOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g.
-   * an MCP server launched from an opaque directory) should pass the actual workspace root
-   * explicitly -- otherwise a bare/partial file spec can resolve against the wrong project,
-   * or an ambiguous symbol name can match a same-named definition in an unrelated project.
-   */
+  /** Project root to scope symbol resolution to. Defaults to `process.cwd()`; same field name as {@link SemanticOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g. an MCP server launched from an opaque directory) should pass the actual workspace root explicitly -- otherwise a bare/partial file spec can resolve against the wrong project, or an ambiguous symbol name can match a same-named definition in an unrelated project. */
   projectRoot?: string
-  /**
-   * Internal only -- set by {@link runReadMulti} on each per-symbol recursive `runRead` call so
-   * the single-symbol path skips its own `recordReadStat`. Without this, N symbols from the
-   * same file would each record a stat against the full file size, inflating the recorded
-   * token-savings by a factor of N for what is really one read. `runReadMulti` records the stat
-   * itself, once, for the whole multi-symbol call. Not a CLI/MCP-facing option.
-   */
+  /** Internal only -- set by {@link runReadMulti} on each per-symbol recursive `runRead` call so the single-symbol path skips its own `recordReadStat`. Without this, N symbols from the same file would each record a stat against the full file size, inflating the recorded token-savings by a factor of N for what is really one read. `runReadMulti` records the stat itself, once, for the whole multi-symbol call. Not a CLI/MCP-facing option. */
   suppressStat?: boolean
 }
 
@@ -1113,33 +1099,27 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const range = parseLineRange(opts.spec)
   if (range !== null) return runLineRange(range, opts)
 
+  // `file:142` / `file:142-160`: a line number is what an agent actually holds at the moment it reads (a grep hit, a stack frame, a diff hunk), and nothing bridged that to the `file::symbol` grammar. Resolved to the enclosing region rather than served as raw lines -- that is the whole point of the form, and it is why it does not just delegate to runLineRange like the `@` spelling does. Checked after `@` and before parseCrossFileMultiSpec, matching the order those two already ran in; parseColonLineSpec declines every spec they handle (a `::` prefix ends in `:`, and a symbol name is not all digits).
+  const region = parseColonLineSpec(opts.spec)
+  if (region !== null) return runLineRegion(region, opts)
+
   // Cross-file multi-spec `src/a.ts::alphaFn,src/b.ts::betaFn`. Checked before the single-file `parseReadSpec` below because that function's `lastIndexOf('::')` would otherwise fold the whole spec into one bogus file/symbol pair -- see parseCrossFileMultiSpec for why it declines (and falls through here) on every spec the single-file path already handles correctly.
   const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
   if (crossFilePairs !== null) return runReadMulti(crossFilePairs, opts)
 
   const { file, symbol } = parseReadSpec(opts.spec)
 
-  // Multi-symbol form: `file::a,b,c`. Guarded against the numeric line-range spec `file::N,M`
-  // (parseColonLineRange, consulted a few lines below on a resolution miss) so a comma there is
-  // never misread as two symbol names -- `parseColonLineRange(symbol) === null` fails fast for
-  // the numeric form and falls straight through to the existing single-symbol path, which still
-  // reaches the `::N,M` fallback later exactly as before.
+  // Multi-symbol form: `file::a,b,c`. Guarded against the numeric line-range spec `file::N,M` (parseColonLineRange, consulted a few lines below on a resolution miss) so a comma there is never misread as two symbol names -- `parseColonLineRange(symbol) === null` fails fast for the numeric form and falls straight through to the existing single-symbol path, which still reaches the `::N,M` fallback later exactly as before.
   if (symbol !== undefined && symbol !== '' && symbol.includes(',') && parseColonLineRange(symbol) === null) {
     const multiSymbols = symbol.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
     if (multiSymbols.length > 1) return runReadMulti(multiSymbols.map((s) => ({ file, symbol: s })), opts)
   }
 
   if (symbol === undefined || symbol === '') {
-    // Only resolve against projectRoot when explicitly given and the path is relative -- same
-    // convention as runSection, so absent-projectRoot CLI behavior stays byte-identical
-    // (readFileText resolves a relative path against process.cwd() itself, as the CLI always
-    // has). Without this the MCP confinement gate validated `<projectRoot>/x` while this read
-    // fetched `<server cwd>/x`: two different files, so a relative spec escaped the workspace.
+    // Only resolve against projectRoot when explicitly given and the path is relative -- same convention as runSection, so absent-projectRoot CLI behavior stays byte-identical (readFileText resolves a relative path against process.cwd() itself, as the CLI always has). Without this the MCP confinement gate validated `<projectRoot>/x` while this read fetched `<server cwd>/x`: two different files, so a relative spec escaped the workspace.
     const text = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
     if (text === null) {
-      // A bare name (no `::` at all, as opposed to a `file::` with an empty symbol) that isn't
-      // a readable file is very likely a symbol name passed without its `file::` prefix --
-      // "Could not read" would wrongly frame that as a filesystem problem.
+      // A bare name (no `::` at all, as opposed to a `file::` with an empty symbol) that isn't a readable file is very likely a symbol name passed without its `file::` prefix -- "Could not read" would wrongly frame that as a filesystem problem.
       if (findSpecSeparator(opts.spec) === -1) {
         return { text: formatBareNameSpecError('read', file, opts.projectRoot), code: 1 }
       }
@@ -1153,9 +1133,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   if (resolution.kind === 'confined') return { text: resolution.message, code: 1 }
 
   if (resolution.kind === 'ambiguous') {
-    // Genuine same-file ambiguity (a bare name matching several classes' methods, or a
-    // qualifier that failed to narrow): refuse to guess. The error lists every candidate and
-    // the qualified retry syntax instead of silently returning the first-ordered row.
+    // Genuine same-file ambiguity (a bare name matching several classes' methods, or a qualifier that failed to narrow): refuse to guess. The error lists every candidate and the qualified retry syntax instead of silently returning the first-ordered row.
     return {
       text: formatAmbiguity(
         resolution.symbol,
@@ -1168,10 +1146,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   }
 
   if (resolution.kind === 'none') {
-    // Ergonomic fallback: `read "file::120-140"` (or `::120:140` / `::120,140` / `::120`) is an
-    // agent using the `::` symbol separator for a line range. Serve the lines instead of failing
-    // to a sed/full-Read round-trip. Only reached once no symbol matched, so a real definition is
-    // never shadowed.
+    // Ergonomic fallback: `read "file::120-140"` (or `::120:140` / `::120,140` / `::120`) is an agent using the `::` symbol separator for a line range. Serve the lines instead of failing to a sed/full-Read round-trip. Only reached once no symbol matched, so a real definition is never shadowed.
     const lineSpec = parseColonLineRange(symbol)
     if (lineSpec !== null) {
       return runLineRange({ file, start: lineSpec.start, end: lineSpec.end }, opts)
@@ -1180,15 +1155,11 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     const crossFileLead = formatCrossFileLead('read', symbol, file, opts.projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-    // Query a bounded superset (FIND_SCAN_LIMIT, same bound runSymbol's near-name scan uses)
-    // scoped to this one file, THEN rank by similarity and cap at DIDYOUMEAN_LIMIT -- capping
-    // in the query itself would return an arbitrary storage-order first-N that can omit the
-    // actual closest match entirely.
+    // Query a bounded superset (FIND_SCAN_LIMIT, same bound runSymbol's near-name scan uses) scoped to this one file, THEN rank by similarity and cap at DIDYOUMEAN_LIMIT -- capping in the query itself would return an arbitrary storage-order first-N that can omit the actual closest match entirely.
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
     const closes = rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
-    // No candidate resembled the query -- point at the command that lists the file's real
-    // symbols instead of leaving the miss with no next step.
+    // No candidate resembled the query -- point at the command that lists the file's real symbols instead of leaving the miss with no next step.
     else if (scanned.length > 0) {
       if (/\.(yaml|yml)$/i.test(file)) {
         messages.push(`Try: token-goat yaml-outline ${file}\nQuery subtree: token-goat yaml-query ${file} '<path>'`)
@@ -1223,27 +1194,19 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const match = resolution.entry
   const fullSourceBytes = sumFileSizes([match.filePath])
 
-  // Only queried when --stats is actually requested -- an extra DB round trip the common
-  // (non-stats) path shouldn't pay for. Same call shape as prepareSymbolListing's ref-count
-  // lookup for skeleton/outline.
+  // Only queried when --stats is actually requested -- an extra DB round trip the common (non-stats) path shouldn't pay for. Same call shape as prepareSymbolListing's ref-count lookup for skeleton/outline.
   const refCounts =
     opts.stats === true
       ? queryRefCounts([match.name], globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
       : undefined
 
   if (opts.json === true) {
-    // Serialize the resolved body, not the raw row. `symbols.body` is stored empty for symbols
-    // an extractor emits without text and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS
-    // (deliberately elided so it can be re-derived here rather than stored truncated). Emitting
-    // the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one
-    // output shape with no honest signal that the text is available elsewhere -- the text form
-    // below already resolves it.
+    // Serialize the resolved body, not the raw row. `symbols.body` is stored empty for symbols an extractor emits without text and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS (deliberately elided so it can be re-derived here rather than stored truncated). Emitting the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one output shape with no honest signal that the text is available elsewhere -- the text form below already resolves it.
     const text = displaySafeJson(
       {
         ...match,
         body: resolveBody(match),
-        // The text branch below prepends staleWarning's DELETED line; without this the JSON form
-        // would be the one surface that still passes a deleted file's body off as a live read.
+        // The text branch below prepends staleWarning's DELETED line; without this the JSON form would be the one surface that still passes a deleted file's body off as a live read.
         ...(fileIsGone(match.filePath) ? { deleted: true } : {}),
         ...(refCounts !== undefined ? { refCount: refCounts.get(match.name) ?? 0 } : {}),
       })

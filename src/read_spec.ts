@@ -101,6 +101,71 @@ export function parseLineRange(spec: string): { file: string; start: number; end
   return { file: m[1]!, start, end }
 }
 
+/** A `file:142` / `file:142-160` line spec -- the shape an agent already holds when a grep hit, a stack trace, or a diff hunk handed it a line number. Split on the LAST `:` by index rather than with a regex group, for the same reason findSpecSeparator does: a Windows absolute path (`C:/Projects/foo.ts:142`) carries a drive-letter colon that a lazy group would split on, turning the path into `C` and the line spec into `/Projects/foo.ts:142`. The suffix must match `^\d+(-\d+)?$` in its entirety, so anything else after the last colon (`file::symbol`, `C:/Projects/foo.ts`) stays a path. Two guards keep the existing `::` grammar whole, and both are load-bearing: a prefix ending in `:` declines `file::120`, and a prefix containing `::` anywhere declines `file::2:4` (whose last colon is the range separator, not a path one) -- the same `includes('::')` guard parseLineRange already carries for its `@` form. Without the second, `file::2:4` was captured here with file = `file::2`, breaking a range spelling that already worked. */
+export function parseColonLineSpec(spec: string): { file: string; start: number; end: number } | null {
+  const colonIdx = spec.lastIndexOf(':')
+  if (colonIdx <= 0) return null
+  const suffix = spec.slice(colonIdx + 1)
+  if (!/^\d+(?:-\d+)?$/.test(suffix)) return null
+  const file = spec.slice(0, colonIdx)
+  if (file === '' || file.endsWith(':') || file.includes('::')) return null
+  if (fileExists(spec)) return null
+  const dash = suffix.indexOf('-')
+  const start = parseInt(dash === -1 ? suffix : suffix.slice(0, dash), 10)
+  const end = dash === -1 ? start : parseInt(suffix.slice(dash + 1), 10)
+  return { file, start, end }
+}
+
+/** One contiguous slice of a file that a queried line falls in: the smallest symbol enclosing it, the preamble above the first symbol, or the gap between two symbols. `label` is what gets disclosed in the output header, so a caller that asked for line 142 and got lines 120-190 can see which is which. */
+export type LineRegion = { kind: 'symbol' | 'preamble' | 'gap'; label: string; start: number; end: number }
+
+/** Map a requested line span onto the regions it overlaps, in file order. Per line: smallest enclosing symbol, else the preamble when the line sits above the first symbol's start, else the gap between the previous symbol's end and the next one's start (running to EOF when nothing follows). Regions fully contained in another picked region are dropped rather than printed twice -- a range landing on both a method and its containing class coalesces to the class, which already covers the method's lines. Returns `[]` when the file has no indexed symbols; the caller reports that rather than serving an adjacent slice that would read as the answer. */
+export function resolveLineRegions(
+  symbols: readonly SymbolEntry[],
+  totalLines: number,
+  start: number,
+  end: number,
+): LineRegion[] {
+  if (symbols.length === 0) return []
+  const firstStart = symbols.reduce((m, s) => Math.min(m, s.lineStart), Number.POSITIVE_INFINITY)
+  const regionFor = (line: number): LineRegion => {
+    let best: SymbolEntry | null = null
+    for (const s of symbols) {
+      if (s.lineStart > line || s.lineEnd < line) continue
+      if (best === null || s.lineEnd - s.lineStart < best.lineEnd - best.lineStart) best = s
+    }
+    if (best !== null) {
+      return { kind: 'symbol', label: `${best.kind} ${best.name}`, start: best.lineStart, end: best.lineEnd }
+    }
+    if (line < firstStart) return { kind: 'preamble', label: 'file preamble', start: 1, end: firstStart - 1 }
+    let prev: SymbolEntry | null = null
+    let next: SymbolEntry | null = null
+    for (const s of symbols) {
+      if (s.lineEnd < line && (prev === null || s.lineEnd > prev.lineEnd)) prev = s
+      if (s.lineStart > line && (next === null || s.lineStart < next.lineStart)) next = s
+    }
+    const prevName = prev === null ? 'start of file' : prev.name
+    return {
+      kind: 'gap',
+      label: next === null ? `gap after ${prevName}` : `gap between ${prevName} and ${next.name}`,
+      start: prev === null ? 1 : prev.lineEnd + 1,
+      end: next === null ? totalLines : next.lineStart - 1,
+    }
+  }
+  const bySpan = new Map<string, LineRegion>()
+  for (let line = start; line <= Math.min(end, totalLines); line++) {
+    const r = regionFor(line)
+    const key = `${r.start}-${r.end}`
+    const seen = bySpan.get(key)
+    if (seen === undefined) bySpan.set(key, r)
+    else if (!seen.label.split(' / ').includes(r.label)) seen.label = `${seen.label} / ${r.label}`
+  }
+  const picked = [...bySpan.values()]
+  return picked
+    .filter((r) => !picked.some((o) => o !== r && o.start <= r.start && o.end >= r.end))
+    .sort((a, b) => a.start - b.start || a.end - b.end)
+}
+
 export function parseColonLineRange(symbol: string): { start: number; end: number } | null {
   const m = /^(\d+)(?:[-:,](\d+))?$/.exec(symbol)
   if (m === null) return null
@@ -143,6 +208,69 @@ export function runLineRange(
     ),
     code: 0,
   }
+}
+
+/** Serve a `file:142` / `file:142-160` spec by resolving the line span to the regions it overlaps ({@link resolveLineRegions}) and printing each one whole. Every block discloses both what it is and its true line span, because the failure mode here is a narrowed answer that reads as a complete one: a caller that asked for line 142 and got lines 120-190 has to be able to tell. A file with no indexed symbols, or a line past EOF, is reported as such rather than answered with an adjacent slice. */
+export function runLineRegion(
+  range: { file: string; start: number; end: number },
+  opts: ReadOptions,
+): { text: string; code: number } {
+  const { file, start, end } = range
+  if (start < 1) return { text: `Invalid line range: start must be >= 1 (got ${start})`, code: 1 }
+  if (end < start) return { text: `Invalid line range: end (${end}) is before start (${start})`, code: 1 }
+  const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+  const confined = confinementRefusal('This file', resolved, confinedProjectRoot(opts.projectRoot))
+  if (confined !== null) return { text: confined, code: 1 }
+  const text = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
+  if (text === null) return { text: `Could not read: ${file}`, code: 1 }
+  const allLines = text.split(/\r?\n/)
+  if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
+  if (start > allLines.length) {
+    return { text: `Line ${start} is past end of file (${countNoun(allLines.length, 'line')}): ${file}`, code: 1 }
+  }
+  if (opts.forceRefresh === true) {
+    indexFileSyncPinned(resolved, globalDbPath())
+    enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
+  } else {
+    healStaleIndex(resolved)
+  }
+  const symbols = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT })
+  const regions = resolveLineRegions(symbols, allLines.length, start, end)
+  const asked = start === end ? `${start}` : `${start}-${end}`
+  if (regions.length === 0) {
+    return {
+      text:
+        `No indexed symbols in '${file}', so line ${asked} cannot be resolved to a region.\n` +
+        `Read the raw lines instead: token-goat read "${file}@${asked}"`,
+      code: 1,
+    }
+  }
+  const slice = (r: LineRegion): string => allLines.slice(r.start - 1, Math.min(r.end, allLines.length)).join('\n')
+  if (opts.json === true) {
+    return {
+      text: displaySafeJson({
+        file,
+        requested: { start, end },
+        regions: regions.map((r) => ({
+          kind: r.kind,
+          label: r.label,
+          start: r.start,
+          end: Math.min(r.end, allLines.length),
+          lines: allLines.slice(r.start - 1, Math.min(r.end, allLines.length)),
+        })),
+      }),
+      code: 0,
+    }
+  }
+  const blocks: string[] = []
+  if (regions.length > 1) blocks.push(`# ${file}:${asked} -> ${countNoun(regions.length, 'region')}`)
+  regions.forEach((r, i) => {
+    const body = slice(r)
+    const tag = regions.length > 1 ? `[${i + 1}/${regions.length}] ` : `${file}:${asked} -> `
+    const span = `lines ${r.start}-${Math.min(r.end, allLines.length)} of ${allLines.length}`
+    blocks.push(`# ${tag}${r.label}  ${span} (~${Math.ceil(body.length / 4)} tok)\n${body}`)
+  })
+  return { text: guardText(blocks.join('\n\n'), 'lines'), code: 0 }
 }
 
 export function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string | null {
