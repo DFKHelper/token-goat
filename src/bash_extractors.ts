@@ -20,15 +20,35 @@ function genericSurgicalFallback(shown: string): string {
  * Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL-specific hint and lead-in text, then falls through to this for the rest.
  */
 // Every caller passes a hintPath already through displaySafePath, because the path here comes out of the shell command's own arguments and so is whatever a repository named its files, while the hint is delivered on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Sanitizing at the fifteen assignment sites rather than at the thirty interpolations below is what keeps that invariant checkable, and it is the identity function on every path that does not contain a marker or a control character, so the index lookups keyed on the same value are unaffected for any real file.
-export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml = false): string {
+export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml = false, target: string | null = null): string {
+  // The whole-file branches are a hard deny, so the sentence they print is the agent's only next
+  // move, and the placeholders it used to print do not run: verified against the built binary on
+  // 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section
+  // 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with
+  // "Key 'KEY_NAME' not found". `target`, when the caller could resolve one out of the index, is a
+  // name that file really holds, so the command runs verbatim. A null target keeps the old
+  // wording, which is exactly what shipped before. Resolution lives in bash_surgical_target.ts,
+  // not here: this module has no index/DB access on purpose (see genericSurgicalFallback above).
+  //
+  // The config branch substitutes into the config-get half ONLY. Its `section "file::sectionName"`
+  // half takes a section, and the name the index yields for a JSON/YAML file is a property --
+  // measured, `token-goat section "package.json::name"` exits 1 while `token-goat config-get
+  // "package.json" name` returns the value -- so putting the resolved name there would replace a
+  // placeholder the agent knows to substitute with a broken command it has no reason to doubt.
+  // With a real key in hand that half has nothing to add, and outline is offered instead: it is
+  // always runnable and lists every key with its line range.
+  const key = target ?? 'KEY_NAME'
+  const section = target ?? 'SectionHeading'
   return isXml
     ? 'Use `token-goat xml-outline "' + hintPath + '"` to inspect structure, or `token-goat xml-query "' + hintPath + '" "<selector>"` to query specific nodes.'
     : isEnv
-      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
+      ? 'Use `token-goat config-get "' + hintPath + '" ' + key + '` to read a specific variable.'
       : isConfig
-        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+        ? target === null
+          ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+          : 'Use `token-goat config-get "' + hintPath + '" ' + key + '` to read a specific value, or ' + genericSurgicalFallback(hintPath) + ' for every key with line ranges.'
         : isDoc
-          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+          ? 'Use `token-goat section "' + hintPath + '::' + section + '"` to read one section' + (target === null ? '.' : ', or ' + genericSurgicalFallback(hintPath) + ' for every heading with line ranges.')
           : 'Use ' + genericSurgicalFallback(hintPath) + ' to read one function or class.'
 }
 
@@ -747,7 +767,7 @@ export function extractLineRangeReadsCompound(cmd: string): Array<{ filePath: st
 /**
  * Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`) that has already been priced and found cheaper than the read it replaces -- see bash_range_savings.ts, which owns that comparison and whose result `sub` is.
  *
- * This used to be a language ladder that named the file and left the agent to supply the heading, key or symbol: `token-goat section "CHANGELOG.md::<heading>"`. Measured, that advice cost more than it saved and could not be followed well even in principle -- the obvious substitution on the largest real case returned 15,150 bytes against the 10,572 the `sed` window asked for, and the heading whose name an agent would guess (`Unreleased`) is not the one the index holds (`[Unreleased]`). So the hint now names the exact regions the pricing resolved and the saving it measured, rather than a shape for the agent to fill in.
+ * This used to be a language ladder that named the file and left the agent to supply the heading, key or symbol: `token-goat section "CHANGELOG.md::<heading>"`. Measured, that advice cost more than it saved and could not be followed well even in principle -- the obvious substitution on the largest real case returned 15,150 bytes against the 10,572 the `sed` window asked for, and the heading whose name an agent would guess (`Unreleased`) is not the one the index holds (`[Unreleased]`) -- recoverable, as it happens, because `section` resolves fuzzily and prints "redirected from", but only by a fallback catching it, not because the advice was answerable as written. So the hint now names the exact regions the pricing resolved and the saving it measured, rather than a shape for the agent to fill in.
  */
 export function sedRangeHint(
   filePath: string,

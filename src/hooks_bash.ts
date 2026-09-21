@@ -31,6 +31,7 @@ import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
+import { runnableTargetFor } from './bash_surgical_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -783,7 +784,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
     // advisoryOnly: a `2>/dev/null`-suffixed read tolerates the file being absent, so it gets guidance rather than a deny (a deny would redirect the agent at a file that may not exist).
     return cdStripped || advisoryOnly ? pathHint(hintPath, '`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
   }
@@ -820,7 +821,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat section "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as the cd-unprefixed branch below does for every other file type) would block a legitimate workflow this hint category was never meant to gate that hard.
       return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
     return cdStripped ? pathHint(hintPath, lead + hint) : denyOutput(lead + hint)
   }
 
@@ -834,7 +835,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         '`cat` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
     return cdStripped ? pathHint(hintPath, '`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
@@ -858,7 +859,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         'Python `open()` file reads bypass read hooks. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
     return cdStripped ? pathHint(hintPath, 'Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
   }
 
@@ -890,11 +891,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
       return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
-    const hint = isDoc
-      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-      : isConfig
-        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
+    // Folded onto the shared ladder every other whole-file-dump branch already uses. It was an
+    // inlined near-copy with the same placeholders, plus one this codebase warns against
+    // everywhere else: `read "path::SymbolName"` claims a specific symbol that file may not have,
+    // which is exactly the fabricated name genericSurgicalFallback's note in bash_extractors.ts
+    // says to never print. extractNodeFileRead reports no isEnv/isXml, so both pass false, which
+    // is what the inlined ladder assumed anyway.
+    const hint = surgicalHintFor(hintPath, false, isConfig, isDoc, false, runnableTargetFor(hintPath, hintCwd, event))
     recordStat('session_hint', 0, 0)
     return cdStripped ? pathHint(hintPath, lead + hint) : denyOutput(lead + hint)
   }
@@ -908,7 +911,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
       return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
     recordStat('session_hint', 0, 0)
     return cdStripped ? pathHint(hintPath, lead + hint) : denyOutput(lead + hint)
   }

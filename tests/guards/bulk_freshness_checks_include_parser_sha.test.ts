@@ -164,6 +164,22 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'runnableTargetFor',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason:
+        'bash_surgical_target.ts resolves one indexed name for the single file a whole-file-dump ' +
+        'command already named, so the command the deny prints runs verbatim -- the same ' +
+        'single-named-file scope, and the same local getFileEntry + fingerprintFile for the same ' +
+        'eager-bundle reason, as rangeSubstituteFor above. It records nothing and skips nothing: a ' +
+        'content-stale file makes it return null, which falls back to the placeholder wording. It ' +
+        'gates on files.sha alone rather than parser_sha as well, deliberately: the name is handed ' +
+        'straight to `token-goat section`/`config-get`, which answer out of the same rows this read, ' +
+        'so a parser-stale name is still a name that command resolves -- what it must never print is ' +
+        'a name the file on disk no longer contains.',
+    },
+  ],
+  [
     'processDirtyBatch',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',

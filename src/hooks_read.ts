@@ -322,7 +322,8 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
 }
 
 // Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely, keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
-function escapeHintName(name: string): string {
+/** Renders an indexed symbol/heading/key name safe to interpolate into a hint's own quoted argument, or '' when it cannot be: backslashes and double quotes are escaped, and anything displaySafeText would rewrite (a token-goat marker, a control character) is refused outright rather than shipped on the context channel, which does not fence its payload the way the deny channel does. Exported for bash_surgical_target.ts, which needs the same guarantee for the whole-file deny's own named target. */
+export function escapeHintName(name: string): string {
   const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
   const safe = displaySafeText(quoted)
   return safe !== quoted ? '' : safe.trim()
