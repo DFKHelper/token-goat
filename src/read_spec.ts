@@ -18,6 +18,7 @@ import {
   indexFileSyncPinned,
   readFileText,
   resolveAgainstProjectRoot,
+  staleWarning,
   type ReadOptions,
 } from './read_commands.js'
 import {
@@ -237,7 +238,8 @@ export function runLineRegion(
     const span = `lines ${r.start}-${Math.min(r.end, allLines.length)} of ${allLines.length}`
     blocks.push(`# ${tag}${r.label}  ${span} (~${Math.ceil(body.length / 4)} tok)\n${body}`)
   })
-  return { text: guardText(blocks.join('\n\n'), 'lines'), code: 0 }
+  // The trailing half of the healStaleIndex/staleWarning pair every other single-file surgical-read command runs (runRead's symbol path, read_section, read_outline, cli_file_ops). healStaleIndex fails safe on a reparse it cannot complete: the stale rows stay, and this second look is what tells the reader the regions below were resolved against them.
+  return { text: guardText(staleWarning(resolved) + blocks.join('\n\n'), 'lines'), code: 0 }
 }
 
 export function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string | null {
