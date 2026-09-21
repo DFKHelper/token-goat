@@ -142,6 +142,12 @@ export function readSpecsMergeable(specs: readonly string[]): boolean {
   return symbol !== undefined && symbol !== '' && symbol.includes(',') && parseColonLineRange(symbol) === null
 }
 
+/** The same question {@link readSpecsMergeable} answers, for `brief`, `refs` and `section`, which do not share `read`'s dispatch and so cannot share its predicate. All three take a spec naming something inside a file, and all three merge a comma list only while every element still does. Verified against the shipped binary: `a.ts::x,b.ts::y`, `a.ts::x,a.ts::y` and the anchor form `a.ts::x@97,a.ts::y` each exit 0, while `a.ts:40,a.ts:120`, `a.ts@40-42,a.ts@50-52` and a bare `a.ts,b.ts` each exit 1. Without this the note promised the comma form unconditionally and printed a command that exits 1, the same defect the `read` note carried. */
+export function namedSpecsMergeable(specs: readonly string[]): boolean {
+  if (specs.length < 2) return true
+  return specs.every((spec) => spec.includes('::'))
+}
+
 export function runLineRange(
   range: { file: string; start: number; end: number },
   opts: ReadOptions,

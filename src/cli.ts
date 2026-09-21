@@ -68,6 +68,7 @@ import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 import {
   runSymbol,
   runRead,
+  namedSpecsMergeable,
   readSpecsMergeable,
   runBrief,
   runSection,
@@ -1672,7 +1673,7 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'only show callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex)')
     .action((spec: string, more: string[], opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean; grep?: string }) =>
       runExit(() => {
-        emitExtraFileArgsNote('brief', spec, more, { noun: 'spec' })
+        emitExtraFileArgsNote('brief', spec, more, { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) })
         return runBrief({
           spec,
           ...(opts.json === true ? { json: true } : {}),
@@ -1700,7 +1701,7 @@ export function buildProgram(): Command {
             return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
           })
         : runExitText(() =>
-            noteExtraFileArgs('section', spec, more, () => runSection({ spec, ...(opts.json === true ? { json: true } : {}) }), { noun: 'spec' }),
+            noteExtraFileArgs('section', spec, more, () => runSection({ spec, ...(opts.json === true ? { json: true } : {}) }), { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) }),
           ),
     )
 
@@ -1772,7 +1773,7 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'filter to references whose call-site file path matches this regex (falls back to a literal substring match when the pattern does not compile); matched against the path as rendered, so ^src/ matches what you see in every form -- drops test/vendored hits from a wide-fanout symbol')
     .action((spec: string, more: string[], opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
       runExit(() => {
-        emitExtraFileArgsNote('refs', spec, more, { noun: 'spec' })
+        emitExtraFileArgsNote('refs', spec, more, { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) })
         return runRefs({
           spec,
           ...(opts.callers === true ? { callers: true } : {}),

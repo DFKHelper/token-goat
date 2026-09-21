@@ -60,9 +60,7 @@ function preBashEvent(command: string): HookEvent {
   }
 }
 
-/** The gate reads real line spans out of the index, so the files it prices have to actually be in
- *  the isolated test index -- an unindexed file is declined, which would make every "emits
- *  nothing" assertion below pass for the wrong reason. */
+/** The gate reads real line spans out of the index, so the files it prices have to actually be in the isolated test index -- an unindexed file is declined, which would make every "emits nothing" assertion below pass for the wrong reason. */
 function indexed(filePath: string): void {
   const resolved = resolveIndexPath(filePath, REPO)
   indexFileSync(resolved, globalDbPath())
@@ -115,16 +113,14 @@ describe('a range hint must price its own replacement', () => {
     expect(sub!.commands.length).toBeGreaterThan(0)
     for (const c of sub!.commands) {
       expect(c.startsWith('token-goat read "src/paths.ts:')).toBe(true)
-      // A bare `read "file"` -- the file with no region after it -- is the shape that made the old
-      // hint unfollowable, so it must not be producible here.
+      // A bare `read "file"` -- the file with no region after it -- is the shape that made the old hint unfollowable, so it must not be producible here.
       expect(c).not.toBe('token-goat read "src/paths.ts"')
     }
     expect(sub!.commands.some((c) => c.includes('::normalizePath'))).toBe(true)
   })
 
   it('the replacement always covers every requested line, which is why it is not smaller', () => {
-    // HAND-DERIVED: the containment property the measurement reflects, checked directly rather
-    // than inferred from the byte totals.
+    // HAND-DERIVED: the containment property the measurement reflects, checked directly rather than inferred from the byte totals.
     const abs = resolveIndexPath('src/paths.ts', process.cwd())
     const total = fs.readFileSync(abs, 'utf8').split('\n').length
     const syms = querySymbols({ filePath: abs, limit: -1 })
@@ -147,12 +143,8 @@ describe('a range hint must price its own replacement', () => {
   })
 
   it('still warns when the lines were already served this session, which owes nothing to pricing', () => {
-    // Also the positive control for the two "emits nothing" cases above: it proves this same
-    // handler, on this same file, in this same run, does still reach a context output -- so their
-    // `pass` is the gate declining and not the whole path being inert.
-    // Through `sed`, whose ranges the pre-hook records itself; `head`'s ledger entry is written by
-    // the post-hook once the command has actually succeeded, which this pre-hook-only test never
-    // reaches.
+    // Also the positive control for the two "emits nothing" cases above: it proves this same handler, on this same file, in this same run, does still reach a context output -- so their `pass` is the gate declining and not the whole path being inert.
+    // Through `sed`, whose ranges the pre-hook records itself; `head`'s ledger entry is written by the post-hook once the command has actually succeeded, which this pre-hook-only test never reaches.
     preBashHandler(preBashEvent(`sed -n '1,40p' CHANGELOG.md`))
     const second = preBashHandler(preBashEvent(`sed -n '1,30p' CHANGELOG.md`))
     expect(second.hookType).toBe('context')
@@ -160,10 +152,7 @@ describe('a range hint must price its own replacement', () => {
   })
 
   it('does emit, naming the priced commands and both figures, when a replacement is cheaper', () => {
-    // The emit half of the gate. Driven through the builder with figures that show a saving,
-    // because the containment property above means no real file produces one: without this the
-    // suite would only ever exercise the silent branch and a builder that emitted nothing at all
-    // would look identical to a working one.
+    // The emit half of the gate. Driven through the builder with figures that show a saving, because the containment property above means no real file produces one: without this the suite would only ever exercise the silent branch and a builder that emitted nothing at all would look identical to a working one.
     const text = sedRangeHint('src/paths.ts', [[10, 52]], 'sed', {
       requestedBytes: 4469,
       replacementBytes: 1200,

@@ -6,6 +6,9 @@ import { join } from 'node:path'
 import { afterEach, beforeAll, afterAll, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'
+import { globalDbPath } from '../src/constants.js'
+import { resolveIndexPath } from '../src/paths.js'
+import { indexFileSync } from '../src/parser.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let TMP: string
@@ -13,6 +16,8 @@ let fileA: string
 let fileB: string
 let docA: string
 let docB: string
+let refA: string
+let refB: string
 
 beforeAll(() => {
   TMP = mkdtempSync(join(tmpdir(), 'tg-extra-args-'))
@@ -24,6 +29,18 @@ beforeAll(() => {
   writeFileSync(fileB, 'export function beta(): number {\n  return 2\n}\n')
   writeFileSync(docA, '# Doc A\n\n## Heading A\nbody a\n')
   writeFileSync(docB, '# Doc B\n\n## Heading B\nbody b\n')
+  // `refs` exits 1 for a symbol nothing calls, so its own fixtures need a real call site or the positive control below cannot tell a working command from an empty result.
+  refA = join(TMP, 'ref_a.ts')
+  refB = join(TMP, 'ref_b.ts')
+  writeFileSync(refA, 'export function gamma(): number {\n  return 3\n}\n')
+  writeFileSync(refB, 'export function delta(): number {\n  return 4\n}\n')
+  const refUse = join(TMP, 'ref_use.ts')
+  writeFileSync(
+    refUse,
+    "import { gamma } from './ref_a.js'\nimport { delta } from './ref_b.js'\n\nexport function useBoth(): number {\n  return gamma() + delta()\n}\n",
+  )
+  // The CLI indexes only the file a spec names, so the call site has to be indexed here or `refs` reports no callers and exits 1 for a reason this test is not about.
+  for (const f of [refA, refB, refUse]) indexFileSync(resolveIndexPath(f, TMP), globalDbPath())
 })
 
 afterAll(() => {
@@ -119,6 +136,42 @@ describe('extra positional arguments are reported, never dropped in silence', ()
     }
     // Non-vacuous: the `::` pair above does get a comma form named, so the loop body ran.
     expect(named).toEqual([`${fileA}::alpha,${fileB}::beta`])
+  })
+
+  it('runs every comma form brief, refs and section name', async () => {
+    const named: string[] = []
+    for (const [command, first, second] of [
+      ['brief', `${fileA}::alpha`, `${fileB}::beta`],
+      ['refs', `${refA}::gamma`, `${refB}::delta`],
+      ['section', `${docA}::Heading A`, `${docB}::Heading B`],
+    ] as const) {
+      // Positive control: without this, an unindexed fixture would exit 1 for every shape and the assertion below would hold for a reason that has nothing to do with the note.
+      await runCli([command, first])
+      expect(lastExitCode, `${command} cannot serve a single spec here`).toBe(0)
+
+      const note = (await runCli([command, first, second])).split('\n').find((l) => l.startsWith('Note:'))
+      const suggested = new RegExp(`token-goat ${command} "([^"]+)"`).exec(note ?? '')
+      expect(suggested, `${command} named no comma form for two mergeable specs`).not.toBeNull()
+      named.push(suggested![1]!)
+      await runCli([command, suggested![1]!])
+      expect(lastExitCode, `${command} note named a spec that does not run: ${suggested![1]!}`).toBe(0)
+    }
+    expect(named).toHaveLength(3)
+  })
+
+  it('names no comma form for the shapes brief, refs and section do not merge', async () => {
+    for (const [command, first, second] of [
+      ['brief', `${fileA}:1`, `${fileB}:1`],
+      ['refs', `${refA}:1`, `${refB}:1`],
+      ['section', docA, docB],
+    ] as const) {
+      const output = await runCli([command, first, second])
+      expect(output).toContain(`Run ${command} once per spec.`)
+      expect(output).not.toContain(`token-goat ${command} "`)
+      // Why it cannot be named: none of the three reaches a multi-spec path for these shapes.
+      await runCli([command, `${first},${second}`])
+      expect(lastExitCode, `${command} unexpectedly served ${first},${second}`).toBe(1)
+    }
   })
 
   it('names no comma form for line specs, which read does not merge', async () => {
