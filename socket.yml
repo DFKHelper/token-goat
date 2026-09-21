@@ -25,9 +25,10 @@ issueRules:
   #
   # All five are known and none is evidence of tampering. Three (better-sqlite3, exceljs,
   # underscore) are devDependencies and reach no user of the published package. The remaining two
-  # arrive under the optional tesseract.js dependency: tesseract.js-core@7.0.0, whose flagged file
-  # is Emscripten-generated WASM glue, and zlibjs@0.3.1, a zero-dependency library last published
-  # in 2022.
+  # arrive under the optional tesseract.js dependency: tesseract.js-core is pinned to 6.1.2 via
+  # package.json overrides to eliminate the tesseract-core-relaxedsimd.wasm.js Emscripten false
+  # positive introduced in 7.0.0, and zlibjs@0.3.1, a zero-dependency library last published in
+  # 2022.
   #
   # Turning this rule off would silence those five, and would equally silence a genuinely malicious
   # minified payload in some future dependency, which is the case the rule exists for. Five
