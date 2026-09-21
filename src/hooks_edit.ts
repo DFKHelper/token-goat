@@ -19,7 +19,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
-import { applyHintTracking, classifyEditHint, meetsSavingsFloor } from './hint_stats.js'
+import { applyHintTracking, classifyEditHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './index_prune.js'
 import { displaySafePath, normalizePath } from './paths.js'
@@ -86,7 +86,10 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
     } catch {
       // best-effort; treat as eligible for the hint below on stat failure
     }
-    if (meetsSavingsFloor(editedSize)) {
+    if (!meetsSavingsFloor(editedSize)) {
+      // The file was edited, it is markdown, and a `section` hint was composable from it, so price is the only thing that stopped this one -- the same decision declineUnpriced records for bash redirects, in the category that emits more hints than any other and had never recorded a refusal.
+      logSuppressedDetection('edit_reread_suggest', event.sessionId, normalized)
+    } else {
       // displaySafePath first: the backtick/quote escaping below is about not breaking the
       // markdown span, and does nothing about a newline in the file name, which would end the
       // hint line and let the rest of the name read as a note of token-goat's own.

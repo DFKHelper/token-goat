@@ -32,6 +32,12 @@ import {
   shouldSuppress,
 } from '../src/hint_stats.js'
 import { preBashHandler } from '../src/hooks_bash.js'
+import { postEditHandler } from '../src/hooks_edit.js'
+import { postReadHandler } from '../src/hooks_read.js'
+import { storeBashOutputSync } from '../src/bash_output_cache.js'
+import { recordBashOutput } from '../src/session.js'
+import { shortFingerprint } from '../src/fingerprint.js'
+import { stripOutputPipeline } from '../src/hooks_bash_commands.js'
 import { pruneHintEmissions, STATS_RETENTION_DAYS } from '../src/stats.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath, configPath } from '../src/constants.js'
@@ -221,5 +227,158 @@ describe('the range-read hint records the files its priced gate declined on', ()
     // Both this and the declines above return `pass`. Only one of them is a decision, and only
     // that one leaves a row -- otherwise the column would count every unremarkable command.
     expect(rowsFor(session)).toHaveLength(0)
+  })
+})
+
+/**
+ * The same decision, at the other net-benefit gates. `detected` has always promised to count a
+ * hint "declined by a hint's own net-benefit gate", but only the bash range-read gate above ever
+ * wrote such a row: every other site called meetsSavingsFloor and returned `pass` on failure,
+ * which is byte-identical to the hook not recognizing the input at all. On one real ledger that
+ * left edit_reread_suggest -- 5140 shown hints, more than any other category -- with zero recorded
+ * refusals, so its decline rate was not low, it was unmeasured.
+ *
+ * Every case here is paired with a control, because the way this change fails is by recording an
+ * absence as a refusal: a file too short to hint on, or a command with nothing cached, never
+ * reached a price comparison and must stay out of the column.
+ *
+ * PROVENANCE: HAND-DERIVED. The file sizes are computed against the two shipped defaults --
+ * hints.min_session_hint_savings_bytes (512) and post_read_code_compress.min_lines (200) -- rather
+ * than read off any producer's output, which is sound here because what is under test is a
+ * threshold comparison rather than a wire format.
+ */
+describe('the other net-benefit gates record their declines too', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-decline-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  const editEvent = (sessionId: string, file: string): HookEvent => ({
+    eventName: 'post_tool_use',
+    toolName: 'Edit',
+    toolInput: { file_path: file },
+    sessionId,
+    agentId: undefined,
+    raw: { cwd: dir },
+  })
+
+  const readEvent = (sessionId: string, file: string): HookEvent => ({
+    eventName: 'post_tool_use',
+    toolName: 'Read',
+    toolInput: { file_path: file },
+    sessionId,
+    agentId: undefined,
+    raw: { cwd: dir },
+  })
+
+  it('names the markdown file whose re-read hint was refused on price', () => {
+    const file = path.join(dir, 'tiny.md')
+    // Under the 512-byte floor: a `section` hint was composable, and only its price stopped it.
+    fs.writeFileSync(file, '# Title\n\nshort\n', 'utf8')
+
+    const session = nonce()
+    expect(postEditHandler(editEvent(session, file)).hookType).toBe('pass')
+
+    const rows = rowsFor(session)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.category).toBe('edit_reread_suggest')
+    expect(rows[0]!.displayed).toBe(0)
+    expect(rows[0]!.correlator).toContain('tiny.md')
+  })
+
+  it('positive control: the same gate above the floor still shows the hint, and books it as shown', () => {
+    const file = path.join(dir, 'big.md')
+    fs.writeFileSync(file, '# Title\n\n' + 'padding line of prose\n'.repeat(60), 'utf8')
+    expect(fs.statSync(file).size).toBeGreaterThan(512)
+
+    const session = nonce()
+    expect(postEditHandler(editEvent(session, file)).hookType).toBe('context')
+
+    const rows = rowsFor(session)
+    expect(rows).toHaveLength(1)
+    // Same category, opposite column: without this the test above would pass against a gate that
+    // had stopped emitting anything at all.
+    expect(rows[0]!.displayed).toBe(1)
+  })
+
+  it('names the source file whose structural-navigation hint was refused on price', () => {
+    const file = path.join(dir, 'many.ts')
+    // 250 lines clears post_read_code_compress.min_lines (200); at 2 bytes a line the whole file
+    // is 500 bytes, under the 512-byte floor. Long enough to hint on, too small to be worth it.
+    fs.writeFileSync(file, 'a\n'.repeat(250), 'utf8')
+    expect(fs.statSync(file).size).toBeLessThan(512)
+
+    const session = nonce()
+    expect(postReadHandler(readEvent(session, file)).hookType).toBe('pass')
+
+    const rows = rowsFor(session)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.category).toBe('read_structural_nav')
+    expect(rows[0]!.displayed).toBe(0)
+    expect(rows[0]!.correlator).toContain('many.ts')
+  })
+
+  it('negative control: a file under min_lines had no hint to decline, so it writes no row', () => {
+    const file = path.join(dir, 'few.ts')
+    fs.writeFileSync(file, 'a\n'.repeat(10), 'utf8')
+
+    const session = nonce()
+    expect(postReadHandler(readEvent(session, file)).hookType).toBe('pass')
+    // Also under the floor, so a gate that recorded on size alone would log this one too and
+    // report the structural-navigation hint as declining on files it never considered.
+    expect(rowsFor(session)).toHaveLength(0)
+  })
+
+  it('names the cached output id a recall hint was refused over', () => {
+    const cmd = 'npm test'
+    // Between hints.bash_dedup_min_bytes (200) and the 512-byte floor: big enough for the dedup
+    // branch to take an interest, too small for the recall to pay for the context it would cost.
+    const id = storeBashOutputSync(cmd, 'x'.repeat(300), 0, dir)
+    recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), id, 300)
+
+    const session = nonce()
+    // Not `pass` like the gates above: a declined recall falls through to the generic compress
+    // path, so the refusal is hidden behind an unrelated success rather than behind silence.
+    expect(preBashHandler(preBashEvent(session, cmd, dir)).hookType).toBe('rewriteInput')
+
+    const rows = rowsFor(session)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.category).toBe('bash_recall')
+    expect(rows[0]!.displayed).toBe(0)
+    // The cache id, not a path: it is what classifyBashHint reads back out of a recall hint that
+    // did get shown, so the declined rows join the shown ones on the same key.
+    expect(rows[0]!.correlator).toBe(id)
+  })
+
+  it('positive control: the same recall above the floor is shown instead of declined', () => {
+    const cmd = 'npm test'
+    const id = storeBashOutputSync(cmd, 'x'.repeat(4000), 0, dir)
+    recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), id, 4000)
+
+    const session = nonce()
+    expect(preBashHandler(preBashEvent(session, cmd, dir)).hookType).toBe('context')
+
+    const rows = rowsFor(session)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.displayed).toBe(1)
+  })
+
+  it('counts every one of them under detected, which is the column that promised to hold them', () => {
+    const session = nonce()
+    fs.writeFileSync(path.join(dir, 'a.md'), '# a\n', 'utf8')
+    fs.writeFileSync(path.join(dir, 'b.ts'), 'a\n'.repeat(250), 'utf8')
+
+    postEditHandler(editEvent(session, path.join(dir, 'a.md')))
+    postReadHandler(readEvent(session, path.join(dir, 'b.ts')))
+
+    // Read back through the summary rather than the table: the doc comment on CategoryEfficacy
+    // makes its promise about this surface, and a row that never reaches it keeps the gate blind.
+    expect(summaryFor('edit_reread_suggest').detected).toBe(1)
+    expect(summaryFor('read_structural_nav').detected).toBe(1)
   })
 })

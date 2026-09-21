@@ -194,6 +194,8 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hint_stats.min_sample_size': {min: 1, max: 10000},
   'semantic.archive_weight': {min: 0.05, max: 1},
   'semantic.docs_weight': {min: 0.05, max: 1},
+  // Upper bound 2 is the metric's own ceiling (an L2 distance between unit vectors cannot exceed 2), so the maximum is 'admit everything' rather than an arbitrary cap. The lower bound is not 0: a floor of 0 admits only an exact vector match, which would disable the vector half entirely while `semantic` went on answering in the words it uses for a genuine absence.
+  'semantic.max_distance': {min: 0.05, max: 2},
 }
 
 /** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/
@@ -1011,6 +1013,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const sem = getDefaultConfig('semantic') as SemanticConfig
   sem.archive_weight = validatedFloat(sem_raw['archive_weight'], sem.archive_weight, ...boundsOf('semantic.archive_weight'))
   sem.docs_weight = validatedFloat(sem_raw['docs_weight'], sem.docs_weight, ...boundsOf('semantic.docs_weight'))
+  sem.max_distance = validatedFloat(sem_raw['max_distance'], sem.max_distance, ...boundsOf('semantic.max_distance'))
 
   return {
     compact_assist: ca,
@@ -1329,6 +1332,7 @@ export function saveConfig(config: Config): void {
     },
     semantic: {
       archive_weight: config.semantic.archive_weight,
+      max_distance: config.semantic.max_distance,
       docs_weight: config.semantic.docs_weight,
     },
   }

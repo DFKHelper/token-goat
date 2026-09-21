@@ -268,6 +268,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   semantic: {
     archive_weight: 0.7,
     docs_weight: 0.92,
+    // Deliberately loose enough to admit everything this metric produces, which is a measured conclusion rather than a placeholder. Against a large index, 12 genuine questions about code that is present had best hits from 0.635 to 0.813 and 11 off-corpus ones (nonsense strings, digits, a cake recipe) from 0.820 to 1.017, which looks separable at about 0.9. It is not: on a small corpus the nearest genuine match is much further away, and a two-file project in this repo's own suite matches its target at 0.934 -- above that cut and inside the noise band. So the two populations overlap across corpus sizes and no fixed distance tells them apart, while getting it wrong removes real answers and says nothing. Left at the retrieval bound's value so the default filters nothing; it exists to be lowered per-project by someone who has measured their own corpus, and runSemantic says which distance it refused when a lowered value empties the vector half.
+    max_distance: 1.2,
   },
 }
 

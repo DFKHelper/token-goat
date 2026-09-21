@@ -2,6 +2,22 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.20] - 2026-09-21
+
+This release changes no stored data, so upgrading and downgrading are both free: no reindex, no re-embed, and no schema move.
+
+### Added
+
+- **`semantic` has a relevance floor you can set, and it says when the floor is what emptied the results**: the command dropped a vector match only past a bound nothing reaches in practice, so a question the project has no answer for still came back with a full page of blocks that print exactly like real matches. `semantic.max_distance` is the worst distance still counted as a match. It ships at the same value as the old bound, which means it filters nothing until you set it, and that default is a measurement rather than an omission: against this repository's own index, twelve real questions had best matches from 0.635 to 0.813 and eleven nonsense ones from 0.820 to 1.017, but a two-file project in this repository's test suite matches its own target at 0.934. The two ranges overlap once corpus size changes, so no single number separates them everywhere, and a number picked wrong removes real answers without saying so. Lower it once you have looked at your own project's distances. When the floor does empty the vector half, the command now says so with the distance that came closest: `Matching on meaning found nothing within 0.5 (closest was 0.598)`, so the number to change is in front of you. A repository's own `.token-goat.toml` cannot set this key, for the same reason it cannot set the index skip lists: a checked-in file setting it near the minimum would take that repository's code out of the vector half while keyword search went on answering as though nothing were held back.
+
+### Changed
+
+- **`semantic` prints the number it ranked on**: the list is ordered by a fused score that combines the vector pass and the keyword pass, but each result showed only its vector distance, and results the keyword pass alone found showed nothing at all. So a result at distance 0.850 could sit above one at 0.776, correctly, and read as a sorting bug. Each result now carries its position in the list, and marks whether the keyword pass voted for it (`+keyword`) or was the only pass that found it (`keyword`). A result only the vector pass found prints exactly as it did before. With `--json`, each item carries `rank`, the fused score, and which of the two passes produced it.
+
+- **A hint refused on price leaves a record**: `token-goat hint-stats` counts what each kind of hint saved against what it was shown for, and a hint that was built and then withheld because the saving was too small to be worth the words recorded nothing at all. Those refusals were invisible, so the table could not tell a hint nobody wanted from one nobody ever saw. Each is now recorded under the same identifier the shown hints use, and appears in the `undisplayed` column.
+
+- **`symbol` puts a real definition ahead of a line that merely imports the name**: asking for a name that a file both imports and defines elsewhere could answer with the import line, which shows where the name came from rather than what it is. Import bindings now sort behind real definitions when you search by name. Listing a file's symbols is unchanged, since there the import line is part of what you asked for.
+
 ## [2.9.19] - 2026-09-21
 
 **Upgrading migrates the index database, and the migration is one way.** The hint ledger gained columns, so the schema stamp moves from 14 to 16 the first time this version opens the database. The migration runs by itself and keeps the existing rows. Going back to an older token-goat afterwards is what does not work: an older build sees a stamp it does not recognise, refuses to open the file rather than guess at it, and says to update token-goat or delete the index and let it rebuild. Deleting it is safe, since the index is rebuilt from your own files.

@@ -314,6 +314,8 @@ export interface HintStatsConfig {
 export interface SemanticConfig {
   archive_weight: number
   docs_weight: number
+  // Relevance floor: a dense hit whose raw distance exceeds this is dropped before fusion, so a corpus whose own distances have been measured can stop the vector half answering a question it has nothing for. Applied to the hits searchSemantic returns rather than inside its scan, because the scan's backfill loop retries while `hits.length < topK` -- tightening the bound in there would make the weakest queries escalate k to the ANN ceiling and fall through to the exact pass, which is the most expensive thing this command can do and exactly backwards. DEFAULT_DISTANCE_THRESHOLD stays as the scan's own sanity bound; this is the relevance decision and it is separate. Compared against raw distance, not the rerank's adjustedDistance, which is a ranking device with no calibrated scale. See the default's comment for why it ships filtering nothing.
+  max_distance: number
 }
 
 export interface Config {
