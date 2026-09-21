@@ -166,9 +166,14 @@ CREATE INDEX IF NOT EXISTS idx_cache_recall_type ON cache_recall(cache_type);
 -- emission event (a hook returning a 'context' HookOutput classified as a discretionary
 -- efficiency nudge, as opposed to a mandatory informational injection -- see hint_stats.ts's
 -- doc comment for the exact category list and what is deliberately excluded). correlator is a
--- best-effort file-path/output-id substring extracted from the hint's own text, used to check
+-- file-path/output-id pointer the hint carries, used to check
 -- whether a later Bash tool call in the same session actually followed the hint's specific
--- pointer (see resolvePendingHintsForEvent) -- NULL when no such pointer could be extracted,
+-- pointer (see resolvePendingHintsForEvent). Supplied by the hint builder itself via
+-- HookOutput's correlators field wherever one exists, and only fallen back to a regex scrape
+-- of the rendered hint text (hint_stats.ts's extractPathCorrelator, whose doc comment records
+-- what that scrape actually measured) where it does not. A row can name SEVERAL files -- the
+-- sed/awk line-range hint joins one per file into one emission -- stored newline-separated and
+-- matched on any member; see joinCorrelators. NULL when no pointer could be supplied or extracted,
 -- in which case the row is inserted already resolved with acted_on=0 (counted as emitted, never
 -- eligible for auto-detected credit). calls_remaining is the countdown of subsequent tool-use
 -- events still eligible to resolve this row before it is considered timed out.

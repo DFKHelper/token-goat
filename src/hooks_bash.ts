@@ -593,6 +593,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const preHookCwd = getCwd(event) ?? null
   // When a cd prefix was stripped, path-based hints below resolve their filePath against the directory that cd would actually leave the shell in, not this hook's own cwd.
   const hintCwd = preHookCwd ?? process.cwd()
+  // Every hint below that names a file returns through this instead of a bare contextOutput, so the efficacy ledger is handed the path the hint was built from rather than regex-scraping one back out of the rendered sentence (see extractPathCorrelator's doc comment for what that scrape actually recorded). Measurement only -- relay.ts drops the field before the harness sees the output, so the hint text is byte-identical either way. The `token-goat bash-output <id>` recall branches near the end deliberately do NOT use this: their correlator is a cache id, which classifyBashHint already reads straight out of the command it printed, not a path.
+  const pathHint = (paths: string | readonly string[], text: string): HookOutput =>
+    contextOutput(text, typeof paths === 'string' ? [paths] : paths)
 
   // Check for unbalanced shell quoting or unterminated heredocs
   const cfg = loadConfig()
@@ -673,7 +676,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, toolOrScript } = terminalXml
     recordStat('session_hint', 0, 0)
     const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
-    return contextOutput(
+    return pathHint(filePath ? [target] : [],
       `token-goat available for this file type, consider 'token-goat xml-query "${target}" "<xpath>"' or 'token-goat xml-outline "${target}"' first instead of terminal XML parsing (${toolOrScript}).`,
     )
   }
@@ -684,10 +687,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (sedReads !== null) {
     recordStat('session_hint', 0, 0)
     const hints: string[] = []
+    // One emission can cover several files here (the per-file hints are joined into one context output), so every file named gets into the correlator set rather than just the first -- see joinCorrelators in hint_stats.ts for why the set, not a primary path, is the right representation.
+    const hintPaths: string[] = []
     for (const { filePath, ranges, tool } of sedReads) {
       // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve against the directory cd would actually leave the shell in, matching every other path-carrying hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd instead of the shell's real one, both mislabeling the hint and missing dedup against a non-cd-prefixed reference to the same file.
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
       // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
+      hintPaths.push(hintPath)
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
       const overlapHints: string[] = []
       const freshRanges: Array<readonly [number, number]> = []
@@ -703,7 +709,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       hints.push(...overlapHints)
       if (freshRanges.length > 0) hints.push(sedRangeHint(hintPath, freshRanges, tool))
     }
-    return contextOutput(hints.join(' '))
+    return pathHint(hintPaths, hints.join(' '))
   }
 
   // These two must run before extractCatFile: a `-Tail`/`Select-Object -First`-flagged Get-Content command is a single path with a flag VALUE in the argument list (e.g. `Get-Content -Tail 50 src/auth.ts`, where `50` reads as a bare positional token), and extractCatFile's own trailing-flag catch-all matches that same shape. Left in its original position below, extractCatFile denied a `-Tail 50` read outright as a whole-file dump -- "loads the entire file into context" -- when only 50 lines were ever going to be read, exactly the ordering hazard extractCatFilesMulti's own out.length >= 2 guard was written to avoid, and recordBashFileReadsForSessionCache already orders its own gcTail/tail/gcSelect/head checks ahead of extractCatFile for this identical reason.
@@ -712,7 +718,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isConfig, isSql, isXml } = gcTailResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
+    return pathHint(hintPath, '`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
   }
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
@@ -720,7 +726,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isConfig, isSql, isXml, n } = gcSelectResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput(leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
+    return pathHint(hintPath, leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
   }
 
   const catJsonPipe = extractCatJsonPipe(cmd)
@@ -729,7 +735,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     const label = isDirectJq ? '`jq`' : '`cat | jq`'
-    return contextOutput(
+    return pathHint(hintPath,
       label + ' loads the whole file. Use `token-goat json-query "' + hintPath + '" "<key>"` or `token-goat config-get "' + hintPath + '" KEY_NAME` to slice one value.',
     )
   }
@@ -739,7 +745,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     if (psJsonPipe.filePath) {
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, psJsonPipe.filePath, hintCwd) : psJsonPipe.filePath)
-      return contextOutput(
+      return pathHint(hintPath,
         'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query "' + hintPath + '" "<selector>"` to extract fields directly without shell conversion scripts.',
       )
     }
@@ -754,13 +760,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isSql) {
-      return contextOutput(
+      return pathHint(hintPath,
         '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     // advisoryOnly: a `2>/dev/null`-suffixed read tolerates the file being absent, so it gets guidance rather than a deny (a deny would redirect the agent at a file that may not exist).
-    return cdStripped || advisoryOnly ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
+    return cdStripped || advisoryOnly ? pathHint(hintPath, '`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
   }
 
   const catMulti = extractCatFilesMulti(cmd)
@@ -782,7 +788,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     })
     const msg =
       '`' + cmd0 + '` on multiple files loads them all into context. Read each surgically instead:\n' + perPath.join('\n')
-    return cdStripped ? contextOutput(msg) : denyOutput(msg)
+    return cdStripped ? pathHint(catMulti.map((m) => displaySafePath(resolveCdHintPath(rawCmd, m.filePath, hintCwd))), msg) : denyOutput(msg)
   }
 
   const psGetContentResult = extractPowerShellWrappedGetContent(cmd, event)
@@ -793,10 +799,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
     if (isSql) {
       // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat section "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as the cd-unprefixed branch below does for every other file type) would block a legitimate workflow this hint category was never meant to gate that hard.
-      return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+      return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
-    return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
+    return cdStripped ? pathHint(hintPath, lead + hint) : denyOutput(lead + hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
@@ -805,12 +811,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isSql) {
-      return contextOutput(
+      return pathHint(hintPath,
         '`cat` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
-    return cdStripped ? contextOutput('`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
+    return cdStripped ? pathHint(hintPath, '`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
   const pyRead = extractPythonFileRead(cmd)
@@ -822,19 +828,19 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // Same two kinds the cat/tail guard above tells apart, decided the same way. An agent transcript is JSONL worth hundreds of kilobytes and reading it whole is the mistake worth blocking; a background command's stdout is plain text the harness expects to be read, so that only gets advice about narrowing it, never a refusal.
       if (taskOutputIsJsonlTranscript(filePath)) {
         const tHint = 'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file "' + hintPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
-        return cdStripped ? contextOutput(tHint) : denyOutput(tHint)
+        return cdStripped ? pathHint(hintPath, tHint) : denyOutput(tHint)
       }
-      return contextOutput(
+      return pathHint(hintPath,
         'This `.output` file is a background command\'s stdout. Use `token-goat bash-output --file "' + hintPath + '"` to narrow it with `--grep PATTERN`, `--tail N` or `--head N`, instead of reading the whole file.',
       )
     }
     if (isSql) {
-      return contextOutput(
+      return pathHint(hintPath,
         'Python `open()` file reads bypass read hooks. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
-    return cdStripped ? contextOutput('Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
+    return cdStripped ? pathHint(hintPath, 'Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
   }
 
   const tailResult = extractTailFile(cmd)
@@ -842,7 +848,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isConfig, isSql, isXml } = tailResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
+    return pathHint(hintPath, '`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
   }
 
   const headResult = extractHeadFile(cmd)
@@ -850,7 +856,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isConfig, isSql, isXml, n } = headResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput(leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
+    return pathHint(hintPath, leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
   }
 
   const nodeRead = extractNodeFileRead(cmd)
@@ -861,7 +867,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     if (isSql) {
       // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile/extractPowerShellWrappedGetContent's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat section "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as this handler did for every other file type, unconditionally, before this fix) would block a legitimate workflow this hint category was never meant to gate that hard. This branch previously fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case below, so a non-cd-prefixed `node -e "readFileSync('x.sql')"` was hard-denied while the equivalent `cat x.sql` was always advisory -- the exact SQL-hint-classifier divergence already fixed for cat/head/tail/Get-Content.
       recordStat('session_hint', 0, 0)
-      return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+      return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
     const hint = isDoc
       ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
@@ -869,7 +875,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
         : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
-    return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
+    return cdStripped ? pathHint(hintPath, lead + hint) : denyOutput(lead + hint)
   }
 
   const psMethodRead = extractPowerShellFileMethodRead(cmd, event)
@@ -879,11 +885,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const lead = 'PowerShell `[IO.File]::ReadAllText()` bypasses read hooks. '
     if (isSql) {
       recordStat('session_hint', 0, 0)
-      return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+      return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml)
     recordStat('session_hint', 0, 0)
-    return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
+    return cdStripped ? pathHint(hintPath, lead + hint) : denyOutput(lead + hint)
   }
 
   // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an exact index answer -- rewrite the command to it instead of just hinting, so the model gets the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape rather than something this call needs to special-case.
@@ -906,7 +912,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath } = mdHeadingGrep
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput(
+    return pathHint(hintPath,
       'Use `token-goat outline "' + hintPath + '"` to get all headings with line ranges — ' +
       'then `token-goat section "' + hintPath + '::Heading"` to read one section.',
     )
@@ -917,8 +923,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (rgSymbol !== null) {
     const { identifier } = rgSymbol
     recordStat('session_hint', 0, 0)
+    // The correlator here is the identifier, not a path: this hint names no file, and the exact token a follow-through would have to carry is the symbol name. Left to extractPathCorrelator it scraped nothing at all, so the row went in permanently uncreditable.
     return contextOutput(
       'Use `token-goat symbol ' + identifier + '` to jump directly to the definition without scanning the file.',
+      [identifier],
     )
   }
 
@@ -927,7 +935,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath } = rgStructural
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return contextOutput(
+    return pathHint(hintPath,
       'Searching for code definitions with `rg`/`grep` is slower than surgical reads. ' +
       'Use `token-goat skeleton "' + hintPath + '"` to see all symbols with line numbers, ' +
       'or `token-goat outline "' + hintPath + '"` for symbols with docstrings and line ranges.'
@@ -1050,7 +1058,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     }
     if (notes.length > 0) {
       recordStat('session_hint', 0, 0)
-      return contextOutput(notes.join(' '))
+      return pathHint(tgRead.filePath !== null ? [tgRead.filePath] : [], notes.join(' '))
     }
     return passOutput()
   }

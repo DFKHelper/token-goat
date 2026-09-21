@@ -50,7 +50,12 @@
  */
 export type HookOutput =
   | { readonly hookType: 'deny'; readonly message: string }
-  | { readonly hookType: 'context'; readonly context: string }
+  | {
+      readonly hookType: 'context'
+      readonly context: string
+      /** The file path(s) this hint points at, supplied by the builder rather than regex-scraped back out of `context` by hint_stats.ts's extractPathCorrelator -- see that function's doc comment for the failure mode this field exists to end. Measurement only: relay.ts rebuilds the context output without it before anything reaches a harness, so it can never reach the model. Empty/absent means "this builder has no path to give", which is not the same as "no path could be found" and is treated as unobservable rather than as a failed hint (see logHintEmission). */
+      readonly correlators?: readonly string[]
+    }
   | { readonly hookType: 'rewriteInput'; readonly updatedInput: Record<string, unknown> }
   | {
       readonly hookType: 'rewriteOutput'

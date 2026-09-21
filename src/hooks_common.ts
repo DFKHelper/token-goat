@@ -210,9 +210,9 @@ export function denyOutput(message: string): HookOutput {
   return { hookType: 'deny', message: `[tg] ${neutralizeOutsideFences(message)}` }
 }
 
-/** Build a `context` output — let the call proceed but inject `context`. */
-export function contextOutput(context: string): HookOutput {
-  return { hookType: 'context', context }
+/** Build a `context` output — let the call proceed but inject `context`. `correlators` names the file path(s) the hint points at, for efficacy tracking only; it is stripped in relay.ts before the output reaches a harness, so passing it never changes a single byte the model sees. Omit it only when the hint genuinely names no file. */
+export function contextOutput(context: string, correlators?: readonly string[]): HookOutput {
+  return correlators === undefined ? { hookType: 'context', context } : { hookType: 'context', context, correlators }
 }
 
 /** What a rewrite saved, for callers that replace tool output with something smaller. `originalBytes` is the size of the text the model WOULD have received; the helper subtracts the emitted size itself rather than trusting a caller-computed delta, so the recorded saving can never disagree with the string actually returned. */

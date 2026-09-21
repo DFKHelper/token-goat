@@ -162,11 +162,22 @@ interface Classification {
 }
 
 /**
- * Best-effort extraction of the specific file path a hint's text points at, so the acted-on
- * check can require the SAME path to reappear in a later command rather than crediting any
- * unrelated token-goat invocation. Matches a Windows drive-letter path or a POSIX/relative path
- * run of non-whitespace/non-quote characters; trims trailing punctuation a hint's own sentence
- * structure might have appended (a period, closing backtick/quote, etc.).
+ * FALLBACK ONLY, for hint builders that do not yet pass their own path via HookOutput's
+ * `correlators` field. Best-effort extraction of the specific file path a hint's text points at,
+ * so the acted-on check can require the SAME path to reappear in a later command rather than
+ * crediting any unrelated token-goat invocation. Matches a Windows drive-letter path or a
+ * POSIX/relative path run of non-whitespace/non-quote characters; trims trailing punctuation a
+ * hint's own sentence structure might have appended (a period, closing backtick/quote, etc.).
+ *
+ * Why it is a fallback and not the mechanism: scraping a path back out of already-rendered prose
+ * cannot tell a path from any other slash-bearing English. The third alternative below is a bare
+ * `/`, so the words "For a whole function/class" in this codebase's own sed-range hint yielded the
+ * correlator `/class`, and a relative `src/hooks_read.ts` yielded `/hooks_read.ts` (nothing in the
+ * pattern matches the `src` before the slash). Measured against the author's global ledger on
+ * 2026-09-20: of 697 `bash_redirect` emissions, 245 carried `/class`, 174 carried no correlator at
+ * all, and only 153 carried a path a later command could plausibly repeat -- so 78% of the
+ * category was scored `acted_on = 0` by construction and the published 0.9% efficacy figure was
+ * not a measurement of anything. A builder knows its own path; prose does not.
  */
 // Literal `::<placeholder>` suffixes this codebase's own hint text templates splice onto a real
 // path (e.g. hooks_edit.ts's `... + '::HeadingName"` ...`, hooks_read.ts's `::SectionName`,
@@ -194,6 +205,19 @@ const KNOWN_CORRELATOR_PLACEHOLDERS = new Set([
   'table_name',
   'name',
 ])
+
+/**
+ * A single hint emission can cover several files: hooks_bash.ts's sed/awk line-range branch joins one hint per file into one `contextOutput`, so one row in `hint_emissions` stands for two or three paths. The chosen representation is the SET, not a primary path -- picking the first would score a genuine follow-through on the second file as a failure, which is the same false-negative class this whole change exists to remove -- stored newline-separated in the existing TEXT column (no schema change; a real path can never contain a newline). {@link isActedOn} and {@link isDefiance} therefore match on ANY member: running the surgical command for any one of the named files is follow-through, and re-reading any one of them whole is defiance.
+ */
+function joinCorrelators(correlators: readonly string[]): string | null {
+  const kept = correlators.filter((c) => c !== '' && !c.includes('\n'))
+  return kept.length === 0 ? null : [...new Set(kept)].join('\n')
+}
+
+/** Split a stored correlator back into the set {@link joinCorrelators} wrote. A pre-existing single-value row has no newline and comes back as a one-element set, so every row written before this field existed keeps its exact old matching behavior. */
+function splitCorrelators(correlator: string): string[] {
+  return correlator.split('\n').filter((c) => c !== '')
+}
 
 export function extractPathCorrelator(text: string): string | null {
   const m = /(?:[A-Za-z]:[\\/]|\.{1,2}\/|\/)[^\s"'`]+/.exec(text)
@@ -309,7 +333,10 @@ function resetSuppressionStreak(category: HintCategory): void {
  */
 export function applyHintTracking(event: HookEvent, output: HookOutput, classify: (text: string) => Classification): HookOutput {
   if (output.hookType !== 'context') return output
-  const { category, correlator } = classify(output.context)
+  const classified = classify(output.context)
+  const { category } = classified
+  // A builder that supplied its own correlators wins outright over classify's regex scrape, including when it supplied an empty list: an empty list is the builder saying "this hint names no file", which is a truthful null, where the scrape on that same text returns whatever path-shaped run of characters the prose happens to contain. See extractPathCorrelator's doc comment for the measured damage the scrape did.
+  const correlator = output.correlators === undefined ? classified.correlator : joinCorrelators(output.correlators)
   // A pre_tool_use-emitted hint (bash_redirect/bash_recall from preBashHandler,
   // read_structural_nav/read_reread_dedup from preReadHandler) is always followed, in a
   // guaranteed-next, separate `token-goat hook post_tool_use` process invocation, by
@@ -451,16 +478,15 @@ function eventTargetText(event: HookEvent): string {
 function isDefiance(correlator: string, target: string): boolean {
   if (target === '') return false
   if (TOKEN_GOAT_INVOCATION_RE.test(target)) return false
-  return commandMentionsCorrelator(target, correlator)
+  return splitCorrelators(correlator).some((c) => commandMentionsCorrelator(target, c))
 }
 
-/** True when a subsequent Bash `command` honestly demonstrates the agent followed this specific hint's pointer: it invokes token-goat AND mentions the exact correlator the hint text gave. */
+/** True when a subsequent Bash `command` honestly demonstrates the agent followed this specific hint's pointer: it invokes token-goat AND mentions any one of the correlators the hint carried (see {@link joinCorrelators} for why a row can carry several). */
 function isActedOn(category: HintCategory, correlator: string, command: string): boolean {
   if (!TOKEN_GOAT_INVOCATION_RE.test(command)) return false
-  if (category === 'bash_recall') {
-    return command.includes('bash-output') && commandMentionsCorrelator(command, correlator)
-  }
-  return commandMentionsCorrelator(command, correlator)
+  const anyMatch = splitCorrelators(correlator).some((c) => commandMentionsCorrelator(command, c))
+  if (category === 'bash_recall') return command.includes('bash-output') && anyMatch
+  return anyMatch
 }
 
 /**
