@@ -2,11 +2,19 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [2.9.21] - 2026-09-21
+
+Upgrading reindexes and re-embeds. Three new languages change what `detectLanguage` answers for files that used to come back unknown, and that answer decides how a file is chunked, so both the parser and the embedding fingerprints move and every already-indexed file is reparsed and re-embedded on the next sweep. It runs in the background; nothing is lost while it catches up.
 
 ### Added
 
 - Added native configuration language symbol extractors for Nginx (`nginx.conf`, `.nginx`), Caddyfile (`Caddyfile`, `.caddy`), and Apache HTTP Server (`httpd.conf`, `apache2.conf`, `.htaccess`). Anonymous server, location, upstream, virtual host, directory, and proxy blocks can now be addressed directly with `token-goat read "file::symbol"`.
+
+### Fixed
+
+- `Caddyfile`, the filename every Caddy install ships and the one this feature was named for, was not detected at all. Basenames are matched in lower case, and the Caddy row spelled the name in its display case, so the key could never be hit and the file came back as an unknown type while `caddy.conf` beside it worked.
+- Nginx files were detected but never offered the symbol read they had just been given. The row that says a language resolves named definitions was left on the data defaults, so the bash hook kept suggesting a line range for `nginx.conf` and diff-on-reread skipped it, even though `read "nginx.conf::server"` worked the whole time.
+- The embedding model ran at half its configured thread count for any caller that supplied a partial config, because the fallback constant said 2 while the shipped `worker.embed_threads` default it claims to mirror says 4.
 
 ### Changed
 

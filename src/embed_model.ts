@@ -51,8 +51,8 @@ const _require = createRequire(import.meta.url)
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
 
-/** Mirrors `worker.embed_threads`'s default in config.ts, for callers that mock a partial config. */
-export const DEFAULT_EMBED_THREADS = 2
+/** Mirrors `worker.embed_threads`'s default in config_defaults.ts, for callers that mock a partial config. */
+export const DEFAULT_EMBED_THREADS = 4
 
 /**
  * The immutable commit this model is pinned to, so a cold cache fetches known-good weights instead

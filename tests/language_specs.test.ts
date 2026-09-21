@@ -126,6 +126,10 @@ const BATCH_FSHARP_IDS = ['fsharp']
 // Nix, added on its own: let-bound names and attribute-set keys (see nix.ts).
 const BATCH_NIX = ['.nix']
 const BATCH_NIX_IDS = ['nix']
+// The server-config batch: Nginx, Caddy and Apache, each its own extractor over the named blocks its syntax nests (server/location/upstream, site addresses, VirtualHost/Directory). All three are read by basename far more often than by extension, so each carries the config filenames it ships under.
+const BATCH_SERVERCONF = ['.nginx', '.caddy', '.apache', '.apache2']
+const BATCH_SERVERCONF_IDS = ['nginx', 'caddy', 'apache']
+const BATCH_SERVERCONF_NAMES = ['nginx.conf', 'caddyfile', 'caddy.conf', 'httpd.conf', 'apache2.conf', '.htaccess']
 
 // Every extension either side knows about, so a dropped extension shows up as a removal.
 const ALL_EXTS = [...new Set([
@@ -142,20 +146,28 @@ function diff(oldPred: (ext: string) => boolean, flag: LanguageFlag): { added: s
 
 const sorted = (xs: readonly string[]): string[] => [...xs].sort()
 
+const FLAGS: readonly LanguageFlag[] = ['symbolBearing', 'sourceHints', 'grepSource', 'diffable']
+
+// LANGUAGE_SPECS is a const-asserted tuple, so a row that declares no basename has no such property to narrow rather than an optional one; this widens the rows to the shape the basename checks below read them at.
+const NAMED_ROWS: ReadonlyArray<{ id: Language; basenames?: readonly string[]; exactBasenames?: readonly string[] }> = LANGUAGE_SPECS
+
 describe('language table: derived lists match the pre-refactor lists except the named differences', () => {
   it('extension map: only the new mappings were added, nothing moved or dropped', () => {
     for (const [ext, lang] of Object.entries(OLD_EXTENSION_LANGUAGE)) expect(EXTENSION_LANGUAGE.get(ext), ext).toBe(lang)
     const added = [...EXTENSION_LANGUAGE.keys()].filter((e) => !(e in OLD_EXTENSION_LANGUAGE))
-    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_TEMPLATES, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX]))
+    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_TEMPLATES, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX, ...BATCH_SERVERCONF]))
     for (const e of ['.zsh', '.ksh', '.bats']) expect(detectLanguage(`a${e}`), e).toBe('bash')
     for (const e of ['.bzl', '.star']) expect(detectLanguage(`a${e}`), e).toBe('python')
     for (const e of PLSQL) expect(detectLanguage(`a${e.toUpperCase()}`), e).toBe('sql')
     for (const e of ['.jsonc', '.avsc']) expect(detectLanguage(`a${e}`), e).toBe('json')
   })
 
-  it('basename maps: only the Bazel files, Jenkinsfile and CMakeLists.txt were added; BUILD and WORKSPACE match exact case only', () => {
+  it('basename maps: only the Bazel files, Jenkinsfile, CMakeLists.txt and the server configs were added; BUILD and WORKSPACE match exact case only', () => {
     for (const [base, lang] of Object.entries(OLD_FILENAME_LANGUAGE)) expect(FILENAME_LANGUAGE.get(base), base).toBe(lang)
-    expect(sorted([...FILENAME_LANGUAGE.keys()].filter((b) => !(b in OLD_FILENAME_LANGUAGE)))).toEqual(['build.bazel', 'cmakelists.txt', 'jenkinsfile', 'module.bazel', 'workspace.bazel'])
+    expect(sorted([...FILENAME_LANGUAGE.keys()].filter((b) => !(b in OLD_FILENAME_LANGUAGE)))).toEqual(sorted(['build.bazel', 'cmakelists.txt', 'jenkinsfile', 'module.bazel', 'workspace.bazel', ...BATCH_SERVERCONF_NAMES]))
+    for (const b of ['Caddyfile', 'CADDYFILE', 'etc/caddy/Caddyfile']) expect(detectLanguage(b), b).toBe('caddy')
+    for (const b of ['nginx.conf', 'etc/nginx/nginx.conf']) expect(detectLanguage(b), b).toBe('nginx')
+    for (const b of ['.htaccess', 'httpd.conf', 'public/.htaccess']) expect(detectLanguage(b), b).toBe('apache')
     for (const b of ['Jenkinsfile', 'ci/jenkinsfile']) expect(detectLanguage(b), b).toBe('groovy')
     for (const b of ['CMakeLists.txt', 'src/cmakelists.txt']) expect(detectLanguage(b), b).toBe('cmake')
     expect(sorted([...EXACT_FILENAME_LANGUAGE.keys()])).toEqual(['BUILD', 'WORKSPACE'])
@@ -166,7 +178,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
 
   it('bash hook symbol-bearing set is unchanged', () => {
     const now = LANGUAGE_SPECS.filter((s) => s.symbolBearing).map((s) => s.id)
-    expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS, ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, ...BATCH_LISP_IDS, ...BATCH_HASKELL_IDS, ...BATCH_OCAML_IDS, ...BATCH_FSHARP_IDS, ...BATCH_NIX_IDS]))
+    expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS, ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, ...BATCH_LISP_IDS, ...BATCH_HASKELL_IDS, ...BATCH_OCAML_IDS, ...BATCH_FSHARP_IDS, ...BATCH_NIX_IDS, ...BATCH_SERVERCONF_IDS]))
   })
 
   it('read hook source-hint set: adds the other Ruby extensions and Starlark only', () => {
@@ -175,7 +187,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
 
   it('diff-on-reread set: adds extensions of languages already covered, and the new mappings', () => {
     expect(diff((e) => OLD_DIFFABLE_SOURCE_RE.test(`x${e}`), 'diffable')).toEqual({
-      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX]),
+      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX, ...BATCH_SERVERCONF]),
       removed: [],
     })
   })
@@ -202,7 +214,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('labels: unchanged except Apex, which used to print as the bare id', () => {
     const ids: Language[] = [...LANGUAGE_SPECS.map((s) => s.id), 'unknown']
     const changed = ids.filter((id) => languageLabel(id) !== (OLD_LABELS[id] ?? id))
-    expect(changed).toEqual([...BATCH_TEMPLATES_IDS, 'abap', 'sas', 'pli', 'rpg', 'jcl', ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, ...BATCH_LISP_IDS, ...BATCH_HASKELL_IDS, ...BATCH_OCAML_IDS, ...BATCH_FSHARP_IDS, ...BATCH_NIX_IDS, 'abl', 'apex'])
+    expect(changed).toEqual([...BATCH_TEMPLATES_IDS, ...BATCH_SERVERCONF_IDS, 'abap', 'sas', 'pli', 'rpg', 'jcl', ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, ...BATCH_LISP_IDS, ...BATCH_HASKELL_IDS, ...BATCH_OCAML_IDS, ...BATCH_FSHARP_IDS, ...BATCH_NIX_IDS, 'abl', 'apex'])
     expect(languageLabel('apex')).toBe('Apex')
   })
 })
@@ -220,6 +232,31 @@ describe('language table: every row reaches an extractor', () => {
     const exts = LANGUAGE_SPECS.flatMap((s) => [...s.extensions])
     expect(exts.length).toBe(new Set(exts).size)
     for (const e of exts) expect(e, 'extensions are lowercase with a leading dot').toMatch(/^\.[a-z0-9]+$/)
+    const bases = NAMED_ROWS.flatMap((s) => [...(s.basenames ?? [])])
+    expect(bases.length).toBe(new Set(bases).size)
+  })
+
+  // `detectLanguage` looks `basenames` up under a lower-cased basename and `exactBasenames` under the literal one, so a row that spells a basename in its display case declares a key no lookup can ever produce and the language goes undetected: `Caddyfile`, the spelling every Caddy install ships and the README advertises, resolved to `unknown` while `caddy.conf` beside it worked. Asserting the round trip rather than the spelling catches any other way the two sides can disagree.
+  it('every basename in the table resolves back to its own row', () => {
+    const rows = NAMED_ROWS.filter((s) => (s.basenames?.length ?? 0) + (s.exactBasenames?.length ?? 0) > 0)
+    expect(rows.length, 'the basename population must be non-empty').toBeGreaterThanOrEqual(10)
+    for (const s of rows) {
+      for (const b of s.basenames ?? []) {
+        expect(b, `${s.id}: \`basenames\` is matched lower-cased, so \`${b}\` is unreachable; use \`exactBasenames\` for a case-exact key`).toBe(b.toLowerCase())
+        expect(detectLanguage(b), `${s.id}: basename \`${b}\``).toBe(s.id)
+      }
+      for (const b of s.exactBasenames ?? []) expect(detectLanguage(b), `${s.id}: exact basename \`${b}\``).toBe(s.id)
+    }
+  })
+
+  // The server-config trio is one feature: someone reading nginx.conf and someone reading httpd.conf want the same offer, so the three rows share their hint flags or the odd one out is a mistake rather than a decision. Nginx shipped as that odd one out -- an extractor, a fixture and a changelog line promising `read "file::symbol"`, over a row spread from DATA that answered false to every flag, so the bash hook never made the offer for the one config file most people have. Markup and data rows produce symbols without being symbol-bearing on purpose, which is why this is scoped to the family rather than asserted of every adapter that returns something.
+  it('the server-config languages agree on their hint flags', () => {
+    const family = ['nginx', 'caddy', 'apache'] as const
+    const rows = family.map((id) => LANGUAGE_SPECS.find((s) => s.id === id))
+    for (const [i, s] of rows.entries()) expect(s, `no ${family[i]} row in the table`).toBeDefined()
+    const flags = rows.map((s) => JSON.stringify(FLAGS.map((f) => languageHasFlag(s!.id, f))))
+    expect(new Set(flags).size, `${family.map((id, i) => `${id}=${flags[i]}`).join(' ')} (flags: ${FLAGS.join(', ')})`).toBe(1)
+    for (const s of rows) expect(languageHasFlag(s!.id, 'symbolBearing'), `${s!.id} resolves named blocks, so it is symbol-bearing`).toBe(true)
   })
 
   it('the doctor count of non-tree-sitter languages matches the architecture doc', () => {
