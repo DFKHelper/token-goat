@@ -77,6 +77,19 @@ describe('parseColonLineSpec', () => {
     expect(parseColonLineSpec('src/answer_router.ts::200-240')).toBeNull()
   })
 
+  // A stray colon anywhere in the file part means the spec is not a line spec. Splitting on the last colon regardless captured `src/answer_router.ts:1` and `C` as file names, and the read that followed failed with `Could not read:` naming a path nobody typed. `C:142` is a legal drive-relative path (drive C, file `142`), which is why a bare drive letter declines rather than being read as a line number.
+  it('declines a file part carrying a colon of its own', () => {
+    expect(parseColonLineSpec('src/answer_router.ts:1:2')).toBeNull()
+    expect(parseColonLineSpec('C:142')).toBeNull()
+    expect(parseColonLineSpec('C::142')).toBeNull()
+  })
+
+  it('names what the caller typed when the spec carries a stray colon', () => {
+    const { text, code } = runRead({ spec: 'src/answer_router.ts:1:2' })
+    expect(code).toBe(1)
+    expect(text).toContain('src/answer_router.ts:1:2')
+  })
+
   // `file::N:M` is an existing accepted range spelling (read_commands.test.ts, "accepts the colon separator form file::N:M"): its LAST colon is the range separator, so a split on it alone would capture the spec here with file = `src/answer_router.ts::200`.
   it('declines the `file::N:M` range spelling, whose last colon is a range separator', () => {
     expect(parseColonLineSpec('src/answer_router.ts::200:240')).toBeNull()

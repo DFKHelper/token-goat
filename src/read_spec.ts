@@ -103,14 +103,18 @@ export function parseLineRange(spec: string): { file: string; start: number; end
   return { file: m[1]!, start, end }
 }
 
-/** A `file:142` / `file:142-160` line spec -- the shape an agent already holds when a grep hit, a stack trace, or a diff hunk handed it a line number. Split on the LAST `:` by index rather than with a regex group, for the same reason findSpecSeparator does: a Windows absolute path (`C:/Projects/foo.ts:142`) carries a drive-letter colon that a lazy group would split on, turning the path into `C` and the line spec into `/Projects/foo.ts:142`. The suffix must match `^\d+(-\d+)?$` in its entirety, so anything else after the last colon (`file::symbol`, `C:/Projects/foo.ts`) stays a path. Two guards keep the existing `::` grammar whole, and both are load-bearing: a prefix ending in `:` declines `file::120`, and a prefix containing `::` anywhere declines `file::2:4` (whose last colon is the range separator, not a path one) -- the same `includes('::')` guard parseLineRange already carries for its `@` form. Without the second, `file::2:4` was captured here with file = `file::2`, breaking a range spelling that already worked. */
+/** A `file:142` / `file:142-160` line spec -- the shape an agent already holds when a grep hit, a stack trace, or a diff hunk handed it a line number. Split on the LAST `:` by index rather than with a regex group, for the same reason findSpecSeparator does: a Windows absolute path (`C:/Projects/foo.ts:142`) carries a drive-letter colon that a lazy group would split on, turning the path into `C` and the line spec into `/Projects/foo.ts:142`. The suffix must match `^\d+(-\d+)?$` in its entirety, so anything else after the last colon (`file::symbol`, `C:/Projects/foo.ts`) stays a path. One guard keeps the existing `::` grammar whole and the error messages honest: the file part must be colon-free past its optional drive colon. That declines `file::120` and `file::2:4` (whose last colon is the range separator, not a path one), the same cases the `endsWith(':')` / `includes('::')` pair it replaced was written for -- without it `file::2:4` was captured with file = `file::2`, breaking a range spelling that already worked -- and it also declines the stray-colon specs those two missed. */
 export function parseColonLineSpec(spec: string): { file: string; start: number; end: number } | null {
   const colonIdx = spec.lastIndexOf(':')
   if (colonIdx <= 0) return null
   const suffix = spec.slice(colonIdx + 1)
   if (!/^\d+(?:-\d+)?$/.test(suffix)) return null
   const file = spec.slice(0, colonIdx)
-  if (file === '' || file.endsWith(':') || file.includes('::')) return null
+  if (file === '') return null
+  // The file part may carry exactly one colon, the Windows drive colon at index 1. Any other colon means this spec is not a line spec at all, and the two shapes that proves matter: `src/f.ts:1:2` used to be captured with file = `src/f.ts:1`, and the drive-relative `C:142` (drive C, file `142`) with file = `C` -- both then failed with `Could not read:` naming a path the user never typed. A single leading letter is that drive colon and nothing else, so it declines; a longer prefix keeps its drive colon and is checked past it. This subsumes the two guards that used to stand here, `endsWith(':')` for `file::120` and `includes('::')` for `file::2:4`, whose own reasons are recorded above.
+  if (/^[A-Za-z]$/.test(file)) return null
+  const pastDrive = /^[A-Za-z]:/.test(file) ? file.slice(2) : file
+  if (pastDrive === '' || pastDrive.includes(':')) return null
   if (fileExists(spec)) return null
   const dash = suffix.indexOf('-')
   const start = parseInt(dash === -1 ? suffix : suffix.slice(0, dash), 10)
