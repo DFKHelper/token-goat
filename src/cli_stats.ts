@@ -12,7 +12,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { summarize, renderStats, renderShortStats, type StatsSummary } from './stats.js'
 import { renderHookLatencyStats } from './hook_latency.js'
-import { dataDir } from './constants.js'
+import { sessionsDir } from './sessions_dir.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
@@ -67,25 +67,23 @@ export function renderTopSessionFiles(topN: number = 5): string {
 }
 
 /**
- * Return the top-N most-read files from the most recently modified session
- * JSON on disk (used when the in-process session state is empty, e.g. when
- * ``stats`` is invoked as a standalone command).
+ * Return the top-N most-read files from the most recently modified session JSON on disk (used when the in-process session state is empty, e.g. when ``stats`` is invoked as a standalone command). Reads {@link sessionsDir}, the same directory session_store.ts writes to; `overrideSessionsDir` exists for tests only.
  */
 export function renderTopSessionFilesFromDisk(topN: number = 5, overrideSessionsDir?: string): string {
   try {
-    const sessionsDir = overrideSessionsDir ?? path.join(dataDir(), 'sessions')
-    if (!fs.existsSync(sessionsDir)) return ''
+    const dir = overrideSessionsDir ?? sessionsDir()
+    if (!fs.existsSync(dir)) return ''
 
     const files = fs
-      .readdirSync(sessionsDir)
+      .readdirSync(dir)
       .filter((f) => f.endsWith('.json'))
-      .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionsDir, f)).mtimeMs }))
+      .map((f) => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime)
       .slice(0, 3)
 
     for (const { name } of files) {
       try {
-        const raw = fs.readFileSync(path.join(sessionsDir, name), 'utf-8')
+        const raw = fs.readFileSync(path.join(dir, name), 'utf-8')
         const data = JSON.parse(raw) as Record<string, unknown>
         const filesList = data['files']
         if (!Array.isArray(filesList)) continue

@@ -22,6 +22,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Editing a file keeps the already-read evidence for the parts of it the edit did not touch**: a Write or Edit cleared that file's entire served-body index, so the next read of it shipped whole. In one edit-read-edit loop over a changelog, fourteen repeated reads of the same opening block cost roughly 274,000 tokens. The index is matched on the served bytes and never on line position, so a line the edit rewrote stops matching by itself while the untouched lines around it still come back withheld behind a recall pointer. The `sed` line-range ledger, matched on numbers an edit does move, is still cleared on every edit.
 
+- **`token-goat stats` shows the top files of the current session again**: the section was read from a directory nothing has ever written to, so it was absent from every run and looked like "nothing worth reporting". It now reads the same session store the hooks write to, and prints the most-read files of the latest session.
+
 ## [2.9.18] - 2026-09-19
 
 ### Fixed

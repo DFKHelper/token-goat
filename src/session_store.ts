@@ -10,13 +10,13 @@ import * as path from 'node:path'
 
 import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { normalizePath } from './paths.js'
-import { tokenGoatHome } from './disk_cache.js'
+import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSecrets } from './secret_redact.js'
 import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
-export const SESSIONS_SUBDIR = 'sessions'
+export { SESSIONS_SUBDIR }
 
 /**
  * The sanitized form of relay.ts's `sessionStateKey` agent-salt separator (`:agent:`), as it actually appears in an on-disk filename after {@link sessionPath}'s sanitization (`:` -> `_`). Exported so any code that needs to recognize or exclude a subagent-scoped session blob by filename (sibling-blob discovery for the pre_compact manifest, "latest session" resolution) derives the marker from the same sanitization logic rather than hardcoding a string that could drift out of sync with it.
@@ -66,7 +66,7 @@ export function sessionSidecarPath(sessionId: string, suffix: string): string | 
   if (!safe) return null
   // A suffix is chosen by calling code, never by a session id, but it still lands in a filename: reject anything that could climb out of the directory rather than trusting the call site.
   if (suffix.includes('/') || suffix.includes('\\') || suffix.includes('..')) return null
-  const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
+  const dir = sessionsDir()
   const candidate = path.join(dir, `${safe}${suffix}`)
   try {
     const rel = path.relative(dir, candidate)
@@ -507,7 +507,7 @@ export function listSiblingSessionStates(sessionId: string): SerializedSession[]
   const prefix = saltedStemPrefix(sessionId)
   // An id that sanitizes to nothing leaves the bare marker, which would match every salted blob on disk regardless of which session wrote it.
   if (prefix === AGENT_SALT_MARKER) return []
-  const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
+  const dir = sessionsDir()
   const out: SerializedSession[] = []
   try {
     if (!fs.existsSync(dir)) return out
