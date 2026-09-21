@@ -89,7 +89,7 @@ export function extraFileArgsNote(
 ): string {
   const noun = opts.noun ?? 'file'
   const head = `Note: ${extras.length} extra ${noun} argument(s) ignored (${extras.join(', ')}).`
-  if (opts.mergeable === false) return `${head} ${command} takes one ${noun} at a time.`
+  if (opts.mergeable === false) return `${head} Run ${command} once per ${noun}.`
   return `${head} ${command} reads one ${noun}, or a comma-separated list: token-goat ${command} "${[first, ...extras].join(',')}"`
 }
 
@@ -128,6 +128,17 @@ export function parseColonLineRange(symbol: string): { start: number; end: numbe
   const start = parseInt(m[1]!, 10)
   const end = m[2] !== undefined ? parseInt(m[2], 10) : start
   return { start, end }
+}
+
+/** Whether `read` would still serve every one of `specs` if they were comma-joined into a single argument -- the question {@link extraFileArgsNote} has to answer before it prints that joined string as advice. Answered by replaying {@link runRead}'s own dispatch over the joined string in its own order rather than by re-deriving which shapes merge: a merged spec is served only if it reaches `runReadMulti`, so anything the two line-spec branches claim first (`a@1-2,b@3-4` is one `@` range ending in `3-4`; `a.ts:40,b.ts:120` and a bare `a.ts,b.ts` reach neither multi path) is not mergeable, however plausible the comma looks. The note used to promise the comma form unconditionally, and for those shapes printed a command that exits 1. */
+export function readSpecsMergeable(specs: readonly string[]): boolean {
+  if (specs.length < 2) return true
+  const joined = specs.join(',')
+  if (parseLineRange(joined) !== null) return false
+  if (parseColonLineSpec(joined) !== null) return false
+  if (parseCrossFileMultiSpec(joined) !== null) return true
+  const { symbol } = parseReadSpec(joined)
+  return symbol !== undefined && symbol !== '' && symbol.includes(',') && parseColonLineRange(symbol) === null
 }
 
 export function runLineRange(

@@ -64,12 +64,11 @@ import {
 } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
-// Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash
-// tool-filter registry (every language, linter, cloud and package-manager filter), which only the
-// compress command ever uses. See the same reasoning for relay in cmdHook.
+// Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
 import {
   runSymbol,
   runRead,
+  readSpecsMergeable,
   runBrief,
   runSection,
   runListSections,
@@ -233,8 +232,7 @@ async function cmdSemantic(query: string | undefined, opts: { limit?: string; js
     ...(opts.preflight === true ? { preflight: true } : {}),
     ...(opts.warm === true ? { warm: true } : {}),
   })
-  // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only
-  // the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
+  // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
   ;(opts.json === true || code === 0 ? out : err)(text)
   process.exitCode = code
 }
@@ -243,9 +241,7 @@ export async function cmdIndex(
   pathArg?: string,
   opts: { walk?: boolean; dbPath?: string; force?: boolean; forceWalk?: boolean } = {},
 ): Promise<void> {
-  // A bulk walk is long-running background work even though the user typed it: they start it and
-  // go back to their editor. The daemon lowers its own priority for the same reason; doing it here
-  // too is what makes "both indexing paths" true rather than only the invisible one.
+  // A bulk walk is long-running background work even though the user typed it: they start it and go back to their editor. The daemon lowers its own priority for the same reason; doing it here too is what makes "both indexing paths" true rather than only the invisible one.
   applyIndexingPriority()
   const root = pathArg ?? process.cwd()
   const dbPath = opts.dbPath ?? globalDbPath()
@@ -304,13 +300,9 @@ export async function cmdIndex(
     paintProgress('scanning')
     // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
-    // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from
-    // indexing entirely -- skip before the language check so a blocked file is never touched.
+    // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) {
-      // Purge rather than skip. A file indexed before its root was blocked would otherwise keep
-      // its symbols, bodies and embeddings forever: a plain skip leaves the rows it wrote behind,
-      // and no other pass removes them (pruning is existence-based, and an excluded file is still
-      // on disk). Same treatment isParseSkipEligible already gives a file excluded by skip_dirs.
+      // Purge rather than skip. A file indexed before its root was blocked would otherwise keep its symbols, bodies and embeddings forever: a plain skip leaves the rows it wrote behind, and no other pass removes them (pruning is existence-based, and an excluded file is still on disk). Same treatment isParseSkipEligible already gives a file excluded by skip_dirs.
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
@@ -323,22 +315,10 @@ export async function cmdIndex(
     }
     // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally for every tracked file on every invocation, even ones byte-identical to what was already indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not unchanged" so the file still gets a normal reindex attempt below. Parse and embed freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file whose embedding previously failed still gets re-embedded even when its parse is current. --force bypasses both freshness checks unconditionally -- e.g. after a parser.ts extraction-logic change, every already-indexed file's SHA is untouched and stale symbols/refs would otherwise never get recomputed until each file happens to be edited.
     const sha = fingerprintFile(key)
-    // A git-tracked file deleted from the worktree is still listed by getTrackedFiles, so it
-    // reaches this loop on every run. fingerprintFile returns null for it, indexFileSync
-    // fail-softs on ENOENT without throwing, and the `indexed += 1` at the bottom of the loop
-    // then counted work that never happened -- every run, forever, since deleting the file is
-    // exactly what keeps it in this state. After a rename the effect was the headline symptom:
-    // `Indexed 1 file into the symbol index` printed while the index had just been emptied.
-    // A null sha for a file that DOES exist is a transient read failure (a lock held by an AV
-    // scanner or an open editor) and still deserves the normal reindex attempt below, so the
-    // existence check is what separates the two. The rows are removed by pruneDeletedFiles
-    // after the loop, which is the pass that owns vanished files.
+    // A git-tracked file deleted from the worktree is still listed by getTrackedFiles, so it reaches this loop on every run. fingerprintFile returns null for it, indexFileSync fail-softs on ENOENT without throwing, and the `indexed += 1` at the bottom of the loop then counted work that never happened -- every run, forever, since deleting the file is exactly what keeps it in this state. After a rename the effect was the headline symptom: `Indexed 1 file into the symbol index` printed while the index had just been emptied. A null sha for a file that DOES exist is a transient read failure (a lock held by an AV scanner or an open editor) and still deserves the normal reindex attempt below, so the existence check is what separates the two. The rows are removed by pruneDeletedFiles after the loop, which is the pass that owns vanished files.
     if (sha === null && !fs.existsSync(key)) continue
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
-    // A case-only rename (`mv b.ts B.ts`) leaves the content byte-identical, so the sha gate below
-    // would skip the file and the row would keep the old spelling indefinitely -- see
-    // indexedPathSpellingIsStale. Reindexing rewrites the row under the spelling the file
-    // actually has.
+    // A case-only rename (`mv b.ts B.ts`) leaves the content byte-identical, so the sha gate below would skip the file and the row would keep the old spelling indefinitely -- see indexedPathSpellingIsStale. Reindexing rewrites the row under the spelling the file actually has.
     const spellingStale = entry !== null && indexedPathSpellingIsStale(entry.filePath, key)
     // entry.parserSha gates on WHICH parser wrote the rows, not just whether the content moved -- see parserFingerprintForLanguage and the same gate in worker.ts's makeIndexer. The expected stamp is the one for the language the row itself records, so a fix to one adapter reparses that language's files and leaves every other language's rows alone. This is what makes the --force escape hatch described above unnecessary after a parser change: the mismatch reparses the file on its own.
     const parseUnchanged =
@@ -388,9 +368,7 @@ export async function cmdIndex(
         }
         continue
       }
-      // indexFileSync fail-softs on ENOENT, so a file deleted during its own parse leaves nothing
-      // written and throws nothing either. Counting it would reintroduce the phantom credit the
-      // pre-parse guard above exists to stop, just through a narrower window.
+      // indexFileSync fail-softs on ENOENT, so a file deleted during its own parse leaves nothing written and throws nothing either. Counting it would reintroduce the phantom credit the pre-parse guard above exists to stop, just through a narrower window.
       if (!fs.existsSync(key)) continue
     }
     // Re-read the stamp the parse above just wrote rather than trusting the one captured before it: writeParseResult clears the carried embed_sha when a reparse moved this file's embedding boundaries (see embeddingBoundariesMoved), and `embedUnchanged` was computed from the pre-parse row. Without this the re-embed is deferred to whatever run happens next, so a single `token-goat index` after an adapter change leaves the file's vectors cut on boundaries that no longer exist.
@@ -419,8 +397,7 @@ export async function cmdIndex(
       `${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}` +
       `${failed > 0 ? ` Failed to index ${failed} file(s) (see stderr).` : ''}`,
   )
-  // A run where every file failed and none indexed is a total indexing failure, not a
-  // no-op success -- callers scripting on `$?` must be able to detect it.
+  // A run where every file failed and none indexed is a total indexing failure, not a no-op success -- callers scripting on `$?` must be able to detect it.
   if (indexed === 0 && failed > 0) {
     process.exitCode = 1
   }
@@ -434,12 +411,7 @@ function cmdMap(opts: { compact?: boolean; json?: boolean }): void {
   } else {
     out(text)
   }
-  // `map_lookup` has carried a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry
-  // since the Python->TS port, but nothing ever called recordStat for it -- the `map`/`baseline`
-  // dashboard bucket was permanently zero regardless of real usage (same class of gap fixed for
-  // changed_lookup, see project_runchanged_missing_stat memory). The byte accounting (including the
-  // recentFiles-vs-topSymbols path canonicalization needed for the dedup) lives in
-  // mapLookupBytesSaved so cmdMap and the MCP `map` tool share one implementation.
+  // `map_lookup` has carried a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry since the Python->TS port, but nothing ever called recordStat for it -- the `map`/`baseline` dashboard bucket was permanently zero regardless of real usage (same class of gap fixed for changed_lookup, see project_runchanged_missing_stat memory). The byte accounting (including the recentFiles-vs-topSymbols path canonicalization needed for the dedup) lives in mapLookupBytesSaved so cmdMap and the MCP `map` tool share one implementation.
   const bytesSaved = mapLookupBytesSaved(map, text)
   recordStat('map_lookup', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
@@ -460,8 +432,7 @@ function cmdCommands(opts: { json?: boolean; grep?: string }): void {
   if (opts.json === true) {
     out(displaySafeJson(manifest, 0))
   } else if (manifest.length === 0) {
-    // Same wording as cmdPptxText's --grep-with-no-hits path: a filter matching nothing is a
-    // legitimate empty result, not an error, so this stays a plain message on exit 0.
+    // Same wording as cmdPptxText's --grep-with-no-hits path: a filter matching nothing is a legitimate empty result, not an error, so this stays a plain message on exit 0.
     out('no matches')
   } else {
     out(formatCommandManifest(manifest))
@@ -504,20 +475,11 @@ function printBridgeVerificationNotice(harness: HarnessName): void {
 }
 
 async function cmdHook(event: string, opts: { harness?: string }): Promise<void> {
-  // A bridge that writes a bare command string into its host tool's config (no in-process
-  // env-setting hook like pi.ts/copilot_cli.ts have) can self-identify via this flag instead —
-  // same purpose as TOKEN_GOAT_HARNESS_OVERRIDE, just passed as an argv flag since there's no
-  // JS relay script in the middle to set process.env directly. detectHarness() itself already
-  // validates the value against KNOWN_HARNESS_NAMES and ignores anything unrecognized, so no
-  // extra validation is needed here.
+  // A bridge that writes a bare command string into its host tool's config (no in-process env-setting hook like pi.ts/copilot_cli.ts have) can self-identify via this flag instead — same purpose as TOKEN_GOAT_HARNESS_OVERRIDE, just passed as an argv flag since there's no JS relay script in the middle to set process.env directly. detectHarness() itself already validates the value against KNOWN_HARNESS_NAMES and ignores anything unrecognized, so no extra validation is needed here.
   if (typeof opts.harness === 'string' && opts.harness.length > 0) {
     process.env[ENV_KEYS.HARNESS_OVERRIDE] = opts.harness
   }
-  // Imported here rather than at module scope: relay.ts side-effect-imports every hook handler to
-  // register them, so a top-level import made every CLI command -- `symbol`, `read`, even
-  // `--version` -- parse the whole hook subsystem, the bash tool-filter registry and the HTML
-  // extractor before doing anything. Only this one command needs any of it. Hooks themselves are
-  // unaffected: they run through dist/token-goat-hook.mjs, which imports relay directly.
+  // Imported here rather than at module scope: relay.ts side-effect-imports every hook handler to register them, so a top-level import made every CLI command -- `symbol`, `read`, even `--version` -- parse the whole hook subsystem, the bash tool-filter registry and the HTML extractor before doing anything. Only this one command needs any of it. Hooks themselves are unaffected: they run through dist/token-goat-hook.mjs, which imports relay directly.
   const { relay } = await import('./relay.js')
   // relay handles its own stdin read / stdout write and never throws on a malformed/unknown event — it emits `{}` and returns.
   await relay(event)
@@ -606,8 +568,7 @@ async function cmdInstall(opts: {
   local?: boolean
   user?: boolean
 }): Promise<void> {
-  // --user is the opt-out from the one harness whose scope default is inverted (see
-  // vscodeScopeFromFlags). Passing both scope flags is a contradiction, not a precedence puzzle.
+  // --user is the opt-out from the one harness whose scope default is inverted (see vscodeScopeFromFlags). Passing both scope flags is a contradiction, not a precedence puzzle.
   if (opts.project === true && opts.user === true) {
     throw new Error('install takes either -p/--project or --user, not both.')
   }
@@ -615,10 +576,7 @@ async function cmdInstall(opts: {
   await import('./relay.js')
   const scope: HookScope = opts.project === true ? 'project' : 'user'
 
-  // Base install: the Claude Code hooks, the CLAUDE.md routing block, and the token-goat skill,
-  // per README's "What gets installed?" table -- gated behind wantsClaudeCodeBase (see its doc
-  // comment) so a scoped harness flag like --vscode never silently rewrites a Claude Code file
-  // it does not need.
+  // Base install: the Claude Code hooks, the CLAUDE.md routing block, and the token-goat skill, per README's "What gets installed?" table -- gated behind wantsClaudeCodeBase (see its doc comment) so a scoped harness flag like --vscode never silently rewrites a Claude Code file it does not need.
   if (wantsClaudeCodeBase(opts)) {
     const result = installHooks(scope)
     // Report alreadyInstalled like every other harness branch below does. installHooks has always computed it; the base Claude Code path was the one caller that discarded it and claimed a fresh install on every run.
@@ -635,8 +593,7 @@ async function cmdInstall(opts: {
         : `Updated CLAUDE.md → ${claudeMdResult.path}`,
     )
 
-    // A block relocated into some other markdown file is invisible to install/uninstall, so the
-    // write above just created a second copy. Say so rather than leaving a silent duplicate.
+    // A block relocated into some other markdown file is invisible to install/uninstall, so the write above just created a second copy. Say so rather than leaving a silent duplicate.
     for (const stray of findStrayClaudeMdBlocks()) {
       out(`WARNING: stray token-goat block in ${stray} — not managed by install/uninstall; delete it to avoid duplicate, stale guidance.`)
     }
@@ -776,8 +733,7 @@ async function cmdInstall(opts: {
     for (const line of visualStudioManualSteps(vsResult.scope)) out(line)
   }
 
-  // --zed is additive and user-scope only: Zed's context_servers has no documented project-local
-  // equivalent to VS Code's .vscode/mcp.json, so -p/--project has no effect here.
+  // --zed is additive and user-scope only: Zed's context_servers has no documented project-local equivalent to VS Code's .vscode/mcp.json, so -p/--project has no effect here.
   if (opts.zed === true) {
     const zedResult = installZed()
     out(
@@ -787,9 +743,7 @@ async function cmdInstall(opts: {
     )
   }
 
-  // Cursor imports Claude Code's hooks from ~/.claude/settings.json by default (confirmed against
-  // the installed 3.19.7 bundle), so token-goat never writes ~/.cursor/hooks.json -- see
-  // src/bridges/cursor_install.ts's header. This registers the MCP server only.
+  // Cursor imports Claude Code's hooks from ~/.claude/settings.json by default (confirmed against the installed 3.19.7 bundle), so token-goat never writes ~/.cursor/hooks.json -- see src/bridges/cursor_install.ts's header. This registers the MCP server only.
   if (opts.cursor === true) {
     const cursorResult = installCursor({ project: opts.project === true })
     out(
@@ -800,9 +754,7 @@ async function cmdInstall(opts: {
     if (cursorResult.scope === 'project') out(projectHooksCommitNote([cursorResult.mcpPath]))
   }
 
-  // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so project-scope
-  // installs for the two hosts overlap there. --vscode is project scope unless --user says
-  // otherwise, so it reaches this overlap without -p now; --visualstudio still needs -p.
+  // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so project-scope installs for the two hosts overlap there. --vscode is project scope unless --user says otherwise, so it reaches this overlap without -p now; --visualstudio still needs -p.
   if (((opts.vscode === true && opts.user !== true) || (opts.visualstudio === true && opts.project === true))) {
     const duplicateNote = visualStudioDuplicateNote()
     if (duplicateNote !== null) out(duplicateNote)
@@ -853,12 +805,7 @@ async function cmdInstall(opts: {
   }
 }
 
-// Backs the VS Code extension's ensureDecoderSetup check -- shelled out to rather than
-// reimplemented in the extension, so the extension and installVscode share one path
-// resolver (vscodeDecoderConfigured) and can never drift on where mcp.json lives or what
-// key name it looks for. --project checks the workspace `.vscode/mcp.json` too (via
-// process.cwd(), set by --cwd above), matching install/uninstall's --project convention.
-// --visualstudio answers the same question for the Visual Studio `.mcp.json` files.
+// Backs the VS Code extension's ensureDecoderSetup check -- shelled out to rather than reimplemented in the extension, so the extension and installVscode share one path resolver (vscodeDecoderConfigured) and can never drift on where mcp.json lives or what key name it looks for. --project checks the workspace `.vscode/mcp.json` too (via process.cwd(), set by --cwd above), matching install/uninstall's --project convention. --visualstudio answers the same question for the Visual Studio `.mcp.json` files.
 function cmdMcpStatus(opts: { vscode?: boolean; visualstudio?: boolean; project?: boolean }): void {
   if ((opts.vscode === true) === (opts.visualstudio === true)) {
     throw new Error('mcp-status needs exactly one of --vscode or --visualstudio')
@@ -892,10 +839,7 @@ function cmdUninstall(opts: {
   }
   const scope: HookScope = opts.project === true ? 'project' : 'user'
 
-  // Base uninstall, mirroring the base install's wantsClaudeCodeBase gate: strip the Claude Code
-  // hooks, the CLAUDE.md block, and the skill directory only when this invocation actually means
-  // Claude Code (bare uninstall, or --hermes, which shares its hook entries). A scoped
-  // `uninstall --vscode` must not also silently strip the caller's Claude Code integration.
+  // Base uninstall, mirroring the base install's wantsClaudeCodeBase gate: strip the Claude Code hooks, the CLAUDE.md block, and the skill directory only when this invocation actually means Claude Code (bare uninstall, or --hermes, which shares its hook entries). A scoped `uninstall --vscode` must not also silently strip the caller's Claude Code integration.
   if (wantsClaudeCodeBase(opts)) {
     const removed = uninstallHooks(scope)
     out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
@@ -903,8 +847,7 @@ function cmdUninstall(opts: {
     const claudeMdRemoved = uninstallClaudeMd()
     out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
 
-    // Strays live in files token-goat doesn't own, so uninstall reports them rather than
-    // deleting: silently editing a user's own markdown is worse than leaving a line behind.
+    // Strays live in files token-goat doesn't own, so uninstall reports them rather than deleting: silently editing a user's own markdown is worse than leaving a line behind.
     for (const stray of findStrayClaudeMdBlocks()) {
       out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
     }
@@ -913,12 +856,7 @@ function cmdUninstall(opts: {
     out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
   }
 
-  // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install
-  // and uninstall (README: "Add --codex ... to also strip those integrations"), so they run
-  // on top of the base uninstall above rather than replacing it. --local (pi, copilot) narrows
-  // removal to the project-local scope only; without it, the uninstaller cleans up wherever
-  // the integration actually is (global and/or local) instead of requiring the caller to
-  // remember which scope it was originally installed with.
+  // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install and uninstall (README: "Add --codex ... to also strip those integrations"), so they run on top of the base uninstall above rather than replacing it. --local (pi, copilot) narrows removal to the project-local scope only; without it, the uninstaller cleans up wherever the integration actually is (global and/or local) instead of requiring the caller to remember which scope it was originally installed with.
   const removals: Array<{ flag: boolean; run: () => boolean; label: string }> = [
     { flag: opts.codex === true, run: uninstallCodex, label: 'Codex CLI integration' },
     { flag: opts.gemini === true, run: uninstallGemini, label: 'Gemini CLI integration' },
@@ -940,25 +878,12 @@ function cmdUninstall(opts: {
     out(removed ? `Removed token-goat ${removal.label}.` : `No token-goat ${removal.label} to remove.`)
   }
 
-  // An integration whose flag was not passed is left wired and, before this, was left silent: a
-  // plain `token-goat uninstall` printed three "Removed" lines while a Codex or Copilot hook still
-  // pointed at the binary about to be deleted. That is the offboarding case, and a Copilot
-  // preToolUse hook whose target is gone fails closed on every call. So each one that is still
-  // present is named here with the exact command that removes it, following the same
-  // report-rather-than-delete rule the stray CLAUDE.md blocks above already use: uninstall does not
-  // silently undo an integration the caller did not ask about.
+  // An integration whose flag was not passed is left wired and, before this, was left silent: a plain `token-goat uninstall` printed three "Removed" lines while a Codex or Copilot hook still pointed at the binary about to be deleted. That is the offboarding case, and a Copilot preToolUse hook whose target is gone fails closed on every call. So each one that is still present is named here with the exact command that removes it, following the same report-rather-than-delete rule the stray CLAUDE.md blocks above already use: uninstall does not silently undo an integration the caller did not ask about.
   for (const leftover of leftoverIntegrations(opts)) {
     out(`NOTE: the token-goat ${leftover.label} is still installed. Run "token-goat uninstall ${leftover.flag}" to remove it.`)
   }
 
-  // Cross-scope warning, mirroring installVscode's cross-scope guard (see
-  // otherScopeHasManagedServer): uninstall only ever touches the requested scope's
-  // mcp.json, so a server registered in the OTHER scope survives silently -- e.g. a
-  // project-scope install from before the project->user default flip, uninstalled with
-  // a bare `token-goat uninstall --vscode` (which now defaults to user scope). Warn
-  // rather than refuse: uninstall is best-effort cleanup (it already reports-not-deletes
-  // stray CLAUDE.md blocks above), and refusing here would block a caller who legitimately
-  // only wants to strip the requested scope.
+  // Cross-scope warning, mirroring installVscode's cross-scope guard (see otherScopeHasManagedServer): uninstall only ever touches the requested scope's mcp.json, so a server registered in the OTHER scope survives silently -- e.g. a project-scope install from before the project->user default flip, uninstalled with a bare `token-goat uninstall --vscode` (which now defaults to user scope). Warn rather than refuse: uninstall is best-effort cleanup (it already reports-not-deletes stray CLAUDE.md blocks above), and refusing here would block a caller who legitimately only wants to strip the requested scope.
   if (opts.vscode === true && otherScopeHasManagedServer(vscodeScopeFromFlags(opts))) {
     const otherScope = opts.user === true ? 'project' : 'user'
     out(`NOTE: token-goat is still registered in VS Code ${otherScope} scope. Run "token-goat uninstall --vscode${otherScope === 'user' ? ' --user' : ''}" to remove it too.`)
@@ -1111,19 +1036,13 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
   if (opts.repair === true || opts.fix === true) {
     doctorOpts.repair = true
   }
-  // Scope the Symbols check to the invoking project so an unrelated project sharing the same
-  // global.db can't mask this project's own parser being broken (see checkSymbolCount's doc
-  // comment). No project root found (bare directory, no git/package.json) falls back to the
-  // prior unscoped whole-database behavior.
+  // Scope the Symbols check to the invoking project so an unrelated project sharing the same global.db can't mask this project's own parser being broken (see checkSymbolCount's doc comment). No project root found (bare directory, no git/package.json) falls back to the prior unscoped whole-database behavior.
   const project = findProject(process.cwd())
   if (project !== null) {
     doctorOpts.rootDir = project.root
   }
   if (opts.json === true) {
-    // --json bypasses printDoctorResults' prose entirely (no `[WARN]`-prefixed lines) and emits
-    // the same DoctorResult[] runDoctor() already computes, one entry per check with its
-    // ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify
-    // convention (no envelope) rather than inventing a new shape.
+    // --json bypasses printDoctorResults' prose entirely (no `[WARN]`-prefixed lines) and emits the same DoctorResult[] runDoctor() already computes, one entry per check with its ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify convention (no envelope) rather than inventing a new shape.
     const results = runDoctor(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir)
     out(displaySafeJson(results, 0))
     if (results.some((r) => r.status === 'fail')) {
@@ -1143,18 +1062,7 @@ export function _applyFiltersAndPrint(
   fenceByProvenance = false,
   fenceTag: string = UNTRUSTED_WEB_TAG,
 ): string {
-  // Fetched-page recall only. The injection scan is documented as unconditional for fetched
-  // pages, and a `web-output <id>` recall puts that same attacker-written text in front of the
-  // model -- but only the WebFetch post-hook fenced it, so the copy served from the cache came
-  // back bare. Scanning here rather than at store time means the fence wraps exactly what the
-  // caller sees, so a --grep/--head slice that keeps the payload is fenced and one that drops it
-  // is not. Recall of cached Bash and MCP output is scanned too, under a tag naming tool output rather
-  // than a fetched page. Neither is a page token-goat fetched, but both carry text written by a
-  // third party -- a dependency's build or test output, a remote MCP server's result -- and the
-  // recall channel put it in front of the model unmarked. The fence is decided by provenance --
-  // `fenceByProvenance` -- and not by whether the scan matched: it used to appear only on a positive
-  // hit, which meant any payload the eight deliberately-narrow regexes miss was emitted bare. The
-  // scan now only decides whether the notice names pattern(s) and whether a stat is recorded.
+  // Fetched-page recall only. The injection scan is documented as unconditional for fetched pages, and a `web-output <id>` recall puts that same attacker-written text in front of the model -- but only the WebFetch post-hook fenced it, so the copy served from the cache came back bare. Scanning here rather than at store time means the fence wraps exactly what the caller sees, so a --grep/--head slice that keeps the payload is fenced and one that drops it is not. Recall of cached Bash and MCP output is scanned too, under a tag naming tool output rather than a fetched page. Neither is a page token-goat fetched, but both carry text written by a third party -- a dependency's build or test output, a remote MCP server's result -- and the recall channel put it in front of the model unmarked. The fence is decided by provenance -- `fenceByProvenance` -- and not by whether the scan matched: it used to appear only on a positive hit, which meant any payload the eight deliberately-narrow regexes miss was emitted bare. The scan now only decides whether the notice names pattern(s) and whether a stat is recorded.
   const emit = (text: string): string => {
     if (!fenceByProvenance || text === '') {
       out(text)
@@ -1180,9 +1088,7 @@ export function _applyFiltersAndPrint(
     if (pattern.startsWith('-E ') || pattern.startsWith('--extended-regexp ')) {
       pattern = pattern.replace(/^(?:-E\s+|--extended-regexp\s+)/, '')
     }
-    // Guarded, not just compiled: a pattern that backtracks unboundedly cannot be interrupted, and
-    // this filter runs over cached command output a line at a time. A refused pattern takes the
-    // same literal-substring path an uncompilable one already takes.
+    // Guarded, not just compiled: a pattern that backtracks unboundedly cannot be interrupted, and this filter runs over cached command output a line at a time. A refused pattern takes the same literal-substring path an uncompilable one already takes.
     const guarded = compileGuardedRegex(pattern)
     if (guarded.ok) {
       const re = guarded.re
@@ -1213,10 +1119,7 @@ export function _applyFiltersAndPrint(
   if (opts.full === true) {
     return emit(rawLines.join('\n'))
   }
-  // Text that ends in a newline splits into a trailing "" that is not a line of output. Counting
-  // it made `--tail N` return N-1 real lines (`--tail 1` returned nothing at all) and made the
-  // default elision drop the last line of every long capture. `--full` above keeps the raw split
-  // so the verbatim blob is unchanged.
+  // Text that ends in a newline splits into a trailing "" that is not a line of output. Counting it made `--tail N` return N-1 real lines (`--tail 1` returned nothing at all) and made the default elision drop the last line of every long capture. `--full` above keeps the raw split so the verbatim blob is unchanged.
   const lines = rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines
   const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
   const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
@@ -1306,9 +1209,7 @@ function cmdBashOutput(
           process.stderr.write(`[tg: stale-write] ${msg}\n`)
         }
       }
-      // `bash-output --file` is a general "show me this file's text" recall path, so a caller can
-      // point it straight at a .env. Its values are secret by the file's nature; redact them here
-      // the same way every other read path does. See dotenv_redact.ts.
+      // `bash-output --file` is a general "show me this file's text" recall path, so a caller can point it straight at a .env. Its values are secret by the file's nature; redact them here the same way every other read path does. See dotenv_redact.ts.
       content = redactIfDotenv(opts.file, decodeSource(fs.readFileSync(opts.file)))
     } catch (e) {
       if (e instanceof CliError) throw e
@@ -1586,19 +1487,12 @@ export * from './cli_skills.js'
 export * from './cli_file_ops.js'
 
 async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh?: boolean }): Promise<void> {
-  // An organisation that does not use Google Drive can switch the integration off entirely, which
-  // refuses here before any file id is validated or any connection is opened, and also stops the
-  // installed agent guidance from naming the command at all.
+  // An organisation that does not use Google Drive can switch the integration off entirely, which refuses here before any file id is validated or any connection is opened, and also stops the installed agent guidance from naming the command at all.
   if (!loadConfig().gdrive.enabled) {
     throw new CliError('gdrive-sections is disabled by gdrive.enabled = false in this install')
   }
   const fetchOpts = { fresh: opts.fresh === true }
-  // Fetch the whole doc once up front (honoring --fresh) so its raw byte size is available as
-  // the "full source" side of the bytes-saved calculation below, mirroring cmdSessionOutline/
-  // cmdSessionSlice's convention. fetchDoc() always writes its result to the on-disk web-output
-  // cache before returning, so the getSectionContent/getDocSections calls below can safely pass
-  // `fresh: false` -- they read through to the entry this call just (re)populated, guaranteeing
-  // exactly one network fetch even with --fresh, instead of two.
+  // Fetch the whole doc once up front (honoring --fresh) so its raw byte size is available as the "full source" side of the bytes-saved calculation below, mirroring cmdSessionOutline/ cmdSessionSlice's convention. fetchDoc() always writes its result to the on-disk web-output cache before returning, so the getSectionContent/getDocSections calls below can safely pass `fresh: false` -- they read through to the entry this call just (re)populated, guaranteeing exactly one network fetch even with --fresh, instead of two.
   const text = await fetchDoc(fileId, fetchOpts)
   const fullSourceBytes = Buffer.byteLength(text, 'utf8')
   let emitted: string
@@ -1612,19 +1506,10 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
     const sections = await getDocSections(fileId, { fresh: false })
     emitted = formatSections(sections)
   }
-  // A Google Doc is authorable by anyone who can edit the shared file, exactly like a fetched web
-  // page -- scan and fence it the same way `_applyFiltersAndPrint` does for WebFetch/web-output,
-  // under the same UNTRUSTED_WEB_TAG (this doc *is* fetched over HTTP, via performHttpFetch in
-  // gdrive.ts). Inlined rather than routed through `_applyFiltersAndPrint` because that helper's
-  // default head/tail elision would silently truncate output this command has always emitted in
-  // full; `emitted` is used unmodified below except when a match is found.
+  // A Google Doc is authorable by anyone who can edit the shared file, exactly like a fetched web page -- scan and fence it the same way `_applyFiltersAndPrint` does for WebFetch/web-output, under the same UNTRUSTED_WEB_TAG (this doc *is* fetched over HTTP, via performHttpFetch in gdrive.ts). Inlined rather than routed through `_applyFiltersAndPrint` because that helper's default head/tail elision would silently truncate output this command has always emitted in full; `emitted` is used unmodified below except when a match is found.
   const toEmit = fenceUntrusted(emitted, UNTRUSTED_WEB_TAG)
   out(toEmit)
-  // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `gdrive-sections`/`gdrive_sections`
-  // entry and nothing ever called recordStat for this command -- the dashboard bucket was
-  // permanently zero regardless of real usage, the same class of gap already fixed for
-  // map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice (see
-  // project_runchanged_missing_stat memory).
+  // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `gdrive-sections`/`gdrive_sections` entry and nothing ever called recordStat for this command -- the dashboard bucket was permanently zero regardless of real usage, the same class of gap already fixed for map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice (see project_runchanged_missing_stat memory).
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(toEmit, 'utf8'))
   recordStat('gdrive_sections', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
@@ -1648,25 +1533,12 @@ export function buildProgram(): Command {
     .name('token-goat')
     .description('Surgical token-reduction companion for AI coding agents')
     .version(VERSION, '-v, --version', 'print the token-goat version')
-    // Lets a caller (e.g. the VS Code extension) convey a project root explicitly
-    // instead of setting the spawned process's own working directory to it -- an
-    // attacker-controlled workspace should never be the cwd a shell/launcher resolves
-    // a binary name against, but commands that key off process.cwd() for project
-    // resolution still need a way to be told where that root is.
+    // Lets a caller (e.g. the VS Code extension) convey a project root explicitly instead of setting the spawned process's own working directory to it -- an attacker-controlled workspace should never be the cwd a shell/launcher resolves a binary name against, but commands that key off process.cwd() for project resolution still need a way to be told where that root is.
     .option('--cwd <path>', 'run as if invoked from this directory (overrides the real working directory)')
-    // Lets a caller print a disclosure line ahead of the command's own output without composing
-    // two commands through a shell operator -- a rewritten command (see detectStructuralIndexRewrite
-    // in bash_structural_index.ts) needs to say what it substituted, and every shell parses one
-    // command with a global flag identically, where `echo ... &&` does not (no `&&` in PowerShell
-    // 5.1 at all).
+    // Lets a caller print a disclosure line ahead of the command's own output without composing two commands through a shell operator -- a rewritten command (see detectStructuralIndexRewrite in bash_structural_index.ts) needs to say what it substituted, and every shell parses one command with a global flag identically, where `echo ... &&` does not (no `&&` in PowerShell 5.1 at all).
     .option('--notice <text>', 'print this line to stdout before the command\'s own output')
 
-  // Applied via a preAction hook (not inside `guard` below) so --cwd works for every
-  // command, not only the ones wrapped in `guard` -- the surgical-read commands (symbol,
-  // read, scope, ...) call runExit/runExitText directly and never go through guard, so a
-  // chdir living only inside guard silently no-ops for them. This hook fires before any
-  // command's action handler, guard-wrapped or not, and before anything resolves the
-  // project root or loads config.
+  // Applied via a preAction hook (not inside `guard` below) so --cwd works for every command, not only the ones wrapped in `guard` -- the surgical-read commands (symbol, read, scope, ...) call runExit/runExitText directly and never go through guard, so a chdir living only inside guard silently no-ops for them. This hook fires before any command's action handler, guard-wrapped or not, and before anything resolves the project root or loads config.
   program.hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts<{ cwd?: string; notice?: string }>()
     const cwdOverride = opts.cwd
@@ -1680,8 +1552,7 @@ export function buildProgram(): Command {
     if (opts.notice !== undefined) out(opts.notice)
   })
 
-  // Each action wraps the (possibly sync) handler so any thrown CliError or unexpected error maps to a stderr line + exit code 1, and success to 0.
-  // A handler that already set process.exitCode itself (a deliberate non-zero exit without throwing) is left alone -- only the still-undefined default gets the success fallback.
+  // Each action wraps the (possibly sync) handler so any thrown CliError or unexpected error maps to a stderr line + exit code 1, and success to 0. A handler that already set process.exitCode itself (a deliberate non-zero exit without throwing) is left alone -- only the still-undefined default gets the success fallback.
   const guard =
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
@@ -1693,17 +1564,13 @@ export function buildProgram(): Command {
         // The parser quotes the offending line of the file back, so this banner carries file bytes in a line prefixed with token-goat's own name.
         err(`token-goat: config.toml failed to parse (${displaySafeText(parseErr)}); using defaults — run \`token-goat config validate\` for details`)
       }
-      // Same distinction as above, for the optional per-project .token-goat.toml override --
-      // it fails open (global-only config still loads), but a corrupt project file should not
-      // look identical to "no project override" for every command.
+      // Same distinction as above, for the optional per-project .token-goat.toml override -- it fails open (global-only config still loads), but a corrupt project file should not look identical to "no project override" for every command.
       const projectParseErr = getLastProjectConfigParseError()
       if (projectParseErr !== null) {
         // Same, and worse: a project override arrives with the repository, so these bytes are third-party on every clone. This banner prints before every command.
         err(`token-goat: .token-goat.toml failed to parse (${displaySafeText(projectParseErr)}); ignoring project override`)
       }
-      // A per-project file arrives with the repository, so it may not set the security controls
-      // an administrator configures once. Say which settings were ignored: silently dropping
-      // them would leave a legitimate author wondering why the file had no effect.
+      // A per-project file arrives with the repository, so it may not set the security controls an administrator configures once. Say which settings were ignored: silently dropping them would leave a legitimate author wondering why the file had no effect.
       const lockedKeys = lastProjectConfigLockedKeys()
       if (lockedKeys.length > 0) {
         err(
@@ -1787,7 +1654,8 @@ export function buildProgram(): Command {
               ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
               ...(opts.stats === true ? { stats: true } : {}),
             }),
-          { noun: 'spec' },
+          // Whether the comma form the note names would actually run depends on the specs themselves, not on the command: `read` merges `::` specs and nothing else.
+          { noun: 'spec', mergeable: readSpecsMergeable([spec, ...more]) },
         ),
       ),
     )
@@ -1847,11 +1715,7 @@ export function buildProgram(): Command {
     .option('--warm', 'warm up the embedding model session in memory')
     .action(guard(cmdSemantic))
 
-  // `skeleton` and `outline` are the same command over the same options (see OutlineOptions, which
-  // is an alias of SkeletonOptions) and differ only in which renderer they hand the file to. They
-  // were registered by two blocks identical line for line apart from the name, description and
-  // callee, so a flag added to one silently did not exist on the other. Registered in the original
-  // order, so `--help` still lists skeleton before outline.
+  // `skeleton` and `outline` are the same command over the same options (see OutlineOptions, which is an alias of SkeletonOptions) and differ only in which renderer they hand the file to. They were registered by two blocks identical line for line apart from the name, description and callee, so a flag added to one silently did not exist on the other. Registered in the original order, so `--help` still lists skeleton before outline.
   const registerSymbolListing = (
     name: string,
     description: string,
@@ -2211,10 +2075,7 @@ export function buildProgram(): Command {
 
   // Replace default help with compact grouped summary
   program.helpOption('-h, --help', 'display help for command')
-  // Override helpInformation (which formatHelp calls) to use compact grouped output.
-  // Capture the prototype implementation first: the assignment below is an own
-  // property that shadows it permanently, so `help --full` has no other way back
-  // to the long listing.
+  // Override helpInformation (which formatHelp calls) to use compact grouped output. Capture the prototype implementation first: the assignment below is an own property that shadows it permanently, so `help --full` has no other way back to the long listing.
   originalHelpInformation = (
     program as unknown as { helpInformation(): string }
   ).helpInformation.bind(program)
@@ -2239,9 +2100,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     runDetachedWorkerDaemon()
     return
   }
-  // `--batch-serve <token>`: serve many invocations from this one already-started process. Same
-  // argv[2]-only interception as --worker-daemon above, and for the same reason -- commander has
-  // no such option, so it would reject it before the server ever started. See batch_serve.ts.
+  // `--batch-serve <token>`: serve many invocations from this one already-started process. Same argv[2]-only interception as --worker-daemon above, and for the same reason -- commander has no such option, so it would reject it before the server ever started. See batch_serve.ts.
   if (argv[2] === '--batch-serve' && typeof argv[3] === 'string') {
     const { serveBatch } = await import('./batch_serve.js')
     serveBatch(argv[3], (a) => run(a))
@@ -2250,15 +2109,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   // Any command that reads or indexes a file can reach a synchronous parse, and the regex language adapters live behind a dynamic import so the hook path never compiles them (see loadRegexExtractors). Load them once here rather than at each of the call sites below it.
   await loadRegexExtractors()
   const program = buildProgram()
-  // Commander's exitOverride lets us catch its internal exits (help, version, unknown command)
-  // instead of letting it call process.exit() mid-flush.
-  //
-  // Applied to every subcommand, not just the program. Commander copies the exit callback to a
-  // subcommand when that subcommand is CREATED (copyInheritedSettings, called from .command()), and
-  // buildProgram() has already created all of them by the time this runs -- so they each inherited
-  // "no callback" and `token-goat <subcommand> --help` called process.exit() for real, which is
-  // exactly what main.ts's docblock says this binary must never do, because an exit mid-flush can
-  // truncate output already written to a pipe.
+  // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush. Applied to every subcommand, not just the program. Commander copies the exit callback to a subcommand when that subcommand is CREATED (copyInheritedSettings, called from .command()), and buildProgram() has already created all of them by the time this runs -- so they each inherited "no callback" and `token-goat <subcommand> --help` called process.exit() for real, which is exactly what main.ts's docblock says this binary must never do, because an exit mid-flush can truncate output already written to a pipe.
   applyExitOverride(program)
   try {
     await program.parseAsync(argv)

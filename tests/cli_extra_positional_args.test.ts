@@ -1,10 +1,4 @@
-// Regression: a single-argument read command silently dropped every extra space-separated
-// positional. `read a.ts::x b.ts::y` returned only `x`, exit 0, no mention that the second spec
-// was thrown away -- the shape an agent is most likely to type, because the merged form these
-// commands advertise is comma-separated and space is the habit from every other CLI. A note for
-// this existed and was wired to the four file-taking commands only, so `read`, `brief`, `section`,
-// `refs` and `symbol` kept dropping in silence. Nothing tested the note at all, on any command,
-// which is why the gap went unnoticed; this covers all nine.
+// Regression: a single-argument read command silently dropped every extra space-separated positional. `read a.ts::x b.ts::y` returned only `x`, exit 0, no mention that the second spec was thrown away -- the shape an agent is most likely to type, because the merged form these commands advertise is comma-separated and space is the habit from every other CLI. A note for this existed and was wired to the four file-taking commands only, so `read`, `brief`, `section`, `refs` and `symbol` kept dropping in silence. Nothing tested the note at all, on any command, which is why the gap went unnoticed; this covers all nine.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -48,6 +42,9 @@ afterEach(() => {
   stderrSpy = undefined
 })
 
+/** The exit code of the most recent {@link runCli} call. Recorded here because runCli restores the ambient `process.exitCode` on the way out, so a caller cannot read it afterwards. */
+let lastExitCode = 0
+
 /** Returns stdout and stderr together: a command with nothing to report (`refs` on a symbol with no callers) still says so, just on the other stream, and the point of these assertions is that the note never becomes the whole response. */
 async function runCli(argv: string[]): Promise<string> {
   stdout = []
@@ -58,6 +55,7 @@ async function runCli(argv: string[]): Promise<string> {
   process.exitCode = 0
   try {
     await run(['node', 'token-goat', ...argv])
+    lastExitCode = typeof process.exitCode === 'number' ? process.exitCode : 0
   } finally {
     process.exitCode = prev
   }
@@ -65,8 +63,7 @@ async function runCli(argv: string[]): Promise<string> {
 }
 
 describe('extra positional arguments are reported, never dropped in silence', () => {
-  // Each entry is one command's natural two-argument misuse. `mergedSuggestion` is the comma form
-  // the note is expected to name; commands with no merged form say so instead of naming one.
+  // Each entry is one command's natural two-argument misuse. `mergedSuggestion` is the comma form the note is expected to name; commands with no merged form say so instead of naming one.
   const CASES: Array<{ name: string; argv: () => string[]; noun: 'file' | 'spec'; dropped: () => string; mergedSuggestion: boolean }> = [
     { name: 'outline', argv: () => ['outline', fileA, fileB], noun: 'file', dropped: () => fileB, mergedSuggestion: true },
     { name: 'skeleton', argv: () => ['skeleton', fileA, fileB], noun: 'file', dropped: () => fileB, mergedSuggestion: true },
@@ -84,8 +81,7 @@ describe('extra positional arguments are reported, never dropped in silence', ()
     it(`${c.name} names the dropped argument`, async () => {
       const output = await runCli(c.argv())
       expect(output).toContain(`1 extra ${c.noun} argument(s) ignored`)
-      // The dropped value itself, not just a count: a bare count leaves the caller guessing which
-      // of the arguments it typed was the one that never ran.
+      // The dropped value itself, not just a count: a bare count leaves the caller guessing which of the arguments it typed was the one that never ran.
       expect(output).toContain(c.dropped())
     })
 
@@ -94,20 +90,45 @@ describe('extra positional arguments are reported, never dropped in silence', ()
       if (c.mergedSuggestion) {
         expect(output).toContain(`token-goat ${c.name} "`)
       } else {
-        // Suggesting a comma list here would print a command that does not work. `section --list`
-        // reads a plain file path and `symbol` searches one name; neither splits on commas.
-        expect(output).toContain(`${c.name} takes one ${c.noun} at a time`)
+        // Suggesting a comma list here would print a command that does not work. `section --list` reads a plain file path and `symbol` searches one name; neither splits on commas.
+        expect(output).toContain(`Run ${c.name} once per ${c.noun}.`)
         expect(output).not.toContain(`token-goat ${c.name} "`)
       }
     })
 
     it(`${c.name} still produces its normal output alongside the note`, async () => {
       const output = await runCli(c.argv())
-      // The note is additive: the first argument is still served. A note that replaced the result
-      // would be a worse bug than the silent drop it reports.
+      // The note is additive: the first argument is still served. A note that replaced the result would be a worse bug than the silent drop it reports.
       expect(output.replace(/^Note:.*\n?/, '').trim().length).toBeGreaterThan(0)
     })
   }
+
+  // Provenance: CAPTURE. The failing spelling below is the note `token-goat read "src/read_spec.ts:40" "src/read_spec.ts:120"` printed against the installed binary, and `Could not read: src/read_spec.ts:40,src/read_spec.ts` is what running that printed command returned. The note's whole value is that the command it names runs as printed, so the suggestion is extracted from the note the run produces rather than pinned as a string here.
+  it('runs every read command its own note names', async () => {
+    const named: string[] = []
+    for (const argv of [
+      ['read', `${fileA}::alpha`, `${fileB}::beta`],
+      ['read', `${fileA}:1`, `${fileB}:1`],
+    ]) {
+      const note = (await runCli(argv)).split('\n').find((l) => l.startsWith('Note:'))
+      const suggested = /token-goat read "([^"]+)"/.exec(note ?? '')
+      if (suggested === null) continue
+      named.push(suggested[1]!)
+      await runCli(['read', suggested[1]!])
+      expect(lastExitCode, `note named a spec that does not run: ${suggested[1]!}`).toBe(0)
+    }
+    // Non-vacuous: the `::` pair above does get a comma form named, so the loop body ran.
+    expect(named).toEqual([`${fileA}::alpha,${fileB}::beta`])
+  })
+
+  it('names no comma form for line specs, which read does not merge', async () => {
+    const output = await runCli(['read', `${fileA}:1`, `${fileB}:1`])
+    expect(output).toContain('Run read once per spec.')
+    expect(output).not.toContain('token-goat read "')
+    // Why it cannot be named: the comma list splitter never reaches a `file:N` spec.
+    await runCli(['read', `${fileA}:1,${fileB}:1`])
+    expect(lastExitCode).toBe(1)
+  })
 
   it('prints no note when a single argument was given', async () => {
     const output = await runCli(['read', `${fileA}::alpha`])
