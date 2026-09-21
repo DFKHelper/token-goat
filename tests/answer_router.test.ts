@@ -7,18 +7,21 @@
  *   (512,191,083 bytes, captured 2026-09-20)
  * Extraction command:
  *   rg -o '"description":"[^"]{6,70}"' <transcript> | sed 's/^"description":"//; s/"$//' | sort -u
- * That yields 25,425 distinct agent-authored statements of intent. The 20 below were selected from
- * it by hand and each was then re-verified against the extraction with `grep -Fxq` before being
- * pasted here. None was written from the router's own regexes -- which is the point: a corpus
- * derived from the implementation agrees with the implementation's bugs by construction, and this
- * repository has shipped that defect 6+ times across three unrelated subsystems.
+ * That yields ~25,400 distinct agent-authored statements of intent (25,425 on the first run, 25,447
+ * when re-run under Git Bash's `sort -u`; the per-shape counts quoted below come from the re-run).
+ * The 30 lines below were selected from it by hand and each was then re-verified against the
+ * extraction with `grep -Fxq` before being pasted here. None was written from the router's own
+ * regexes -- which is the point: a corpus derived from the implementation agrees with the
+ * implementation's bugs by construction, and this repository has shipped that defect 6+ times across
+ * three unrelated subsystems.
  *
  * The integration cases index this repo's own `src` tree (HAND-DERIVED expectations: the symbol
- * `foldPath` lives in src/path_containment.ts, verifiable with `token-goat symbol foldPath`).
+ * `foldPath` lives in src/path_containment.ts and the file src/config.ts exists, both verifiable
+ * with `token-goat symbol foldPath` / `token-goat outline src/config.ts`).
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -65,6 +68,21 @@ const QUESTIONS = {
   ],
   unresolvableWhere: ['Where is injection fencing applied?', 'Where is cross-project confinement enforced'],
   tests: [{ q: 'Check test coverage for the ranged-read case', subject: 'ranged-read case' }],
+  /** The bare `X imports` form. 34 hits in the corpus against 15 for `X exports`, so the commoner of the pair was the one with no rule. */
+  bareImports: [
+    { q: 'Check config imports', subject: 'config' },
+    { q: 'List hooks_compact imports', subject: 'hooks_compact' },
+    { q: 'Check fold_delivery imports', subject: 'fold_delivery' },
+    { q: 'Check image_shrink imports', subject: 'image_shrink' },
+  ],
+  /** Retrieval verbs the imperative strip did not cover. Each carries a different intent so the strip is shown to run before intent matching, not inside one rule. */
+  retrievalVerbs: [
+    { q: 'Locate jsonc call sites', intent: 'callers', subject: 'jsonc' },
+    { q: 'Read cli_doctor imports', intent: 'imports', subject: 'cli_doctor' },
+    { q: 'Measure the blast radius of the substring guard', intent: 'impact', subject: 'substring guard' },
+  ],
+  /** Edit instructions that are shaped exactly like the bare `X imports` query. They must still classify -- the refusal is subject resolution's job -- but they must never produce an answer. */
+  editInstructions: ['Add imports', 'Update imports', 'Remaining imports'],
 } as const
 
 function captureErr(fn: () => number): { out: string; err: string; code: number } {
@@ -108,6 +126,39 @@ describe('classify (pure, no index)', () => {
   it('routes every captured export-shaped question to the exports intent, stripping the imperative verb', () => {
     for (const { q, subject } of QUESTIONS.exports) {
       expect(classify(q), `failed on: ${q}`).toEqual({ intent: 'exports', subject })
+    }
+  })
+
+  it('routes every captured bare `X imports` question to the imports intent -- the commoner of the pair had no rule', () => {
+    for (const { q, subject } of QUESTIONS.bareImports) {
+      expect(classify(q), `failed on: ${q}`).toEqual({ intent: 'imports', subject })
+    }
+  })
+
+  it('strips the captured retrieval verbs, which the imperative strip did not cover', () => {
+    for (const { q, intent, subject } of QUESTIONS.retrievalVerbs) {
+      expect(classify(q), `failed on: ${q}`).toEqual({ intent, subject })
+    }
+  })
+
+  it('does NOT strip an edit verb: a captured edit instruction shaped like a query must not become one', () => {
+    // These classify (the shape really is `X imports`), and are refused one layer down by subject resolution -- see the integration case of the same name. What must not happen is the verb being peeled, which would turn "Add imports" into the bare query "imports".
+    for (const q of QUESTIONS.editInstructions) {
+      expect(classify(q)?.intent, `failed on: ${q}`).toBe('imports')
+      expect(classify(q)?.subject, `verb was stripped from: ${q}`).not.toBe('imports')
+    }
+  })
+
+  it('matches the what-breaks phrasings its own refusal message advertises', () => {
+    // HAND-DERIVED: each phrasing is a rewording of the capability the impact refusal already claims ("what-breaks questions"), written from that promise rather than from the patterns -- which is the point, since the patterns are what did not keep it.
+    for (const q of [
+      'what breaks if I change foldPath',
+      'what breaks when foldPath changes',
+      'what depends on foldPath',
+      'what is impacted by foldPath',
+      "what's impacted by foldPath",
+    ]) {
+      expect(classify(q), `failed on: ${q}`).toEqual({ intent: 'impact', subject: 'foldPath' })
     }
   })
 
@@ -264,6 +315,119 @@ describe('runAnswer against the real index', () => {
     expect(r.code).toBe(1)
     expect(r.err).toContain("'src/paths.ts' is a file, and callers needs a symbol")
     expect(r.err).toContain('try: token-goat outline src/paths.ts')
+  })
+
+  it('resolves a module-shaped subject to the file it names, not to a same-named symbol elsewhere', () => {
+    // The shipped defect: `exports`/`imports` resolved symbol-first, so a bare word landed on whichever same-named symbol sorted first and the intent then followed it to THAT symbol's file. Against this repo's real index, `Check config exports` answered about src/bridges/openclaw_install.ts; 12 of the 14 captured subjects that resolved at all were wrong the same way.
+    for (const { q, file } of [
+      { q: 'Check config exports', file: 'src/config.ts' },
+      { q: 'Check image_shrink imports', file: 'src/image_shrink.ts' },
+      { q: 'List read_commands imports', file: 'src/read_commands.ts' },
+      { q: 'Locate src/paths.ts exports', file: 'src/paths.ts' },
+    ]) {
+      const r = captureErr(() => runAnswer({ question: q }))
+      expect(r.code, `should answer: ${q} (${r.err})`).toBe(0)
+      expect(r.out.split('\n')[0]).toMatch(new RegExp(`^via: token-goat (?:exports|imports) ${file.replace('.', '\\.')}$`))
+    }
+  })
+
+  it('refuses a symbol subject for a file-level intent instead of answering about its defining file', () => {
+    const r = captureErr(() => runAnswer({ question: 'exports of foldPath' }))
+    expect(r.code).toBe(1)
+    expect(r.err).toContain("'foldPath' is a symbol; exports/imports are file-level")
+    expect(r.err).toContain('try: token-goat exports src/path_containment.ts')
+    expect(r.out).toBe('')
+  })
+
+  it('refuses every captured edit instruction shaped like a bare imports query', () => {
+    for (const q of QUESTIONS.editInstructions) {
+      const r = captureErr(() => runAnswer({ question: q }))
+      expect(r.code, `should refuse: ${q}`).toBe(1)
+      expect(r.out, `answered an edit instruction: ${q}`).toBe('')
+    }
+  })
+
+  it('keeps the symbol-to-file translation for tests while letting a file subject win', () => {
+    const bySymbol = captureErr(() => runAnswer({ question: 'what tests cover foldPath' }))
+    expect(bySymbol.code).toBe(0)
+    expect(bySymbol.out.split('\n')[0]).toBe('via: token-goat test-for src/path_containment.ts')
+
+    const byFile = captureErr(() => runAnswer({ question: 'what tests cover config' }))
+    expect(byFile.code).toBe(0)
+    expect(byFile.out.split('\n')[0]).toBe('via: token-goat test-for src/config.ts')
+  })
+
+  it('reports an ambiguous extensionless stem rather than picking one of the files', () => {
+    const r = captureErr(() => runAnswer({ question: 'registry exports' }))
+    expect(r.code).toBe(1)
+    expect(r.err).toContain("'registry' names 2 files in this project")
+    expect(r.err).toContain('src/bridges/registry.ts')
+    expect(r.err).toContain('src/languages/registry.ts')
+  })
+
+  it('never resolves a subject into a vendored, generated, or tool-metadata tree', () => {
+    // This repo's own index carries six files under node_modules/ and a .git/config row: the indexing walk skips those directories, but a hook indexes whatever file was just read and `token-goat index <file>` names one directly. Unfiltered they answered "where is worker" with a pdfjs type declaration, and `Check config exports` was ambiguous between .git/config and src/config.ts.
+    const vendorDir = join(resolve('node_modules'), '.tg-answer-fixture')
+    const ignoredDir = join(resolve('coverage'), 'tg-answer-fixture')
+    try {
+      mkdirSync(vendorDir, { recursive: true })
+      mkdirSync(ignoredDir, { recursive: true })
+      const vendored = join(vendorDir, 'zzVendorFixture.ts')
+      const generated = join(ignoredDir, 'zzGeneratedFixture.ts')
+      writeFileSync(vendored, 'export function zzVendorOnlySymbol(p: string): string {\n  return p\n}\n')
+      writeFileSync(generated, 'export function zzGeneratedOnlySymbol(p: string): string {\n  return p\n}\n')
+      indexFileSync(normalizePath(vendored))
+      indexFileSync(normalizePath(generated))
+
+      // Calibration: both rows really are in the index and inside this project root, so the refusals below are the filter and not a failed write.
+      const root = normalizePath(resolve('.'))
+      for (const name of ['zzVendorOnlySymbol', 'zzGeneratedOnlySymbol']) {
+        expect(querySymbols({ name, rootDir: root, limit: 5 }).length, `${name} was never indexed`).toBeGreaterThan(0)
+      }
+
+      expect(resolveSubject('zzVendorOnlySymbol')).toBeNull()
+      expect(resolveSubject('zzGeneratedOnlySymbol')).toBeNull()
+      // The file reading has to be filtered too, or the extensionless stem walks straight back in.
+      expect(resolveSubject('zzVendorFixture', 'file-only')).toBeNull()
+      expect(resolveSubject('zzGeneratedFixture.ts', 'file-only')).toBeNull()
+
+      const r = captureErr(() => runAnswer({ question: 'where is zzVendorOnlySymbol' }))
+      expect(r.code).toBe(1)
+      expect(r.err).toContain("'zzVendorOnlySymbol' is not an indexed symbol or file")
+      // Calibration, the other direction: an in-project source symbol still resolves under the same filter.
+      expect(resolveSubject('foldPath')?.kind).toBe('symbol')
+    } finally {
+      rmSync(vendorDir, { recursive: true, force: true })
+      rmSync(ignoredDir, { recursive: true, force: true })
+    }
+  })
+
+  it('finds a real symbol that hundreds of vendored rows of the same name sort in front of', () => {
+    // Ignored trees sort FIRST under `ORDER BY file_path` (`node_modules/` before `tests/`), so they fill the front of any page: a fixed cap followed by a filter reports "no such symbol" for a symbol that is plainly there. This project's index really does hold 147 rows named `constructor` under node_modules/ from six files, measured against the live index on 2026-09-20, so the 260 below is a fixture of a shape that exists rather than an invented extreme.
+    const vendorDir = join(resolve('node_modules'), '.tg-answer-crowd')
+    const realFile = join(resolve('tests'), '.tg-answer-crowd-fixture.ts')
+    try {
+      mkdirSync(vendorDir, { recursive: true })
+      const crowd = join(vendorDir, 'crowd.ts')
+      const classes = Array.from({ length: 260 }, (_, i) => `export class ZzCrowd${i} {\n  zzCrowdedSymbol(): number {\n    return ${i}\n  }\n}`)
+      writeFileSync(crowd, `${classes.join('\n')}\n`)
+      writeFileSync(realFile, 'export function zzCrowdedSymbol(): number {\n  return -1\n}\n')
+      indexFileSync(normalizePath(crowd))
+      indexFileSync(normalizePath(realFile))
+
+      const root = normalizePath(resolve('.'))
+      const all = querySymbols({ name: 'zzCrowdedSymbol', rootDir: root, limit: 1000 })
+      // Calibration: the vendored rows really do crowd the front of the ordering, and there really are more of them than one page holds. Without this the test passes for the wrong reason on any index where they happen to sort last.
+      expect(all.length, 'the crowd fixture was never indexed').toBeGreaterThan(200)
+      expect(all[0]?.filePath, 'the vendored rows did not sort first, so nothing is being crowded out').toContain('node_modules')
+
+      const resolved = resolveSubject('zzCrowdedSymbol')
+      expect(resolved?.kind).toBe('symbol')
+      expect(resolved?.kind === 'symbol' ? resolved.file : '').toContain('.tg-answer-crowd-fixture.ts')
+    } finally {
+      rmSync(vendorDir, { recursive: true, force: true })
+      rmSync(realFile, { force: true })
+    }
   })
 
   it('refuses an empty question', () => {

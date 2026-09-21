@@ -23,7 +23,7 @@ import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
-import { isTestFile } from './util.js'
+import { foldPath, isTestFile } from './util.js'
 import { displaySafeText, normalizePath, toDisplayPath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 
@@ -64,6 +64,13 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
   '.idea',
   '.vscode',
 ])
+
+/** True when any directory segment of `p` names a {@link SKIP_DIRS} tree -- vendored, generated, or tool metadata. The indexing walk refuses to descend into these, but rows still reach the index out of band: a hook indexes whatever file was just read, and `token-goat index <file>` names one directly. This repo's own index carries `.git/config` and six files under `node_modules/` for exactly that reason, so any consumer that reads the index as "this project's source" has to filter again here. */
+export function isIgnoredIndexPath(p: string): boolean {
+  const segments = foldPath(p).split(/[/\\]/)
+  // The last segment is the file name: a file called `dist` is not inside a `dist` directory.
+  return segments.slice(0, -1).some((s) => SKIP_DIRS.has(s))
+}
 
 // Cap the walk so a pathological tree cannot make `map` run unbounded. Also the "too much stuff" ceiling for the non-git walk-index fallback (see walk_index.ts).
 export const MAX_FILES_SCANNED = 20000

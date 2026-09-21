@@ -11,7 +11,9 @@
  * more expensive than a refusal it can act on.
  */
 
-import { getFileEntry, querySymbols } from './index_reader.js'
+import { getFileEntry, getProjectFileEntries, querySymbols } from './index_reader.js'
+import { isIgnoredIndexPath } from './baseline.js'
+import { foldPath } from './path_containment.js'
 import { displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { ensureNewline } from './util.js'
@@ -89,8 +91,15 @@ const INTENT_RULES: readonly IntentRule[] = [
 
   { intent: 'imports', re: /^what does (.+) import$/i },
   { intent: 'imports', re: /^imports of (.+)$/i },
+  // The bare form is the commoner of the pair in the captured corpus (34 hits vs 15 for `X exports`). It is only safe alongside file-only subject resolution for this intent: with a symbol fallback, the corpus lines `Add imports` and `Update imports` resolve `Add`/`Update` to whatever same-named symbol sorts first.
+  { intent: 'imports', re: /^(.+) imports$/i },
 
   { intent: 'impact', re: /^what breaks if (.+) changes?$/i },
+  { intent: 'impact', re: /^what breaks if (?:i|we|you) chang(?:e|ed) (.+)$/i },
+  { intent: 'impact', re: /^what breaks when (?:i|we|you) chang(?:e|ed) (.+)$/i },
+  { intent: 'impact', re: /^what breaks when (.+) chang(?:es|ed)$/i },
+  { intent: 'impact', re: /^what depends on (.+)$/i },
+  { intent: 'impact', re: /^what(?:'s| is) impacted by (?:changing )?(.+)$/i },
   { intent: 'impact', re: /^blast radius of (.+)$/i },
   { intent: 'impact', re: /^impact of (?:changing )?(.+)$/i },
 
@@ -114,7 +123,9 @@ export interface Classification {
  */
 export function normalizeQuestion(question: string): string {
   const collapsed = question.replace(/\s+/g, ' ').trim().replace(/[?\s]+$/, '')
-  return collapsed.replace(/^(?:check|show|list|find|get|print|inspect) /i, '')
+  // Retrieval verbs only. An edit verb (`add`, `update`, `wire`, `patch`, `fix`) is deliberately absent: stripping it would turn "Add imports" -- an instruction to write code -- into a query about a file named `Add`. `read` is included because it is the single most common lead-in on retrieval-shaped lines in the captured corpus, and its edit-instruction cases carry multi-word subjects that subject resolution refuses anyway.
+  // The article is peeled only as part of the verb, so a bare "the blast radius of X" is untouched: the captured corpus writes it as "Measure the blast radius of ...", where the article belongs to the framing and not to the question.
+  return collapsed.replace(/^(?:check|show|list|find|get|print|inspect|read|locate|verify|measure|view|trace|identify) (?:the |a |an )?/i, '')
 }
 
 /** True when the question asks for judgement, intent, or runtime behaviour, which no index row can answer. Checked before intent matching, and reported as its own refusal reason so the caller is not told "no intent matched" about a question that matched one. */
@@ -154,17 +165,85 @@ export type ResolvedSubject =
   | { kind: 'symbol'; name: string; file: string }
   | { kind: 'file'; path: string }
   | { kind: 'ambiguous'; candidates: string[] }
-
-/** Bound on the basename scan below. A basename match is a path-suffix query, so an unbounded one on a large index scans every symbol row of every matching file to learn a fact about the file set. */
-const BASENAME_SCAN_LIMIT = 500
+  | { kind: 'symbol-only'; name: string; file: string }
 
 /**
- * Looks the subject up in the index. A symbol wins over a file when both match, because every intent
- * that takes a file can reach it from the symbol's own definition site, while the reverse is not
- * true. Returns null when the subject is in neither table -- the router then refuses rather than
- * falling back to a fuzzy or semantic match and presenting it as fact.
+ * Which table the subject is looked up in first, and whether the other one is allowed at all.
+ *
+ * `symbol-first` -- `where`/`callers`/`impact`: these ask about a definition, so a symbol wins and a
+ * file is the fallback (the router then refuses, naming `outline`).
+ * `file-first` -- `tests`: `what tests cover config` means the file, `what tests cover foldPath` means
+ * the symbol, and both have to work, so the file interpretation leads and the symbol backs it up.
+ * `file-only` -- `exports`/`imports`: these are module-level properties, and a symbol subject is a
+ * category error rather than a thing to redirect. Resolving them symbol-first is what made
+ * `Check config exports` answer about src/bridges/openclaw_install.ts, because a same-named symbol
+ * sorted first and the intent then followed it to ITS defining file: measured over the 32 distinct
+ * subjects the captured corpus uses with this shape, 12 of the 14 that resolved were wrong.
  */
-export function resolveSubject(subject: string): ResolvedSubject | null {
+export type SubjectMode = 'symbol-first' | 'file-first' | 'file-only'
+
+/** Page size for the scan in {@link resolveSymbolHit}. Not a cap: the scan pages until it finds a hit or the index runs out. */
+const SYMBOL_SCAN_PAGE = 200
+
+/**
+ * One indexed symbol with this exact name in this project, never one in a vendored, generated, or
+ * tool-metadata tree.
+ *
+ * Deliberately paged rather than filtered from a single capped query. Ignored trees sort FIRST under
+ * `querySymbols`'s `ORDER BY file_path` -- `node_modules/` and `.git/` both come before `src/` -- so
+ * they are exactly the rows that fill the front of any page, and a fixed cap followed by a filter
+ * would report "no such symbol" for a symbol that is plainly there. That is not hypothetical: this
+ * project's index holds 147 rows named `constructor` under `node_modules/` from six files alone.
+ * Paging until a hit or exhaustion has no such blind spot, and costs one extra query only when a
+ * project really has that much vendored code indexed.
+ */
+function resolveSymbolHit(subject: string, rootDir: string): { name: string; file: string } | null {
+  for (let offset = 0; ; offset += SYMBOL_SCAN_PAGE) {
+    const rows = querySymbols({ name: subject, rootDir, limit: SYMBOL_SCAN_PAGE, offset })
+    if (rows.length === 0) return null
+    const hit = rows.find((r) => !isIgnoredIndexPath(r.filePath))
+    if (hit) return { name: hit.name, file: hit.filePath }
+    if (rows.length < SYMBOL_SCAN_PAGE) return null
+  }
+}
+
+/**
+ * The subject read as a file: an exact path, else the project's file list matched by basename
+ * ("config.ts") or by extensionless stem ("config"). Several matches is reported as ambiguity rather
+ * than resolved by picking one, which would be a confident wrong answer.
+ *
+ * The match runs over the `files` table rather than over symbol rows: `files` is the authoritative
+ * list of what is indexed (a file with no extracted symbols has no symbol rows at all), it needs one
+ * query instead of a capped path-suffix scan, and it makes the candidate set independent of how many
+ * symbols each file happens to contain.
+ */
+function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | null {
+  const entry = getFileEntry(resolveIndexPath(subject))
+  if (entry && !isIgnoredIndexPath(entry.filePath)) return { kind: 'file', path: entry.filePath }
+  if (subject.includes('/') || subject.includes('\\')) return null
+
+  const want = foldPath(subject)
+  const matches: string[] = []
+  for (const [folded, indexed] of getProjectFileEntries(rootDir)) {
+    if (isIgnoredIndexPath(folded)) continue
+    const base = folded.slice(Math.max(folded.lastIndexOf('/'), folded.lastIndexOf('\\')) + 1)
+    const dot = base.lastIndexOf('.')
+    if (base === want || (dot > 0 && base.slice(0, dot) === want)) matches.push(indexed.filePath)
+  }
+  const paths = [...new Set(matches)].sort()
+  if (paths.length === 0) return null
+  if (paths.length === 1 && paths[0] !== undefined) return { kind: 'file', path: paths[0] }
+  return { kind: 'ambiguous', candidates: paths }
+}
+
+/**
+ * Looks the subject up in the index, in the order `mode` prescribes. Returns null when the subject is
+ * in neither table -- the router then refuses rather than falling back to a fuzzy or semantic match
+ * and presenting it as fact. Vendored dependency trees are excluded on every path: this repo indexes
+ * 6 files under node_modules, and unfiltered they answered "where is worker" with a pdfjs type
+ * declaration and "who calls worker" with a line of pdf.mjs.
+ */
+export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-first'): ResolvedSubject | null {
   // Every lookup is scoped to THIS project. The symbols table is machine-wide, so an unscoped name query answers from whichever project happens to sort first: asking this repo "where does normalizePath live" resolved to a JavaScript file in an unrelated website checkout, and "tests for runWorker" to a scratch repro script on another drive. Both were confident, both were wrong, and neither was visible to a test whose index only ever holds one project.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
 
@@ -173,28 +252,37 @@ export function resolveSubject(subject: string): ResolvedSubject | null {
   if (sep > 0 && sep + 2 < subject.length) {
     const file = resolveIndexPath(subject.slice(0, sep))
     const hit = querySymbols({ filePath: file, name: subject.slice(sep + 2), rootDir, limit: 1 })[0]
-    if (hit) return { kind: 'symbol', name: hit.name, file: hit.filePath }
+    if (hit && !isIgnoredIndexPath(hit.filePath)) return { kind: 'symbol', name: hit.name, file: hit.filePath }
     return null
   }
 
-  if (!/\s/.test(subject)) {
-    const hit = querySymbols({ name: subject, rootDir, limit: 1 })[0]
-    if (hit) return { kind: 'symbol', name: hit.name, file: hit.filePath }
-    const entry = getFileEntry(resolveIndexPath(subject))
-    if (entry) return { kind: 'file', path: entry.filePath }
-    // A bare basename ("base.ts") is not resolvable against cwd, but the index can still name it -- as long as exactly one file in this project carries it. Several is reported as ambiguity rather than resolved by picking one, which would be a confident wrong answer.
-    if (!subject.includes('/') && !subject.includes('\\') && subject.includes('.')) {
-      const rows = querySymbols({ fileBaseName: subject, rootDir, limit: BASENAME_SCAN_LIMIT })
-      const files = [...new Set(rows.map((r) => r.filePath))]
-      if (files.length === 1 && files[0] !== undefined) return { kind: 'file', path: files[0] }
-      if (files.length > 1) return { kind: 'ambiguous', candidates: files }
-    }
+  if (/\s/.test(subject)) return null
+
+  if (mode === 'symbol-first') {
+    const hit = resolveSymbolHit(subject, rootDir)
+    if (hit) return { kind: 'symbol', name: hit.name, file: hit.file }
+    return resolveFileHit(subject, rootDir)
   }
-  return null
+
+  const file = resolveFileHit(subject, rootDir)
+  if (file) return file
+
+  const hit = resolveSymbolHit(subject, rootDir)
+  if (!hit) return null
+  // `file-only`: the subject names a symbol and nothing else, so say so and point at the command that does take a symbol, rather than silently answering about the symbol's defining file.
+  return mode === 'file-first'
+    ? { kind: 'symbol', name: hit.name, file: hit.file }
+    : { kind: 'symbol-only', name: hit.name, file: hit.file }
 }
 
 /** Intents whose delegate takes a file path; a symbol subject resolves to its defining file. */
 const FILE_INTENTS: ReadonlySet<AnswerIntent> = new Set<AnswerIntent>(['tests', 'exports', 'imports'])
+
+/** See {@link SubjectMode}: `exports`/`imports` are module-level and take no symbol, `tests` accepts either with the file reading first, everything else is about a definition. */
+function subjectModeFor(intent: AnswerIntent): SubjectMode {
+  if (intent === 'exports' || intent === 'imports') return 'file-only'
+  return intent === 'tests' ? 'file-first' : 'symbol-first'
+}
 
 export function runAnswer(opts: AnswerOptions): number {
   const question = opts.question.trim()
@@ -224,7 +312,7 @@ export function runAnswer(opts: AnswerOptions): number {
     return 1
   }
 
-  const resolved = resolveSubject(cls.subject)
+  const resolved = resolveSubject(cls.subject, subjectModeFor(cls.intent))
   if (resolved === null) {
     emitErr(
       refusal(
@@ -240,10 +328,25 @@ export function runAnswer(opts: AnswerOptions): number {
   if (resolved.kind === 'ambiguous') {
     const shown = resolved.candidates.slice(0, 5).map((c) => toDisplayPath(rootDir, c))
     const more = resolved.candidates.length - shown.length
+    const first = shown[0] ?? ''
+    // A symbol intent that got here fell through to the file reading, so re-asking it with one of these paths would refuse again for being a file: point at `outline` instead.
+    const next = FILE_INTENTS.has(cls.intent)
+      ? `token-goat answer "${cls.intent === 'tests' ? 'tests for' : cls.intent === 'imports' ? 'imports of' : 'exports of'} ${first}"`
+      : `token-goat outline ${first}`
     emitErr(
       refusal(
         `'${cls.subject}' names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`,
-        `token-goat answer "${cls.intent === 'tests' ? 'tests for' : cls.intent === 'imports' ? 'imports of' : 'exports of'} ${shown[0] ?? ''}"`,
+        next,
+      ),
+    )
+    return 1
+  }
+
+  if (resolved.kind === 'symbol-only') {
+    emitErr(
+      refusal(
+        `'${cls.subject}' is a symbol; exports/imports are file-level`,
+        `token-goat ${cls.intent} ${toDisplayPath(rootDir, resolved.file)}`,
       ),
     )
     return 1

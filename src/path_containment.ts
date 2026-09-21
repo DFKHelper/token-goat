@@ -34,6 +34,12 @@ export function foldPath(p: string): string {
   return isCaseInsensitiveFs() ? foldCase(p) : p;
 }
 
+/** True when `p` is inside a vendored dependency tree. Case-insensitive on case-insensitive filesystems (Windows, macOS by default), case-sensitive elsewhere, and matches both forward slashes (normalized) and backslashes (Windows). */
+export function isNodeModulesPath(p: string): boolean {
+  const check = foldPath(p);
+  return check.includes('/node_modules/') || check.includes('\\node_modules\\');
+}
+
 /** Unicode-aware case fold. Separate from {@link foldPath} because `db.ts` mirrors THIS one into SQL as a custom `LOWER()`, ungated by platform. */
 export function foldCase(s: string): string {
   return s.toLowerCase();

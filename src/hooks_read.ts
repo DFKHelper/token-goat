@@ -12,6 +12,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
+import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, normalizePath, toDisplayPath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -122,13 +123,6 @@ function diffHintCredit(counterfactualBytes: number, body: string): number | nul
   const credit = counterfactualCredit(counterfactualBytes, body.length)
   if (savedTokensFromBytes(credit) < loadConfig().hints.diff_hint_min_tokens_saved) return null
   return credit
-}
-
-/** Check if a path is under node_modules/. Case-insensitive on case-insensitive filesystems (Windows, macOS by default), case-sensitive elsewhere. */
-function isNodeModulesPath(p: string): boolean {
-  const check = foldPath(p)
-  // Match both forward slashes (normalized) and backslashes (Windows).
-  return check.includes('/node_modules/') || check.includes('\\node_modules\\')
 }
 
 /** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually
