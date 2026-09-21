@@ -8,8 +8,6 @@ import { preToolPathDeclined } from './vscode_path_gate.js'
 import { resolveIndexPath, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import type { HookEvent } from './hook_registry.js'
 import { hasBareBackgroundOrNewline, hasUnquotedOperator } from './tool_filters/index.js'
-import { detectLanguage } from './parser_types.js'
-import { languageHasFlag } from './language_specs.js'
 import { getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 
@@ -746,52 +744,69 @@ export function extractLineRangeReadsCompound(cmd: string): Array<{ filePath: st
   return [...merged.values()]
 }
 
-// Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`), tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range per requested range.
-export function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, number]>, tool: 'sed' | 'awk'): string {
-  const lang = detectLanguage(filePath)
-  // One token-goat read per requested range so the agent can fetch each independently. Combined into one inline list with `and` for two ranges and Oxford-comma for three or more.
-  const rangeReads = ranges.map(([s, e]) => '`token-goat read "' + filePath + '@' + s + '-' + e + '"`')
-  const allReads = rangeReads.length === 2
-    ? rangeReads.join(' and ')
-    : rangeReads.length >= 3
-      ? rangeReads.slice(0, -1).join(', ') + ', and ' + rangeReads[rangeReads.length - 1]
-      : rangeReads[0]!
-  const prefix = '`' + (tool === 'awk' ? 'awk' : 'sed -n') + '` line-range reads bypass read hooks. '
-  if (lang === 'markdown') {
-    return prefix + 'For Markdown, `token-goat section "' + filePath + '::<heading>"` extracts a whole section by name (robust to line shifts); or ' + allReads + ' for exactly those lines.'
-  }
-  if (lang === 'toml' || lang === 'json' || lang === 'yaml' || lang === 'ini') {
-    return prefix + 'For config, `token-goat config-get "' + filePath + '" <key>` or `token-goat section "' + filePath + '::<block>"` extracts one value; or ' + allReads + ' for exactly those lines.'
-  }
-  // Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
-  if (languageHasFlag(lang, 'symbolBearing')) {
-    return prefix + 'For a whole function/class, `token-goat symbol <name>` or `token-goat read "' + filePath + '::<Symbol>"` is robust to line shifts; or ' + allReads + ' for exactly those lines.'
-  }
-  return prefix + 'Use ' + allReads + ' to read exactly those lines.'
+/**
+ * Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`) that has already been priced and found cheaper than the read it replaces -- see bash_range_savings.ts, which owns that comparison and whose result `sub` is.
+ *
+ * This used to be a language ladder that named the file and left the agent to supply the heading, key or symbol: `token-goat section "CHANGELOG.md::<heading>"`. Measured, that advice cost more than it saved and could not be followed well even in principle -- the obvious substitution on the largest real case returned 15,150 bytes against the 10,572 the `sed` window asked for, and the heading whose name an agent would guess (`Unreleased`) is not the one the index holds (`[Unreleased]`). So the hint now names the exact regions the pricing resolved and the saving it measured, rather than a shape for the agent to fill in.
+ */
+export function sedRangeHint(
+  filePath: string,
+  ranges: ReadonlyArray<readonly [number, number]>,
+  tool: 'sed' | 'awk',
+  sub: RangeSubstituteFigures,
+): string {
+  return '`' + (tool === 'awk' ? 'awk' : 'sed -n') + '` line-range reads bypass read hooks. ' + substituteSentence(filePath, ranges, sub)
+}
+
+/** The figures bash_range_savings.ts's pricing produces, as the hint builders consume them. Declared structurally rather than imported so this module keeps its no-index-access property (see the note above surgicalHintFor). */
+export interface RangeSubstituteFigures {
+  requestedBytes: number
+  replacementBytes: number
+  commands: readonly string[]
+}
+
+/** The one sentence both range-hint shapes share: what was asked for, what the priced replacement costs instead, and the exact commands that return it. */
+function substituteSentence(filePath: string, ranges: ReadonlyArray<readonly [number, number]>, sub: RangeSubstituteFigures): string {
+  const spans = ranges.map(([s, e]) => s + '-' + e).join(', ')
+  const reads = sub.commands.map((c) => '`' + c + '`')
+  const allReads = reads.length === 2
+    ? reads.join(' and ')
+    : reads.length >= 3
+      ? reads.slice(0, -1).join(', ') + ', and ' + reads[reads.length - 1]
+      : reads[0]!
+  return (
+    'Lines ' + spans + ' of ' + filePath + ' cost ' + sub.requestedBytes + ' bytes; ' + allReads +
+    ' returns the same content as ' + sub.replacementBytes + ' bytes, resolved to whole regions and robust to line shifts.'
+  )
 }
 
 // Returns the previously-served range that overlaps [start, end] the most (by shared line count), or null if none overlap.
 /**
  * Hint for a leading-lines read (`head -n N file`, `Get-Content file | Select-Object -First N`): the overlap warning when those lines were already served this session, the ordinary surgical hint when they were not.
  *
+ * The lead-in plus a language-shaped surgical suggestion used to be the unconditional else-branch here. It is now the priced substitute sentence instead, for the reason recorded on {@link sedRangeHint}: the language ladder named the file and left the agent to supply a heading or symbol, and on the largest measured real case the obvious substitution cost 43% more than the read it objected to.
+ *
  * These commands have always *written* to the line-range ledger -- `recordBashFileReadsForSessionCache` records 1..n once the command succeeds, because leading-lines reads are the one truncated shape whose absolute range is known -- but nothing ever read that entry back. So a second `head -30 CHANGELOG.md` produced the same generic advice as the first, and never mentioned that the lines were already in context. A ledger's write half and read half are separately observable, and a guard holding only one of them is indistinguishable from a working guard from the outside.
  *
  * `tail` deliberately stays out of this: its absolute start line depends on the file's total length, which this hook does not know, so it is recorded as truncated rather than as a range and there is no trustworthy range here to compare against.
  *
  * Checks without recording, because for these shapes the recording is the post-hook's job and happens only if the command actually succeeds.
+ *
+ * Returns null when there is nothing worth saying: the lines were not already served AND the caller's pricing (`substitute`, null when the replacement could not be priced or was not cheaper -- see bash_range_savings.ts) found no saving to offer. The already-served overlap warning is never gated on that pricing: it reports that this content is already in context, which is a saving of the whole read and owes nothing to whatever command replaces it.
  */
 export function leadingLinesHint(
   lead: string,
   hintPath: string,
   start: number,
   end: number,
-  flags: { isConfig: boolean; isDoc: boolean; isSql: boolean; isXml?: boolean },
   preHookCwd: string | null,
-): string {
+  substitute: RangeSubstituteFigures | null,
+): string | null {
   const key = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
   const prior = findRangeOverlap(getFileLineRanges(key), start, end)
   if (prior !== null) return sedOverlapHint(hintPath, prior, start, end)
-  return lead + surgicalHintForConfigDoc(hintPath, flags.isConfig, flags.isDoc, flags.isSql, flags.isXml ?? false)
+  if (substitute === null) return null
+  return lead + substituteSentence(hintPath, [[start, end]], substitute)
 }
 
 export function findRangeOverlap(prior: ReadonlyArray<readonly [number, number]>, start: number, end: number): readonly [number, number] | null {

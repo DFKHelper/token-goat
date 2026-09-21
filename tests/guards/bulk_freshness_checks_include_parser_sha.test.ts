@@ -151,6 +151,19 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'rangeSubstituteFor',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason:
+        'bash_range_savings.ts prices the surgical replacement for the one file a sed/awk/head ' +
+        'command already named, against a fresh disk read -- the same single-named-file scope as ' +
+        'detectStructuralIndexRewrite above, and the same local getFileEntry + fingerprintFile for ' +
+        'the same eager-bundle reason. It skips nothing and reuses nothing: a content-stale or ' +
+        'parser-stale file makes it decline to price, which suppresses a hint rather than serving ' +
+        'stale rows.',
+    },
+  ],
+  [
     'processDirtyBatch',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',

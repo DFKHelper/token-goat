@@ -30,6 +30,7 @@ import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
+import { rangeSubstituteFor } from './bash_range_savings.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -82,6 +83,7 @@ import {
   extractLineRangeRead,
   extractLineRangeReadsCompound,
   sedRangeHint,
+  type RangeSubstituteFigures,
   leadingLinesHint,
   findRangeOverlap,
   sedOverlapHint,
@@ -596,6 +598,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Every hint below that names a file returns through this instead of a bare contextOutput, so the efficacy ledger is handed the path the hint was built from rather than regex-scraping one back out of the rendered sentence (see extractPathCorrelator's doc comment for what that scrape actually recorded). Measurement only -- relay.ts drops the field before the harness sees the output, so the hint text is byte-identical either way. The `token-goat bash-output <id>` recall branches near the end deliberately do NOT use this: their correlator is a cache id, which classifyBashHint already reads straight out of the command it printed, not a path.
   const pathHint = (paths: string | readonly string[], text: string): HookOutput =>
     contextOutput(text, typeof paths === 'string' ? [paths] : paths)
+  // A leading-lines read's substitute, priced, or null when it could not be priced or was not cheaper -- the same gate the sed/awk branch applies, reached through one expression because two branches need it identically.
+  const pricedSubstitute = (hintPath: string, start: number, end: number): RangeSubstituteFigures | null => {
+    const sub = rangeSubstituteFor(hintPath, hintCwd, [[start, end]])
+    return sub !== null && meetsSavingsFloor(sub.requestedBytes - sub.replacementBytes) ? sub : null
+  }
 
   // Check for unbalanced shell quoting or unterminated heredocs
   const cfg = loadConfig()
@@ -685,7 +692,6 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const singleLineRangeRead = extractLineRangeRead(cmd)
   const sedReads = singleLineRangeRead !== null ? [singleLineRangeRead] : extractLineRangeReadsCompound(cmd)
   if (sedReads !== null) {
-    recordStat('session_hint', 0, 0)
     const hints: string[] = []
     // One emission can cover several files here (the per-file hints are joined into one context output), so every file named gets into the correlator set rather than just the first -- see joinCorrelators in hint_stats.ts for why the set, not a primary path, is the right representation.
     const hintPaths: string[] = []
@@ -707,8 +713,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         }
       }
       hints.push(...overlapHints)
-      if (freshRanges.length > 0) hints.push(sedRangeHint(hintPath, freshRanges, tool))
+      // Priced, not assumed: the hint is pushed only when the regions a surgical read would have to return are measurably cheaper than the lines the command asked for. See bash_range_savings.ts for the comparison and for what it measures over a real corpus.
+      const sub = freshRanges.length > 0 ? rangeSubstituteFor(hintPath, hintCwd, freshRanges) : null
+      if (sub !== null && meetsSavingsFloor(sub.requestedBytes - sub.replacementBytes)) {
+        hints.push(sedRangeHint(hintPath, freshRanges, tool, sub))
+      }
     }
+    if (hints.length === 0) return passOutput()
+    recordStat('session_hint', 0, 0)
     return pathHint(hintPaths, hints.join(' '))
   }
 
@@ -723,10 +735,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
   if (gcSelectResult !== null) {
-    const { filePath, isDoc, isConfig, isSql, isXml, n } = gcSelectResult
+    const { filePath, n } = gcSelectResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    const gcSelectHint = leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n))
+    if (gcSelectHint === null) return passOutput()
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath, leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
+    return pathHint(hintPath, gcSelectHint)
   }
 
   const catJsonPipe = extractCatJsonPipe(cmd)
@@ -853,10 +867,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const headResult = extractHeadFile(cmd)
   if (headResult !== null) {
-    const { filePath, isDoc, isConfig, isSql, isXml, n } = headResult
+    const { filePath, n } = headResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    const headHint = leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n))
+    if (headHint === null) return passOutput()
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath, leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql, isXml }, preHookCwd))
+    return pathHint(hintPath, headHint)
   }
 
   const nodeRead = extractNodeFileRead(cmd)

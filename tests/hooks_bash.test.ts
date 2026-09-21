@@ -22,6 +22,12 @@ const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractPowerShellFileMethodRead, extractPythonFileRead, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
+import {
+  extractLineRangeRead,
+  extractLineRangeReadsCompound,
+  extractHeadFile,
+  extractGetContentSelectFirst,
+} from '../src/bash_extractors.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -814,12 +820,13 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('emits advisory context for head command on source file', () => {
-    const result = preBashHandler(makeBashEvent('head -n 46 src/app/analytics/page.tsx'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('head')
-    }
+  it('recognizes head on a source file, and declines to hint when the replacement cannot be priced', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractHeadFile('head -n 46 src/app/analytics/page.tsx')).toMatchObject({ filePath: 'src/app/analytics/page.tsx', n: 46 })
+    expect(preBashHandler(makeBashEvent('head -n 46 src/app/analytics/page.tsx')).hookType).toBe('pass')
   })
 
   it(
@@ -827,13 +834,15 @@ describe('preBashHandler — cat source file recall', () => {
       '(regression: classifyDocConfig folded .sql into isDoc with no isSql flag, so `head file.sql` got the ' +
       'generic "SectionHeading" doc phrasing instead of the table_name phrasing `cat file.sql` already gets)',
     () => {
-      const result = preBashHandler(makeBashEvent('head -15 supabase/migrations/0001_init.sql'))
-      expect(result.hookType).toBe('context')
-      if (result.hookType === 'context') {
-        expect(result.context).toContain('table_name')
-        expect(result.context).toContain('CREATE TABLE')
-        expect(result.context).not.toContain('SectionHeading')
-      }
+      // Priced gate: this fixture path is not on disk, so the replacement cannot be priced and no
+      // hint is emitted (bash_range_savings.ts). The SQL classification this title's regression is
+      // about is asserted on the extractor, which is where it actually lives.
+      expect(extractHeadFile('head -15 supabase/migrations/0001_init.sql')).toMatchObject({
+        filePath: 'supabase/migrations/0001_init.sql',
+        isSql: true,
+        n: 15,
+      })
+      expect(preBashHandler(makeBashEvent('head -15 supabase/migrations/0001_init.sql')).hookType).toBe('pass')
     },
   )
 
@@ -879,21 +888,22 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('emits sed line-range read hint with @start-end', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read')
-      expect(result.context).toContain('docs/report.md@13-31')
-    }
+  it('recognizes a sed line range, and declines to hint when the replacement cannot be priced', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '13,31p' docs/report.md") ?? extractLineRangeReadsCompound("sed -n '13,31p' docs/report.md")?.[0]).toMatchObject({ filePath: 'docs/report.md', ranges: [[13, 31]], tool: 'sed' })
+    expect(preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md")).hookType).toBe('pass')
   })
 
-  it('sed line-range hint handles a path with 2>/dev/null suffix', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '250,300p' src/app/page.tsx 2>/dev/null"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/app/page.tsx@250-300')
-    }
+  it('strips a 2>/dev/null suffix off the sed path', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '250,300p' src/app/page.tsx 2>/dev/null") ?? extractLineRangeReadsCompound("sed -n '250,300p' src/app/page.tsx 2>/dev/null")?.[0]).toMatchObject({ filePath: 'src/app/page.tsx', ranges: [[250, 300]] })
+    expect(preBashHandler(makeBashEvent("sed -n '250,300p' src/app/page.tsx 2>/dev/null")).hookType).toBe('pass')
   })
 
   it('passes through single-address sed (no comma)', () => {
@@ -901,20 +911,22 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('hints on sed piped through a formatting-only stage (the read is the same span)', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/pipe_fold_demo.tsx@10-20')
-    }
+  it('sees through a formatting-only pipe stage (the read is the same span)', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160") ?? extractLineRangeReadsCompound("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160")?.[0]).toMatchObject({ filePath: 'src/pipe_fold_demo.tsx', ranges: [[10, 20]] })
+    expect(preBashHandler(makeBashEvent("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160")).hookType).toBe('pass')
   })
 
-  it('hints on sed piped through chained formatting stages (cat -A then head)', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/pipe_cata_demo.ts@30-60')
-    }
+  it('sees through chained formatting stages (cat -A then head)', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50") ?? extractLineRangeReadsCompound("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50")?.[0]).toMatchObject({ filePath: 'src/pipe_cata_demo.ts', ranges: [[30, 60]] })
+    expect(preBashHandler(makeBashEvent("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50")).hookType).toBe('pass')
   })
 
   it('passes through sed piped into a content-changing stage (grep is a search, not a read)', () => {
@@ -922,51 +934,60 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('hints on an unquoted sed range (same read, no quotes)', () => {
-    const result = preBashHandler(makeBashEvent('sed -n 120,180p src/unquoted_demo.ts'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/unquoted_demo.ts@120-180')
-    }
+  it('recognizes an unquoted sed range', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead('sed -n 120,180p src/unquoted_demo.ts') ?? extractLineRangeReadsCompound('sed -n 120,180p src/unquoted_demo.ts')?.[0]).toMatchObject({ filePath: 'src/unquoted_demo.ts', ranges: [[120, 180]] })
+    expect(preBashHandler(makeBashEvent('sed -n 120,180p src/unquoted_demo.ts')).hookType).toBe('pass')
   })
 
-  it('sed line-range hint handles a 2>&1 suffix like 2>/dev/null', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/stderr_suffix_demo.tsx@250-300')
-    }
+  it('strips a 2>&1 suffix off the sed path', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1") ?? extractLineRangeReadsCompound("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1")?.[0]).toMatchObject({ filePath: 'src/stderr_suffix_demo.tsx', ranges: [[250, 300]] })
+    expect(preBashHandler(makeBashEvent("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1")).hookType).toBe('pass')
   })
 
-  it('hints on an echo-separated compound of sed reads, one hint per file in command order', () => {
-    const result = preBashHandler(makeBashEvent('sed -n \'10,20p\' src/compound_a_demo.ts; echo "=== b ==="; sed -n \'30,40p\' src/compound_b_demo.ts'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      const aPos = result.context.indexOf('src/compound_a_demo.ts@10-20')
-      const bPos = result.context.indexOf('src/compound_b_demo.ts@30-40')
-      expect(aPos, 'first file hint present').toBeGreaterThanOrEqual(0)
-      expect(bPos, 'second file hint present').toBeGreaterThanOrEqual(0)
-      expect(aPos, 'hints follow command order').toBeLessThan(bPos)
-    }
+  it('resolves an echo-separated compound of sed reads to both files in command order', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    const cmd = 'sed -n \'10,20p\' src/compound_a_demo.ts; echo "=== b ==="; sed -n \'30,40p\' src/compound_b_demo.ts'
+    expect(extractLineRangeReadsCompound(cmd)).toMatchObject([
+      { filePath: 'src/compound_a_demo.ts', ranges: [[10, 20]] },
+      { filePath: 'src/compound_b_demo.ts', ranges: [[30, 40]] },
+    ])
+    expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 
-  it('hints on an &&-separated compound of sed reads', () => {
-    const result = preBashHandler(makeBashEvent('sed -n \'5,15p\' src/compound_and_a.ts && echo --- && sed -n \'25,35p\' src/compound_and_b.ts'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/compound_and_a.ts@5-15')
-      expect(result.context).toContain('src/compound_and_b.ts@25-35')
-    }
+  it('resolves an &&-separated compound of sed reads to both files', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    const cmd = 'sed -n \'5,15p\' src/compound_and_a.ts && echo --- && sed -n \'25,35p\' src/compound_and_b.ts'
+    expect(extractLineRangeReadsCompound(cmd)).toMatchObject([
+      { filePath: 'src/compound_and_a.ts', ranges: [[5, 15]] },
+      { filePath: 'src/compound_and_b.ts', ranges: [[25, 35]] },
+    ])
+    expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 
-  it('merges compound sed reads of the same file into one multi-range hint', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/compound_merge_demo.ts; echo x; sed -n '30,40p' src/compound_merge_demo.ts"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/compound_merge_demo.ts@10-20')
-      expect(result.context).toContain('src/compound_merge_demo.ts@30-40')
-      expect(result.context.match(/line-range reads bypass read hooks/g)?.length, 'one hint stanza for one file').toBe(1)
-    }
+  it('merges compound sed reads of the same file into one entry carrying both ranges', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    const cmd = "sed -n '10,20p' src/compound_merge_demo.ts; echo x; sed -n '30,40p' src/compound_merge_demo.ts"
+    const reads = extractLineRangeReadsCompound(cmd)
+    expect(reads, 'one entry for one file').toHaveLength(1)
+    expect(reads).toMatchObject([{ filePath: 'src/compound_merge_demo.ts', ranges: [[10, 20], [30, 40]] }])
+    expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 
   it('passes through a compound containing a non-read segment (redirect into a file)', () => {
@@ -993,51 +1014,49 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('sed hint for Markdown suggests section by heading', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
-      expect(result.context).toContain('docs/report.md@13-31')
-    }
+  it('recognizes a Markdown sed range (the language-shaped advice ladder is gone -- see sedRangeHint)', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '13,31p' docs/report.md") ?? extractLineRangeReadsCompound("sed -n '13,31p' docs/report.md")?.[0]).toMatchObject({ filePath: 'docs/report.md', ranges: [[13, 31]] })
+    expect(preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md")).hookType).toBe('pass')
   })
 
-  it('sed hint for a source file suggests a symbol read', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '40,90p' src/auth.py"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat symbol')
-      expect(result.context).toContain('src/auth.py@40-90')
-    }
+  it('recognizes a source-file sed range', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '40,90p' src/auth.py") ?? extractLineRangeReadsCompound("sed -n '40,90p' src/auth.py")?.[0]).toMatchObject({ filePath: 'src/auth.py', ranges: [[40, 90]] })
+    expect(preBashHandler(makeBashEvent("sed -n '40,90p' src/auth.py")).hookType).toBe('pass')
   })
 
-  it('sed hint for a config file suggests config-get', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '5,15p' pyproject.toml"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat config-get')
-      expect(result.context).toContain('pyproject.toml@5-15')
-    }
+  it('recognizes a config-file sed range', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '5,15p' pyproject.toml") ?? extractLineRangeReadsCompound("sed -n '5,15p' pyproject.toml")?.[0]).toMatchObject({ filePath: 'pyproject.toml', ranges: [[5, 15]] })
+    expect(preBashHandler(makeBashEvent("sed -n '5,15p' pyproject.toml")).hookType).toBe('pass')
   })
 
-  it('sed hint for an unknown extension falls back to the plain line-range read', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '1,9p' notes/scratch.txt"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('notes/scratch.txt@1-9')
-      expect(result.context).not.toContain('token-goat symbol')
-      expect(result.context).not.toContain('token-goat section')
-      expect(result.context).not.toContain('token-goat config-get')
-    }
+  it('recognizes a sed range on an unknown extension', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '1,9p' notes/scratch.txt") ?? extractLineRangeReadsCompound("sed -n '1,9p' notes/scratch.txt")?.[0]).toMatchObject({ filePath: 'notes/scratch.txt', ranges: [[1, 9]] })
+    expect(preBashHandler(makeBashEvent("sed -n '1,9p' notes/scratch.txt")).hookType).toBe('pass')
   })
 
-  it('first sed read on a file gets the normal hint, not an overlap hint', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/paging_demo.ts@10-60')
-      expect(result.context).not.toContain('already read')
-    }
+  it('a first sed read on a file produces no overlap warning', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '10,60p' src/paging_demo.ts") ?? extractLineRangeReadsCompound("sed -n '10,60p' src/paging_demo.ts")?.[0]).toMatchObject({ filePath: 'src/paging_demo.ts', ranges: [[10, 60]] })
+    expect(preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts")).hookType).toBe('pass')
   })
 
   it('a second overlapping sed read names the prior range and points at the delta', () => {
@@ -1061,16 +1080,14 @@ describe('preBashHandler — cat source file recall', () => {
    *
    * A ledger's write half and read half are separately observable, and a guard holding only one of them is indistinguishable from a working guard unless both directions are asserted -- hence the paired "first read does not warn" test below.
    */
-  it('a first head read gets the normal surgical hint and no overlap warning', async () => {
+  it('a first head read produces no overlap warning', async () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
     const first = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_demo.md'))
-
-    expect(first.hookType).toBe('context')
-    if (first.hookType === 'context') {
-      expect(first.context).toContain('`head` bypasses read hooks.')
-      expect(first.context).not.toContain('already read')
-    }
-    // The write half, which already worked: the successful run records lines 1-30.
-    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_demo.md', 'line\n'.repeat(30)))
+    expect(first.hookType).toBe('pass')
+    expect(extractHeadFile('head -n 30 docs/paging_head_demo.md')).toMatchObject({ filePath: 'docs/paging_head_demo.md', n: 30 })
   })
 
   it('a repeat head read on the same file names the lines it already served', async () => {
@@ -1100,13 +1117,16 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a head read on a different file is not treated as an overlap', async () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
     preBashHandler(makeBashEvent('head -n 30 docs/paging_head_a.md'))
     await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_a.md', 'line\n'.repeat(30)))
 
     const other = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_b.md'))
-
-    expect(other.hookType).toBe('context')
-    if (other.hookType === 'context') expect(other.context).not.toContain('already read')
+    expect(other.hookType).toBe('pass')
+    expect(other.hookType === 'context' ? other.context : '').not.toContain('already read')
   })
 
   it('a repeat tail read still gets the plain hint, since its absolute start line is unknown', async () => {
@@ -1149,15 +1169,15 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  it('a non-overlapping later sed read on the same file gets the normal hint', () => {
+  it('a non-overlapping later sed read on the same file gets no overlap warning', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
     preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts"))
-    // 200-260 is disjoint from 10-60, so no overlap hint.
+    // 200-260 is disjoint from 10-60, so no overlap hint -- and the priced gate declines the rest.
     const result = preBashHandler(makeBashEvent("sed -n '200,260p' src/paging_demo.ts"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/paging_demo.ts@200-260')
-      expect(result.context).not.toContain('already read')
-    }
+    expect(result.hookType).toBe('pass')
   })
 
   it('dedups a sed read against the same file referenced by relative vs absolute path (fail-on-buggy: breaks if the line-range key stops resolving against cwd)', () => {
@@ -1484,43 +1504,40 @@ describe('preBashHandler — PowerShell read commands', () => {
     }
   })
 
-  it('Get-Content "src/auth.ts" | Select-Object -First 50 (quoted path) → suggests surgical read (regression: same quote-stripping gap in extractGetContentSelectFirst)', () => {
-    const event = makeBashEvent('Get-Content "src/auth.ts" | Select-Object -First 50')
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('Select-Object -First')
-      expect(result.context).toContain('token-goat')
-    }
+  it('Get-Content "src/auth.ts" | Select-Object -First 50 (quoted path) -> resolves the real path, and the priced gate declines the hint', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractGetContentSelectFirst('Get-Content "src/auth.ts" | Select-Object -First 50')).toMatchObject({ filePath: 'src/auth.ts', n: 50 })
+    expect(preBashHandler(makeBashEvent('Get-Content "src/auth.ts" | Select-Object -First 50')).hookType).toBe('pass')
   })
 
-  it('Get-Content src/auth.ts | Select-Object -First 50 → suggests surgical read', () => {
-    const event = makeBashEvent('Get-Content src/auth.ts | Select-Object -First 50')
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('Select-Object -First')
-      expect(result.context).toContain('token-goat')
-    }
+  it('Get-Content src/auth.ts | Select-Object -First 50 -> resolves the real path, and the priced gate declines the hint', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractGetContentSelectFirst('Get-Content src/auth.ts | Select-Object -First 50')).toMatchObject({ filePath: 'src/auth.ts', n: 50 })
+    expect(preBashHandler(makeBashEvent('Get-Content src/auth.ts | Select-Object -First 50')).hookType).toBe('pass')
   })
 
-  it('gc src/auth.ts | select -First 30 → suggests surgical read', () => {
-    const event = makeBashEvent('gc src/auth.ts | select -First 30')
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('Select-Object -First')
-    }
+  it('gc src/auth.ts | select -First 30 -> resolves the real path, and the priced gate declines the hint', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractGetContentSelectFirst('gc src/auth.ts | select -First 30')).toMatchObject({ filePath: 'src/auth.ts', n: 30 })
+    expect(preBashHandler(makeBashEvent('gc src/auth.ts | select -First 30')).hookType).toBe('pass')
   })
 
-  it('Get-Content -Path src/auth.ts | Select-Object -First 50 (explicit -Path flag) → suggests surgical read on the real path, not "-Path src/auth.ts" (regression: extractGetContentSelectFirst captured everything before the pipe as filePath without stripping a leading -Path flag, so the flag itself became part of the extracted filePath)', () => {
-    const event = makeBashEvent('Get-Content -Path src/auth.ts | Select-Object -First 50')
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat outline "src/auth.ts"')
-      expect(result.context).not.toContain('-Path')
-    }
+  it('Get-Content -Path src/auth.ts | Select-Object -First 50 (explicit -Path flag) -> resolves the real path, and the priced gate declines the hint', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractGetContentSelectFirst('Get-Content -Path src/auth.ts | Select-Object -First 50')).toMatchObject({ filePath: 'src/auth.ts', n: 50 })
+    expect(preBashHandler(makeBashEvent('Get-Content -Path src/auth.ts | Select-Object -First 50')).hookType).toBe('pass')
   })
 
   it('Get-Content C:/Windows/Temp/x.log (temp path) → passes through', () => {
@@ -1529,22 +1546,22 @@ describe('preBashHandler — PowerShell read commands', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('Get-Content src/config.json | Select-Object -First 30 (config) → suggests config-get', () => {
-    const event = makeBashEvent('Get-Content src/config.json | Select-Object -First 30')
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('config-get')
-    }
+  it('Get-Content src/config.json | Select-Object -First 30 (config) -> resolves the real path, and the priced gate declines the hint', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractGetContentSelectFirst('Get-Content src/config.json | Select-Object -First 30')).toMatchObject({ filePath: 'src/config.json', isConfig: true, n: 30 })
+    expect(preBashHandler(makeBashEvent('Get-Content src/config.json | Select-Object -First 30')).hookType).toBe('pass')
   })
 
-  it('Get-Content README.md | Select-Object -First 30 (doc) → suggests section', () => {
-    const event = makeBashEvent('Get-Content README.md | Select-Object -First 30')
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
-    }
+  it('Get-Content README.md | Select-Object -First 30 (doc) -> resolves the real path, and the priced gate declines the hint', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractGetContentSelectFirst('Get-Content README.md | Select-Object -First 30')).toMatchObject({ filePath: 'README.md', isDoc: true, n: 30 })
+    expect(preBashHandler(makeBashEvent('Get-Content README.md | Select-Object -First 30')).hookType).toBe('pass')
   })
 })
 
@@ -2141,48 +2158,44 @@ describe('preBashHandler — sed line-range interception', () => {
     clearModuleCaches()
   })
 
-  it('emits sed line-range read hint for single-quoted range', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '10,50p' src/hooks_read.ts"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read')
-      expect(result.context).toContain('src/hooks_read.ts@10-50')
-    }
+  it('recognizes a single-quoted sed range', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '10,50p' src/hooks_read.ts") ?? extractLineRangeReadsCompound("sed -n '10,50p' src/hooks_read.ts")?.[0]).toMatchObject({ filePath: 'src/hooks_read.ts', ranges: [[10, 50]] })
+    expect(preBashHandler(makeBashEvent("sed -n '10,50p' src/hooks_read.ts")).hookType).toBe('pass')
   })
 
-  it('emits sed line-range read hint with double-quoted range', () => {
-    const result = preBashHandler(makeBashEvent('sed -n "100,200p" README.md'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read')
-      expect(result.context).toContain('README.md@100-200')
-    }
+  it('recognizes a double-quoted sed range', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead('sed -n "100,200p" README.md') ?? extractLineRangeReadsCompound('sed -n "100,200p" README.md')?.[0]).toMatchObject({ filePath: 'README.md', ranges: [[100, 200]] })
+    expect(preBashHandler(makeBashEvent('sed -n "100,200p" README.md')).hookType).toBe('pass')
   })
 
   it('passes through sed without -n flag', () => {
     const result = preBashHandler(makeBashEvent("sed 's/foo/bar/g' file.ts"))
     expect(result.hookType).toBe('pass')
   })
-  it('emits sed line-range hint for double-semicolon multi-range on a .md file', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '24,28p;65,84p' file.md"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read')
-      expect(result.context).toContain('file.md@24-28')
-      expect(result.context).toContain('file.md@65-84')
-      // Markdown: should also point at section by heading as the upgrade alternative.
-      expect(result.context).toContain('token-goat section')
-    }
+  it('recognizes a semicolon multi-range on a .md file', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '24,28p;65,84p' file.md") ?? extractLineRangeReadsCompound("sed -n '24,28p;65,84p' file.md")?.[0]).toMatchObject({ filePath: 'file.md', ranges: [[24, 28], [65, 84]] })
+    expect(preBashHandler(makeBashEvent("sed -n '24,28p;65,84p' file.md")).hookType).toBe('pass')
   })
 
-  it('emits sed line-range hint for multi-range on a source file with symbol-read fallback', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '40,90p;200,260p' src/auth.py"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat symbol')
-      expect(result.context).toContain('src/auth.py@40-90')
-      expect(result.context).toContain('src/auth.py@200-260')
-    }
+  it('recognizes a multi-range on a source file', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '40,90p;200,260p' src/auth.py") ?? extractLineRangeReadsCompound("sed -n '40,90p;200,260p' src/auth.py")?.[0]).toMatchObject({ filePath: 'src/auth.py', ranges: [[40, 90], [200, 260]] })
+    expect(preBashHandler(makeBashEvent("sed -n '40,90p;200,260p' src/auth.py")).hookType).toBe('pass')
   })
 
   it('multi-range sed on a temp path passes through (no hint)', () => {
@@ -2195,37 +2208,37 @@ describe('preBashHandler — sed line-range interception', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('multi-range sed with three ranges lists all of them with an Oxford-comma separator', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '10,20p;100,110p;200,210p' src/foo.ts"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('src/foo.ts@10-20')
-      expect(result.context).toContain('src/foo.ts@100-110')
-      expect(result.context).toContain('src/foo.ts@200-210')
-      // Three-range sed joins reads with an Oxford comma so the agent clearly sees the last run-on boundary; without it the three reads read as a single comma-separated run.
-      expect(result.context).toContain(', and ')
-    }
+  it('recognizes all three of a three-range sed', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '10,20p;100,110p;200,210p' src/foo.ts") ?? extractLineRangeReadsCompound("sed -n '10,20p;100,110p;200,210p' src/foo.ts")?.[0]).toMatchObject({ filePath: 'src/foo.ts', ranges: [[10, 20], [100, 110], [200, 210]] })
+    expect(preBashHandler(makeBashEvent("sed -n '10,20p;100,110p;200,210p' src/foo.ts")).hookType).toBe('pass')
   })
 
-  it('single-range sed still resolves through the multi-range path (no regression on the one-range case)', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('docs/report.md@13-31')
-    }
+  it('a single range still resolves through the multi-range path', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("sed -n '13,31p' docs/report.md") ?? extractLineRangeReadsCompound("sed -n '13,31p' docs/report.md")?.[0]).toMatchObject({ filePath: 'docs/report.md', ranges: [[13, 31]] })
+    expect(preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md")).hookType).toBe('pass')
   })
 
-  it('treats Salesforce Apex, metadata, and markup as symbol-bearing surgical reads', () => {
+  it('resolves Salesforce Apex, metadata, and markup line ranges to their files', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
     for (const file of [
       'force-app/main/default/classes/ExampleController.cls',
       'force-app/main/default/flows/Example.flow-meta.xml',
       'force-app/main/default/aura/example/example.cmp',
     ]) {
-      const result = preBashHandler(makeBashEvent(`sed -n '10,40p' ${file}`))
-      expect(result.hookType).toBe('context')
-      if (result.hookType === 'context') {
-        expect(result.context).toContain('token-goat symbol')
-      }
+      const cmd = `sed -n '10,40p' ${file}`
+      expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: file, ranges: [[10, 40]] })
+      expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
     }
   })
 })
@@ -2240,34 +2253,38 @@ describe('preBashHandler — awk line-range interception', () => {
     clearModuleCaches()
   })
 
-  it('emits a line-range read hint for the NR>= && NR<= spelling', () => {
-    const result = preBashHandler(makeBashEvent("awk 'NR>=10 && NR<=50' src/hooks_read.ts"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read')
-      expect(result.context).toContain('src/hooks_read.ts@10-50')
-      expect(result.context, 'the hint must name the command actually run').toContain('`awk`')
-      expect(result.context, 'it must not tell the agent it ran sed').not.toContain('`sed -n`')
-    }
+  it('recognizes the awk NR>= && NR<= spelling, and reports it as awk rather than sed', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("awk 'NR>=10 && NR<=50' src/hooks_read.ts") ?? extractLineRangeReadsCompound("awk 'NR>=10 && NR<=50' src/hooks_read.ts")?.[0]).toMatchObject({ filePath: 'src/hooks_read.ts', ranges: [[10, 50]], tool: 'awk' })
+    expect(preBashHandler(makeBashEvent("awk 'NR>=10 && NR<=50' src/hooks_read.ts")).hookType).toBe('pass')
   })
 
-  it('emits a line-range read hint for the NR==A,NR==B spelling', () => {
-    const result = preBashHandler(makeBashEvent("awk 'NR==100,NR==200' README.md"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('README.md@100-200')
-    }
+  it('recognizes the awk NR==A,NR==B spelling', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("awk 'NR==100,NR==200' README.md") ?? extractLineRangeReadsCompound("awk 'NR==100,NR==200' README.md")?.[0]).toMatchObject({ filePath: 'README.md', ranges: [[100, 200]], tool: 'awk' })
+    expect(preBashHandler(makeBashEvent("awk 'NR==100,NR==200' README.md")).hookType).toBe('pass')
   })
 
   it('tolerates the unspaced && form', () => {
-    const result = preBashHandler(makeBashEvent("awk 'NR>=3&&NR<=7' src/cli.ts"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') expect(result.context).toContain('src/cli.ts@3-7')
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractLineRangeRead("awk 'NR>=3&&NR<=7' src/cli.ts") ?? extractLineRangeReadsCompound("awk 'NR>=3&&NR<=7' src/cli.ts")?.[0]).toMatchObject({ filePath: 'src/cli.ts', ranges: [[3, 7]], tool: 'awk' })
+    expect(preBashHandler(makeBashEvent("awk 'NR>=3&&NR<=7' src/cli.ts")).hookType).toBe('pass')
   })
 
   it('shares one dedup ledger with the sed spelling of the same range', () => {
     const ev = makeBashEvent("sed -n '10,50p' src/shared_ledger_probe.ts")
-    expect(preBashHandler(ev).hookType).toBe('context')
+    // The first read's own hint is declined by the priced gate, but it still records its range --
+    // the ledger write happens before the gate, which is what the second read below depends on.
+    expect(preBashHandler(ev).hookType).toBe('pass')
     const second = preBashHandler({ ...ev, toolInput: { command: "awk 'NR>=10 && NR<=50' src/shared_ledger_probe.ts" } })
     expect(second.hookType).toBe('context')
     if (second.hookType === 'context') {
@@ -4675,12 +4692,13 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     expect(result.hookType).toBe('pass')
   })
 
-  it('admits the piped leading-lines spelling `cat FILE | head -50` with the same hint as `head -50 FILE`', () => {
-    const result = preBashHandler(makeBashEvent('cat src/loop46_pipe.ts | head -50'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toBe('`head` bypasses read hooks. Use `token-goat outline "src/loop46_pipe.ts"` or `token-goat skeleton "src/loop46_pipe.ts"` to see the file structure.')
-    }
+  it('admits the piped leading-lines spelling `cat FILE | head -50` as the same read as `head -50 FILE`', () => {
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    expect(extractHeadFile('cat src/loop46_pipe.ts | head -50')).toMatchObject({ filePath: 'src/loop46_pipe.ts', n: 50 })
+    expect(preBashHandler(makeBashEvent('cat src/loop46_pipe.ts | head -50')).hookType).toBe('pass')
   })
 
   it('control: `cat FILE | head -5` is already surgical and stays unhinted, matching the direct head carve-out', () => {
@@ -4702,11 +4720,13 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
   })
 
   it('admits `cat FILE | sed -n RANGE` as the same line-range read as `sed -n RANGE FILE`', () => {
-    const result = preBashHandler(makeBashEvent("cat docs/loop46_guide.md | sed -n '29,36p'"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toBe('`sed -n` line-range reads bypass read hooks. For Markdown, `token-goat section "docs/loop46_guide.md::<heading>"` extracts a whole section by name (robust to line shifts); or `token-goat read "docs/loop46_guide.md@29-36"` for exactly those lines.')
-    }
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    const cmd = "cat docs/loop46_guide.md | sed -n '29,36p'"
+    expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'docs/loop46_guide.md', ranges: [[29, 36]], tool: 'sed' })
+    expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 
   it('the piped head spelling feeds the same line-range ledger: a repeat is told which lines it already served', async () => {
@@ -4723,19 +4743,23 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
 
 describe('preBashHandler — awk range reads with a pure line-print action (loop-46 census)', () => {
   it('admits an NR range whose action prints each whole line with its number', () => {
-    const result = preBashHandler(makeBashEvent('awk \'NR>=84 && NR<=116 {print NR": "$0}\' docs/loop46_awk.md'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toBe('`awk` line-range reads bypass read hooks. For Markdown, `token-goat section "docs/loop46_awk.md::<heading>"` extracts a whole section by name (robust to line shifts); or `token-goat read "docs/loop46_awk.md@84-116"` for exactly those lines.')
-    }
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    const cmd = 'awk \'NR>=84 && NR<=116 {print NR": "$0}\' docs/loop46_awk.md'
+    expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'docs/loop46_awk.md', ranges: [[84, 116]], tool: 'awk' })
+    expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 
   it('admits the printf spelling of the same whole-line print', () => {
-    const result = preBashHandler(makeBashEvent('awk \'NR>=10 && NR<=40 {printf "%d|%s\\n", NR, $0}\' src/loop46_awk.ts'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toBe('`awk` line-range reads bypass read hooks. For a whole function/class, `token-goat symbol <name>` or `token-goat read "src/loop46_awk.ts::<Symbol>"` is robust to line shifts; or `token-goat read "src/loop46_awk.ts@10-40"` for exactly those lines.')
-    }
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    const cmd = 'awk \'NR>=10 && NR<=40 {printf "%d|%s\\n", NR, $0}\' src/loop46_awk.ts'
+    expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'src/loop46_awk.ts', ranges: [[10, 40]], tool: 'awk' })
+    expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 
   it('control: a transforming action (substr/length projection) emits less than the span and stays unhinted', () => {
@@ -4744,11 +4768,13 @@ describe('preBashHandler — awk range reads with a pure line-print action (loop
   })
 
   it('admits the `2>&1` suffix on a plain awk range, matching the sed suffix parity from loop 45', () => {
-    const result = preBashHandler(makeBashEvent("awk 'NR>=5 && NR<=30' src/loop46_awk2.ts 2>&1"))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toBe('`awk` line-range reads bypass read hooks. For a whole function/class, `token-goat symbol <name>` or `token-goat read "src/loop46_awk2.ts::<Symbol>"` is robust to line shifts; or `token-goat read "src/loop46_awk2.ts@5-30"` for exactly those lines.')
-    }
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
+    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
+    // command shape is recognized and resolves to this file and range -- is asserted on the
+    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    const cmd = "awk 'NR>=5 && NR<=30' src/loop46_awk2.ts 2>&1"
+    expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'src/loop46_awk2.ts', ranges: [[5, 30]], tool: 'awk' })
+    expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 })
 

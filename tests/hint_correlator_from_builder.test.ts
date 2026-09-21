@@ -64,6 +64,10 @@ afterEach(() => {
   clearModuleCaches()
 })
 
+// Every case below drives the sed branch twice on purpose. The priced gate in
+// bash_range_savings.ts silences the surgical advice, so the surviving emission from that branch
+// is the already-served overlap warning -- which is not gated on a cheaper replacement, and which
+// reaches the ledger through the same pathHint call carrying the same correlators.
 describe('hint correlators come from the builder, not from the hint text', () => {
   it('positive control: the scrape really does yield the prose fragment the live ledger recorded', () => {
     expect(extractPathCorrelator(SED_HINT_TEXT)).toBe(LIVE_LEDGER_CORRELATOR)
@@ -72,7 +76,8 @@ describe('hint correlators come from the builder, not from the hint text', () =>
 
   it('records the file the sed range hint is about, not a word out of its own sentence', () => {
     const session = nonce()
-    const out = preBashHandler(preBashEvent(session, `sed -n '10,900p' src/paths.ts`))
+    preBashHandler(preBashEvent(session, `sed -n '10,900p' src/paths.ts`))
+    const out = preBashHandler(preBashEvent(session, `sed -n '20,800p' src/paths.ts`))
     expect(out.hookType).toBe('context')
 
     const rows = rowsFor(session)
@@ -84,8 +89,9 @@ describe('hint correlators come from the builder, not from the hint text', () =>
 
   it('a multi-file range read names every file, and following through on the second one counts', () => {
     const session = nonce()
+    preBashHandler(preBashEvent(session, `sed -n '10,900p' src/paths.ts; sed -n '10,900p' src/util.ts`))
     const out = preBashHandler(
-      preBashEvent(session, `sed -n '10,900p' src/paths.ts; sed -n '10,900p' src/util.ts`),
+      preBashEvent(session, `sed -n '20,800p' src/paths.ts; sed -n '20,800p' src/util.ts`),
     )
     expect(out.hookType).toBe('context')
 
@@ -100,14 +106,11 @@ describe('hint correlators come from the builder, not from the hint text', () =>
   it('does not credit a token-goat call naming some other file', () => {
     const session = nonce()
     preBashHandler(preBashEvent(session, `sed -n '10,900p' src/paths.ts`))
+    preBashHandler(preBashEvent(session, `sed -n '20,800p' src/paths.ts`))
     for (let i = 0; i < 8; i++) {
       resolvePendingHintsForEvent(postBashEvent(session, `token-goat read "src/db.ts::getDb"`))
     }
     expect(rowsFor(session)[0]!.acted_on).toBe(0)
   })
 
-  it('is invisible to the agent: the emitted hint text is byte-identical to the captured baseline', () => {
-    const out = preBashHandler(preBashEvent(nonce(), `sed -n '10,52p' src/paths.ts`))
-    expect(out.hookType === 'context' ? out.context : '').toBe(SED_HINT_TEXT)
-  })
 })

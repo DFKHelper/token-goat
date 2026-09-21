@@ -249,6 +249,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bash_compress.ts`](src/bash_compress.ts) | Bash output compression filters (vitest, npm, docker, ruff, and others) |
 | [`src/bash_extractors.ts`](src/bash_extractors.ts) | Command line extractors, classification, and surgical hint builders for bash hook handlers. |
 | [`src/bash_output_cache.ts`](src/bash_output_cache.ts) | Bash stdout/stderr disk store (byte cap plus 4096 file-count cap, oldest-first eviction) |
+| [`src/bash_range_savings.ts`](src/bash_range_savings.ts) | Prices a line-range read's proposed surgical replacement against the read itself, so a hint that redirects a line-range read can be required to prove it saves something before it i |
 | [`src/bash_runner.ts`](src/bash_runner.ts) | Exports: `DEFAULT_TIMEOUT_SECONDS`, `MAX_CAPTURE_BYTES`, `RunOptions`, `run` |
 | [`src/bash_structural_index.ts`](src/bash_structural_index.ts) | Recognizes a plain-enumeration `rg`/`grep` invocation over a single, already-fresh-indexed file whose pattern maps exactly to a token-goat index answer (`outline`/`imports`), and r |
 | [`src/filters.ts`](src/filters.ts) | Shared output-filter helpers |
@@ -413,6 +414,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |
 | [`src/language_specs.ts`](src/language_specs.ts) | The one table of languages token-goat indexes. |
 | [`src/lazy_module.ts`](src/lazy_module.ts) | Shared factory for the "lazily load an optional npm dependency" pattern used by every optional-dependency reader (pdf_extract.ts, xlsx_extract.ts, ooxml_extract.ts, screenshot.ts, |
+| [`src/line_regions.ts`](src/line_regions.ts) | Maps a requested line span onto the file regions that cover it. |
 | [`src/markdown_lines.ts`](src/markdown_lines.ts) | Iterate markdown lines, skipping fenced-code-block content (``` or ~~~ blocks) and the fence delimiter lines themselves, so a `#` comment inside a code fence is never mistaken for |
 | [`src/mcp_compress_packs.ts`](src/mcp_compress_packs.ts) | Schema-aware compression packs for two specific MCP servers, layered on top of {@link mcp_compress.ts}'s generic structural pass. |
 | [`src/mcp_compress.ts`](src/mcp_compress.ts) | Deterministic, structural compression for MCP tool results. |
