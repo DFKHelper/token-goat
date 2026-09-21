@@ -26,7 +26,7 @@ export function generateCompactHelp(): string {
     '  html-lint, docx-outline, docx-tables, docx-text, pptx-outline, pptx-slide, pptx-text,',
     '  pptx-notes',
     '',
-    'Index & Search: index, map, reconcile, doctor, commands, ask, pack, tokens,',
+    'Index & Search: index, map, reconcile, doctor, commands, ask, answer, pack, tokens,',
     '  budget, failures, todo, trace, logfold, lockdeps, dep-docs, recent, hot,',
     '  snapshot-snapshot, baseline, cost, coverage-report-gaps, clean-cache,',
     '  cache-audit, reclaim-index, project',

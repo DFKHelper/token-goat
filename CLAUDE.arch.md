@@ -337,6 +337,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/affected.ts`](src/affected.ts) | `token-goat affected` -- which test files a set of changed source files can reach. |
+| [`src/answer_router.ts`](src/answer_router.ts) | `token-goat answer` -- a deterministic question router. |
 | [`src/archive_query.ts`](src/archive_query.ts) | Entry listing + single-member extraction for `token-goat zip-list` / `zip-read`, so a .zip/.jar/.whl/.vsix/.nupkg (all zip-format containers under the hood) never needs its whole a |
 | [`src/baseline.ts`](src/baseline.ts) | Project map / overview (`token-goat map`). |
 | [`src/batch_serve.ts`](src/batch_serve.ts) | `--batch-serve`: run many CLI invocations inside one already-started process. |

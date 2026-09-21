@@ -19,6 +19,7 @@ import {
   runBlame,
   runAsk,
 } from './graph_commands.js'
+import { runAnswer } from './answer_router.js'
 import {
   DEFAULT_AFFECTED_DEPTH,
   runAffected,
@@ -377,6 +378,11 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
         }),
       ),
     )
+
+  program
+    .command('answer <question>')
+    .description('answer a plain-English question from the index alone, or refuse with a reason (no model call, no inference)')
+    .action((question: string) => runExit(() => runAnswer({ question })))
 
   program
     .command('pack [patterns...]')

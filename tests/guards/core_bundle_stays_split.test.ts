@@ -37,8 +37,10 @@ const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
  * 8 KB was added when origin/main's doctor work merged in: findTopIndexedProjects, the age window on checkUnmappedTools, checkVscodeProjectMcp and cleanupDeprecatedVscodeProjectMcp, alongside the local oversized-db category breakdown that now ships beside it rather than instead of it. Measured 3,411,459 bytes after the merge against the 3,407,872-byte line, which it missed by 3,587. The remaining 4,605 bytes of headroom are deliberate: this is still the collapse trip-wire, and a ceiling raised to within a few hundred bytes of the measurement turns the next unrelated change into a red guard rather than a decision.
  *
  * 4 KB more was added by the per-kind embedding stamp: src/embed_stamp.ts (which extraction kind a path belongs to) plus the kind-scoped reset in src/embeddings.ts and the generated per-kind digest map, all of them on the already-eager embedding path. Measured 3,416,952 bytes against the 3,416,064-byte line, which it missed by 888. The remaining 3,208 bytes of headroom are deliberate, for the same reason the paragraph above gives: the line moves by a measured amount when a feature lands on the eager path, never to whatever the current build happens to weigh.
+ *
+ * 8 KB more was added by the `answer` question router: src/answer_router.ts, registered from src/cli_cmd_analysis.ts, which is already eager. It pulls in no new chunk -- the eager closure stayed at 31 chunks across all three measurements below -- so the whole cost is the router's own compiled bytes. Three trees measured with the same closure walk this file performs, rebuilt between each: HEAD 3,417,370 bytes; HEAD plus the one-word `--help` group line 3,417,378 (+8); the router wired up 3,424,850 (+7,480 over HEAD), which missed the 3,420,160-byte line by 4,690. The remaining 3,502 bytes of headroom are deliberate, for the same reason both paragraphs above give.
  */
-const MAX_EAGER_BYTES = 3.25 * 1024 * 1024 + 12 * 1024
+const MAX_EAGER_BYTES = 3.25 * 1024 * 1024 + 20 * 1024
 
 /** Chunk filenames the given built file imports with a static `import ... from "./..."`. */
 function staticChunkImports(file: string): string[] {

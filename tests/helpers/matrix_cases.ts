@@ -2251,6 +2251,26 @@ export const cases: Record<string, () => void | Promise<void>> = {
       child.kill()
     }
   },
+  answer: () => {
+    // Routes to the real callers command through the built bundle, and prints the provenance line naming what it ran.
+    const r = run(['answer', 'who calls refHelper'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout.split('\n')[0]).toBe('via: token-goat callers refHelper')
+    expect(r.stdout).toMatch(/refDriver|caller\.ts/)
+    // The subject is resolved in the index before a command is chosen, so a symbol subject reaches test-for as its defining FILE -- passing the symbol straight to test-for fails.
+    const rTests = run(['answer', 'what tests cover refHelper'])
+    expect(rTests.status, rTests.stderr).toBe(0)
+    expect(rTests.stdout.split('\n')[0]).toMatch(/^via: token-goat test-for .*caller\.ts$/)
+    // A judgement question naming that same resolvable symbol must still refuse, on stderr, with exit 1.
+    const rWhy = run(['answer', 'why does refHelper return 1'])
+    expect(rWhy.status).toBe(1)
+    expect(rWhy.stderr).toContain('cannot answer deterministically: that asks for judgement')
+    expect(rWhy.stdout).toBe('')
+    // An unindexed subject refuses rather than falling back to a fuzzy match.
+    const rMiss = run(['answer', 'who calls notARealSymbolAnywhere'])
+    expect(rMiss.status).toBe(1)
+    expect(rMiss.stderr).toContain('is not an indexed symbol or file')
+  },
   callers: () => {
     // The fixture has refDriver calling refHelper twice; callers should find refDriver as the enclosing symbol.
     const r = run(['callers', 'refHelper'])

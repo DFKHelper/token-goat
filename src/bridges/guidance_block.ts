@@ -76,6 +76,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     'Exemptions (gate passes, read directly): the file is under ~200 lines and you need all of it; it was never indexed (new, untracked, or generated this turn); it is a genuinely opaque binary (not an image); the target has no symbol handle (e.g. a literal mid-function).',
     '',
     'Failure shapes to catch yourself in, and the command that replaces each:',
+    '- not knowing which command answers a question you can already state in words → `answer "<question>"`, which resolves the subject in the index, runs the right command, prints `via: <command>`, and refuses rather than guess',
     '- a shell text search with context flags to find a function body → `read "file::symbol"`',
     '- paging one function with view/view_range → `read "file::symbol"`',
     '- reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`',
@@ -89,7 +90,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- opening a screenshot, diagram, or scan to read the text in it → `image-text file`',
     '- opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF `pdf-meta`/`pdf-outline` then `pdf-locate` to find the pages and `pdf-extract` only those; Word `docx-outline` then `docx-tables`/`docx-text`; PowerPoint `pptx-outline` then `pptx-slide`/`pptx-notes`; Excel `xlsx-sheets` then `xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`',
     '',
-    'Commands: `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, ' +
+    'Commands: `answer "<question>"`, `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, ' +
       (gdrive ? '`gdrive-sections <file-id>`, ' : '') +
       '`image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`.',
     '',

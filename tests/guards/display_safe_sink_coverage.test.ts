@@ -366,6 +366,15 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'expression is a token-budget truncator, not a neutralizer, and is not what makes it safe.',
   ],
   [
+    'answer_router.ts:r.text',
+    "the `where` intent delegates to runSymbol and re-emits its returned text verbatim. That text " +
+      'is the payload the reader asked for, and it reaches stdout byte-identically when `symbol` is ' +
+      'invoked directly, where cli_dispatch.ts runExitText passes the same value to out() with no ' +
+      'escaping either. Escaping it here would make one route through runSymbol render differently ' +
+      "from the other. The `via: token-goat symbol <name>` line above it IS token-goat's own voice " +
+      'and IS escaped, with displaySafeText applied to the index-supplied symbol name.',
+  ],
+  [
     'read_outline.ts:sym.name',
     'skeleton and outline listing rows: these are the payload the reader asked for, and these ' +
       'commands hand back file structure unfenced by design. Escaping the name alone would buy ' +
