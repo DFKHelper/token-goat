@@ -49,6 +49,15 @@ function efficacyCell(row: CategoryEfficacy): string {
   return isSuppressionCategory(row.category) ? `${pct} *` : pct
 }
 
+/**
+ * Renders a category's emitted cell, marked when some of what it emitted is not in that count.
+ *
+ * `emitted` counts the rows efficacy was actually scored on. A hint that carried no correlator names nothing a later command could match, so it is excluded from both sides of the percentage rather than given an invented verdict -- but it was still emitted, and it still spent its bytes. Without a marker the two populations are indistinguishable: `bash_redirect` reads as 524 emissions when 698 were really pushed at the agent, and a reader sizing the category off this column undercounts it by a quarter.
+ */
+function emittedCell(row: CategoryEfficacy): string {
+  return row.unobservable > 0 ? `${row.emitted} ~${row.unobservable}` : String(row.emitted)
+}
+
 function printSummary(rows: readonly CategoryEfficacy[]): void {
   const w = (text: string) => {
     process.stdout.write(text)
@@ -57,7 +66,7 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
   for (const row of rows) {
     w(
       pad(row.category, 22) +
-        pad(String(row.emitted), 9) +
+        pad(emittedCell(row), 9) +
         pad(String(row.actedOn), 10) +
         pad(efficacyCell(row), 12) +
         pad(suppressedCell(row), 17) +
@@ -116,7 +125,10 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
   // Those two conclusions call for opposite actions (retire the hints vs. go collect data), so
   // say which one it is. The table still prints underneath: the registered category list is
   // useful on its own, and dropping it would narrow existing output.
-  if (rows.every((r) => r.emitted === 0 && r.actedOn === 0)) {
+  // `unobservable` belongs in this test: a store holding only correlator-less rows has recorded
+  // plenty, it just scored none of it, and calling that "absence of data" would send a reader to
+  // collect more of exactly the data that is already there and still unscoreable.
+  if (rows.every((r) => r.emitted === 0 && r.actedOn === 0 && r.unobservable === 0)) {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
   printSummary(rows)
@@ -127,6 +139,17 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
       'expires with no re-read counts as compliance. Their percentage is not comparable with the ' +
       'unmarked rows, which only count when the agent runs the command the hint named. A high ' +
       'starred figure means "the warned-against read was not seen", not "this hint persuaded anyone".\n',
+    )
+  }
+  // Without this, the emitted column silently shrinks: 174 of bash_redirect's 698 rows leave the
+  // count and nothing says where they went, which looks like data loss rather than a scoping rule.
+  if (rows.some((r) => r.unobservable > 0)) {
+    process.stdout.write(
+      '\n~N: N further emissions in that category carried no correlator -- no pointer a later ' +
+      'command could have matched -- so no verdict about them was ever observed. They are not in ' +
+      'the emitted or acted-on counts and not in the efficacy figure, which is scored only on the ' +
+      'rows that could have gone either way. They ARE in the spend column: an unobservable hint ' +
+      'costs the agent its bytes all the same.\n',
     )
   }
   // A permanently-suppressed category emits nothing at all, so its efficacy can never rise and

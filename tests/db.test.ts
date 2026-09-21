@@ -329,6 +329,60 @@ describe('getDb schema version', () => {
     expect(inserted.bytes_emitted).toBe(42)
   })
 
+  it('migrates a v14 DB up to SCHEMA_VERSION, adding hint_emissions.observable and backfilling it from the correlator', () => {
+    const p = tmpDbPath()
+
+    // A real pre-v15 on-disk database: hint_emissions shaped exactly like v14's SCHEMA_SQL (no
+    // `observable` column), stamped user_version = 14. Built directly against the raw file,
+    // bypassing getDb/initConnection, same pattern as the v9 -> v10 bytes_emitted test above.
+    const raw = new Database(p)
+    raw.exec(`
+      CREATE TABLE hint_emissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        harness TEXT NOT NULL,
+        correlator TEXT,
+        emitted_at REAL NOT NULL,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        acted_on INTEGER NOT NULL DEFAULT 0,
+        calls_remaining INTEGER NOT NULL DEFAULT 0,
+        bytes_emitted INTEGER
+      );
+    `)
+    const ins = raw.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    // The two shapes the live ledger actually holds: a correlator-less redirect row booked as a
+    // failure, and a correlator-less suppression row booked as a success. Neither verdict was
+    // observed, and after the migration neither is counted.
+    ins.run('bash_redirect', 'null-redirect', 'claude-code', null, Date.now(), 1, 0, 0, 300)
+    ins.run('edit_reread_suggest', 'null-suppression', 'claude-code', null, Date.now(), 1, 1, 0, 300)
+    ins.run('bash_redirect', 'has-correlator', 'claude-code', 'src/paths.ts', Date.now(), 1, 1, 0, 300)
+    raw.pragma('user_version = 14')
+    raw.close()
+
+    const db = getDb(p)
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION)
+
+    const seen = db
+      .prepare('SELECT session_id, observable FROM hint_emissions ORDER BY id')
+      .all() as Array<{ session_id: string; observable: number }>
+    expect(seen).toEqual([
+      { session_id: 'null-redirect', observable: 0 },
+      { session_id: 'null-suppression', observable: 0 },
+      { session_id: 'has-correlator', observable: 1 },
+    ])
+
+    // The column defaults to 1, so a writer that never mentions it produces an observable row --
+    // which is right: every row born after this migration that carries a correlator is one.
+    db.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('bash_redirect', 'fresh-session', 'claude-code', 'src/db.ts', Date.now(), 0, 0, 5, 42)
+    const inserted = db.prepare('SELECT observable FROM hint_emissions WHERE session_id = ?').get('fresh-session') as { observable: number }
+    expect(inserted.observable).toBe(1)
+  })
+
   it('refuses to open a DB whose user_version is newer than this build supports', () => {
     const p = tmpDbPath()
     getDb(p)

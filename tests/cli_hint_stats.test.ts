@@ -91,7 +91,10 @@ describe('runHintStatsCommand — human output', () => {
     cfg.hints.backoff_thresholds = thresholds
     saveConfig(cfg)
     clearModuleCaches()
-    logHintEmission('bash_redirect', nonce(), null)
+    // A real correlator, because this helper's job is "this category emitted and was never acted
+    // on". A null correlator now means the opposite -- nothing a later command could have matched,
+    // so no verdict was observed -- and such a row is not part of the sample shouldSuppress judges.
+    logHintEmission('bash_redirect', nonce(), 'C:/x/suppress.ts')
   }
 
   it('marks a permanently-suppressed category and names the action that clears it', () => {
@@ -134,7 +137,7 @@ describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
     // Simulate a pre-migration row directly, the same shape db.test.ts's v9->v10 migration test
     // leaves a pre-existing row in: no bytes_emitted value at all.
     const sid = nonce()
-    logHintEmission('bash_redirect', sid, null)
+    logHintEmission('bash_redirect', sid, 'C:/x/legacy.ts')
     const output = captureStdout(() => runHintStatsCommand())
     expect(output).toContain('n/a')
     expect(output).toContain('legacy')
@@ -142,9 +145,9 @@ describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
 
   it('computes a real net figure and marks a legacy row count once at least one emission carries a spend figure', () => {
     const sid1 = nonce()
-    logHintEmission('bash_redirect', sid1, null, false, 200) // tracked
+    logHintEmission('bash_redirect', sid1, 'C:/x/tracked.ts', false, 200) // tracked
     const sid2 = nonce()
-    logHintEmission('bash_redirect', sid2, null) // legacy: no spend figure
+    logHintEmission('bash_redirect', sid2, 'C:/x/legacy.ts') // legacy: no spend figure
 
     const output = captureStdout(() => runHintStatsCommand())
     // Per-category spend column reflects only the tracked row (200), not a blended/fake total.
@@ -279,5 +282,45 @@ describe('runHintStatsCommand — efficacy polarity disclosure', () => {
     logHintEmission('bash_redirect', nonce(), 'C:/x/c.ts')
     const output = captureStdout(() => runHintStatsCommand())
     expect(output).not.toContain('Scored on an absence')
+  })
+})
+
+// Unobservable rows leave the emitted count, which shrinks a number a reader uses to size a
+// category -- bash_redirect reads as 524 where 698 were really pushed at the agent. A count that
+// silently drops a quarter of its population looks like data loss unless the table says otherwise.
+// Both halves of the branch are checked, for the same reason the footnote above checks both.
+describe('runHintStatsCommand — unobservable emissions are disclosed, not silently dropped', () => {
+  it('marks the emitted cell and explains the marker when a category has unobservable rows', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/seen.ts')
+    logHintEmission('bash_redirect', sid, null)
+    logHintEmission('bash_redirect', sid, null)
+
+    const output = captureStdout(() => runHintStatsCommand())
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line, 'no bash_redirect row in the table').toBeDefined()
+    // One scored emission, two that carried no pointer at all.
+    expect(line).toContain('1 ~2')
+    expect(output).toContain('carried no correlator')
+  })
+
+  it('stays silent, and prints a bare count, when every emission was observable', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/seen.ts')
+
+    const output = captureStdout(() => runHintStatsCommand())
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line).toBeDefined()
+    expect(line).not.toContain('~')
+    expect(output).not.toContain('carried no correlator')
+  })
+
+  it('a store holding only unobservable rows is not reported as absence of data', () => {
+    logHintEmission('bash_redirect', nonce(), null)
+    const output = captureStdout(() => runHintStatsCommand())
+    // The zeros here mean "recorded but unscoreable", which calls for fixing the hint builder that
+    // supplies no correlator -- the opposite action from "go collect data".
+    expect(output).not.toContain('No hint emissions recorded yet')
+    expect(output).toContain('carried no correlator')
   })
 })

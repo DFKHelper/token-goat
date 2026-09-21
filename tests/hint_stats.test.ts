@@ -33,6 +33,28 @@ function nonce(): string {
   return `hs${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
 
+/**
+ * A real correlator that nothing in the test will ever mention, for the seeds below that only need
+ * "this category emitted and nobody followed through". They used to pass `null`, which now marks a
+ * row unobservable -- excluded from the efficacy sample entirely rather than counted as a miss --
+ * so a null here would seed nothing at all. Unique per call so two seeds never credit each other.
+ */
+function unfollowed(): string {
+  return `C:/repo/src/unfollowed-${Math.random().toString(36).slice(2, 10)}.ts`
+}
+
+/**
+ * The suppression-category counterpart: a hint whose warned-against re-read never happened, which
+ * is the absence that books compliance. Spelled as a real pointer plus an expiring window rather
+ * than as a null correlator, because those are now different things -- the first is an observed
+ * compliance, the second is no observation at all.
+ */
+function seedComplied(category: 'read_reread_dedup' | 'read_structural_nav' | 'edit_reread_suggest', bytesEmitted: number | null = null): void {
+  const session = nonce()
+  logHintEmission(category, session, unfollowed(), false, bytesEmitted)
+  for (let i = 0; i < 6; i++) resolvePendingHintsForEvent(bashEvent(session, `echo idle-${i}`))
+}
+
 function bashEvent(sessionId: string, command: string): HookEvent {
   return {
     eventName: 'post_tool_use',
@@ -239,13 +261,19 @@ describe('logHintEmission', () => {
     expect(row?.acted_on).toBe(0)
   })
 
-  it('still counts toward emitted even with a null correlator', () => {
+  // This used to assert the opposite -- that a correlator-less emission counted toward `emitted`
+  // with acted_on 0. It was changed deliberately, not because it was inconvenient: a row carrying
+  // no pointer cannot be matched by any later command, so booking it a miss reports a verdict
+  // nobody observed. On the live ledger that was 174 of bash_redirect's 698 rows. See
+  // tests/hint_unobservable_rows.test.ts for the full contract; this pins the `emitted` half of it.
+  it('does not count toward emitted with a null correlator, and is disclosed separately', () => {
     const n = nonce()
     logHintEmission('bash_redirect', n, null)
     const summary = getHintStatsSummary()
     const row = summary.find((r) => r.category === 'bash_redirect')
-    expect(row?.emitted).toBe(1)
+    expect(row?.emitted).toBe(0)
     expect(row?.actedOn).toBe(0)
+    expect(row?.unobservable).toBe(1)
   })
 
   it('persists the bytesEmitted spend figure passed by the caller', () => {
@@ -275,8 +303,8 @@ describe('getHintStatsSummary — spend (bytesEmitted/legacyEmissions)', () => {
   })
 
   it('sums bytesEmitted across emissions that all carry a tracked spend figure', () => {
-    logHintEmission('read_reread_dedup', nonce(), null, false, 100)
-    logHintEmission('read_reread_dedup', nonce(), null, false, 50)
+    seedComplied('read_reread_dedup', 100)
+    seedComplied('read_reread_dedup', 50)
     const summary = getHintStatsSummary()
     const row = summary.find((r) => r.category === 'read_reread_dedup')
     expect(row?.emitted).toBe(2)
@@ -287,8 +315,8 @@ describe('getHintStatsSummary — spend (bytesEmitted/legacyEmissions)', () => {
   it('reports bytesEmitted null (not a fake 0) when every emission predates spend tracking', () => {
     // Simulates a pre-migration row: bytes_emitted left unset, same shape the v9->v10 ALTER
     // TABLE migration leaves a pre-existing row in (see db.test.ts's v9->v10 migration test).
-    logHintEmission('edit_reread_suggest', nonce(), null)
-    logHintEmission('edit_reread_suggest', nonce(), null)
+    seedComplied('edit_reread_suggest')
+    seedComplied('edit_reread_suggest')
     const summary = getHintStatsSummary()
     const row = summary.find((r) => r.category === 'edit_reread_suggest')
     expect(row?.emitted).toBe(2)
@@ -297,8 +325,8 @@ describe('getHintStatsSummary — spend (bytesEmitted/legacyEmissions)', () => {
   })
 
   it('sums only the tracked rows and reports the legacy count separately for a mixed category', () => {
-    logHintEmission('bash_recall', nonce(), null) // legacy: no spend figure
-    logHintEmission('bash_recall', nonce(), null, false, 80) // tracked
+    logHintEmission('bash_recall', nonce(), unfollowed()) // legacy: no spend figure
+    logHintEmission('bash_recall', nonce(), unfollowed(), false, 80) // tracked
     const summary = getHintStatsSummary()
     const row = summary.find((r) => r.category === 'bash_recall')
     expect(row?.emitted).toBe(2)
@@ -533,7 +561,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
 
     for (let i = 0; i < 4; i++) {
       const n = nonce()
-      logHintEmission('bash_redirect', n, null) // resolved immediately, never acted on
+      logHintEmission('bash_redirect', n, unfollowed()) // a real pointer, never followed
     }
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
   })
@@ -546,7 +574,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
 
     for (let i = 0; i < 5; i++) {
       const n = nonce()
-      logHintEmission('bash_redirect', n, null) // 0% acted-on
+      logHintEmission('bash_redirect', n, unfollowed()) // 0% acted-on
     }
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
@@ -578,7 +606,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     logHintEmission('bash_redirect', nActed, 'C:/repo/a.ts')
     resolvePendingHintsForEvent(bashEvent(nActed, 'token-goat skeleton "C:/repo/a.ts"'))
     const nNotActed = nonce()
-    logHintEmission('bash_redirect', nNotActed, null)
+    logHintEmission('bash_redirect', nNotActed, unfollowed())
     // 1/2 = 50%, not below a 50% threshold.
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
 
@@ -598,7 +626,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     cfg.hint_stats.suppress_threshold_pct = 100 // guarantee suppression on the first sample
     saveConfig(cfg)
 
-    logHintEmission('bash_redirect', nonce(), null) // 0% acted-on, resolved
+    logHintEmission('bash_redirect', nonce(), unfollowed()) // 0% acted-on
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     const summary = getHintStatsSummary()
@@ -681,7 +709,7 @@ describe('applyHintTracking', () => {
     saveConfig(cfg)
 
     const seedSession = nonce()
-    logHintEmission('bash_redirect', seedSession, null) // 0% acted-on, resolved
+    logHintEmission('bash_redirect', seedSession, unfollowed()) // 0% acted-on
 
     const n = nonce()
     const event = bashEvent(n, 'cat C:/repo/other.ts')
@@ -772,7 +800,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
 
     // Seed one below-threshold, never-acted-on emission so the category crosses min_sample_size at 0% efficacy.
     const seedSession = nonce()
-    logHintEmission('bash_redirect', seedSession, null)
+    logHintEmission('bash_redirect', seedSession, unfollowed())
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     // Occasion 1 while suppressed matches backoff_thresholds' single threshold (1) -- must probe:
@@ -804,7 +832,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     saveConfig(cfg)
 
     const seedSession = nonce()
-    logHintEmission('bash_redirect', seedSession, null)
+    logHintEmission('bash_redirect', seedSession, unfollowed())
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     // Occasions 1 and 2 don't match the schedule -- must stay silently suppressed, not logged.
@@ -838,7 +866,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     saveConfig(cfg)
 
     const seedSession = nonce()
-    logHintEmission('bash_redirect', seedSession, null)
+    logHintEmission('bash_redirect', seedSession, unfollowed())
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     for (let i = 0; i < 40; i++) {
@@ -872,7 +900,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     // Episode 1: seed a 0%-acted-on emission -> suppressed. Occasion 1 matches threshold [1] and
     // probes through.
     const seedSession = nonce()
-    logHintEmission('bash_redirect', seedSession, null)
+    logHintEmission('bash_redirect', seedSession, unfollowed())
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     const probeSession = nonce()
@@ -943,7 +971,7 @@ describe('pruneHintEmissions (retention via the shared stats maintenance throttl
     )
     for (let i = 0; i < 5; i++) insertOld.run(`old-${nonce()}`, oldMs) // old rows alone already cross min_sample_size at 0% efficacy
 
-    for (let i = 0; i < 5; i++) logHintEmission('bash_redirect', nonce(), null) // fresh rows, also 0% efficacy -- cross the same threshold on their own
+    for (let i = 0; i < 5; i++) logHintEmission('bash_redirect', nonce(), unfollowed()) // fresh rows, also 0% efficacy -- cross the same threshold on their own
 
     expect(shouldSuppress('bash_redirect', nonce()), 'setup: suppressed before pruning').toBe(true)
 
@@ -1064,6 +1092,14 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     for (let i = 0; i < turns; i++) resolvePendingHintsForEvent(bashEvent(sessionId, `echo idle-${i}`))
   }
 
+  function observableFor(sessionId: string): number | undefined {
+    return (
+      getDb(globalDbPath())
+        .prepare('SELECT observable FROM hint_emissions WHERE session_id = ?')
+        .get(sessionId) as { observable: number } | undefined
+    )?.observable
+  }
+
   function rowFor(sessionId: string): { resolved: number; acted_on: number } | undefined {
     return getDb(globalDbPath())
       .prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?')
@@ -1157,14 +1193,28 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     expect(row?.acted_on, 'a redirect hint names a command to run; silence is not compliance').toBe(0)
   })
 
-  it('books a correlator-less hint by its own polarity', () => {
+  // This used to assert that a correlator-less hint was booked BY ITS POLARITY: 1 for a
+  // suppression category, 0 for a redirect one. Both readings are defensible and both are
+  // inventions, and mixing an invention into a measured rate is the defect this replaced. The row
+  // is now marked unobservable and left at 0, which the efficacy queries skip rather than read --
+  // so the 0 below is an absence of verdict, not a miss, and `observable` is what says which.
+  it('books no verdict at all for a correlator-less hint, whatever its polarity', () => {
     const sup = nonce()
     logHintEmission('read_reread_dedup', sup, null)
-    expect(rowFor(sup)?.acted_on, 'an unobservable suppression hint was never contradicted').toBe(1)
+    expect(rowFor(sup)?.acted_on, 'an unobservable suppression hint was never contradicted -- nor observed complying').toBe(0)
+    expect(observableFor(sup)).toBe(0)
 
     const red = nonce()
     logHintEmission('bash_redirect', red, null)
     expect(rowFor(red)?.acted_on, 'an unobservable redirect hint was never followed either').toBe(0)
+    expect(observableFor(red)).toBe(0)
+
+    // Positive control: the same two categories DO record a verdict when a pointer exists.
+    const seen = nonce()
+    logHintEmission('bash_redirect', seen, 'C:/repo/src/seen.ts')
+    resolvePendingHintsForEvent(bashEvent(seen, 'token-goat read "C:/repo/src/seen.ts::f"'))
+    expect(rowFor(seen)?.acted_on).toBe(1)
+    expect(observableFor(seen)).toBe(1)
   })
 
   it('lets a category already muted by pre-fix rows recover on its next obeyed probe', () => {
@@ -1216,7 +1266,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     cfg.hints.backoff_thresholds = thresholds as number[]
     saveConfig(cfg)
 
-    logHintEmission('bash_redirect', nonce(), null)
+    logHintEmission('bash_redirect', nonce(), unfollowed())
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     const row = getHintStatsSummary().find((r) => r.category === 'bash_redirect')
@@ -1262,7 +1312,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     const acted = nonce()
     logHintEmission('bash_redirect', acted, 'C:/repo/a.ts')
     resolvePendingHintsForEvent(bashEvent(acted, 'token-goat skeleton "C:/repo/a.ts"'))
-    logHintEmission('bash_redirect', nonce(), null)
+    logHintEmission('bash_redirect', nonce(), unfollowed())
   }
 
   /** A suppression category at exactly 50%: one observed re-read of the named path, one emission whose re-read never happened. */
@@ -1270,7 +1320,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     const defied = nonce()
     logHintEmission('read_reread_dedup', defied, 'C:/repo/b.ts')
     resolvePendingHintsForEvent(readEvent(defied, 'C:/repo/b.ts'))
-    logHintEmission('read_reread_dedup', nonce(), null)
+    seedComplied('read_reread_dedup')
   }
 
   function configure(suppressPct: number, defiancePct: number): void {
@@ -1385,7 +1435,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     configureWithoutDefianceKey(37)
     expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(63)
     seedSuppressionAllDefiance(3)
-    logHintEmission('read_reread_dedup', nonce(), null)
+    seedComplied('read_reread_dedup')
     expect(getHintStatsSummary().find((r) => r.category === 'read_reread_dedup')?.efficacyPct).toBe(25)
     expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
   })

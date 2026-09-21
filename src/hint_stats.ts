@@ -63,14 +63,17 @@
  * It is still a PROXY for causation, not proof: a match means the agent ran the suggested
  * command shortly after the hint, but cannot prove the hint caused that (the agent might have
  * been about to do it anyway). This is disclosed here and in the CLI output rather than
- * asserted as certainty. When no correlator can be extracted from a hint's text (a small
+ * asserted as certainty. When no correlator is supplied or can be extracted (a small
  * minority of branches with no path/id in their message, e.g. the "collapse grep|grep" or
  * "unbalanced shell quoting, use Write tool" hints), the emission is logged as resolved
- * immediately -- honestly counted as "no signal available" rather than invented. Which way that
- * no-signal row is booked depends on the category's polarity: a redirect hint books 0, because
- * the substitute command it named was never seen; a suppression hint books 1, because the
- * re-read it warned against was never seen either, and those are the same absence. See
- * {@link isSuppressionCategory}. `token-goat hint-stats --mark-effective/--mark-ineffective <category>` exists as a
+ * immediately and marked `observable = 0`: no later command can match a pointer the row does not
+ * carry, so no verdict about it was ever observed. Efficacy skips those rows in both numerator and
+ * denominator rather than booking a verdict for them. It used to book one, and which way depended
+ * on the category's polarity -- a redirect hint booked 0 because the substitute it named was never
+ * seen, a suppression hint booked 1 because the re-read it warned against was never seen either.
+ * Both readings are defensible and both are inventions, and mixing an invention into a measured
+ * rate is what held `bash_redirect` at a reported 0.86% when its observed figure was 1.15%: 174 of
+ * its 698 rows carried no pointer at all. `token-goat hint-stats --mark-effective/--mark-ineffective <category>` exists as a
  * human override/supplement for exactly this gap; it is tracked as a SEPARATE counter
  * (hint_manual_marks) and never blended into the automatic acted_on/emitted percentage, so the
  * two signals are never silently conflated.
@@ -371,13 +374,15 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
   try {
     const db = getDb(globalDbPath())
     const resolved = correlator === null ? 1 : 0
-    // A suppression hint resolved on the spot for want of a correlator was never contradicted; see
-    // SUPPRESSION_HINT_CATEGORIES for why an unobservable row must not be booked as a failure.
-    const actedOn = resolved === 1 && isSuppressionCategory(category) ? 1 : 0
+    // A row with no correlator names nothing a later command could match, so no verdict about it is
+    // ever observed. It used to be booked as a failure here, except in a suppression category where
+    // it was booked as a success instead -- two opposite fabrications, both averaged into a measured
+    // rate. It is now marked unobservable and left at acted_on=0, which the efficacy queries skip
+    // entirely rather than read; see the hint_emissions.observable schema comment in db.ts.
     const window = ACTED_ON_WINDOW + (compensateSelfResolve ? 1 : 0)
     db.prepare(
-      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
-       VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, @resolved, @actedOn, @callsRemaining, @bytesEmitted)`,
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted, observable)
+       VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, @resolved, 0, @callsRemaining, @bytesEmitted, @observable)`,
     ).run({
       category,
       sessionId,
@@ -385,9 +390,9 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
       correlator,
       emittedAt: Date.now(),
       resolved,
-      actedOn,
       callsRemaining: correlator === null ? 0 : window,
       bytesEmitted,
+      observable: correlator === null ? 0 : 1,
     })
   } catch {
     // Fail-soft: a hint-tracking failure must never block the hint (or the tool call) it accompanies.
@@ -508,11 +513,11 @@ export function resolvePendingHintsForEvent(event: HookEvent): void {
 
     for (const row of pending) {
       if (!isHintCategory(row.category) || row.correlator === null) {
-        // Nothing observable to wait for. A suppression hint that named no path was never
-        // contradicted, so resolving it as a failure would be the same false negative this
-        // category's inverted polarity exists to avoid.
-        const unobservable = isHintCategory(row.category) && isSuppressionCategory(row.category) ? 1 : 0
-        db.prepare(`UPDATE hint_emissions SET acted_on = ?, resolved = 1 WHERE id = ?`).run(unobservable, row.id)
+        // Nothing observable to wait for: no later command can match a pointer this row does not
+        // carry. Recorded as unobservable rather than given a manufactured verdict in either
+        // direction -- this branch used to book a failure, or a success in a suppression category,
+        // and efficacy averaged both. See hint_emissions.observable's schema comment in db.ts.
+        db.prepare(`UPDATE hint_emissions SET acted_on = 0, resolved = 1, observable = 0 WHERE id = ?`).run(row.id)
         continue
       }
       if (isSuppressionCategory(row.category)) {
@@ -578,6 +583,8 @@ export interface CategoryEfficacy {
   emitted: number
   actedOn: number
   efficacyPct: number | null
+  /** Count of this category's emissions that carried no correlator, so nothing a later command could do would ever have matched them. Excluded from `emitted`, `actedOn` and `efficacyPct` -- they are the rows no verdict was ever observed for -- but still included in `bytesEmitted`, because an unobservable hint spent its bytes all the same. Surfaced so a category whose efficacy rests on a small observable slice of a large emission count cannot look the same as one that was fully measured. */
+  unobservable: number
   suppressed: boolean
   /**
    * True only when this category is suppressed *and* `hints.backoff_thresholds` is empty, so no
@@ -599,6 +606,7 @@ export interface CategoryEfficacy {
 interface EmissionRow {
   emitted: number
   actedOn: number | null
+  unobservable: number
   bytesEmitted: number | null
   legacyEmissions: number | null
 }
@@ -607,12 +615,23 @@ function categoryStats(category: HintCategory): EmissionRow {
   const db = getDb(globalDbPath())
   const row = db
     .prepare(
-      `SELECT COUNT(*) AS emitted, SUM(acted_on) AS actedOn, SUM(bytes_emitted) AS bytesEmitted,
+      // emitted/actedOn count observable rows only: an unobservable row carries no verdict, so
+      // including it would divide a real numerator by a denominator partly made of rows nothing
+      // could ever have satisfied. bytesEmitted and legacyEmissions deliberately span every row --
+      // an unobservable hint still spent its bytes on the agent, and the spend figure would
+      // under-report by exactly the amount the efficacy figure is being protected from.
+      // COALESCE on the two counts that stay `number`: SUM over no rows is NULL where the COUNT(*)
+      // this replaced was 0, and an aggregate query always returns its row, so the `?? default`
+      // below would not have caught it.
+      `SELECT COALESCE(SUM(CASE WHEN observable = 1 THEN 1 ELSE 0 END), 0) AS emitted,
+              SUM(CASE WHEN observable = 1 THEN acted_on ELSE 0 END) AS actedOn,
+              COALESCE(SUM(CASE WHEN observable = 1 THEN 0 ELSE 1 END), 0) AS unobservable,
+              SUM(bytes_emitted) AS bytesEmitted,
               SUM(CASE WHEN bytes_emitted IS NULL THEN 1 ELSE 0 END) AS legacyEmissions
        FROM hint_emissions WHERE category = ? AND harness = ?`,
     )
     .get(category, getHarnessName()) as EmissionRow | undefined
-  return row ?? { emitted: 0, actedOn: 0, bytesEmitted: null, legacyEmissions: 0 }
+  return row ?? { emitted: 0, actedOn: 0, unobservable: 0, bytesEmitted: null, legacyEmissions: 0 }
 }
 
 /**
@@ -675,7 +694,7 @@ function manualMarks(category: HintCategory): { effective: number; ineffective: 
 export function getHintStatsSummary(): CategoryEfficacy[] {
   const probeThresholds = loadConfig().hints.backoff_thresholds.filter((t) => t > 0)
   return HINT_CATEGORIES.map((category) => {
-    const { emitted, actedOn, bytesEmitted, legacyEmissions } = categoryStats(category)
+    const { emitted, actedOn, unobservable, bytesEmitted, legacyEmissions } = categoryStats(category)
     const marks = manualMarks(category)
     const suppressed = shouldSuppress(category, '')
     return {
@@ -683,6 +702,7 @@ export function getHintStatsSummary(): CategoryEfficacy[] {
       emitted,
       actedOn: actedOn ?? 0,
       efficacyPct: emitted === 0 ? null : Math.round((1000 * (actedOn ?? 0)) / emitted) / 10,
+      unobservable,
       suppressed: suppressed,
       suppressionPermanent: suppressed && probeThresholds.length === 0,
       manualEffective: marks.effective,
