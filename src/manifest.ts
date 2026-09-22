@@ -119,11 +119,13 @@ function selectManifestFiles(sessionId?: string): { files: FileEntry[]; readFile
  *
  * The post-compaction survival canary counts how many of these the summary reproduced, so it must draw from the same selection the manifest printed rather than from the raw session file list. A path the manifest filtered out can never survive, so sampling one inflates the denominator and drives the canary's ratio down for a reason that has nothing to do with the channel it watches -- a false "channel dead" alarm, which is the one failure a canary must not raise.
  *
- * Paths are returned verbatim, because that is exactly what the rows print: {@link renderReadRow} and the edited/symbol rows each interpolate the stored path with no transformation. Case tolerance belongs at the comparison, where both sides get folded together.
+ * Paths come back in the spelling the rows print -- `displaySafePath` applied to the stored path, the same call every renderer makes -- so a caller comparing against the manifest is comparing like with like. Case tolerance belongs at that comparison, where both sides get folded together.
+ *
+ * `cwd` and `transcriptPath` must be whatever the emitting hook passed to {@link buildManifest}: they feed the adaptive character budget, and rebuilding under a different budget prints a different set of rows.
  */
-export function manifestPrintedPaths(sessionId: string | undefined, limit: number): string[] {
+export function manifestPrintedPaths(sessionId: string | undefined, limit: number, cwd?: string, transcriptPath?: string): string[] {
   // Taken from what the render step recorded, not parsed back out of its own output. Re-deriving from selectManifestFiles sampled the uncapped lists, so rows past each section's MAX_ROWS counted despite never being shown; capping at MAX_ROWS here instead would still have been a guess, because capManifestChars applies a character budget to the joined string afterwards. Re-parsing the rendered text was the next wrong answer: a path containing a space stops at the space, the `- ...and N more` overflow notice is itself a bullet, and with no web section to stop at the scan runs on into SAFE_TO_DISCARD and reads cached shell commands as paths. A path the model was never shown cannot survive into the summary, so every one of those counts retained context as lost.
-  const { printed } = buildManifestParts(sessionId)
+  const { printed } = buildManifestParts(sessionId, cwd, transcriptPath)
   return printed.slice(0, limit)
 }
 
@@ -167,7 +169,8 @@ function buildManifestParts(
   const seen = new Set<string>()
   const printed: string[] = []
   for (const { path, row } of fileRows) {
-    if (seen.has(path) || !text.includes(row)) continue
+    // The row must survive as a whole line, not as a prefix of one. An edited row is a bare `- <path>`, so a plain `includes` would report `- src/a.ts` as printed on the strength of `- src/a.tsx` sitting above the cut -- counting a path the model never saw, which is the inflated denominator this function exists to prevent.
+    if (seen.has(path) || !(text.includes(row + '\n') || text.endsWith(row))) continue
     seen.add(path)
     printed.push(path)
   }

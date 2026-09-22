@@ -409,23 +409,6 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
-    'truncateLine',
-    {
-      bucket: 'dead-code-unreachable-from-any-entry-point',
-      reason:
-        'bash_compress.ts::compressOutput (this function\'s only caller) is never imported outside ' +
-        'bash_compress.ts itself -- every real importer of this module (overflow_guard.ts, ' +
-        'tool_filters/helpers.ts, tool_filters/shell_file.ts) takes only stripAnsiCodes from it.',
-    },
-  ],
-  [
-    'truncateLines',
-    {
-      bucket: 'dead-code-unreachable-from-any-entry-point',
-      reason: 'Same bash_compress.ts::compressOutput dead path as truncateLine.',
-    },
-  ],
-  [
     'bashOutputCapBytes',
     {
       bucket: 'shortens-a-count-or-a-digest-not-free-text',

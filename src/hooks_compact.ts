@@ -59,10 +59,10 @@ const MANIFEST_SURVIVAL_SAMPLE = 64
  *
  * Deliberately re-derived from session state rather than stashed at pre_compact time. Nothing mutates the file ledger between the two events -- no tool call can run while the harness is compacting -- so the list is the same one the manifest was built from, and re-deriving it avoids adding a field that would need all six of the session-state touch points (interface, serialize, deserialize, reset, coerce, merge) to carry a value that is only ever read milliseconds after it is written.
  *
- * The one imprecision is in the safe direction: `capManifestChars` may have cut the tail off the emitted manifest, so a path here might never have been sent. That can only make survival look worse than it was, never better, which is the bias a canary wants -- it cannot falsely report that the channel is alive.
+ * `cwd` and `transcriptPath` are passed because the character budget depends on them: `adaptiveCharBonus` widens the cap when the working tree is dirty and returns zero when it has no `cwd` to check. Rebuilding without them reproduces the manifest under a *narrower* budget than the one that was sent, which drops the tail rows -- and the tail is exactly what a summary is least likely to keep, so the survival ratio comes back higher than the truth. That is the one direction a canary must never be wrong in, since it is what `doctor` reads to decide the channel is alive.
  */
-function manifestPathSample(sessionId?: string): string[] {
-  return manifestPrintedPaths(sessionId, MANIFEST_SURVIVAL_SAMPLE)
+function manifestPathSample(event: HookEvent): string[] {
+  return manifestPrintedPaths(event.sessionId, MANIFEST_SURVIVAL_SAMPLE, getCwd(event), getTranscriptPath(event))
 }
 
 /**
@@ -83,7 +83,7 @@ export function postCompactHandler(event: HookEvent): HookOutput {
   const summary = typeof raw === 'string' ? raw : ''
   const bytes = Buffer.byteLength(summary, 'utf-8')
   // A harness whose post-compaction event carries no summary field at all is not a harness whose summary dropped every path: the sample was never searched, because there was nothing to search. Codex CLI 0.155.0 is the live case -- its post-compact hook input names session_id, turn_id, transcript_path, cwd, hook_event_name, model and trigger, and no summary anywhere. Scoring that as 0/N would feed checkCompactionChannel a conclusive row for every compaction and it would report a channel dead that was never measured; an absent needle is the one shape that must read as "not measured" rather than "found none". An empty string is deliberately not the same case: that harness offered the channel and the summary really did come back with nothing in it.
-  const sample = typeof raw === 'string' ? manifestPathSample(event.sessionId) : []
+  const sample = typeof raw === 'string' ? manifestPathSample(event) : []
   // Fold both sides on a case-insensitive filesystem so a summary that reproduces a path with different capitalization still counts as a survivor. Folding the needle alone was the first version of this and it matched nothing on Windows, which would have made the canary read "channel dead" on every compaction. The summarizer rewrites the manifest's absolute paths relative to the project root (322 recorded summaries named `src/...` files and none by absolute path), so a path also survives as its cwd-relative spelling; matching the absolute form alone read 0/64 on every compaction and made doctor report a live channel as dead. Separators are unified on both sides because the summary writes `/` whatever the platform, and cwd goes through normalizePath like the stored paths did, or a macOS `/var` or Windows 8.3 short-name cwd would relativize every path to `../`.
   const cwd = normalizePath(getCwd(event) ?? process.cwd())
   const spell = (p: string): string => foldPath(p.replaceAll('\\', '/'))

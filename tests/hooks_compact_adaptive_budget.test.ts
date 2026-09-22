@@ -62,6 +62,7 @@ const _testConfigPath = tempConfigPath('tg-hooks-compact-adaptive-config-test.to
 import { relayInProcess } from '../src/relay.js'
 import { runGit } from '../src/util.js'
 import { recordFileEdit, importSessionState } from '../src/session.js'
+import { buildManifest, manifestPrintedPaths } from '../src/manifest.js'
 import { saveSessionState } from '../src/session_store.js'
 import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
 
@@ -223,5 +224,43 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   it('falls back to the fixed cap with zero extra git spawns when the harness sends no cwd', async () => {
     const manifest = await runPreCompact(undefined)
     expect(truncatedAt(manifest)).toBe(CONFIGURED_CAP)
+  })
+
+  // HAND-DERIVED: the dirty state is made on disk by this test and the expectation follows from what the adaptive bonus is for -- a wider cap prints more rows, so a sample taken under the wider cap must be at least as large as one taken under the narrower. Nothing is read off the budget arithmetic. The post-compact canary used to rebuild the manifest with no cwd at all, scoring survival against a manifest shorter than the one that was actually sent: the rows it silently dropped were the tail, which is exactly what a summary is least likely to keep, so the ratio came back better than the truth -- the one direction a canary is not allowed to be wrong in.
+  it('samples the manifest the hook emitted, not a narrower rebuild of it', async () => {
+    fs.writeFileSync(path.join(repoDir, 'tracked.txt'), 'changed\n')
+    const emitted = await runPreCompact(repoDir)
+
+    const withCwd = manifestPrintedPaths(SESSION_ID, 64, repoDir)
+    const withoutCwd = manifestPrintedPaths(SESSION_ID, 64)
+
+    expect(withCwd.length, 'the dirty-tree bonus must widen the sample, or this asserts nothing').toBeGreaterThan(withoutCwd.length)
+    for (const p of withCwd) expect(emitted, `${p} was sampled but never emitted`).toContain(p)
+  })
+
+  // HAND-DERIVED: the cap is computed from the manifest this run actually rendered -- find where the shorter of the two rows begins and cap one character before it -- rather than guessed at, so the cut lands on that row whatever the surrounding rows happen to cost. An edited row is a bare `- <path>`, so `- <dir>/a.ts` is a prefix of `- <dir>/a.tsx`: with the longer row surviving above the cut, a substring test reports the cut row as printed, and the canary then scores survival against a path the model was never sent.
+  it('does not report a cut row as printed because a longer row shares its prefix', () => {
+    const dir = '/tg-prefix-probe'
+    resetSessionState()
+    recordFileEdit(`${dir}/a.tsx`)
+    recordFileEdit(`${dir}/a.ts`)
+    saveSessionState(SESSION_ID)
+
+    const wide = defaultConfig()
+    wide.compact_assist.max_manifest_chars = 100_000
+    saveConfig(wide)
+    invalidateConfigCache()
+    const full = buildManifest(SESSION_ID)
+    const cutAt = full.indexOf(`- ${dir}/a.ts\n`)
+    expect(cutAt, 'both rows must render, or this asserts nothing').toBeGreaterThan(full.indexOf(`- ${dir}/a.tsx\n`))
+
+    const narrow = defaultConfig()
+    narrow.compact_assist.max_manifest_chars = cutAt
+    saveConfig(narrow)
+    invalidateConfigCache()
+
+    const printed = manifestPrintedPaths(SESSION_ID, 64)
+    expect(printed).toContain(`${dir}/a.tsx`)
+    expect(printed).not.toContain(`${dir}/a.ts`)
   })
 })

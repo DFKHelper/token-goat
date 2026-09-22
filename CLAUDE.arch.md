@@ -250,7 +250,6 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
-| [`src/bash_compress.ts`](src/bash_compress.ts) | Bash output compression filters (vitest, npm, docker, ruff, and others) |
 | [`src/bash_extractors.ts`](src/bash_extractors.ts) | Command line extractors, classification, and surgical hint builders for bash hook handlers. |
 | [`src/bash_output_cache.ts`](src/bash_output_cache.ts) | Bash stdout/stderr disk store (byte cap plus 4096 file-count cap, oldest-first eviction) |
 | [`src/bash_range_savings.ts`](src/bash_range_savings.ts) | Prices a line-range read's proposed surgical replacement against the read itself, so a hint that redirects a line-range read can be required to prove it saves something before it i |

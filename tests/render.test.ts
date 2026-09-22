@@ -5,6 +5,7 @@ import {
   padL,
   padR,
   stripAnsi,
+  stripAnsiEscapes,
   fmtBytes,
   lerpRgb,
   colorStdout,
@@ -13,6 +14,29 @@ import {
 } from '../src/render/ansi.js'
 import { renderStats, setStatsMessages } from '../src/render/stats_renderer.js'
 import type { StatsData, TotalStats } from '../src/render/types.js'
+
+// HAND-DERIVED: each input is an escape sequence written by hand from the ECMA-48 forms it names (SGR `CSI ... m`, OSC `ESC ] ... BEL`), and the expectation is the same string with those bytes removed -- computed from the input, not read off this module's own pattern. These moved here when `bash_compress.ts` was deleted: its `stripAnsiCodes` was a one-line alias for this function, so the assertions were always about this function and now say so. The two truncated-OSC cases are the ones that matter: an unterminated sequence must strip to end-of-string rather than leak its payload as visible text.
+describe('stripAnsiEscapes', () => {
+  it('removes SGR colour escape sequences', () => {
+    expect(stripAnsiEscapes('\x1B[31mred\x1B[0m and \x1B[1;32mbold green\x1B[0m')).toBe('red and bold green')
+  })
+
+  it('removes OSC hyperlink/title sequences', () => {
+    expect(stripAnsiEscapes('before\x1B]0;window title\x07after')).toBe('beforeafter')
+  })
+
+  it('returns plain text unchanged (fast path)', () => {
+    expect(stripAnsiEscapes('no escapes here')).toBe('no escapes here')
+  })
+
+  it('strips a truncated OSC sequence with no BEL/ST terminator instead of leaking the dangling payload', () => {
+    expect(stripAnsiEscapes('before\x1B]0;window title cut off mid-write')).toBe('before')
+  })
+
+  it('strips an unterminated OSC sequence to end-of-string rather than leaking its payload text after a 2-byte partial strip', () => {
+    expect(stripAnsiEscapes('before\x1B]after')).toBe('before')
+  })
+})
 
 describe('ANSI formatting', () => {
   it('fg creates foreground color escape sequence', () => {

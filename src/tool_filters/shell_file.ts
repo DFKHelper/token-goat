@@ -15,7 +15,7 @@ import {
   clipGrepLines,
   capLongLines,
 } from './helpers.js'
-import { stripAnsiCodes } from '../bash_compress.js'
+import { stripAnsiEscapes } from '../render/ansi.js'
 
 // ---------------------------------------------------------------------------
 // Grep / rg constants
@@ -30,15 +30,28 @@ const _GREP_MAX_FILE_LINES = 20
  * `-l`/`--files-with-matches` emits a bare path per line and `-c`/`--count` emits `path:count`. Neither is a `path:lineno:text` match line, and GrepFilter's summarizer reads every line as one match on the text before its first colon. So `-l` attributed all 385 paths of an `rg -l export src/` to `src/` -- the search root, which is not a file -- and reported "385 matches across 1 file(s)", destroying the only thing the caller asked for. `-c` was worse in kind: each `path:6` became one match for `path`, so every real count printed as 1, the header's total was the file count, and the top-20 cap then ranked on a number the filter had fabricated.
  *
  * Short flags are matched inside a cluster, not just alone: `grep -rl` and `grep -rc` are the ordinary spellings and an exact-token test misses both. Case is load-bearing -- `-c` is count, `-C` is context.
+ *
+ * A cluster is only flags up to the first one that takes a value, because that flag consumes the rest of the token: `rg -tcss` is `--type=css`, not `-t -c -s -s`, and reading a `c` out of `css` claimed a match-listing search was a count-only one and shipped every match line uncompressed. The letters that eat the rest are {@link _GLUED_VALUE_SHORT_FLAGS}.
  */
 function grepFlagInCluster(argv: string[], short: string, long: string): boolean {
   for (const a of argv) {
     if (a === long || a.startsWith(long + '=')) return true
     if (a.startsWith('--') || !a.startsWith('-') || a.length < 2) continue
-    if (/^-[A-Za-z]+$/.test(a) && a.slice(1).includes(short)) return true
+    if (!/^-[A-Za-z]+$/.test(a)) continue
+    for (const ch of a.slice(1)) {
+      if (ch === short) return true
+      if (_GLUED_VALUE_SHORT_FLAGS.includes(ch)) break
+    }
   }
   return false
 }
+
+/**
+ * Short flags of `grep`/`rg` whose value may be glued to the letter, so everything after one in a cluster is that value rather than more flags: `-e`/`-f`/`-m`/`-d`/`-D`/`-A`/`-B`/`-C` (both tools), `-t`/`-T`/`-g`/`-j`/`-M` (rg only, and grep defines none of those letters).
+ *
+ * `-r` is deliberately absent even though rg reads it as `--replace`: in grep it is `--recursive`, a boolean, and `grep -rl` is the single most common spelling this function exists to match. `rg -rtext` glued is rare enough to lose that trade.
+ */
+const _GLUED_VALUE_SHORT_FLAGS = 'ABCDMTdefgjmt'
 
 /** `-l`/`--files-with-matches`: every line is a bare path, never a match. */
 function isFilesOnlySearch(argv: string[]): boolean {
@@ -681,7 +694,7 @@ export class BatFilter extends ToolFilter {
     _argv: string[],
   ): string {
     const merged = this.combineOutput(stdout, stderr)
-    const text = normalise(stripAnsiCodes(merged))
+    const text = normalise(stripAnsiEscapes(merged))
     const lines = _stripBatBorders(text.split('\n'))
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= 50) return lines.join('\n').trimEnd()
@@ -713,7 +726,7 @@ export class DeltaFilter extends ToolFilter {
     _argv: string[],
   ): string {
     const merged = this.combineOutput(stdout, stderr)
-    const text = normalise(stripAnsiCodes(merged))
+    const text = normalise(stripAnsiEscapes(merged))
     const lines = _stripDeltaSeparators(text.split('\n'))
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= 80) return lines.join('\n').trimEnd()

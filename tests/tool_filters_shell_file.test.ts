@@ -110,6 +110,20 @@ describe('GrepFilter compression', () => {
     }
   })
 
+  // HAND-DERIVED: the flag spellings are read off `rg --help`'s own synopsis (`-t, --type <TYPE>`, `-T, --type-not <TYPE>`, `-e, --regexp <PATTERN>`) and the expectation follows from what those flags mean, not from this filter's matcher. Every type name here contains the letter the cluster scan was looking for -- `css`, `html`, `c`, `clojure`, `log` -- which is what made an ordinary `rg -tcss` read as `--count` and ship 600 raw match lines where a summary was due.
+  it('reads a glued flag value as a value, not as more clustered flags', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
+    for (const argv of [
+      ['rg', '-tcss', 'export', 'src/'],
+      ['rg', '-thtml', 'export', 'src/'],
+      ['rg', '-tc', 'export', 'src/'],
+      ['rg', '-Tclojure', 'export', 'src/'],
+      ['grep', '-eclass', 'src/'],
+    ]) {
+      expect(compress(f, lines.join('\n'), argv), argv.join(' ')).toContain('match(es)')
+    }
+  })
+
   it('still summarises when only an uppercase -C is present, since that is context and not count', () => {
     const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
     const out = compress(f, lines.join('\n'), ['grep', '-C', '2', 'TODO', '.'])

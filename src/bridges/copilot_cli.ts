@@ -593,6 +593,7 @@ function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
     const originalText = rawResult && (typeof rawResult.textResultForLlm === 'string' ? rawResult.textResultForLlm : typeof rawResult.text_result_for_llm === 'string' ? rawResult.text_result_for_llm : undefined)
     const rewritten = typeof updatedToolOutput === 'string'
     const body = rewritten ? updatedToolOutput : typeof originalText === 'string' ? originalText : undefined
+    // KNOWN GAP, recorded rather than papered over: when there is a hint but no body -- no rewrite, and a tool result carrying neither text key -- the fold cannot run, only the dropped additionalContext is left, and relay.ts has already counted the hint as delivered and cleared the queue, which on a compaction loses the recovery manifest permanently. Not fixed here because both plausible fixes are worse than the gap until the condition is shown to occur: synthesising a modifiedResult would replace a result object whose other fields we cannot see, and making relay's clear conditional would push a bridge-specific test into the bridge-agnostic drain. Establish first whether a real postToolUse payload arrives with neither key.
     // Never claim a modification we did not make: with no rewrite and no hint, the body would be the tool's own
     // text handed back verbatim, and a pass-through modifiedResult is a lie about authorship on every call.
     if (typeof body === 'string' && (rewritten || context)) {

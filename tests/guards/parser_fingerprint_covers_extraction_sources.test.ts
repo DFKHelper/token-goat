@@ -46,6 +46,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/asset_extensions.ts': 'classifies extensions for the image pipeline and for embedding eligibility; parseContent never consults it, so an edit here cannot change a single symbol, ref or section an unchanged file extracts',
   'src/bridges/created_configs.ts': 'installer config-ledger bookkeeping (which config files token-goat created), reached only via util.ts/install.ts/config.ts, never by an extractor',
   'src/bridges/project_scope_guard.ts': 'write-scope confinement for installers, reached only via util.ts/util_config.ts, never by an extractor',
+  'src/own_lookup.ts': 'an own-property accessor over a plain-object map, reached via config.ts; it decides whether a lookup answers at all, never what an extractor reads out of file content',
   'src/bridges/registry.ts': 'detects which AI harness is running for hook wiring; irrelevant to parsing file content',
   'src/bridges/types.ts': 'type-only declarations for harness names/bridge config, erased at compile time',
   'src/config.ts': 'runtime config values; the values are already reflected in what gets indexed (e.g. large_file_symbol_only_kb), not compiled into extraction logic itself',

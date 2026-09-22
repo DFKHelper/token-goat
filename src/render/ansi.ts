@@ -65,14 +65,13 @@ const _PUA_RE = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}]/gu
 
 /**
  * Remove ANSI/VT escape sequences only (CSI/OSC/DCS/SOS/PM/APC/bare-Fe), with no PUA stripping.
- * This is the single source of truth for {@link _ANSI_ESCAPE_RE} -- `bash_compress.ts`'s
- * `stripAnsiCodes` (output-cleaning for model-facing text, which has no reason to touch PUA
- * glyphs) delegates to this instead of maintaining its own copy of the pattern. The two modules
- * previously each hand-maintained an identical regex and once silently drifted out of sync (a
- * missing `[` in the bracket range fixed here but not there until a later pass caught it) with no
- * test to catch the next drift -- extracting one shared primitive removes that risk entirely
- * rather than relying on the two copies being kept manually in sync forever. Optimized with a
- * fast path for plain text (no ESC byte).
+ * The single source of truth for {@link _ANSI_ESCAPE_RE}, and every caller's entry point: output
+ * cleaning for model-facing text has no reason to touch PUA glyphs, so it wants exactly this.
+ * `bash_compress.ts` used to hand-maintain a second copy of the pattern, the two drifted (a missing
+ * `[` in the bracket range fixed here but not there until a later pass caught it), and the fix was
+ * to make that copy a one-line alias -- which then survived as a pass-through wrapper long after
+ * the module around it was dead. Both are gone; callers name this function directly. Optimized
+ * with a fast path for plain text (no ESC byte).
  */
 export function stripAnsiEscapes(s: string): string {
   if (!s.includes('\x1b')) {

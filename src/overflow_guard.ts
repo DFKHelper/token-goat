@@ -5,7 +5,7 @@
  * protection against accidentally dumping huge payloads to the model.
  */
 
-import { stripAnsiCodes } from './bash_compress.js'
+import { stripAnsiEscapes } from './render/ansi.js'
 import { safeSlice } from './util.js'
 import type { ContentClass } from './token_estimate.js'
 import { classifyContent, guardDivisor } from './token_estimate.js'
@@ -30,7 +30,7 @@ export function estimateTokensFromLength(length: number, cls: ContentClass = 'te
  * Classifies rather than taking the class from the caller: this overload is the one that has the string in hand, so the one thing it can do that a byte count cannot is look. A base64 blob costs nearly three times what the flat estimate said, and a guard that under-estimates by that much fires after the context it was protecting is already spent.
  */
 export function estimateTokens(text: string): number {
-  const stripped = stripAnsiCodes(text)
+  const stripped = stripAnsiEscapes(text)
   return estimateTokensFromLength(stripped.length, classifyContent(stripped))
 }
 
@@ -49,7 +49,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   const markerMarginTokens = 64
 
   // Classify once and spend the same divisor the entry check measured with. These were two different divisors: the check classified, while the char budget below multiplied by guardDivisor()'s `text` default, so a base64 payload was priced at ~1.09 bytes/token on the way in and at 3.0 on the way out. A 1000-token cap then emitted 2583 tokens of it -- an overflow guard overshooting by 2.6x is the one failure it exists to prevent.
-  const strippedAll = stripAnsiCodes(text)
+  const strippedAll = stripAnsiEscapes(text)
   const contentClass = classifyContent(strippedAll)
   const totalTokens = estimateTokensFromLength(strippedAll.length, contentClass)
   if (totalTokens <= budgetTokens) {
@@ -69,7 +69,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   let used = 0
 
   for (const ln of lines) {
-    const stripped = stripAnsiCodes(ln)
+    const stripped = stripAnsiEscapes(ln)
     // Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains
     // the raw (un-stripped) line, so accounting must match what is actually emitted. Charging
     // the stripped length would let ANSI-heavy lines discount bytes that are never removed.

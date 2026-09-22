@@ -7,6 +7,7 @@ import { configPath, projectConfigPath } from './constants.js'
 import { envBool, envInt, envStr, envStrList, TRUTHY_ENV_VALUES, FALSY_ENV_VALUES } from './env.js'
 import { shortFingerprint } from './fingerprint.js'
 import { SUPPORTED_OCR_LANG_CODES, isSupportedOcrLang } from './ocr_languages.js'
+import { ownGet } from './own_lookup.js'
 import { atomicWriteText, extractErrorMessage } from './util.js'
 import { registerReset } from './reset.js'
 
@@ -194,7 +195,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
  *  validatedFloat/envInt -- _buildConfig's single source of truth for bounds, instead of
  *  restating each field's min/max a second time at its build-time validation call site. */
 function boundsOf(key: string): [number, number] {
-  const b = NUMERIC_FIELD_BOUNDS[key]
+  const b = ownGet(NUMERIC_FIELD_BOUNDS, key)
   if (!b) throw new Error(`token-goat: no NUMERIC_FIELD_BOUNDS entry for '${key}'`)
   return [b.min, b.max]
 }
@@ -215,7 +216,7 @@ function walkGetNumeric(obj: Record<string, unknown>, parts: string[]): number |
 }
 
 export function validateNumericField(fieldKey: string, value: number, cfg: Record<string, unknown>): number | undefined {
-  const bounds = NUMERIC_FIELD_BOUNDS[fieldKey]
+  const bounds = ownGet(NUMERIC_FIELD_BOUNDS, fieldKey)
   if (!bounds) return undefined
 
   // Apply simple min/max clamping (matching validatedInt/validatedFloat logic)
@@ -258,7 +259,7 @@ export function validateEnumField(fieldKey: string, value: string): string[] | u
     const allowed = [...SUPPORTED_OCR_LANG_CODES]
     return tokens.length > 0 && tokens.every((t) => isSupportedOcrLang(t)) ? undefined : allowed
   }
-  const allowed = ENUM_FIELD_VALUES[fieldKey]
+  const allowed = ownGet(ENUM_FIELD_VALUES, fieldKey)
   if (!allowed) return undefined
   return allowed.includes(value) ? undefined : allowed
 }
@@ -417,7 +418,7 @@ function rawValueEquals(a: unknown, b: unknown): boolean {
 /** Why `rawValue` could not be used as-is, stated from the field's own declared constraints where it has them, or `null` when nothing in this module can justify a specific cause. Never guesses. */
 function rejectionReason(key: string, rawValue: unknown, effectiveValue: unknown, cfg: Record<string, unknown>): string | null {
   if (typeof rawValue === 'number') {
-    const bounds = NUMERIC_FIELD_BOUNDS[key]
+    const bounds = ownGet(NUMERIC_FIELD_BOUNDS, key)
     if (bounds !== undefined) {
       if (rawValue < bounds.min || rawValue > bounds.max) return `outside the allowed range ${bounds.min}-${bounds.max}`
       if (!Number.isInteger(rawValue) && Number.isInteger(effectiveValue)) return 'not a whole number'
