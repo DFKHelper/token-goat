@@ -1654,6 +1654,25 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(parsed.repeatedUncompressedBash.some((c) => c.normalized === 'git status' && c.count === 2)).toBe(true)
   },
 
+  audit: () => {
+    const proj = mkIsolated('tg-matrix-audit-')
+    const transcript = path.join(proj, 'fake-session.jsonl')
+    const lines = [
+      { message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/tmp/never-touched.ts' } }] } },
+      { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_read', content: [{ type: 'text', text: 'x'.repeat(300) }] }] } },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+
+    const r = run(['audit', '--project', proj, '--transcript', transcript])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Maintainer Feedback Card')
+    expect(r.stdout).toContain('Friction & Missed Savings')
+
+    const rj = run(['audit', '--project', proj, '--transcript', transcript, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    expect(rj.stdout).toContain('preAuditFindings')
+  },
+
   'session-outline': () => {
     const proj = mkIsolated('tg-matrix-session-outline-')
     const transcript = path.join(proj, 'fake-session.jsonl')

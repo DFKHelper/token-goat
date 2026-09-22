@@ -216,4 +216,70 @@ describe('runWasteCommand', () => {
     expect(normalizePath(parsed.project)).toBe(normalizePath(tempDir))
     expect(process.exitCode).toBe(1)
   })
+
+  it('automatically routes to Copilot report when --transcript points to an events.jsonl without --copilot flag', async () => {
+    const eventsPath = path.join(tempDir, 'events.jsonl')
+    const lines = [
+      JSON.stringify({ type: 'user.message', id: 'e-1', timestamp: 1, data: { content: 'hello' } }),
+      JSON.stringify({
+        type: 'session.shutdown',
+        id: 'e-2',
+        timestamp: 2,
+        data: { systemTokens: 100, toolDefinitionsTokens: 200, conversationTokens: 50, currentTokens: 350 },
+      }),
+    ]
+    fs.writeFileSync(eventsPath, lines.join('\n') + '\n', 'utf-8')
+
+    const cap = captureStdout()
+    try {
+      await runWasteCommand({ transcript: eventsPath, json: true })
+    } finally {
+      cap.restore()
+    }
+
+    const parsed = JSON.parse(cap.text()) as { sessionId: string; tokens: { systemTokens: number } }
+    expect(parsed.tokens).toBeDefined()
+    expect(parsed.tokens.systemTokens).toBe(100)
+    expect(process.exitCode).toBeUndefined()
+  })
+
+  it('automatically discovers active Copilot session for project when no flags are given', async () => {
+    const copilotHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cphome-waste-'))
+    const sessId = 'auto-copilot-sess'
+    const sessDir = path.join(copilotHome, 'session-state', sessId)
+    fs.mkdirSync(sessDir, { recursive: true })
+
+    const lines = [
+      JSON.stringify({ type: 'user.message', id: 'e-1', timestamp: 1, data: { content: 'test' } }),
+      JSON.stringify({
+        type: 'session.shutdown',
+        id: 'e-2',
+        timestamp: 2,
+        data: { systemTokens: 42, toolDefinitionsTokens: 84, conversationTokens: 10, currentTokens: 136 },
+      }),
+    ]
+    fs.writeFileSync(path.join(sessDir, 'events.jsonl'), lines.join('\n') + '\n', 'utf-8')
+    fs.writeFileSync(path.join(sessDir, 'workspace.yaml'), `id: ${sessId}\ncwd: ${tempDir}\n`, 'utf-8')
+
+    const prevCopilotHome = process.env['COPILOT_HOME']
+    const prevAgentSession = process.env['COPILOT_AGENT_SESSION_ID']
+    process.env['COPILOT_HOME'] = copilotHome
+    process.env['COPILOT_AGENT_SESSION_ID'] = sessId
+
+    const cap = captureStdout()
+    try {
+      await runWasteCommand({ project: tempDir, json: true })
+    } finally {
+      cap.restore()
+      if (prevCopilotHome === undefined) delete process.env['COPILOT_HOME']
+      else process.env['COPILOT_HOME'] = prevCopilotHome
+      if (prevAgentSession === undefined) delete process.env['COPILOT_AGENT_SESSION_ID']
+      else process.env['COPILOT_AGENT_SESSION_ID'] = prevAgentSession
+      fs.rmSync(copilotHome, { recursive: true, force: true })
+    }
+
+    const parsed = JSON.parse(cap.text()) as { sessionId: string; tokens: { systemTokens: number } }
+    expect(parsed.sessionId).toBe(sessId)
+    expect(parsed.tokens.systemTokens).toBe(42)
+  })
 })
