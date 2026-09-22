@@ -156,18 +156,17 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'codex',
     label: 'Codex CLI',
     sourceFile: 'src/bridges/codex_install.ts (CODEX_HOOK_EVENTS, CODEX_GLOBAL_HOOK_EVENTS)',
-    verification: 'sourced',
+    verification: 'dogfooded',
     verificationNote:
-      "Wire format pinned to Codex 0.137.0+'s declared hookSpecificOutput schema (src/bridges/codex.ts); no run against a Codex binary is recorded here.",
+      'codex-cli 0.155.0, 2026-09-22: observed running the installed config.toml hooks and delivering real payloads to the shim -- PreToolUse/PostToolUse with tool_name "Bash" and tool_input.command, and PreCompact with trigger "auto" from a forced auto-compaction. A pre-tool deny was honored (the model dropped Get-Content and ran token-goat outline instead) and post-tool additionalContext reached the model; the pre-compact response did not, which is why codex is in PRE_COMPACT_CONTEXT_DROPPED. Two conditions gate the tool events and both fail silently. config.toml must carry the matching [hooks.state] trusted_hash the installer writes, and the matcher must name the tool as it appears on the hook wire -- "Bash" for shell execution, since Codex normalizes its own exec tool into Claude Code\'s vocabulary before matching, while apply_patch stays native. A matcher naming the internal spelling produced a run with eight pre_compact rows and no pre_tool_use or post_tool_use row at all, and that also stranded every queued compaction manifest. Verified end to end after the fix: a forced auto-compaction run recorded eight compactions and twelve manifest deliveries in its own rollout transcript.',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
-      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
       {
-        events: ['session_start'],
+        events: ['post_compact', 'session_start'],
         reason:
-          "Codex CLI's hook config schema (CODEX_EVENT_ARG) has no session-start-equivalent event to map onto token-goat's session_start -- unlike Claude Code's real SessionStart hook",
+          "Codex CLI 0.155.0 does declare PostCompact and SessionStart -- both appear in the hook-event enum next to PreToolUse and PreCompact, so the earlier claim that it had no session-start equivalent and no post-compact event was wrong. They stay unwired for the reason the rest of this table applies: neither channel has been measured. The post-compact input has no summary field anywhere in the binary's payload key list (session_id, turn_id, agent_id, agent_type, transcript_path, hook_event_name, model, permission_mode, trigger, tool_name, tool_input, tool_use_id), so postCompactHandler would have nothing to count, and whether SessionStart forwards additionalContext has not been run",
       },
     ],
   },
@@ -317,7 +316,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       {
         events: ['pre_compact', 'post_tool_use_failure'],
         reason:
-          "VS Code reads the shared Copilot hooks file but maps only sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse, agentStop, subagentStop and errorOccurred out of it, so the file's preCompact and postToolUseFailure entries never fire there",
+          "VS Code reads the shared Copilot hooks file but maps only sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse, agentStop, subagentStop and errorOccurred out of it, so the file's preCompact and postToolUseFailure entries never fire there. Re-read in the 1.138.0 bundle, where the github-copilot branch of that table still lists exactly those eight: the compaction manifest is unavailable on this harness rather than merely unwired, and unlike Copilot CLI and Codex there is no queueing fallback, because the trigger itself never arrives",
       },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },

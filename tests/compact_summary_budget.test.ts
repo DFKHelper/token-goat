@@ -149,6 +149,24 @@ describe('postCompactHandler counters', () => {
 })
 
 describe('manifest survival canary', () => {
+  it('reports nothing sampled when the event carries no summary field, rather than scoring every path as lost', () => {
+    setBudget(BUDGET)
+    for (let i = 0; i < 5; i++) recordFileRead(makeTmpFile(`nochannel${i}.ts`))
+    // Codex CLI 0.155.0's post-compact hook input is this shape: session/turn ids, transcript path, cwd, hook_event_name, model and trigger, with no summary field anywhere. Scoring that 0/5 would hand checkCompactionChannel a conclusive dead row for a channel it never got to look at, and five of those in a row is exactly what makes doctor accuse the harness. sampled === 0 is its own "inconclusive" case, so an absent needle has to land there.
+    const noSummary: HookEvent = { eventName: 'post_compact', toolName: undefined, toolInput: {}, sessionId: 'budget-nochannel', agentId: undefined, raw: { session_id: 'budget-nochannel', trigger: 'auto', cwd: process.cwd() } }
+    postCompactHandler(noSummary)
+    expect(latestDetail()).toContain('manifest_paths=0/0')
+  })
+
+  it('still scores a summary that arrived empty, because that harness did offer the channel', () => {
+    setBudget(BUDGET)
+    const present = makeTmpFile('emptysummary.ts')
+    recordFileRead(present)
+    postCompactHandler(postCompactEvent('', 'budget-emptysummary'))
+    // An empty string is a measurement: the summarizer was asked and returned nothing. Collapsing it into the absent-field case above would hide the one failure this canary exists to catch.
+    expect(latestDetail()).toContain('manifest_paths=0/1')
+  })
+
   it('samples well past the old 12-path cap, which is what makes the ratio able to see late state evaporate', () => {
     setBudget(BUDGET)
     const paths: string[] = []

@@ -2,6 +2,23 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.23] - 2026-09-22
+
+This release changes no stored data, so upgrading and downgrading are both free: no reindex, no re-embed, and no schema move.
+
+### Fixed
+
+- **Every tool hook on Codex was dead, and nothing said so.** Codex matches a hook against the tool name it puts on the wire, and for shell commands that name is `Bash`: it renames its own `exec` tool before matching. token-goat wired the internal name, so no pre-tool or post-tool hook fired at all on a real Codex run: no read tracking, no command output caching, no denials, and no delivery for the compaction manifest that had just been queued. A run that should have recorded eight of each recorded none. Fixed by matching the name Codex actually sends, read out of a captured hook payload rather than out of token-goat's own notes, which is where the wrong name came from.
+- **Codex was being treated as Claude Code whenever it was started from a Claude Code terminal.** Nothing Codex sets identifies its own hook processes, so token-goat guessed from the environment, and two of the variables it checked first are handed down by whatever shell launched Codex. The Codex hook script now states which harness it is before doing anything else, the way the Kimi and pi bridges already did. A wrong answer here quietly sent every Codex session down another harness's wire format.
+- **Codex CLI gets the compaction manifest it was silently losing.** Codex fires the pre-compaction hook and then discards whatever the hook returns, so token-goat built a manifest on every Codex compaction and handed it to nothing. It is now queued at that moment and carried by the next tool call, the same delivery path Copilot CLI already uses. Measured rather than assumed: a forced auto-compaction produced six pre-compaction events, and a shim returning one marker from both the pre-compaction and post-tool hooks put the post-tool copy in the transcript twice and the pre-compaction copy zero times.
+- **A harness with no summary to search no longer reads as a harness that lost every path.** The check that watches whether a compaction summary kept the manifest scored an absent summary field as nothing-survived, so a harness that never offered the channel would have looked like a dead one, and five in a row is what makes `token-goat doctor` report a break. An absent summary now records as nothing sampled, which is already the inconclusive case. A summary that arrives empty still counts, because that is a real measurement.
+
+### Changed
+
+- **The Codex bridge is recorded as run against a Codex binary rather than read from one.** It had been marked as sourced from the declared schema with no run on record. It has now been driven on codex-cli 0.155.0: real pre-tool and post-tool payloads, a pre-tool denial the model obeyed by switching to a `token-goat` command, and post-tool context reaching the model. The whole chain was then re-run once the two fixes above were in: a forced auto-compaction session recorded eight compactions and put the recovery manifest into its own transcript twelve times. `token-goat bridges-status` shows the new note.
+- **Two Codex events were listed as absent from the harness, and are not.** The table said Codex has no post-compaction event and no session-start equivalent. Both appear in codex-cli 0.155.0's own hook-event list. They stay unwired, now for the reason that applies to everything else in that table: neither channel has been measured, and Codex's post-compaction input carries no summary field for the check to read. A wrong reason is worse than a listed gap, because it reads as a decision.
+- **VS Code's missing compaction hook is confirmed two releases on.** The event table it reads out of a Copilot hooks file was re-read in the 1.138.0 bundle and still lists the same eight keys with neither compaction key, so on that harness the manifest is unavailable rather than unwired: the trigger itself never arrives, and there is nothing to queue.
+
 ## [2.9.22] - 2026-09-22
 
 This release changes no stored data, so upgrading and downgrading are both free: no reindex, no re-embed, and no schema move.

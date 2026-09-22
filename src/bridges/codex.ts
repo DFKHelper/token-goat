@@ -33,6 +33,10 @@
  * src/types.ts.
  *
  * On any error the shim prints `{}` so the tool call proceeds unchanged.
+ *
+ * The shim also injects `TOKEN_GOAT_HARNESS_OVERRIDE=codex` before dispatching, the way kimi.ts and pi.ts do. Codex publishes no ambient per-session env var identifying its own hook subprocesses, so detectHarness() (./registry.ts) could only reach the codex branch through CODEX_SESSION_ID/CODEX_SESSION, which codex-cli 0.155.0 does not set, or through an OPENAI_API_KEY with no ANTHROPIC_API_KEY beside it. Absent would be survivable; the real hazard is the mis-hit. Two branches sit ahead of the codex one and both test variables a parent shell hands down, so a Codex launched from a Claude Code terminal (TERM_PROGRAM=claude-code, or CLAUDE_CODE_VERSION set) resolved 'claudecode', and every harness-scoped decision -- wire-format translation, PRE_COMPACT_CONTEXT_DROPPED -- was then taken for the wrong harness with nothing failing. The override is consulted before any sniffing, so injecting it settles the question rather than biasing it.
+ *
+ * This comment lives here rather than beside that line because everything inside CODEX_HOOK_SCRIPT is a template string: esbuild strips comments from module source, but shim comments are payload, and the bundle-size guard in tests/guards/dist_chunks_deduped.test.ts measures them.
  */
 import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
@@ -42,6 +46,9 @@ export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node
 ${SHIM_REQUIRES}
 
 ${SHIM_VALID_HOOK_EVENTS}
+
+// Codex sets no env var of its own identifying a hook subprocess; see this module's docblock.
+process.env.TOKEN_GOAT_HARNESS_OVERRIDE = 'codex'
 
 // Keep in sync with CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts -- the
 // live/wired 'token-goat hook <event>' path (src/relay.ts) always emits this

@@ -102,7 +102,9 @@ const USER_INSTRUCTIONS_FRONTMATTER = "---\ndescription: 'token-goat: when to us
 /**
  * The Copilot-format event keys VS Code maps out of a hooks file; any other key is skipped.
  *
- * Read from the camelCase-to-hook-type table in workbench.desktop.main.js (VS Code 1.136.0), where
+ * Read from the camelCase-to-hook-type table in workbench.desktop.main.js (VS Code 1.136.0, and
+ * re-read unchanged in 1.138.0, where the `github-copilot` branch of that table still lists exactly
+ * these eight keys and neither compaction key), where
  * `userPromptSubmitted` becomes UserPromptSubmit and `agentStop` becomes Stop. The shared hooks file
  * also carries `preCompact` and `postToolUseFailure` for Copilot CLI; VS Code never runs those two.
  */

@@ -32,6 +32,7 @@ import {
   isCodexInstalled,
   uninstallCodex,
 } from '../src/bridges/codex_install.js'
+import { detectHarness } from '../src/bridges/registry.js'
 
 interface CodexHookEntry {
   type: string
@@ -93,7 +94,7 @@ describe('codexHookCommandFor', () => {
 describe('computeCodexHookHash', () => {
   it('computes the canonical sha256 hash matching Codex CLIs [hooks.state] format for matcher-scoped hooks', () => {
     const cmd = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\.codex\\hooks\\token-goat-shim.js" pre_tool_use "C:\\Users\\user\\dist\\token-goat.mjs"'
-    const hash = computeCodexHookHash('pre_tool_use', cmd, 'view_image|shell|bash')
+    const hash = computeCodexHookHash('pre_tool_use', cmd, 'view_image|Bash|exec|shell|bash')
     expect(hash.startsWith('sha256:')).toBe(true)
     expect(hash).toHaveLength(71) // 'sha256:' (7) + 64 hex chars
   })
@@ -125,6 +126,29 @@ describe('installCodex with a malformed pre-existing config.toml', () => {
   })
 })
 
+describe('codex harness identity', () => {
+  // Codex sets no per-session env var of its own, so without an injected identity detectHarness() reaches the codex branch only via CODEX_SESSION_ID/CODEX_SESSION (absent in 0.155.0) or a bare OPENAI_API_KEY. The failure that matters is not the miss but the mis-hit: TERM_PROGRAM and CLAUDE_CODE_VERSION are inherited from whatever shell launched codex, they are tested ahead of the codex branch, and a wrong answer there silently reroutes wire-format translation and the pre-compact channel decision. This asserts the ordering, not the string.
+  it('resolves codex even when the launching shell handed down Claude Code env vars', () => {
+    const saved = { ...process.env }
+    try {
+      process.env['TERM_PROGRAM'] = 'claude-code'
+      process.env['CLAUDE_CODE_VERSION'] = '2.0.0'
+      delete process.env['CODEX_SESSION_ID']
+      delete process.env['CODEX_SESSION']
+      expect(detectHarness()).toBe('claudecode')
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'codex'
+      expect(detectHarness()).toBe('codex')
+    } finally {
+      process.env = saved
+    }
+  })
+
+  it('injects that identity in the installed shim, since nothing else on the wire carries it', () => {
+    const shim = fs.readFileSync(installCodex().hookScriptPath, 'utf8')
+    expect(shim).toContain("process.env.TOKEN_GOAT_HARNESS_OVERRIDE = 'codex'")
+  })
+})
+
 describe('installCodex', () => {
   it('writes the config.toml hooks block and the AGENTS.md delimited block on a fresh install', () => {
     const result = installCodex()
@@ -136,7 +160,7 @@ describe('installCodex', () => {
     const config = readConfig()
     for (const event of ['PreToolUse', 'PostToolUse']) {
       const matchers = (config.hooks?.[event] ?? []).map((g) => g.matcher)
-      expect(matchers).toContain('view_image|shell|bash')
+      expect(matchers).toContain('view_image|Bash|exec|shell|bash')
       expect(matchers).toContain('apply_patch')
       expect(matchers).toContain('web_search')
       for (const command of commandsFor(config, event)) {
@@ -147,8 +171,8 @@ describe('installCodex', () => {
     const agents = fs.readFileSync(result.agentsPath, 'utf8')
     expect(agents).toContain('<!-- token-goat-codex-begin -->')
     expect(agents).toContain('<!-- token-goat-codex-end -->')
-    expect(agents).toContain('Codex\'s native `shell`, `apply_patch`, and `view_image` tools')
-    expect(agents).toContain('shell commands like `cat`/`type` run inside `shell`')
+    expect(agents).toContain('Codex\'s native `exec`, `apply_patch`, and `view_image` tools')
+    expect(agents).toContain('shell commands like `cat`/`type` run inside `exec`')
     expect(agents).toContain('Fallback clauses may name')
 
     // Verifies all token-goat hooks have trusted_hash set in [hooks.state]
@@ -162,17 +186,12 @@ describe('installCodex', () => {
     expect(isCodexInstalled()).toBe(true)
   })
 
-  // Regression: CODEX_MATCHERS wrote 'view_image|Bash' into config.toml, but Codex matches a matcher string against its own native tool names ('apply_patch' and 'web_search' in the same list are already native names), and this same install's own AGENTS.md text below (FORMAT-DERIVED: read off codex_install.ts's buildAgentsBlock, not an independently captured Codex payload) names Codex's native shell tool 'shell', not 'Bash', so the old matcher's shell alternative never matched anything a real Codex install would send and every Codex shell call fell through with no hook coverage at all, independent of whatever tool-name remap hooks_cli.ts's CODEX_TOOL_NAME_MAP applied downstream.
-  it('the view_image matcher alternation names a native shell tool name that matches the AGENTS.md guidance text written by the same install', () => {
-    const result = installCodex()
-    const config = readConfig()
-    const agents = fs.readFileSync(result.agentsPath, 'utf8')
-    const nativeShellName = agents.match(/Codex's native `(\w+)`, `apply_patch`, and `view_image` tools/)?.[1]
-    expect(nativeShellName).toBeTruthy()
-    const viewImageMatcher = (config.hooks?.['PreToolUse'] ?? []).map((g) => g.matcher).find((m) => m?.startsWith('view_image'))
-    expect(viewImageMatcher).toBeTruthy()
-    const alternatives = (viewImageMatcher as string).split('|')
-    expect(alternatives).toContain(nativeShellName)
+  // This replaces a test that checked the matcher against this same install's own AGENTS.md text, and passed for as long as the matcher was dead -- both strings come out of codex_install.ts, so it only ever proved the file agrees with itself. The names below are CAPTURE, codex-cli 0.155.0, 2026-09-22, read out of the hook payload the shim received: a shell command arrives as tool_name "Bash" and the patch tool as "apply_patch". Codex normalizes `exec` into Claude Code's vocabulary before matching but leaves `apply_patch` native, so the matcher list has to carry both spellings and neither can be inferred from the other.
+  it('matches the tool names a real Codex hook payload carries', () => {
+    const matchers = (installCodex(), readConfig()).hooks?.['PreToolUse']?.map((g) => g.matcher) ?? []
+    for (const wireName of ['Bash', 'apply_patch']) {
+      expect(matchers.some((m) => m !== undefined && new RegExp(`^(?:${m})$`).test(wireName)), wireName).toBe(true)
+    }
   })
 
   // Regression coverage for the parity-matrix gap found via feature-queue #307's
@@ -212,7 +231,7 @@ describe('installCodex', () => {
       const matchers = (config.hooks?.[event] ?? []).map((g) => g.matcher)
       expect(matchers.filter((m) => m === 'apply_patch')).toHaveLength(1)
       expect(matchers.filter((m) => m === 'web_search')).toHaveLength(1)
-      expect(matchers.filter((m) => m === 'view_image|shell|bash')).toHaveLength(1)
+      expect(matchers.filter((m) => m === 'view_image|Bash|exec|shell|bash')).toHaveLength(1)
     }
     for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
       expect(commandsFor(config, event)).toHaveLength(1)
@@ -319,7 +338,7 @@ describe('installCodex', () => {
     // left behind.
     const staleConfig = [
       '[[hooks.PreToolUse]]',
-      'matcher = "view_image|shell|bash"',
+      'matcher = "view_image|Bash|exec|shell|bash"',
       '',
       '[[hooks.PreToolUse.hooks]]',
       'type = "command"',
@@ -444,7 +463,7 @@ describe('isCodexInstalled / uninstallCodex', () => {
     expect(preCommands).toContain('bash /opt/scripts/definitely-not-token-goat-shim-related.sh')
   })
 
-  // Regression: re-installing over a real pre-upgrade config left a dead 'view_image|Bash' group at array position 0 (CODEX_MATCHERS[0] changed to 'view_image|shell|bash' in a prior change; stripStaleGroupHooks only compares against the *current* matcher being installed, so the old-matcher group survives untouched and every later group's real array position shifts). The old matcher string and the '${configPath}:${eventArg}:${groupIndex}:${hookIndex}' state-key format below are FORMAT-DERIVED: read directly off codex_install.ts as of commit 2be706dd^ ('git show 2be706dd^:src/bridges/codex_install.ts'), not reconstructed from this version's own code, so the fixture does not agree with the fix by construction.
+  // Regression: re-installing over a real pre-upgrade config left a dead 'view_image|Bash' group at array position 0 (CODEX_MATCHERS[0] changed to 'view_image|shell|bash' in a prior change, and to 'view_image|Bash|exec|shell|bash' after that; stripStaleGroupHooks only compares against the *current* matcher being installed, so the old-matcher group survives untouched and every later group's real array position shifts). The old matcher string and the '${configPath}:${eventArg}:${groupIndex}:${hookIndex}' state-key format below are FORMAT-DERIVED: read directly off codex_install.ts as of commit 2be706dd^ ('git show 2be706dd^:src/bridges/codex_install.ts'), not reconstructed from this version's own code, so the fixture does not agree with the fix by construction.
   it('migrates a real pre-upgrade config (old view_image|Bash group at position 0) so isCodexInstalled reports true and no dead group or orphaned state key survives', () => {
     const configP = codexConfigPath()
     const scriptPath = codexHookScriptPath()
@@ -492,7 +511,7 @@ describe('isCodexInstalled / uninstallCodex', () => {
     const preGroups = config.hooks?.['PreToolUse'] ?? []
     // The dead old-matcher group must not survive as a distinct group carrying token-goat's command; only the three current CODEX_MATCHERS matchers remain.
     expect(preGroups.map((g) => g.matcher).filter((m): m is string => m !== undefined)).toEqual(
-      expect.arrayContaining(['view_image|shell|bash', 'apply_patch', 'web_search']),
+      expect.arrayContaining(['view_image|Bash|exec|shell|bash', 'apply_patch', 'web_search']),
     )
     expect(preGroups.some((g) => g.matcher === 'view_image|Bash')).toBe(false)
 
@@ -537,7 +556,7 @@ describe('isCodexInstalled / uninstallCodex', () => {
     const oldConfig = {
       hooks: {
         PreToolUse: [
-          { matcher: 'view_image|shell|bash', hooks: [{ type: 'command', command: preCmd }] },
+          { matcher: 'view_image|Bash|exec|shell|bash', hooks: [{ type: 'command', command: preCmd }] },
           { matcher: 'apply_patch', hooks: [{ type: 'command', command: preCmd }] },
           { matcher: 'web_search', hooks: [{ type: 'command', command: preCmd }] },
           { matcher: 'retired-matcher-a', hooks: [{ type: 'command', command: preCmd }] },

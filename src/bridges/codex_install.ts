@@ -24,7 +24,7 @@
  * - `~/.codex/config.toml` -- a `[[hooks.<Event>]]` / `[[hooks.<Event>.hooks]]`
  *   array-of-tables block (Codex's real hook config shape; verified against
  *   OpenAI's Codex hooks documentation) wiring `PreToolUse`/`PostToolUse` for
- *   the three Codex-specific matchers the README documents: `view_image|Bash`,
+ *   the three Codex-specific matchers the README documents: `view_image|Bash|exec|shell|bash`,
  *   `apply_patch`, `web_search` -- plus three matcher-less global events,
  *   `PreCompact`/`UserPromptSubmit`/`SubagentStop`, matching what Claude Code
  *   and Grok already wire (see {@link CODEX_GLOBAL_HOOK_EVENTS}'s docstring).
@@ -65,10 +65,15 @@ import { groupHasTokenGoat, findTokenGoatEntryPosition, findAnyTokenGoatEntryPos
 const CODEX_COMMAND_MARKER = 'token-goat-shim'
 
 /**
- * The three Codex-specific tool-name matchers token-goat wires (README
- * "What gets installed?" -> "With `--codex`"). Codex's matcher string is matched against its own native tool names, not token-goat's internal ones (`apply_patch` and `web_search` below are Codex's native names, confirmed by codex_install.ts's own buildAgentsBlock fallbackToolClause text "Codex's native `shell`, `apply_patch`, and `view_image` tools"), so `view_image|shell` covers image reads and shell execution together (mirrors Claude Code's combined Read/Grep/Bash pre-read handling), with `bash` kept as a fallback alternative in case some Codex version or fork still names its shell tool that; `apply_patch` covers file edits; `web_search` covers Codex's web-fetch equivalent.
+ * The Codex-specific tool-name matchers token-goat wires (README "What gets installed?" -> "With `--codex`"). Codex's matcher string is matched against its own native tool names, not token-goat's internal ones, so this alternation covers image reads and shell execution together (mirroring Claude Code's combined Read/Grep/Bash pre-read handling); `apply_patch` covers file edits and `web_search` covers Codex's web-fetch equivalent.
+ *
+ * Codex's matcher is tested against the tool name it puts on the hook wire, and 0.155.0 does not use one vocabulary for that. CAPTURE, 2026-09-22, read out of the hook payload itself rather than off the rollout: a shell command arrives as `tool_name: "Bash"` -- Codex normalizes its own `exec` tool into Claude Code's PascalCase naming before matching -- while the patch tool arrives under its native `apply_patch`. So `Bash` is what covers shell execution here, and the rollout's `custom_tool_call` name (`exec`) is the internal spelling, which never reaches the matcher.
+ *
+ * Reaching that took a calibrated test rather than a guess. With `view_image|exec|shell|bash` installed, a real run's isolated ledger held `hook:pre_compact|8` and `hook:user_prompt_submit|1` and no `hook:pre_tool_use` or `hook:post_tool_use` row at all -- every tool-scoped hook silently dead, which also stranded the pre-compact manifest, since it queues on PreCompact and drains on the next PostToolUse (eight queued across that run, none delivered). A null that shape has two causes: a matcher that does not match, or a `[hooks.state]` trusted_hash Codex rejects. Substituting `.*` with a recomputed hash made both rows appear immediately, which separates them: the hash was always right and the matcher was always wrong.
+ *
+ * The broken names were not wrong by accident, and one of them was a regression. An older version wired `view_image|Bash`, which matched; it was changed to `view_image|shell|bash` on the strength of this file's own `buildAgentsBlock` text naming "Codex's native `shell`, `apply_patch`, and `view_image` tools" -- a fixture read off the producer sitting beside it rather than off a run, so it agreed with the mistake by construction and every test kept passing. Lowercase `bash`, `shell` and `exec` are kept as alternatives because an older Codex or a fork may still send them and an unmatched alternative costs nothing. `view_image` and `web_search` carry no capture: neither was invoked in the runs above, so they stay unverified rather than confirmed.
  */
-const CODEX_MATCHERS = ['view_image|shell|bash', 'apply_patch', 'web_search'] as const
+const CODEX_MATCHERS = ['view_image|Bash|exec|shell|bash', 'apply_patch', 'web_search'] as const
 
 /** Event keys wired for each matcher: pre- and post- tool-call interception. */
 const CODEX_HOOK_EVENTS = ['PreToolUse', 'PostToolUse'] as const
@@ -295,7 +300,7 @@ export function installCodex(): CodexInstallResult {
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     // A hand-edited or foreign-tool-written config.toml can hold a scalar (e.g. a bare string) under a key that Codex CLI's own hooks schema requires to be an array of matcher-group tables; spreading a scalar here would silently split a string into single-character garbage entries, so treat any non-array shape as absent rather than corrupting the write.
     const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
-    // Migrate a group left behind by a previous token-goat version whose matcher string has since changed (e.g. CODEX_MATCHERS[0] widening from "view_image|Bash" to "view_image|shell|bash"): stripStaleGroupHooks below only ever compares against the *current* matcher being installed, so a group under an old, no-longer-current matcher would otherwise survive untouched forever and permanently desync every later group's array position from what isCodexInstalled expects.
+    // Migrate a group left behind by a previous token-goat version whose matcher string has since changed (e.g. CODEX_MATCHERS[0] widening from "view_image|Bash" to "view_image|shell|bash" to "view_image|Bash|exec|shell|bash"): stripStaleGroupHooks below only ever compares against the *current* matcher being installed, so a group under an old, no-longer-current matcher would otherwise survive untouched forever and permanently desync every later group's array position from what isCodexInstalled expects.
     // A state key records the position the *existing* config wrote it under, so it has to be built from the group's original index; `idx` alone is the live-array index, which every splice below shifts down, which would record a key one slot short and leave the real orphan behind while transiently deleting a live entry's key.
     let removedGroups = 0
     for (let idx = 0; idx < groups.length; idx++) {
@@ -554,7 +559,7 @@ function buildAgentsBlock(): string {
     beginMarker: AGENTS_BEGIN,
     endMarker: AGENTS_END,
     fallbackToolClause:
-      "Codex's native `shell`, `apply_patch`, and `view_image` tools (shell commands like `cat`/`type` run inside `shell`)",
+      "Codex's native `exec`, `apply_patch`, and `view_image` tools (shell commands like `cat`/`type` run inside `exec`)",
     gdrive: loadConfig().gdrive.enabled,
   })
 }

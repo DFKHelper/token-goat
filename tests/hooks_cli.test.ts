@@ -47,15 +47,13 @@ describe('normalizePayload', () => {
     expect(result['_tg_harness']).toBe('codex')
   })
 
-  // FORMAT-DERIVED: 'shell' is the tool name codex_install.ts's own buildAgentsBlock fallbackToolClause names as "Codex's native `shell`... tool" (src/bridges/codex_install.ts, the AGENTS.md guidance block written for real Codex users), which CODEX_TOOL_NAME_MAP's pre-existing 'bash'-only key contradicted; not independently verified against a captured Codex payload.
-  it('remaps Codex shell tool name to Bash', () => {
-    const payload: HookPayload = {
-      tool_name: 'shell',
-      tool_input: { command: 'ls -la' },
+  // CAPTURE: codex-cli 0.155.0, 2026-09-22. A `codex exec` run issuing eight shell commands wrote eight rollout records shaped {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec"}} and not one naming 'shell' or 'bash'. The previous fixture here claimed 'shell' on FORMAT-DERIVED provenance, read off this repo's own AGENTS.md guidance text rather than off a run, and that text was wrong -- so the test agreed with the defect and passed throughout.
+  it('remaps the Codex shell tool name to Bash', () => {
+    for (const name of ['exec', 'shell']) {
+      const result = normalizePayload({ tool_name: name, tool_input: { command: 'ls -la' } } as HookPayload, 'codex')
+      expect(result['tool_name'], name).toBe('Bash')
+      expect(result['_tg_harness'], name).toBe('codex')
     }
-    const result = normalizePayload(payload, 'codex')
-    expect(result['tool_name']).toBe('Bash')
-    expect(result['_tg_harness']).toBe('codex')
   })
 
   it('remaps Codex apply_patch to Edit', () => {

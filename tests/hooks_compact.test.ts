@@ -590,3 +590,50 @@ describe('mergeManifestFiles sibling collision keeps symbols_read', () => {
     expect(row).toMatch(/symbols: (alpha, beta|beta, alpha)\)$/)
   })
 })
+
+/**
+ * Harnesses that fire pre-compact and throw the response away get the manifest queued for a channel
+ * that is read, instead of returned into a void (PRE_COMPACT_CONTEXT_DROPPED in
+ * src/harness_channels.ts). Nothing covered this branch before, so adding a harness to that set was
+ * a change no test could see.
+ *
+ * Fixture provenance: the harness names are HAND-DERIVED from the set under test, and the branch is
+ * exercised through the real preCompactHandler rather than by asserting on set membership -- a
+ * membership assertion restates the table and would pass even if the reroute stopped happening. The
+ * evidence behind codex's membership is CAPTURE: codex-cli 0.155.0, a forced auto-compaction, one
+ * shim returning the same marker from pre_compact and post_tool_use, and a session rollout holding
+ * two real compactions with the post-tool marker twice and the pre-compact marker zero times.
+ */
+describe('pre-compact manifest routing per harness', () => {
+  let savedHarness: string | undefined
+
+  beforeEach(() => {
+    savedHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  })
+
+  afterEach(() => {
+    if (savedHarness === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarness
+  })
+
+  it('returns the manifest as context on a harness that reads the pre-compact response', async () => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+    recordFileRead(makeTmpFile())
+    const { drainPendingContext } = await import('../src/pending_context.js')
+    const out = preCompactHandler({ ...compactEvent, sessionId: 'route-claude' }) as { hookType?: string; context?: string }
+    expect(out.context).toContain('Files read')
+    expect(drainPendingContext('route-claude')).toBeNull()
+  })
+
+  for (const harness of ['copilot_cli', 'codex']) {
+    it(`queues the manifest for a later channel on ${harness}, which discards what pre-compact returns`, async () => {
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = harness
+      recordFileRead(makeTmpFile())
+      const { drainPendingContext } = await import('../src/pending_context.js')
+      const sessionId = `route-${harness}`
+      const out = preCompactHandler({ ...compactEvent, sessionId }) as { hookType?: string; context?: string }
+      expect(out.context).toBeUndefined()
+      expect(drainPendingContext(sessionId)).toContain('Files read')
+    })
+  }
+})

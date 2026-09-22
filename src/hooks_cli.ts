@@ -146,7 +146,8 @@ export const COPILOT_CLI_INPUT_KEY_MAP: Record<string, Record<string, string>> =
  */
 const CODEX_TOOL_NAME_MAP: Record<string, string> = {
   bash: 'Bash',
-  // Codex's actual shell tool is named 'shell', per this repo's own Codex user-facing guidance text (codex_install.ts's buildAgentsBlock fallbackToolClause: "Codex's native `shell`, `apply_patch`, and `view_image` tools") -- the pre-existing 'bash' key above was never matched by a real Codex payload, so every real Codex shell call fell through unmapped and never reached hooks_bash.ts's Bash-only handlers; kept 'bash' too in case some Codex version or fork still sends it.
+  // CAPTURE, codex-cli 0.155.0, 2026-09-22: a shell call reaches the hook wire already named 'Bash', and its internal spelling is 'exec'. 'shell' and 'bash' are kept for an older Codex or a fork; neither has been seen on a real payload, both came from this repo's own guidance text, and that text was wrong. See CODEX_MATCHERS in bridges/codex_install.ts.
+  exec: 'Bash',
   shell: 'Bash',
   edit_file: 'Edit',
   edit: 'Edit',

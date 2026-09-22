@@ -65,11 +65,20 @@ export function dropsPromptSubmitContext(): boolean {
  * than as instructions to the summarizer -- a strictly weaker delivery than Claude Code's, and the
  * best this harness allows.
  *
+ * Codex CLI is the second member, measured rather than read. Codex 0.155.0 does fire PreCompact --
+ * a forced auto-compaction (`-c model_auto_compact_token_limit=6000`) produced six of them, each
+ * carrying `trigger: "auto"` -- so the event is real and the response is not. The probe was
+ * calibrated rather than left as a bare null, because an absent marker proves nothing on its own:
+ * one shim returned the same literal marker from both `pre_compact` and `post_tool_use` in a single
+ * run, and the session rollout that recorded two real compactions contained the post-tool marker
+ * twice and the pre-compact marker zero times. Same process, same string, same transcript, opposite
+ * results.
+ *
  * Claude Code is deliberately absent: its PreCompact runner joins every succeeded hook's raw stdout
  * into `newCustomInstructions` and hands that to the summarizing model, which is the strongest
  * channel any harness offers here. See EVENTS_WITH_RAW_STDOUT_CONTEXT in src/hook_registry.ts.
  */
-export const PRE_COMPACT_CONTEXT_DROPPED = new Set<string>(['copilot_cli'])
+export const PRE_COMPACT_CONTEXT_DROPPED = new Set<string>(['copilot_cli', 'codex'])
 
 export function dropsPreCompactContext(): boolean {
   return PRE_COMPACT_CONTEXT_DROPPED.has(getHarnessName())

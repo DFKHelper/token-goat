@@ -30,8 +30,12 @@ describe('bridge verification provenance', () => {
   it('does not claim more bridges have been run than actually have', () => {
     // The count is pinned deliberately. Promoting a row to `dogfooded` is a claim that someone ran
     // it against the real binary, and it should require editing this number and saying so.
+    // codex joined on 2026-09-22 against codex-cli 0.155.0: its installed config.toml hooks were
+    // observed delivering real PreToolUse/PostToolUse payloads and a PreCompact carrying
+    // trigger "auto" from a forced auto-compaction, a pre-tool denial was honored by the model, and
+    // post-tool additionalContext reached it while the pre-compact response did not.
     const dogfooded = BRIDGE_CAPABILITY_MATRIX.filter((r) => r.verification === 'dogfooded')
-    expect(dogfooded.map((r) => r.harness).sort()).toEqual(['claudecode', 'copilot_cli', 'grok'])
+    expect(dogfooded.map((r) => r.harness).sort()).toEqual(['claudecode', 'codex', 'copilot_cli', 'grok'])
   })
 
   it('renders the level in the text table and the evidence beneath it', () => {
