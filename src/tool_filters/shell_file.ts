@@ -31,27 +31,44 @@ const _GREP_MAX_FILE_LINES = 20
  *
  * Short flags are matched inside a cluster, not just alone: `grep -rl` and `grep -rc` are the ordinary spellings and an exact-token test misses both. Case is load-bearing -- `-c` is count, `-C` is context.
  *
- * A cluster is only flags up to the first one that takes a value, because that flag consumes the rest of the token: `rg -tcss` is `--type=css`, not `-t -c -s -s`, and reading a `c` out of `css` claimed a match-listing search was a count-only one and shipped every match line uncompressed. The letters that eat the rest are {@link _GLUED_VALUE_SHORT_FLAGS}.
+ * A cluster is only flags up to the first one that takes a value, because that flag consumes the rest of the token: `rg -tcss` is `--type=css`, not `-t -c -s -s`, and reading a `c` out of `css` claimed a match-listing search was a count-only one and shipped every match line uncompressed. Which letters eat the rest is a property of the tool, so the caller passes its own set: {@link _GREP_GLUED_VALUE_SHORT_FLAGS} or {@link _RG_GLUED_VALUE_SHORT_FLAGS}.
  */
 function grepFlagInCluster(argv: string[], short: string, long: string): boolean {
+  const glued = gluedValueShortFlags(argv)
   for (const a of argv) {
     if (a === long || a.startsWith(long + '=')) return true
     if (a.startsWith('--') || !a.startsWith('-') || a.length < 2) continue
     if (!/^-[A-Za-z]+$/.test(a)) continue
     for (const ch of a.slice(1)) {
       if (ch === short) return true
-      if (_GLUED_VALUE_SHORT_FLAGS.includes(ch)) break
+      if (glued.includes(ch)) break
     }
   }
   return false
 }
 
 /**
- * Short flags of `grep`/`rg` whose value may be glued to the letter, so everything after one in a cluster is that value rather than more flags: `-e`/`-f`/`-m`/`-d`/`-D`/`-A`/`-B`/`-C` (both tools), `-t`/`-T`/`-g`/`-j`/`-M` (rg only, and grep defines none of those letters).
+ * Short flags whose value may be glued to the letter, so everything after one in a cluster is that value rather than more flags. The two tools disagree, and one shared set could only ever be wrong for one of them, so each gets its own.
  *
- * `-r` is deliberately absent even though rg reads it as `--replace`: in grep it is `--recursive`, a boolean, and `grep -rl` is the single most common spelling this function exists to match. `rg -rtext` glued is rare enough to lose that trade.
+ * grep's are `-A`/`-B`/`-C` (NUM), `-D`/`-d` (ACTION), `-e` (PATTERN), `-f` (FILE), `-m` (NUM) -- the eight entries `grep --help` prints with a value placeholder. `-T` is *not* among them: it is `--initial-tab`, a boolean, so `grep -Tc` is a real count-only search and `grep -Tl` a real files-only one. Treating `T` as value-taking here broke the scan before the `c`/`l` that followed it and handed a count list to the summarizer, which reprinted every file's count as 1.
+ *
+ * `-g` is the ninth entry and is here for `ack`/`ag`, which read it as a pattern. grep defines no `-g` at all, so carrying it costs grep nothing and keeps those two reading a glued `-gPATTERN` the way they did under the single shared set.
  */
-const _GLUED_VALUE_SHORT_FLAGS = 'ABCDMTdefgjmt'
+const _GREP_GLUED_VALUE_SHORT_FLAGS = 'ABCDdefgm'
+
+/**
+ * rg's own set, from the synopsis: `-A`/`-B`/`-C`/`-d`/`-j`/`-m`/`-M` (NUM), `-E` (ENCODING), `-e` (PATTERN), `-f` (PATTERNFILE), `-g` (GLOB), `-r` (REPLACEMENT_TEXT), `-t`/`-T` (TYPE).
+ *
+ * `-r` belongs here and could not be in the shared set it replaces: rg reads it as `--replace`, but grep reads it as `--recursive`, a boolean, and `grep -rl` is the single most common spelling this scan exists to match. Splitting the sets per tool is what lets both be right, so `rg -rlfoo` now reads `lfoo` as replacement text instead of finding a `--files-with-matches` inside it.
+ */
+const _RG_GLUED_VALUE_SHORT_FLAGS = 'ABCEMTdefgjmrt'
+
+/**
+ * Which set applies is a property of the command, read off `argv[0]` -- not of the filter class that happens to be handling it. GrepFilter's binaries include `rg` and RgFilter's include `grep`, so either class can be handed either tool and "which filter am I" answers the wrong question.
+ */
+function gluedValueShortFlags(argv: string[]): string {
+  return pathStem(argv[0] ?? '').toLowerCase() === 'rg' ? _RG_GLUED_VALUE_SHORT_FLAGS : _GREP_GLUED_VALUE_SHORT_FLAGS
+}
 
 /** `-l`/`--files-with-matches`: every line is a bare path, never a match. */
 function isFilesOnlySearch(argv: string[]): boolean {

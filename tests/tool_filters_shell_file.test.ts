@@ -124,6 +124,16 @@ describe('GrepFilter compression', () => {
     }
   })
 
+  // CAPTURE: `grep -Tc x FILE` was run on this machine (GNU grep, 2026-09-22) and printed `1`, and `grep --help` lists `-T, --initial-tab` with no value placeholder where `-e/-f/-m/-d/-D/-A/-B/-C` all carry one. FORMAT-DERIVED for the rg rows, from `rg --help`'s own synopsis (`-r, --replace <REPLACEMENT_TEXT>`, `-d, --max-depth <NUM>`). The two tools disagree on these letters, so one shared glued-value set had to be wrong for one of them: it broke the cluster scan at grep's boolean `-T` and never reached the `c`/`l` after it, and it read rg's `-rlfoo` replacement text as a clustered `-l`.
+  it('reads a glued flag value per tool, since grep and rg disagree on which letters take one', () => {
+    const countRows = Array.from({ length: 40 }, (_, i) => `src/file_${i}.ts:${i + 2}`).join('\n')
+    const paths = Array.from({ length: 40 }, (_, i) => `src/file_${i}.ts`).join('\n')
+    // grep's -T is boolean, so the letter after it is still a flag.
+    expect(compress(f, countRows, ['grep', '-Tc', 'export', 'src/'])).toBe(countRows.trimEnd())
+    expect(compress(f, countRows, ['grep', '-Tc', 'export', 'src/'])).toContain('src/file_39.ts:41')
+    expect(compress(f, paths, ['grep', '-Tl', 'export', 'src/'])).toBe(paths.trimEnd())
+  })
+
   it('still summarises when only an uppercase -C is present, since that is context and not count', () => {
     const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
     const out = compress(f, lines.join('\n'), ['grep', '-C', '2', 'TODO', '.'])
@@ -310,22 +320,42 @@ describe('RgFilter compression', () => {
   const f = new RgFilter()
   const argv = ['rg', '-C', '3', 'error']
 
+  // CAPTURE: line shapes from `rg -n -C 1 "_RG_GROUP_THRESHOLD" src/tool_filters/shell_file.ts src/tool_filters/helpers.ts`, run in this repo on 2026-09-22 -- context as `path-LINENO-text`, matches as `path:LINENO:text`, groups divided by a bare `--`. The separator is load-bearing and was missing here: without a `--` line the filter returns its input untouched, so the old shorter-than-input assertion was satisfied by the trailing blank alone and this test passed without the compression path ever running.
   it('strips context lines when output is large with many context groups', () => {
-    // Build output with many groups > _RG_CONTEXT_THRESHOLD (30)
     const groups: string[] = []
-    for (let i = 0; i < 12; i++) {
-      groups.push(`src/a_${i}.ts:5:  before context line`)
+    // Ten groups: above _RG_GROUP_THRESHOLD the filter elides whole groups instead of stripping context lines, and the context lines are what this asserts on. Forty lines still clears _RG_CONTEXT_THRESHOLD (30).
+    for (let i = 0; i < 10; i++) {
+      groups.push(`src/a_${i}.ts-5-  before context line`)
       groups.push(`src/a_${i}.ts:6: error found here`)
-      groups.push(`src/a_${i}.ts:7:  after context line`)
-      groups.push('')
+      groups.push(`src/a_${i}.ts-7-  after context line`)
+      groups.push('--')
     }
     const out = compress(f, groups.join('\n'), argv)
-    expect(out.split('\n').length).toBeLessThan(groups.length)
+    expect(out).not.toContain('before context line')
+    expect(out).not.toContain('after context line')
+    // Must-not-drop: every match line survives. Dropping those too would shorten the output further and satisfy a size-only assertion.
+    for (let i = 0; i < 10; i++) expect(out).toContain(`src/a_${i}.ts:6: error found here`)
   })
 
   it('passes through small output (stripped of trailing whitespace)', () => {
     const small = 'src/foo.ts:5: error here\nsrc/foo.ts:6: context'
     expect(compress(f, small, argv)).toBe(small.trimEnd())
+  })
+
+  // CAPTURE for the line shapes: `rg -n -C 1 "_RG_GROUP_THRESHOLD" src/tool_filters/shell_file.ts src/tool_filters/helpers.ts` run in this repo on 2026-09-22 printed context as `path-LINENO-text` and matches as `path:LINENO:text`, separated by a bare `--`. FORMAT-DERIVED for the flag: `rg --help` prints `-r, --replace <REPLACEMENT_TEXT>`, where grep prints `-r, --recursive` with no placeholder. One shared glued-value set could not hold both, and it was built for grep's reading, so every letter of an rg replacement string was scanned as a clustered flag -- the `l` in `-rlfoo` reading as `--files-with-matches` and releasing whole the context dump the filter was called to compress.
+  it('reads an rg replacement value as a value, not as more clustered flags', () => {
+    const groups: string[] = []
+    // Ten groups, not more: above _RG_GROUP_THRESHOLD the filter drops whole groups instead of stripping context lines, and the context lines are what this assertion reads.
+    for (let i = 0; i < 10; i++) {
+      groups.push(`src/a_${i}.ts-5-  before context line`)
+      groups.push(`src/a_${i}.ts:6: error found here`)
+      groups.push(`src/a_${i}.ts-7-  after context line`)
+      groups.push('--')
+    }
+    const out = compress(f, groups.join('\n'), ['rg', '-C', '3', '-rlfoo', 'error'])
+    // The context lines are what compression removes, so their absence is the signal. A line count alone is not: releasing the input whole also drops its trailing blank and so comes in one line under it.
+    expect(out).not.toContain('before context line')
+    expect(out).toContain('error found here')
   })
 })
 
