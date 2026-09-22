@@ -236,7 +236,9 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['util.ts::ensureDirSync', 'generic mkdir primitive: it touches only the path its caller supplies, so the caller is where a payload path has to be classified'],
   ['util.ts::atomicWriteCore', 'generic write primitive, same reasoning as ensureDirSync'],
   ['util.ts::withFileLock', 'generic lockfile primitive, same reasoning as ensureDirSync'],
-  ['db.ts::getDb', 'reached from relayInProcess via recordStat -> getGlobalDb (Batch S hook-latency timing); the dbPath it existsSync-checks is always dataDir()/dataDirForHome(homeDir) + \'global.db\', never a value from the hook payload'],
+  ['pending_context.ts::commitPendingContext', 'relayInProcess calls it AFTER runHook, to clear a delivered hint, so it is only on this list because static reachability cannot see where in the function the call sits. The path is sessionSidecarPath(sessionId, ...) under tokenGoatHome(): env-derived root, and the payload-derived session id is sanitized to a stem and containment-checked inside that helper before it becomes a path -- the same provenance as session_store.ts::saveSessionState above'],
+  ['pending_context.ts::readPending', 'the read half of the same pair: it only ever opens the path commitPendingContext and peekPendingContext computed, with that same sanitization'],
+  ['db.ts::getDb','reached from relayInProcess via recordStat -> getGlobalDb (Batch S hook-latency timing); the dbPath it existsSync-checks is always dataDir()/dataDirForHome(homeDir) + \'global.db\', never a value from the hook payload'],
   ['stats.ts::recordStatWriteFailure', 'reached from relayInProcess via recordStat\'s own catch when the global.db write fails; the marker and log paths it stats/writes/appends are always dataDir() + \'stats-write-failed.marker\'/\'stats-write-failed.log\', never a value from the hook payload -- same shape as db.ts::getDb above'],
 ])
 

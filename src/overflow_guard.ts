@@ -48,7 +48,10 @@ export function estimateTokens(text: string): number {
 export function trimToBudget(text: string, budgetTokens: number, command?: string): string {
   const markerMarginTokens = 64
 
-  const totalTokens = estimateTokens(text)
+  // Classify once and spend the same divisor the entry check measured with. These were two different divisors: the check classified, while the char budget below multiplied by guardDivisor()'s `text` default, so a base64 payload was priced at ~1.09 bytes/token on the way in and at 3.0 on the way out. A 1000-token cap then emitted 2583 tokens of it -- an overflow guard overshooting by 2.6x is the one failure it exists to prevent.
+  const strippedAll = stripAnsiCodes(text)
+  const contentClass = classifyContent(strippedAll)
+  const totalTokens = estimateTokensFromLength(strippedAll.length, contentClass)
   if (totalTokens <= budgetTokens) {
     return text
   }
@@ -60,7 +63,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   const totalLines = lines.length
 
   const bodyBudget = Math.max(1, budgetTokens - markerMarginTokens)
-  const charBudget = bodyBudget * guardDivisor()
+  const charBudget = bodyBudget * guardDivisor(contentClass)
 
   const kept: string[] = []
   let used = 0

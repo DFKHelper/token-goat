@@ -6,6 +6,8 @@
  * denormalization and hook dispatch now live in relay.ts / hook_registry.ts.
  */
 import { canonicalizeCopilotMcpToolName } from './copilot_mcp_names.js'
+import { COPILOT_CLI_TOOL_NAME_MAP } from './copilot_tool_names.js'
+import { ownGet } from './own_lookup.js'
 
 // All three levels are wired to console.error (stderr), never console.log/console.debug
 // (stdout): `token-goat hook <event>` treats its own stdout as the wire protocol Claude
@@ -53,12 +55,8 @@ export const CANONICAL_TG_TOOLS = [
   'ExitPlanMode',
 ] as const
 
-/**
- * Case-insensitively fold a tool name: lowercase, stripped of underscores and dashes.
- */
-export function foldToolName(name: string): string {
-  return typeof name === 'string' ? name.toLowerCase().replace(/[_-]/g, '') : ''
-}
+import { foldToolName } from './tool_name_fold.js'
+export { foldToolName }
 
 /**
  * Normalizes an inbound tool name against a harness map and canonical tool names
@@ -69,10 +67,10 @@ export function normalizeToolNameWithMap(toolName: string, nameMap?: Record<stri
 
   const stripped = toolName.includes(':') ? toolName.split(':').pop()! : toolName
 
-  // 1. Exact match in nameMap
+  // 1. Exact match in nameMap. ownGet, not `in` plus a bare index: both walk the prototype chain, so a tool named after an Object.prototype member resolved to that member and returned a function from a function typed `: string`. See src/own_lookup.ts.
   if (nameMap) {
-    if (toolName in nameMap) return nameMap[toolName]!
-    if (stripped in nameMap) return nameMap[stripped]!
+    const exact = ownGet(nameMap, toolName) ?? ownGet(nameMap, stripped)
+    if (exact !== undefined) return exact
   }
 
   const lower = toolName.toLowerCase()
@@ -111,24 +109,7 @@ export function normalizeToolNameWithMap(toolName: string, nameMap?: Record<stri
   return toolName
 }
 
-/**
- * Copilot CLI tool name -> internal PascalCase tool name.
- */
-export const COPILOT_CLI_TOOL_NAME_MAP: Record<string, string> = {
-  bash: 'Bash',
-  powershell: 'Bash',
-  read_bash: 'BashOutput',
-  read_powershell: 'BashOutput',
-  view: 'Read',
-  create: 'Write',
-  edit: 'Edit',
-  web_fetch: 'WebFetch',
-  web_search: 'WebSearch',
-  grep: 'Grep',
-  glob: 'Glob',
-  skill: 'Skill',
-  exit_plan_mode: 'ExitPlanMode',
-}
+export { COPILOT_CLI_TOOL_NAME_MAP }
 
 /**
  * Copilot CLI tool_input key -> internal key, per remapped tool.
@@ -158,7 +139,7 @@ const CODEX_TOOL_NAME_MAP: Record<string, string> = {
   list_files: 'Glob',
   glob: 'Glob',
   web_search: 'WebFetch',
-  // Codex's only wired image-viewing tool (CODEX_MATCHERS in codex_install.ts wires the matcher 'view_image|Bash', with the codex_install.ts docstring calling out that 'view_image|Bash' covers image reads and shell execution together, mirroring Claude Code's Read handling) -- without this entry, tool_name stayed the literal 'view_image', which matches neither preReadHandler's nor image_shrink.ts's preReadImageHandler's toolName: 'Read' filter, so every Codex image view silently skipped image shrinking and read-session tracking entirely.
+  // Codex's only wired image-viewing tool (CODEX_MATCHERS in codex_install.ts wires it alongside the shell spellings, in one matcher that covers image reads and shell execution together, mirroring Claude Code's Read handling) -- without this entry, tool_name stayed the literal 'view_image', which matches neither preReadHandler's nor image_shrink.ts's preReadImageHandler's toolName: 'Read' filter, so every Codex image view silently skipped image shrinking and read-session tracking entirely.
   view_image: 'Read',
 }
 
@@ -427,7 +408,7 @@ export const VSCODE_TOOL_NAME_KEY = '_tg_vscode_tool_name'
  */
 export function vscodeNativeToolInput(vscodeToolName: string, canonicalInput: Record<string, unknown>): Record<string, unknown> {
   const inverse: Record<string, string> = {}
-  for (const [nativeKey, canonicalKey] of Object.entries(VSCODE_INPUT_KEY_MAP[vscodeToolName] ?? {})) {
+  for (const [nativeKey, canonicalKey] of Object.entries(ownGet(VSCODE_INPUT_KEY_MAP, vscodeToolName) ?? {})) {
     inverse[canonicalKey] = nativeKey
   }
   return remapInputKeys(canonicalInput, inverse)
@@ -461,7 +442,7 @@ export function vscodeNativeToolInput(vscodeToolName: string, canonicalInput: Re
 function remapInputKeys(input: Record<string, unknown>, keyMap: Record<string, string>): Record<string, unknown> {
   const newInput: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(input)) {
-    newInput[keyMap[k] || k] = v
+    newInput[ownGet(keyMap, k) || k] = v
   }
   return newInput
 }
@@ -488,7 +469,7 @@ function remapToolName(
   const result = { ...obj }
   result['tool_name'] = mapped
   const rawInput = obj['tool_input']
-  const keyMap = inputKeyMap[mapped] ?? inputKeyMap[toolName]
+  const keyMap = ownGet(inputKeyMap, mapped) ?? ownGet(inputKeyMap, toolName)
   if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
     result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
   }
@@ -611,7 +592,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     const mapped = normalizeToolNameWithMap(toolName, VSCODE_TOOL_NAME_MAP)
     const result = { ...obj }
     result['tool_name'] = mapped
-    const keyMap = VSCODE_INPUT_KEY_MAP[toolName] ?? VSCODE_INPUT_KEY_MAP[mapped]
+    const keyMap = ownGet(VSCODE_INPUT_KEY_MAP, toolName) ?? ownGet(VSCODE_INPUT_KEY_MAP, mapped)
     const rawInput = obj['tool_input']
     if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
       result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)

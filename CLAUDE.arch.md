@@ -381,6 +381,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/content_store.ts`](src/content_store.ts) | Local, bounded storage for generic compressed text and named handoffs. |
 | [`src/copilot_mcp_names.ts`](src/copilot_mcp_names.ts) | Canonicalise Copilot CLI's MCP tool names into the `mcp__<server>__<tool>` shape every MCP-aware hook in token-goat gates on. |
 | [`src/copilot_mcp_tools.ts`](src/copilot_mcp_tools.ts) | Reads Copilot CLI's on-disk MCP tool-definition cache. |
+| [`src/copilot_tool_names.ts`](src/copilot_tool_names.ts) | Copilot CLI's built-in tool names, mapped to the canonical token-goat names every hook gates on. |
 | [`src/copilot_waste.ts`](src/copilot_waste.ts) | Waste analysis for Copilot CLI sessions. |
 | [`src/coverage_query.ts`](src/coverage_query.ts) | Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report (which can run to tens of thousands of lines for a real project) never needs a full ` |
 | [`src/csv_query.ts`](src/csv_query.ts) | Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". |
@@ -437,6 +438,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/ooxml_extract.ts`](src/ooxml_extract.ts) | Shared ZIP+XML core for OOXML formats (.pptx, .docx are both a ZIP container of XML parts). |
 | [`src/openapi_query.ts`](src/openapi_query.ts) | Narrow structural summary + single-operation extraction for `token-goat openapi-outline` / `openapi-op`, so a multi-thousand-line OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) neve |
 | [`src/overflow_guard.ts`](src/overflow_guard.ts) | Overflow guard — cap oversized output to protect the model's context. |
+| [`src/own_lookup.ts`](src/own_lookup.ts) | Own-property lookup for plain-object maps whose keys arrive from outside this process. |
 | [`src/path_containment.ts`](src/path_containment.ts) | Path canonicalization and the symlink-resolving containment test. |
 | [`src/pending_context.ts`](src/pending_context.ts) | Deferred hint delivery, for harnesses that run a prompt-submit hook but discard its response. |
 | [`src/pptx_extract.ts`](src/pptx_extract.ts) | PowerPoint (.pptx) narrow-slice reader. |
@@ -458,6 +460,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/sql_path.ts`](src/sql_path.ts) | Exports: `pathEqClause`, `pathSuffixClause`, `projectScopeClause` |
 | [`src/stdin_json.ts`](src/stdin_json.ts) | Reading a JSON payload off stdin, with a timeout and a byte cap. |
 | [`src/symbol_body_probe.ts`](src/symbol_body_probe.ts) | Doctor's oversized-stored-body check, hosted outside cli_doctor.ts. |
+| [`src/tool_name_fold.ts`](src/tool_name_fold.ts) | The one fold applied to a tool name before it is compared to another tool name. |
 | [`src/transcript_extract.ts`](src/transcript_extract.ts) | Zero-dependency WebVTT/SRT transcript reader. |
 | [`src/ts_refs.ts`](src/ts_refs.ts) | Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. |
 | [`src/untrusted_fence.ts`](src/untrusted_fence.ts) | The single decision point for "should this text be fenced, and under what notice". |

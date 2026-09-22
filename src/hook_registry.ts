@@ -19,6 +19,7 @@
 
 import type { HarnessName } from './bridges/types.js'
 import { registerReset } from './reset.js'
+import { foldToolName } from './tool_name_fold.js'
 import { recordUnmappedTool } from './stats.js'
 import type { HookEventName, HookOutput } from './types.js'
 import { replaceToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
@@ -170,11 +171,6 @@ export function toolMatcherFor(eventName: HookEventName): string | null {
 }
 
 /** Run every registered handler for `event.eventName` in registration order. Short-circuits and returns the first `deny`/`context`/`update` result; once a handler claims the event, later handlers do not run (they cannot see or override a decision already made). Returns `{ hookType: 'pass' }` when no handler is registered or every handler passes. A handler whose `toolName` filter does not match `event.toolName` is skipped without being called. */
-/** Fold a tool name to the form that survives a bridge's renaming step: lower case, no separators. The class this catches is narrow and deliberate. A bridge that fails to rename an inbound tool passes the harness's own spelling straight through -- Copilot's `bash` instead of `Bash`, `web_fetch` instead of `WebFetch` -- and that is a difference of case and underscores only. A bridge whose mapping is *semantic* (Copilot's `view` -> `Read`) produces a name this cannot relate to anything, and it does not pretend otherwise: such a name is simply recorded as unrecognized, with no near-miss claimed. */
-function foldToolName(name: string): string {
-  return name.toLowerCase().replace(/[_-]/g, '')
-}
-
 /** Record that `event.toolName` reached an event whose handlers name the tools they want, and matched none of them. Cheap and side-band: the observation never changes what runs. Skipped entirely when the event has no name-filtered handler at all (a non-tool event, or one whose handlers all take every tool), because there is nothing for a name to be unrecognized *against* there. */
 function noteUnrecognizedTool(event: HookEvent, list: readonly Registration[]): void {
   const toolName = event.toolName

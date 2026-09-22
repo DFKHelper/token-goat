@@ -619,21 +619,21 @@ describe('pre-compact manifest routing per harness', () => {
   it('returns the manifest as context on a harness that reads the pre-compact response', async () => {
     process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
     recordFileRead(makeTmpFile())
-    const { drainPendingContext } = await import('../src/pending_context.js')
+    const { peekPendingContext } = await import('../src/pending_context.js')
     const out = preCompactHandler({ ...compactEvent, sessionId: 'route-claude' }) as { hookType?: string; context?: string }
     expect(out.context).toContain('Files read')
-    expect(drainPendingContext('route-claude')).toBeNull()
+    expect(peekPendingContext('route-claude')).toBeNull()
   })
 
   for (const harness of ['copilot_cli', 'codex']) {
     it(`queues the manifest for a later channel on ${harness}, which discards what pre-compact returns`, async () => {
       process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = harness
       recordFileRead(makeTmpFile())
-      const { drainPendingContext } = await import('../src/pending_context.js')
+      const { peekPendingContext } = await import('../src/pending_context.js')
       const sessionId = `route-${harness}`
       const out = preCompactHandler({ ...compactEvent, sessionId }) as { hookType?: string; context?: string }
       expect(out.context).toBeUndefined()
-      expect(drainPendingContext(sessionId)).toContain('Files read')
+      expect(peekPendingContext(sessionId)).toContain('Files read')
     })
   }
 })

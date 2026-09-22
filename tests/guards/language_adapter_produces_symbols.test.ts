@@ -54,6 +54,17 @@ interface AdapterCase {
   readonly source: string
   /** The basename the fixture is copied to before indexing, so detectLanguage sees the real extension/filename it routes on. */
   readonly targetBasename: string
+  /**
+   * Symbol names this fixture must resolve, asserted one by one.
+   *
+   * A bare "produced at least one symbol" floor is satisfied by whichever construct still works,
+   * so a construct that stopped resolving hides behind its siblings. Both adapters listed below
+   * shipped exactly that way: nginx emitted its `upstream` and `location` symbols while `http`,
+   * `events` and every `server` block were absent, and caddy emitted its site headers while the
+   * blocks nested inside them were dropped. Populate this for any adapter whose fixture covers
+   * more than one construct.
+   */
+  readonly mustResolve?: readonly string[]
 }
 
 const CASES: readonly AdapterCase[] = [
@@ -94,8 +105,8 @@ const CASES: readonly AdapterCase[] = [
   { language: 'graphql', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.graphql'), targetBasename: 'sample.graphql' },
   { language: 'sql', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.sql'), targetBasename: 'sample.sql' },
   { language: 'ini', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.ini'), targetBasename: 'sample.ini' },
-  { language: 'nginx', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.nginx'), targetBasename: 'sample.nginx' },
-  { language: 'caddy', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.caddy'), targetBasename: 'sample.caddy' },
+  { language: 'nginx', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.nginx'), targetBasename: 'sample.nginx', mustResolve: ['events', 'http', 'server (example.com)', 'upstream backend_api', 'location /', 'location /api/'] },
+  { language: 'caddy', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.caddy'), targetBasename: 'sample.caddy', mustResolve: ['global', '(secure_headers)', 'example.com', 'handle /api/*'] },
   { language: 'apache', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.apache'), targetBasename: 'sample.apache' },
   { language: 'makefile', kind: 'regex', source: path.join(HAND_FIXTURES, 'Makefile.sample'), targetBasename: 'Makefile' },
   { language: 'proto', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.proto'), targetBasename: 'sample.proto' },
@@ -256,5 +267,12 @@ describe('every registered language adapter produces symbols on a real file, thr
       hits.length,
       `'${c.language}' adapter produced 0 symbols on a real file (${path.relative(REPO_ROOT, c.source)}) through the real indexFileSync path.`,
     ).toBeGreaterThan(0)
+
+    for (const name of c.mustResolve ?? []) {
+      expect(
+        hits.map((h) => h.name),
+        `'${c.language}' resolved no symbol named '${name}' in ${path.relative(REPO_ROOT, c.source)}, though the fixture defines one.`,
+      ).toContain(name)
+    }
   })
 })

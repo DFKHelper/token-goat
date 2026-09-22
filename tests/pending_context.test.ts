@@ -4,9 +4,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   MAX_PENDING_CONTEXT_BYTES,
-  drainPendingContext,
+  commitPendingContext,
+  peekPendingContext,
   queuePendingContext,
 } from '../src/pending_context.js'
+
+/** Peek plus the commit a successful delivery makes, which is what the queue's storage contract is about. The half these tests are not exercising -- a peek whose text never reaches the output -- is covered separately below, at the relay level where that decision is actually made. */
+function drainPendingContext(sessionId: string): string | null {
+  const text = peekPendingContext(sessionId)
+  commitPendingContext(sessionId, text)
+  return text
+}
 
 describe('pending context', () => {
   let home: string
@@ -93,5 +101,75 @@ describe('pending context', () => {
     walk(home)
 
     expect(strays).toEqual([])
+  })
+})
+
+/**
+ * The half the storage tests above cannot see: whether a peeked hint is cleared when it was never
+ * emitted.
+ *
+ * pendingContextHandler is registered advisory, and runHook returns the first non-advisory non-pass
+ * result it meets, discarding the advisory one it was holding. While the queue was consumed at read
+ * time, that combination deleted a queued compaction manifest on any tool call where another
+ * handler also had something to return -- postBashHandler's compression and delta branches are the
+ * everyday case -- and it was gone for the rest of the session with nothing failing.
+ *
+ * Fixture provenance: HAND-DERIVED. The rewriteOutput shape is the HookOutput variant declared in
+ * src/types.ts; the probe handler stands in for any non-advisory post_tool_use handler, since what
+ * decides the outcome is runHook's advisory rule and not which handler won.
+ */
+describe('deferred hint delivery, through the real relay', () => {
+  let home: string
+  let prevHome: string | undefined
+  let prevHarness: string | undefined
+
+  beforeEach(() => {
+    prevHome = process.env['TOKEN_GOAT_HOME']
+    prevHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    home = mkdtempSync(join(tmpdir(), 'tg-pending-relay-'))
+    process.env['TOKEN_GOAT_HOME'] = home
+    // The queue only has a reader on a harness that drops what pre-compact returns.
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'copilot_cli'
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+    else process.env['TOKEN_GOAT_HOME'] = prevHome
+    if (prevHarness === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = prevHarness
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it('keeps the hint queued when another handler returns the output for that call', async () => {
+    const { registerHook } = await import('../src/hook_registry.js')
+    const { relayInProcess } = await import('../src/relay.js')
+    registerHook('post_tool_use', () => ({ hookType: 'rewriteOutput', updatedOutput: 'compressed' }), {
+      toolName: 'TgPendingRewriteProbe',
+    })
+    queuePendingContext('relay-lost', 'MANIFEST-MARKER-ONE')
+
+    await relayInProcess('post_tool_use', {
+      session_id: 'relay-lost',
+      tool_name: 'TgPendingRewriteProbe',
+      tool_input: {},
+      tool_response: { output: 'raw' },
+    })
+
+    expect(peekPendingContext('relay-lost')).toBe('MANIFEST-MARKER-ONE')
+  })
+
+  it('clears the hint once it is in the output, so it stays one-shot', async () => {
+    const { relayInProcess } = await import('../src/relay.js')
+    queuePendingContext('relay-delivered', 'MANIFEST-MARKER-TWO')
+
+    const emitted = await relayInProcess('post_tool_use', {
+      session_id: 'relay-delivered',
+      tool_name: 'TgPendingPassProbe',
+      tool_input: {},
+      tool_response: { output: 'raw' },
+    })
+
+    expect(emitted).toContain('MANIFEST-MARKER-TWO')
+    expect(peekPendingContext('relay-delivered')).toBeNull()
   })
 })

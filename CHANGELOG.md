@@ -2,6 +2,24 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.24] - 2026-09-22
+
+Upgrading reparses Nginx and Caddy files, and nothing else: the two adapters below changed, so their per-language stamps moved and every other language keeps its existing index. Downgrading is free.
+
+### Fixed
+
+- **A queued compaction manifest was deleted on its way to the model whenever another hook had something to say.** The handler that carries a queued hint to the next tool call is advisory, which means it never overrules another handler, but it consumed the queue the moment it read it. So on any tool call where a second handler returned output of its own, and compressing a shell command's output is the everyday case, the manifest was gone with nothing failing and the hint still counted as delivered. It is now read without being consumed, and cleared only once the text is confirmed to be in what the hook is about to emit. A hint that misses one tool call waits for the next instead of vanishing.
+- **The overflow guard overshot its own budget on dense payloads by 2.6x.** It decided whether to trim by pricing the text at its measured rate, then trimmed against a flat three-bytes-per-token that only ever suited ordinary text. A base64 blob capped at a thousand tokens came out at 2,583. Both halves now price the same content the same way, which is the whole point of a guard that exists to fire before the context it protects is spent.
+- **Nginx `http`, `events`, `stream` and a plain `server` block were invisible to the indexer.** The pattern that finds a block required an argument before the keyword, and those four take none, so a stock `nginx.conf` indexed its upstreams and locations and nothing else. `token-goat read "nginx.conf::server"` returned nothing on the file the feature was announced for.
+- **A Caddyfile placeholder desynced the Caddy block tracker.** Blocks were classified once per line but closed once per brace, so a line like `redir https://{host}{uri}` pushed one entry and closed two, ending the enclosing site block early and dropping every block below it. Classification now happens per brace, which is where the imbalance was.
+- **A tool named after a built-in object property was not treated as a name.** Three lookups read their maps with a plain index, so a payload naming its tool `constructor` came back holding a function rather than a string, and an input key of the same name was rewritten to `function Object() { [native code] }`. All three now ask whether the map really has that key.
+- **Qwen Code's invalid-settings error now says what is wrong with the file.** Its three sibling installers quote the parser's own message; this one dropped it and left the reader to find the bad line themselves.
+
+### Changed
+
+- **One fold for tool names, instead of three.** The same lowercase-and-strip-separators rule existed in three files, and the copy in the hook registry had lost the type guard the other two carry, so an untrusted tool name that the other two answered for threw there instead. It is one leaf module now.
+- **One table of Copilot CLI tool names, instead of two identical ones.** The bridge and the hook normalizer each held their own copy, byte-identical and with nothing checking that they stayed that way.
+
 ## [2.9.23] - 2026-09-22
 
 This release changes no stored data, so upgrading and downgrading are both free: no reindex, no re-embed, and no schema move.

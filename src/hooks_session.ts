@@ -7,7 +7,7 @@ import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
 import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js';
-import { drainPendingContext, queuePendingContext } from './pending_context.js';
+import { peekPendingContext, queuePendingContext } from './pending_context.js';
 import { dropsPreCompactContext, dropsPromptSubmitContext } from './harness_channels.js';
 import { recordStat } from './stats.js';
 import {
@@ -22,8 +22,10 @@ import {
 /**
  * Deliver anything the prompt-submit hook queued, on the first tool call that follows.
  *
- * Advisory and tool-agnostic: it adds context and never decides a tool's fate. The drain is
- * one-shot, so this is a no-op for every later call in the turn.
+ * Advisory and tool-agnostic: it adds context and never decides a tool's fate. It peeks rather than
+ * consumes, and relay.ts clears the queue once the emitted output is confirmed to carry the text --
+ * which is what makes this a no-op for every later call in the turn, and what keeps the text queued
+ * on the calls where an advisory result loses to another handler's. See pending_context.ts.
  *
  * The gate names every producer that writes to the queue, not just the one this handler was built
  * for. Gating on the prompt-submit set alone was correct while that set was the only writer; once
@@ -34,7 +36,7 @@ import {
 function pendingContextHandler(event: HookEvent): HookOutput {
   try {
     if (!event.sessionId || (!dropsPromptSubmitContext() && !dropsPreCompactContext())) return passOutput();
-    const pending = drainPendingContext(event.sessionId);
+    const pending = peekPendingContext(event.sessionId);
     return pending === null ? passOutput() : contextOutput(pending);
   } catch {
     return passOutput();

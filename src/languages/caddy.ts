@@ -35,29 +35,31 @@ export function extractCaddy(content: string, filePath: string): SymbolEntry[] {
     const commentIndex = rawLine.indexOf('#')
     const codeLine = commentIndex >= 0 ? rawLine.slice(0, commentIndex) : rawLine
     const trimmed = codeLine.trim()
-    const firstOpen = codeLine.indexOf('{')
-    if (firstOpen >= 0) {
-      const header = codeLine.slice(0, firstOpen).trim()
-      if (braceDepth === 0 && !sawContent && header === '') {
-        stack.push({ name: 'global', kind: 'caddy_global', lineStart: i + 1, site: false })
-      } else if (braceDepth === 0 && header) {
-        const snippet = /^\(([^)]+)\)$/.exec(header)
-        stack.push({
-          name: snippet ? `(${snippet[1]})` : header,
-          kind: snippet ? 'caddy_snippet' : 'caddy_site',
-          lineStart: i + 1,
-          site: !snippet,
-        })
-      } else if (header && /^(?:route|handle|handle_path)\b/.test(header) && stack.some((block) => block.site)) {
-        stack.push({ name: header, kind: 'caddy_block', lineStart: i + 1, site: false })
-      } else {
-        stack.push({ name: '', kind: '', lineStart: i + 1, site: false })
-      }
-    }
-    if (trimmed) sawContent = true
+    // One stack entry per '{', classified from the line only for the first one. Classifying once per LINE while popping once per '}' desynced the stack on any line carrying more than one brace pair, which in a Caddyfile means any line using a placeholder: `redir https://{host}{uri}` pushed one entry and popped two, closing the enclosing site block on that line and dropping every block nested below it.
+    const depthAtLineStart = braceDepth
+    const contentBeforeLine = sawContent
+    let opensSeen = 0
 
-    for (const char of codeLine) {
+    for (let c = 0; c < codeLine.length; c++) {
+      const char = codeLine[c]
       if (char === '{') {
+        const header = opensSeen === 0 ? codeLine.slice(0, c).trim() : ''
+        if (opensSeen === 0 && depthAtLineStart === 0 && !contentBeforeLine && header === '') {
+          stack.push({ name: 'global', kind: 'caddy_global', lineStart: i + 1, site: false })
+        } else if (opensSeen === 0 && depthAtLineStart === 0 && header) {
+          const snippet = /^\(([^)]+)\)$/.exec(header)
+          stack.push({
+            name: snippet ? `(${snippet[1]})` : header,
+            kind: snippet ? 'caddy_snippet' : 'caddy_site',
+            lineStart: i + 1,
+            site: !snippet,
+          })
+        } else if (header && /^(?:route|handle|handle_path)\b/.test(header) && stack.some((block) => block.site)) {
+          stack.push({ name: header, kind: 'caddy_block', lineStart: i + 1, site: false })
+        } else {
+          stack.push({ name: '', kind: '', lineStart: i + 1, site: false })
+        }
+        opensSeen++
         braceDepth++
       } else if (char === '}') {
         braceDepth--
@@ -70,6 +72,7 @@ export function extractCaddy(content: string, filePath: string): SymbolEntry[] {
         }
       }
     }
+    if (trimmed) sawContent = true
   }
 
   return symbols.sort((a, b) => a.lineStart - b.lineStart)

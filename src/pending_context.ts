@@ -77,21 +77,31 @@ export function queuePendingContext(sessionId: string, text: string): void {
 }
 
 /**
- * Take everything queued for `sessionId`, or null when nothing is. Deletes as it reads, so a hint
- * is delivered exactly once even though every tool call in the session checks. Deleting before
- * returning is deliberate: a crash between read and delete would otherwise repeat the hint on
- * every subsequent tool call for the rest of the session.
+ * Read everything queued for `sessionId`, or null when nothing is, without consuming it.
+ *
+ * Peek rather than take, because reading is not delivering. The handler that reads this queue is registered advisory, and `runHook` returns the first non-advisory non-pass result it sees and drops the advisory one it was holding alongside it. Consuming at read time therefore deleted a queued compaction manifest on any tool call where another handler also had something to say -- `postBashHandler`'s compression and delta branches are the common case -- and the manifest was gone for the rest of the session with nothing failing and the hint still counted as emitted. Pair every peek with {@link commitPendingContext} against the text that actually got emitted.
  */
-export function drainPendingContext(sessionId: string): string | null {
+export function peekPendingContext(sessionId: string): string | null {
   const target = sessionSidecarPath(sessionId, PENDING_SUFFIX)
-  if (target === null) return null
-  const text = readPending(target)
+  return target === null ? null : readPending(target)
+}
+
+/**
+ * Clear the queue for `sessionId`, but only when `delivered` actually carries the queued text.
+ *
+ * Delivery is proven from the string about to be serialized rather than assumed from the fact that the reading handler ran, so a peek whose result lost the turn leaves the text queued for the next tool call instead of dropping it. When it did land, this clear is what keeps a one-shot hint one-shot.
+ */
+export function commitPendingContext(sessionId: string, delivered: string | null): void {
+  if (delivered === null || delivered === '') return
+  const target = sessionSidecarPath(sessionId, PENDING_SUFFIX)
+  if (target === null) return
+  const queued = readPending(target)
+  if (queued === null || !delivered.includes(queued)) return
   try {
     rmSync(target, { force: true })
   } catch {
-    // Already gone, or unremovable; the text is still returned exactly once from this call.
+    // Already gone, or unremovable; a repeated hint is the cost here, never a blocked tool call.
   }
-  return text
 }
 
 /** Read a queued payload, or null when the file is absent, unreadable, or empty. */

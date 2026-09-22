@@ -200,6 +200,28 @@ describe('overflow_guard', () => {
 
 })
 
+describe('dense payloads are trimmed against their own divisor', () => {
+  // The entry check prices `text` by classifying it, but the trim loop's char budget multiplied by
+  // guardDivisor()'s default -- so a base64 blob was measured at ~1.09 bytes/token on the way in and
+  // spent at 3.0 bytes/token on the way out, and a 1000-token cap emitted ~2.7x that. An overflow
+  // guard that overshoots is the one failure it exists to prevent.
+  //
+  // Fixture provenance: HAND-DERIVED. The payload is built to satisfy classifyContent's three
+  // documented conditions (no whitespace, dense alphabet, >=16 distinct characters); the expected
+  // bound is the budget the caller asked for, not a number read off the implementation.
+  const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+  it('keeps a dense payload inside the token budget it was given', () => {
+    const payload = Array.from({ length: 10_000 }, (_, i) => ALPHABET[(i * 7 + (i >> 6)) % 64]).join('')
+    expect(estimateTokens(payload)).toBeGreaterThan(1000)
+
+    const capped = trimToBudget(payload, 1000)
+    const markerAt = capped.lastIndexOf('[token-goat:')
+    expect(markerAt).toBeGreaterThan(0)
+    expect(estimateTokens(capped.slice(0, markerAt))).toBeLessThanOrEqual(1000)
+  })
+})
+
 describe('capped-output line total', () => {
   it('counts the real lines of newline-terminated output, not the empty piece past the last one (fail-on-buggy: split by newline counts one element too many)', () => {
     const text = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'

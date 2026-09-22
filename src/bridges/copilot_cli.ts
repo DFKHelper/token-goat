@@ -78,6 +78,9 @@
  * shrink rewrite spreads the full original toolArgs and swaps only `path`, in Copilot's
  * own key, rather than returning a bare path object.
  */
+import { COPILOT_CLI_TOOL_NAME_MAP } from '../copilot_tool_names.js'
+import { ownGet } from '../own_lookup.js'
+import { foldToolName } from '../tool_name_fold.js'
 import { MATERIALIZE_SHRUNK_IMAGE_JS } from './shrink_block.js'
 
 export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
@@ -718,29 +721,9 @@ main()
   })
 `
 
-/**
- * Folds a tool name to lowercase alphanumeric characters (stripping underscores and hyphens)
- * for case- and separator-insensitive matching.
- */
-export function foldToolName(name: unknown): string {
-  return typeof name === 'string' ? name.toLowerCase().replace(/[_-]/g, '') : ''
-}
+export { foldToolName }
 
-const TOOL_TO_TG_MAPPING: Record<string, string> = {
-  bash: 'Bash',
-  powershell: 'Bash',
-  read_bash: 'BashOutput',
-  read_powershell: 'BashOutput',
-  view: 'Read',
-  create: 'Write',
-  edit: 'Edit',
-  web_fetch: 'WebFetch',
-  web_search: 'WebSearch',
-  grep: 'Grep',
-  glob: 'Glob',
-  skill: 'Skill',
-  exit_plan_mode: 'ExitPlanMode',
-}
+const TOOL_TO_TG_MAPPING = COPILOT_CLI_TOOL_NAME_MAP
 
 const FOLDED_MAPPING: Record<string, string> = {}
 for (const [k, v] of Object.entries(TOOL_TO_TG_MAPPING)) {
@@ -753,10 +736,10 @@ for (const [k, v] of Object.entries(TOOL_TO_TG_MAPPING)) {
  */
 export function resolveCanonicalToolName(name: string): string {
   if (!name || typeof name !== 'string') return name
-  const direct = TOOL_TO_TG_MAPPING[name]
+  const direct = ownGet(TOOL_TO_TG_MAPPING, name)
   if (direct !== undefined) return direct
   const folded = foldToolName(name)
-  return FOLDED_MAPPING[folded] || name
+  return ownGet(FOLDED_MAPPING, folded) || name
 }
 
 /**

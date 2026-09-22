@@ -30,7 +30,7 @@ import * as path from 'node:path'
 
 import { anchoredMarkerPattern } from '../install.js'
 import { removeCreatedBackups } from './created_configs.js'
-import { quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
+import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 
 import { groupHasTokenGoat } from './matcher_group.js'
 
@@ -84,10 +84,10 @@ function readQwenSettings(p: string, opts: { strict?: boolean } = {}): QwenSetti
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
-  } catch {
+  } catch (e) {
     if (opts.strict === true) {
       throw new QwenSettingsParseError(
-        `Qwen Code settings file '${p}' exists but contains invalid JSON. Fix or back up the file before running install.`,
+        `Qwen Code settings file '${p}' exists but contains invalid JSON. Fix or back up the file before running install. (${extractErrorMessage(e)})`,
       )
     }
     return {}

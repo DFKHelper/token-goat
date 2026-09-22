@@ -66,7 +66,7 @@ describe('normalizePayload', () => {
     expect(result['_tg_harness']).toBe('codex')
   })
 
-  it('remaps Codex view_image to Read (the matcher CODEX_MATCHERS wires as \'view_image|Bash\' in codex_install.ts)', () => {
+  it('remaps Codex view_image to Read (CODEX_MATCHERS wires it in the same matcher as the shell spellings, in codex_install.ts)', () => {
     const payload: HookPayload = {
       tool_name: 'view_image',
       tool_input: { file_path: '/tmp/screenshot.png' },
@@ -74,6 +74,21 @@ describe('normalizePayload', () => {
     const result = normalizePayload(payload, 'codex')
     expect(result['tool_name']).toBe('Read')
     expect(result['_tg_harness']).toBe('codex')
+  })
+
+  // HAND-DERIVED: `in` and a bare index both walk the prototype chain, so a tool named after an Object.prototype member resolves to that member. The name reaches normalizePayload straight off the wire, and an MCP tool is named by its own server, so `srv:valueOf` strips to `valueOf` and hits the same lookup. Nothing downstream re-checks the type the signature promised.
+  it('leaves a tool named after an Object.prototype member as the string it arrived as', () => {
+    for (const name of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'srv:valueOf']) {
+      const result = normalizePayload({ tool_name: name, tool_input: { command: 'ls' } } as HookPayload, 'codex')
+      expect(typeof result['tool_name'], name).toBe('string')
+    }
+  })
+
+  it('leaves an input key named after an Object.prototype member as the string it arrived as', () => {
+    const result = normalizePayload({ tool_name: 'read_file', tool_input: { constructor: 'ls', valueOf: 'x' } } as HookPayload, 'vscode')
+    for (const key of Object.keys(result['tool_input'] as Record<string, unknown>)) {
+      expect(key, key).not.toMatch(/native code/)
+    }
   })
 
   it('leaves Gemini read_file input keys untouched (file_path is already token-goat\'s own canonical key)', () => {

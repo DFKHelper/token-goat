@@ -1,4 +1,4 @@
-# HAND-DERIVED fixture: representative Caddyfile syntax.
+# HAND-DERIVED fixture: representative Caddyfile syntax. The `redir` line carries the `{host}`/`{uri}` placeholders a real Caddyfile is full of; without them the file balances its braces one pair per line and never exercises the stack.
 {
 	email admin@example.com
 	acme_ca https://acme.example.test
@@ -12,6 +12,7 @@
 
 example.com {
 	import secure_headers
+	redir https://{host}{uri}
 
 	handle /api/* {
 		reverse_proxy localhost:8080

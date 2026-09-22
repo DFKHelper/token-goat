@@ -5,9 +5,6 @@
 import {
   type SymbolEntry,
 } from '../parser_types.js';
-import {
-  type MiniSection,
-} from './common.js';
 
 interface BlockStart {
   readonly name: string;
@@ -16,19 +13,19 @@ interface BlockStart {
   readonly openBraceDepth: number;
 }
 
-const NGINX_BLOCK_START_RE = /^(?:([a-zA-Z0-9_]+)[ \t]+)?(http|events|stream|server|upstream|location)(?:[ \t]+([^{;\s](?:[^{};]*[^{};\s])?))[ \t]*\{/;
+// The argument group is optional. `http`, `events`, `stream` and the canonical `server` take no inline argument, so requiring one left every one of them unmatched: a stock nginx.conf indexed its `upstream` and `location` blocks and nothing else, and the server_name/listen labelling below was unreachable because it needs a `server` block to label.
+const NGINX_BLOCK_START_RE = /^(?:([a-zA-Z0-9_]+)[ \t]+)?(http|events|stream|server|upstream|location)(?:[ \t]+([^{;\s](?:[^{};]*[^{};\s])?))?[ \t]*\{/;
 const SERVER_NAME_RE = /^\s*server_name[ \t]+([^\s;][^;]*);/;
 const LISTEN_RE = /^\s*listen[ \t]+([^\s;][^;]*);/;
 
 /**
- * Extracts symbols and hierarchical sections from Nginx configuration files.
+ * Extracts symbols from Nginx configuration files.
  * Handles top-level blocks (http, events, stream), upstreams, servers (labeled
  * with server_name or port if present), and locations.
  */
 export function extractNginx(content: string, filePath: string): SymbolEntry[] {
   const lines = content.split('\n');
   const symbols: SymbolEntry[] = [];
-  const sections: MiniSection[] = [];
 
   let braceDepth = 0;
   const blockStack: BlockStart[] = [];
@@ -119,12 +116,6 @@ export function extractNginx(content: string, filePath: string): SymbolEntry[] {
               parent: '',
             };
             symbols.push(symbol);
-            sections.push({
-              heading: top.name,
-              line: top.line,
-              endLine: i + 1,
-              level: 1,
-            });
           }
         }
       }
