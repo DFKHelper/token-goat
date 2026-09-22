@@ -72,6 +72,21 @@ describe('manifestPrintedPaths', () => {
     expect(manifest, 'an edited file must survive a read list that overflows the char budget').toContain('edited-one.ts')
     expect(sampled.some((p) => p.endsWith('edited-one.ts')), 'an edited file must be reachable past a full read section').toBe(true)
   })
+
+  // HAND-DERIVED: a path containing a space is the input, and the expectation is the whole path back. Nothing here is read off the renderer: the row interpolates the path verbatim, so whatever the sample returns must equal what went in. Reading it back out of the rendered text with a whitespace-delimited pattern returned `.../my` instead, and the survival canary then looked for a path the manifest had never printed -- a guaranteed miss counted as context lost.
+  it('keeps a path whole when the path contains a space', () => {
+    const spaced = `${FIXTURE_ROOT}/my app/spaced name.ts`
+    recordFileEdit(spaced)
+    expect(manifestPrintedPaths(undefined, 64).some((p) => p.endsWith('my app/spaced name.ts'))).toBe(true)
+  })
+
+  // HAND-DERIVED: 41 edited files is one past MAX_ROWS, chosen so the section emits its `- ...and N more` overflow line; the paths are short so that line stays inside the character budget rather than being cut away with the rows after it. The overflow notice is itself a `- ` bullet, so a sample read back out of the rendered text collected the literal `...and` as though it were a file.
+  it('never samples the overflow notice a full section ends with', () => {
+    for (let i = 0; i < 41; i++) recordFileEdit(`/tg/e${i}.ts`)
+    const sampled = manifestPrintedPaths(undefined, 64)
+    expect(buildManifest(undefined), 'the overflow notice must actually be printed, or this asserts nothing').toContain('- ...and ')
+    expect(sampled.filter((p) => p.includes('...and')), 'the overflow notice is not a file').toEqual([])
+  })
 })
 
 describe('postCompactHandler', () => {

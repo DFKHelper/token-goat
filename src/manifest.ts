@@ -122,26 +122,21 @@ function selectManifestFiles(sessionId?: string): { files: FileEntry[]; readFile
  * Paths are returned verbatim, because that is exactly what the rows print: {@link renderReadRow} and the edited/symbol rows each interpolate the stored path with no transformation. Case tolerance belongs at the comparison, where both sides get folded together.
  */
 export function manifestPrintedPaths(sessionId: string | undefined, limit: number): string[] {
-  // Read back out of the rendered manifest rather than re-derived from the session, because only the rendered text knows what was printed. Re-walking selectManifestFiles sampled the uncapped lists: rows past each section's MAX_ROWS were counted despite never being shown, and since the walk ran read-files first, a session with `limit` or more of them never reached the edited or symbol-only sections at all. Capping each section at MAX_ROWS here instead would still have been a guess -- capManifestChars applies a character budget to the joined string afterwards, so on the session that surfaced this only 25 of the 40 allowed read rows survived. A path the model was never shown cannot survive into the summary, so counting one against survival reports retained context as lost.
-  const manifest = buildManifest(sessionId)
-  const lines = manifest.split('\n')
-  // capManifestChars slices mid-string and then appends its notice on a line of its own, so when it fired, the row just before that notice is whatever the slice left of a row -- possibly a path cut in half, which would match nothing in the summary and count as lost. Stop one row short of it.
-  const truncatedAt = lines.findIndex((l) => l.startsWith('...(manifest truncated at '))
-  const end = truncatedAt === -1 ? lines.length : Math.max(0, truncatedAt - 1)
-  const seen = new Set<string>()
-  for (let i = 0; i < end; i++) {
-    const line = lines[i]!
-    // Web URLs are rendered as `- ` rows too, and they are not paths; the sections before that header are.
-    if (line.startsWith('### Web URLs fetched')) break
-    const path = /^- (\S+)/.exec(line)?.[1]
-    if (path === undefined) continue
-    seen.add(path)
-    if (seen.size >= limit) break
-  }
-  return [...seen]
+  // Taken from what the render step recorded, not parsed back out of its own output. Re-deriving from selectManifestFiles sampled the uncapped lists, so rows past each section's MAX_ROWS counted despite never being shown; capping at MAX_ROWS here instead would still have been a guess, because capManifestChars applies a character budget to the joined string afterwards. Re-parsing the rendered text was the next wrong answer: a path containing a space stops at the space, the `- ...and N more` overflow notice is itself a bullet, and with no web section to stop at the scan runs on into SAFE_TO_DISCARD and reads cached shell commands as paths. A path the model was never shown cannot survive into the summary, so every one of those counts retained context as lost.
+  const { printed } = buildManifestParts(sessionId)
+  return printed.slice(0, limit)
 }
 
-export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?: string): string {
+/**
+ * The manifest text together with the file paths it actually printed, in print order.
+ *
+ * One pass, so the two can never disagree. A row is recorded only if it was inside its section's row cap AND its full rendered line survives the character budget -- `includes` on the whole row rather than on the path, so a row the budget sliced in half is not counted, and only the three file sections contribute, which is what keeps notices, web URLs and SAFE_TO_DISCARD rows out without needing to recognise them.
+ */
+function buildManifestParts(
+  sessionId?: string,
+  cwd?: string,
+  transcriptPath?: string,
+): { text: string; printed: string[] } {
   const { files, readFiles, editedFiles, symbolOnlyFiles } = selectManifestFiles(sessionId)
   const webFetches = [...getSessionWebFetches().entries()]
 
@@ -150,21 +145,38 @@ export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?:
   lines.push(`Files read: ${readFiles.length}`)
   lines.push(`Files edited: ${editedFiles.length}`)
 
+  // Every row a file section prints, paired with the path it names, so the survival sample below is taken rather than re-derived.
+  const fileRows: { path: string; row: string }[] = []
+  const appendFileSection = (header: string, entries: readonly FileEntry[], render: (entry: FileEntry) => string): void => {
+    const rows = entries.map(render)
+    appendCappedSection(lines, header, rows, MAX_ROWS)
+    for (let i = 0; i < Math.min(rows.length, MAX_ROWS); i++) fileRows.push({ path: displaySafePath(entries[i]!.path), row: rows[i]! })
+  }
+
   // Edits before reads, because capManifestChars cuts the tail and the two sections are not worth the same. The budget is 1600 chars by default and a read row runs about 55, so roughly 28 read rows consume all of it -- MAX_ROWS (40) is not even reachable. With reads rendered first, any session past that many reads had its entire edited-files section truncated away, and the summarizing model was told what the session had looked at but not what it had changed. Measured: 45 reads and one edit printed no edited row at all. Reads are also the recoverable half, since a dropped read row costs a re-read while a dropped edit is a fact about the session that nothing else records.
-  appendCappedSection(
-    lines,
-    '### Edited files',
-    editedFiles.map((entry) => `- ${displaySafePath(entry.path)}`),
-    MAX_ROWS,
-  )
-  appendCappedSection(lines, '### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles.map(renderSymbolReadRow), MAX_ROWS)
-  appendCappedSection(lines, '### Read files', readFiles.map(renderReadRow), MAX_ROWS)
+  appendFileSection('### Edited files', editedFiles, (entry) => `- ${displaySafePath(entry.path)}`)
+  appendFileSection('### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles, renderSymbolReadRow)
+  appendFileSection('### Read files', readFiles, renderReadRow)
   appendCappedSection(lines, '### Web URLs fetched', webFetches.map(([key, cacheId]) => renderWebFetchRow(key, cacheId)), MAX_ROWS)
 
   lines.push(...buildSafeToDiscardSection(files))
   lines.push(...buildMemEpochSection())
 
-  return capManifestChars(lines.join('\n'), sessionId, cwd, transcriptPath)
+  const text = capManifestChars(lines.join('\n'), sessionId, cwd, transcriptPath)
+
+  const seen = new Set<string>()
+  const printed: string[] = []
+  for (const { path, row } of fileRows) {
+    if (seen.has(path) || !text.includes(row)) continue
+    seen.add(path)
+    printed.push(path)
+  }
+  return { text, printed }
+}
+
+/** The compaction manifest for `sessionId`, as text -- {@link buildManifestParts} without the survival sample its other caller needs. */
+export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?: string): string {
+  return buildManifestParts(sessionId, cwd, transcriptPath).text
 }
 
 /**
