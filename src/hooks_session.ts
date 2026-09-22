@@ -1,5 +1,5 @@
 import type { HookEvent } from './hook_registry.js';
-import { registerHook } from './hook_registry.js';
+import { registerHook, sessionStateKey } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import crypto from 'node:crypto';
 import { passOutput, contextOutput, getCwd } from './hooks_common.js';
@@ -36,7 +36,7 @@ import {
 function pendingContextHandler(event: HookEvent): HookOutput {
   try {
     if (!event.sessionId || (!dropsPromptSubmitContext() && !dropsPreCompactContext())) return passOutput();
-    const pending = peekPendingContext(event.sessionId);
+    const pending = peekPendingContext(sessionStateKey(event));
     return pending === null ? passOutput() : contextOutput(pending);
   } catch {
     return passOutput();
@@ -188,7 +188,7 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
     // On a harness that discards this event's response, returning the text would deliver nothing.
     // Queue it for the next tool call, where there IS a channel that reaches the model.
     if (dropsPromptSubmitContext()) {
-      queuePendingContext(event.sessionId, text);
+      queuePendingContext(sessionStateKey(event), text);
       return passOutput();
     }
     return contextOutput(text);

@@ -172,4 +172,30 @@ describe('deferred hint delivery, through the real relay', () => {
     expect(emitted).toContain('MANIFEST-MARKER-TWO')
     expect(peekPendingContext('relay-delivered')).toBeNull()
   })
+
+  it("leaves a parent's queued manifest alone when a subagent sharing its session id makes a tool call (regression: the queue was keyed on the bare session id, so the first child tool call read the parent's compaction manifest, relay then cleared it as delivered, and the parent -- the one that compacted -- received nothing)", async () => {
+    const { relayInProcess } = await import('../src/relay.js')
+    // HAND-DERIVED: the composite key is sessionStateKey's own documented shape, applied here rather than read back from the queue.
+    queuePendingContext('parent-session', 'RECOVERY-FOR-PARENT')
+
+    const toChild = await relayInProcess('post_tool_use', {
+      session_id: 'parent-session',
+      agent_id: 'child-agent',
+      tool_name: 'TgPendingPassProbe',
+      tool_input: {},
+      tool_response: { output: 'raw' },
+    })
+    expect(toChild).not.toContain('RECOVERY-FOR-PARENT')
+    expect(peekPendingContext('parent-session')).toBe('RECOVERY-FOR-PARENT')
+
+    // Still reaches the session that queued it, on its own next tool call.
+    const toParent = await relayInProcess('post_tool_use', {
+      session_id: 'parent-session',
+      tool_name: 'TgPendingPassProbe',
+      tool_input: {},
+      tool_response: { output: 'raw' },
+    })
+    expect(toParent).toContain('RECOVERY-FOR-PARENT')
+    expect(peekPendingContext('parent-session')).toBeNull()
+  })
 })

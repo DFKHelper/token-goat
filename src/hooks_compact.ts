@@ -8,7 +8,7 @@ import * as path from 'node:path'
 
 import { markCompacted } from './session.js'
 import type { HookEvent } from './hook_registry.js'
-import { registerHook } from './hook_registry.js'
+import { registerHook, sessionStateKey } from './hook_registry.js'
 import { contextOutput, passOutput, getCwd, getTranscriptPath } from './hooks_common.js'
 import { foldPath } from './util.js'
 import type { HookOutput } from './types.js'
@@ -38,7 +38,7 @@ export function preCompactHandler(event: HookEvent): HookOutput {
       out = contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(cfg.summary_budget_chars)}\n\n${manifest}`)
     } else if (event.sessionId) {
       // Trimmed here rather than left to the queue's own cap, which keeps the tail: the adaptive char bonus can push a manifest past MAX_PENDING_CONTEXT_BYTES, and a tail-keeping trim would drop the preamble saying what the block is while keeping the least important rows.
-      queuePendingContext(event.sessionId, `${MANIFEST_RECOVERY_PREAMBLE}\n\n${manifest.slice(0, MAX_PENDING_CONTEXT_BYTES - MANIFEST_RECOVERY_PREAMBLE.length - 2)}`)
+      queuePendingContext(sessionStateKey(event), `${MANIFEST_RECOVERY_PREAMBLE}\n\n${manifest.slice(0, MAX_PENDING_CONTEXT_BYTES - MANIFEST_RECOVERY_PREAMBLE.length - 2)}`)
     }
   }
   markCompacted()

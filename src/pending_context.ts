@@ -54,14 +54,14 @@ const PENDING_SUFFIX = '.pending-context.txt'
 export const MAX_PENDING_CONTEXT_BYTES = 4_096
 
 /**
- * Queue `text` for delivery on this session's next tool call. Appends, so two hints produced by
- * one prompt both survive. Silently does nothing when the session id is unusable or the write
- * fails -- a hint that cannot be stored is a lost hint, never a failed hook.
+ * Queue `text` for delivery on the next tool call made under `stateKey`. Appends, so two hints produced by one prompt both survive. Silently does nothing when the key is unusable or the write fails -- a hint that cannot be stored is a lost hint, never a failed hook.
+ *
+ * The key is `sessionStateKey(event)`, never a bare session id: a subagent shares its parent's session id and makes tool calls of its own, so a queue keyed on the id alone let the first child tool call read and consume a manifest queued for the parent's compaction, and the parent -- the one that compacted and lost the context -- got nothing. The composite key is the one `session_store.ts` already understands: `sessionFileStem` splits on `:agent:` and hashes the agent half, so parent and child land on different sidecars.
  */
-export function queuePendingContext(sessionId: string, text: string): void {
+export function queuePendingContext(stateKey: string, text: string): void {
   const trimmed = text.trim()
   if (trimmed === '') return
-  const target = sessionSidecarPath(sessionId, PENDING_SUFFIX)
+  const target = sessionSidecarPath(stateKey, PENDING_SUFFIX)
   if (target === null) return
   try {
     const existing = readPending(target)
@@ -77,23 +77,23 @@ export function queuePendingContext(sessionId: string, text: string): void {
 }
 
 /**
- * Read everything queued for `sessionId`, or null when nothing is, without consuming it.
+ * Read everything queued under `stateKey`, or null when nothing is, without consuming it.
  *
  * Peek rather than take, because reading is not delivering. The handler that reads this queue is registered advisory, and `runHook` returns the first non-advisory non-pass result it sees and drops the advisory one it was holding alongside it. Consuming at read time therefore deleted a queued compaction manifest on any tool call where another handler also had something to say -- `postBashHandler`'s compression and delta branches are the common case -- and the manifest was gone for the rest of the session with nothing failing and the hint still counted as emitted. Pair every peek with {@link commitPendingContext} against the text that actually got emitted.
  */
-export function peekPendingContext(sessionId: string): string | null {
-  const target = sessionSidecarPath(sessionId, PENDING_SUFFIX)
+export function peekPendingContext(stateKey: string): string | null {
+  const target = sessionSidecarPath(stateKey, PENDING_SUFFIX)
   return target === null ? null : readPending(target)
 }
 
 /**
- * Clear the queue for `sessionId`, but only when `delivered` actually carries the queued text.
+ * Clear the queue for `stateKey`, but only when `delivered` actually carries the queued text.
  *
  * Delivery is proven from the string about to be serialized rather than assumed from the fact that the reading handler ran, so a peek whose result lost the turn leaves the text queued for the next tool call instead of dropping it. When it did land, this clear is what keeps a one-shot hint one-shot.
  */
-export function commitPendingContext(sessionId: string, delivered: string | null): void {
+export function commitPendingContext(stateKey: string, delivered: string | null): void {
   if (delivered === null || delivered === '') return
-  const target = sessionSidecarPath(sessionId, PENDING_SUFFIX)
+  const target = sessionSidecarPath(stateKey, PENDING_SUFFIX)
   if (target === null) return
   const queued = readPending(target)
   if (queued === null || !delivered.includes(queued)) return

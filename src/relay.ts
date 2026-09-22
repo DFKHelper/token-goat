@@ -229,7 +229,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown, har
     const output = safeSuggestions(await runHook(event))
     // Clear the deferred-hint queue only once the text is in the output that is about to be serialized. The handler that reads that queue is advisory, and runHook discards an advisory result whenever a later non-advisory handler returns one of its own, so consuming the queue at read time deleted queued compaction manifests that then reached nothing. Checking the emitted string makes delivery a fact rather than an assumption, and leaves an undelivered hint queued for the next tool call. See pending_context.ts.
     if (event.sessionId) {
-      commitPendingContext(event.sessionId, output.hookType === 'context' ? output.context : null)
+      commitPendingContext(stateKey, output.hookType === 'context' ? output.context : null)
     }
     try {
       saveSessionState(stateKey)

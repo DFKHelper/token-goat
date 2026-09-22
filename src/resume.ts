@@ -2,7 +2,8 @@
 import { readFile } from 'node:fs/promises'
 import { loadBlob } from './disk_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
-import { displaySafeText } from './paths.js'
+import { displaySafePath, displaySafeText } from './paths.js'
+import { neutralizeSpokenMarkers } from './injection_scan.js'
 import { resolveProjectRoot } from './project.js'
 import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
@@ -56,10 +57,11 @@ async function buildSkillsSection(sessionId: string): Promise<string[]> {
     if (checklist !== null) {
       const trimmed =
         checklist.length > SKILL_MAX_CHARS_EACH ? checklist.slice(0, SKILL_MAX_CHARS_EACH).trimEnd() + '…' : checklist
-      skillLines.push(`**${skill.name}**:`)
-      skillLines.push(trimmed)
+      // Both halves are repository-controlled -- a checked-in skill file names itself and writes its own DoD -- and this packet is emitted in token-goat's own voice. The name is one token, so it takes the full displaySafeText; the checklist is a multi-line block whose markdown is the point of reproducing it, so it takes the marker half only.
+      skillLines.push(`**${displaySafeText(skill.name)}**:`)
+      skillLines.push(neutralizeSpokenMarkers(trimmed))
     } else {
-      skillLines.push(`**${skill.name}** — \`token-goat skill-body ${skill.name} --section DoD\``)
+      skillLines.push(`**${displaySafeText(skill.name)}** — \`token-goat skill-body ${displaySafeText(skill.name)} --section DoD\``)
     }
   }
   skillLines.push('')
@@ -72,7 +74,7 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
   if (blob === null || typeof blob !== 'object') return null
   const raw = blob as Record<string, unknown>
   const filesArr = Array.isArray(raw['files']) ? (raw['files'] as Array<Record<string, unknown>>) : []
-  const lines: string[] = [`# Resume packet — session ${sessionId}`, '']
+  const lines: string[] = [`# Resume packet — session ${displaySafeText(sessionId)}`, '']
 
   try {
     lines.push(...(await buildSkillsSection(sessionId)))
@@ -87,7 +89,7 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
     .slice(0, 10)
   if (editedPaths.length > 0) {
     lines.push('## Edited files')
-    for (const p of editedPaths) lines.push(`- ${p}`)
+    for (const p of editedPaths) lines.push(`- ${displaySafePath(p)}`)
     lines.push('')
   }
 
@@ -99,7 +101,7 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
     .filter(Boolean)
   if (topRead.length > 0) {
     lines.push('## Top files read')
-    for (const p of topRead) lines.push(`- ${p}`)
+    for (const p of topRead) lines.push(`- ${displaySafePath(p)}`)
     lines.push('')
   }
 
@@ -138,7 +140,8 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
     const result = runGit(['diff', '--stat'], { cwd: projectRoot })
     if (result.exitCode === 0 && result.stdout.trim().length > 0) {
       lines.push('## Uncommitted changes (git diff --stat)')
-      lines.push(result.stdout.trim())
+      // Per line rather than over the block: the diffstat's own newlines are its structure, and displaySafeText escapes a newline. The filenames in it are the repository's, so the block carries the same marker risk every other row here does.
+      lines.push(result.stdout.trim().split('\n').map(displaySafeText).join('\n'))
       lines.push('')
     }
   } catch {
