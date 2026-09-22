@@ -817,6 +817,22 @@ describe('GitDiffFilter stat rollup', () => {
     expect(result).toContain('files changed')
   })
 
+  // PROVENANCE: CAPTURE. The three row spellings are real `git diff --stat` output, run on 2026-09-22 in a throwaway repository built for this: a binary file whose size changed (` b.bin    | Bin 3 -> 5 bytes`), a binary file whose size did not (` same.bin | Bin 2 -> 2 bytes`), and an ordinary text row (` t.txt    |   2 +-`) for contrast. Reading the `Bin` spelling off our own regex would have proved only that the regex agrees with itself -- and it did not agree with git, which is the defect: the pattern required a digit immediately after the bar, so every binary row failed it and went to otherLines. That bucket is excluded from the rollup threshold AND spliced ahead of the rollup, so binary rows both failed to count toward the file total and jumped above the summary they belong in.
+  it('counts binary rows as files and rolls them up with the rest', () => {
+    const lines = [
+      ...Array.from({ length: 25 }, (_v, i) => ` src/file${i}.py | 2 +-`),
+      ' src/b.bin    | Bin 3 -> 5 bytes',
+      ' src/same.bin | Bin 2 -> 2 bytes',
+      ' 27 files changed, 25 insertions(+), 25 deletions(-)',
+    ].join('\n')
+    const result = apply(gitDiffFilter, lines, ['git', 'diff', '--stat'])
+    expect(result, 'binary rows must be counted, not hoisted above the rollup').toContain('src/ (27 files,')
+    expect(result, 'a rolled-up binary row must not survive verbatim').not.toContain('b.bin')
+    // A binary change has no line counts to attribute, so the totals must come from the 25 text rows alone (each ` 2 +-` is one add and one delete) rather than picking up the `-` in `3 -> 5`.
+    expect(result).toContain('+25/-25')
+    expect(result).toContain('files changed')
+  })
+
   it('large stat with pathspec -- uses truncation not rollup', () => {
     const text = makeStatDiff(25)
     const result = apply(gitDiffFilter, text, ['git', 'diff', '--stat', '--', 'src/'])

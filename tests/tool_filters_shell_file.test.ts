@@ -80,6 +80,42 @@ describe('GrepFilter compression', () => {
     expect(compress(f, out, argv)).toBe(out.trimEnd())
   })
 
+  // CAPTURE: the shapes below are real output from `rg -l "export" src/` and `rg -c "export" src/` run in this repo on 2026-09-22, abbreviated in row count but not in form. The defect they pin was found the same way -- through the live Bash hook, which reported `grep: 385 matches across 1 file(s)` / `  src/: 385 match(es)` for the first and a column of fabricated `1 match(es)` for the second.
+  it('releases a files-with-matches search whole, because every line is the answer and none of them is a match line (regression: the summarizer read each bare path as a match on the text before its first colon, so a multi-root search lost all 385 filenames to "unattributed" and a single-root search attributed every one of them to the search root, which is a directory and not a file at all)', () => {
+    const paths = Array.from({ length: 40 }, (_, i) => `src/file_${i}.ts`)
+    const out = paths.join('\n')
+    for (const argv of [
+      ['rg', '-l', 'export', 'src/'],
+      ['rg', '--files-with-matches', 'export', 'src/'],
+      ['grep', '-rl', 'export', 'src/'], // clustered short flag: the ordinary spelling
+    ]) {
+      const got = compress(f, out, argv)
+      expect(got, argv.join(' ')).toBe(out.trimEnd())
+      expect(got, argv.join(' ')).not.toContain('match(es)')
+    }
+  })
+
+  it('releases a count-only search whole, keeping each file\'s real count (regression: every `path:6` line was counted as one match for `path`, so every count printed as 1, the header total was the file count rather than the match count, and the 20-file cap then ranked on a number the filter had invented)', () => {
+    const rows = Array.from({ length: 40 }, (_, i) => `src/file_${i}.ts:${i + 2}`)
+    const out = rows.join('\n')
+    for (const argv of [
+      ['rg', '-c', 'export', 'src/'],
+      ['rg', '--count', 'export', 'src/'],
+      ['grep', '-rc', 'export', 'src/'],
+    ]) {
+      const got = compress(f, out, argv)
+      expect(got, argv.join(' ')).toBe(out.trimEnd())
+      // The distinguishing detail: a real count survives, where the summarizer would have printed 1.
+      expect(got, argv.join(' ')).toContain('src/file_39.ts:41')
+    }
+  })
+
+  it('still summarises when only an uppercase -C is present, since that is context and not count', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
+    const out = compress(f, lines.join('\n'), ['grep', '-C', '2', 'TODO', '.'])
+    expect(out).toContain('match(es)')
+  })
+
   it('summarises large grep output with file grouping', () => {
     const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
     const out = compress(f, lines.join('\n'), argv)

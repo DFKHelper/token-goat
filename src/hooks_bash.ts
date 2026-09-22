@@ -466,12 +466,14 @@ async function maybeCompressCompoundOutput(
   if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
   if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
   // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used.
-  const shaped = pipelineShapeFilter(cmd, cwd) ?? (isUnwrapped ? detectFromCommand(cmd, cwd ?? undefined)?.filter ?? null : null)
-  const filter =
-    shaped !== null && !cfg.disabled_filters.includes(shaped.name) ? shaped : filterByName('generic')
+  const shaped = pipelineShapeFilter(cmd, cwd) ?? (isUnwrapped ? detectFromCommand(cmd, cwd ?? undefined) ?? null : null)
+  const useShaped = shaped !== null && !cfg.disabled_filters.includes(shaped.filter.name)
+  const filter = useShaped ? shaped.filter : filterByName('generic')
   if (filter === null) return null
+  // Only the shaped filter gets argv: the generic fallback is chosen precisely because no filter claimed this command, so handing it the first stage's tokens would invite it to read flags meant for something else.
+  const filterArgv = useShaped ? shaped.argv : []
   // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout.
-  const compressed = compressOutput(filter, output, '', exitCode ?? 0, [], {
+  const compressed = compressOutput(filter, output, '', exitCode ?? 0, filterArgv, {
     maxLines: cfg.max_lines,
     maxBytes: cfg.max_bytes,
   })

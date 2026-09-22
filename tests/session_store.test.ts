@@ -818,6 +818,19 @@ describe('file cap', () => {
     const minKept = Math.min(...disk.files.map((f) => f.lastReadAt))
     expect(minKept).toBe(100) // the 100 oldest (lastReadAt 0..99) are evicted
   })
+
+  // HAND-DERIVED: the timestamps are chosen from recordFileEdit's own documented behaviour (a file edited but never read is stored with `lastReadAt: 0`), not read back from a capped session. That zero put edited files at the very bottom of a lastReadAt ordering, so they were the first thing evicted -- and they are what the compaction manifest and the resume packet's edited-files list are built from.
+  it('keeps files this session edited, even when they were never read and every other file was', () => {
+    const many: FileEntry[] = []
+    // One edited-never-read file, then a full cap's worth of files each read more recently than it.
+    many.push({ ...file('/edited-never-read.ts', 0), wasEdited: true })
+    for (let i = 0; i < 600; i++) many.push(file(`/f${i}.ts`, i + 1))
+    importSessionState({ ...empty(), files: many })
+    saveSessionState('sid-edit-cap')
+    const disk = JSON.parse(fs.readFileSync(sessionFile('sid-edit-cap'), 'utf8')) as SerializedSession
+    expect(disk.files).toHaveLength(500)
+    expect(disk.files.map((f) => f.path)).toContain('/edited-never-read.ts')
+  })
 })
 
 describe('saveSessionState redaction backstop (CLAUDE.arch.md Security Boundaries)', () => {

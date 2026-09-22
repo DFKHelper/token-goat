@@ -173,6 +173,25 @@ describe('deferred hint delivery, through the real relay', () => {
     expect(peekPendingContext('relay-delivered')).toBeNull()
   })
 
+  it('clears a hint the relay rewrote on its way out, rather than re-emitting it on every later tool call', async () => {
+    const { relayInProcess } = await import('../src/relay.js')
+    const { stripUnsafeSuggestions } = await import('../src/hint_suggestion_guard.js')
+    // HAND-DERIVED: the `$` is the guard's own first unsafe test, applied to the shape the manifest really queues -- buildSafeToDiscardSection lists this session's cached commands, so a path with a shell metacharacter in it arrives here as ordinary content. Held as a variable so the assertion below proves the rewrite happened rather than assuming it; if the guard ever stops rewriting this line the test says so instead of passing vacuously.
+    const queued = 'MANIFEST-MARKER-REWRITTEN\n- `token-goat read "src/a$b.ts::fn"` — already served'
+    expect(stripUnsafeSuggestions(queued), 'the trigger must actually be rewritten, or this proves nothing').not.toBe(queued)
+    queuePendingContext('relay-rewritten', queued)
+
+    const emitted = await relayInProcess('post_tool_use', {
+      session_id: 'relay-rewritten',
+      tool_name: 'TgPendingPassProbe',
+      tool_input: {},
+      tool_response: { output: 'raw' },
+    })
+
+    expect(emitted, 'the hint still goes out, in its sanitized form').toContain('MANIFEST-MARKER-REWRITTEN')
+    expect(peekPendingContext('relay-rewritten'), 'delivered text that the relay rewrote must still count as delivered').toBeNull()
+  })
+
   it("leaves a parent's queued manifest alone when a subagent sharing its session id makes a tool call (regression: the queue was keyed on the bare session id, so the first child tool call read the parent's compaction manifest, relay then cleared it as delivered, and the parent -- the one that compacted -- received nothing)", async () => {
     const { relayInProcess } = await import('../src/relay.js')
     // HAND-DERIVED: the composite key is sessionStateKey's own documented shape, applied here rather than read back from the queue.

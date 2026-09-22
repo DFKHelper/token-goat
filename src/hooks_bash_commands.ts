@@ -374,7 +374,7 @@ function isCiBuildTestSegment(cleaned: string, cwd: string | null): boolean {
   return false
 }
 
-export function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter | null {
+export function pipelineShapeFilter(cmd: string, cwd: string | null): { filter: ToolFilter; argv: string[] } | null {
   if (hasUnquotedOperator(cmd, ['&&', '||', ';'])) {
     // For compound command chains (e.g. `npm run build && npm run typecheck`), route recognized build/test/lint commands to generic-ci.
     const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
@@ -390,7 +390,9 @@ export function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter
         }
       }
       if (recognizedCiCount > 0) {
-        return filterByName('generic-ci')
+        const ci = filterByName('generic-ci')
+        // A chain of several commands has no single argv to speak for it, so this branch keeps the empty one the caller used to pass unconditionally. generic-ci reads none.
+        return ci === null ? null : { filter: ci, argv: [] }
       }
     }
     return null
@@ -409,7 +411,8 @@ export function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter
   }
   // The first stage with its trailing redirections removed. detectFromCommand refuses anything carrying an unquoted operator, so it has to be asked about that stage alone rather than the whole pipeline.
   const detected = detectFromCommand(stripOutputPipeline(cmd), cwd ?? undefined)
-  return detected === null ? null : detected.filter
+  // The argv travels with the filter rather than being recomputed (or, as it was, dropped for an empty array at the call site). Every argv-reading behaviour in every filter was dead on this path: grep's single-file attribution saw no file to attribute to, so `rg -n pat one-file.ts | cat` reported "0 file(s)" and discarded all 38 matching lines, and grep's files-only/count-only passthrough, its match-window clipping, and the subcommand and target extraction in the cargo/gh/make filters were all reading an empty argv too. This is the same drift dispatchArgv exists to prevent one layer up, so the value is carried, never re-derived.
+  return detected === null ? null : { filter: detected.filter, argv: detected.argv }
 }
 
 /** True when the first pipeline stage of `cmd` is a `token-goat bash-output|web-output|mcp-output <id> --full` recall. That command's output is already the model's own earlier full delivery, so it must never be recompressed into a new, smaller pointer -- e.g. `token-goat bash-output <id> --full | head -300` capping a 16,959-byte recall down to a fresh 7,468-byte one. */

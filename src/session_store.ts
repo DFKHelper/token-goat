@@ -471,10 +471,16 @@ function mergeSeenImageHashes(disk: string[], mem: string[]): string[] {
   return merged.length > MAX_SEEN_IMAGE_HASHES ? merged.slice(merged.length - MAX_SEEN_IMAGE_HASHES) : merged
 }
 
-/** Drop all but the `max` most-recently-read file entries (oldest by lastReadAt). */
+/**
+ * Drop all but the `max` most relevant file entries: edited ones first, then most-recently-read.
+ *
+ * Ranking on `lastReadAt` alone evicted exactly the entries worth keeping. `recordFileEdit` stores a new entry with `lastReadAt: 0` -- correctly, since an edit is not a read and a fabricated read timestamp would let the dedup path claim the model has seen content it never received -- so a file this session edited and never read sorted below every file it read once, and at the cap it went first. Those entries are what `selectManifestFiles` and the resume packet's edited-files list are built from, which makes them the most expensive ones to lose. The edit flag carries that priority instead of a timestamp, so nothing has to invent a read that did not happen.
+ */
 function capFiles(s: SerializedSession, max: number): SerializedSession {
   if (s.files.length <= max) return s
-  const kept = [...s.files].sort((a, b) => b.lastReadAt - a.lastReadAt).slice(0, max)
+  const kept = [...s.files]
+    .sort((a, b) => (a.wasEdited === b.wasEdited ? b.lastReadAt - a.lastReadAt : a.wasEdited ? -1 : 1))
+    .slice(0, max)
   return { ...s, files: kept }
 }
 

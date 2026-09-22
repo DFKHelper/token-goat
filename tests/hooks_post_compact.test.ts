@@ -16,7 +16,7 @@ import { dataDir } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { postCompactHandler } from '../src/hooks_compact.js'
-import { buildManifest } from '../src/manifest.js'
+import { buildManifest, manifestPrintedPaths } from '../src/manifest.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordFileRead } from '../src/session.js'
 import { isCaseInsensitiveFs } from '../src/util.js'
@@ -56,6 +56,22 @@ beforeEach(() => {
 
 afterEach(() => {
   clearModuleCaches()
+})
+
+// HAND-DERIVED: 64 read files is computed from the two caps that disagreed, not read off either -- the survival sample asks for 64 paths while buildManifest prints at most 40 rows per section, so a session at or above the sample size exhausts the walk inside the read-files list. The assertion is the invariant rather than a count: every sampled path must be one the manifest actually printed, because a path the model was never shown cannot be judged to have survived. Checked against buildManifest's real output rather than against the cap constant, so the two cannot drift apart again silently.
+describe('manifestPrintedPaths', () => {
+  it('samples only paths the manifest actually prints, including from the sections after the first', () => {
+    for (let i = 0; i < 45; i++) recordFileRead(`${FIXTURE_ROOT}/printed/read-${i}.ts`)
+    recordFileEdit(`${FIXTURE_ROOT}/printed/edited-one.ts`)
+    const manifest = buildManifest(undefined)
+    const sampled = manifestPrintedPaths(undefined, 64)
+    expect(sampled.length).toBeGreaterThan(0)
+    const unprinted = sampled.filter((p) => !manifest.includes(parse(p).base))
+    expect(unprinted, 'the canary must not sample rows the manifest never printed').toEqual([])
+    // 45 read files is past both the section's own 40-row cap and the manifest's 1600-char budget, which is the case that used to lose the edited row entirely. Asserted against the manifest text rather than assumed, so this cannot start passing vacuously if the edited section stops being emitted.
+    expect(manifest, 'an edited file must survive a read list that overflows the char budget').toContain('edited-one.ts')
+    expect(sampled.some((p) => p.endsWith('edited-one.ts')), 'an edited file must be reachable past a full read section').toBe(true)
+  })
 })
 
 describe('postCompactHandler', () => {
@@ -164,13 +180,16 @@ describe('postCompactHandler', () => {
   })
 
   it('caps how many paths it samples, so a session with hundreds of files does not scan the summary hundreds of times', () => {
-    // Deliberately more files than the cap. The count tracks MANIFEST_SURVIVAL_SAMPLE in src/hooks_compact.ts: at or below it this case stops exercising a cap at all and silently becomes an assertion that the session had exactly this many files.
+    // Deliberately more files than any cap in the path. This used to assert the total was exactly MANIFEST_SURVIVAL_SAMPLE (64), a number read off the constant rather than off the output -- so it passed while the sample included 24 rows the manifest never printed, and the denominator of a survival ratio counted content the model was never given. The bound that matters is the printed one: the total must not exceed the sample cap, and every path in it must be a row buildManifest really emitted.
     for (let i = 0; i < 96; i++) {
       recordFileRead(makeTmpFile(`sampled-${i}.ts`))
     }
+    const printedRows = buildManifest().split('\n').filter((l) => /^- \S/.test(l)).length
     postCompactHandler(postCompactEvent('a summary naming nothing in particular'))
     const detail = latestCompactSummaryRow()?.detail ?? ''
     const total = Number(/manifest_paths=\d+\/(\d+)/.exec(detail)?.[1])
-    expect(total).toBe(64)
+    expect(total, 'the sample must stay bounded, or a large session rescans the summary hundreds of times').toBeLessThanOrEqual(64)
+    expect(total, 'and must not exceed what the manifest actually printed').toBeLessThanOrEqual(printedRows)
+    expect(total, 'while still sampling enough to discriminate').toBeGreaterThan(10)
   })
 })

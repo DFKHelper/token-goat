@@ -412,7 +412,8 @@ export class GitLogFilter extends GitBaseFilter {
 // the combined-diff (`git diff --cc` / `git show --cc`) form, which omits filenames entirely
 // ("Binary files differ") -- the filename segment is optional so both shapes match.
 const _GIT_DIFF_BINARY_RE = /^Binary files?(?: .+)? differ$/
-const _GIT_DIFF_STAT_FILE_RE = /^\s+\S.*\|\s+\d+/
+// A binary file's row carries `Bin 3 -> 5 bytes` (or a bare `Bin` when the size did not change) where a text row carries a change count, so requiring a digit after the bar classified every binary row as "not a stat line". Those rows then went to otherLines, which is excluded from the rollup threshold AND spliced ahead of the rollup: 60 changed binary files read as one stat line and shipped uncompressed, and a mixed diff hoisted its binary rows above the directory summary they belonged in. Matched here so they count toward the threshold and roll up with everything else -- _diffStatLineCounts finds no +/- in `Bin ...`, which is correct, since a binary change has no line counts to attribute.
+const _GIT_DIFF_STAT_FILE_RE = /^\s+\S.*\|\s+(?:\d+|Bin\b)/
 const _GIT_DIFF_STAT_SUMMARY_RE = /^\s*\d+ files? changed/
 const _DIFF_STAT_DIR_ROLLUP_THRESHOLD = 20
 // Matches the numeric total-changes column that follows " | " in a stat line, e.g. "1000" in

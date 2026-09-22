@@ -24,6 +24,32 @@ import { stripAnsiCodes } from '../bash_compress.js'
 const _GREP_COMPRESS_THRESHOLD = 30
 const _GREP_MAX_FILE_LINES = 20
 
+/**
+ * True when a grep/rg command asks for one of the two output shapes whose lines are not matches.
+ *
+ * `-l`/`--files-with-matches` emits a bare path per line and `-c`/`--count` emits `path:count`. Neither is a `path:lineno:text` match line, and GrepFilter's summarizer reads every line as one match on the text before its first colon. So `-l` attributed all 385 paths of an `rg -l export src/` to `src/` -- the search root, which is not a file -- and reported "385 matches across 1 file(s)", destroying the only thing the caller asked for. `-c` was worse in kind: each `path:6` became one match for `path`, so every real count printed as 1, the header's total was the file count, and the top-20 cap then ranked on a number the filter had fabricated.
+ *
+ * Short flags are matched inside a cluster, not just alone: `grep -rl` and `grep -rc` are the ordinary spellings and an exact-token test misses both. Case is load-bearing -- `-c` is count, `-C` is context.
+ */
+function grepFlagInCluster(argv: string[], short: string, long: string): boolean {
+  for (const a of argv) {
+    if (a === long || a.startsWith(long + '=')) return true
+    if (a.startsWith('--') || !a.startsWith('-') || a.length < 2) continue
+    if (/^-[A-Za-z]+$/.test(a) && a.slice(1).includes(short)) return true
+  }
+  return false
+}
+
+/** `-l`/`--files-with-matches`: every line is a bare path, never a match. */
+function isFilesOnlySearch(argv: string[]): boolean {
+  return grepFlagInCluster(argv, 'l', '--files-with-matches')
+}
+
+/** `-c`/`--count`: every line is `path:count`, and the count is the answer. */
+function isCountOnlySearch(argv: string[]): boolean {
+  return grepFlagInCluster(argv, 'c', '--count')
+}
+
 // ---------------------------------------------------------------------------
 // GrepFilter
 // ---------------------------------------------------------------------------
@@ -46,6 +72,8 @@ export class GrepFilter extends ToolFilter {
 
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[], ctx: CompressContext = {}): string {
     const text = this.combineOutput(stdout, stderr)
+    // Released whole: the per-file summary below is a lossy restatement of match lines, and neither of these shapes has any. A files-only list IS the answer, and a count list is already one short line per file, so summarising either can only subtract. apply()'s line and byte caps still bound the result, and they disclose what they drop.
+    if (isFilesOnlySearch(argv) || isCountOnlySearch(argv)) return text
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
     // Under the summarise threshold the raw output ships verbatim, which used to include a 5,000-char hit inside a minified bundle at full length: neither this filter nor apply()'s line/byte caps ever looks at an individual line. Clip those to a window centred on the match instead. The >30-line branch below needs nothing, since it already discards line content entirely.
@@ -161,14 +189,6 @@ export class RgFilter extends ToolFilter {
     return depth
   }
 
-  private static _isFilesOnly(argv: string[]): boolean {
-    return argv.some(a => a === '-l' || a === '--files-with-matches')
-  }
-
-  private static _isCountOnly(argv: string[]): boolean {
-    return argv.some(a => a === '-c' || a === '--count')
-  }
-
   /** True when argv carries an actual context flag (-A/-B/-C/--[after|before]-context/--context, short or long form). */
   private static _hasContextFlags(argv: string[]): boolean {
     const longFlags = ['--after-context', '--before-context', '--context']
@@ -223,7 +243,7 @@ export class RgFilter extends ToolFilter {
 
   private _compressBody(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const text = this.combineOutput(stdout, stderr)
-    if (RgFilter._isFilesOnly(argv) || RgFilter._isCountOnly(argv)) return text
+    if (isFilesOnlySearch(argv) || isCountOnlySearch(argv)) return text
     const lines = text.split('\n')
     if (lines.length <= _RG_CONTEXT_THRESHOLD) return text
     if (!lines.some(l => l === RgFilter._SEP)) return text

@@ -84,6 +84,18 @@ describe('post-hook filter selection for a piped command', () => {
     expect(body, 'must still carry the match count').toContain('400')
   })
 
+  // PROVENANCE: CAPTURE. Real `rg -n "describe\(" tests/tool_filters_git.test.ts` output from this repository on 2026-09-22, run twice against the live hook: bare it reported `grep: 38 matches across 1 file(s)` with the path named, and piped to `cat` it reported `grep: 38 matches across 0 file(s)` / `(unattributed lines: 38)` -- the same 38 matches, every one discarded. The captured part is the line shape a SINGLE-file search emits: `lineno:text` with no path prefix, because grep and rg only prefix a filename when the search spans more than one file. That shape is the whole point here: the filter has a branch that attributes those bare lines to the one file named in argv, and the pipeline path was passing it an empty argv, so the branch could never fire.
+  const SINGLE_FILE_LINES = Array.from({ length: 400 }, (_v, i) => `${i + 1}:describe('GitLogFilter dispatch', () => {`).join('\n')
+
+  it('attributes a single-file search through a pipeline, where the path is in argv and not in the output', async () => {
+    const body = await runAndGetBody('rg -n "describe\\(" tests/tool_filters_git.test.ts | cat', SINGLE_FILE_LINES)
+    expect(compressFilters(), 'a pass-through pipeline must not fall back to generic').toContain('grep')
+    // The count survived the old defect -- what did not was any route back to the matches. A summary naming zero files is strictly worse than the raw output it replaced.
+    expect(body, 'must name the file argv searched').toContain('tests/tool_filters_git.test.ts')
+    expect(body, 'must not report every line as unattributable').not.toContain('unattributed lines')
+    expect(body, 'must not report zero files for a search that matched').not.toContain('0 file(s)')
+  })
+
   it('selects the family filter through a `2>&1 | tail` pipeline rather than shearing on the redirect', async () => {
     // `2>&1` contains an `&`, which the shared segment splitter treats as an operator, so this
     // spelling split into a bare-digit remnant that read as an unknown stage and fell back to
