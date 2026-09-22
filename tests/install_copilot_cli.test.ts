@@ -887,7 +887,12 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBeUndefined()
   })
 
-  it('emits both modifiedResult and additionalContext when a postToolUse response carries both', () => {
+  // CAPTURE: the fold target and the dropped field are both read off Copilot CLI's shipping app.js 1.0.80 --
+  // postToolExecution (offset 2043150) applies modifiedResult in place and never forwards additionalContext, and
+  // that event's native return payload (offset 1793926) has no additional_contexts key. So textResultForLlm is the
+  // only assertion here that proves delivery; asserting additionalContext alone proves our shim emits a field the
+  // harness throws away, which is what the previous version of this test did while the hint was being lost.
+  it('folds the hint into the rewritten body when a postToolUse response carries both, because additionalContext is dropped on this path', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
       cwd,
@@ -902,8 +907,23 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       env,
     )
     const parsed = JSON.parse(stdout)
-    expect(parsed.modifiedResult).toEqual({ resultType: 'success', textResultForLlm: 'compressed body' })
+    expect(parsed.modifiedResult).toEqual({ resultType: 'success', textResultForLlm: 'compressed body\n\n[token-goat: a hint]' })
     expect(parsed.additionalContext).toBe('a hint')
+  })
+
+  it('leaves the tool result untouched when a postToolUse response carries neither a rewrite nor a hint', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, JSON.stringify({}))
+    const stdout = runShim(
+      'postToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'read', toolArgs: {}, toolResult: { textResultForLlm: 'the tool said this' } }),
+      cwd,
+      env,
+    )
+    const parsed = JSON.parse(stdout)
+    // A pass-through modifiedResult would hand the tool's own bytes back as ours on every call. Nothing to fold means nothing to return.
+    expect(parsed.modifiedResult).toBeUndefined()
+    expect(parsed.additionalContext).toBeUndefined()
   })
 
   it('does not emit modifiedResult for sessionStart even when the response carries updatedToolOutput', () => {

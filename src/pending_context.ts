@@ -8,29 +8,28 @@
  * installs command hooks, so every hint it produced at prompt-submit time reached nothing. The
  * skill-drift nudge and the resident-context hints were computed and discarded on every prompt.
  *
- * So the hint is held here and delivered on the next tool call instead, via `postToolUse`'s
- * `additionalContext`. That is a few hundred milliseconds later in the same turn, and the shape is
- * strictly safer than the alternative: appending guidance after a tool result is additive and
- * visible, where rewriting the prompt would silently change what the user asked for.
+ * So the hint is held here and delivered on the next tool call instead. That is a few hundred
+ * milliseconds later in the same turn, and the shape is strictly safer than the alternative:
+ * appending guidance after a tool result is additive and visible, where rewriting the prompt would
+ * silently change what the user asked for.
  *
- * The delivery channel, however, is NOT confirmed to work on the one harness this was built for.
- * The original rationale here quoted Copilot's hooks reference -- "Additional guidance appended to
- * textResultForLlm so the model sees it after the tool output on the same turn" -- and that page
- * is not reliable: the same page also says `userPromptSubmitted` output is dropped, which a live
- * test on 1.0.80 disproved for `additionalContext`. Reading the 1.0.80 bundle instead:
- * `postToolExecution` (app.js offset 2043150) applies `modifiedResult` in place but never pushes
- * `additionalContext` anywhere, `grep -abo "onAdditionalContext:" app.js` finds no supplier for the
- * callback, and the event's native return payload (offset 1793926) has no `additional_contexts`
- * key, unlike the pre-tool sibling that does. The residual is that native
- * `hookProcessorPostToolUse` might fold the context into the `toolResultJson` it hands back; that
- * was not verified in either direction. See the `postToolUse` branch in
- * `src/bridges/copilot_cli.ts` for the full evidence.
+ * The channel it lands on is `modifiedResult.textResultForLlm`, not `additionalContext`. That
+ * distinction is the whole delivery guarantee and it was not always true here. `additionalContext`
+ * is dropped on Copilot's JS path: reading the 1.0.80 bundle, `postToolExecution` (app.js offset
+ * 2043150) applies `modifiedResult` in place and never pushes `additionalContext` anywhere,
+ * `grep -abo "onAdditionalContext:" app.js` finds no supplier for the callback, and that event's
+ * native return payload (offset 1793926) has no `additional_contexts` key, unlike the pre-tool
+ * sibling that does. `modifiedResult`, by contrast, is applied in place by that same function. So
+ * the `postToolUse` branch in `src/bridges/copilot_cli.ts` appends the queued text to the body it
+ * returns, and the hint arrives on the channel the harness reads rather than the one its docs name.
  *
- * This module is kept anyway. It is nearly free -- `getHarnessName()` is memoised, so the per-tool
- * -call price is one cached read and an empty `Set.has()` -- it is correct on any harness that does
- * honor the field, and it is the ready-made delivery half if Copilot's channel is confirmed or
- * fixed later. What must not happen is anyone reading this file and believing the hints are known
- * to arrive on Copilot today. They are not.
+ * What is still open is not the channel but the population: `PROMPT_SUBMIT_CONTEXT_DROPPED` in
+ * `src/harness_channels.ts` is empty, because a live test on 1.0.80 showed Copilot's
+ * `userPromptSubmitted` context does reach the model despite the documentation saying otherwise.
+ * So no harness currently reroutes through here for prompt-submit hints. The pre-compact queue
+ * beside it is not empty and does use this path -- see `dropsPreCompactContext`.
+ *
+ * The per-tool-call price is one memoised `getHarnessName()` read and a `Set.has()`.
  *
  * State lives in a sidecar file beside the session, not inside the session JSON, so no field has
  * to be threaded through that store's serialize/deserialize/validate/merge paths -- a shape where

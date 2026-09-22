@@ -96,7 +96,7 @@ afterEach(() => {
 })
 
 describe('sessionStartHandler when reconcileProject throws', () => {
-  it('records reconcile_note_failed with the thrown message and still returns the routing reminder', () => {
+  it('records reconcile_note_failed with the thrown message and still returns the routing reminder', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-reconcile-fail-'))
     try {
       const forwardSlashDir = normalizePath(projectDir)
@@ -113,7 +113,7 @@ describe('sessionStartHandler when reconcileProject throws', () => {
       const before = db.prepare("SELECT count(*) AS n FROM stats WHERE kind = 'reconcile_note_failed'").get() as { n: number }
       expect(before.n, 'calibration: a prior write already exists under this kind').toBe(0)
 
-      const result = sessionStartHandler(makeEvent(projectDir))
+      const result = await sessionStartHandler(makeEvent(projectDir))
 
       expect(result.hookType, 'a thrown reconcile sweep must not fail the session start').toBe('context')
       if (result.hookType === 'context') {

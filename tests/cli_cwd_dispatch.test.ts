@@ -79,16 +79,16 @@ describe('--cwd applies before dispatch for every command, not only guard-wrappe
 
   // The chdir must land before anything resolves the project root or loads config, not merely before the action body: a hook that fired after config resolution would still pass the two tests above (process.cwd() is correct by then) while silently serving the WRONG project's .token-goat.toml.
   it('applies before project config resolution, so --cwd selects the target project\'s .token-goat.toml', async () => {
-    fs.writeFileSync(path.join(target, '.token-goat.toml'), '[compact_assist]\nmax_manifest_tokens = 111\n')
-    fs.writeFileSync(path.join(elsewhere, '.token-goat.toml'), '[compact_assist]\nmax_manifest_tokens = 999\n')
+    fs.writeFileSync(path.join(target, '.token-goat.toml'), '[compact_assist]\nmax_manifest_chars = 111\n')
+    fs.writeFileSync(path.join(elsewhere, '.token-goat.toml'), '[compact_assist]\nmax_manifest_chars = 999\n')
 
     process.chdir(elsewhere)
-    const withoutCwd = await runCli(['config', 'get', 'compact_assist.max_manifest_tokens'])
+    const withoutCwd = await runCli(['config', 'get', 'compact_assist.max_manifest_chars'])
     expect(withoutCwd, stderr.join('')).toBe(0)
     expect(stdout.join('')).toContain('999')
 
     stdout.length = 0
-    const withCwd = await runCli(['--cwd', target, 'config', 'get', 'compact_assist.max_manifest_tokens'])
+    const withCwd = await runCli(['--cwd', target, 'config', 'get', 'compact_assist.max_manifest_chars'])
     expect(withCwd, stderr.join('')).toBe(0)
     expect(stdout.join('')).toContain('111')
     expect(stdout.join('')).not.toContain('999')

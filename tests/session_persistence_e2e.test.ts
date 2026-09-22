@@ -254,9 +254,9 @@ describe('sibling subagents get independent re-read dedup ledgers (regression: a
 
 describe('pre_compact manifest sees subagent edits (regression: agent_id salting drops them from the parent manifest)', () => {
   it('a file edited only by a sibling subagent still appears in the parent pre_compact manifest', () => {
-    const fileA = path.join(repo, 'parent-touched.md')
+    // Project-shaped rather than under `repo`, which the OS puts inside the temp root: the manifest drops noise paths from its read rows and every OS temp root is on that list, so a read of a file under `repo` never reaches the rows this control asserts on. The edited path can stay under `repo` because edits are exempt from that filter. Nothing here reads file A off disk -- the post_tool_use payload carries its content inline.
+    const fileA = `${path.parse(os.tmpdir()).root.split(path.sep).join('/')}tg-persist-project/parent-touched.md`
     const fileB = path.join(repo, 'subagent-edited.md')
-    fs.writeFileSync(fileA, '# A\n')
     fs.writeFileSync(fileB, '# B\n')
     const sessionId = 'e2e-compact-subagent'
 
@@ -271,7 +271,7 @@ describe('pre_compact manifest sees subagent edits (regression: agent_id salting
       session_id: sessionId,
       tool_name: 'Read',
       tool_input: { file_path: fileA },
-      tool_response: { content: fs.readFileSync(fileA, 'utf8') },
+      tool_response: { content: '# A\n' },
     })
     expect(parentReadPost.status).toBe(0)
 

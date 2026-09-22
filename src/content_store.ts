@@ -12,7 +12,8 @@ import { isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
 import { redactSecrets } from './secret_redact.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
+import { BYTES_PER_TOKEN } from './token_estimate.js'
 
 export const CONTENT_MAX_INPUT_CHARS = 512 * 1024
 export const CONTENT_MAX_ITEMS = 256
@@ -40,16 +41,16 @@ interface StoredHandoff {
   createdAt: number
 }
 
-// Measured with tiktoken (cl100k_base and o200k_base) over 120 real repo files: natural source text runs 3.83-4.22 bytes per token while a deflate/base64url payload runs 1.41-1.49, so deflate roughly halves the bytes but nearly triples tokens-per-byte and usually loses in the unit the product actually bills in.
-export const TEXT_BYTES_PER_TOKEN = 4.0
-export const BASE64URL_BYTES_PER_TOKEN = 1.45
+// The measurement behind these two numbers, and why they must stay apart, is in token_estimate.ts. Re-exported rather than restated: this module measured them, and a second copy of a ratio is how the two drift into disagreeing about the same bytes. Deflate roughly halves the bytes but nearly triples tokens-per-byte, so it usually loses in the unit the product actually bills in -- which is only visible if both sides of that subtraction are priced on their own class.
+export const TEXT_BYTES_PER_TOKEN = BYTES_PER_TOKEN.text
+export const BASE64URL_BYTES_PER_TOKEN = BYTES_PER_TOKEN.dense
 
 function estimateTextTokens(bytes: number): number {
-  return Math.round(bytes / TEXT_BYTES_PER_TOKEN)
+  return savedTokensFromBytes(bytes, 'text')
 }
 
 function estimateBase64urlTokens(bytes: number): number {
-  return Math.round(bytes / BASE64URL_BYTES_PER_TOKEN)
+  return savedTokensFromBytes(bytes, 'dense')
 }
 
 export interface CompressionResult {

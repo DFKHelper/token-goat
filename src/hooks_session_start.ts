@@ -3,6 +3,8 @@
  *
  * install.ts's `buildClaudeMdBlock()` writes a one-time static routing block into ~/.claude/CLAUDE.md at install time, and `token-goat install` also drops a SKILL.md -- but neither is reinforced again during a session. Over a long session that one-time prose competes against a strong base-training prior toward the Read/Grep tools with zero reinforcement, and the reactive PreToolUse hints (hooks_read.ts etc.) only fire after the model has already reached for the wrong tool. This hook re-surfaces the highest-leverage commands at every SessionStart source Claude Code fires (startup, resume, clear, compact).
  *
+ * On the one source that follows a compaction it also carries the resume packet -- see {@link postCompactRecovery}, which is why the handler is async.
+ *
  * Kept deliberately short (a handful of commands, not the full CLAUDE.md block) since it costs tokens on every session start. Project-aware when cheap: if the cwd resolves to an indexed project, names a concrete symbol count instead of generic boilerplate. Gated on `hints.session_start_reminder` (default true). Fails soft -- any error inside the handler returns `pass`, never blocks session start.
  */
 
@@ -99,9 +101,31 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
 }
 
 /** session_start handler: inject the reminder as context, gated on hints.session_start_reminder. */
-export function sessionStartHandler(event: HookEvent): HookOutput {
+/**
+ * The resume packet, injected automatically when this SessionStart is the one that follows a compaction.
+ *
+ * `token-goat resume <session>` built exactly this and was never called by anything: a user had to know the command existed, know their session id, and think to run it at the one moment they have just lost the context that would have reminded them. Claude Code fires SessionStart with `source: "compact"` immediately after a compaction, which is that moment, so the packet is emitted there instead of waiting to be asked for.
+ *
+ * It is not a second copy of the compaction manifest. The manifest goes to the model that writes the summary and names files; this names the skills the session loaded, the last bash commands, the fetched URLs and the uncommitted diff -- state the summarizer was never given and could not have preserved.
+ *
+ * Imported dynamically so the other four SessionStart sources (startup, resume, clear, fork) keep the cold start this module's header describes: `resume.ts` pulls in the skill cache, the bash-output cache and a `git diff` spawn, none of which belong on a plain session start. Gated on `compact_assist.enabled` -- the key that governs whether token-goat assists compaction at all -- and fails soft, since a missing session blob is the normal case for a session that compacted before token-goat was installed.
+ */
+async function postCompactRecovery(event: HookEvent): Promise<string | null> {
+  if (event.raw['source'] !== 'compact' || event.sessionId === undefined) return null
+  if (!loadConfig().compact_assist.enabled) return null
   try {
-    if (!loadConfig().hints.session_start_reminder) return passOutput()
+    const { buildResumePacket } = await import('./resume.js')
+    return await buildResumePacket(event.sessionId)
+  } catch {
+    return null
+  }
+}
+
+export async function sessionStartHandler(event: HookEvent): Promise<HookOutput> {
+  // Recovery is resolved before the reminder gate and appended after it, because the two answer different questions: `hints.session_start_reminder` turns off a routing reminder an experienced user does not need, and it must not also turn off the restoration of state that has just been compacted away. A user who silenced the reminder still gets the packet, alone.
+  const recovery = await postCompactRecovery(event)
+  try {
+    if (!loadConfig().hints.session_start_reminder) return recovery === null ? passOutput() : contextOutput(recovery)
     const cwd = getCwd(event)
     const indexed = isIndexedProject(cwd)
     let context = buildReminder(indexed)
@@ -120,9 +144,10 @@ export function sessionStartHandler(event: HookEvent): HookOutput {
     } catch {
       // dodgy DB health check must never block the base reminder
     }
+    if (recovery !== null) context += `\n\n${recovery}`
     return contextOutput(context)
   } catch {
-    return passOutput()
+    return recovery === null ? passOutput() : contextOutput(recovery)
   }
 }
 

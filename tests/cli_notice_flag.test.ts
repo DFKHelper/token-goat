@@ -55,7 +55,7 @@ async function runCli(argv: string[]): Promise<number | undefined> {
 describe('--notice prints one line ahead of the command it decorates', () => {
   it('prints the notice text as the first line of stdout, then the command runs normally', async () => {
     process.chdir(target)
-    const code = await runCli(['--notice', '[token-goat: rewrote this]', 'config', 'get', 'compact_assist.max_manifest_tokens'])
+    const code = await runCli(['--notice', '[token-goat: rewrote this]', 'config', 'get', 'compact_assist.max_manifest_chars'])
     expect(code, stderr.join('')).toBe(0)
     const lines = stdout.join('').split('\n').filter((l) => l !== '')
     expect(lines[0]).toBe('[token-goat: rewrote this]')
@@ -64,7 +64,7 @@ describe('--notice prints one line ahead of the command it decorates', () => {
 
   it('omitting --notice prints only the command\'s own output', async () => {
     process.chdir(target)
-    const code = await runCli(['config', 'get', 'compact_assist.max_manifest_tokens'])
+    const code = await runCli(['config', 'get', 'compact_assist.max_manifest_chars'])
     expect(code, stderr.join('')).toBe(0)
     expect(stdout.join('')).not.toContain('token-goat: rewrote')
   })

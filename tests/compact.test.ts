@@ -30,16 +30,12 @@ import {
   CONTEXT_TIER_CRITICAL,
   CONTEXT_TIER_HOT,
   CONTEXT_TIER_WARM,
-  buildManifest,
-  buildManifestAdaptive,
-  buildManifestWithCount,
   computeAdaptiveBudget,
   estimateTokens,
   eventCount,
   findLatestSessionId,
   getAutoTriggerMultiplier,
   getContextPressure,
-  inferSessionGoal,
   isNoisePath,
   loadSessionCache,
   measurePromptTokens,
@@ -47,6 +43,7 @@ import {
   tierForFraction,
   type SessionCacheObject,
 } from '../src/compact.js'
+import { buildManifest } from '../src/manifest.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
@@ -355,28 +352,6 @@ auto_trigger_multiplier = 2.0
     })
   })
 
-  describe('inferSessionGoal', () => {
-    // Regression: parts (the goal-fragment array) is built via an if/else-if/else-if chain
-    // that pushes AT MOST ONE string, so the old guard `goalTokens > maxTokens && parts.length
-    // > 1` could never fire -- parts.length is always 0 or 1. A long directory name (the only
-    // signal here, so only one fragment gets pushed) could blow well past the ~80 token budget
-    // with zero truncation. Fails against a reader that still gates truncation on parts.length
-    // > 1 and passes once truncation engages purely off goalTokens > maxTokens.
-    it('truncates an over-budget goal even when only a single fragment was built (long dir name)', () => {
-      const longDir = 'a'.repeat(300)
-      const cache: SessionCacheObject = {
-        files: [
-          fileEntry(`${longDir}/one.ts`, { wasEdited: true }),
-          fileEntry(`${longDir}/two.ts`, { wasEdited: true }),
-        ],
-      }
-      const goal = inferSessionGoal(cache)
-      expect(estimateTokens(goal)).toBeLessThanOrEqual(80)
-      expect(goal.length).toBeLessThan(longDir.length)
-      expect(goal.endsWith('...')).toBe(true)
-    })
-  })
-
   describe('isNoisePath', () => {
     it('returns false for empty paths', () => {
       expect(isNoisePath('')).toBe(false)
@@ -493,36 +468,8 @@ auto_trigger_multiplier = 2.0
     })
   })
 
-  describe('buildManifest', () => {
-    it('returns empty string for missing session', () => {
-      const manifest = buildManifest('nonexistent-session-id')
-      expect(manifest).toBe('')
-    })
-
-    it('returns empty string when session cache not on disk', () => {
-      const manifest = buildManifest('test-session')
-      expect(typeof manifest).toBe('string')
-    })
-  })
-
-  describe('buildManifestWithCount', () => {
-    it('returns empty manifest and zero count for missing session', () => {
-      const [manifest, count] = buildManifestWithCount('nonexistent-session-id')
-      expect(manifest).toBe('')
-      expect(count).toBe(0)
-    })
-
-    it('returns tuple with text and number', () => {
-      const result = buildManifestWithCount('nonexistent-session-id')
-      expect(Array.isArray(result)).toBe(true)
-      expect(result).toHaveLength(2)
-      expect(typeof result[0]).toBe('string')
-      expect(typeof result[1]).toBe('number')
-    })
-  })
-
   describe('eventCount', () => {
-    it('includes webFetches in the total (fail-on-buggy: webFetches omitted from the sum, unlike buildManifestWithCount)', () => {
+    it('includes webFetches in the total (fail-on-buggy: webFetches omitted from the sum, unlike the pre-fix sum)', () => {
       const cache: SessionCacheObject = {
         files: [fileEntry('a.ts'), fileEntry('b.ts', { wasEdited: true })],
         bashOutputs: [['cmd1', 'out1']],
@@ -569,15 +516,8 @@ auto_trigger_multiplier = 2.0
     })
   })
 
-  describe('buildManifestAdaptive', () => {
-    it('returns empty string for missing session', () => {
-      const manifest = buildManifestAdaptive('nonexistent-session-id')
-      expect(manifest).toBe('')
-    })
-  })
-
   describe('session directory resolution (regression)', () => {
-    // findLatestSessionId / buildManifestWithCount must read from the same base
+    // findLatestSessionId / loadSessionCache must read from the same base
     // directory the real session writer (session_store.ts) uses — tokenGoatHome()
     // (honors TOKEN_GOAT_HOME) — not dataDir() (honors XDG_DATA_HOME), a
     // different directory nothing ever writes session blobs under. storeBlob
@@ -621,15 +561,15 @@ auto_trigger_multiplier = 2.0
     // read/edited files. These tests drive the real save -> load -> manifest
     // pipeline end to end so they fail on the buggy dict-shaped reader and pass
     // once compact.ts reads the real FileEntry[] shape.
-    it('buildManifestWithCount reads real session data written under TOKEN_GOAT_HOME', () => {
+    it('loadSessionCache and the manifest builder both read real session data written under TOKEN_GOAT_HOME', () => {
       recordFileRead('C:/proj/src/gamma.ts')
       recordFileRead('C:/proj/src/gamma.ts')
       recordFileEdit('C:/proj/src/delta.ts')
       saveSessionState('real-session-id')
 
-      const [manifest, count] = buildManifestWithCount('real-session-id')
       // files.length(2: gamma.ts + delta.ts) + editedCount(1: delta.ts) = 3
-      expect(count).toBe(3)
+      expect(eventCount(loadSessionCache('real-session-id') ?? {})).toBe(3)
+      const manifest = buildManifest('real-session-id')
       expect(manifest).toContain('gamma.ts')
       expect(manifest).toContain('delta.ts')
     })
@@ -644,23 +584,21 @@ auto_trigger_multiplier = 2.0
     // immediately before compaction, so that list reads as the record of the session.
 
     it('discloses the files it left out of the read section rather than rendering a short list as a complete one', () => {
-      const TOTAL = 20
-      for (let i = 0; i < TOTAL; i++) recordFileRead(`C:/proj/src/file${i}.ts`)
+      // 45 short paths: past the 40-row section cap, and small enough in total that the
+      // max_manifest_chars cap does not also fire -- otherwise the outer truncation would eat the
+      // very disclosure line this asserts on, and the test would be measuring the wrong layer.
+      const TOTAL = 45
+      for (let i = 0; i < TOTAL; i++) recordFileRead(`/proj/src/f${String(i).padStart(2, '0')}.ts`)
       saveSessionState('read-cap-session')
 
       const manifest = buildManifest('read-cap-session')
-      const shown = manifest.split('\n').filter((l) => /^- c:\/proj\/src\/file\d+\.ts/i.test(l)).length
+      const shown = manifest.split('\n').filter((l: string) => /^- \/proj\/src\/f\d\d\.ts/i.test(l)).length
 
-      // Calibration: the cap must actually engage, or the disclosure assertion below is
-      // asserting on an uncapped list and proves nothing.
+      // Calibration: the cap must actually engage, or the disclosure assertion below is asserting
+      // on an uncapped list and proves nothing.
       expect(shown, `${TOTAL} files were read but ${shown} rendered; the cap is not engaging`).toBeLessThan(TOTAL)
       expect(shown).toBeGreaterThan(0)
-      // CAPTURE: the real manifest for this session shows 14 rows, not the 15-row cap -- the
-      // token-budget break fires first. So the disclosed count must be 'eligible minus emitted'
-      // (6), which is what makes it right; a naive `total - cap` would report 5 and be wrong.
-      expect(manifest, 'the read section dropped rows and said nothing').toMatch(
-        new RegExp(`- \\.\\.\\.and ${TOTAL - shown} more`),
-      )
+      expect(manifest, 'the read section dropped rows and said nothing').toContain(`- ...and ${TOTAL - shown} more`)
     })
 
     it('spends the read cap on files it will actually show, not on noise paths it then drops', () => {
@@ -677,8 +615,9 @@ auto_trigger_multiplier = 2.0
       const manifest = buildManifest('noise-first-session')
       // Must-not-drop anchor: the one real file has to survive. A collapse that hid everything
       // would satisfy any "no noise in the output" assertion on its own.
-      expect(manifest, 'the only non-noise file read was dropped in favour of noise paths').toContain('real.ts')
-      expect(manifest, 'noise paths must not reach the manifest').not.toContain('node_modules')
+      const readSection = manifest.split('### Read files')[1]?.split('###')[0] ?? ''
+      expect(readSection, 'the only non-noise file read was dropped in favour of noise paths').toContain('real.ts')
+      expect(readSection, 'noise paths must not reach the read section').not.toContain('node_modules')
     })
 
     it('says nothing about omissions when every file fits', () => {
@@ -714,46 +653,25 @@ auto_trigger_multiplier = 2.0
       saveSessionState('real-classification-session')
 
       const manifest = buildManifest('real-classification-session')
-      const editedSection = manifest.split('## Edited files')[1]?.split('##')[0] ?? ''
-      const readSection = manifest.split('## Files read')[1]?.split('##')[0] ?? ''
+      const editedSection = manifest.split('### Edited files')[1]?.split('###')[0] ?? ''
+      const readSection = manifest.split('### Read files')[1]?.split('###')[0] ?? ''
       expect(editedSection).toContain('edited.ts')
       expect(editedSection).not.toContain('readonly.ts')
       expect(readSection).toContain('readonly.ts')
       expect(readSection).not.toContain('edited.ts')
     })
 
-    // Regression: loadSessionCache used to return only `{ files: disk.files }`,
-    // dropping disk.webFetches/disk.bashOutputs entirely, so the manifest's
-    // "## Recent bash" / "## Web fetches" sections never rendered no matter how
-    // much real bash/web activity a session recorded.
-    it('buildManifest renders Recent bash / Web fetches sections from real recorded activity', () => {
-      recordBashOutput('hash1', 'out1', 10)
+    // Regression: the web ledger used to be dropped on the way from disk into the manifest, so a
+    // session's fetched URLs never rendered no matter how many it recorded. Bash output is not
+    // asserted here -- it reaches the manifest through SAFE_TO_DISCARD, which is covered against
+    // real stored output in hooks_compact.test.ts.
+    it('renders fetched URLs from real recorded activity', () => {
       recordWebFetch('https://example.com/page', 'prompt', 'wout1')
-      saveSessionState('real-bash-web-session')
+      saveSessionState('real-web-session')
 
-      const manifest = buildManifest('real-bash-web-session')
-      expect(manifest).toContain('## Recent bash')
-      expect(manifest).toContain('## Web fetches')
+      const manifest = buildManifest('real-web-session')
+      expect(manifest).toContain('### Web URLs fetched')
       expect(manifest).toContain('https://example.com/page')
-    })
-
-    // Regression: the Python original (compact.py, section "6b.5. Session Goal") wired
-    // infer_session_goal into _build_manifest_from_cache so the compaction LLM gets
-    // immediate context about what the session was trying to accomplish. The TS port
-    // carried inferSessionGoal itself over (fully implemented, unit-tested in isolation
-    // under the 'inferSessionGoal' describe block above) but never called it from
-    // _buildManifestText, so a real session's manifest -- driven end to end through
-    // recordFileEdit -> saveSessionState -> loadSessionCache -> buildManifest, the same
-    // production path every other test in this block exercises -- never contained a
-    // '## Session goal' section no matter how much real edit activity was recorded.
-    it('renders a Session goal section inferred from real recorded edit activity', () => {
-      recordFileEdit('C:/proj/src/widgets/one.ts')
-      recordFileEdit('C:/proj/src/widgets/two.ts')
-      saveSessionState('real-goal-session')
-
-      const manifest = buildManifest('real-goal-session')
-      expect(manifest).toContain('## Session goal')
-      expect(manifest).toContain('widgets')
     })
   })
 
@@ -826,35 +744,36 @@ auto_trigger_multiplier = 2.0
       expect(computeAdaptiveBudget({}, 4000)).toBe(200)
     })
 
-    // Bug 2: buildManifestAdaptive scales its budget by the session cache's real
-    // age, derived from the persisted created_ts. Pre-fix created_ts was never
-    // written and loadSessionCache dropped it, so age was always 0 (young tier)
-    // and an old cache produced the same budget as a fresh one.
-    it('scales the manifest budget by the real persisted cache age (created_ts)', () => {
-      // 40 edited files so the "## Edited files" section is budget-limited: a
-      // bigger (older) budget lists more of them, making the effect observable.
+    // Bug 2: the manifest budget scales by the session cache's real age, derived from the
+    // persisted created_ts. Pre-fix created_ts was never written and loadSessionCache dropped it,
+    // so age was always 0 (young tier) and an old cache produced the same budget as a fresh one.
+    // Asserted on the round trip itself rather than through a rendered manifest: the two things
+    // that broke are the writer stamping the field and the reader returning it, and a row count
+    // downstream of a character cap only observes them through two more layers of budgeting.
+    it('persists created_ts and lets it drive the session-age budget tier', () => {
       for (let i = 0; i < 40; i++) recordFileEdit(`/proj/src/edited${i}.ts`)
       saveSessionState('age-e2e')
 
       const p = path.join(tmpHome, SESSIONS_SUBDIR, 'age-e2e.json')
       const nowSecs = Math.floor(Date.now() / 1000)
       const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>
+      expect(typeof raw['created_ts'], 'saveSessionState must stamp created_ts').toBe('number')
 
-      // Mature cache: created ~4000s ago (>3600s tier). 40 edits over ~66min keeps
-      // edit density above the 0.3/min floor, so the multiplier stays at 1.4.
+      // Mature cache: created ~4000s ago (>3600s tier). 40 edits over ~66min keeps edit density
+      // above the 0.3/min floor, so the multiplier stays at 1.4.
       raw['created_ts'] = nowSecs - 4000
       fs.writeFileSync(p, JSON.stringify(raw), 'utf8')
-      const matureManifest = buildManifestAdaptive('age-e2e')
+      const mature = loadSessionCache('age-e2e')
+      expect(mature?.created_ts).toBe(nowSecs - 4000)
+      const matureBudget = computeAdaptiveBudget(mature ?? {}, nowSecs - (mature?.created_ts ?? nowSecs))
 
       // Young cache: created just now -> 0.6 tier.
       raw['created_ts'] = nowSecs
       fs.writeFileSync(p, JSON.stringify(raw), 'utf8')
-      const youngManifest = buildManifestAdaptive('age-e2e')
+      const young = loadSessionCache('age-e2e')
+      const youngBudget = computeAdaptiveBudget(young ?? {}, nowSecs - (young?.created_ts ?? nowSecs))
 
-      // The mature cache's larger budget must list strictly more edited files.
-      const editedLines = (m: string): number =>
-        (m.split('## Edited files')[1]?.split('##')[0]?.match(/^- /gm) ?? []).length
-      expect(editedLines(matureManifest)).toBeGreaterThan(editedLines(youngManifest))
+      expect(matureBudget).toBeGreaterThan(youngBudget)
     })
   })
 

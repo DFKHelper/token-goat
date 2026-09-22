@@ -174,12 +174,11 @@ describe('cmdConfig get', () => {
   })
 
   it('returns array as JSON for array-typed keys', () => {
-    cmdConfig({ action: 'get', key: 'compact_assist.triggers' })
+    cmdConfig({ action: 'get', key: 'indexing.skip_files' })
     const out = captured().trim()
     const parsed = JSON.parse(out) as unknown[]
-    // Pin the real default content, not just "is a non-empty array" -- that shape check alone
-    // would pass even if the returned array held the wrong section's values entirely.
-    expect(parsed).toEqual(['manual', 'auto'])
+    // Pin the real default content, not just "is a non-empty array" -- that shape check alone would pass even if the returned array held the wrong section's values entirely.
+    expect(parsed).toEqual(['coverage.json', 'coverage-final.json'])
   })
 
   it('throws with a key-not-found message for an unknown key, without also writing directly to stderr (regression: cmdConfig used to emitErr AND throw the same message, double-printing once the CLI guard() catch also prints the thrown error)', () => {
@@ -196,15 +195,15 @@ describe('cmdConfig get', () => {
   })
 
   it('annotates a value that came from a project .token-goat.toml', () => {
-    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
-      cmdConfig({ action: 'get', key: 'compact_assist.min_events' })
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', () => {
+      cmdConfig({ action: 'get', key: 'compact_assist.max_manifest_chars' })
       expect(captured()).toContain('500')
       expect(captured()).toContain('# from .token-goat.toml')
     })
   })
 
   it('leaves a globally-resolved value byte-identical even while a project .token-goat.toml exists for OTHER keys', () => {
-    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', () => {
       cmdConfig({ action: 'get', key: 'compact_assist.enabled' })
       // The project file is present but does not pin this key, so the annotation must not appear -- otherwise every key in a project with any config at all would be mislabeled as overridden.
       expect(captured().trim()).toBe('true')
@@ -212,8 +211,8 @@ describe('cmdConfig get', () => {
   })
 
   it('--json names the resolving layer in both directions', () => {
-    inProjectDir('[compact_assist]\nmin_events = 500\n', (dir) => {
-      cmdConfig({ action: 'get', key: 'compact_assist.min_events', json: true })
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', (dir) => {
+      cmdConfig({ action: 'get', key: 'compact_assist.max_manifest_chars', json: true })
       const overridden = JSON.parse(captured()) as Record<string, unknown>
       expect(overridden['source']).toBe('project')
       expect(String(overridden['projectPath'])).toContain(path.basename(dir))
@@ -235,7 +234,7 @@ describe('cmdConfig get', () => {
  * and reporting one as the other sends the reader to edit the wrong thing, so the pair is
  * pinned as producing different output rather than each being checked in isolation.
  *
- * `compact_assist.min_events` is the project-layer probe precisely because it has NO entry in
+ * `compact_assist.max_manifest_chars` is the project-layer probe precisely because it has NO entry in
  * CONFIG_KEY_ENV_OVERRIDES -- no env var can confound it. `hints.min_file_lines_for_hint` is
  * the env probe because it has one.
  */
@@ -265,10 +264,10 @@ describe('cmdConfig layer attribution', () => {
   }
 
   it('state global: no project file at all leaves both commands unannotated', () => {
-    const text = bothText('compact_assist.min_events')
-    expect(text.get).toBe('3')
-    expect(text.listLine).toBe('compact_assist.min_events = 3')
-    const json = bothJson('compact_assist.min_events')
+    const text = bothText('compact_assist.max_manifest_chars')
+    expect(text.get).toBe('1600')
+    expect(text.listLine).toBe('compact_assist.max_manifest_chars = 1600')
+    const json = bothJson('compact_assist.max_manifest_chars')
     expect(json.get['source']).toBe('global')
     expect('projectPath' in json.get).toBe(false)
     // Absence from _sources is what "global" means in list --json; an entry here would mean list disagrees with get.
@@ -276,22 +275,22 @@ describe('cmdConfig layer attribution', () => {
   })
 
   it('state global: a project file setting only OTHER keys stays byte-identical for an untouched key', () => {
-    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
-      const text = bothText('compact_assist.max_manifest_tokens')
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', () => {
+      const text = bothText('compact_assist.summary_budget_chars')
       expect(text.get).not.toContain('#')
       expect(text.listLine).not.toContain('#')
-      const json = bothJson('compact_assist.max_manifest_tokens')
+      const json = bothJson('compact_assist.summary_budget_chars')
       expect(json.get['source']).toBe('global')
       expect(json.listSource).toBeUndefined()
     })
   })
 
   it('state project: an in-bounds project value took effect, and get and list say so identically', () => {
-    inProjectDir('[compact_assist]\nmin_events = 500\n', (dir) => {
-      const text = bothText('compact_assist.min_events')
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', (dir) => {
+      const text = bothText('compact_assist.max_manifest_chars')
       expect(text.get).toBe('500  # from .token-goat.toml')
-      expect(text.listLine).toBe('compact_assist.min_events = 500  # from .token-goat.toml')
-      const json = bothJson('compact_assist.min_events')
+      expect(text.listLine).toBe('compact_assist.max_manifest_chars = 500  # from .token-goat.toml')
+      const json = bothJson('compact_assist.max_manifest_chars')
       expect(json.get['source']).toBe('project')
       expect(String(json.get['projectPath'])).toContain(path.basename(dir))
       expect(json.listSource).toEqual({ source: 'project', projectPath: json.get['projectPath'] })
@@ -299,35 +298,35 @@ describe('cmdConfig layer attribution', () => {
   })
 
   it('state project: a project value that coincidentally equals the already-effective value is still project, not rejected', () => {
-    // 1000 is what compact_assist.min_events resolves to with no project file at all (see the global test above). Equality with the effective value is exactly the took-effect condition, so this must NOT be reported as rejected -- an "it differs, therefore something rejected it" reading would be fine here and wrong; this pins the direction.
-    inProjectDir('[compact_assist]\nmin_events = 1000\n', () => {
-      expect(bothText('compact_assist.min_events').get).toBe('1000  # from .token-goat.toml')
-      expect(bothJson('compact_assist.min_events').get['source']).toBe('project')
+    // 1600 is what compact_assist.max_manifest_chars resolves to with no project file at all (see the global test above). Equality with the effective value is exactly the took-effect condition, so this must NOT be reported as rejected -- an "it differs, therefore something rejected it" reading would be fine here and wrong; this pins the direction.
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 1600\n', () => {
+      expect(bothText('compact_assist.max_manifest_chars').get).toBe('1600  # from .token-goat.toml')
+      expect(bothJson('compact_assist.max_manifest_chars').get['source']).toBe('project')
     })
   })
 
   it('state project-invalid: an out-of-bounds project value names both values and the violated range', () => {
-    inProjectDir('[compact_assist]\nmin_events = 4321\n', () => {
-      const text = bothText('compact_assist.min_events')
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 43210\n', () => {
+      const text = bothText('compact_assist.max_manifest_chars')
       // The three things the reader needs: the project file sets this key, that value is not what is in effect, and what is.
-      expect(text.get).toBe('1000  # .token-goat.toml sets 4321 (outside the allowed range 0-1000), not in effect; using 1000')
-      expect(text.listLine).toBe('compact_assist.min_events = 1000  # .token-goat.toml sets 4321 (outside the allowed range 0-1000), not in effect; using 1000')
-      const json = bothJson('compact_assist.min_events')
+      expect(text.get).toBe('16000  # .token-goat.toml sets 43210 (outside the allowed range 0-16000), not in effect; using 16000')
+      expect(text.listLine).toBe('compact_assist.max_manifest_chars = 16000  # .token-goat.toml sets 43210 (outside the allowed range 0-16000), not in effect; using 16000')
+      const json = bothJson('compact_assist.max_manifest_chars')
       expect(json.get['source']).toBe('project_invalid')
-      expect(json.get['projectValue']).toBe(4321)
-      expect(json.get['reason']).toBe('outside the allowed range 0-1000')
+      expect(json.get['projectValue']).toBe(43210)
+      expect(json.get['reason']).toBe('outside the allowed range 0-16000')
       // Not overloaded onto source:'project' -- the value did not come from the project file as written.
       expect(json.get['source']).not.toBe('project')
-      expect(json.listSource).toEqual({ source: 'project_invalid', projectPath: json.get['projectPath'], projectValue: 4321, reason: 'outside the allowed range 0-1000' })
+      expect(json.listSource).toEqual({ source: 'project_invalid', projectPath: json.get['projectPath'], projectValue: 43210, reason: 'outside the allowed range 0-16000' })
     })
   })
 
   it('state project-invalid: a wrong-typed project value reports the type mismatch, not a range', () => {
-    inProjectDir('[compact_assist]\nmin_events = "many"\n', () => {
-      const text = bothText('compact_assist.min_events')
+    inProjectDir('[compact_assist]\nmax_manifest_chars = "many"\n', () => {
+      const text = bothText('compact_assist.max_manifest_chars')
       expect(text.get).toContain('expected a number, got a string')
       expect(text.get).not.toContain('allowed range')
-      expect(bothJson('compact_assist.min_events').get['reason']).toBe('expected a number, got a string')
+      expect(bothJson('compact_assist.max_manifest_chars').get['reason']).toBe('expected a number, got a string')
     })
   })
 
@@ -480,16 +479,16 @@ describe('cmdConfig layer attribution', () => {
   })
 
   it('state project-unparsed: a malformed project file is reported once by list and inline by get, and never as a per-key project override', () => {
-    inProjectDir('[compact_assist\nmin_events = 500\n', () => {
-      const text = bothText('compact_assist.min_events')
+    inProjectDir('[compact_assist\nmax_manifest_chars = 500\n', () => {
+      const text = bothText('compact_assist.max_manifest_chars')
       expect(text.get).toContain('failed to parse')
-      expect(text.get.startsWith('3')).toBe(true)
+      expect(text.get.startsWith('1600')).toBe(true)
       // A trailing `# ...` comment is a one-line suffix by construction; smol-toml's parse message is multi-line, and letting it through would make `VALUE=$(token-goat config get k)` capture several lines.
       expect(text.get.split('\n')).toHaveLength(1)
       // list states the file-level failure once in its footer; repeating it on every one of ~200 key lines would bury the per-key annotations it sits among.
-      expect(text.listLine).toBe('compact_assist.min_events = 3')
+      expect(text.listLine).toBe('compact_assist.max_manifest_chars = 1600')
       expect(text.listAll).toContain('failed to parse')
-      const json = bothJson('compact_assist.min_events')
+      const json = bothJson('compact_assist.max_manifest_chars')
       expect(json.get['source']).toBe('project_unparsed')
       // The one-lining above is presentation only: --json still carries the parser's full multi-line message, so nothing is actually lost.
       expect(String(json.get['parseError'])).toContain('\n')
@@ -500,22 +499,22 @@ describe('cmdConfig layer attribution', () => {
 
   it('config validate reports a project value that will be ignored, and stays clean when the project value is fine', () => {
     // Without this, a rejected project value is only discoverable by happening to `config get` that exact key.
-    inProjectDir('[compact_assist]\nmin_events = 4321\n', () => {
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 43210\n', () => {
       cmdConfig({ action: 'validate', json: true })
       const findings = (JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }>; ok: boolean }).findings
       const f = findings.find((x) => x.kind === 'project_value_ignored')
-      expect(f?.key).toBe('compact_assist.min_events')
-      expect(f?.suggestion).toBe('4321 is outside the allowed range 0-1000; in effect: 1000')
+      expect(f?.key).toBe('compact_assist.max_manifest_chars')
+      expect(f?.suggestion).toBe('43210 is outside the allowed range 0-16000; in effect: 16000')
       expect(process.exitCode).toBe(1)
       process.exitCode = 0
       stdoutLines.length = 0
       cmdConfig({ action: 'validate' })
       // The explanation is not a near-miss key name, so it must not be rendered as "did you mean: <sentence>?".
-      expect(captured()).toContain('[project_value_ignored] compact_assist.min_events (4321 is outside the allowed range 0-1000; in effect: 1000)')
-      expect(captured()).not.toContain('did you mean: 4321')
+      expect(captured()).toContain('[project_value_ignored] compact_assist.max_manifest_chars (43210 is outside the allowed range 0-16000; in effect: 16000)')
+      expect(captured()).not.toContain('did you mean: 43210')
     })
     stdoutLines.length = 0
-    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', () => {
       cmdConfig({ action: 'validate', json: true })
       const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string }>; ok: boolean }
       // An in-bounds project value is not a finding -- flagging every project override would make the gate useless.
@@ -525,11 +524,11 @@ describe('cmdConfig layer attribution', () => {
 
   it('config set warns about a project value that is clamped, naming both values, because the project layer still displaces the save', () => {
     // _buildConfig merges the project raw tree OVER the global one and validates the merged result, so a clamped project value still wins over config.toml -- the save is as much a no-op as in the clean case. Staying silent here would be the mirror of the mislabel this whole change removes.
-    inProjectDir('[compact_assist]\nmin_events = 4321\n', () => {
-      cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '77' })
-      expect(capturedErr()).toContain('sets it to 4321')
-      expect(capturedErr()).toContain('taking effect as 1000')
-      expect(capturedErr()).toContain('outside the allowed range 0-1000')
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 43210\n', () => {
+      cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '77' })
+      expect(capturedErr()).toContain('sets it to 43210')
+      expect(capturedErr()).toContain('taking effect as 16000')
+      expect(capturedErr()).toContain('outside the allowed range 0-16000')
     })
   })
 })
@@ -538,16 +537,16 @@ describe('cmdConfig layer attribution', () => {
 
 describe('cmdConfig set', () => {
   it('warns that a project .token-goat.toml shadows the key it just saved', () => {
-    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
-      cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '77' })
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', () => {
+      cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '77' })
       expect(capturedErr()).toContain('.token-goat.toml')
       expect(capturedErr()).toContain('overrides it in this project')
     })
   })
 
   it('stays silent when a project .token-goat.toml exists but does not pin the key being set', () => {
-    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
-      cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_tokens', value: '123' })
+    inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', () => {
+      cmdConfig({ action: 'set', key: 'compact_assist.summary_budget_chars', value: '123' })
       // A project config that sets unrelated keys shadows nothing; warning here would train the reader to ignore the warning entirely.
       expect(capturedErr()).toBe('')
     })
@@ -575,9 +574,9 @@ describe('cmdConfig set', () => {
   })
 
   it('round-trip: set a value then get it back', () => {
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '99' })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '99' })
     invalidateConfigCache()
-    cmdConfig({ action: 'get', key: 'compact_assist.min_events' })
+    cmdConfig({ action: 'get', key: 'compact_assist.max_manifest_chars' })
     expect(captured()).toContain('99')
   })
 
@@ -595,28 +594,28 @@ describe('cmdConfig set', () => {
   })
 
   it('coerces number values correctly', () => {
-    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_tokens', value: '777' })
+    cmdConfig({ action: 'set', key: 'compact_assist.summary_budget_chars', value: '777' })
     invalidateConfigCache()
     const cfg = loadConfig()
-    expect(cfg.compact_assist.max_manifest_tokens).toBe(777)
+    expect(cfg.compact_assist.summary_budget_chars).toBe(777)
   })
 
   it('rejects an empty or whitespace-only value for a numeric field instead of silently coercing it to 0 (regression: Number(\'\') === 0 is finite, so a blank --value slipped past the Number.isFinite guard)', () => {
-    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '' })).toThrow(/expected a number/)
-    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '   ' })).toThrow(/expected a number/)
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '' })).toThrow(/expected a number/)
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '   ' })).toThrow(/expected a number/)
   })
 
   it('still accepts an explicit "0" for a numeric field', () => {
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '0' })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '0' })
     invalidateConfigCache()
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(0)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(0)
   })
 
   it('persists the change to disk (verifying nested-set actually writes)', () => {
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '42' })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '42' })
     const raw = fs.readFileSync(_testConfigPath, 'utf8')
-    expect(raw).toContain('min_events')
+    expect(raw).toContain('max_manifest_chars')
   })
 
   it('rejects a JSON array of non-string elements for a string-list field instead of silently persisting it, only for it to validate to empty on next load (regression: coerce() only type-checked JSON-array elements when the field was a number list, so a string-list key set to a JSON array of numbers reported success here but validatedStrList later silently filtered it down to [])', () => {
@@ -653,18 +652,18 @@ describe('cmdConfig set', () => {
   })
 
   it('--json returns the set value', () => {
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '7', json: true })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '7', json: true })
     const parsed = JSON.parse(captured()) as { key: string; value: unknown }
-    expect(parsed.key).toBe('compact_assist.min_events')
+    expect(parsed.key).toBe('compact_assist.max_manifest_chars')
     expect(parsed.value).toBe(7)
   })
 
   it('restores default after mutation-verify test', () => {
     const def = defaultConfig()
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: String(def.compact_assist.min_events) })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: String(def.compact_assist.max_manifest_chars) })
     invalidateConfigCache()
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(def.compact_assist.min_events)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(def.compact_assist.max_manifest_chars)
   })
 })
 
@@ -807,22 +806,22 @@ describe('cmdConfig set input validation hardening', () => {
     // The section must still be a valid object with its documented fields intact, not
     // silently replaced with the raw string (which would serialize every field as undefined).
     expect(typeof cfg.compact_assist).toBe('object')
-    expect(cfg.compact_assist.min_events).toBe(3)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(1600)
   })
 
   it('rejects a config set value above the documented max instead of silently clamping on disk (#M28)', () => {
-    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '2000' })).toThrow('outside the allowed range')
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '20000' })).toThrow('outside the allowed range')
     expect(capturedErr()).toBe('')
     // The out-of-range value must never reach disk in the first place.
     expect(fs.existsSync(_testConfigPath)).toBe(false)
   })
 
   it('accepts a config set value exactly at the documented max instead of rejecting the boundary itself (regression: an off-by-one clamp would silently reject/alter the exact max, not just values past it)', () => {
-    // compact_assist.min_events bounds are {min: 0, max: 1000} -- 1000 itself must be a legal, unclamped value.
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '1000' })
+    // compact_assist.max_manifest_chars bounds are {min: 0, max: 16000} -- 16000 itself must be a legal, unclamped value.
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '16000' })
     invalidateConfigCache()
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(1000)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(16000)
   })
 
   it('accepts a cross-field clampTo value exactly equal to the field it must not exceed (regression: an off-by-one on the clampTo comparison would reject/alter the exact boundary, not just values past it)', () => {
@@ -895,7 +894,7 @@ describe('cmdConfig set warns when an active env var shadows the write', () => {
   })
 
   it('does not warn when the key being set has no env-var override at all', () => {
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '55' })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '55' })
     expect(capturedErr()).toBe('')
   })
 
@@ -915,7 +914,7 @@ describe('cmdConfig set backs up a corrupt config.toml instead of silently clobb
     fs.writeFileSync(_testConfigPath, corruptContent, 'utf8')
     invalidateConfigCache()
 
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '77' })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '77' })
 
     expect(capturedErr()).toContain('config.toml.bak')
     expect(capturedErr()).toMatch(/failed to parse|parse/i)
@@ -925,21 +924,21 @@ describe('cmdConfig set backs up a corrupt config.toml instead of silently clobb
     expect(fs.readFileSync(backupPath, 'utf8')).toBe(corruptContent)
 
     invalidateConfigCache()
-    expect(loadConfig().compact_assist.min_events).toBe(77)
+    expect(loadConfig().compact_assist.max_manifest_chars).toBe(77)
 
     try { fs.unlinkSync(backupPath) } catch { /* ok */ }
   })
 
   it('does not create a backup or warn when config.toml is simply absent (not corrupt)', () => {
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '33' })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '33' })
     expect(capturedErr()).toBe('')
     expect(fs.existsSync(`${_testConfigPath}.bak`)).toBe(false)
   })
 
   it('does not create a backup or warn when config.toml is valid', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 5\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 5\n', 'utf8')
     invalidateConfigCache()
-    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '9' })
+    cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '9' })
     expect(capturedErr()).toBe('')
     expect(fs.existsSync(`${_testConfigPath}.bak`)).toBe(false)
   })
@@ -1004,7 +1003,7 @@ describe('config set / project exclude / prune do not persist transient env over
 
   it('config set does not bake a TOKEN_GOAT_BASH_COMPRESS override into bash_compress.enabled on disk', () => {
     withBashCompressEnvOff(() => {
-      cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '50' })
+      cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '50' })
     })
     // The env override is gone again now, so loadConfig() reflects disk only.
     expect(loadConfig().bash_compress.enabled).toBe(true)

@@ -8,7 +8,7 @@ For installation and usage, see the [README](../README.md).
 
 ## Design notes
 
-Token-goat's approach to context-saving rests on four pillars.
+Token-goat's approach to context-saving rests on five pillars.
 
 ### 1. Image compression
 
@@ -21,6 +21,8 @@ Instead of reading entire files, `token-goat symbol`, `token-goat read`, and `to
 ### 3. Compaction manifest
 
 Before Claude Code summarizes a long session, the `PreCompact` hook injects a structured manifest listing edited files, accessed symbols, recent test outcomes, and git diffs. The manifest stays under a configurable token budget (default 400) and includes a `### MUST_PRESERVE` sealed block so the compaction LLM treats critical context as load-bearing. Post-compaction, the `SessionStart` hook emits a recovery hint listing cached Bash outputs, WebFetch responses, and skill bodies so the agent can recall prior work without re-running or re-fetching.
+
+> Two of those details did not survive the rewrite and are recorded here only as history. The current manifest carries no `MUST_PRESERVE` block: it is built by `src/manifest.ts` and capped in characters rather than tokens, and its one instruction to the summarizer is to reproduce paths and symbol names verbatim. It reaches that summarizer as `customInstructions`, not `systemMessage`. See [CLAUDE.arch.md](../CLAUDE.arch.md) for what ships.
 
 ### 4. Output caching and dedup
 

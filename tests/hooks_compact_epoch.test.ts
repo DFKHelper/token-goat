@@ -303,7 +303,8 @@ describe('preCompactHandler stamps the epoch', () => {
     const cfg = defaultConfig()
     cfg.compact_assist.enabled = true
     saveConfig(cfg)
-    const p = tmpDoc('# Doc\n' + 'x'.repeat(4096))
+    // A project-shaped path rather than one under the OS temp root: the manifest filters noise paths out of its read rows before capping them, and every OS temp root is a noise path, so a fixture written there would never reach the rows this asserts on. Nothing reads the bytes here -- the row renderer stats the path for a size and floors it at 1kb.
+    const p = `${path.parse(os.tmpdir()).root.split(path.sep).join('/')}tg-epoch-project/src/pre-compaction-read.md`
     recordFileRead(normalizePath(p))
 
     const out = preCompactHandler(makeHookEvent({ eventName: 'pre_compact', toolName: '', sessionId: 'test' }))

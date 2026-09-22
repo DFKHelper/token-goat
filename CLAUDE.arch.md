@@ -133,6 +133,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/text_logfold.ts`](src/text_logfold.ts) | Text processing, analysis, and transformation for logfold |
 | [`src/text_todo.ts`](src/text_todo.ts) | Text processing, analysis, and transformation for todo |
 | [`src/text_trace.ts`](src/text_trace.ts) | Text processing, analysis, and transformation for trace |
+| [`src/token_estimate.ts`](src/token_estimate.ts) | Bytes-to-tokens estimation, by content class. |
 
 **Harness Bridges**
 
@@ -404,6 +405,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/graph_commands.ts`](src/graph_commands.ts) | CLI command handlers for code-graph commands. |
 | [`src/graph_inspection.ts`](src/graph_inspection.ts) | Code graph inspection commands: dead, deps, types, and scope. |
 | [`src/graph_traversal.ts`](src/graph_traversal.ts) | Core graph traversal, scope analysis, and cycle detection primitives. |
+| [`src/harness_channels.ts`](src/harness_channels.ts) | Which harnesses discard which hook event's response. |
 | [`src/hint_stats.ts`](src/hint_stats.ts) | Efficacy tracking + auto-suppression for token-goat's discretionary hint hooks (`token-goat hint-stats`). |
 | [`src/hint_suggestion_guard.ts`](src/hint_suggestion_guard.ts) | Strip shell commands that a path broke out of, from hint and deny text on its way to the model. |
 | [`src/hints.ts`](src/hints.ts) | Session-hint text builder |
@@ -419,6 +421,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/language_specs.ts`](src/language_specs.ts) | The one table of languages token-goat indexes. |
 | [`src/lazy_module.ts`](src/lazy_module.ts) | Shared factory for the "lazily load an optional npm dependency" pattern used by every optional-dependency reader (pdf_extract.ts, xlsx_extract.ts, ooxml_extract.ts, screenshot.ts, |
 | [`src/line_regions.ts`](src/line_regions.ts) | Maps a requested line span onto the file regions that cover it. |
+| [`src/manifest.ts`](src/manifest.ts) | The compaction manifest: what this session touched, rendered for whoever reads it next. |
 | [`src/markdown_lines.ts`](src/markdown_lines.ts) | Iterate markdown lines, skipping fenced-code-block content (``` or ~~~ blocks) and the fence delimiter lines themselves, so a `#` comment inside a code fence is never mistaken for |
 | [`src/mcp_compress_packs.ts`](src/mcp_compress_packs.ts) | Schema-aware compression packs for two specific MCP servers, layered on top of {@link mcp_compress.ts}'s generic structural pass. |
 | [`src/mcp_compress.ts`](src/mcp_compress.ts) | Deterministic, structural compression for MCP tool results. |

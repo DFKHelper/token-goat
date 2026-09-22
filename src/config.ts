@@ -126,15 +126,7 @@ function section(raw: Record<string, unknown>, key: string): Record<string, unkn
 
 // Numeric field bounds for targeted validation (config set on numbers). Extracted from _buildConfig.
 const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: string}> = {
-  'compact_assist.min_events': {min: 0, max: 1000},
-  'compact_assist.max_manifest_tokens': {min: 50, max: 10000},
   'compact_assist.auto_trigger_multiplier': {min: 1.0, max: 10.0},
-  'compact_assist.compact_skip_ttl_secs': {min: 1.0, max: 3600.0},
-  'compact_assist.noise_floor_tokens': {min: 0, max: 10000},
-  'compact_assist.edited_dir_group_threshold': {min: 0, max: 100},
-  'compact_assist.max_section_lines': {min: 0, max: 10000},
-  'compact_assist.wide_session_threshold': {min: 1, max: 10000},
-  'compact_assist.orchestrator_commit_threshold': {min: 1, max: 10000},
   'compact_assist.max_manifest_chars': {min: 0, max: 16000},
   'compact_assist.summary_budget_chars': {min: 0, max: 200_000},
   'bash_compress.max_lines': {min: 50, max: 100_000},
@@ -665,16 +657,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const ca_raw = section(raw, 'compact_assist')
   const ca = getDefaultConfig('compact_assist') as CompactAssistConfig
   ca.enabled = validatedBool(ca_raw['enabled'], ca.enabled)
-  ca.triggers = validatedStrList(ca_raw['triggers'], ca.triggers)
-  ca.min_events = validatedInt(ca_raw['min_events'], ca.min_events, ...boundsOf('compact_assist.min_events'))
-  ca.max_manifest_tokens = validatedInt(ca_raw['max_manifest_tokens'], ca.max_manifest_tokens, ...boundsOf('compact_assist.max_manifest_tokens'))
   ca.auto_trigger_multiplier = validatedFloat(ca_raw['auto_trigger_multiplier'], ca.auto_trigger_multiplier, ...boundsOf('compact_assist.auto_trigger_multiplier'))
-  ca.compact_skip_ttl_secs = validatedFloat(ca_raw['compact_skip_ttl_secs'], ca.compact_skip_ttl_secs, ...boundsOf('compact_assist.compact_skip_ttl_secs'))
-  ca.noise_floor_tokens = validatedInt(ca_raw['noise_floor_tokens'], ca.noise_floor_tokens, ...boundsOf('compact_assist.noise_floor_tokens'))
-  ca.edited_dir_group_threshold = validatedInt(ca_raw['edited_dir_group_threshold'], ca.edited_dir_group_threshold, ...boundsOf('compact_assist.edited_dir_group_threshold'))
-  ca.max_section_lines = validatedInt(ca_raw['max_section_lines'], ca.max_section_lines, ...boundsOf('compact_assist.max_section_lines'))
-  ca.wide_session_threshold = validatedInt(ca_raw['wide_session_threshold'], ca.wide_session_threshold, ...boundsOf('compact_assist.wide_session_threshold'))
-  ca.orchestrator_commit_threshold = validatedInt(ca_raw['orchestrator_commit_threshold'], ca.orchestrator_commit_threshold, ...boundsOf('compact_assist.orchestrator_commit_threshold'))
   ca.max_manifest_chars = validatedInt(ca_raw['max_manifest_chars'], ca.max_manifest_chars, ...boundsOf('compact_assist.max_manifest_chars'))
   ca.summary_budget_chars = validatedInt(ca_raw['summary_budget_chars'], ca.summary_budget_chars, ...boundsOf('compact_assist.summary_budget_chars'))
   ca.harness = validatedStr(ca_raw['harness'], ca.harness)
@@ -1155,16 +1138,7 @@ export function saveConfig(config: Config): void {
   const data = {
     compact_assist: {
       enabled: ca.enabled,
-      triggers: ca.triggers,
-      min_events: ca.min_events,
-      max_manifest_tokens: ca.max_manifest_tokens,
       ...(keepsMultiplierDefault ? {} : { auto_trigger_multiplier: ca.auto_trigger_multiplier }),
-      compact_skip_ttl_secs: ca.compact_skip_ttl_secs,
-      noise_floor_tokens: ca.noise_floor_tokens,
-      edited_dir_group_threshold: ca.edited_dir_group_threshold,
-      max_section_lines: ca.max_section_lines,
-      wide_session_threshold: ca.wide_session_threshold,
-      orchestrator_commit_threshold: ca.orchestrator_commit_threshold,
       max_manifest_chars: ca.max_manifest_chars,
       summary_budget_chars: ca.summary_budget_chars,
       harness: ca.harness,

@@ -172,8 +172,9 @@ describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
     const output = captureStdout(() => runHintStatsCommand())
     const totalLine = output.split('\n').find((l) => l.startsWith('TOTAL'))
     expect(totalLine).toBeDefined()
-    expect(totalLine).toContain('saved=5000000000')
-    expect(totalLine).toContain('spent=200')
+    // Both carry their unit in the name: the values are byte counts, and an unlabelled `spent=200` next to token figures elsewhere in this tool reads as tokens.
+    expect(totalLine).toContain('saved-bytes=5000000000')
+    expect(totalLine).toContain('spent-bytes=200')
     expect(totalLine).not.toMatch(/net=/)
   })
 

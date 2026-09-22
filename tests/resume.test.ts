@@ -6,6 +6,8 @@ import { storeBlob } from '../src/disk_cache.js'
 import { SESSIONS_SUBDIR } from '../src/session_store.js'
 import { storeBashOutput } from '../src/bash_output_cache.js'
 import { storeOutput, setSkillOutputsDirForTesting } from '../src/skill_cache.js'
+import { WEB_FETCH_KEY_SEP, exportSessionState, recordWebFetch } from '../src/session.js'
+import { clearModuleCaches } from '../src/reset.js'
 
 // Only runGit (used for the "## Uncommitted changes (git diff --stat)" section) is mocked --
 // resolveProjectRoot resolves the real project root normally, but every git subprocess call
@@ -240,6 +242,33 @@ describe('buildResumePacket — Skills section', () => {
     expect(packet).toContain('## Skills')
     expect(packet).toContain('plain-skill')
     expect(packet).toContain('token-goat skill-body plain-skill --section DoD')
+  })
+
+  // CAPTURE: the webFetches rows below are produced by recordWebFetch + exportSessionState, the same pair that writes a real session blob, rather than by hand-assembling the composite key here. A key spelled from this test's own reading of webFetchKey would agree with a wrong split by construction, which is the defect this fixture exists to catch.
+  it('names the pages this session fetched, with the cacheId that recalls each one', async () => {
+    const sessionId = 'sid-web-fetches'
+    clearModuleCaches()
+    recordWebFetch('https://example.com/docs/api', 'what are the rate limits', 'cache-id-1')
+    recordWebFetch('https://example.com/pricing', '', 'cache-id-2')
+    expect(storeBlob(SESSIONS_SUBDIR, sessionId, exportSessionState() as unknown as Record<string, unknown>)).toBe(true)
+
+    const packet = await buildResumePacket(sessionId)
+    expect(packet).not.toBeNull()
+    expect(packet).toContain('## Web pages fetched')
+    // The url and the cacheId both survive: the url is what identifies the page to a reader, the cacheId is what makes the row actionable through `token-goat web-output`.
+    expect(packet).toContain('- https://example.com/docs/api (cacheId: cache-id-1, prompt: "what are the rate limits")')
+    expect(packet).toContain('- https://example.com/pricing (cacheId: cache-id-2)')
+    // Not the raw composite key: the trailing identity digest is noise to a reader, and a row printing it would mean the key was never split.
+    expect(packet).not.toContain(`cache-id-1)${WEB_FETCH_KEY_SEP}`)
+  })
+
+  it('omits the web section entirely when the session fetched nothing', async () => {
+    const sessionId = 'sid-web-none'
+    expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
+
+    const packet = await buildResumePacket(sessionId)
+    expect(packet).not.toBeNull()
+    expect(packet).not.toContain('## Web pages fetched')
   })
 
   it('omits the Skills section entirely when no skill was loaded this session', async () => {

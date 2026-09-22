@@ -102,7 +102,7 @@ describe('loadConfig', () => {
     const def = defaultConfig()
 
     expect(cfg.compact_assist.enabled).toBe(def.compact_assist.enabled)
-    expect(cfg.compact_assist.min_events).toBe(def.compact_assist.min_events)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(def.compact_assist.max_manifest_chars)
     expect(cfg.bash_compress.max_lines).toBe(def.bash_compress.max_lines)
     expect(cfg.hints.backoff_thresholds).toEqual(def.hints.backoff_thresholds)
     expect(cfg.skill_preservation.orphan_age_secs).toBe(def.skill_preservation.orphan_age_secs)
@@ -339,7 +339,7 @@ describe('loadConfig', () => {
 
   it('mtime cache: second call with unchanged file returns same object reference', () => {
     // Write a minimal TOML so the file exists
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
 
     const first = loadConfig()
     const second = loadConfig()
@@ -347,7 +347,7 @@ describe('loadConfig', () => {
   })
 
   it('the cached object is frozen (regression: a caller mutating a sub-field of the shared cached config, e.g. loadConfig().hints.foo = x, used to silently corrupt every other caller sharing that same reference until the next cache invalidation)', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
 
     const cfg = loadConfig()
 
@@ -355,21 +355,21 @@ describe('loadConfig', () => {
     expect(Object.isFrozen(cfg.hints)).toBe(true)
     expect(Object.isFrozen(cfg.worker.blocked_roots)).toBe(true)
     expect(() => {
-      ;(cfg as { compact_assist: { min_events: number } }).compact_assist.min_events = 999
+      ;(cfg as { compact_assist: { max_manifest_chars: number } }).compact_assist.max_manifest_chars = 999
     }).toThrow(TypeError)
     // The failed mutation attempt above must not have partially applied.
-    expect(loadConfig().compact_assist.min_events).toBe(4)
+    expect(loadConfig().compact_assist.max_manifest_chars).toBe(4)
   })
 
   it('mtime cache: invalidated by invalidateConfigCache()', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
 
     const first = loadConfig()
     invalidateConfigCache()
     const second = loadConfig()
     // Same values but different object (re-parsed)
     expect(second).not.toBe(first)
-    expect(second.compact_assist.min_events).toBe(4)
+    expect(second.compact_assist.max_manifest_chars).toBe(4)
   })
 
   it('content-hash cache: a second write landing on the same mtime is still picked up (regression: the old mtime-only cache key silently served the first write forever once two writes shared an mtime tick)', () => {
@@ -378,22 +378,22 @@ describe('loadConfig', () => {
     // of racing real filesystem timing.
     const pinnedMtime = new Date('2026-01-01T00:00:00.000Z')
 
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
     fs.utimesSync(_testConfigPath, pinnedMtime, pinnedMtime)
     const first = loadConfig()
-    expect(first.compact_assist.min_events).toBe(4)
+    expect(first.compact_assist.max_manifest_chars).toBe(4)
 
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 9\n', 'utf8')
     fs.utimesSync(_testConfigPath, pinnedMtime, pinnedMtime)
 
     const second = loadConfig()
-    expect(second.compact_assist.min_events).toBe(9)
+    expect(second.compact_assist.max_manifest_chars).toBe(9)
     expect(second).not.toBe(first)
   })
 
   it('round-trips saveConfig → loadConfig with modified values', () => {
     const cfg = defaultConfig()
-    cfg.compact_assist.min_events = 7
+    cfg.compact_assist.max_manifest_chars = 7
     cfg.bash_compress.max_lines = 500
     cfg.hints.git_hint_max_ms = 99
     cfg.worker.blocked_roots = ['/tmp/blocked']
@@ -405,7 +405,7 @@ describe('loadConfig', () => {
     // saveConfig calls invalidateConfigCache internally
     const loaded = loadConfig()
 
-    expect(loaded.compact_assist.min_events).toBe(7)
+    expect(loaded.compact_assist.max_manifest_chars).toBe(7)
     expect(loaded.bash_compress.max_lines).toBe(500)
     expect(loaded.hints.git_hint_max_ms).toBe(99)
     expect(loaded.worker.blocked_roots).toEqual(['/tmp/blocked'])
@@ -490,7 +490,7 @@ describe('saveConfig and auto_trigger_multiplier explicitness (#323 regression)'
 
   it('a saveConfig() for an unrelated key does not bake the still-default auto_trigger_multiplier into the raw TOML (regression: saveConfig always resaved every field, so isAutoTriggerMultiplierExplicit() returned true forever after any config set, permanently discarding the harness-tuned default multiplier)', () => {
     const cfg = defaultConfig()
-    cfg.compact_assist.min_events = 42 // an unrelated field -- this is the kind of save that used to clobber auto_trigger_multiplier's explicitness
+    cfg.compact_assist.max_manifest_chars = 42 // an unrelated field -- this is the kind of save that used to clobber auto_trigger_multiplier's explicitness
     saveConfig(cfg)
 
     const raw = fs.readFileSync(_testConfigPath, 'utf8')
@@ -505,7 +505,7 @@ describe('saveConfig and auto_trigger_multiplier explicitness (#323 regression)'
 
     const cfg = defaultConfig()
     cfg.compact_assist.auto_trigger_multiplier = 3.5
-    cfg.compact_assist.min_events = 42 // unrelated save, should not lose the explicit multiplier
+    cfg.compact_assist.max_manifest_chars = 42 // unrelated save, should not lose the explicit multiplier
     saveConfig(cfg)
 
     const raw = fs.readFileSync(_testConfigPath, 'utf8')
@@ -520,7 +520,7 @@ describe('saveConfig and auto_trigger_multiplier explicitness (#323 regression)'
     expect(isAutoTriggerMultiplierExplicit()).toBe(true)
 
     const cfg = defaultConfig()
-    cfg.compact_assist.min_events = 42
+    cfg.compact_assist.max_manifest_chars = 42
     saveConfig(cfg)
 
     const raw = fs.readFileSync(_testConfigPath, 'utf8')
@@ -622,7 +622,6 @@ describe('defaultConfig field spot-checks', () => {
   it('CompactAssistConfig defaults', () => {
     const cfg = defaultConfig()
     expect(cfg.compact_assist.enabled).toBe(true)
-    expect(cfg.compact_assist.triggers).toEqual(['manual', 'auto'])
     expect(cfg.compact_assist.auto_trigger_multiplier).toBe(2.0)
     expect(cfg.compact_assist.harness).toBe('auto')
   })
@@ -958,62 +957,62 @@ describe('per-project .token-goat.toml override', () => {
   })
 
   it('falls back to global-only behavior unchanged when no .token-goat.toml is present (regression: existing behavior)', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(4)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(4)
     expect(getProjectConfigInfo()).toBeNull()
     expect(getLastProjectConfigParseError()).toBeNull()
   })
 
   it('a valid .token-goat.toml overriding one known key changes that key\'s effective value', () => {
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmax_manifest_chars = 9\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(9)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(9)
   })
 
   it('per-project file overriding a value also set in the global file: per-project wins', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmax_manifest_chars = 9\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(9)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(9)
   })
 
   it('per-project file setting one key in a section leaves sibling keys in that section inherited from the global file (field-level merge, not whole-section replace)', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\nmax_manifest_tokens = 700\n', 'utf8')
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\nsummary_budget_chars = 700\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmax_manifest_chars = 9\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(9)
-    expect(cfg.compact_assist.max_manifest_tokens).toBe(700)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(9)
+    expect(cfg.compact_assist.summary_budget_chars).toBe(700)
   })
 
   it('an unknown key in .token-goat.toml is ignored, same as an unknown key in the global config.toml', () => {
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nnot_a_real_key = 123\nmin_events = 6\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nnot_a_real_key = 123\nmax_manifest_chars = 6\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(6)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(6)
     expect(Object.hasOwn(cfg.compact_assist, 'not_a_real_key')).toBe(false)
   })
 
   it('an unknown section in .token-goat.toml is ignored, same as an unknown section in the global config.toml', () => {
-    fs.writeFileSync(_testProjectConfigPath, '[not_a_real_section]\nfoo = 1\n\n[compact_assist]\nmin_events = 6\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[not_a_real_section]\nfoo = 1\n\n[compact_assist]\nmax_manifest_chars = 6\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(6)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(6)
     expect(Object.hasOwn(cfg, 'not_a_real_section')).toBe(false)
   })
 
   it('a malformed .token-goat.toml fails open: global config still loads, and the parse error is reported separately from the global one', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
     fs.writeFileSync(_testProjectConfigPath, 'this is not [ valid toml ===\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(4)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(4)
     expect(getLastConfigParseError()).toBeNull()
     expect(getLastProjectConfigParseError()).not.toBeNull()
   })
 
   it('an out-of-bounds value in .token-goat.toml is clamped/rejected the same way an out-of-bounds value in the global config is', () => {
-    // compact_assist.min_events bounds are [0, 1000] (NUMERIC_FIELD_BOUNDS in config.ts).
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 999999\n', 'utf8')
+    // compact_assist.max_manifest_chars bounds are [0, 16000] (NUMERIC_FIELD_BOUNDS in config.ts).
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmax_manifest_chars = 9999999\n', 'utf8')
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(1000)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(16000)
   })
 
   it('an env var override wins over both the global file and the per-project file', () => {
@@ -1034,22 +1033,22 @@ describe('per-project .token-goat.toml override', () => {
   })
 
   it('cache: a change to the per-project file (with the global file and env unchanged) is picked up on the next loadConfig() after invalidateConfigCache()', () => {
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 3\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmax_manifest_chars = 3\n', 'utf8')
     const first = loadConfig()
-    expect(first.compact_assist.min_events).toBe(3)
+    expect(first.compact_assist.max_manifest_chars).toBe(3)
 
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 8\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmax_manifest_chars = 8\n', 'utf8')
     invalidateConfigCache()
     const second = loadConfig()
-    expect(second.compact_assist.min_events).toBe(8)
+    expect(second.compact_assist.max_manifest_chars).toBe(8)
     expect(second).not.toBe(first)
   })
 
   it('getProjectConfigInfo() reports the overridden dotted keys for the config-list display', () => {
-    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 6\n\n[hints]\ngit_hint_max_ms = 5\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmax_manifest_chars = 6\n\n[hints]\ngit_hint_max_ms = 5\n', 'utf8')
     const info = getProjectConfigInfo()
     expect(info).not.toBeNull()
-    expect(info?.keys).toEqual(expect.arrayContaining(['compact_assist.min_events', 'hints.git_hint_max_ms']))
+    expect(info?.keys).toEqual(expect.arrayContaining(['compact_assist.max_manifest_chars', 'hints.git_hint_max_ms']))
     expect(info?.parseError).toBeNull()
   })
 
@@ -1058,10 +1057,10 @@ describe('per-project .token-goat.toml override', () => {
   })
 
   it('does not break existing zero-arg loadConfig() callers (signature stays backward compatible)', () => {
-    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
     // Called exactly as every pre-existing caller in src/ calls it -- no args.
     const cfg = loadConfig()
-    expect(cfg.compact_assist.min_events).toBe(4)
+    expect(cfg.compact_assist.max_manifest_chars).toBe(4)
   })
 })
 

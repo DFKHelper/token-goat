@@ -576,20 +576,28 @@ function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
 
   if (copilotEvent === 'postToolUse') {
     // modifiedResult is honored on success: rewriteOutput (compression, fencing, image shrink) reaches LLM.
-    // additionalContext is dropped on Copilot CLI JS path; we fold context into modifiedResult.textResultForLlm.
+    // additionalContext is dropped on Copilot CLI JS path, so the ONLY channel that reaches the model here is
+    // modifiedResult.textResultForLlm, and the body that goes into it is chosen before the fold rather than
+    // instead of it. The two used to be alternatives -- a rewritten output took the first branch and skipped the
+    // fold entirely -- so any response carrying both a compressed body and a hint delivered the body and dropped
+    // the hint on the floor, silently, on the one harness this whole fold exists for. Pick the body (rewritten if
+    // there is one, else the original), then append the hint to whichever it was.
     const hso = resp && resp.hookSpecificOutput
     const updatedToolOutput = hso && hso.updatedToolOutput
     const context = extractContext(resp)
     const out = {}
-    if (typeof updatedToolOutput === 'string') {
-      out.modifiedResult = { resultType: 'success', textResultForLlm: updatedToolOutput }
-    } else if (context) {
-      const rawResult = payload && payload.toolResult
-      const originalText = rawResult && (typeof rawResult.textResultForLlm === 'string' ? rawResult.textResultForLlm : typeof rawResult.text_result_for_llm === 'string' ? rawResult.text_result_for_llm : undefined)
-      if (typeof originalText === 'string') {
-        out.modifiedResult = { resultType: 'success', textResultForLlm: originalText + '\\n\\n[token-goat: ' + context + ']' }
-      }
+    const rawResult = payload && payload.toolResult
+    const originalText = rawResult && (typeof rawResult.textResultForLlm === 'string' ? rawResult.textResultForLlm : typeof rawResult.text_result_for_llm === 'string' ? rawResult.text_result_for_llm : undefined)
+    const rewritten = typeof updatedToolOutput === 'string'
+    const body = rewritten ? updatedToolOutput : typeof originalText === 'string' ? originalText : undefined
+    // Never claim a modification we did not make: with no rewrite and no hint, the body would be the tool's own
+    // text handed back verbatim, and a pass-through modifiedResult is a lie about authorship on every call.
+    if (typeof body === 'string' && (rewritten || context)) {
+      out.modifiedResult = { resultType: 'success', textResultForLlm: context ? body + '\\n\\n[token-goat: ' + context + ']' : body }
     }
+    // Still set alongside the fold rather than instead of it: the field is dropped on the JS path read at 1.0.80,
+    // but it is the documented channel and costs nothing if a later release starts honoring it. The fold above is
+    // what the delivery guarantee rests on.
     if (context) out.additionalContext = context
     return out
   }

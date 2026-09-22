@@ -37,16 +37,7 @@ import type {
 export const CONFIG_DEFAULTS: Record<string, object> = {
   compact_assist: {
     enabled: true,
-    triggers: ['manual', 'auto'],
-    min_events: 3,
-    max_manifest_tokens: 400,
     auto_trigger_multiplier: 2.0,
-    compact_skip_ttl_secs: 300.0,
-    noise_floor_tokens: 0,
-    edited_dir_group_threshold: 3,
-    max_section_lines: 0,
-    wide_session_threshold: 15,
-    orchestrator_commit_threshold: 5,
     max_manifest_chars: 1600,
     summary_budget_chars: 24000,
     harness: 'auto',

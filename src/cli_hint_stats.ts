@@ -71,7 +71,7 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
   const w = (text: string) => {
     process.stdout.write(text)
   }
-  w(pad('category', 22) + pad('emitted', 9) + pad('undisplayed', 13) + pad('acted-on', 10) + pad('efficacy', 12) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent\n')
+  w(pad('category', 22) + pad('emitted', 9) + pad('undisplayed', 13) + pad('acted-on', 10) + pad('efficacy', 12) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent-bytes\n')
   for (const row of rows) {
     w(
       pad(row.category, 22) +
@@ -89,7 +89,9 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
 }
 
 /**
- * Prints the all-time saved/spent summary line. `saved` reuses the pre-existing `stats` ledger
+ * Prints the all-time saved/spent summary line. Both figures are byte counts, and the column names say so: the schema calls the underlying field `bytes_emitted` and the docs have always described it as bytes, but the printed line said only `spent=5490`, which a reader sitting next to token figures elsewhere in the same tool reads as tokens. A number whose unit is only recoverable from the schema is a number that will be misread.
+ *
+ * `saved` reuses the pre-existing `stats` ledger
  * (unaffected by this feature) and spans every hint kind; `spent` sums only the much smaller
  * hint_emissions ledger and renders 'n/a', never a fake 0, when nothing has been tracked yet or
  * the store is entirely pre-migration legacy rows. The two figures cover disjoint populations and
@@ -103,7 +105,7 @@ function printTotals(totals: HintStatsTotals): void {
   // across every hint kind stats.ts maps to SOURCE_HINT, while spent sums only the much smaller
   // hint_emissions ledger. They are disjoint populations -- see getHintStatsTotals's doc comment.
   process.stdout.write(
-    `\nTOTAL   saved=${totals.savedBytes} (all-time, every hint kind)   spent=${spent} (hint_emissions ledger only)${legacyNote}\n`,
+    `\nTOTAL   saved-bytes=${totals.savedBytes} (all-time, every hint kind)   spent-bytes=${spent} (hint_emissions ledger only)${legacyNote}\n`,
   )
 }
 

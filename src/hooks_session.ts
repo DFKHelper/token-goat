@@ -7,8 +7,8 @@ import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
 import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js';
-import { getHarnessName } from './bridges/registry.js';
 import { drainPendingContext, queuePendingContext } from './pending_context.js';
+import { dropsPreCompactContext, dropsPromptSubmitContext } from './harness_channels.js';
 import { recordStat } from './stats.js';
 import {
   accumulateResidentLines,
@@ -20,51 +20,20 @@ import {
 } from './resident_context.js';
 
 /**
- * Harnesses that run the prompt-submit hook but drop whatever it returns.
- *
- * Empty today, and that is a finding rather than an oversight. Copilot CLI was the only member,
- * on the strength of its own hooks reference saying command-hook output "is dropped"
- * (https://docs.github.com/en/copilot/reference/hooks-reference). That documentation is wrong for
- * `additionalContext`, at least as of 1.0.80: a project-scope config-file command hook (under
- * `<cwd>/.github/hooks/`) returned `{"additionalContext":"<marker>"}` and the marker appeared
- * verbatim in the session's `user.message.transformedContent`, wrapped in `<system_reminder>`.
- * That it reached the model rather than only the on-disk record is settled by the provider's own
- * returned usage: ~140 input tokens billed for a turn whose raw `content` is 35 bytes. Scope: this
- * was demonstrated once, on one of two turns, and the delivery rate is unknown -- see the longer
- * account in `src/bridges/copilot_cli.ts`. The doc's claim about `modifiedPrompt` was not retested
- * and is assumed to still hold; token-goat does not want that field regardless.
- *
- * The set and the reroute below are kept rather than deleted because they are the fallback if a
- * future Copilot release makes the documentation true again. Re-adding a harness name here used to
- * be described as the whole fix, with no other code change. That is no longer true for Copilot
- * specifically: a hint queued by this reroute drains through `post_tool_use`, and reading the
- * 1.0.80 bundle shows Copilot's `postToolUse` never forwards `additionalContext` to the model on
- * the JS path (no supplier for `onAdditionalContext`, no `additional_contexts` key in that event's
- * native return payload; see the `postToolUse` branch in `src/bridges/copilot_cli.ts`). So for
- * Copilot the reroute currently moves a hint from one unconfirmed channel to another, and
- * re-adding the name would also need the drain side proven to arrive. For a harness that drops
- * prompt-submit output but does honor post-tool `additionalContext`, the one-line claim still
- * holds. Membership stays evidence-backed in both directions --
- * adding a harness silently reroutes its hints and removing one silently discards them, so
- * neither move should ever rest on documentation alone. See BRIDGES_STATUS for the harness-level
- * record of what each event can actually carry.
- */
-const PROMPT_SUBMIT_CONTEXT_DROPPED = new Set<string>([]);
-
-function dropsPromptSubmitContext(): boolean {
-  return PROMPT_SUBMIT_CONTEXT_DROPPED.has(getHarnessName());
-}
-
-/**
  * Deliver anything the prompt-submit hook queued, on the first tool call that follows.
  *
  * Advisory and tool-agnostic: it adds context and never decides a tool's fate. The drain is
- * one-shot, so this is a no-op for every later call in the turn, and a no-op entirely on a harness
- * that surfaces prompt-submit context directly.
+ * one-shot, so this is a no-op for every later call in the turn.
+ *
+ * The gate names every producer that writes to the queue, not just the one this handler was built
+ * for. Gating on the prompt-submit set alone was correct while that set was the only writer; once
+ * pre_compact began queuing on a harness that discards its own response, an empty prompt-submit set
+ * would have stranded every queued manifest on disk -- nothing failing, and the hint still counted
+ * as emitted.
  */
 function pendingContextHandler(event: HookEvent): HookOutput {
   try {
-    if (!event.sessionId || !dropsPromptSubmitContext()) return passOutput();
+    if (!event.sessionId || (!dropsPromptSubmitContext() && !dropsPreCompactContext())) return passOutput();
     const pending = drainPendingContext(event.sessionId);
     return pending === null ? passOutput() : contextOutput(pending);
   } catch {

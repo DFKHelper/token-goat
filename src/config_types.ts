@@ -6,18 +6,12 @@
 // Section interfaces
 // ---------------------------------------------------------------------------
 
+/**
+ * Every key here is read by shipping code. Nine others -- `triggers`, `min_events`, `max_manifest_tokens`, `compact_skip_ttl_secs`, `noise_floor_tokens`, `edited_dir_group_threshold`, `max_section_lines`, `wide_session_threshold`, `orchestrator_commit_threshold` -- were carried over from the Python predecessor's manifest builder, parsed and validated and printed by `config export`, and read by nothing. A key that configures nothing is worse than a missing key: it reads as a decision the tool made, so a user who set `max_manifest_tokens` believed they had bounded the manifest when the only bound was `max_manifest_chars`. They are gone rather than wired, because the behaviors they named were decided the other way -- `min_events` in particular would suppress the manifest on a short session, and the PreCompact hook deliberately emits one even for an empty session so its counts can confirm nothing was dropped.
+ */
 export interface CompactAssistConfig {
   enabled: boolean
-  triggers: string[]
-  min_events: number
-  max_manifest_tokens: number
   auto_trigger_multiplier: number
-  compact_skip_ttl_secs: number
-  noise_floor_tokens: number
-  edited_dir_group_threshold: number
-  max_section_lines: number
-  wide_session_threshold: number
-  orchestrator_commit_threshold: number
   max_manifest_chars: number
   summary_budget_chars: number
   harness: string

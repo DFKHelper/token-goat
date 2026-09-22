@@ -23,9 +23,8 @@
  *     doc comment. This file does not assert that number -- pinning a tuned default would make
  *     every future retune a test failure rather than a decision.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse, sep } from 'node:path'
 
 import { beforeEach, describe, expect, it } from 'vitest'
 
@@ -33,7 +32,8 @@ import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.
 import { dataDir } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import type { HookEvent } from '../src/hook_registry.js'
-import { BUDGET_ESCALATION_MARKER, postCompactHandler, preCompactHandler, summaryBudgetDirective } from '../src/hooks_compact.js'
+import { postCompactHandler, preCompactHandler } from '../src/hooks_compact.js'
+import { BUDGET_ESCALATION_MARKER, summaryBudgetDirective } from '../src/manifest.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead } from '../src/session.js'
 
@@ -61,11 +61,14 @@ function latestDetail(): string {
   return row?.detail ?? ''
 }
 
-/** One temp file per call, so recordFileRead has a real path to put in the manifest. */
+// A project-shaped absolute path, not a real file under the OS temp directory. The manifest drops noise paths before its row cap and every OS temp root is on that list, so a fixture written there is filtered out of the very rows the survival canary samples. Nothing here reads the bytes: the row renderer stats the path for a size and floors it at 1kb, so an absent file renders exactly as a small real one would.
+const FIXTURE_ROOT = `${parse(tmpdir()).root.split(sep).join('/')}tg-budget-project`
+let fixtureSeq = 0
+
+/** One project-shaped path per call, so recordFileRead has a distinct path to put in the manifest. */
 function makeTmpFile(name: string): string {
-  const p = join(mkdtempSync(join(tmpdir(), 'tg-budget-')), name)
-  writeFileSync(p, 'data')
-  return p
+  fixtureSeq += 1
+  return `${FIXTURE_ROOT}/run-${fixtureSeq}/${name}`
 }
 
 beforeEach(() => {

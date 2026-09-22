@@ -7,9 +7,13 @@ import { resolveProjectRoot } from './project.js'
 import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { listSkills, getSkillFilePath, extractChecklistSection } from './skill_cache.js'
+import { renderWebFetchRow } from './manifest.js'
 
 export const MAX_RESUME_TOKENS = 2000
 export const MAX_RESUME_CHARS = MAX_RESUME_TOKENS * 4
+
+/** How many of a session's most recent web fetches the packet names. Eight matches the top-files-read cap: one line each, and a session that fetched more than eight pages has almost certainly moved on from the first ones. */
+const MAX_RESUME_WEB_FETCHES = 8
 
 // Mirrors the Python predecessor's `_SKILL_MAX_COUNT`/`_SKILL_MAX_CHARS_EACH` (resume.py):
 // how many recently-loaded skills to surface, and how many characters of each one's checklist
@@ -114,6 +118,18 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
         if (bashEntry !== null) lines.push(`- ${displaySafeText(bashEntry.command)}`)
       }
     }
+    lines.push('')
+  }
+
+  // A fetched page is the one kind of session state that cannot be recovered by re-reading the working tree: the URL is gone from the model's context and nothing on disk names it. The blob stores `[key, cacheId]` pairs in the same composite-key shape the compaction manifest renders, so this shares that renderer rather than re-deriving the split -- taking the most recent fetches, since a resume is a recency question. The whole section is dropped on a malformed entry rather than printing a half-row: the cacheId is what makes the row actionable via `web-output`.
+  const webFetches = Array.isArray(raw['webFetches']) ? (raw['webFetches'] as Array<unknown>) : []
+  const webRows = webFetches
+    .slice(-MAX_RESUME_WEB_FETCHES)
+    .filter((e): e is [string, string] => Array.isArray(e) && typeof e[0] === 'string' && typeof e[1] === 'string')
+    .map(([key, cacheId]) => renderWebFetchRow(key, cacheId))
+  if (webRows.length > 0) {
+    lines.push('## Web pages fetched')
+    lines.push(...webRows)
     lines.push('')
   }
 

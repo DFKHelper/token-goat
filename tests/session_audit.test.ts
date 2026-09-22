@@ -19,7 +19,8 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { auditSessionCorpus, formatSessionAudit, listCorpusTranscripts } from '../src/session_audit.js'
+import type { EstimatedAttribution, MeasuredUsage } from '../src/session_audit.js'
+import { auditSessionCorpus, computeCalibration, formatSessionAudit, listCorpusTranscripts } from '../src/session_audit.js'
 import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
 
 const L1 = '{"type":"assistant","message":{"id":"msg_A","role":"assistant","usage":{"input_tokens":100,"cache_creation_input_tokens":200,"cache_read_input_tokens":300,"output_tokens":40},"content":[{"type":"text","text":"Hello world!"}]}}'
@@ -137,6 +138,60 @@ describe('formatSessionAudit', () => {
     expect(text).not.toContain('Hello world!')
     expect(text).not.toContain('do the thing')
     expect(text).not.toContain('C--Projects-example')
+  })
+
+  // HAND-DERIVED: 117 + 200 = 317 is the sum of the fixture's own usage objects, the same two numbers the section above already asserts separately. The point of the assertion is that the calibration reads the pair and not `input_tokens` alone -- 117 would appear here if it did.
+  it('measures the estimate against input + cache-write, never against uncached input alone', async () => {
+    const s = await auditSessionCorpus({ dir: corpusDir })
+    expect(s.calibration.measuredFirstWriteTokens).toBe(317)
+    const text = formatSessionAudit(s)
+    expect(text).toContain('## Estimator calibration')
+    expect(text).toContain('Measured first-write tokens:                 317')
+    expect(text).toMatch(/Estimator error: +[+-]\d+\.\d% (over|under) measured/)
+  })
+})
+
+describe('computeCalibration', () => {
+  /** HAND-DERIVED: a category table written for the arithmetic, not read back out of an audit run. */
+  function attribution(bytes: number, estTokens: number): EstimatedAttribution {
+    const zero = { count: 0, bytes: 0, estTokens: 0 }
+    return {
+      // One visible category carries everything; the rest are zero so the expected sums are the literals above.
+      toolResults: { count: 1, bytes, estTokens },
+      assistantText: { ...zero },
+      assistantThinking: { ...zero },
+      toolUseInputs: { ...zero },
+      attachments: { ...zero },
+      userTurns: { ...zero },
+      harnessMeta: { ...zero },
+      system: { ...zero },
+      // Local bookkeeping is deliberately large: it must not reach either side of the comparison.
+      otherLocal: { count: 9, bytes: 999_999, estTokens: 333_333 },
+    }
+  }
+
+  const usage = (inputTokens: number, cacheCreationTokens: number): MeasuredUsage => ({ apiCalls: 1, inputTokens, cacheCreationTokens, cacheReadTokens: 500_000, outputTokens: 7 })
+
+  it('excludes local bookkeeping and cache reads, which are the two ways this comparison goes wrong', () => {
+    const cal = computeCalibration(attribution(3000, 1000), usage(400, 600))
+    expect(cal.modelVisibleBytes).toBe(3000)
+    expect(cal.estimatedTokens).toBe(1000)
+    expect(cal.measuredFirstWriteTokens).toBe(1000)
+    expect(cal.relativeError).toBe(0)
+    expect(cal.bytesPerMeasuredToken).toBe(3)
+  })
+
+  it('reports the sign of the error, since an estimate under the billed figure is the expected direction', () => {
+    // 800 estimated against 1000 measured is -20%; 4000 bytes over 1000 tokens is 4.0 bytes/token.
+    const cal = computeCalibration(attribution(4000, 800), usage(1000, 0))
+    expect(cal.relativeError).toBeCloseTo(-0.2, 10)
+    expect(cal.bytesPerMeasuredToken).toBe(4)
+  })
+
+  it('returns zero rather than a division by zero when nothing was billed', () => {
+    const cal = computeCalibration(attribution(4000, 800), usage(0, 0))
+    expect(cal.relativeError).toBe(0)
+    expect(cal.bytesPerMeasuredToken).toBe(0)
   })
 })
 

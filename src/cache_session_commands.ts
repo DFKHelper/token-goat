@@ -8,7 +8,9 @@ import { pruneSkillOutputs, SKILLS_OUTPUT_SUBDIR } from './skill_cache.js'
 import { isInstalled } from './install.js'
 import { cleanupStaleDownloads } from './webfetch.js'
 import { buildResumePacket } from './resume.js'
-import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
+import { getContextPressure, estimateTokens, eventCount, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
+import { buildManifest } from './manifest.js'
+import { loadSessionState } from './session_store.js'
 import { resolveSessionTranscript } from './session_read.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
@@ -344,17 +346,28 @@ export async function cmdResume(opts: { sessionId: string; json?: boolean }): Pr
 
 // ── compact-hint ──────────────────────────────────────────────────────────────
 
-/** Show compact manifest info and context pressure. Reuses compact.ts primitives; never rebuilds the manifest. */
+/**
+ * Show compact manifest info and context pressure.
+ *
+ * The manifest is built by the same `manifest.ts` builder the pre_compact hook emits, from session state hydrated off disk for this process. It used to be built by a second, unrelated builder in compact.ts, so the token figure printed here sized text the hook would never produce: a reader checking what the next compaction would carry learned nothing about what it actually carries, and the two builders drifted with nothing to notice.
+ */
 export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; json?: boolean }): void {
   const sessionId = opts.sessionId ?? findLatestSessionId()
   const cache = sessionId !== null ? loadSessionCache(sessionId) : null
   const transcriptPath = sessionId !== null ? resolveSessionTranscript(sessionId) : null
   const pressure = getContextPressure(cache ?? undefined, transcriptPath ?? undefined)
-  const [manifest, eventCount] = sessionId !== null ? buildManifestWithCount(sessionId) : (['', 0] as [string, number])
+  let manifest = ''
+  let events = 0
+  if (sessionId !== null && cache !== null) {
+    // The hook runs with this state already hydrated by relay; a CLI process has to load it itself before the builder can see anything.
+    loadSessionState(sessionId)
+    manifest = buildManifest(sessionId, process.cwd(), transcriptPath ?? undefined)
+    events = eventCount(cache)
+  }
   const manifestTokens = estimateTokens(manifest)
   const pct = (pressure.fillFraction * 100).toFixed(1)
   if (opts.json === true) {
-    const out: Record<string, unknown> = { tier: pressure.tier, fillFraction: pressure.fillFraction, pct: Number(pct), manifestTokens, eventCount }
+    const out: Record<string, unknown> = { tier: pressure.tier, fillFraction: pressure.fillFraction, pct: Number(pct), manifestTokens, eventCount: events }
     if (sessionId !== null) out['sessionId'] = sessionId
     if (opts.trigger !== undefined) out['trigger'] = opts.trigger
     process.stdout.write(displaySafeJson(out) + '\n')
@@ -362,7 +375,7 @@ export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; jso
   }
   process.stdout.write(`Compact hint — context: ${pressure.tier} (${pct}% full)\n`)
   if (sessionId !== null) process.stdout.write(`Session: ${sessionId}\n`)
-  process.stdout.write(`Manifest: ${manifestTokens} tokens, ${countNoun(eventCount, 'event')}\n`)
+  process.stdout.write(`Manifest: ${manifestTokens} tokens, ${countNoun(events, 'event')}\n`)
   if (opts.trigger === 'auto') {
     const remaining = Math.max(0, Math.round((1 - pressure.fillFraction) * CONTEXT_AUTOCOMPACT_TOKENS))
     process.stdout.write(`Auto-compact at ${CONTEXT_AUTOCOMPACT_TOKENS.toLocaleString()} tokens; ~${remaining.toLocaleString()} remaining\n`)

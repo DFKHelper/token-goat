@@ -61,6 +61,59 @@ export interface EstimatedCategory {
   estTokens: number
 }
 
+/** Content attribution by source, estimated from transcript bytes. */
+export interface EstimatedAttribution {
+  userTurns: EstimatedCategory
+  toolResults: EstimatedCategory
+  assistantText: EstimatedCategory
+  assistantThinking: EstimatedCategory
+  toolUseInputs: EstimatedCategory
+  attachments: EstimatedCategory
+  harnessMeta: EstimatedCategory
+  system: EstimatedCategory
+  /** Bookkeeping lines never sent to the model (snapshots, mode, queue ops, unparseable). */
+  otherLocal: EstimatedCategory
+}
+
+/** The estimated categories that were actually sent to the model. `otherLocal` is local bookkeeping and never enters a prompt, so it is excluded from every share and from the calibration below. */
+const MODEL_VISIBLE_CATEGORIES: ReadonlyArray<keyof EstimatedAttribution> = ['toolResults', 'assistantText', 'assistantThinking', 'toolUseInputs', 'attachments', 'userTurns', 'harnessMeta', 'system']
+
+/**
+ * The estimate measured against the billed ledger sitting beside it.
+ *
+ * Both numbers are already in this report; until they were subtracted no claim about estimator accuracy in this repository was evidence-backed. The measured side is `input_tokens + cache_creation_input_tokens`, never `input_tokens` alone: in a cached session almost every first write is billed as a cache write, so reading the uncached field as "what was sent" under-counts by an order of magnitude.
+ */
+export interface EstimatorCalibration {
+  /** Bytes across {@link MODEL_VISIBLE_CATEGORIES}. */
+  modelVisibleBytes: number
+  /** The chars/3 estimate over those bytes. */
+  estimatedTokens: number
+  /** `input_tokens + cache_creation_input_tokens`: content billed the first time it entered a prompt. */
+  measuredFirstWriteTokens: number
+  /** `(estimated - measured) / measured`. Negative means the estimate sits below the billed figure. Zero when there is nothing measured to divide by. */
+  relativeError: number
+  /** Model-visible bytes per measured first-write token: the divisor the corpus says this estimator should have been using. */
+  bytesPerMeasuredToken: number
+}
+
+/** Compute {@link EstimatorCalibration} from the two halves of the report that already exist. Pure, so the arithmetic is testable without a corpus. */
+export function computeCalibration(estimated: EstimatedAttribution, measured: MeasuredUsage): EstimatorCalibration {
+  let modelVisibleBytes = 0
+  let estimatedTokens = 0
+  for (const key of MODEL_VISIBLE_CATEGORIES) {
+    modelVisibleBytes += estimated[key].bytes
+    estimatedTokens += estimated[key].estTokens
+  }
+  const measuredFirstWriteTokens = measured.inputTokens + measured.cacheCreationTokens
+  return {
+    modelVisibleBytes,
+    estimatedTokens,
+    measuredFirstWriteTokens,
+    relativeError: measuredFirstWriteTokens === 0 ? 0 : (estimatedTokens - measuredFirstWriteTokens) / measuredFirstWriteTokens,
+    bytesPerMeasuredToken: measuredFirstWriteTokens === 0 ? 0 : modelVisibleBytes / measuredFirstWriteTokens,
+  }
+}
+
 export interface ToolRollup {
   name: string
   /** tool_use invocations seen (unique tool_use ids). */
@@ -127,18 +180,9 @@ export interface SessionAuditSummary {
   /** Sidechain (subagent) share of the measured ledger, already included in `measured`. */
   measuredSidechain: MeasuredUsage
   /** Content attribution by source. Estimated; see module doc. */
-  estimated: {
-    userTurns: EstimatedCategory
-    toolResults: EstimatedCategory
-    assistantText: EstimatedCategory
-    assistantThinking: EstimatedCategory
-    toolUseInputs: EstimatedCategory
-    attachments: EstimatedCategory
-    harnessMeta: EstimatedCategory
-    system: EstimatedCategory
-    /** Bookkeeping lines never sent to the model (snapshots, mode, queue ops, unparseable). */
-    otherLocal: EstimatedCategory
-  }
+  estimated: EstimatedAttribution
+  /** The estimate above measured against the billed ledger beside it. */
+  calibration: EstimatorCalibration
   /** Ranked by result bytes, descending; complete (never truncated). */
   tools: ToolRollup[]
   /** Per-attachment-kind census, ranked by billedEquivTokens descending; complete. */
@@ -1163,6 +1207,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
       system: emptyCategory(),
       otherLocal: emptyCategory(),
     },
+    calibration: { modelVisibleBytes: 0, estimatedTokens: 0, measuredFirstWriteTokens: 0, relativeError: 0, bytesPerMeasuredToken: 0 },
     tools: [],
     attachmentKinds: [],
     hookOutputs: [],
@@ -1223,6 +1268,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   summary.hookOutputs = [...hookMap.values()].sort((a, b) => b.contextBytes - a.contextBytes || b.fires - a.fires || a.origin.localeCompare(b.origin) || a.event.localeCompare(b.event))
   summary.denyOutcomes = aggregateDenyOutcomes(denyRows)
   summary.editErrorBaseline.rate = summary.editErrorBaseline.totalEdits === 0 ? 0 : summary.editErrorBaseline.totalErrors / summary.editErrorBaseline.totalEdits
+  summary.calibration = computeCalibration(summary.estimated, summary.measured)
   summary.runtimeMs = Date.now() - started
   return summary
 }
@@ -1269,10 +1315,19 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
     ['system lines', e.system],
     ['local bookkeeping (never sent)', e.otherLocal],
   ]
-  const modelVisibleBytes = rows.slice(0, 8).reduce((acc, [, c]) => acc + c.bytes, 0)
+  const cal = s.calibration
+  const modelVisibleBytes = cal.modelVisibleBytes
   for (const [label, cat] of rows.sort((a, b) => b[1].bytes - a[1].bytes)) {
     lines.push(`${label.padEnd(31)} count ${fmt(cat.count).padStart(11)}  bytes ${fmt(cat.bytes).padStart(15)}  est-tokens ${fmt(cat.estTokens).padStart(13)}  ${label === 'local bookkeeping (never sent)' ? '(excluded from share)' : pct(cat.bytes, modelVisibleBytes)}`)
   }
+  lines.push('')
+  lines.push('## Estimator calibration (the estimate above against the billed ledger above it)')
+  lines.push(`Model-visible bytes:          ${fmt(cal.modelVisibleBytes).padStart(18)}`)
+  lines.push(`Estimated tokens (chars/3):   ${fmt(cal.estimatedTokens).padStart(18)}`)
+  lines.push(`Measured first-write tokens:  ${fmt(cal.measuredFirstWriteTokens).padStart(18)}  (input + cache-write; NEVER input alone -- a cached session bills nearly every first write as a cache write)`)
+  lines.push(`Estimator error:              ${(cal.relativeError >= 0 ? '+' : '') + (cal.relativeError * 100).toFixed(1) + '%'} ${cal.relativeError >= 0 ? 'over' : 'under'} measured`)
+  lines.push(`Implied bytes per token:      ${cal.bytesPerMeasuredToken.toFixed(2)}  (against the 3.0 the estimate divides by)`)
+  lines.push('Read the error as a bound, not a correction factor. Two effects inflate the measured side and neither is separable here: a prefix whose cache entry expires is written again and billed twice while the estimate counts it once, and the system prompt and tool schemas are sent on every call but appear in the transcript only in part. Both push the measured figure up, so an estimate below it is expected and only the magnitude carries information.')
   lines.push('')
   lines.push('## Tool results by tool (estimated content size; calls = tool_use invocations)')
   for (const t of s.tools.slice(0, 25)) {

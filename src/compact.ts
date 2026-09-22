@@ -12,9 +12,7 @@ import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { ensureDirSync, atomicWriteText, normalizePathForwardSlash } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
-import { displaySafeText } from './paths.js'
 import { readSessionStateFile, sessionFileStem, AGENT_SALT_MARKER } from './session_store.js'
-import { WEB_FETCH_KEY_SEP } from './session.js'
 import type { FileEntry } from './session.js'
 import { readTranscriptTail } from './resident_context.js'
 
@@ -130,33 +128,6 @@ export interface SessionCacheObject {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Simple counter for frequency analysis.
- */
-class Counter<T> {
-  private map = new Map<T, number>()
-
-  increment(key: T, delta: number = 1): void {
-    this.map.set(key, (this.map.get(key) ?? 0) + delta)
-  }
-
-  get size(): number {
-    return this.map.size
-  }
-
-  max(): T | undefined {
-    if (this.map.size === 0) return undefined
-    let maxKey = undefined
-    let maxCount = -1
-    for (const [key, count] of this.map) {
-      if (count > maxCount) {
-        maxKey = key
-        maxCount = count
-      }
-    }
-    return maxKey
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Core functions
@@ -310,80 +281,10 @@ export function getAutoTriggerMultiplier(opts?: {
   return Math.max(1.0, Math.min(10.0, HARNESS_MULTIPLIER_DEFAULTS[harness] ?? 1.0))
 }
 
-/**
- * Infer the session's goal from edited files, accessed symbols, and recent bash commands.
- */
-export function inferSessionGoal(cache: SessionCacheObject, maxTokens: number = 80): string {
-  try {
-    const editedPaths = (cache.files ?? []).filter((f) => f.wasEdited).map((f) => f.path)
-    const symbolAccessRaw = cache.symbolAccessCounts ?? {}
-
-    if (editedPaths.length < 2 && Object.keys(symbolAccessRaw).length === 0) {
-      return ''
-    }
-
-    const dirCounts = new Counter<string>()
-    for (const fpath of editedPaths) {
-      try {
-        let parent = path.dirname(fpath)
-        if (parent === '.') {
-          parent = 'root'
-        } else if (parent.startsWith('./')) {
-          parent = parent.slice(2).replace(/^[\\/]/, '') || 'root'
-        }
-        if (parent) {
-          dirCounts.increment(parent)
-        }
-      } catch {
-        // Skip on parse error
-      }
-    }
-
-    let topArea: string | undefined = ''
-    if (dirCounts.size > 0) {
-      topArea = dirCounts.max()
-    }
-
-    const topSymbols: string[] = []
-    if (Object.keys(symbolAccessRaw).length > 0) {
-      const sorted = Object.entries(symbolAccessRaw).sort((a, b) => b[1] - a[1])
-      topSymbols.push(...sorted.slice(0, 3).map(([sym]) => sym))
-    }
-
-    const parts: string[] = []
-
-    if (topArea && topSymbols.length > 0) {
-      parts.push(`Working on ${topArea}, focusing on ${topSymbols.slice(0, 2).join(' and ')}.`)
-    } else if (topArea) {
-      parts.push(`Working on changes in ${topArea}.`)
-    } else if (topSymbols.length > 0) {
-      parts.push(`Focusing on ${topSymbols.slice(0, 2).join(' and ')}.`)
-    }
-
-    const goal = parts.join(' ')
-    const goalTokens = estimateTokens(goal)
-    if (goalTokens > maxTokens) {
-      // Reserve room for the 3-char ellipsis suffix so the truncated result (mirroring
-      // estimateTokens's ~length/3 heuristic) actually lands back within maxTokens.
-      const maxChars = Math.max(0, (maxTokens - 2) * 3)
-      return `${goal.slice(0, maxChars).trimEnd()}...`
-    }
-
-    return goal.trim()
-  } catch {
-    return ''
-  }
-}
 
 /**
  * Return True when path should be excluded from the manifest as low-value noise.
  */
-/** Most-read files listed in the manifest before the rest are folded into an "and N more" line. */
-const READ_SECTION_MAX_ROWS = 15
-
-/** Distinct fetched URLs listed in the manifest before the rest are folded into an "and N more" line. */
-const WEB_SECTION_MAX_ROWS = 10
-
 export function isNoisePath(inputPath: string): boolean {
   if (!inputPath) {
     return false
@@ -639,115 +540,6 @@ export function loadSessionCache(sessionId: string): SessionCacheObject | null {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Build manifest from loaded cache
-// ---------------------------------------------------------------------------
-
-function _buildManifestText(cache: SessionCacheObject, maxTokens: number): string {
-  const lines: string[] = []
-  lines.push('# token-goat session manifest')
-  lines.push('')
-
-  const files = cache.files ?? []
-  const editedFiles = files.filter((f) => f.wasEdited)
-  const readFiles = files.filter((f) => !f.wasEdited)
-  const bashOutputs = cache.bashOutputs ?? []
-  const webFetches = cache.webFetches ?? []
-
-  const usedTokens = estimateTokens(lines.join('\n'))
-  const budgetRemaining = maxTokens - usedTokens
-
-  if (editedFiles.length > 0) {
-    lines.push('## Edited files')
-    let sectionTokens = estimateTokens('## Edited files\n')
-    // Noise filtered ahead of the loop for the same reason as the files-read section below: it
-    // separates "excluded by design" from "dropped by the budget", which is what the count reports.
-    const eligibleEdited = editedFiles.filter((e) => !isNoisePath(normalizePathForwardSlash(e.path)))
-    let shownEdited = 0
-    for (const entry of eligibleEdited) {
-      if (sectionTokens > budgetRemaining * 0.4) break
-      // The manifest is token-goat's own document and reaches the compacting model as a systemMessage, so the repo-chosen paths listed in it are escaped. Computed once so the budget accounting below measures the string actually emitted.
-      const shownPath = displaySafeText(normalizePathForwardSlash(entry.path))
-      lines.push(`- ${shownPath}`)
-      sectionTokens += estimateTokens(`- ${shownPath}\n`)
-      shownEdited += 1
-    }
-    // This section has no row cap -- only the budget break -- and a break drops rows exactly as
-    // silently as a slice does. "Edited files" reading as complete when it is not is the worst of
-    // the three: it is the list a reader is most likely to treat as the record of what changed.
-    if (shownEdited < eligibleEdited.length) lines.push(`- ...and ${eligibleEdited.length - shownEdited} more`)
-    lines.push('')
-  }
-
-  if (readFiles.length > 0) {
-    lines.push('## Files read')
-    let sectionTokens = estimateTokens('## Files read\n')
-    const sortedRead = [...readFiles].sort((a, b) => b.readCount - a.readCount)
-    // Noise paths are filtered BEFORE the cap, not inside the loop. Filtering inside meant the
-    // slice spent its 15 places on entries that were then dropped, so a session whose most-read
-    // paths were all noise rendered "## Files read" with nothing under it -- a heading asserting
-    // that the list below is what was read.
-    const eligibleRead = sortedRead.filter((e) => !isNoisePath(normalizePathForwardSlash(e.path)))
-    let shownRead = 0
-    for (const entry of eligibleRead.slice(0, READ_SECTION_MAX_ROWS)) {
-      if (sectionTokens > budgetRemaining * 0.3) break
-      const cleanPath = displaySafeText(normalizePathForwardSlash(entry.path))
-      const truncatedTag = entry.wasTruncated ? ' (truncated)' : ''
-      lines.push(`- ${cleanPath}${truncatedTag}`)
-      sectionTokens += estimateTokens(`- ${cleanPath}${truncatedTag}\n`)
-      shownRead += 1
-    }
-    // Counted from what was actually emitted, so it covers the row cap and the budget break
-    // alike -- the break drops rows just as silently as the slice does, and reporting only
-    // `eligible - cap` would understate it. Noise paths are excluded by design rather than
-    // omitted by a cap, so they are not in this count.
-    if (shownRead < eligibleRead.length) lines.push(`- ...and ${eligibleRead.length - shownRead} more`)
-    lines.push('')
-  }
-
-  // Ported from Python's _build_manifest_from_cache (compact.py, section "6b.5. Session
-  // Goal"), which wired infer_session_goal into the manifest so the compaction LLM gets
-  // immediate context about what the session was trying to accomplish. The TS port carried
-  // over inferSessionGoal itself (fully implemented, unit-tested in isolation) but never
-  // called it from here, so `## Session goal` never appeared in any real manifest -- the
-  // same "dead field" shape already fixed for symbolsBonus/created_ts above.
-  const sessionGoal = inferSessionGoal(cache)
-  if (sessionGoal) {
-    lines.push('## Session goal')
-    lines.push(sessionGoal)
-    lines.push('')
-  }
-
-  if (bashOutputs.length > 0) {
-    lines.push('## Recent bash')
-    lines.push('(bash history recorded)')
-    lines.push('')
-  }
-
-  if (webFetches.length > 0) {
-    lines.push('## Web fetches')
-    let sectionTokens = estimateTokens('## Web fetches\n')
-    // webFetches keys are redactedUrl + redactedPrompt + digest composites (see webFetchKey in
-    // session.ts) — surface the distinct URLs, dropping the prompt and digest fields.
-    const urls = Array.from(new Set(webFetches.map(([key]) => key.split(WEB_FETCH_KEY_SEP)[0] ?? key)))
-    let shownUrls = 0
-    for (const url of urls.slice(0, WEB_SECTION_MAX_ROWS)) {
-      if (sectionTokens > budgetRemaining * 0.2) break
-      const shownUrl = displaySafeText(url)
-      lines.push(`- ${shownUrl}`)
-      sectionTokens += estimateTokens(`- ${shownUrl}\n`)
-      shownUrls += 1
-    }
-    // Same accounting as the files section above: emitted-vs-eligible, so the budget break is
-    // disclosed and not just the row cap.
-    if (shownUrls < urls.length) lines.push(`- ...and ${urls.length - shownUrls} more`)
-    lines.push('')
-  }
-
-  lines.push(`# as-of: ${new Date().toISOString()}`)
-
-  return lines.join('\n')
-}
 
 // ---------------------------------------------------------------------------
 // Core functions
@@ -809,53 +601,4 @@ export function computeAdaptiveBudget(
   }
 
   return Math.max(minTotal, Math.min(capMax, total))
-}
-
-/**
- * Build a session manifest from a loaded cache.
- */
-export function buildManifest(sessionId: string, opts?: { maxTokens?: number }): string {
-  const maxTokens = opts?.maxTokens ?? 400
-  const cache = loadSessionCache(sessionId)
-  if (!cache) {
-    return ''
-  }
-
-  return _buildManifestText(cache, maxTokens)
-}
-
-/**
- * Build manifest with adaptively-computed budget.
- */
-export function buildManifestAdaptive(sessionId: string): string {
-  const cache = loadSessionCache(sessionId)
-  if (!cache) {
-    return ''
-  }
-
-  const createdTs = cache.created_ts
-  const ageSecs = createdTs ? Math.max(0, Date.now() / 1000 - createdTs) : 0
-
-  const budget = computeAdaptiveBudget(cache, ageSecs, {
-    contextPressure: getContextPressure(cache),
-  })
-
-  return _buildManifestText(cache, budget)
-}
-
-/**
- * Build manifest and return both text and event count.
- */
-export function buildManifestWithCount(
-  sessionId: string,
-  opts?: { maxTokens?: number }
-): [string, number] {
-  const cache = loadSessionCache(sessionId)
-  if (!cache) {
-    return ['', 0]
-  }
-
-  const evCount = eventCount(cache)
-  const manifest = buildManifest(sessionId, opts)
-  return [manifest, evCount]
 }

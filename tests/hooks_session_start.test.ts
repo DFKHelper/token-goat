@@ -32,15 +32,18 @@ import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { recordEvidence } from '../src/evidence_cache.js'
+import { exportSessionState, recordFileEdit } from '../src/session.js'
+import { storeBlob } from '../src/disk_cache.js'
+import { SESSIONS_SUBDIR } from '../src/session_store.js'
 
-function makeEvent(cwd?: string): HookEvent {
+function makeEvent(cwd?: string, source?: string): HookEvent {
   return {
     eventName: 'session_start',
     toolName: undefined,
     toolInput: {},
     sessionId: 'test-session',
     agentId: undefined,
-    raw: cwd !== undefined ? { cwd } : {},
+    raw: { ...(cwd !== undefined ? { cwd } : {}), ...(source !== undefined ? { source } : {}) },
   }
 }
 
@@ -67,7 +70,7 @@ afterEach(() => {
 })
 
 describe('sessionStartHandler', () => {
-  it('adds a bounded delta capsule for evidence whose source changed', () => {
+  it('adds a bounded delta capsule for evidence whose source changed', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-evidence-'))
     const source = path.join(projectDir, 'example.ts')
     try {
@@ -79,7 +82,7 @@ describe('sessionStartHandler', () => {
         text: 'export const answer = 41\n',
       })
 
-      const result = sessionStartHandler(makeEvent(projectDir))
+      const result = await sessionStartHandler(makeEvent(projectDir))
 
       expect(JSON.stringify(result)).toContain('Cross-session evidence changed since it was cached')
       expect(JSON.stringify(result)).toContain(normalizePath(source))
@@ -89,7 +92,7 @@ describe('sessionStartHandler', () => {
     }
   })
 
-  it('emits a project-aware reminder that names no exact symbol count when the cwd is indexed', () => {
+  it('emits a project-aware reminder that names no exact symbol count when the cwd is indexed', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-proj-'))
     try {
       const forwardSlashDir = normalizePath(projectDir)
@@ -101,7 +104,7 @@ describe('sessionStartHandler', () => {
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(`${forwardSlashDir}/b.ts`, 'bar', 'function', 1, 2, '', '')
 
-      const result = sessionStartHandler(makeEvent(projectDir))
+      const result = await sessionStartHandler(makeEvent(projectDir))
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
         expect(result.context).toContain('this project is indexed')
@@ -123,7 +126,7 @@ describe('sessionStartHandler', () => {
   // the earliest, most cacheable position of the request. Asserting the absence of a digit
   // (above) proves the count is gone but not that the string is actually stable end to end --
   // this drives the real change (inserting a symbol between two calls) and diffs full strings.
-  it('emits byte-identical context across a reindex that changes the symbol count', () => {
+  it('emits byte-identical context across a reindex that changes the symbol count', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-stable-'))
     try {
       const forwardSlashDir = normalizePath(projectDir)
@@ -132,7 +135,7 @@ describe('sessionStartHandler', () => {
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(`${forwardSlashDir}/a.ts`, 'foo', 'function', 1, 2, '', '')
 
-      const before = sessionStartHandler(makeEvent(projectDir))
+      const before = await sessionStartHandler(makeEvent(projectDir))
       expect(before.hookType).toBe('context')
 
       // Simulate a reindex that grows the symbol count mid-session.
@@ -143,7 +146,7 @@ describe('sessionStartHandler', () => {
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(`${forwardSlashDir}/c.ts`, 'baz', 'function', 1, 2, '', '')
 
-      const after = sessionStartHandler(makeEvent(projectDir))
+      const after = await sessionStartHandler(makeEvent(projectDir))
       expect(after.hookType).toBe('context')
 
       if (before.hookType === 'context' && after.hookType === 'context') {
@@ -154,11 +157,11 @@ describe('sessionStartHandler', () => {
     }
   })
 
-  it('degrades to a short generic reminder when the cwd is not indexed', () => {
+  it('degrades to a short generic reminder when the cwd is not indexed', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-unindexed-'))
     try {
       getDb(_testDbPath) // create an empty db so countSymbols has something to query against
-      const result = sessionStartHandler(makeEvent(projectDir))
+      const result = await sessionStartHandler(makeEvent(projectDir))
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
         expect(result.context).toContain('token-goat index .')
@@ -171,8 +174,8 @@ describe('sessionStartHandler', () => {
     }
   })
 
-  it('degrades to the generic reminder when no cwd is present on the event', () => {
-    const result = sessionStartHandler(makeEvent(undefined))
+  it('degrades to the generic reminder when no cwd is present on the event', async () => {
+    const result = await sessionStartHandler(makeEvent(undefined))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat index .')
@@ -181,24 +184,24 @@ describe('sessionStartHandler', () => {
     }
   })
 
-  it('emits nothing (pass) when hints.session_start_reminder is disabled', () => {
+  it('emits nothing (pass) when hints.session_start_reminder is disabled', async () => {
     const cfg = defaultConfig()
     cfg.hints.session_start_reminder = false
     saveConfig(cfg)
     invalidateConfigCache()
 
-    const result = sessionStartHandler(makeEvent(undefined))
+    const result = await sessionStartHandler(makeEvent(undefined))
     expect(result).toEqual({ hookType: 'pass' })
   })
 
-  it('appends a DB-health warning to the context when a stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', () => {
+  it('appends a DB-health warning to the context when a stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', async () => {
     const db = getDb(_testDbPath)
     const oversized = 'x'.repeat(200 * 1024)
     db.prepare(
       'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run('/some/generated.js', 'bloated', 'function', 1, 2, oversized, '')
 
-    const result = sessionStartHandler(makeEvent(undefined))
+    const result = await sessionStartHandler(makeEvent(undefined))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('exceed the')
@@ -211,13 +214,13 @@ describe('sessionStartHandler', () => {
     }
   })
 
-  it('does not add DB-health noise when no stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', () => {
+  it('does not add DB-health noise when no stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', async () => {
     const db = getDb(_testDbPath)
     db.prepare(
       'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run('/some/normal.js', 'small', 'function', 1, 2, 'return 1', '')
 
-    const result = sessionStartHandler(makeEvent(undefined))
+    const result = await sessionStartHandler(makeEvent(undefined))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).not.toContain('reclaim-index')
@@ -230,22 +233,22 @@ describe('sessionStartHandler', () => {
   // hook outright. This test proves the block actually runs by spying on checkSymbolBodySize
   // itself: deleting the block makes this spy assertion fail regardless of DB content, closing
   // the gap the negative-content assertion above cannot cover on its own.
-  it('actually invokes checkSymbolBodySize while building context', () => {
+  it('actually invokes checkSymbolBodySize while building context', async () => {
     const spy = vi.spyOn(symbolBodyProbe, 'checkSymbolBodySize')
-    const result = sessionStartHandler(makeEvent(undefined))
+    const result = await sessionStartHandler(makeEvent(undefined))
     expect(spy).toHaveBeenCalledWith(_testDbPath)
     expect(result.hookType).toBe('context')
     spy.mockRestore()
   })
 
-  it('fails soft (pass) when the underlying DB lookup throws', () => {
+  it('fails soft (pass) when the underlying DB lookup throws', async () => {
     // Point at a path that can never be a valid sqlite file (a directory), so getDb()/countSymbols()
     // throws inside buildReminder() and the handler's own try/catch must still return cleanly.
     const badDbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-baddb-'))
     fs.rmSync(_testDbPath, { force: true })
     fs.renameSync(badDbDir, _testDbPath)
     try {
-      const result = sessionStartHandler(makeEvent(process.cwd()))
+      const result = await sessionStartHandler(makeEvent(process.cwd()))
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
         expect(result.context).toContain('token-goat index .')
@@ -255,5 +258,59 @@ describe('sessionStartHandler', () => {
     } finally {
       fs.rmSync(_testDbPath, { recursive: true, force: true })
     }
+  })
+  // CAPTURE: the session blob is written by exportSessionState after recordFileEdit, the same pair that persists a real session, so the packet is built from the shape a real compaction leaves behind rather than from a hand-written blob.
+  describe('post-compaction recovery', () => {
+    /** Narrow the handler's union to its context branch. `expect(result.hookType).toBe('context')` reads like a narrowing but is not one, and every assertion here is about the text that branch carries. */
+    function contextOf(result: Awaited<ReturnType<typeof sessionStartHandler>>): string {
+      if (result.hookType !== 'context') throw new Error(`expected a context output, got ${result.hookType}`)
+      return result.context
+    }
+
+    function seedSession(): void {
+      recordFileEdit('/proj/src/widget.ts')
+      storeBlob(SESSIONS_SUBDIR, 'test-session', exportSessionState() as unknown as Record<string, unknown>)
+    }
+
+    it('appends the resume packet when this session start is the one that follows a compaction', async () => {
+      seedSession()
+      const result = await sessionStartHandler(makeEvent(undefined, 'compact'))
+      expect(result.hookType).toBe('context')
+      expect(contextOf(result)).toContain('# Resume packet')
+      expect(contextOf(result)).toContain('/proj/src/widget.ts')
+      // The routing reminder is still there: recovery is appended to it, not swapped for it.
+      expect(contextOf(result)).toContain('token-goat:')
+    })
+
+    it('does not spend the packet on an ordinary session start', async () => {
+      seedSession()
+      const result = await sessionStartHandler(makeEvent(undefined, 'startup'))
+      expect(result.hookType).toBe('context')
+      expect(contextOf(result)).not.toContain('# Resume packet')
+    })
+
+    it('still recovers when the routing reminder is switched off, since the two settings answer different questions', async () => {
+      seedSession()
+      const cfg = defaultConfig()
+      cfg.hints.session_start_reminder = false
+      saveConfig(cfg)
+      invalidateConfigCache()
+
+      const result = await sessionStartHandler(makeEvent(undefined, 'compact'))
+      expect(result.hookType).toBe('context')
+      expect(contextOf(result)).toContain('# Resume packet')
+      expect(contextOf(result)).not.toContain('token-goat: prefer surgical reads')
+    })
+
+    it('stays silent after a compaction when compact_assist is disabled', async () => {
+      seedSession()
+      const cfg = defaultConfig()
+      cfg.compact_assist.enabled = false
+      saveConfig(cfg)
+      invalidateConfigCache()
+
+      const result = await sessionStartHandler(makeEvent(undefined, 'compact'))
+      expect(contextOf(result)).not.toContain('# Resume packet')
+    })
   })
 })

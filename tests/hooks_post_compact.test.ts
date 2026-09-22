@@ -7,28 +7,27 @@
  *
  * The assertions below therefore pin three separate things, because each has its own way of going quietly wrong: that a row is recorded at all, that it is recorded at ZERO savings (a measurement credited as a saving is this project's most-repeated accounting bug), and that the survival count actually discriminates -- a counter that always reports 0/0, or always reports every path as surviving, would pass a test that only checked the row exists.
  */
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { join, parse, sep } from 'node:path'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { dataDir } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import type { HookEvent } from '../src/hook_registry.js'
-import { buildManifest, postCompactHandler } from '../src/hooks_compact.js'
+import { postCompactHandler } from '../src/hooks_compact.js'
+import { buildManifest } from '../src/manifest.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordFileRead } from '../src/session.js'
 import { isCaseInsensitiveFs } from '../src/util.js'
 
-const tmpDirs: string[] = []
+// A project-shaped absolute path, not a real file under the OS temp directory. The manifest drops noise paths before its row cap and every OS temp root is on that list, so a fixture written there is filtered out of the very rows the survival canary samples. Nothing here reads the bytes: the row renderer stats the path for a size and floors it at 1kb, so an absent file renders exactly as a small real one would.
+const FIXTURE_ROOT = `${parse(tmpdir()).root.split(sep).join('/')}tg-postcompact-project`
+let fixtureSeq = 0
 
-function makeTmpFile(name: string, content = 'data'): string {
-  const dir = mkdtempSync(join(tmpdir(), 'tg-postcompact-'))
-  tmpDirs.push(dir)
-  const p = join(dir, name)
-  writeFileSync(p, content)
-  return p
+function makeTmpFile(name: string): string {
+  fixtureSeq += 1
+  return `${FIXTURE_ROOT}/run-${fixtureSeq}/${name}`
 }
 
 function postCompactEvent(summary: string, trigger = 'auto', sessionId = 'postcompact-test'): HookEvent {
@@ -57,15 +56,6 @@ beforeEach(() => {
 
 afterEach(() => {
   clearModuleCaches()
-  while (tmpDirs.length > 0) {
-    const d = tmpDirs.pop()
-    if (d === undefined) continue
-    try {
-      rmSync(d, { recursive: true, force: true })
-    } catch {
-      // best-effort
-    }
-  }
 })
 
 describe('postCompactHandler', () => {
@@ -135,19 +125,15 @@ describe('postCompactHandler', () => {
 
   it('counts a path the summary rewrote relative to the project root, which is how real summaries name files', () => {
     // CAPTURE: 322 recorded compaction summaries of one project named its files as `src/...` and `tests/...` and never by the absolute path the manifest printed; matching the absolute form alone recorded 0/64 on every one of them.
-    const root = mkdtempSync(join(tmpdir(), 'tg-postcompact-'))
-    tmpDirs.push(root)
-    mkdirSync(join(root, 'src'))
-    const file = join(root, 'src', 'relative-in-summary.ts')
-    writeFileSync(file, 'data')
-    recordFileRead(file)
+    const root = `${FIXTURE_ROOT}/relative-root`
+    recordFileRead(`${root}/src/relative-in-summary.ts`)
     const event = postCompactEvent('Edited `src/relative-in-summary.ts` and moved on.')
 
     postCompactHandler({ ...event, raw: { ...event.raw, cwd: root } })
     expect(latestCompactSummaryRow()?.detail).toContain('manifest_paths=1/1')
 
     // Control: from a directory the file is not under, the relative spelling is not this file, so nothing survives.
-    postCompactHandler({ ...event, raw: { ...event.raw, cwd: tmpdir() + '-elsewhere' } })
+    postCompactHandler({ ...event, raw: { ...event.raw, cwd: `${FIXTURE_ROOT}/elsewhere` } })
     expect(latestCompactSummaryRow()?.detail).toContain('manifest_paths=0/1')
   })
 
