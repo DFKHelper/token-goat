@@ -65,8 +65,10 @@
  * silently never engage for Copilot CLI sessions. This resolves the `toolArgs` key
  * question the block above previously flagged as unconfirmed.
  *
- * Image shrinking rides token-goat's pre_tool_use additionalContext, which Copilot's
- * preToolUse output schema cannot carry (docs/hook-channel-matrix.md footnote 7). It is
+ * Image shrinking rides token-goat's pre_tool_use additionalContext, which reaches the
+ * model on this harness (see translate()'s preToolUse branch for the evidence) but must
+ * not carry a shrink payload: that payload is a base64 data URL, and forwarding it as
+ * text would cost more than the image it replaced. It is
  * delivered here the same way opencode/pi do it: materializeShrunkImage decodes the
  * payload's data URL to a temp file and translate() returns
  * `{modifiedArgs: {...originalArgs, path: <shrunk copy>}}` for a `view` call. Verified
@@ -565,16 +567,21 @@ function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
         (resp && resp.reason) || (hso && hso.permissionDecisionReason) || 'blocked by token-goat'
       return { permissionDecision: 'deny', permissionDecisionReason: reason }
     }
+    const context = extractContext(resp)
+    // A shrink payload is a base64 data URL, not prose. It rides the same additionalContext field every other pre-tool hint does, so the two have to be told apart before either is forwarded: handing the model a data URL would cost far more context than the image it was shrunk from ever did. It is only ever materialized to a temp file the read argument is pointed at.
+    const shrinkPayload = typeof context === 'string' && context.indexOf('data:image/') !== -1
+    const out = {}
     const updated = hso && hso.updatedInput
     if (updated && typeof updated === 'object') {
-      return { modifiedArgs: updated }
+      out.modifiedArgs = updated
+    } else if (shrinkPayload && (toolName === 'view' || foldToolName(toolName) === 'view')) {
+      // modifiedArgs REPLACES the tool call's args wholesale (ESr in the 1.0.80 bundle, see this module's header docblock), so the full original toolArgs are spread and only Copilot's own path key is swapped.
+      const shrunkPath = materializeShrunkImage(context)
+      if (shrunkPath) out.modifiedArgs = Object.assign({}, originalToolArgs, { path: shrunkPath })
     }
-    // Image shrink has no context channel on this event (Copilot's preToolUse output schema carries no additionalContext; docs/hook-channel-matrix.md footnote 7) -- translate it into a rewritten view path pointing at a materialized shrunk copy instead, via the same modifiedArgs channel the updatedInput branch above already uses. modifiedArgs REPLACES the tool call's args wholesale (ESr in the 1.0.80 bundle, see this module's header docblock), so the full original toolArgs are spread and only Copilot's own path key is swapped.
-    if (toolName === 'view' || foldToolName(toolName) === 'view') {
-      const shrunkPath = materializeShrunkImage(extractContext(resp))
-      if (shrunkPath) return { modifiedArgs: Object.assign({}, originalToolArgs, { path: shrunkPath }) }
-    }
-    return {}
+    // Every pre-tool hint token-goat emits -- read-dedup nudges, the bash surgical-read advisories, the write-path notices -- used to stop here, on the stated grounds that Copilot's preToolUse output schema has no additionalContext field. It has one, and has had one for every version this bridge was ever checked against: copilot-sdk/types.d.ts declares additionalContext as an optional string on PreToolUseHookOutput in 1.0.80, 1.0.82, 1.0.86, 1.0.87 and 1.0.88 alike, and the 1.0.88 native runtime (prebuilds/win32-x64/runtime.node) carries it in the preToolUse response key list beside the three keys already known to work -- permissionDecision, permissionDecisionReason, modifiedArgs, additionalContext, in that order, immediately before "preToolUse hook timed out; allowing the tool call to proceed". The same binary carries an aggregation limit message naming the field generically ("Ignoring additionalContext returned by a ... hook because aggregating it would exceed the ... byte limit"), which is the mechanism 1.0.88's own release note calls combining contributions within a limit. Forwarded alongside modifiedArgs rather than instead of it: the schema accepts both, and a rewritten argument is no reason to drop the sentence explaining it.
+    if (context && !shrinkPayload) out.additionalContext = context
+    return out
   }
 
   if (copilotEvent === 'postToolUse') {
@@ -590,10 +597,13 @@ function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
     const context = extractContext(resp)
     const out = {}
     const rawResult = payload && payload.toolResult
-    const originalText = rawResult && (typeof rawResult.textResultForLlm === 'string' ? rawResult.textResultForLlm : typeof rawResult.text_result_for_llm === 'string' ? rawResult.text_result_for_llm : undefined)
+    // Copilot's own ToolResult type is a union of a bare string and ToolResultObject (copilot-sdk/types.d.ts), so a string is a shape the harness itself admits even though PostToolUseHookInput narrows this field to the object form. Reading it as a body costs one typeof and removes the only route by which body could come back undefined on a well-formed payload: in every version this bridge has been checked against (1.0.80, 1.0.82, 1.0.86, 1.0.87, 1.0.88) ToolResultObject declares textResultForLlm as a required string rather than an optional one, so the object form always carries a body and the hint always has something to be folded into.
+    const originalText =
+      typeof rawResult === 'string'
+        ? rawResult
+        : rawResult && (typeof rawResult.textResultForLlm === 'string' ? rawResult.textResultForLlm : typeof rawResult.text_result_for_llm === 'string' ? rawResult.text_result_for_llm : undefined)
     const rewritten = typeof updatedToolOutput === 'string'
     const body = rewritten ? updatedToolOutput : typeof originalText === 'string' ? originalText : undefined
-    // KNOWN GAP, recorded rather than papered over: when there is a hint but no body -- no rewrite, and a tool result carrying neither text key -- the fold cannot run, only the dropped additionalContext is left, and relay.ts has already counted the hint as delivered and cleared the queue, which on a compaction loses the recovery manifest permanently. Not fixed here because both plausible fixes are worse than the gap until the condition is shown to occur: synthesising a modifiedResult would replace a result object whose other fields we cannot see, and making relay's clear conditional would push a bridge-specific test into the bridge-agnostic drain. Establish first whether a real postToolUse payload arrives with neither key.
     // Never claim a modification we did not make: with no rewrite and no hint, the body would be the tool's own
     // text handed back verbatim, and a pass-through modifiedResult is a lie about authorship on every call.
     if (typeof body === 'string' && (rewritten || context)) {

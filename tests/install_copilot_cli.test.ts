@@ -828,6 +828,64 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.modifiedArgs).toEqual({ command: 'compressed-command' })
   })
 
+  // PROVENANCE: FORMAT-DERIVED for the response field name. `additionalContext?: string` is declared on PreToolUseHookOutput in the shipped copilot-sdk/types.d.ts of 1.0.80, 1.0.82, 1.0.86, 1.0.87 and 1.0.88, and the 1.0.88 native runtime (prebuilds/win32-x64/runtime.node) lists it in the preToolUse response key set beside permissionDecision, permissionDecisionReason and modifiedArgs. HAND-DERIVED for the token-goat side: the hookSpecificOutput.additionalContext envelope is what serializeOutput emits for a pre_tool_use context response.
+  it('forwards a preToolUse context response as additionalContext', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({ hookSpecificOutput: { additionalContext: 'read this with token-goat read instead' } }),
+    )
+    const stdout = runShim(
+      'preToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'read', toolArgs: { path: '/f.txt' } }),
+      cwd,
+      env,
+    )
+    expect(JSON.parse(stdout).additionalContext).toBe('read this with token-goat read instead')
+  })
+
+  it('keeps the hint when the same preToolUse response also rewrites the arguments', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({
+        hookSpecificOutput: { updatedInput: { command: 'compressed-command' }, additionalContext: 'output will be compressed' },
+      }),
+    )
+    const stdout = runShim(
+      'preToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'shell', toolArgs: { command: 'original' } }),
+      cwd,
+      env,
+    )
+    const parsed = JSON.parse(stdout)
+    expect(parsed.modifiedArgs).toEqual({ command: 'compressed-command' })
+    expect(parsed.additionalContext).toBe('output will be compressed')
+  })
+
+  // The image-shrink payload rides the same field every other pre-tool hint does, and it is a base64 data URL. Forwarding it as text would hand the model more bytes than the image it replaced, so it must reach the model only as a rewritten path.
+  // PROVENANCE: HAND-DERIVED. The payload shape ("<summary>\n data URL") is the one formatShrinkSummary builds in src/image_shrink.ts; the body is a base64 literal chosen here so the materialized file can be read back and compared.
+  it('never forwards an image-shrink payload as additionalContext', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({
+        hookSpecificOutput: { additionalContext: 'Shrunk 1.2 MB to 40 KB\ndata:image/png;base64,aGVsbG8=' },
+      }),
+    )
+    const stdout = runShim(
+      'preToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'view', toolArgs: { path: '/big.png' } }),
+      cwd,
+      env,
+    )
+    const parsed = JSON.parse(stdout)
+    expect(parsed.additionalContext, 'a base64 data URL must never be handed to the model as text').toBeUndefined()
+    expect(parsed.modifiedArgs.path).not.toBe('/big.png')
+    expect(fs.readFileSync(parsed.modifiedArgs.path, 'utf8')).toBe('hello')
+    fs.rmSync(parsed.modifiedArgs.path, { force: true })
+  })
+
   it('translates a postToolUse context response (hookSpecificOutput.additionalContext) into additionalContext', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
@@ -865,6 +923,25 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const parsed = JSON.parse(stdout)
     expect(parsed.additionalContext).toBe('you already read this file')
     expect(parsed.modifiedResult).toEqual({
+      resultType: 'success',
+      textResultForLlm: 'file contents here\n\n[token-goat: you already read this file]',
+    })
+  })
+
+  // PROVENANCE: FORMAT-DERIVED. copilot-sdk/types.d.ts declares `export type ToolResult = string | ToolResultObject` in 1.0.80 through 1.0.88, so a bare string is a result shape the harness's own union admits. Without this branch the string form leaves the fold with no body, and the hint is lost on the one channel that reaches the model here.
+  it('reads a bare-string toolResult as the body to fold the hint into', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({ hookSpecificOutput: { additionalContext: 'you already read this file' } }),
+    )
+    const stdout = runShim(
+      'postToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'read', toolArgs: {}, toolResult: 'file contents here' }),
+      cwd,
+      env,
+    )
+    expect(JSON.parse(stdout).modifiedResult).toEqual({
       resultType: 'success',
       textResultForLlm: 'file contents here\n\n[token-goat: you already read this file]',
     })
