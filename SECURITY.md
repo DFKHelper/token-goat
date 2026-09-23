@@ -99,6 +99,16 @@ Direct dependencies with a forward patch are kept current rather than pinned: `p
 
 For a scanner that ingests a bill of materials rather than a lockfile, `npm run sbom` writes CycloneDX 1.5 to stdout.
 
+## What actually runs
+
+The supply-chain attacks worth planning for no longer run at install time. Blocking `preinstall` and `postinstall` hooks answers the previous generation; the current one ships a package that installs cleanly, passes a static scan, and hides its payload inside a method the host application is certain to call once it starts working normally. Nothing about that install looks wrong, so nothing examining the install can find it.
+
+What the class still needs is a package in the tree, which is why the number that matters here is how few there are. Exactly one package is required at runtime: [`jsonc-parser`](https://www.npmjs.com/package/jsonc-parser), bundled into the shipped artifact at build time. Every other production dependency is `optional` and resolved lazily, so its code runs only if you use the feature that needs it, on an install that actually has it. Skip optional packages, as the second row of the table above does, and the whole install is two packages: Token-Goat and that one dependency.
+
+Which names may appear in that tree is pinned in [`tests/guards/runtime_dependency_set_is_locked.test.ts`](tests/guards/runtime_dependency_set_is_locked.test.ts) and checked on every CI run. A dependency that arrives through a routine version bump fails the build and names itself, rather than quietly beginning to execute in every install. Installs themselves are `npm ci` against the committed lockfile, so resolution cannot drift from what was reviewed, and Dependabot proposals wait seven days ([`.github/dependabot.yml`](.github/dependabot.yml)) rather than adopting a version on the day it is published.
+
+None of this inspects what a dependency does once it runs. It bounds how much third-party code can run at all, and makes any change to that set something a person has to agree to.
+
 ## Verifying what you installed
 
 Every published version is built and pushed by one workflow, [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which runs only when a GitHub release is published (or manually, and then only from `main`). It publishes with npm provenance, so npm holds a signed attestation tying the tarball to the commit and workflow run that produced it. Nothing is ever published from a developer workstation.

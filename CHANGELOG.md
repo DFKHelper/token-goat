@@ -6,6 +6,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 No reindex is needed.
 
+### Security
+
+- **The set of packages allowed to run in your process is now pinned and checked on every build.** Supply-chain malware has moved past install scripts: the current pattern is a package that installs cleanly, passes a static scan, and puts its payload inside a method the program is certain to call once it starts working. Blocking install hooks does nothing about that, and neither does scanning an install that looks normal. What the attack still needs is a package in the tree, so that is what is bounded here. Exactly one package is required at runtime, `jsonc-parser`, bundled into the shipped artifact; every other production dependency is optional and loaded only when the feature that needs it is used. A dependency arriving through a routine version bump now fails the build and names itself instead of quietly beginning to execute in every install. `SECURITY.md` states the guarantee and the guard holds that statement to the tree it describes, so it cannot go stale into something untrue.
+
 ### Fixed
 
 - **Three more search modes whose lines are the answer are passed through instead of being summarised into invented numbers.** A search that lists files or counts them per file emits no match lines, and the summariser reads every line as one match on the text before its first colon. `-l` and `-c` were released whole for that reason; their siblings were missed. `rg --count-matches` reports a per-file total of matches rather than matching lines, so each `path:18` line counted as a single match for `path`: a search of this project's own source printed `372 matches across 372 file(s)` with every file shown as one match, where the real total was 4466. `rg --files-without-match` and `rg --files` emit a bare path per line, and a 394-file listing became `394 matches across 1 file(s)` attributed entirely to the search root in the first case and `394 matches across 0 file(s)` with every line unattributed in the second. All three now release their output untouched.
