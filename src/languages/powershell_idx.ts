@@ -166,6 +166,7 @@ function stripLeadingAttributes(text: string): string {
 const FUNC_RE = new RegExp(`^(?:function|filter|workflow|configuration)\\s+(?:(?:global|local|script|private):)?(${FUNC_IDENT})`, 'i')
 const CLASS_RE = new RegExp(`^(class|enum)\\s+(${IDENT})`, 'i')
 const PESTER_RE = /^(Describe|Context|It)\b(?:\s+-[A-Za-z0-9_-]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s{]+))?)*\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_.-]+))/i
+const PESTER_SETUP_RE = /^(BeforeAll|BeforeEach|AfterAll|AfterEach)\b(?:\s+-[A-Za-z0-9_-]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s{]+))?)*\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_.-]+))?/i
 const METHOD_NAME_RE = new RegExp(
   `^(?!(?:if|elseif|else|while|for|foreach|do|switch|return|throw|try|catch|finally|param|begin|process|end)\\b)(${IDENT})\\s*\\(`,
   'i',
@@ -203,7 +204,7 @@ export function extractPowershell(
 
   interface OpenBlock {
     symbolIndex: number
-    kind: 'function' | 'describe' | 'context' | 'test' | 'class' | 'method'
+    kind: 'function' | 'describe' | 'context' | 'test' | 'setup' | 'class' | 'method'
     braceDepth: number
     entered: boolean
   }
@@ -265,35 +266,54 @@ export function extractPowershell(
       continue
     }
 
-    // FUNCTION or FILTER (top-level only, not nested)
-    if (braceDepth === 0 && currentClass === null) {
+    // FUNCTION or FILTER (top-level only, or helper functions nested inside Pester test/context/setup blocks)
+    const isPesterScope = openBlocks.some((b) => b.kind === 'test' || b.kind === 'context' || b.kind === 'setup' || b.kind === 'describe')
+    if ((braceDepth === 0 || isPesterScope) && currentClass === null) {
       const funcMatch = FUNC_RE.exec(stripped)
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
         if (symbols.length < MAX_SYMBOLS) {
           const pushIdx = symbols.length
-          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, line.trimEnd().slice(0, 200), undefined, lines, 'hash'))
+          const parentBlock = [...openBlocks].reverse().find((b) => b.kind === 'test' || b.kind === 'context' || b.kind === 'setup' || b.kind === 'describe')
+          const parentName = parentBlock !== undefined ? symbols[parentBlock.symbolIndex]?.name : undefined
+          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, line.trimEnd().slice(0, 200), parentName, lines, 'hash'))
           openBlocks.push({ symbolIndex: pushIdx, kind: 'function', braceDepth, entered: false })
         }
       }
     }
 
-    // PESTER TEST BLOCKS: Describe, Context, It (supported across .Tests.ps1 and general PowerShell files)
+    // PESTER TEST & SETUP BLOCKS: Describe, Context, It, BeforeAll, BeforeEach, AfterAll, AfterEach (supported across .Tests.ps1 and general PowerShell files)
     if (currentClass === null) {
-      const pesterTrigger = /^(?:Describe|Context|It)\b/i.exec(stripped)
+      const pesterTrigger = /^(?:Describe|Context|It|BeforeAll|BeforeEach|AfterAll|AfterEach)\b/i.exec(stripped)
       if (pesterTrigger) {
         const rawLine = sourceLine.trimStart()
-        const pesterMatch = PESTER_RE.exec(rawLine)
-        if (pesterMatch) {
-          const blockType = (pesterMatch[1] ?? '').toLowerCase()
-          const testName = (pesterMatch[2] ?? pesterMatch[3] ?? pesterMatch[4] ?? '').trim()
-          if (testName && symbols.length < MAX_SYMBOLS) {
-            const kind = blockType === 'context' ? 'context' : 'test'
-            const parentBlock = [...openBlocks].reverse().find((b) => b.kind === 'test' || b.kind === 'context')
-            const parentName = parentBlock !== undefined ? symbols[parentBlock.symbolIndex]?.name : undefined
-            const pushIdx = symbols.length
-            symbols.push(makeLineSymbol(filePath, testName, kind, lineNum, sourceLine.trimEnd().slice(0, 200), parentName, lines, 'hash'))
-            openBlocks.push({ symbolIndex: pushIdx, kind, braceDepth, entered: false })
+        const isSetupBlock = /^(?:BeforeAll|BeforeEach|AfterAll|AfterEach)\b/i.test(stripped)
+        if (isSetupBlock) {
+          const pesterMatch = PESTER_SETUP_RE.exec(rawLine)
+          if (pesterMatch) {
+            const explicitName = (pesterMatch[2] ?? pesterMatch[3] ?? pesterMatch[4] ?? '').trim()
+            const testName = explicitName || (pesterMatch[1] ?? 'BeforeAll')
+            if (testName && symbols.length < MAX_SYMBOLS) {
+              const parentBlock = [...openBlocks].reverse().find((b) => b.kind === 'test' || b.kind === 'context' || b.kind === 'setup' || b.kind === 'describe')
+              const parentName = parentBlock !== undefined ? symbols[parentBlock.symbolIndex]?.name : undefined
+              const pushIdx = symbols.length
+              symbols.push(makeLineSymbol(filePath, testName, 'setup', lineNum, sourceLine.trimEnd().slice(0, 200), parentName, lines, 'hash'))
+              openBlocks.push({ symbolIndex: pushIdx, kind: 'setup', braceDepth, entered: false })
+            }
+          }
+        } else {
+          const pesterMatch = PESTER_RE.exec(rawLine)
+          if (pesterMatch) {
+            const blockType = (pesterMatch[1] ?? '').toLowerCase()
+            const testName = (pesterMatch[2] ?? pesterMatch[3] ?? pesterMatch[4] ?? '').trim()
+            if (testName && symbols.length < MAX_SYMBOLS) {
+              const kind = blockType === 'context' ? 'context' : 'test'
+              const parentBlock = [...openBlocks].reverse().find((b) => b.kind === 'test' || b.kind === 'context' || b.kind === 'setup' || b.kind === 'describe')
+              const parentName = parentBlock !== undefined ? symbols[parentBlock.symbolIndex]?.name : undefined
+              const pushIdx = symbols.length
+              symbols.push(makeLineSymbol(filePath, testName, kind, lineNum, sourceLine.trimEnd().slice(0, 200), parentName, lines, 'hash'))
+              openBlocks.push({ symbolIndex: pushIdx, kind, braceDepth, entered: false })
+            }
           }
         }
       }

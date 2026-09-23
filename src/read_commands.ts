@@ -2987,6 +2987,19 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   const indexEmpty = isIndexEmptyForProject(globalDbPath(), rootDir)
   if (opts.json === true) {
     // A dedicated field, never prose folded into an existing string field -- same "add a field, don't rewrite an existing one" convention doctor's own {status, message} shape follows, and consistent with this payload's own {source, items, truncated, totalCount} envelope.
+    let symFound = false
+    const trimmedQuery = query.trim()
+    const isIdentifier = /^[A-Za-z0-9_.:-]+$/.test(trimmedQuery)
+    if (!indexEmpty && isIdentifier) {
+      try {
+        const symMatches = querySymbols({ name: trimmedQuery, rootDir })
+        if (symMatches.length > 0) {
+          symFound = true
+        }
+      } catch {
+        // Ignore DB errors during symbol lookup fallback
+      }
+    }
     const payload = indexEmpty
       ? {
           source: 'fts',
@@ -3025,6 +3038,12 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
                   warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.`,
                 }
               : {}),
+          ...(!indexEmpty && isIdentifier
+            ? {
+                symbolSuggestion: `token-goat symbol "${trimmedQuery}"`,
+                ...(symFound ? { indexedSymbolFound: true } : {}),
+              }
+            : {}),
         }
     const text = displaySafeJson(payload)
     return { text, code: 1 }
@@ -3032,6 +3051,24 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   let text = indexEmpty
     ? `token-goat: no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
     : `token-goat: no matches for '${query}'`
+  const trimmedQuery = query.trim()
+  const isIdentifier = /^[A-Za-z0-9_.:-]+$/.test(trimmedQuery)
+  if (!indexEmpty && isIdentifier) {
+    let symFound = false
+    try {
+      const symMatches = querySymbols({ name: trimmedQuery, rootDir })
+      if (symMatches.length > 0) {
+        symFound = true
+      }
+    } catch {
+      // Ignore DB errors during symbol lookup fallback
+    }
+    if (symFound) {
+      text += `\n(note: '${trimmedQuery}' is an indexed symbol name; use: token-goat symbol "${trimmedQuery}")`
+    } else {
+      text += `\nTry: token-goat symbol "${trimmedQuery}"`
+    }
+  }
   if (preflight.status !== 'ready') {
     text += `\n(note: semantic indexing is degraded [${preflight.status}]: ${preflight.summary}${preflight.actionRequired ? ` — ${preflight.actionRequired}` : ''})`
   } else if (searchSemanticError !== null) {

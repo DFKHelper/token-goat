@@ -137,13 +137,18 @@ afterEach(() => {
 
 async function runSemanticCli(
   query: string,
-): Promise<{ stdout: string; warnings: string[]; exitCode: number }> {
+): Promise<{ stdout: string; stderr: string; warnings: string[]; exitCode: number }> {
   const prev = process.exitCode
   process.exitCode = 0
   const chunks: string[] = []
+  const errChunks: string[] = []
   const warnings: string[] = []
   const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
     chunks.push(String(chunk))
+    return true
+  })
+  const err = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+    errChunks.push(String(chunk))
     return true
   })
   const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
@@ -158,10 +163,11 @@ async function runSemanticCli(
     // Read before the restore below puts the caller's value back: the exit code is the whole
     // difference between "degraded to keyword search" and "failed", and both print the same
     // warning.
-    return { stdout: chunks.join(''), warnings, exitCode: process.exitCode === undefined ? 0 : Number(process.exitCode) }
+    return { stdout: chunks.join(''), stderr: errChunks.join(''), warnings, exitCode: process.exitCode === undefined ? 0 : Number(process.exitCode) }
   } finally {
     process.chdir(cwd)
     out.mockRestore()
+    err.mockRestore()
     warn.mockRestore()
     process.exitCode = prev
   }
@@ -256,5 +262,32 @@ describe('semantic with the runtime installed but its model files unobtainable',
     expect(warning, 'the package is installed here; telling them to install it is wrong advice').not.toContain(
       'npm install',
     )
+  })
+
+  it('suggests exact symbol lookup when a single-identifier semantic query misses', async () => {
+    modelAvailable = true
+    searchFailure = null
+    const { stderr, exitCode } = await runSemanticCli('NonExistentFunctionName')
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("token-goat: no matches for 'NonExistentFunctionName'")
+    expect(stderr).toContain('Try: token-goat symbol "NonExistentFunctionName"')
+  })
+
+  it('notes indexed symbol when the query matches an existing indexed symbol with no semantic chunks', async () => {
+    modelAvailable = true
+    searchFailure = null
+    const { getDb } = await import('../src/db.js')
+    const db = getDb(globalDbPath())
+    db.prepare(`
+      INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(FIXTURE, 'Resolve-EmailRecipientGroup', 'function', 1, 5, 'body', null, '')
+    // Delete from symbols_fts to simulate a semantic miss while the symbol remains in symbols table
+    db.prepare(`DELETE FROM symbols_fts WHERE name = 'Resolve-EmailRecipientGroup'`).run()
+
+    const { stderr, exitCode } = await runSemanticCli('Resolve-EmailRecipientGroup')
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("token-goat: no matches for 'Resolve-EmailRecipientGroup'")
+    expect(stderr).toContain("(note: 'Resolve-EmailRecipientGroup' is an indexed symbol name; use: token-goat symbol \"Resolve-EmailRecipientGroup\")")
   })
 })

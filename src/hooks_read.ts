@@ -202,11 +202,14 @@ export function extractQuickSymbolSamples(content: string, _filePath?: string, l
     }
   }
 
-  // Matches Pester Describe, Context, and It blocks in PowerShell test files
-  const pesterRegex = /^\s*(?:Describe|Context|It)\b(?:\s+-[A-Za-z0-9_-]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s{]+))?)*\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_.-]+))/gim
+  // Matches Pester Describe, Context, It, and setup/lifecycle blocks in PowerShell test files
+  const pesterRegex = /^\s*(?:Describe|Context|It|BeforeAll|BeforeEach|AfterAll|AfterEach)\b(?:\s+-[A-Za-z0-9_-]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s{]+))?)*\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_.-]+))?/gim
   let match: RegExpExecArray | null
   while ((match = pesterRegex.exec(content)) !== null) {
-    const name = match[1] ?? match[2] ?? match[3]
+    const rawMatch = match[0].trimStart()
+    const blockKeyword = rawMatch.split(/\s+/)[0] ?? ''
+    const explicitName = match[1] ?? match[2] ?? match[3]
+    const name = explicitName || blockKeyword
     if (name && !symbols.includes(name)) {
       symbols.push(name)
       if (symbols.length >= limit) return symbols

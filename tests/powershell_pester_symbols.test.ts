@@ -42,6 +42,53 @@ describe('PowerShell Pester test blocks and hyphenated function symbols', () => 
     expect(itSym?.lineEnd).toBe(6)
   })
 
+  it('extracts BeforeAll setup blocks and nested helper functions within Pester scopes', () => {
+    const code = [
+      'Describe "CapMvrisPipeline" {',
+      '    BeforeAll {',
+      '        function Resolve-EmailRecipientGroup {',
+      '            param($Group)',
+      '            return "recipients@example.com"',
+      '        }',
+      '    }',
+      '    It "sends email to resolved group" {',
+      '        $recipients = Resolve-EmailRecipientGroup -Group "ops"',
+      '        $recipients | Should -Be "recipients@example.com"',
+      '    }',
+      '}',
+    ].join('\n')
+
+    const { symbols } = extractPowershell(code, 'CapMvrisPipeline.Tests.ps1')
+    const names = symbols.map((s) => s.name)
+
+    expect(names).toContain('CapMvrisPipeline')
+    expect(names).toContain('BeforeAll')
+    expect(names).toContain('Resolve-EmailRecipientGroup')
+    expect(names).toContain('sends email to resolved group')
+
+    const beforeAllSym = symbols.find((s) => s.name === 'BeforeAll')
+    expect(beforeAllSym).toBeDefined()
+    expect(beforeAllSym?.kind).toBe('setup')
+    expect(beforeAllSym?.lineStart).toBe(2)
+    expect(beforeAllSym?.lineEnd).toBe(7)
+    expect(beforeAllSym?.parent).toBe('CapMvrisPipeline')
+
+    const helperFn = symbols.find((s) => s.name === 'Resolve-EmailRecipientGroup')
+    expect(helperFn).toBeDefined()
+    expect(helperFn?.kind).toBe('function')
+    expect(helperFn?.lineStart).toBe(3)
+    expect(helperFn?.lineEnd).toBe(6)
+    expect(helperFn?.parent).toBe('BeforeAll')
+    expect(helperFn?.body).toContain('param($Group)')
+    expect(helperFn?.body).toContain('return "recipients@example.com"')
+
+    const itSym = symbols.find((s) => s.name === 'sends email to resolved group')
+    expect(itSym).toBeDefined()
+    expect(itSym?.lineStart).toBe(8)
+    expect(itSym?.lineEnd).toBe(11)
+    expect(itSym?.parent).toBe('CapMvrisPipeline')
+  })
+
   it('extracts hyphenated functions with multi-line body spans', () => {
     const code = [
       'function Audit-NonInternalPaths {',
@@ -84,6 +131,8 @@ describe('PowerShell Pester test blocks and hyphenated function symbols', () => 
 
     const pesterScript = [
       'Describe "AuditSuite" {',
+      '    BeforeAll {',
+      '    }',
       '    It "verifies non-internal paths" {',
       '    }',
       '}',
@@ -91,6 +140,7 @@ describe('PowerShell Pester test blocks and hyphenated function symbols', () => 
 
     const testSamples = extractQuickSymbolSamples(pesterScript, 'AuditNonInternalPaths.Tests.ps1')
     expect(testSamples).toContain('AuditSuite')
+    expect(testSamples).toContain('BeforeAll')
     expect(testSamples).toContain('verifies non-internal paths')
   })
 
