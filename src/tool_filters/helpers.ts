@@ -199,7 +199,28 @@ function maskQuotedSpans(cmd: string): string {
 export function hasBareBackgroundOrNewline(cmd: string): boolean {
   if (cmd.includes('\n') || cmd.includes('\r')) return true
   const masked = maskQuotedSpans(cmd)
-  return /(?<!&)&(?!&)/.test(masked)
+  for (let i = 0; i < masked.length; i++) {
+    if (masked[i] !== '&') continue
+    // Consume the second half of `&&` so neither character reads as a background operator.
+    if (masked[i + 1] === '&') {
+      i++
+      continue
+    }
+    if (masked[i - 1] === '&') continue
+    if (isRedirectAmpersand(masked, i)) continue
+    return true
+  }
+  return false
+}
+
+/**
+ * True when the `&` at `index` duplicates a file descriptor rather than detaching the job: `2>&1`, `>&2` and `0<&3` put it against a preceding `<`/`>`, and `cmd &> log` against a following `>`. Bash requires that adjacency, so no whitespace is skipped on either side.
+ *
+ * Exported because `splitShellSegments` needs the same answer and used to reach it by a different route. It treats a bare `&` as a segment separator, so `rg -n pat src >&2 | tail -20` sheared into `['rg -n pat src >', '2', 'tail -20']` and the `2` remnant read as an unknown pipeline stage; three callers in `hooks_bash_commands.ts` compensated by deleting the literal strings ` 2>&1` and ` 2>/dev/null` from the command first, which covered the one spelling each had met and left `>&2`, `1>&2` and `&>` shearing. Those strips stay -- they also keep the two halves of a redirect out of separate segments for callers that walk them -- but the splitter and this gate now decide what counts as a background `&` the same way, once.
+ */
+export function isRedirectAmpersand(cmd: string, index: number): boolean {
+  const before = cmd[index - 1]
+  return before === '<' || before === '>' || cmd[index + 1] === '>'
 }
 
 /**

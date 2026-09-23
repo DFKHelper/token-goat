@@ -18,6 +18,7 @@ import {
   splitOwnTrailingNotices,
   dedupeConsecutive,
   dedupeNumericRuns,
+  hasBareBackgroundOrNewline,
   hasHighEntropyToken,
   normalise,
   preserveStderrOnError,
@@ -437,6 +438,25 @@ describe('dispatch: detection + compound handling', () => {
     expect(detectFromCommand("mytool -m 'a || b' || mytool c")).toBeNull()
     // An unbalanced quote must not become a way to smuggle a pipeline past the gate.
     expect(detectFromCommand("mytool -E 'foo | head -5")).toBeNull()
+  })
+
+  // Fixture provenance: HAND-DERIVED -- these are redirection spellings from the POSIX shell grammar's redirection section (https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_07) plus bash's `&>`, read off the grammar rather than off token-goat's own matcher.
+  it('hasBareBackgroundOrNewline reads a file-descriptor duplication as part of its token, not as a background operator', () => {
+    expect(hasBareBackgroundOrNewline('npm test 2>&1')).toBe(false)
+    expect(hasBareBackgroundOrNewline('echo oops >&2')).toBe(false)
+    expect(hasBareBackgroundOrNewline('npm run b 1>&2')).toBe(false)
+    expect(hasBareBackgroundOrNewline('cat 0<&3')).toBe(false)
+    expect(hasBareBackgroundOrNewline('npm test &> log')).toBe(false)
+    expect(hasBareBackgroundOrNewline('npm test &>> log')).toBe(false)
+  })
+
+  // The other half: a gate that only got looser is indistinguishable from a broken one.
+  it('hasBareBackgroundOrNewline still reports a genuinely backgrounded or multi-line command', () => {
+    expect(hasBareBackgroundOrNewline('npm start &')).toBe(true)
+    expect(hasBareBackgroundOrNewline('npm start & npm test')).toBe(true)
+    expect(hasBareBackgroundOrNewline('npm test 2>&1 & npm start')).toBe(true)
+    expect(hasBareBackgroundOrNewline('npm run a\nnpm run b')).toBe(true)
+    expect(hasBareBackgroundOrNewline('npm run a && npm run b')).toBe(false)
   })
 
   it('the real grep filter claims a quoted-alternation grep as a single command', () => {

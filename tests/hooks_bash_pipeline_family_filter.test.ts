@@ -106,6 +106,21 @@ describe('post-hook filter selection for a piped command', () => {
     expect(compressFilters()).not.toContain('generic')
   })
 
+  // PROVENANCE: HAND-DERIVED. The three spellings come from the POSIX redirection grammar and bash's
+  // `&>` extension, not from token-goat's matchers. The test above passes only because the caller
+  // deletes the literal string ` 2>&1` before splitting, so it covers one spelling of a family: these
+  // are the siblings that deletion never named, and each one used to shear the same way. `>&2` is the
+  // common one -- any command that writes a note to stderr on the way into a pipe.
+  it('selects the family filter through the redirection spellings a literal 2>&1 strip never covered', async () => {
+    for (const redirect of ['>&2', '1>&2', '&>>/dev/null']) {
+      ;(recordStat as unknown as { mockClear: () => void }).mockClear()
+      const body = await runAndGetBody(`grep -rn "export function" src ${redirect} | tail -200`)
+      expect(compressFilters(), `${redirect} must not shear the segment walk`).toContain('grep')
+      expect(compressFilters()).not.toContain('generic')
+      expect(body, 'must still carry the match count').toContain('400')
+    }
+  })
+
   // NOT COVERED, deliberately, and measured rather than assumed: a piped TEST or BUILD run (`npx
   // vitest run 2>&1 | tail -40`) never reaches maybeCompressCompoundOutput at all, because
   // postBashHandler routes it by `isBuildCommand` into the cache branch first. Per command the

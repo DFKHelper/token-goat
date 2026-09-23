@@ -7,7 +7,7 @@ import { isUnderSystemTemp, escapesOntoNetworkThroughLinks } from './project.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { resolveIndexPath, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import type { HookEvent } from './hook_registry.js'
-import { hasBareBackgroundOrNewline, hasUnquotedOperator } from './tool_filters/index.js'
+import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } from './tool_filters/index.js'
 import { getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 
@@ -92,6 +92,11 @@ export function splitShellSegments(cmd: string): string[] {
     if (ch === '\\' && i + 1 < cmd.length) {
       cur += ch + cmd[i + 1]!
       i++
+      continue
+    }
+    // A redirection's `&` belongs to the token it sits in, not between two commands: splitting `rg -n pat src >&2 | tail -20` here left a bare `2` standing where a command should be.
+    if (ch === '&' && isRedirectAmpersand(cmd, i)) {
+      cur += ch
       continue
     }
     if (ch === '|' || ch === ';' || ch === '\n' || ch === '&') {
