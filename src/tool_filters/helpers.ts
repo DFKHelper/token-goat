@@ -29,6 +29,8 @@ export const LONG_LINE_MAX_CHARS = 1000
 
 /** A line already carrying an elision marker, from this helper or from the grep clip beside it. */
 const ELIDED_MARKER_RE = /… \[\d+ chars elided\]/
+/** {@link clipWideLines}'s own marker, whose captured count is what it dropped from the middle of the original line. A different word and a different ellipsis from the one above, so {@link ELIDED_MARKER_RE} never matched it. */
+const CLIPPED_MARKER_RE = / \.\.\. \[(\d+) chars clipped\] \.\.\. /
 
 /** Effective input cap: env `TOKEN_GOAT_FILTER_MAX_BYTES` override or default. */
 export function getMaxInputBytes(): number {
@@ -1083,15 +1085,15 @@ export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS
     if (line.length <= maxChars) return line
     // A line the grep clip already shortened still exceeds a smaller cap, and cutting it again would append a second marker whose count is measured against the first marker's text rather than against the original line: two elision notices on one line, the second one wrong. One clip per line, whoever made it.
     if (ELIDED_MARKER_RE.test(line)) return line
+    // The input clip at step 2b runs four times wider than this cap, so its lines arrive here still over it and have to be cut again. Its marker records what it already dropped; carry that figure into this one, or the notice reports only what this cut removed from an already-shortened line -- a 10,000-char line came out saying 3,030 chars elided when 9,000 were gone. Only when the whole marker falls beyond the cut: otherwise part of it survives into the kept text and its characters would be counted on both sides.
+    const priorClip = CLIPPED_MARKER_RE.exec(line)
     let cut = maxChars
-    // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a
-    // cut landing between a high surrogate and its low surrogate (e.g. inside
-    // an emoji) leaves a lone surrogate that serializes as U+FFFD on UTF-8
-    // output. Back off by one code unit so the pair stays whole.
+    // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a cut landing between a high surrogate and its low surrogate (e.g. inside an emoji) leaves a lone surrogate that serializes as U+FFFD on UTF-8 output. Back off by one code unit so the pair stays whole.
     const high = line.charCodeAt(cut - 1)
     const low = line.charCodeAt(cut)
     if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
-    return `${line.slice(0, cut)}  … [${line.length - cut} chars elided]`
+    const carried = priorClip !== null && priorClip.index >= cut ? Number(priorClip[1]) - priorClip[0].length : 0
+    return `${line.slice(0, cut)}  … [${line.length - cut + carried} chars elided]`
   })
 }
 

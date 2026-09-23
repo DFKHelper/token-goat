@@ -18,7 +18,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { capLongLines, LONG_LINE_MAX_CHARS } from '../src/tool_filters/helpers.js'
+import { capLongLines, clipWideLines, LONG_LINE_MAX_CHARS } from '../src/tool_filters/helpers.js'
 import { GenericFilter } from '../src/tool_filters/generic.js'
 
 /** A single line of exactly `n` characters, distinguishable from padding. */
@@ -84,5 +84,24 @@ describe('ToolFilter.apply: a single enormous line no longer ships whole', () =>
     const body = Array.from({ length: 30 }, (_, i) => `ordinary line ${i}`).join('\n')
     const out = new GenericFilter().apply(body, '', 0, ['cat', 'narrow.txt'])
     expect(out.text).not.toContain('chars elided')
+  })
+})
+
+describe('capLongLines after the input clip', () => {
+  // HAND-DERIVED: 10,000 and 1,000 are the inputs, and 9,000 is arithmetic on them -- what is left of
+  // the original line once 1,000 characters are kept. Neither figure is read back off capLongLines.
+  it('reports what is gone from the original line, not from the already-clipped one', () => {
+    const clipped = clipWideLines(wide(10000))
+    const [capped] = capLongLines([clipped], LONG_LINE_MAX_CHARS)
+
+    expect(capped).toContain('… [9000 chars elided]')
+    expect(capped).not.toContain('chars clipped')
+  })
+
+  it("leaves an unclipped line's count measured against itself", () => {
+    // Calibration: without it the case above only proves some number is printed, not that the carried
+    // figure is what moves it.
+    const [capped] = capLongLines([wide(4000)], LONG_LINE_MAX_CHARS)
+    expect(capped).toContain('… [3000 chars elided]')
   })
 })
