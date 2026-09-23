@@ -2,6 +2,13 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.24] - 2026-09-23
+
+### Fixed
+
+- **The oversized-index warning reports each category as a share of the database file, and says how much of the file it did not measure.** The warning states the file's size and then introduces its breakdown with "where it went", but each share was worked out against the total of the categories it had measured rather than against the file. Those categories cover the text columns and the embedding vectors only, so on a database whose size is mostly indexes and fixed-width rows they account for a small part of it and the shares quietly rescaled to fill that part instead. A 1633 MB index whose symbol bodies held 167 MB reported them as 76% of it, which reads as about 1.2 GB recoverable by the rebuild named in the same sentence. The shares are now taken against the file, so that case reads 10%, and a remainder worth mentioning is named outright rather than left to be inferred from shares that no longer add up to everything.
+- **The lock file records the same version as the package manifest.** Releasing bumped the manifest by hand, and nothing in that path updated the version the lock file carries, so the two drifted apart across two releases while every check stayed green. A new check compares them.
+
 ## [2.9.23] - 2026-09-23
 
 ### Fixed

@@ -174,12 +174,18 @@ export function oversizeDbMessage(
   }
   const head = `global.db is ${mb(sizeBytes)} MB at ${displaySafeText(dbPath)} (larger than threshold of ${thresholdMb} MB). `
   const totalCategoryBytes = categories.reduce((sum, c) => sum + c.bytes, 0)
+  // Each share is of the whole file, because "where it went" is a claim about the file the sentence just sized. Taking it against the categories' own subtotal instead reports a share of whatever happened to be measured: the categories cover variable-length content only, so on a database whose bytes are mostly indexes and fixed-width rows they can be a small slice of it, and the ledger this was found against held 220 MB across the four columns out of 1633 MB, where a subtotal-relative share called the largest 76% of a file it was 10% of. That is the number a reader prices a reclaim against, so the unmeasured remainder is named too rather than left to be inferred from shares that no longer sum to 100.
+  const unmeasuredBytes = sizeBytes - totalCategoryBytes
   const breakdown =
-    totalCategoryBytes > 0
+    totalCategoryBytes > 0 && sizeBytes > 0
       ? ` Where it went: ${categories
           .slice(0, 3)
-          .map((c) => `${c.name} ${mb(c.bytes)} MB (${Math.round((c.bytes / totalCategoryBytes) * 100)}%) -- ${c.command}`)
-          .join('; ')}.`
+          .map((c) => `${c.name} ${mb(c.bytes)} MB (${Math.round((c.bytes / sizeBytes) * 100)}%) -- ${c.command}`)
+          .join('; ')}.${
+          unmeasuredBytes >= sizeBytes / 20
+            ? ` The other ${mb(unmeasuredBytes)} MB is row overhead and indexes, which these commands do not measure.`
+            : ''
+        }`
       : ''
   let base = advice.length > 0 ? `${head}${advice.join('; ')}.${breakdown}` : `${head}Only ${mb(freeBytes)} MB of it is free pages and none of it is temp-dir scratch, so it is live index data that neither 'reclaim-index' nor 'project prune' will shrink.${breakdown}`
   if (topConsumers.length > 0) {
