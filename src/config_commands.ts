@@ -23,21 +23,12 @@ import { findOrphanedChunkPaths, findSystemTempFiles, pruneBlockedRoot, pruneOrp
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
+import { ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
 import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
-import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
-
-function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsiEscapes(text)
-  process.stdout.write(ensureNewline(payload))
-}
-
-function emitErr(text: string): void {
-  process.stderr.write(ensureNewline(text))
-}
+import { emit, emitErr } from './emit.js'
 
 /** Ensure the config parent directory exists then call saveConfig. */
 function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0]): void {

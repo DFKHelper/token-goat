@@ -14,13 +14,10 @@ import { loadSessionState } from './session_store.js'
 import { resolveSessionTranscript } from './session_read.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
-import { ensureNewline, pad, requireNonNegativeStrictInt, countNoun } from './util.js'
+import { pad, requireNonNegativeStrictInt, countNoun } from './util.js'
 import { loadConfig } from './config.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
-
-function emitErr(text: string): void {
-  process.stderr.write(ensureNewline(text))
-}
+import { emitErr } from './emit.js'
 
 /**
  * Cap a listing to `limit` rows and say so on stderr when rows were dropped.

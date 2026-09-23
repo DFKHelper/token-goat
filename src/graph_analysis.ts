@@ -13,8 +13,7 @@ import { resolveSymbolSpecOrEmitError, guardJsonRows } from './read_commands.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, extractErrorMessage, countNoun } from './util.js'
-import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
+import { runGit, isTestFile, extractErrorMessage, countNoun } from './util.js'
 import { globalDbPath } from './constants.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
@@ -27,15 +26,7 @@ import {
   buildFileSymCache,
   findCyclesCapped,
 } from './graph_traversal.js'
-
-function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsiEscapes(text)
-  process.stdout.write(ensureNewline(payload))
-}
-
-function emitErr(text: string): void {
-  process.stderr.write(ensureNewline(text))
-}
+import { emit, emitErr } from './emit.js'
 
 // ---- similar ----------------------------------------------------------------
 

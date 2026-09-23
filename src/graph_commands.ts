@@ -24,7 +24,6 @@ import {
 import { detectLanguageOfFile } from './parser_types.js'
 import { guardJsonRows, unknownSymbolSuggestion, warnIfFilesStale } from './read_commands.js'
 import {
-  ensureNewline,
   isTestFile,
   compileGrepMatcher,
   grepFilteredToEmptyNotice,
@@ -34,7 +33,6 @@ import {
   windowsCmdQuoteArg,
 } from './util.js'
 import { buildContextWindow, renderContextWindow } from './util_context.js'
-import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { globalDbPath } from './constants.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
@@ -53,21 +51,13 @@ import {
   refBlindKindVerdict,
   compareHopEntries,
 } from './graph_traversal.js'
+import { emit, emitErr } from './emit.js'
 
 // Re-export all graph traversal, inspection, and analysis APIs for 100% backward compatibility
 export * from './graph_traversal.js'
 export * from './graph_inspection.js'
 export * from './graph_analysis.js'
 export { isTestFile }
-
-function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsiEscapes(text)
-  process.stdout.write(ensureNewline(payload))
-}
-
-function emitErr(text: string): void {
-  process.stderr.write(ensureNewline(text))
-}
 
 // ---- callers ----------------------------------------------------------------
 

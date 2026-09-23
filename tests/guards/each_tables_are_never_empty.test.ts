@@ -70,6 +70,16 @@ const EXEMPT: readonly Exemption[] = [
     reason: 'jobsRestoringTheModelCache() returns the result of pinnedPopulation(), which fails on an empty or under-floor population before any table is built from it.',
   },
   {
+    file: 'tests/guards/no_color_bypass.test.ts',
+    table: 'SCANNED',
+    reason: 'SCANNED is the direct return value of pinnedPopulation(), which fails on an empty or under-350 population before this table is used.',
+  },
+  {
+    file: 'tests/guards/no_color_bypass.test.ts',
+    table: 'DECIDERS',
+    reason: 'DECIDERS is the direct return value of pinnedPopulation(), which fails on an empty or under-4 population before this table is used.',
+  },
+  {
     file: 'tests/guards/scoped_install_never_writes_claude_code_base.test.ts',
     table: 'scopes',
     reason: 'scopes is the direct return value of pinnedPopulation(), which fails on an empty or under-10 population before this table is used.',

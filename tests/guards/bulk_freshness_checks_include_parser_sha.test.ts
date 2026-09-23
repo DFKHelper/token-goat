@@ -138,45 +138,24 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
-    'detectStructuralIndexRewrite',
+    'indexMatchesDisk',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
       reason:
-        'bash_structural_index.ts checks the one file an rg/grep command already named, against a ' +
-        'fresh disk read -- the same single-named-file scope as staleWarning, reimplemented locally ' +
-        '(getFileEntry + fingerprintFile) instead of importing staleWarning itself, because ' +
-        'read_commands.ts pulls the full parser/language-adapter graph into the pre_tool_use hook\'s ' +
-        'eager bundle (see tests/guards/dist_chunks_deduped.test.ts). A parser-stale-but-content-' +
-        'unchanged file here is caught by reconcile.ts\'s own sweep, not by this function.',
-    },
-  ],
-  [
-    'rangeSubstituteFor',
-    {
-      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
-      reason:
-        'bash_range_savings.ts prices the surgical replacement for the one file a sed/awk/head ' +
-        'command already named, against a fresh disk read -- the same single-named-file scope as ' +
-        'detectStructuralIndexRewrite above, and the same local getFileEntry + fingerprintFile for ' +
-        'the same eager-bundle reason. It skips nothing and reuses nothing: a content-stale or ' +
-        'parser-stale file makes it decline to price, which suppresses a hint rather than serving ' +
-        'stale rows.',
-    },
-  ],
-  [
-    'runnableTargetFor',
-    {
-      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
-      reason:
-        'bash_surgical_target.ts resolves one indexed name for the single file a whole-file-dump ' +
-        'command already named, so the command the deny prints runs verbatim -- the same ' +
-        'single-named-file scope, and the same local getFileEntry + fingerprintFile for the same ' +
-        'eager-bundle reason, as rangeSubstituteFor above. It records nothing and skips nothing: a ' +
-        'content-stale file makes it return null, which falls back to the placeholder wording. It ' +
-        'gates on files.sha alone rather than parser_sha as well, deliberately: the name is handed ' +
-        'straight to `token-goat section`/`config-get`, which answer out of the same rows this read, ' +
-        'so a parser-stale name is still a name that command resolves -- what it must never print is ' +
-        'a name the file on disk no longer contains.',
+        'index_freshness.ts holds the one copy of the four-line check its three hook-tier callers ' +
+        'used to each carry inline -- detectStructuralIndexRewrite (bash_structural_index.ts), ' +
+        'rangeSubstituteFor (bash_range_savings.ts) and runnableTargetFor (bash_surgical_target.ts). ' +
+        'Every one of them checks the single file an rg/sed/cat command already named, against a ' +
+        'fresh disk read: the same single-named-file scope as staleWarning, built from getFileEntry ' +
+        '+ fingerprintFile rather than by importing staleWarning itself, because read_commands.ts ' +
+        'pulls the full parser/language-adapter graph into the eager bundle of the pre_tool_use hook ' +
+        '(see tests/guards/dist_chunks_deduped.test.ts). None of the three skips or reuses anything: ' +
+        'a stale file makes each decline to price, rewrite, or name, which suppresses a hint rather ' +
+        'than serving stale rows. It gates on files.sha alone rather than parser_sha as well, ' +
+        'deliberately: the names it clears are handed to `token-goat section`/`config-get`, which ' +
+        'answer out of the same rows this read, so a parser-stale name is still a name that command ' +
+        'resolves -- what it must never clear is a name the file on disk no longer contains. A ' +
+        'parser-stale-but-content-unchanged file is caught by the sweep in reconcile.ts instead.',
     },
   ],
   [

@@ -10,6 +10,7 @@ import { querySymbols, queryRefs, queryRefsByContext } from './index_reader.js'
 import { resolveProjectRoot } from './project.js'
 import { findSpecSeparator } from './read_commands.js'
 import { foldPath } from './util.js'
+import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
@@ -21,10 +22,10 @@ import type { SymbolEntry, RefEntry } from './parser_types.js'
 export const DEFAULT_REF_QUERY_LIMIT = 500
 
 /** Symbol-query cap for "every symbol in one file" lookups. A single filePath already narrows the query to one file with no other predicate to combine against, so any finite cap here is a silent truncation waiting to happen rather than a real bound: a file indexed with more than 10000 symbols (e.g. a generated file with one const per data row) had its tail dropped, and every enclosingSymbol lookup on a line past the cut returned null instead of the real symbol, misreporting callers/impact rows as "(module scope)" and letting runTestFor/find --symbol report false negatives. Set to the same unbounded sentinel as UNBOUNDED_REF_LIMIT below (SQLite: LIMIT -1 is unlimited) rather than a bigger finite number, since there is no size at which "every symbol in one file" stops needing to mean literally every symbol. */
-export const ALL_SYMBOLS_IN_FILE_LIMIT = -1
+export const ALL_SYMBOLS_IN_FILE_LIMIT = UNBOUNDED_QUERY_LIMIT
 
 /** SQLite: `LIMIT -1` (even as a bound parameter) means unbounded. */
-export const UNBOUNDED_REF_LIMIT = -1
+export const UNBOUNDED_REF_LIMIT = UNBOUNDED_QUERY_LIMIT
 
 // ---- pure helpers (exported for unit tests) ---------------------------------
 

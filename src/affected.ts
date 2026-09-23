@@ -26,8 +26,8 @@ import { buildImportGraph } from './import_graph.js'
 import { normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
 import { getDisplayRoot } from './project.js'
 import { compileGuardedRegex } from './regex_guard.js'
-import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
-import { countNoun, ensureNewline, foldPath, isTestFile } from './util.js'
+import { countNoun, foldPath, isTestFile } from './util.js'
+import { emit, emitErr } from './emit.js'
 
 /** Default transitive-import depth. Deep enough for realistic helper chains, bounded so a
  * densely-connected graph cannot walk the entire project and report every test as affected. */
@@ -58,15 +58,6 @@ export interface AffectedResult {
   /** How many files sat unexplored at the frontier when the depth bound hit. */
   unexploredAtFrontier: number
   depth: number
-}
-
-function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsiEscapes(text)
-  process.stdout.write(ensureNewline(payload))
-}
-
-function emitErr(text: string): void {
-  process.stderr.write(ensureNewline(text))
 }
 
 /**

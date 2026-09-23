@@ -36,8 +36,8 @@
 import { statSync } from 'node:fs'
 
 import { resolveIndexPath } from './paths.js'
-import { getFileEntry, querySymbols } from './index_reader.js'
-import { fingerprintFile } from './fingerprint.js'
+import { querySymbols } from './index_reader.js'
+import { indexMatchesDisk } from './index_freshness.js'
 import { escapeHintName } from './hooks_read.js'
 import { commandPathIsTouchable } from './bash_extractors.js'
 import type { HookEvent } from './hook_registry.js'
@@ -80,12 +80,7 @@ export function runnableTargetFor(hintPath: string, cwd: string, event?: HookEve
     if (!commandPathIsTouchable(hintPath, event)) return null
     const resolved = resolveIndexPath(hintPath, cwd)
     if (!statSync(resolved).isFile()) return null
-    const entry = getFileEntry(resolved)
-    if (entry === null) return null
-    if (entry.sha !== '') {
-      const diskSha = fingerprintFile(resolved)
-      if (diskSha === null || diskSha !== entry.sha) return null
-    }
+    if (!indexMatchesDisk(resolved)) return null
     const symbols = querySymbols({ filePath: resolved, limit: ALL_SYMBOLS_IN_FILE })
     if (symbols.length === 0) return null
     const inLineOrder = [...symbols].sort((a, b) => a.lineStart - b.lineStart)

@@ -16,24 +16,14 @@ import { isIgnoredIndexPath } from './baseline.js'
 import { foldPath } from './path_containment.js'
 import { displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
-import { ensureNewline } from './util.js'
-import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { runCallers, runImpact } from './graph_commands.js'
 import { runTestFor } from './graph_analysis.js'
 import { runExports, runImports } from './read_inspect.js'
 import { runSymbol } from './read_commands.js'
+import { emit, emitErr } from './emit.js'
 
 export interface AnswerOptions {
   question: string
-}
-
-function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsiEscapes(text)
-  process.stdout.write(ensureNewline(payload))
-}
-
-function emitErr(text: string): void {
-  process.stderr.write(ensureNewline(text))
 }
 
 /** Emitted for every refusal so the caller always gets a reason and a next step, never a bare failure. */

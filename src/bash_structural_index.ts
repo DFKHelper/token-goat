@@ -15,8 +15,7 @@ import { pathStem } from './tool_filters/helpers.js'
 import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
 import { resolveIndexPath } from './paths.js'
-import { getFileEntry } from './index_reader.js'
-import { fingerprintFile } from './fingerprint.js'
+import { indexMatchesDisk } from './index_freshness.js'
 import { DOC_EXT_RE, STRUCTURAL_DOC_PATTERN_RE } from './hooks_grep.js'
 import { statSync } from 'node:fs'
 
@@ -103,19 +102,8 @@ export function detectStructuralIndexRewrite(rawCmd: string, cwd: string): Struc
     }
     if (!stat.isFile()) return null
 
-    // Never answer from a file that was never indexed, or one the index believes is stale --
-    // pass through instead of trusting the substitute command's own on-demand reparse to catch
-    // up before this hook's decision is already made. Same SHA comparison staleWarning() (in
-    // read_commands.ts) makes -- reused as the same two primitives rather than through that
-    // module directly, because read_commands.ts is CLI-command-tier code and importing it here
-    // would pull the full parser/language-adapter graph into the hook's eager bundle (see
-    // tests/guards/dist_chunks_deduped.test.ts's size ceiling on that same path).
-    const entry = getFileEntry(resolved)
-    if (entry === null) return null
-    if (entry.sha !== '') {
-      const diskSha = fingerprintFile(resolved)
-      if (diskSha === null || diskSha !== entry.sha) return null
-    }
+    // Never answer from a file that was never indexed, or one the index believes is stale -- pass through instead of trusting the substitute command's own on-demand reparse to catch up before this hook's decision is already made.
+    if (!indexMatchesDisk(resolved)) return null
 
     // A path with no shared-safe form (see dualShellArg) cannot be rewritten without either
     // breaking one of the two dialects or reaching for an escape valid in only one of them --
