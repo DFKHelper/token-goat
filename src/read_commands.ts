@@ -26,10 +26,11 @@ import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, checkEmbeddingPreflight, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection } from './section_reader.js'
-import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, isTestFile } from './util.js'
+import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, isTestFile } from './util.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 export { requireNonNegativeStrictInt } from './util.js'
-import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
+import { emit, emitErr } from './emit.js'
+import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { loadConfig } from './config.js'
@@ -107,16 +108,22 @@ const GREP_MAX_LINES = 200
 // this tool's own index (thousands of symbols) without paging.
 export const FIND_SCAN_LIMIT = 20_000
 
-// `refs --top` exists specifically for high-fanout symbols (hundreds+ of references) and
-// aggregates by file before truncating, so it must scan far more rows than the default
-// per-line `refs` cap (100, sized for "read these individually"). queryRefs orders rows by
-// file_path then line -- an alphabetical, not count-based, ordering -- so applying the
-// default 100-row cap ahead of the by-file grouping silently drops every ref in
-// alphabetically-later files (regardless of how many refs they actually hold) before the
-// count comparison ever happens, producing a "top files by reference count" that is really
-// just "top files among whichever ones sort first alphabetically". Large enough to cover any
-// realistic single-symbol fanout in this codebase without paging.
-const REFS_TOP_SCAN_LIMIT = 20_000
+// `refs --top`, `--exclude-tests` and `--grep` all narrow the resolved set in JavaScript AFTER the
+// query returns, and `--top` additionally aggregates by file before truncating. queryRefs orders
+// rows by file_path then line -- alphabetical, not count-based -- so any finite cap ahead of those
+// steps drops every ref in alphabetically-later files regardless of how many they hold, producing
+// a "top files by reference count" that is really "top files among whichever sort first
+// alphabetically", and an --exclude-tests/--grep page selected from a prefix of the matches
+// instead of from all of them.
+//
+// This was a cap of 100 before, then 20,000 with a comment calling it "large enough to cover any
+// realistic single-symbol fanout". Measured against the live index that belief was false by 7.2x:
+// `expect` has 143,666 references, `toBe` 62,841 and `test` 52,484, with four more names past the
+// window. `refs expect --top 8` therefore ranked the alphabetically-first 13.9% of the rows and
+// reported a top file of 695 references while the real leader held 1,571 and never appeared; for
+// `push --exclude-tests`, 2,459 of 17,484 genuine non-test references (14.1%) sat past the window
+// and were unreachable at any --limit. A bigger finite number would only move the project size at
+// which that recurs, so these paths scan unbounded and the cap is gone rather than raised.
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -585,14 +592,7 @@ export function warnIfFilesStale(filePaths: readonly string[]): void {
   }
 }
 
-export function emit(text: string): void {
-  const out = colorStdout() ? text : stripAnsiEscapes(text)
-  process.stdout.write(ensureNewline(out))
-}
-
-export function emitErr(text: string): void {
-  process.stderr.write(ensureNewline(text))
-}
+export { emit, emitErr }
 
 /**
  * Emit text through the overflow guard: caps output at `config.overflow_guard.max_tokens`
@@ -1079,12 +1079,13 @@ interface TruncationTotal {
  *
  * `countRefs` reruns the SQL filters with no LIMIT, which is exact. The client-side filters (`--exclude-tests`, `--grep`, and the typed-refs tier) have no SQL equivalent, so their total is the post-filter count of the window the rows came from: exact only while that window had room to spare, a floor once it filled.
  *
- * `scanLimit` is the window the rows were actually fetched under, which is NOT one fixed number. `--exclude-tests`/`--grep`/`--top` widen it to REFS_TOP_SCAN_LIMIT, an explicit `--limit` sets it, and a query with none of those gets queryRefs' own DEFAULT_QUERY_LIMIT. Comparing against the widened constant in every case would call a filled narrow window exact, which is the one shape that is certainly a floor.
+ * `scanLimit` is the window the rows were actually fetched under, which is NOT one fixed number. `--exclude-tests`/`--grep`/`--top` scan unbounded (`UNBOUNDED_QUERY_LIMIT`, negative), an explicit `--limit` sets it, and a query with none of those gets queryRefs' own DEFAULT_QUERY_LIMIT. A negative window never fills, so the client-side filters on those routes saw every matching row and their post-filter count is the exact total rather than a floor -- which is why the sign is tested rather than the count compared against a constant that no longer exists.
  *
  * No CLI path reaches that wrong branch today, and the fix is deliberately not sold as one: {@link truncationNotice} prints nothing unless `shown >= limit` and `count > shown`, and on every route that leaves this window narrow the window IS the display limit, so the post-filter count cannot exceed what was shown. That is a coincidence held together three call frames apart, and it is the whole reason to compare against the window actually used instead: widening a default here, or slicing to something other than the query limit there, silently turns a floor into a claimed total with no test able to see it happen.
  */
 function refsTotal(clientFiltered: boolean, filteredTotal: number | undefined, shown: number, countExact: () => number, preScanCount: number, scanLimit: number): TruncationTotal {
   if (!clientFiltered) return { count: countExact(), exact: true }
+  if (scanLimit < 0) return { count: filteredTotal ?? shown, exact: true }
   return { count: filteredTotal ?? shown, exact: preScanCount < scanLimit }
 }
 
@@ -1503,9 +1504,9 @@ function renderRefsTargets(
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: symbol }
     // The `file` in `file::symbol` names where the symbol is DEFINED, only used to disambiguate a same-named symbol elsewhere in the index via applyTypedRefsTier below. It must never be passed to queryRefs/countRefs -- refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only.
     // --grep needs the same full-headroom query as --exclude-tests -- see runRefsSingle's sibling comment.
-    if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
-    else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    else if (opts.top !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
     const rootDir = refsRootDir(opts)
     if (rootDir !== undefined) queryOpts.rootDir = rootDir
     const scanned = queryRefs(queryOpts)
@@ -1524,7 +1525,7 @@ function renderRefsTargets(
     const preGrepCount = results.length
     const matchesGrep = refGrepFilter(opts.grep)
     if (matchesGrep !== undefined) results = results.filter(matchesGrep)
-    // The typed-tier filter is a client-side filter over the same REFS_TOP_SCAN_LIMIT window as --exclude-tests/--grep, so a query where it alone dropped rows can only report a floor too: see refsTotal's doc comment.
+    // The typed-tier filter is a client-side filter over the same window as --exclude-tests/--grep, so a query where it alone dropped rows reports a floor whenever that window was finite: see refsTotal's doc comment.
     const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
     let filteredTotal: number | undefined
     if (clientFiltered) filteredTotal = results.length
@@ -1682,9 +1683,9 @@ function runRefsSingle(opts: RefsOptions): number {
   // resolved set client-side (on filePath) AFTER the query -- slicing to the requested limit
   // before it runs would silently under-return by letting non-matching refs occupy slots ahead
   // of the cutoff.
-  if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+  if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
   else if (opts.limit !== undefined) queryOpts.limit = opts.limit
-  else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+  else if (opts.top !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
   const rootDir = refsRootDir(opts)
   if (rootDir !== undefined) queryOpts.rootDir = rootDir
 
@@ -1705,7 +1706,7 @@ function runRefsSingle(opts: RefsOptions): number {
   const preGrepCount = results.length
   const matchesGrep = refGrepFilter(opts.grep)
   if (matchesGrep !== undefined) results = results.filter(matchesGrep)
-  // The typed-tier filter is a client-side filter over the same REFS_TOP_SCAN_LIMIT window as --exclude-tests/--grep, so a query where it alone dropped rows can only report a floor too: see refsTotal's doc comment.
+  // The typed-tier filter is a client-side filter over the same window as --exclude-tests/--grep, so a query where it alone dropped rows reports a floor whenever that window was finite: see refsTotal's doc comment.
   const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
   let filteredTotal: number | undefined
   if (clientFiltered) filteredTotal = results.length
@@ -1828,7 +1829,7 @@ interface FileRefCount {
   readonly count: number
 }
 
-/** `--exclude-tests`: drops references whose call site is a test file, per {@link isTestFile}. Callers must query with enough headroom (REFS_TOP_SCAN_LIMIT) for this to run BEFORE any `--limit`/`--top` slicing, or the flag silently under-returns by letting suppressed test refs occupy slots ahead of the cutoff. */
+/** `--exclude-tests`: drops references whose call site is a test file, per {@link isTestFile}. Callers must query unbounded so this runs BEFORE any `--limit`/`--top` slicing, or the flag silently under-returns by letting suppressed test refs occupy slots ahead of the cutoff -- and no finite headroom is sufficient, since the rows are ordered alphabetically rather than by relevance. */
 function applyExcludeTestsFilter(refs: RefEntry[]): { refs: RefEntry[]; suppressed: number } {
   const filtered = refs.filter((r) => !isTestFile(r.filePath))
   return { refs: filtered, suppressed: refs.length - filtered.length }

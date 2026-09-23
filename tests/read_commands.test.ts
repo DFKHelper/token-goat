@@ -118,6 +118,7 @@ import {
 import { querySymbols, countSymbols, queryRefs, countRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { runGit } from '../src/util.js'
+import { UNBOUNDED_QUERY_LIMIT } from '../src/query_limits.js'
 import { resolveIndexPath, toDisplayPath } from '../src/paths.js'
 import { readSection, listSections, findContainingSection } from '../src/section_reader.js'
 import { loadConfig } from '../src/config.js'
@@ -7841,20 +7842,24 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
   // ordering, not count-based) -- sized for "read these individual matches", not for the
   // by-file aggregation --top exists specifically to serve on high-fanout (100+ ref) symbols.
   // Without overriding that default, --top's ranking silently drops every ref in
-  // alphabetically-later files before the count comparison ever happens.
-  it('scans well beyond the default 100-row cap when --top is given without an explicit --limit (single-symbol spec)', () => {
+  // alphabetically-later files before the count comparison ever happens. The assertion is on the
+  // unbounded sentinel rather than on "bigger than 100", because a finite cap of any size is the
+  // same defect one project size later: this path once scanned 20,000 rows, which comfortably
+  // passed a >100 check while ranking `expect` (143,666 references in the live index) off a
+  // seventh of its call sites.
+  it('scans unbounded when --top is given without an explicit --limit (single-symbol spec)', () => {
     mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x')])
     capture(() => runRefs({ spec: 'login', top: 2 }))
     const call = mockQueryRefs.mock.calls[0]?.[0] as { limit?: number }
-    expect(call.limit).toBeGreaterThan(100)
+    expect(call.limit).toBe(UNBOUNDED_QUERY_LIMIT)
   })
 
-  it('scans well beyond the default 100-row cap when --top is given without an explicit --limit (multi-symbol spec)', () => {
+  it('scans unbounded when --top is given without an explicit --limit (multi-symbol spec)', () => {
     mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x')])
     capture(() => runRefs({ spec: 'login,refresh', top: 2 }))
     for (const call of mockQueryRefs.mock.calls) {
       const opts = call[0] as { limit?: number }
-      expect(opts.limit).toBeGreaterThan(100)
+      expect(opts.limit).toBe(UNBOUNDED_QUERY_LIMIT)
     }
   })
 
@@ -8027,9 +8032,11 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
   // the `clientFiltered` flag fed to refsTotal, so a query where typed filtering alone dropped
   // rows from a filled window printed the SQL-wide `countRefs` total (mocked to 0 below, since
   // it cannot replicate a JS-side type-checker filter) as if it were exact, instead of the
-  // honest post-typed-filter floor. HAND-DERIVED: the 20,001-row scanned count and the 2-row
-  // --limit are computed directly from REFS_TOP_SCAN_LIMIT's own value (src/read_commands.ts:113,
-  // 20_000) and refsTotal's own `exact = preScanCount < REFS_TOP_SCAN_LIMIT` check, not from
+  // honest post-typed-filter floor. HAND-DERIVED: the window this test fills is the `--limit 2`
+  // it passes -- with neither --exclude-tests, --grep nor --top set, runRefsSingle queries under
+  // the requested limit itself, so `scanLimit` is 2 and refsTotal's `preScanCount < scanLimit`
+  // check is what the 20,001 mocked rows have to exceed. Any count above 2 would do; 20,001 is
+  // kept because it also reads as "far past any plausible window". Neither number comes from
   // running this fix and pasting its output back.
   it('reports a floor, not a bare exact total, when the typed-refs filter alone drops rows from a filled scan window', () => {
     const fooSrc = ['export class Foo {', '  run(): void {', "    console.log('foo')", '  }', '}', ''].join('\n')
@@ -8050,7 +8057,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
     // 5 genuine refs to Foo.run (kept: the type checker resolves callerA's `foo.run()` to the
     // real definition) plus 19,996 false-positive refs to Bar's unrelated same-named `run`
     // (dropped: the checker resolves callerB's `bar.run()` to a different declaration) -- 20,001
-    // total, past REFS_TOP_SCAN_LIMIT (20,000), so the scan window reads as filled.
+    // total, far past the `--limit 2` window these rows are fetched under, so it reads as filled.
     const genuineRef = { filePath: callerA, name: 'run', line: 3, col: 0, context: '' }
     const falsePositiveRef = { filePath: callerB, name: 'run', line: 3, col: 0, context: '' }
     mockQueryRefs.mockReturnValue([
