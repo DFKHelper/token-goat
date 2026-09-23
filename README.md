@@ -43,17 +43,9 @@ Restart your AI sessions. Run `token-goat stats` a couple of minutes after your 
 
 ---
 
-<p align="center">
-  <img src="assets/token-goat-comparison.jpg" alt="Side-by-side comparison: a bloated workflow sends whole files and grows context every round, while token-goat sends only the needed lines and stays lean" width="900">
-  <br>
-  <sub>Same requirements, smarter input: fewer input tokens, shorter answers, and context that stops compounding across rounds</sub>
-</p>
+<p align="center"> <img src="assets/token-goat-comparison.jpg" alt="Side-by-side comparison: a bloated workflow sends whole files and grows context every round, while token-goat sends only the needed lines and stays lean" width="900"> <br> <sub>Same requirements, smarter input: fewer input tokens, shorter answers, and context that stops compounding across rounds</sub> </p>
 
-<p align="center">
-  <img src="assets/stats_v180.png" alt="token-goat stats display" width="589">
-  <br>
-  <sub>Stats display — gradient bars, sparklines, and a calendar heatmap in 24-bit color</sub>
-</p>
+<p align="center"> <img src="assets/stats_v180.png" alt="token-goat stats display" width="589"> <br> <sub>Stats display — gradient bars, sparklines, and a calendar heatmap in 24-bit color</sub> </p>
 
 ## The problem
 
@@ -184,7 +176,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Broad recursive Glob sweep (`*`, `**/*`) on root directory | Pre-Glob hook warns against tree-dumping and points at `token-goat map --compact` for fast, lightweight structure inspection |
 | Guessing database column names in `session_store_sql` / `sql` and falling back to `SELECT *` | `token-goat session-schema [table]` and `describe <target>` provide instant schema discovery; `post_tool_use_failure` hook intercepts unknown columns and guides the query — ~85–95% smaller than trial-and-error `SELECT *` dumps |
 | Compound test/build pipeline (`npm run build && npm run typecheck && npm test`) | Post-Bash hook routes chained build/test/lint commands to `generic-ci` compression, dropping verbose passing steps and compiler noise |
-| Windows PowerShell execution in Codex CLI and Copilot CLI fails on escaped paths or operators | Pre-bash hooks rewrite Windows PowerShell commands via base64 payloads (`--cmd-b64`) and dispatch directly to PowerShell (`--shell pwsh`), preserving backslashes and special syntax while enabling output compression |
+| Verbose command output on Windows under Codex CLI, Copilot CLI, or a PowerShell session, where the compression hook used to skip every command | Pre-Bash hook hands the command to PowerShell itself, base64-encoded through an environment variable the launched script clears first, so backslashes, quotes, and redirection survive and the output is compressed like anywhere else |
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
 
@@ -390,64 +382,17 @@ token-goat handoff-resolve review-notes --full
 }
 ```
 
-`token-goat install --vscode` creates or idempotently updates VS Code's
-user-profile `mcp.json` by default (`%APPDATA%\Code\User\mcp.json` on
-Windows, `~/Library/Application Support/Code/User/mcp.json` on macOS,
-`~/.config/Code/User/mcp.json` on Linux) — add `-p`/`--project` for the
-project-local `.vscode/mcp.json` shown above instead. It also adds a delimited
-routing block, preserving unrelated JSON and user text: to
-`~/.copilot/instructions/token-goat.instructions.md` for the user install (a
-personal instructions file VS Code applies in every workspace, so the folder
-you run it from is left alone), or to `.github/copilot-instructions.md` with
-`-p`. It fails clearly on malformed JSON, and refuses to
-install into one scope if the other scope already has a token-goat-managed
-entry (registering it twice would duplicate its tool schemas in that
-workspace). It also installs agent hooks in `~/.copilot/hooks/` (or
-`.github/hooks/` with `-p`), the folder VS Code's Copilot agent reads hooks
-from, so token-goat sees the agent's built-in reads, edits, and terminal
-commands. `token-goat uninstall --vscode` (add `-p`/`--project` for the
-project scope) removes only token-goat's server entry, guidance block, and
-hooks, and keeps the hooks if `--copilot` still uses them.
+`token-goat install --vscode` creates or idempotently updates VS Code's user-profile `mcp.json` by default (`%APPDATA%\Code\User\mcp.json` on Windows, `~/Library/Application Support/Code/User/mcp.json` on macOS, `~/.config/Code/User/mcp.json` on Linux) — add `-p`/`--project` for the project-local `.vscode/mcp.json` shown above instead. It also adds a delimited routing block, preserving unrelated JSON and user text: to `~/.copilot/instructions/token-goat.instructions.md` for the user install (a personal instructions file VS Code applies in every workspace, so the folder you run it from is left alone), or to `.github/copilot-instructions.md` with `-p`. It fails clearly on malformed JSON, and refuses to install into one scope if the other scope already has a token-goat-managed entry (registering it twice would duplicate its tool schemas in that workspace). It also installs agent hooks in `~/.copilot/hooks/` (or `.github/hooks/` with `-p`), the folder VS Code's Copilot agent reads hooks from, so token-goat sees the agent's built-in reads, edits, and terminal commands. `token-goat uninstall --vscode` (add `-p`/`--project` for the project scope) removes only token-goat's server entry, guidance block, and hooks, and keeps the hooks if `--copilot` still uses them.
 
-**Visual Studio** (2022 17.14 or later, or 2026): `token-goat install --visualstudio`
-adds the same `servers` entry to `%USERPROFILE%\.mcp.json` and a routing block
-to `%USERPROFILE%\copilot-instructions.md` (Visual Studio 2026 reads that
-file). With `-p`/`--project` it writes `.mcp.json` and
-`.github/copilot-instructions.md` in the solution folder instead. Visual Studio
-has no agent hooks, so token-goat works there through its MCP tools and
-instructions only: no read dedup, hints, image shrink, or output folding. Two
-switches in Visual Studio turn it on: the Tools > Options checkbox for custom
-instructions, and the token-goat tools in the chat Tools picker, since new MCP
-tools start disabled. `token-goat uninstall --visualstudio` (add `-p` for the
-project) removes only token-goat's entry and block. See
-[Visual Studio users](docs/install.md#visual-studio-users).
+**Visual Studio** (2022 17.14 or later, or 2026): `token-goat install --visualstudio` adds the same `servers` entry to `%USERPROFILE%\.mcp.json` and a routing block to `%USERPROFILE%\copilot-instructions.md` (Visual Studio 2026 reads that file). With `-p`/`--project` it writes `.mcp.json` and `.github/copilot-instructions.md` in the solution folder instead. Visual Studio has no agent hooks, so token-goat works there through its MCP tools and instructions only: no read dedup, hints, image shrink, or output folding. Two switches in Visual Studio turn it on: the Tools > Options checkbox for custom instructions, and the token-goat tools in the chat Tools picker, since new MCP tools start disabled. `token-goat uninstall --visualstudio` (add `-p` for the project) removes only token-goat's entry and block. See [Visual Studio users](docs/install.md#visual-studio-users).
 
-**Zed**: `token-goat install --zed` registers token-goat as an MCP context
-server in Zed's `settings.json` (user scope only — Zed has no
-project-local equivalent). Zed's first-party agent has no hooks API at all,
-so this is MCP tools only, the same limits as Visual Studio above: no read
-dedup, hints, image shrink, or output folding. Enable the token-goat server
-under Zed's Agent panel tools list after installing; new MCP servers start
-disabled. `token-goat uninstall --zed` removes the entry and its generated
-shim script. See [Zed users](docs/install.md#zed-users).
+**Zed**: `token-goat install --zed` registers token-goat as an MCP context server in Zed's `settings.json` (user scope only — Zed has no project-local equivalent). Zed's first-party agent has no hooks API at all, so this is MCP tools only, the same limits as Visual Studio above: no read dedup, hints, image shrink, or output folding. Enable the token-goat server under Zed's Agent panel tools list after installing; new MCP servers start disabled. `token-goat uninstall --zed` removes the entry and its generated shim script. See [Zed users](docs/install.md#zed-users).
 
-**Cursor**: `token-goat install --cursor` registers token-goat as an MCP
-server in `~/.cursor/mcp.json` (`-p`/`--project` for
-`<project>/.cursor/mcp.json`). This never touches `~/.cursor/hooks.json`:
-Cursor already imports Claude Code's hooks from `~/.claude/settings.json` by
-default, so a plain `token-goat install` for Claude Code already gets hooks
-running in Cursor too, with no separate Cursor hooks file to maintain or risk
-clobbering. `token-goat uninstall --cursor` removes only the MCP entry. See
-[Cursor users](docs/install.md#cursor-users).
+**Cursor**: `token-goat install --cursor` registers token-goat as an MCP server in `~/.cursor/mcp.json` (`-p`/`--project` for `<project>/.cursor/mcp.json`). This never touches `~/.cursor/hooks.json`: Cursor already imports Claude Code's hooks from `~/.claude/settings.json` by default, so a plain `token-goat install` for Claude Code already gets hooks running in Cursor too, with no separate Cursor hooks file to maintain or risk clobbering. `token-goat uninstall --cursor` removes only the MCP entry. See [Cursor users](docs/install.md#cursor-users).
 
-**JetBrains** (WebStorm, IntelliJ, PyCharm, Rider, PhpStorm): no integration
-today — no hooks, no MCP, no terminal filter. See
-[JetBrains IDEs users](docs/install.md#jetbrains-ides-webstorm-intellij-pycharm-rider-phpstorm-users)
-for why and what a Copilot-for-JetBrains user might already get for free.
+**JetBrains** (WebStorm, IntelliJ, PyCharm, Rider, PhpStorm): no integration today — no hooks, no MCP, no terminal filter. See [JetBrains IDEs users](docs/install.md#jetbrains-ides-webstorm-intellij-pycharm-rider-phpstorm-users) for why and what a Copilot-for-JetBrains user might already get for free.
 
-The optional source-controlled extension lives in `vscode-extension/`. Build
-and install its VSIX manually; `--vscode` intentionally does not copy or
-install extensions:
+The optional source-controlled extension lives in `vscode-extension/`. Build and install its VSIX manually; `--vscode` intentionally does not copy or install extensions:
 
 ```text
 cd vscode-extension
@@ -457,24 +402,11 @@ npx @vscode/vsce package
 code --install-extension token-goat-vscode-0.1.0.vsix
 ```
 
-Its commands call the local CLI and use `workbench.action.chat.open` to
-prefill chat. They never submit chat automatically.
+Its commands call the local CLI and use `workbench.action.chat.open` to prefill chat. They never submit chat automatically.
 
-Installing the extension is an alternative to `install --vscode`, not an
-addition to it: the extension contributes the MCP decoder itself through VS
-Code's `mcpServerDefinitionProviders` contribution point, so VS Code starts
-`token-goat mcp-serve` on demand and there is no `mcp.json` to write and no
-window to reload. That path needs VS Code 1.101 or newer, which the
-extension's `engines` field requires. `install --vscode` remains the way to
-configure the decoder without the extension — for Copilot in an editor that
-has no extension installed, or for any other MCP client.
+Installing the extension is an alternative to `install --vscode`, not an addition to it: the extension contributes the MCP decoder itself through VS Code's `mcpServerDefinitionProviders` contribution point, so VS Code starts `token-goat mcp-serve` on demand and there is no `mcp.json` to write and no window to reload. That path needs VS Code 1.101 or newer, which the extension's `engines` field requires. `install --vscode` remains the way to configure the decoder without the extension — for Copilot in an editor that has no extension installed, or for any other MCP client.
 
-If the extension is running somewhere that contribution did not take effect,
-it falls back to calling `token-goat mcp-status --vscode` (add
-`-p`/`--project` for the workspace scope too) to check whether `mcp.json`
-already configures the decoder, and offers to run `install --vscode` if not —
-the same path resolver `install`/`uninstall` write against, so the two can
-never drift on where `mcp.json` lives or what key name it looks for.
+If the extension is running somewhere that contribution did not take effect, it falls back to calling `token-goat mcp-status --vscode` (add `-p`/`--project` for the workspace scope too) to check whether `mcp.json` already configures the decoder, and offers to run `install --vscode` if not — the same path resolver `install`/`uninstall` write against, so the two can never drift on where `mcp.json` lives or what key name it looks for.
 
 **Copilot CLI** — add it to `~/.copilot/mcp-config.json`:
 
