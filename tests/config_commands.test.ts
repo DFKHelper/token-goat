@@ -74,6 +74,7 @@ import { globalDbPath } from '../src/constants.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { getDb } from '../src/db.js'
+import { recordKnownRoot } from '../src/known_roots.js'
 import { compactPathFor, isCompactFresh } from '../src/doc_compact.js'
 import { invalidateConfigCache, loadConfig, loadPersistedConfig, saveConfig, defaultConfig } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
@@ -1176,6 +1177,44 @@ describe('cmdProject prune', () => {
     const after = loadConfig()
     expect(after.worker.blocked_roots).toContain(real)
     expect(after.worker.blocked_roots).toContain(fake)
+  })
+
+  /**
+   * A file deleted under a root that still exists is the largest category of dead index rows, and
+   * the only thing that ever reclaimed it was the worker daemon's own sweep, on a 24-hour cadence:
+   * `project prune` never called sweepKnownRoots and answered "Nothing to do" against an index that
+   * had plenty to do. Measured on a real index of 14,062 rows across 38 registered roots at the
+   * time this was written: 3 dead rows the command declined to reclaim.
+   *
+   * Provenance: HAND-DERIVED. The fixture indexes a real file into a real temp root, registers that
+   * root the way the edit hook does, then deletes the file -- so the expectation (one row before,
+   * none after) is computed from the inputs, not read off the pruner.
+   */
+  it('reclaims a file row whose file was deleted under a root that still exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-prune-live-'))
+    // recordKnownRoot registers what findProject resolves, and findProject needs a marker: without one the root is never registered and the sweep has nothing to walk, which is a silent pass rather than a failure.
+    fs.mkdirSync(path.join(root, '.git'))
+    const file = path.join(root, 'gone.ts')
+    fs.writeFileSync(file, 'export function soonGone(): number { return 1 }' + String.fromCharCode(10), 'utf-8')
+    indexFileSync(file)
+    recordKnownRoot(file)
+    const countRow = (): number =>
+      (getDb(globalDbPath()).prepare('SELECT COUNT(*) AS c FROM files WHERE path = ?').get(normalizePath(file)) as { c: number }).c
+    expect(countRow(), 'the fixture must actually index, or this asserts on an empty set').toBe(1)
+
+    fs.rmSync(file)
+    cmdProject({ action: 'prune', dryRun: true, json: true })
+    const preview = JSON.parse(captured()) as { wouldPruneDeadFileRows: number }
+    expect(preview.wouldPruneDeadFileRows, 'the preview must see the dead row').toBeGreaterThanOrEqual(1)
+    expect(countRow(), 'a dry run must not delete anything').toBe(1)
+
+    stdoutLines.length = 0
+    cmdProject({ action: 'prune', json: true })
+    const done = JSON.parse(captured()) as { prunedDeadFileRows: number }
+    expect(done.prunedDeadFileRows).toBeGreaterThanOrEqual(1)
+    expect(countRow(), 'the real run must reclaim the dead row').toBe(0)
+
+    fs.rmSync(root, { recursive: true, force: true })
   })
 
   it('--dry-run --json reports the would-be-pruned entries without persisting', () => {

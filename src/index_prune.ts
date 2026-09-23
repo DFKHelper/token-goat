@@ -329,15 +329,25 @@ export interface KnownRootsSweepResult {
  *    that's simply unreachable right now.
  *
  * Called from the worker daemon's existing periodic-sweep loop ({@link runWorkerLoop} in
- * worker.ts) on a long cadence -- see KNOWN_ROOTS_SWEEP_INTERVAL_MS there. Never throws.
+ * worker.ts) on a long cadence -- see KNOWN_ROOTS_SWEEP_INTERVAL_MS there, and on demand from
+ * `token-goat project prune`. Never throws.
+ *
+ * With `dryRun`, every branch below reaches the same decision and writes nothing: no row is
+ * deleted, no grace timestamp is stamped or cleared, and the two orphan passes are skipped
+ * because they mutate unconditionally. The result then reports what a real sweep would do.
+ * `prunedRows` is a count of rows found deletable rather than of deletes performed, which is the
+ * same number the real pass writes except where the recheck-before-delete in
+ * {@link removeDeletedFilesBestEffort} catches a file recreated in between -- so it is an upper
+ * bound, and the preview says "would" for exactly that reason.
  */
 export function sweepKnownRoots(
   dbPath: string = globalDbPath(),
-  opts?: { now?: number; missingGraceMs?: number },
+  opts?: { now?: number; missingGraceMs?: number; dryRun?: boolean },
 ): KnownRootsSweepResult {
   const db = getDb(dbPath)
   const now = opts?.now ?? Date.now()
   const graceMs = opts?.missingGraceMs ?? KNOWN_ROOT_MISSING_GRACE_MS
+  const dryRun = opts?.dryRun === true
   const roots = db.prepare('SELECT root, first_missing_ms FROM known_roots').all() as Array<{
     root: string
     first_missing_ms: number | null
@@ -367,18 +377,19 @@ export function sweepKnownRoots(
 
     if (!reachable) {
       if (firstMissingMs === null) {
-        db.prepare('UPDATE known_roots SET first_missing_ms = ? WHERE root = ?').run(now, root)
+        if (!dryRun) db.prepare('UPDATE known_roots SET first_missing_ms = ? WHERE root = ?').run(now, root)
         continue
       }
       if (now - firstMissingMs < graceMs) continue
-      const count = pruneDeletedFiles(root, dbPath)
+      // Counted, not deleted, under dryRun: findDeletablePaths is pruneDeletedFiles' own read-only half, so the preview and the real pass agree by sharing the scan rather than by restating its rule.
+      const count = dryRun ? findDeletablePaths(root, dbPath).length : pruneDeletedFiles(root, dbPath)
       prunedRows += count
       if (count > 0) prunedRoots.push(root)
-      db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+      if (!dryRun) db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
       continue
     }
 
-    if (firstMissingMs !== null) {
+    if (firstMissingMs !== null && !dryRun) {
       db.prepare('UPDATE known_roots SET first_missing_ms = NULL WHERE root = ?').run(root)
     }
 
@@ -392,7 +403,7 @@ export function sweepKnownRoots(
       continue
     }
 
-    prunedRows += removeDeletedFilesBestEffort(db, deletable).length
+    prunedRows += dryRun ? deletable.length : removeDeletedFilesBestEffort(db, deletable).length
     prunedRoots.push(root)
   }
 
@@ -400,10 +411,11 @@ export function sweepKnownRoots(
   // known root and no per-root branch above could ever reach it. Runs last so any file row the
   // loop just deleted has already released its chunks through removeFileFromIndex's transaction,
   // leaving only genuinely half-applied leftovers for this pass to clear.
-  const prunedOrphanChunkPaths = pruneOrphanedChunks(dbPath)
+  const prunedOrphanChunkPaths = dryRun ? findOrphanedChunkPaths(dbPath) : pruneOrphanedChunks(dbPath)
   // After the chunk sweep, not before: that pass deletes chunk rows, and any vector it could not
   // delete alongside them becomes an orphan this pass then collects in the same run.
-  const prunedOrphanVectors = pruneOrphanedVectors(dbPath)
+  // No read-only counterpart exists for the vector pass, and inventing one would restate sqlite-vec's own join rather than share it. A preview reports 0 and says so at the call site rather than guessing a number.
+  const prunedOrphanVectors = dryRun ? 0 : pruneOrphanedVectors(dbPath)
 
   return { prunedRows, prunedRoots, flaggedRoots, prunedOrphanChunkPaths, prunedOrphanVectors }
 }

@@ -19,7 +19,7 @@ import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
-import { findOrphanedChunkPaths, findSystemTempFiles, pruneBlockedRoot, pruneOrphanedChunks, pruneOrphanedVectors, pruneSystemTempFiles } from './index_prune.js'
+import { findSystemTempFiles, pruneBlockedRoot, pruneSystemTempFiles, sweepKnownRoots } from './index_prune.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
@@ -589,14 +589,13 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     // blocked_roots existence check above: pruned by content of the `files` table itself, not by
     // whether a config-listed root still exists on disk.
     const staleTempFiles = findSystemTempFiles()
-    // A third, independent kind of staleness: embedding chunks whose `files` row is already gone.
-    // Neither check above can see them -- both enumerate paths out of `files` -- so without this
-    // they stay searchable through `semantic` forever. See findOrphanedChunkPaths' docstring.
-    const orphanChunkPaths = findOrphanedChunkPaths()
+    // A third and fourth kind of staleness, both owned by sweepKnownRoots: file rows whose file was deleted under a root that is still very much alive, and embedding chunks whose `files` row is already gone. Neither of the checks above can see either -- one reads the config's blocked_roots list and the other enumerates the system temp dir -- so before this call the only thing that ever reclaimed them was the worker daemon's own sweep, on a 24-hour cadence, and `project prune` answered "Nothing to do" against an index that had plenty to do. Calling the sweep rather than restating its rules here is what keeps the one-off command and the daemon from drifting apart.
+    const sweep = sweepKnownRoots(undefined, { dryRun: opts.dryRun === true })
+    const orphanChunkPaths = sweep.prunedOrphanChunkPaths
 
     if (opts.dryRun === true) {
       if (opts.json === true) {
-        emit(displaySafeJson({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, wouldPruneOrphanChunkFiles: orphanChunkPaths.length, orphanChunkPaths, blocked_roots: before }))
+        emit(displaySafeJson({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, wouldPruneOrphanChunkFiles: orphanChunkPaths.length, orphanChunkPaths, wouldPruneDeadFileRows: sweep.prunedRows, deadRowRoots: sweep.prunedRoots, flaggedRoots: sweep.flaggedRoots, blocked_roots: before }))
         return
       }
       if (removed === 0) {
@@ -617,6 +616,14 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
         emit(`Would prune orphaned embedding chunks for ${orphanChunkPaths.length} file(s):`)
         for (const p of orphanChunkPaths) emit(`  ${p}`)
       }
+      if (sweep.prunedRows === 0) {
+        emit('Would prune 0 dead file row(s) under known roots. Nothing to do.')
+      } else {
+        emit(`Would prune ${sweep.prunedRows} dead file row(s) under ${sweep.prunedRoots.length} known root(s):`)
+        for (const r of sweep.prunedRoots) emit(`  ${r}`)
+      }
+      // Surfaced in the preview and not only in the real run: a flagged root is the one case where running the command changes nothing and the reason is worth reading -- too large a fraction of its rows would go at once, which reads as an offline mount rather than as deleted files.
+      for (const r of sweep.flaggedRoots) emit(`  skipped (too many rows would go at once, root may be partly offline): ${r}`)
       return
     }
 
@@ -624,16 +631,18 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     saveConfigSafe(cfg)
     invalidateConfigCache()
     const prunedTempFiles = pruneSystemTempFiles()
-    const prunedOrphanChunks = pruneOrphanedChunks()
-    const prunedOrphanVectors = pruneOrphanedVectors()
+    const prunedOrphanChunks = sweep.prunedOrphanChunkPaths
+    const prunedOrphanVectors = sweep.prunedOrphanVectors
     if (opts.json === true) {
-      emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length, prunedOrphanVectors }))
+      emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length, prunedOrphanVectors, prunedDeadFileRows: sweep.prunedRows, deadRowRoots: sweep.prunedRoots, flaggedRoots: sweep.flaggedRoots }))
       return
     }
     emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
     emit(`Pruned ${prunedTempFiles.length} stale indexed temp-dir file(s).`)
     emit(`Pruned orphaned embedding chunks for ${prunedOrphanChunks.length} file(s).`)
     emit(`Pruned ${prunedOrphanVectors} orphaned embedding vector(s).`)
+    emit(`Pruned ${sweep.prunedRows} dead file row(s) under ${sweep.prunedRoots.length} known root(s).`)
+    for (const r of sweep.flaggedRoots) emit(`  skipped (too many rows would go at once, root may be partly offline): ${r}`)
     return
   }
 

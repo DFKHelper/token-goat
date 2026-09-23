@@ -8,6 +8,7 @@ Upgrading reparses the index. The stored reference rows described below are the 
 
 ### Fixed
 
+- **`token-goat project prune` reclaims file rows whose file was deleted under a root that still exists.** That is the largest category of dead rows, and the only thing that ever reclaimed it was the worker daemon's own sweep, on a twenty-four hour cadence: the one-off command never ran that sweep, so it answered "Nothing to do" against an index that had plenty to do. It runs the same sweep the daemon does rather than restating its rules, so the two cannot drift apart, and `--dry-run` previews it without writing. A root that would lose an anomalously large share of its rows in one pass is still skipped rather than pruned, and now says so.
 - **A reference's stored context is bounded to a window around the reference.** A context is the source line the reference sits on, which is short in a file a human wrote and the whole document in one a machine generated: a FlexiPage, a serialized Flow, a minified bundle and a one-line JSON document all put everything on line 1. Every reference on that line stored a copy of the entire file, so the bytes written grew with the square of the input — a 779 KB FlexiPage carrying 10,000 component references wrote 7,789,990,000 characters of context and took 58 seconds to index. It takes 0.8 seconds now, and the time is linear in the file. The window is centred on the reference's own column rather than cut from the head of the line, so the row still shows what it is a reference to.
 
 ## [2.9.20] - 2026-09-23
