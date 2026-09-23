@@ -182,8 +182,8 @@ function isDispatchedFileType(basename: string): boolean {
   return DISPATCHED_FILE_TYPE_EXTS.has(path.extname(basename).slice(1).toLowerCase())
 }
 
-/** Extract quick top-level symbol names from source text without heavy parser dependencies. */
-export function extractQuickSymbolSamples(content: string, _filePath?: string): string[] {
+/** Extract quick top-level symbol names from source text without heavy parser dependencies. `limit` is how many names to collect before stopping; a caller that filters the result afterwards has to raise it, because stopping at the number it wants to display puts the cap before its own predicate. */
+export function extractQuickSymbolSamples(content: string, _filePath?: string, limit = 3): string[] {
   const symbols: string[] = []
 
   // Check if content is a shell script (.sh, .bash) or begins with a bash shebang
@@ -197,7 +197,7 @@ export function extractQuickSymbolSamples(content: string, _filePath?: string): 
       const banner = extractShellBannerHeading(line)
       if (banner !== null && !symbols.includes(banner.heading)) {
         symbols.push(banner.heading)
-        if (symbols.length >= 3) return symbols
+        if (symbols.length >= limit) return symbols
       }
     }
   }
@@ -209,7 +209,7 @@ export function extractQuickSymbolSamples(content: string, _filePath?: string): 
     const name = match[1] ?? match[2] ?? match[3]
     if (name && !symbols.includes(name)) {
       symbols.push(name)
-      if (symbols.length >= 3) return symbols
+      if (symbols.length >= limit) return symbols
     }
   }
 
@@ -219,7 +219,7 @@ export function extractQuickSymbolSamples(content: string, _filePath?: string): 
     const name = match[1]
     if (name && !symbols.includes(name)) {
       symbols.push(name)
-      if (symbols.length >= 3) return symbols
+      if (symbols.length >= limit) return symbols
     }
   }
 
@@ -228,10 +228,23 @@ export function extractQuickSymbolSamples(content: string, _filePath?: string): 
     const name = match[1]
     if (name && !symbols.includes(name)) {
       symbols.push(name)
-      if (symbols.length >= 3) break
+      if (symbols.length >= limit) break
     }
   }
   return symbols
+}
+
+/** How many indexed symbols a hint scans before giving up on finding three it can name. escapeHintName refuses anything displaySafeText would rewrite, so the names it drops are not evenly spread: a repository that puts a marker character or an emoji zero-width joiner in one label usually does it in several adjacent ones, and querying exactly three would let that cluster decide the hint. Bounded rather than unbounded because the contract here is "three usable names", not "every match" -- a hint has no reason to page a ten-thousand-symbol file. */
+const HINT_NAME_SCAN_LIMIT = 500
+/** How many names a surgical-read hint lists. */
+const HINT_NAME_COUNT = 3
+
+/** Index-backed names for a surgical-read hint: over-fetch, drop what escapeHintName refuses, then take three. Filtering after a `limit: 3` query put the cap before the predicate, so three unusable names hid every usable one behind them and collapsed the hint to its generic placeholder. This mirrors the in-memory sibling below, which filters the whole heading list before slicing. */
+function indexedHintNames(opts: Parameters<typeof querySymbols>[0]): string[] {
+  return querySymbols({ ...opts, limit: HINT_NAME_SCAN_LIMIT })
+    .map((symbol) => escapeHintName(symbol.name))
+    .filter((name) => name !== '')
+    .slice(0, HINT_NAME_COUNT)
 }
 
 /** Generate extension-aware surgical-read hint for a file, gated on hints.min_file_lines_for_hint — files below the threshold return '' since a surgical-read * suggestion isn't worth the noise for a file that's already small enough to read whole. */
@@ -252,16 +265,14 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
       const top = extractMarkdownHeadings(fileContent)
         .map((h) => escapeHintName(h.text.trim()))
         .filter((name) => name !== '')
-        .slice(0, 3)
+        .slice(0, HINT_NAME_COUNT)
       if (top.length > 0) {
         return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
       }
     }
     if (fileContent === undefined) {
       try {
-        const top = querySymbols({ filePath, kind: 'heading', limit: 3 })
-          .map((symbol) => escapeHintName(symbol.name))
-          .filter((name) => name !== '')
+        const top = indexedHintNames({ filePath, kind: 'heading' })
         if (top.length > 0) {
           return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
         }
@@ -281,18 +292,14 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   } else {
     const isShellScript = /\.(sh|bash|zsh|ksh)$/i.test(basename)
     const samples = fileContent !== undefined
-      ? extractQuickSymbolSamples(fileContent, filePath).map(escapeHintName).filter((name) => name !== '')
+      ? extractQuickSymbolSamples(fileContent, filePath, HINT_NAME_SCAN_LIMIT).map(escapeHintName).filter((name) => name !== '').slice(0, HINT_NAME_COUNT)
       : (() => {
           try {
             if (isShellScript) {
-              const headings = querySymbols({ filePath, kind: 'heading', limit: 3 })
-                .map((symbol) => escapeHintName(symbol.name))
-                .filter((name) => name !== '')
+              const headings = indexedHintNames({ filePath, kind: 'heading' })
               if (headings.length > 0) return headings
             }
-            return querySymbols({ filePath, limit: 3 })
-              .map((symbol) => escapeHintName(symbol.name))
-              .filter((name) => name !== '')
+            return indexedHintNames({ filePath })
           } catch {
             return []
           }

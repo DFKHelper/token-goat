@@ -93,4 +93,17 @@ describe('PowerShell Pester test blocks and hyphenated function symbols', () => 
     expect(testSamples).toContain('AuditSuite')
     expect(testSamples).toContain('verifies non-internal paths')
   })
+
+  // Regression (cap-before-predicate): surgicalHint's in-memory branch drops the names escapeHintName refuses, but this function stopped collecting at the three the hint displays -- so three unusable names at the top of a file were the only three the drop could ever consider, and the hint fell back to its generic placeholder. A Pester block name is free text, so it is a real vector for the marker character that makes escapeHintName refuse a name. The `limit` argument is what lets the caller over-fetch and filter afterwards. HAND-DERIVED: three unusable names is one more than the default cap could see past, computed from that cap's own value.
+  it('collects past the display count when the caller asks for more', () => {
+    const script = [
+      "Describe '[tg] first' { }",
+      "Describe '[tg] second' { }",
+      "Describe '[tg] third' { }",
+      "Describe 'Real Suite' { }",
+    ].join('\n')
+
+    expect(extractQuickSymbolSamples(script, 'Markers.Tests.ps1')).not.toContain('Real Suite')
+    expect(extractQuickSymbolSamples(script, 'Markers.Tests.ps1', 500)).toContain('Real Suite')
+  })
 })

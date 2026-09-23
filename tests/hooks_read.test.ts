@@ -4113,6 +4113,28 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
+    // Regression (cap-before-predicate): surgicalHint's index-backed branches queried `limit: 3` and only then dropped the names escapeHintName refuses, so the cap decided which symbols the drop could ever consider. Three unusable labels at the top of a file exhausted the window and the hint fell back to the generic `::SymbolName` placeholder even though the file went on to hold perfectly good ones. The sibling branch -- the one that runs when the file's content is already in hand -- filters first and slices to 3 after; the two are meant to produce the same hint from the same file. Terraform is the fixture for the same reason as the test below: `.tf` reaches the generic `else` branch with no outline branch ahead of it, and a resource label is a real vector for a marker character. HAND-DERIVED: three marker-bearing labels is one more than the retired cap could see past, computed from that cap's own value rather than from this fix's output.
+    it('names a clean indexed symbol that sits past three unusable ones', () => {
+      const p = path.join(os.tmpdir(), `tg-indexed-symbol-past-cap-${process.pid}-${Math.random().toString(36).slice(2)}.tf`)
+      const labels = ['[tg] first', '[tg] second', '[tg] third', 'real_label']
+      const blocks = labels.map((label) => `resource "aws_instance" "${label}" {}`).join('\n')
+      const content = `${blocks}\n# ${'x'.repeat(150 * 1024)}\n`
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+      indexFileSync(normalizePath(p), globalDbPath())
+      indexedFiles.push(p)
+
+      const result = preReadHandler(readEvent(p))
+
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('real_label')
+        // The marker-bearing names must still be dropped rather than escaped -- see the test above for why an escaped spelling is a broken instruction, not a safe one.
+        expect(result.context).not.toContain('[tg]')
+        expect(result.context).not.toContain('&#91;')
+      }
+    })
+
     // Same defect, the non-doc branch: querySymbols samples for a non-doc, non-section, non-dispatched file (the `else` branch of surgicalHint) come from the index too, and a Terraform resource label is a real vector for a marker character -- `resource "type" "[tg] ..." {` is ordinary HCL and terraform_idx.ts's extractTerraform indexes the label verbatim (joined with the type) as a `tf_resource` symbol name. .tf is neither a doc extension, a section extension, nor in DISPATCHED_FILE_TYPE_EXTS, so it reaches the same generic large-file quietContextOutput branch as the markdown case above. Same fix, same reasoning: read_spec.ts resolves the literal symbol name, so an escaped `&#91;tg]` label would still be unrunnable; dropping it falls back to the generic `SymbolName` placeholder in the suggested `token-goat read` command.
     it('drops a marker-bearing indexed Terraform resource label and falls back to the generic hint', () => {
       const p = path.join(os.tmpdir(), `tg-indexed-marker-tf-${process.pid}-${Math.random().toString(36).slice(2)}.tf`)
