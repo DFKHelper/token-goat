@@ -423,6 +423,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/index_reclaim.ts`](src/index_reclaim.ts) | Index-space reclamation (`token-goat reclaim-index`). |
 | [`src/indexed_source.ts`](src/indexed_source.ts) | Resolves the document a stored symbol line range actually addresses. |
 | [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |
+| [`src/known_roots.ts`](src/known_roots.ts) | Exports: `isTooShallowToPrune`, `recordKnownRoot`, `sweepExpiredKnownRootMarkers`, `recordKnownRootThrottled` |
 | [`src/language_specs.ts`](src/language_specs.ts) | The one table of languages token-goat indexes. |
 | [`src/lazy_module.ts`](src/lazy_module.ts) | Shared factory for the "lazily load an optional npm dependency" pattern used by every optional-dependency reader (pdf_extract.ts, xlsx_extract.ts, ooxml_extract.ts, screenshot.ts, |
 | [`src/line_regions.ts`](src/line_regions.ts) | Maps a requested line span onto the file regions that cover it. |

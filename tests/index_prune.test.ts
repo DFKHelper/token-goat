@@ -63,8 +63,6 @@ import { indexFileSync, deleteFileRows } from '../src/parser.js'
 import {
   pruneDeletedFiles,
   removeFileFromIndex,
-  recordKnownRoot,
-  recordKnownRootThrottled,
   sweepKnownRoots,
   findSystemTempFiles,
   pruneSystemTempFiles,
@@ -72,6 +70,7 @@ import {
   pruneOrphanedChunks,
   pruneOrphanedVectors,
 } from '../src/index_prune.js'
+import { recordKnownRoot, recordKnownRootThrottled } from '../src/known_roots.js'
 import * as embeddingsModule from '../src/embeddings.js'
 
 // Resolved at collection time so the vector test below can be a real skip rather than a body that

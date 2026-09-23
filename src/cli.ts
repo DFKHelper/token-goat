@@ -15,13 +15,14 @@ import { redactSecrets } from './secret_redact.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
-import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
+import { dataDir, ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
+import { recordKnownRootThrottled } from './known_roots.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
@@ -294,6 +295,8 @@ export async function cmdIndex(
     const sha = fingerprintFile(key)
     // A git-tracked file deleted from the worktree is still listed by getTrackedFiles, so it reaches this loop on every run. fingerprintFile returns null for it, indexFileSync fail-softs on ENOENT without throwing, and the `indexed += 1` at the bottom of the loop then counted work that never happened -- every run, forever, since deleting the file is exactly what keeps it in this state. After a rename the effect was the headline symptom: `Indexed 1 file into the symbol index` printed while the index had just been emptied. A null sha for a file that DOES exist is a transient read failure (a lock held by an AV scanner or an open editor) and still deserves the normal reindex attempt below, so the existence check is what separates the two. The rows are removed by pruneDeletedFiles after the loop, which is the pass that owns vanished files.
     if (sha === null && !fs.existsSync(key)) continue
+    // Register the project root as sweepable before the freshness gates below can skip this file: a walk that finds everything already current still proves the project has rows worth sweeping. See recordKnownRootThrottled.
+    recordKnownRootThrottled(key, dataDir(), dbPath)
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     // A case-only rename (`mv b.ts B.ts`) leaves the content byte-identical, so the sha gate below would skip the file and the row would keep the old spelling indefinitely -- see indexedPathSpellingIsStale. Reindexing rewrites the row under the spelling the file actually has.
     const spellingStale = entry !== null && indexedPathSpellingIsStale(entry.filePath, key)

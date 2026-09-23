@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { getDb } from '../../src/db.js'
 import { normalizePath } from '../../src/paths.js'
-import { pruneDeletedFiles, sweepKnownRoots, recordKnownRoot, isTooShallowToPrune } from '../../src/index_prune.js'
+import { pruneDeletedFiles, sweepKnownRoots } from '../../src/index_prune.js'
+import { isTooShallowToPrune, recordKnownRoot } from '../../src/known_roots.js'
 
 // Built rather than written as a literal so no layer between here and the file on disk can
 // quietly drop the backslash that is the entire point of the case.

@@ -17,7 +17,8 @@ import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displa
 import { indexFileSync } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
-import { globalDbPath } from './constants.js'
+import { dataDir, globalDbPath } from './constants.js'
+import { recordKnownRootThrottled } from './known_roots.js'
 import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
 import { extractExportNames, extractImports, importsExtensionFor } from './import_export_extract.js'
 export { extractExportNames, extractImports, importsExtensionFor }
@@ -271,6 +272,8 @@ function verifyPin(p: string, pinned: string): void {
  * byte-for-byte the pre-existing behavior: indexFileSync does its own read.
  */
 export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
+  // A heal triggered by a read can be the only thing that ever indexes a project, so register its root here too rather than relying on a later edit or bulk walk. See recordKnownRootThrottled.
+  recordKnownRootThrottled(resolvedPath, dataDir(), dbPath)
   const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))
   if (pinned === undefined) {
     indexFileSync(resolvedPath, dbPath)

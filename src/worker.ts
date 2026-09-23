@@ -23,7 +23,8 @@ import { ensureDirSync, foldPath, isUnderBlockedRoot, extractErrorMessage } from
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
-import { removeFileFromIndex, pruneDeletedFiles, sweepExpiredKnownRootMarkers, sweepKnownRoots } from './index_prune.js'
+import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
+import { recordKnownRootThrottled, sweepExpiredKnownRootMarkers } from './known_roots.js'
 import { reclaimIndex } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { cleanup_stale } from './snapshots.js'
@@ -512,6 +513,8 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
   const dir = path.dirname(dbPath)
   return (absPath, sha) => {
     try {
+      // Register this file's project root as sweepable before any gate below can skip the file: a drain that finds everything fresh still proves the project has rows worth sweeping. See recordKnownRootThrottled.
+      recordKnownRootThrottled(absPath, dir, dbPath)
       // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate: a file that becomes skip-eligible purely from a config change (same sha) would otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows stale forever. Guard on ixCfgForSkip !== undefined for tests that mock loadConfig with a partial { worker: {...} } shape.
       const ixCfgForSkip = loadConfig().indexing
       if (ixCfgForSkip !== undefined && isParseSkipEligible(absPath, ixCfgForSkip)) {

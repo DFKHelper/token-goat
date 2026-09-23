@@ -25,7 +25,7 @@ import {
 } from '../src/worker.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
-import { recordKnownRoot } from '../src/index_prune.js'
+import { recordKnownRoot } from '../src/known_roots.js'
 import { querySymbols, queryRefs, getFileEntry } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
