@@ -198,27 +198,6 @@ export class RgFilter extends ToolFilter {
   private static readonly _CTX_LINE_RE = /^(?:.+-)?\d+-/
   private static readonly _MATCH_LINE_RE = /^(?:.+:)?\d+:/
 
-  private static _parseContextDepth(argv: string[]): number {
-    let depth = 0
-    const longFlags = new Set(['--after-context', '--before-context', '--context'])
-    for (let i = 0; i < argv.length; i++) {
-      const a = argv[i]!
-      if ((a === '-A' || a === '-B' || a === '-C' || longFlags.has(a)) && i + 1 < argv.length) {
-        const v = parseInt(argv[i + 1]!, 10)
-        if (!isNaN(v)) depth = Math.max(depth, v)
-        i++
-        continue
-      }
-      for (const short of ['-A', '-B', '-C']) {
-        if (a.startsWith(short) && a.length > 2) {
-          const v = parseInt(a.slice(2), 10)
-          if (!isNaN(v)) depth = Math.max(depth, v)
-        }
-      }
-    }
-    return depth
-  }
-
   /** True when argv carries an actual context flag (-A/-B/-C/--[after|before]-context/--context, short or long form). */
   private static _hasContextFlags(argv: string[]): boolean {
     const longFlags = ['--after-context', '--before-context', '--context']
@@ -852,8 +831,14 @@ const _CURL_VERBOSE_META_RE = /^[*>](\s|$)/
 const _CURL_STATUS_RE = /^<\s+HTTP\/[\d.]+\s+(\d{3})/
 const _CURL_USEFUL_HEADER_RE =
   /^<\s+(content-type|location|content-length|www-authenticate|x-ratelimit):/i
-const _CURL_PROGRESS_RE =
-  /^\s+%\s+Total|^\s+Dload\s+Upload\s|^\d{1,3}\s+\d+\s+\d+\s+\d+\s|^\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+/
+/** The two header lines curl prints once before its transfer meter. Nothing but curl produces them, so they are what licenses the row pattern below to run at all. */
+const _CURL_METER_HEADER_RE = /^\s+%\s+Total|^\s+Dload\s+Upload\s/
+/**
+ * One meter frame: four or five whitespace-separated numbers, optionally led by the carriage return curl uses to overwrite the previous frame in place.
+ *
+ * This shape is also every row of a whitespace-separated numeric table, which is why it is gated on the header above having already been seen. Ungated, `curl -s <numeric data>` had its entire body deleted and replaced with `[token-goat: dropped N progress lines]` -- total loss, under a note that was wrong about what it had dropped as well as that it had dropped anything. Captured curl output shows why the obvious tighter anchor does not work: the Time Total/Spent/Left columns are blank rather than `--:--:--`, so requiring a time triple would stop matching a real meter. Over-keeping when the header is missing is the correct direction here, since a leaked meter frame costs a few characters and a deleted body costs the answer.
+ */
+const _CURL_METER_ROW_RE = /^\d{1,3}\s+\d+\s+\d+\s+\d+\s|^\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+/
 const _WGET_NOISE_RE =
   /^--\d{4}-\d{2}-\d{2}|^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} URL:|^(Resolving|Connecting to|Reusing|Sending|Saving to|HTTP request sent|Length:|Location:)/
 const _WGET_HTTP_STATUS_RE = /^HTTP\/[\d.]+\s+(\d{3})/
@@ -891,8 +876,15 @@ export class CurlFilter extends ToolFilter {
         kept.push(line)
       }
     } else {
+      // Set by the meter header and never cleared: curl prints the header once and then overwrites one frame in place, so every frame after it belongs to that meter.
+      let sawMeterHeader = false
       for (const line of lines) {
-        if (_CURL_PROGRESS_RE.test(line)) {
+        if (_CURL_METER_HEADER_RE.test(line)) {
+          sawMeterHeader = true
+          droppedProgress++
+          continue
+        }
+        if (sawMeterHeader && _CURL_METER_ROW_RE.test(line)) {
           droppedProgress++
           continue
         }

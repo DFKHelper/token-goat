@@ -846,6 +846,37 @@ describe('CurlFilter compression', () => {
   const f = new CurlFilter()
   const argv = ['curl', '-v', 'https://api.example.com/data']
 
+  // CAPTURE. `curl -o /dev/null https://registry.npmjs.org/token-goat` on Windows, curl 8.x, stderr only, 2026-09-22. Two things here are not what a hand-written fixture would have guessed and both matter: the Time Total/Spent/Left columns are blank rather than `--:--:--`, so anchoring the row pattern on a time triple would stop matching a real meter; and every frame after the header arrives `\r`-separated inside ONE newline-terminated line, so the row pattern has to survive a leading `\r` and must not assume one frame per line.
+  const CAPTURED_CURL_METER =
+    '  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n' +
+    '                                 Dload  Upload  Total   Spent   Left   Speed\r\n' +
+    '\r  0      0   0      0   0      0      0      0                              0' +
+    '\r100 311.2k 100 311.2k   0      0  1.33M      0                              0' +
+    '\r100 311.2k 100 311.2k   0      0  1.32M      0                              0\r\n'
+
+  it('still strips a real progress meter', () => {
+    const out = f.compress('{"name":"token-goat"}', CAPTURED_CURL_METER, 0, ['curl', 'https://registry.npmjs.org/token-goat'])
+    expect(out).toContain('{"name":"token-goat"}')
+    expect(out).not.toContain('311.2k')
+    expect(out).not.toContain('% Total')
+  })
+
+  it('keeps a numeric body that no meter header introduced', () => {
+    // A response body of whitespace-separated numbers has the same shape as a meter frame -- four or five integers in a row -- so matching on that shape alone deleted the entire body of any numeric data fetch and reported it as `dropped N progress lines`, a note that was wrong about what it dropped as well as that it dropped it. The meter header is the thing no data table produces, so it is what gates the row match.
+    const rows = Array.from({ length: 60 }, (_, i) => `${i + 1} ${i * 2} ${i * 3} ${i * 4} ${i * 5}`)
+    const out = f.compress(rows.join('\n'), '', 0, ['curl', '-s', 'https://example.com/data.txt'])
+    expect(out).toContain('7 12 18 24 30')
+    expect(out).toContain('60 118 177 236 295')
+    expect(out).not.toContain('progress lines')
+  })
+
+  it('keeps an indented numeric body that no meter header introduced', () => {
+    const rows = Array.from({ length: 60 }, (_, i) => `   ${i + 1}   ${i * 2}   ${i * 3}   ${i * 4}   ${i * 5}`)
+    const out = f.compress(rows.join('\n'), '', 0, ['curl', '-s', 'https://example.com/data.txt'])
+    expect(out).toContain('7   12   18   24   30')
+    expect(out).not.toContain('progress lines')
+  })
+
   it('strips verbose metadata headers from curl -v output', () => {
     const out = [
       '*   Trying 93.184.216.34:443...',
