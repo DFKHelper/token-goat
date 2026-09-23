@@ -18,8 +18,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { BACKFILL_META_KEY, pruneUnembeddableChunks, selectUnembeddableChunkFiles } from '../src/embed_backfill.js'
 import { deleteFileEmbeddings } from '../src/embeddings.js'
+import { assetEmbedSha, isEmbedFresh, maxChunksEmbedSha } from '../src/parser.js'
 import { VERSION } from '../src/version.js'
 import type { SqliteDatabase } from '../src/sqlite_driver.js'
+
+/** What both shipping call sites (src/worker.ts, src/cli.ts) pass, so these tests exercise the markers the product stamps rather than stand-ins of their own. */
+const MARKERS = { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha }
 
 let TMP: string
 
@@ -75,7 +79,7 @@ describe('pruneUnembeddableChunks backfills an index written before the gates ex
     const before = (db.prepare('SELECT COUNT(*) c FROM chunks').get() as { c: number }).c
     expect(before).toBe(1030)
 
-    const result = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings)
+    const result = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS)
 
     expect(result.ran).toBe(true)
     expect(result.files).toBe(2)
@@ -91,14 +95,14 @@ describe('pruneUnembeddableChunks backfills an index written before the gates ex
     const db = getDb(path.join(TMP, 'index.db'))
     seedChunks(db, 'c:/proj/assets/photo.jpg', 118)
 
-    const first = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings)
+    const first = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS)
     expect(first.ran).toBe(true)
     expect(first.chunks).toBe(118)
     expect((db.prepare('SELECT value FROM index_migrations WHERE key = ?').get(BACKFILL_META_KEY) as { value: string }).value).toBe(VERSION)
 
     // Rows that arrive after the sweep are the live gate's job, not the sweep's -- and re-scanning a quarter-million-row table on every worker drain is the cost the version key exists to avoid.
     seedChunks(db, 'c:/proj/assets/later.jpg', 40)
-    const second = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings)
+    const second = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS)
     expect(second.ran).toBe(false)
     expect(second.chunks).toBe(0)
     expect(chunkCount(db, 'c:/proj/assets/later.jpg')).toBe(40)
@@ -110,7 +114,7 @@ describe('pruneUnembeddableChunks backfills an index written before the gates ex
     db.exec('CREATE TABLE IF NOT EXISTS index_migrations (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
     db.prepare('INSERT INTO index_migrations (key, value) VALUES (?, ?)').run(BACKFILL_META_KEY, '0.0.0-some-older-release')
 
-    const result = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings)
+    const result = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS)
     expect(result.ran).toBe(true)
     expect(result.chunks).toBe(118)
   })
@@ -119,8 +123,66 @@ describe('pruneUnembeddableChunks backfills an index written before the gates ex
     const db = getDb(path.join(TMP, 'index.db'))
     seedChunks(db, 'c:/proj/memory/kw-snap.json', 900)
 
-    const result = pruneUnembeddableChunks(db, 0, deleteFileEmbeddings)
+    const result = pruneUnembeddableChunks(db, 0, deleteFileEmbeddings, MARKERS)
     expect(result.files).toBe(0)
     expect(chunkCount(db, 'c:/proj/memory/kw-snap.json')).toBe(900)
+  })
+})
+
+/**
+ * PROVENANCE: FORMAT-DERIVED -- the `files` column list is read off src/db.ts's SCHEMA_SQL, and the
+ * expected stamp values come from the same `assetEmbedSha`/`maxChunksEmbedSha` the shipping gate
+ * calls rather than from literals transcribed here, so a change to either marker's spelling moves
+ * the product and the expectation together instead of pinning a dead string.
+ */
+function seedFile(db: SqliteDatabase, filePath: string, sha: string): void {
+  db.prepare('INSERT INTO files (path, sha, embed_sha) VALUES (?, ?, ?)').run(filePath, sha, sha)
+}
+
+function storedEmbedSha(db: SqliteDatabase, filePath: string): string | null {
+  return (db.prepare('SELECT embed_sha FROM files WHERE path = ?').get(filePath) as { embed_sha: string | null }).embed_sha
+}
+
+describe('the sweep restamps each pruned file with the verdict the live gate would have recorded', () => {
+  it('replaces the bare sha that made the skip permanent with the threshold- and set-id-bearing markers', () => {
+    const db = getDb(path.join(TMP, 'index.db'))
+    seedChunks(db, 'c:/proj/assets/photo.jpg', 118)
+    seedFile(db, 'c:/proj/assets/photo.jpg', 'sha-jpg')
+    seedChunks(db, 'c:/proj/memory/kw-snap.json', 900)
+    seedFile(db, 'c:/proj/memory/kw-snap.json', 'sha-json')
+    seedChunks(db, 'c:/proj/src/widget.ts', 12)
+    seedFile(db, 'c:/proj/src/widget.ts', 'sha-ts')
+
+    pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS)
+
+    // The asset test runs before anything counts chunks in indexFileEmbeddings, so a file that is both gets the asset marker.
+    expect(storedEmbedSha(db, 'c:/proj/assets/photo.jpg')).toBe(assetEmbedSha('sha-jpg'))
+    expect(storedEmbedSha(db, 'c:/proj/memory/kw-snap.json')).toBe(maxChunksEmbedSha('sha-json', 600))
+    // The survival anchor: a sweep that restamped every row would satisfy both assertions above.
+    expect(storedEmbedSha(db, 'c:/proj/src/widget.ts')).toBe('sha-ts')
+  })
+
+  it('leaves a pruned file re-examinable once the ceiling that refused it is raised, which a bare sha never was', () => {
+    const db = getDb(path.join(TMP, 'index.db'))
+    seedChunks(db, 'c:/proj/memory/kw-snap.json', 900)
+    seedFile(db, 'c:/proj/memory/kw-snap.json', 'sha-json')
+
+    pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS)
+    const stored = storedEmbedSha(db, 'c:/proj/memory/kw-snap.json') ?? undefined
+
+    // Settled while the ceiling holds: the file is not re-read into extraction on every drain.
+    expect(isEmbedFresh(stored, 'sha-json', true, true, 500, 600)).toBe(true)
+    // ...and re-opened the moment it moves, which is the whole reason the marker is threshold-bearing.
+    expect(isEmbedFresh(stored, 'sha-json', true, true, 500, 10000)).toBe(false)
+  })
+
+  it('prunes a chunk row with no file row at all rather than failing on the missing stamp target', () => {
+    const db = getDb(path.join(TMP, 'index.db'))
+    seedChunks(db, 'c:/proj/assets/orphan.jpg', 40)
+
+    const result = pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS)
+
+    expect(result.chunks).toBe(40)
+    expect(chunkCount(db, 'c:/proj/assets/orphan.jpg')).toBe(0)
   })
 })

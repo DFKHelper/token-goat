@@ -17,7 +17,7 @@ import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors } from './parser.js'
+import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getDb } from './db.js'
@@ -248,7 +248,7 @@ export async function cmdIndex(
   if ((loadConfig().indexing?.embeddings_enabled ?? true) && embeddingsDepsAvailable(getDb(dbPath))) {
     ensureEmbeddingProvenance(getDb(dbPath))
     // Chunk rows written before the asset and chunk-count gates existed carry a valid embed_sha, so the per-file freshness gate below reads every one of them as current and would leave them searchable forever. Same placement and the same reason as ensureEmbeddingProvenance directly above: it has to run before the loop reads any row. See src/embed_backfill.ts for why this is a version-keyed sweep rather than a fingerprint bump.
-    pruneUnembeddableChunks(getDb(dbPath), ixCfg.max_chunks_per_file, deleteFileEmbeddings)
+    pruneUnembeddableChunks(getDb(dbPath), ixCfg.max_chunks_per_file, deleteFileEmbeddings, { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha })
   }
   let indexed = 0
   let failed = 0

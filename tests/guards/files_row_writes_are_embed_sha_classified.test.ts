@@ -110,6 +110,13 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'embed_backfill.ts::UPDATE files SET embed_sha = ? WHERE',
+    {
+      bucket: 'writes-a-freshly-computed-embed-sha',
+      reason: 'pruneUnembeddableChunks restamps a file it just pruned with the same skip marker indexFileEmbeddings would have given it -- assetEmbedSha or maxChunksEmbedSha over that row\'s own sha -- so the verdict re-opens when the set id or the ceiling it was refused under moves. Gated on sha = ? for the same reason the parser.ts stamp above is.',
+    },
+  ],
+  [
     'db.ts::UPDATE files SET embed_sha = NULL WHERE path = ?',
     {
       bucket: 'deliberately-clears-embed-sha',

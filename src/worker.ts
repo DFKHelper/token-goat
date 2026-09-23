@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors } from './parser.js'
+import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
@@ -525,7 +525,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       if (depsAvailable) {
         ensureEmbeddingProvenance(getDb(dbPath))
         // Same placement and the same reason as the call above, for the gates that reject a file rather than the stack that embedded it; see src/embed_backfill.ts. Self-throttling on a ledger row, so after the first drain of a release this is one indexed SELECT per file.
-        pruneUnembeddableChunks(getDb(dbPath), loadConfig().indexing?.max_chunks_per_file ?? 0, deleteFileEmbeddings)
+        pruneUnembeddableChunks(getDb(dbPath), loadConfig().indexing?.max_chunks_per_file ?? 0, deleteFileEmbeddings, { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha })
       }
       const entry = getFileEntry(absPath, dbPath)
       // Skip the syntactic reparse when content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. ...and not when the row's own spelling has gone stale under a case-only rename, which leaves the content identical and would otherwise pin the old spelling in place forever. See indexedPathSpellingIsStale. ...and not when the rows were written by a different version of the extraction logic. files.sha answers "has the content changed", which is only half the question: a parser change alters what gets extracted from content that never moved, and before parser_sha existed those files kept their old symbol set for as long as nobody edited them. Measured on a real index, 37 of 237 source files disagreed with what the same binary produced from scratch. An empty parserSha is a row written before the column existed and is correctly stale. The expected stamp is the one for the language the row itself records, so a fix to one adapter reparses that language's files and leaves every other language's rows alone. See parserFingerprintForLanguage.

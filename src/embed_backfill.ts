@@ -25,7 +25,9 @@
  * correctness one.
  */
 import { isNonTextAsset } from './asset_extensions.js'
+import { pathEqClause } from './sql_path.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
+import { foldPath } from './util.js'
 import { VERSION } from './version.js'
 
 /** Bookkeeping key holding the token-goat version whose sweep last completed. */
@@ -67,33 +69,64 @@ export function selectUnembeddableChunkFiles(db: SqliteDatabase, maxChunksPerFil
 }
 
 /**
+ * The two `files.embed_sha` markers `indexFileEmbeddings` stamps for the verdicts this sweep
+ * re-applies, injected for the same leaf reason `deleteForFile` is: both live in parser.ts, and an
+ * import edge from here to there would drag the whole parser into this module's closure and risk a
+ * cycle that only shows up in the built bundle. Callers pass `assetEmbedSha` and `maxChunksEmbedSha`.
+ */
+export interface EmbedSkipMarkers {
+  asset: (sha: string) => string
+  maxChunks: (sha: string, maxChunks: number) => string
+}
+
+/**
  * Delete the chunk rows (and their vectors) of every file the current gates would reject, once per
- * token-goat version per database.
+ * token-goat version per database, and restamp each one with the marker the live gate would have
+ * given it.
  *
  * `deleteForFile` is the per-file delete primitive, injected rather than imported so this module
  * stays a leaf: importing embeddings.ts here would put this file in the embedding fingerprint's
  * import closure, which is the exact cost the whole design avoids. Callers pass
  * `deleteFileEmbeddings`.
  *
- * Deliberately does NOT clear `files.embed_sha` for the pruned files. The stamp is left alone so
- * the file settles rather than re-entering indexFileEmbeddings on every worker drain; the next time
- * its content actually changes, the new gates stamp it with the right marker. Clearing the stamp
- * would re-read every pruned file's bytes on the next drain to reach the same verdict.
+ * The restamp is the point of the pass as much as the delete is. Leaving the file's original bare
+ * `embed_sha` in place -- which is what this did first -- makes `isEmbedFresh` return true on its
+ * terminal `storedEmbedSha === sha` clause forever, which is precisely the
+ * permanent-verdict-from-a-changed-condition failure ASSET_EMBED_SHA_PREFIX and
+ * MAX_CHUNKS_EMBED_SHA_PREFIX exist to prevent: raising `indexing.max_chunks_per_file`, or dropping
+ * an extension from NON_TEXT_ASSET_EXTENSIONS, re-opens the decision for every file the live gate
+ * stamped and for none of the files this sweep pruned. Clearing the stamp to NULL would fix that
+ * too but costs a re-read of every pruned file's bytes on the next drain to reach the same verdict;
+ * stamping the threshold-bearing marker keeps the file settled AND re-examines it the moment the
+ * condition it was refused under moves. Mirrors `indexFileEmbeddings`' own gate order, where the
+ * asset test runs before anything counts chunks.
+ *
+ * The stamp carries `AND sha = ?` for the reason `stampEmbedSha` does: if the file's content moved
+ * between the SELECT and the UPDATE, the row already belongs to a fresher writer and this one must
+ * be a no-op rather than bury the new content under a verdict taken on the old.
  */
 export function pruneUnembeddableChunks(
   db: SqliteDatabase,
   maxChunksPerFile: number,
   deleteForFile: (db: SqliteDatabase, filePath: string) => void,
+  markers: EmbedSkipMarkers,
 ): BackfillResult {
   ensureLedger(db)
   const row = db.prepare('SELECT value FROM index_migrations WHERE key = ?').get(BACKFILL_META_KEY) as { value: string } | undefined
   if (row?.value === VERSION) return { files: 0, chunks: 0, ran: false }
 
   const targets = selectUnembeddableChunkFiles(db, maxChunksPerFile)
+  const readSha = db.prepare(`SELECT sha FROM files WHERE ${pathEqClause('path')}`).pluck()
+  const restamp = db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')} AND sha = ?`)
   let chunks = 0
   for (const target of targets) {
     deleteForFile(db, target.filePath)
     chunks += target.chunks
+    const folded = foldPath(target.filePath)
+    // A chunk row whose file row is gone (or never carried a sha) has nothing to stamp against, and no gate will ever read it either. Deleting its chunks was the whole job.
+    const sha = readSha.get(folded) as string | null | undefined
+    if (typeof sha !== 'string' || sha === '') continue
+    restamp.run(isNonTextAsset(target.filePath) ? markers.asset(sha) : markers.maxChunks(sha, maxChunksPerFile), folded, sha)
   }
   db.prepare('INSERT INTO index_migrations (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(BACKFILL_META_KEY, VERSION)
   return { files: targets.length, chunks, ran: true }
