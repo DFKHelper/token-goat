@@ -33,6 +33,11 @@ export interface ConflictSide {
   content: string
 }
 
+export interface ConflictContextLine {
+  line: number
+  text: string
+}
+
 /** One `<<<<<<< ... >>>>>>>` conflict region. `base` is present only for diff3-style conflicts
  * (a `|||||||` section was seen); `null` for a plain two-way conflict. */
 export interface ConflictRegion {
@@ -43,6 +48,8 @@ export interface ConflictRegion {
   ours: ConflictSide
   base: ConflictSide | null
   theirs: ConflictSide
+  beforeContext?: ConflictContextLine[]
+  afterContext?: ConflictContextLine[]
 }
 
 /** A malformed/unbalanced marker sequence -- e.g. a `<<<<<<<` with no matching `=======`/
@@ -63,7 +70,7 @@ export interface FileConflicts {
 }
 
 /** Parse every conflict region (and any malformed marker sequence) out of one file's text. */
-export function parseConflicts(filePath: string, text: string): FileConflicts {
+export function parseConflicts(filePath: string, text: string, contextLines = 3): FileConflicts {
   const lines = text.split(/\r?\n/)
   const regions: ConflictRegion[] = []
   const warnings: ConflictWarning[] = []
@@ -135,6 +142,20 @@ export function parseConflicts(filePath: string, text: string): FileConflicts {
       const theirsMatch = THEIRS_RE.exec(line)
       if (theirsMatch !== null) {
         const theirsLabel = (theirsMatch[1] ?? '').trim()
+        const beforeContext: ConflictContextLine[] = []
+        if (contextLines > 0) {
+          const ctxStart = Math.max(0, startLine - 1 - contextLines)
+          for (let c = ctxStart; c < startLine - 1; c++) {
+            beforeContext.push({ line: c + 1, text: lines[c] ?? '' })
+          }
+        }
+        const afterContext: ConflictContextLine[] = []
+        if (contextLines > 0) {
+          const ctxEnd = Math.min(lines.length, lineNo + contextLines)
+          for (let c = lineNo; c < ctxEnd; c++) {
+            afterContext.push({ line: c + 1, text: lines[c] ?? '' })
+          }
+        }
         regions.push({
           filePath,
           lineStart: startLine,
@@ -142,6 +163,8 @@ export function parseConflicts(filePath: string, text: string): FileConflicts {
           ours: { label: oursLabel, content: oursLines.join('\n') },
           base: sawBase ? { label: baseLabel, content: baseLines.join('\n') } : null,
           theirs: { label: theirsLabel, content: theirsLines.join('\n') },
+          ...(beforeContext.length > 0 ? { beforeContext } : {}),
+          ...(afterContext.length > 0 ? { afterContext } : {}),
         })
         resetRegion()
         continue
@@ -212,6 +235,11 @@ function formatSingleFileConflicts(result: FileConflicts): string {
     lines.push(`${displaySafeText(result.filePath)} -- ${result.regions.length} conflict${result.regions.length === 1 ? '' : 's'}`)
     for (const r of result.regions) {
       lines.push(`  lines ${r.lineStart}-${r.lineEnd}`)
+      if (r.beforeContext && r.beforeContext.length > 0) {
+        for (const c of r.beforeContext) {
+          lines.push(`      ${c.line} | ${displaySafeText(c.text)}`)
+        }
+      }
       lines.push(`    <<<<<<< ${displaySafeText(r.ours.label || '(ours)')}`)
       lines.push(indentBlock(r.ours.content))
       if (r.base !== null) {
@@ -221,6 +249,11 @@ function formatSingleFileConflicts(result: FileConflicts): string {
       lines.push('    =======')
       lines.push(indentBlock(r.theirs.content))
       lines.push(`    >>>>>>> ${displaySafeText(r.theirs.label || '(theirs)')}`)
+      if (r.afterContext && r.afterContext.length > 0) {
+        for (const c of r.afterContext) {
+          lines.push(`      ${c.line} | ${displaySafeText(c.text)}`)
+        }
+      }
     }
   } else {
     lines.push(`${displaySafeText(result.filePath)} -- no conflicts`)

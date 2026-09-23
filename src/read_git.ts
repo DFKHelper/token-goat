@@ -34,6 +34,7 @@ export interface ConflictsCliOptions {
   path?: string
   json?: boolean
   summary?: boolean
+  context?: number
 }
 
 export function runConflicts(opts: ConflictsCliOptions): number {
@@ -52,11 +53,12 @@ export function runConflicts(opts: ConflictsCliOptions): number {
     files = stat.isDirectory() ? walkProject(abs).files : [abs]
   }
 
+  const contextLines = opts.context !== undefined ? opts.context : 3
   const results: ReturnType<typeof parseConflicts>[] = []
   for (const f of files) {
     const text = readFileText(f)
     if (text === null) continue
-    const parsed = parseConflicts(f, text)
+    const parsed = parseConflicts(f, text, contextLines)
     if (parsed.regions.length > 0 || parsed.warnings.length > 0) results.push(parsed)
   }
 

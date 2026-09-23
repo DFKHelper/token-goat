@@ -5,7 +5,12 @@ import { join } from 'node:path'
 
 import {
   buildCopilotWasteReport,
+  findActiveCopilotSession,
   findLatestCopilotSession,
+  findProjectSession,
+  isCopilotSessionActive,
+  isCopilotTranscript,
+  readCopilotWorkspace,
   splitInjectedBlocks,
 } from '../src/copilot_waste.js'
 
@@ -202,4 +207,154 @@ describe('findLatestCopilotSession', () => {
     expect(findLatestCopilotSession()).toBe(p)
     expect(p.startsWith(root)).toBe(true)
   })
+
+  it('filters sessions by projectRoot matching workspace.yaml cwd', () => {
+    const projectA = join(root, 'repo-a')
+    const projectB = join(root, 'repo-b')
+    mkdirSync(projectA, { recursive: true })
+    mkdirSync(projectB, { recursive: true })
+
+    const sessA = session('sess-a', 1_000_000)
+    writeFileSync(join(root, 'session-state', 'sess-a', 'workspace.yaml'), `id: sess-a\ncwd: ${projectA}\n`, 'utf-8')
+
+    const sessB = session('sess-b', 2_000_000)
+    writeFileSync(join(root, 'session-state', 'sess-b', 'workspace.yaml'), `id: sess-b\ncwd: ${projectB}\n`, 'utf-8')
+
+    expect(findLatestCopilotSession(projectA)).toBe(sessA)
+    expect(findLatestCopilotSession(projectB)).toBe(sessB)
+    expect(findLatestCopilotSession(join(root, 'repo-c'))).toBeNull()
+  })
+
+  it('filters sessions by projectRoot matching workspace.yaml git_root', () => {
+    const gitRoot = join(root, 'worktree-root')
+    mkdirSync(gitRoot, { recursive: true })
+
+    const sess = session('sess-git', 1_000_000)
+    writeFileSync(join(root, 'session-state', 'sess-git', 'workspace.yaml'), `id: sess-git\ncwd: /tmp/random\ngit_root: ${gitRoot}\n`, 'utf-8')
+
+    expect(findLatestCopilotSession(gitRoot)).toBe(sess)
+  })
+
+  it('prefers active session over newer inactive session for the same project', () => {
+    const project = join(root, 'active-proj')
+    mkdirSync(project, { recursive: true })
+
+    const olderActive = session('sess-active', 1_000_000)
+    writeFileSync(join(root, 'session-state', 'sess-active', 'workspace.yaml'), `id: sess-active\ncwd: ${project}\n`, 'utf-8')
+    writeFileSync(join(root, 'session-state', 'sess-active', `inuse.${process.pid}.lock`), String(process.pid), 'utf-8')
+
+    const newerInactive = session('sess-inactive', 2_000_000)
+    writeFileSync(join(root, 'session-state', 'sess-inactive', 'workspace.yaml'), `id: sess-inactive\ncwd: ${project}\n`, 'utf-8')
+
+    expect(findLatestCopilotSession(project)).toBe(olderActive)
+    expect(findLatestCopilotSession(project)).not.toBe(newerInactive)
+    expect(findActiveCopilotSession(project)).toBe(olderActive)
+  })
+
+  it('honors COPILOT_AGENT_SESSION_ID when projectRoot matches', () => {
+    const project = join(root, 'env-proj')
+    mkdirSync(project, { recursive: true })
+
+    const sessEnv = session('sess-env', 1_000_000)
+    writeFileSync(join(root, 'session-state', 'sess-env', 'workspace.yaml'), `id: sess-env\ncwd: ${project}\n`, 'utf-8')
+
+    process.env['COPILOT_AGENT_SESSION_ID'] = 'sess-env'
+    try {
+      expect(findLatestCopilotSession(project)).toBe(sessEnv)
+      expect(findActiveCopilotSession(project)).toBe(sessEnv)
+      // When a different projectRoot is specified, env session ID does not falsely match
+      expect(findLatestCopilotSession(join(root, 'other-proj'))).toBeNull()
+    } finally {
+      delete process.env['COPILOT_AGENT_SESSION_ID']
+    }
+  })
 })
+
+describe('readCopilotWorkspace', () => {
+  it('extracts cwd, git_root, and id from workspace.yaml', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-ws-'))
+    try {
+      writeFileSync(join(dir, 'workspace.yaml'), 'id: "abc-123"\ncwd: C:\\Projects\\test\ngit_root: \'C:\\Projects\\test\'\n', 'utf-8')
+      const ws = readCopilotWorkspace(dir)
+      expect(ws).toEqual({
+        id: 'abc-123',
+        cwd: 'C:\\Projects\\test',
+        gitRoot: 'C:\\Projects\\test',
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns null when workspace.yaml is missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-ws-none-'))
+    try {
+      expect(readCopilotWorkspace(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('isCopilotSessionActive', () => {
+  it('returns true when inuse lock has a living PID', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-active-'))
+    try {
+      writeFileSync(join(dir, `inuse.${process.pid}.lock`), String(process.pid), 'utf-8')
+      expect(isCopilotSessionActive(dir, 'sess-test')).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns false when inuse lock has a non-existent PID', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-inactive-'))
+    try {
+      writeFileSync(join(dir, 'inuse.999999.lock'), '999999', 'utf-8')
+      expect(isCopilotSessionActive(dir, 'sess-dead')).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('isCopilotTranscript', () => {
+  it('identifies events.jsonl by filename', () => {
+    expect(isCopilotTranscript('/path/to/events.jsonl')).toBe(true)
+    expect(isCopilotTranscript('C:\\Users\\test\\.copilot\\session-state\\id\\events.jsonl')).toBe(true)
+  })
+
+  it('identifies Copilot JSON content even if named differently', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-cpevents-'))
+    try {
+      const p = join(dir, 'custom-log.txt')
+      writeFileSync(p, '{"type":"user.message","id":"e-1","timestamp":1,"data":{"content":"hi"}}\n', 'utf-8')
+      expect(isCopilotTranscript(p)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns false for Claude Code transcripts or unrelated files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-claude-'))
+    try {
+      const p = join(dir, 'session.jsonl')
+      writeFileSync(p, '{"type":"user","message":{"role":"user","content":"hello"}}\n', 'utf-8')
+      expect(isCopilotTranscript(p)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('findProjectSession', () => {
+  it('returns null when no session transcripts exist for an empty project', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-empty-proj-'))
+    try {
+      expect(findProjectSession(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+

@@ -80,6 +80,15 @@ export function cmdWaste(opts: { project?: string; transcript?: string; json?: b
   })
 }
 
+export async function cmdAudit(opts: { project?: string; transcript?: string; json?: boolean } = {}): Promise<void> {
+  const { runAuditCommand } = await import('./cli_audit.js')
+  return runAuditCommand({
+    ...(opts.project !== undefined ? { project: opts.project } : {}),
+    ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),
+    ...(opts.json === true ? { json: true } : {}),
+  })
+}
+
 export async function cmdSessionAudit(opts: { dir?: string; json?: boolean } = {}): Promise<void> {
   let summary
   try {

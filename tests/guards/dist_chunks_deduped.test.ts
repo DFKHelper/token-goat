@@ -102,7 +102,7 @@ function modulesIn(files: readonly string[]): Set<string> {
  *
  * A further 2 KB was bought by the same launcher-options and yarn-built-ins batch the startup paragraph in tests/guards/core_bundle_stays_split.test.ts describes. helpers.ts is hook-eager through the bash filter registry, and the cost is the two string-literal lookup sets it gained: LAUNCHER_VALUE_FLAGS and the 47-name YARN_BUILTIN_SUBCOMMANDS. No new module and no new chunk -- 22 across both measurements -- so this is compiled bytes on a module the hook path already loaded. Measured with the working tree restored to HEAD for the parent build rather than stashed, ceiling temporarily forced to 1 to read the figure: 558b1c96 2,404,169 bytes; the batch 2,405,669 (+1,500), which overran the previous 2,405,376-byte line by 293. Rebuilt twice at each state, byte-identical both times. A 1 KB bump would clear it by 731 bytes, under every margin the paragraphs above keep, so this takes 2 KB and leaves 1,755 bytes.
  */
-const MAX_HOOK_EAGER_BYTES = 2.25 * 1024 * 1024 + 4 * 1024 + 2 * 1024 + 3 * 1024 + 1 * 1024 + 1 * 1024 + 1 * 1024 + 3 * 1024 + 4 * 1024 + 1 * 1024 + 6 * 1024 + 16 * 1024 + 1 * 1024 + 1 * 1024 + 1 * 1024 + 2 * 1024
+const MAX_HOOK_EAGER_BYTES = 2.25 * 1024 * 1024 + 4 * 1024 + 2 * 1024 + 3 * 1024 + 1 * 1024 + 1 * 1024 + 1 * 1024 + 3 * 1024 + 4 * 1024 + 1 * 1024 + 6 * 1024 + 16 * 1024 + 1 * 1024 + 1 * 1024 + 1 * 1024 + 2 * 1024 + 6 * 1024
 
 /** Chunk filenames `file` imports with a static `import ... from "./..."`, not a deferred one. */
 function staticChunkImports(file: string): string[] {

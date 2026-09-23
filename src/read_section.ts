@@ -40,6 +40,8 @@ export interface SectionOptions {
   suppressStat?: boolean
   /** Project root to scope relative paths against. Defaults to process.cwd() when unset, matching runRead/runSymbol's projectRoot option. */
   projectRoot?: string
+  /** Maximum number of content lines to return from the top of the section. */
+  maxLines?: number
 }
 
 export function literalHeadingExists(filePath: string, heading: string): boolean {
@@ -112,8 +114,34 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   const kind = result.redirectedFrom !== undefined ? 'section_replacement' : 'section_read'
   const fullSourceBytes = sumFileSizes([filePath])
 
+  let content = result.content
+  let lineEnd = result.lineEnd
+  let truncatedNotice = ''
+
+  if (opts.maxLines !== undefined && opts.maxLines > 0) {
+    const lines = content.split('\n')
+    if (lines.length > opts.maxLines) {
+      const remaining = lines.length - opts.maxLines
+      content = lines.slice(0, opts.maxLines).join('\n')
+      lineEnd = Math.min(result.lineEnd, result.lineStart + opts.maxLines - 1)
+      truncatedNotice = `\n... (${countNoun(remaining, 'more line')} not shown; pass a larger --max-lines or omit to read full section)`
+    }
+  }
+
   if (opts.json === true) {
-    const text = displaySafeJson(result)
+    const jsonPayload: Record<string, unknown> = {
+      ...result,
+      content,
+      lineEnd,
+      ...(opts.maxLines !== undefined && opts.maxLines > 0
+        ? {
+            totalLines: result.content.split('\n').length,
+            shownLines: content.split('\n').length,
+            truncated: truncatedNotice.length > 0,
+          }
+        : {}),
+    }
+    const text = displaySafeJson(jsonPayload)
     if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
     return { text, code: 0 }
   }
@@ -121,7 +149,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   const redirectNote =
     result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
   const text = guardText(
-    `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
+    `# ${result.heading} — ${filePath}:${result.lineStart}-${lineEnd}${redirectNote}\n${content}${truncatedNotice}`,
     'heading',
   )
   if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)

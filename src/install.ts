@@ -27,7 +27,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
-import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './bridges/guidance_block.js'
+import { buildGuidanceBlock } from './bridges/guidance_block.js'
+import { CANONICAL_SKILL_MD } from './canonical_skill.js'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { compareSemver } from './cli_upgrade.js'
 import { loadConfig } from './config.js'
@@ -627,27 +628,8 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
 // validate every entry against their tool registry and warn on each miss, so a
 // subcommand list here produces one "Unknown tool name in the tool allowlist"
 // warning per entry. token-goat itself runs through the shell tool.
-function skillMdFrontmatter(gdrive: boolean): string {
-  return `---
-name: token-goat
-${skillDescriptionLine(gdrive)}
-allowed-tools:
-  - Bash
-  - Read
-  - Grep
-  - Glob
----`
-}
-
-// The body is the single shared gate (buildGuidanceBody), the same wording
-// upserted into CLAUDE.md/AGENTS.md/copilot-instructions.md -- one source across
-// all four surfaces. This skill ships in ~/.claude/skills, so the fallback clause
-// names Claude Code's own read tools, exactly like the CLAUDE.md block.
-// A function, not a constant: whether the Google Drive integration is named depends on this
-// install's `gdrive.enabled`, which a module-load-time constant would freeze before config is read.
 function skillMdContent(): string {
-  const gdrive = loadConfig().gdrive.enabled
-  return `${skillMdFrontmatter(gdrive)}\n\n${buildGuidanceBody("Claude Code's own Read, Grep, and Glob preference rules", { gdrive })}\n`
+  return CANONICAL_SKILL_MD
 }
 
 /** Absolute path to the token-goat skill directory, `~/.claude/skills/token-goat`. */

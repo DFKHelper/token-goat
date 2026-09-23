@@ -53,6 +53,8 @@ export interface ReclaimResult {
   dropped: Record<string, number>
   /** Whether derived rows were dropped (vs. a vacuum-only run). */
   rebuilt: boolean
+  /** Whether embeddings-only rows were dropped. */
+  embeddingsOnly?: boolean
   /** True when SQLite declined to truncate the WAL because a reader held it. */
   checkpointBusy: boolean
   /**
@@ -70,7 +72,7 @@ export interface ReclaimResult {
 const DERIVED_TABLES = ['chunk_vectors', 'chunks', 'refs', 'symbols', 'files'] as const
 
 /** Bytes on disk for the DB and its sidecar WAL (the WAL can itself be tens of MB). */
-function indexSizeBytes(dbPath: string): number {
+export function indexSizeBytes(dbPath: string): number {
   let total = 0
   for (const p of [dbPath, `${dbPath}-wal`]) {
     try {
@@ -129,24 +131,29 @@ function tableExists(db: ReturnType<typeof getDb>, table: string): boolean {
  * Returns before/after sizes so the caller can report what was actually
  * recovered rather than asserting success blindly.
  */
-export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean } = {}): ReclaimResult {
+export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddingsOnly?: boolean } = {}): ReclaimResult {
   const rebuild = opts.rebuild === true
+  const embeddingsOnly = opts.embeddingsOnly === true
   const beforeBytes = indexSizeBytes(dbPath)
   const beforeDbBytes = dbFileBytes(dbPath)
   const db = getDb(dbPath)
   const dropped: Record<string, number> = {}
 
-  if (rebuild) {
+  if (rebuild || embeddingsOnly) {
+    const tablesToDrop = embeddingsOnly ? (['chunk_vectors', 'chunks'] as const) : DERIVED_TABLES
     // One transaction so a failure partway through cannot leave `files` rows claiming a
     // freshness SHA for symbols that were already deleted -- that combination would make the
     // next index run's SHA gate skip the very files whose symbols are gone, silently leaving
     // them unsearchable until each one happens to be edited.
     db.transaction(() => {
-      for (const table of DERIVED_TABLES) {
+      for (const table of tablesToDrop) {
         if (!tableExists(db, table)) continue
         const before = (db.prepare(`SELECT count(*) AS c FROM "${table}"`).get() as { c: number }).c
         db.prepare(`DELETE FROM "${table}"`).run()
         dropped[table] = before
+      }
+      if (embeddingsOnly && tableExists(db, 'files')) {
+        db.prepare('UPDATE files SET embed_sha = NULL').run()
       }
     }).immediate()
     // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN,
@@ -164,7 +171,7 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean } = {}): 
     // triggers, so the delete above already removed its entries. Rebuild its internal b-tree
     // anyway: FTS5 leaves tombstones behind on delete, and this is the one moment where
     // compacting them costs nothing extra because a VACUUM follows immediately.
-    if (tableExists(db, 'symbols_fts')) {
+    if (rebuild && tableExists(db, 'symbols_fts')) {
       try {
         db.prepare(`INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')`).run()
       } catch {
@@ -190,6 +197,7 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean } = {}): 
     afterDbBytes: dbFileBytes(dbPath),
     dropped,
     rebuilt: rebuild,
+    embeddingsOnly,
     checkpointBusy: checkpointBusy || finalCheckpointBusy,
     vacuumDeferred,
   }

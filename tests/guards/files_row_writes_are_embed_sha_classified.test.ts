@@ -151,6 +151,13 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
       reason: 'Clears the retry counter once a fingerprint read succeeds; embed_sha is not in this statement\'s column list.',
     },
   ],
+  [
+    'index_reclaim.ts::UPDATE files SET embed_sha = NULL',
+    {
+      bucket: 'deliberately-clears-embed-sha',
+      reason: 'Reclaim pass purges embedding vectors for unreferenced or over-budget projects and explicitly resets embed_sha to NULL so files are marked un-embedded.',
+    },
+  ],
 ])
 
 function classify(site: WriteSite): Classification | undefined {

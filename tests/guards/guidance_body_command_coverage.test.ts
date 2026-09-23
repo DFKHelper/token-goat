@@ -79,6 +79,7 @@ const OMISSIONS: readonly Omission[] = [
   // Session / cache introspection
   { command: 'memory', reason: SESSION_REASON },
   { command: 'waste', reason: SESSION_REASON },
+  { command: 'audit', reason: SESSION_REASON },
   { command: 'hint-stats', reason: SESSION_REASON },
   { command: 'statusline', reason: SESSION_REASON },
   { command: 'session-outline', reason: SESSION_REASON },

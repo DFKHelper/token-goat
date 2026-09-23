@@ -30,6 +30,7 @@ import * as path from 'node:path'
 
 import { copilotCliUserRoot } from './bridges/copilot_cli_install.js'
 import { readCopilotMcpTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
+import { findLatestTranscript } from './waste.js'
 
 /** Event types verified to carry no model-visible content: they exist only in the on-disk log. */
 const HOOK_RECORD_TYPES = new Set(['hook.start', 'hook.end'])
@@ -107,31 +108,241 @@ export function splitInjectedBlocks(transformed: string): { kind: string; body: 
   return out
 }
 
-/** Newest `events.jsonl` under the Copilot session-state directory, or null if there is none. */
-export function findLatestCopilotSession(): string | null {
+export interface FindCopilotSessionOptions {
+  projectRoot?: string | undefined
+  onlyActive?: boolean | undefined
+}
+
+/** Check if two paths point to the same location, normalized for platform casing. */
+function pathsMatch(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined || a === '' || b === '') return false
+  const resA = path.resolve(a)
+  const resB = path.resolve(b)
+  if (process.platform === 'win32') {
+    return resA.toLowerCase() === resB.toLowerCase()
+  }
+  return resA === resB
+}
+
+/**
+ * Extract `cwd` and `git_root` from Copilot's `workspace.yaml` in a session directory.
+ * Returns null if the file cannot be read or parsed.
+ */
+export function readCopilotWorkspace(sessionDir: string): { cwd?: string | undefined; gitRoot?: string | undefined; id?: string | undefined } | null {
+  const wsFile = path.join(sessionDir, 'workspace.yaml')
+  let raw: string
+  try {
+    raw = fs.readFileSync(wsFile, 'utf8')
+  } catch {
+    return null
+  }
+  let cwd: string | undefined
+  let gitRoot: string | undefined
+  let id: string | undefined
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('cwd:')) {
+      cwd = trimmed.slice(4).trim().replace(/^['"]|['"]$/g, '')
+    } else if (trimmed.startsWith('git_root:')) {
+      gitRoot = trimmed.slice(9).trim().replace(/^['"]|['"]$/g, '')
+    } else if (trimmed.startsWith('id:')) {
+      id = trimmed.slice(3).trim().replace(/^['"]|['"]$/g, '')
+    }
+  }
+  return { cwd, gitRoot, id }
+}
+
+/** Check if a process ID is currently running on the system. */
+function isProcessAlive(pid: number): boolean {
+  if (pid <= 0 || !Number.isInteger(pid)) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err: unknown) {
+    return (err as { code?: string })?.code === 'EPERM'
+  }
+}
+
+/** Check whether a session directory represents an actively running Copilot CLI session. */
+export function isCopilotSessionActive(sessionDir: string, sessionId?: string): boolean {
+  const sid = sessionId ?? path.basename(sessionDir)
+  const envSessionId = process.env['COPILOT_AGENT_SESSION_ID']
+  if (envSessionId !== undefined && envSessionId.trim() === sid) {
+    return true
+  }
+
+  try {
+    const files = fs.readdirSync(sessionDir)
+    for (const f of files) {
+      if (f.startsWith('inuse.') && f.endsWith('.lock')) {
+        const pidStr = f.slice(6, -5)
+        const pid = parseInt(pidStr, 10)
+        if (!Number.isNaN(pid) && isProcessAlive(pid)) {
+          return true
+        }
+      }
+    }
+  } catch {
+    // Session directory unreadable
+  }
+
+  try {
+    const opLock = path.join(path.dirname(sessionDir), '.session-operation-locks', `${sid}.lock`)
+    if (fs.existsSync(opLock)) {
+      return true
+    }
+  } catch {
+    // Ignore
+  }
+
+  return false
+}
+
+/** Checks if a given file path is a Copilot CLI event log rather than a Claude Code transcript. */
+export function isCopilotTranscript(filePath: string): boolean {
+  if (path.basename(filePath) === 'events.jsonl') return true
+  try {
+    const fd = fs.openSync(filePath, 'r')
+    const buf = Buffer.alloc(512)
+    const bytesRead = fs.readSync(fd, buf, 0, 512, 0)
+    fs.closeSync(fd)
+    const prefix = buf.toString('utf8', 0, bytesRead)
+    return /"type"\s*:\s*"(?:session\.|user\.message|assistant\.message|tool\.)/.test(prefix)
+  } catch {
+    return false
+  }
+}
+
+/** Find the active Copilot session for a given project, or active session overall if no project specified. */
+export function findActiveCopilotSession(projectRoot?: string): string | null {
+  return findLatestCopilotSession({ projectRoot, onlyActive: true })
+}
+
+/**
+ * Discover the newest (or active) `events.jsonl` under the Copilot session-state directory.
+ * If projectRoot is specified, only sessions whose workspace.yaml cwd or git_root matches are returned.
+ */
+export function findLatestCopilotSession(projectRootOrOpts?: string | FindCopilotSessionOptions): string | null {
+  const opts: FindCopilotSessionOptions = typeof projectRootOrOpts === 'string'
+    ? { projectRoot: projectRootOrOpts }
+    : (projectRootOrOpts ?? {})
+
   const root = path.join(copilotCliUserRoot(), 'session-state')
+
+  const envSessionId = process.env['COPILOT_AGENT_SESSION_ID']
+  if (envSessionId !== undefined && envSessionId.trim() !== '') {
+    const sid = envSessionId.trim()
+    const sessionDir = path.join(root, sid)
+    const candidate = path.join(sessionDir, 'events.jsonl')
+    if (fs.existsSync(candidate)) {
+      try {
+        if (fs.statSync(candidate).isFile()) {
+          if (opts.projectRoot !== undefined) {
+            const ws = readCopilotWorkspace(sessionDir)
+            if (ws && (pathsMatch(ws.cwd, opts.projectRoot) || pathsMatch(ws.gitRoot, opts.projectRoot))) {
+              return candidate
+            }
+          } else {
+            return candidate
+          }
+        }
+      } catch {
+        // Continue to filesystem scan
+      }
+    }
+  }
+
   let entries: string[]
   try {
     entries = fs.readdirSync(root)
   } catch {
     return null
   }
-  let best: string | null = null
-  let bestMtime = -Infinity
+
+  let bestActive: string | null = null
+  let bestActiveMtime = -Infinity
+  let bestInactive: string | null = null
+  let bestInactiveMtime = -Infinity
+
   for (const entry of entries) {
-    const candidate = path.join(root, entry, 'events.jsonl')
+    if (entry.startsWith('.')) continue
+    const sessionDir = path.join(root, entry)
+    const candidate = path.join(sessionDir, 'events.jsonl')
+    let st: fs.Stats
     try {
-      const st = fs.statSync(candidate)
+      st = fs.statSync(candidate)
       if (!st.isFile()) continue
-      if (st.mtimeMs > bestMtime) {
-        bestMtime = st.mtimeMs
-        best = candidate
-      }
     } catch {
-      // Missing events.jsonl for this session (started but never wrote one); skip it.
+      continue
+    }
+
+    if (opts.projectRoot !== undefined) {
+      const ws = readCopilotWorkspace(sessionDir)
+      if (!ws || (!pathsMatch(ws.cwd, opts.projectRoot) && !pathsMatch(ws.gitRoot, opts.projectRoot))) {
+        continue
+      }
+    }
+
+    const active = isCopilotSessionActive(sessionDir, entry)
+    if (active) {
+      if (st.mtimeMs > bestActiveMtime) {
+        bestActiveMtime = st.mtimeMs
+        bestActive = candidate
+      }
+    } else if (opts.onlyActive !== true) {
+      if (st.mtimeMs > bestInactiveMtime) {
+        bestInactiveMtime = st.mtimeMs
+        bestInactive = candidate
+      }
     }
   }
-  return best
+
+  return bestActive ?? (opts.onlyActive === true ? null : bestInactive)
+}
+
+export interface DetectedSession {
+  path: string
+  kind: 'copilot' | 'claude'
+}
+
+/**
+ * Discovers the active or most recent session for a project across Copilot CLI and Claude Code.
+ * Active sessions take priority over inactive sessions; otherwise newest modification time wins.
+ */
+export function findProjectSession(projectRoot: string): DetectedSession | null {
+  const copilotSession = findActiveCopilotSession(projectRoot) ?? findLatestCopilotSession(projectRoot)
+  const claudeTranscript = findLatestTranscript(projectRoot)
+
+  if (copilotSession !== null && claudeTranscript !== null) {
+    if (findActiveCopilotSession(projectRoot) !== null) {
+      return { path: copilotSession, kind: 'copilot' }
+    }
+    let cpTime = 0
+    let clTime = 0
+    try {
+      cpTime = fs.statSync(copilotSession).mtimeMs
+    } catch {
+      // Non-fatal if stat fails
+    }
+    try {
+      clTime = fs.statSync(claudeTranscript).mtimeMs
+    } catch {
+      // Non-fatal if stat fails
+    }
+    return cpTime >= clTime
+      ? { path: copilotSession, kind: 'copilot' }
+      : { path: claudeTranscript, kind: 'claude' }
+  }
+
+  if (copilotSession !== null) {
+    return { path: copilotSession, kind: 'copilot' }
+  }
+
+  if (claudeTranscript !== null) {
+    return { path: claudeTranscript, kind: 'claude' }
+  }
+
+  return null
 }
 
 function readNumber(source: Record<string, unknown>, key: string): number {

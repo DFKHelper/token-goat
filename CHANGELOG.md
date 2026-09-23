@@ -101,6 +101,9 @@ Upgrading reindexes and re-embeds. Three new languages change what `detectLangua
 ### Added
 
 - Added native configuration language symbol extractors for Nginx (`nginx.conf`, `.nginx`), Caddyfile (`Caddyfile`, `.caddy`), and Apache HTTP Server (`httpd.conf`, `apache2.conf`, `.htaccess`). Anonymous server, location, upstream, virtual host, directory, and proxy blocks can now be addressed directly with `token-goat read "file::symbol"`.
+- Added `--max-lines <n>` and `--head <n>` options to `token-goat section` to slice section content from the top, avoiding large payload dumps on long documents under single headings.
+- Added `-C, --context <n>` support to `token-goat conflicts` (defaulting to 3 lines), showing surrounding file context around merge conflict markers to eliminate whole-file reviews during git merges.
+- Added configurable index database size warning threshold (`indexing.max_db_size_mb`, default 1500 MB) and automated vector cleanup (`indexing.auto_reclaim_embeddings`, default false) in `token-goat doctor` and `doctor --repair`. When the shared index database exceeds the configured limit, doctor highlights the dominant tables and can safely reclaim embedding vectors and compact the database during repair.
 
 ### Fixed
 
@@ -111,6 +114,10 @@ Upgrading reindexes and re-embeds. Three new languages change what `detectLangua
 ### Changed
 
 - Extended the SQL extractor with DuckDB macros (`CREATE MACRO`) and secrets (`CREATE SECRET`), PostgreSQL extensions, domains, aggregates, policies, rules, and operators, plus Oracle synonyms, database links, clusters, and contexts.
+
+### Fixed
+
+- PowerShell reads with bounded head parameters (`Get-Content -TotalCount`, `-First`, `-Head`) are recognized as partial reads rather than whole-file dumps, avoiding false denies and unnecessary retry turns.
 
 ## [2.9.20] - 2026-09-21
 

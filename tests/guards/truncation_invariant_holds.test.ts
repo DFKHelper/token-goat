@@ -196,6 +196,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['pdf-extract', 'needs a binary PDF fixture; text extraction, not a row list'],
   ['docx-text', 'needs a binary .docx fixture; text extraction, not a row list'],
   ['logfold', 'its cap is on INPUT LINES while the payload is folded rows -- different units, so "the pre-cap count of the rows being capped" is not a quantity that exists here. It does disclose, in-band and on stderr; driven by its own case in tests/logfold_tail_discloses.test.ts'],
+  ['section', '--max-lines limits LINES of text, not rows of a list, so "the pre-cap count of the rows being capped" is not a quantity that exists here. Line elision is disclosed inline and covered by tests/read_section_max_lines.test.ts'],
 ])
 
 beforeAll(() => {

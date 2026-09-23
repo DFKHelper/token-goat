@@ -180,6 +180,7 @@ export function classifyCatPath(
 }
 
 export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; cmd0: string; advisoryOnly: boolean } | null {
+  if (/-(?:TotalCount|Head|First|Tail)\b/i.test(cmd)) return null
   // Loop-46 census (8,179 real cat-headed commands): 144 qualifying reads spelled the identical read with a trailing `2>&1` or `2>/dev/null` and got no hint at all, so the suffix is accepted like extractSedRange already does. The `2>/dev/null` spelling signals an existence-tolerant read (dominated by memory-recall probes of files that may not exist), so it is admitted advisory-only: denying it would push the agent at a possibly missing file.
   const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*?)?(?:\s+2>(&1|\/dev\/null))?\s*$/i.exec(cmd)
   if (!m) return null
@@ -240,6 +241,7 @@ export function extractPowerShellWrappedGetContent(cmd: string, event?: HookEven
   if (!w) return null
   const inner = (w[1] ?? w[2] ?? '').trim()
   if (!inner) return null
+  if (/-(?:TotalCount|Head|First|Tail)\b/i.test(inner)) return null
   const m = PS_GETCONTENT_INNER_RE.exec(inner)
   if (!m) return null
   const filePath = m[1] ?? m[2] ?? m[3]
@@ -935,6 +937,27 @@ export function extractGetContentSelectFirst(cmd: string): { filePath: string; i
   const filePath = (m[2]?.trim() ?? '').replace(/^-Path\s+/i, '').replace(/^["']|["']$/g, '')
   const n = parseInt(m[5] ?? '0', 10)
   if (n <= 10) return null // already surgical -- matches extractGetContentTail's <=10 threshold
+  if (!filePath) return null
+  if (isTempPath(filePath)) return null
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1|xml|dtsx|ampkg|xaml)$/i.test(filePath)) return null
+  const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql, isXml, n }
+}
+
+// Extracts file path from `Get-Content <path> -TotalCount N` / `-Head N` / `-First N` (PowerShell).
+export function extractGetContentHead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; n: number } | null {
+  const headMatch = /-(?:TotalCount|Head|First)\s+(\d+)/i.exec(cmd)
+  if (!headMatch) return null
+  const n = parseInt(headMatch[1]!, 10)
+  if (n <= 10) return null // already surgical -- matches extractHeadFile's <=10 threshold
+  const getnMatch = /^(Get-Content|gc)\s+/i.exec(cmd)
+  if (!getnMatch) return null
+  const afterCmd = cmd.slice(getnMatch[0].length).replace(/-Path\s+/i, '')
+  const beforeHead = afterCmd.split(/-(?:TotalCount|Head|First)/i)[0]?.trim() ?? ''
+  const afterHead = afterCmd.split(/-(?:TotalCount|Head|First)\s+\d+/i)[1]?.trim() ?? ''
+  const cleanedBefore = beforeHead.replace(/-(?:Encoding|Delimiter|Wait)\s+\S+/gi, '').replace(/-[a-zA-Z]+/g, '').trim()
+  const cleanedAfter = afterHead.replace(/-(?:Encoding|Delimiter|Wait)\s+\S+/gi, '').replace(/-[a-zA-Z]+/g, '').trim()
+  const filePath = (cleanedBefore || cleanedAfter).replace(/^["']|["']$/g, '')
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1|xml|dtsx|ampkg|xaml)$/i.test(filePath)) return null

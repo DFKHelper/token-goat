@@ -28,8 +28,9 @@ import {
   uninstallClaudeMd,
   uninstallSkill,
 } from '../src/install.js'
+import { CANONICAL_SKILL_MD } from '../src/canonical_skill.js'
 import { checkStrayClaudeMdBlocks } from '../src/cli_doctor.js'
-import { buildGuidanceBlock, buildGuidanceBody } from '../src/bridges/guidance_block.js'
+import { buildGuidanceBody } from '../src/bridges/guidance_block.js'
 
 let TMP: string
 
@@ -168,18 +169,10 @@ describe('installSkill', () => {
     expect(content).not.toContain('Prefer token-goat commands over reading whole files')
   })
 
-  it('renders its body from the shared guidance builder, so it stays in sync with the other three surfaces', () => {
+  it('installs the checked-in canonical skill text without regenerating a stub', () => {
     installSkill()
     const content = fs.readFileSync(skillPath(), 'utf8')
-    // The skill body is byte-identical to the shared gate body...
-    expect(content).toContain(sharedBody)
-    // ...which is exactly the body the CLAUDE.md/AGENTS.md/copilot blocks wrap in markers.
-    const claudeBlock = buildGuidanceBlock({
-      beginMarker: '<!-- token-goat-begin -->',
-      endMarker: '<!-- token-goat-end -->',
-      fallbackToolClause: CLAUDE_FALLBACK_CLAUSE,
-    })
-    expect(claudeBlock).toContain(sharedBody)
+    expect(content).toBe(CANONICAL_SKILL_MD)
   })
 
   // Regression: the gate listed only code-shaped commands, and named `config-get file KEY` while naming no JSON/YAML command at all -- so the omission read as a deliberate boundary ("config has a command, structured data does not") rather than a gap, and a manifest lookup routed to a full file read. Asserted on the shared body so all four surfaces are covered at once.
@@ -249,6 +242,18 @@ describe('installSkill', () => {
     const content = fs.readFileSync(p, 'utf8')
     expect(content).not.toContain('stale body')
     expect(content).toContain('answer one question first')
+  })
+
+  it('installs the full canonical skill, including audit guidance and supporting sections', () => {
+    installSkill()
+    const content = fs.readFileSync(skillPath(), 'utf8')
+
+    expect(content).toContain('## When to Use')
+    expect(content).toContain('## Subcommands')
+    expect(content).toContain('### audit — session retrospective')
+    expect(content).toContain('## Anti-Patterns')
+    expect(content).toContain('## Related Skills')
+    expect(content).toContain('## Changelog')
   })
 })
 

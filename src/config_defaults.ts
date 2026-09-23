@@ -227,6 +227,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     skip_files: ['coverage.json', 'coverage-final.json'],
     embeddings_enabled: true,
     cross_project_symbols: true,
+    max_db_size_mb: 1500,
+    auto_reclaim_embeddings: false,
   },
   compression: {
     profile: 'auto',

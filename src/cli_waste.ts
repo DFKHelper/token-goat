@@ -13,8 +13,14 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { resolveProjectRoot } from './project.js'
-import { buildWasteReport, findLatestTranscript, type WasteReport } from './waste.js'
-import { buildCopilotWasteReport, findLatestCopilotSession, type CopilotWasteReport } from './copilot_waste.js'
+import { buildWasteReport, type WasteReport } from './waste.js'
+import {
+  buildCopilotWasteReport,
+  findLatestCopilotSession,
+  findProjectSession,
+  isCopilotTranscript,
+  type CopilotWasteReport,
+} from './copilot_waste.js'
 import { copilotCliMcpToolsDir } from './bridges/copilot_cli_install.js'
 import { countNoun } from './util.js'
 import { formatBytes, formatTokenEstimate } from './resident_context.js'
@@ -246,8 +252,52 @@ function printResidentContext(resident: WasteReport['residentContext'], w: (text
 
 /** Run the `token-goat waste` command. */
 export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<void> {
+  const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
+
+  // 1. Explicit transcript path passed
+  if (opts.transcript !== undefined) {
+    const resolvedPath = path.resolve(opts.transcript)
+    if (!fs.existsSync(resolvedPath)) {
+      if (opts.copilot === true) {
+        const detail = `Copilot session event log not found: ${resolvedPath}`
+        if (opts.json === true) {
+          process.stdout.write(`${displaySafeJson({ error: detail }, 0)}\n`)
+        } else {
+          process.stdout.write('\n# token-goat waste (Copilot CLI)\n')
+          process.stdout.write(`${detail}\n`)
+        }
+        process.exitCode = 1
+        return
+      }
+      process.stderr.write(`token-goat: transcript not found: ${resolvedPath}\n`)
+      process.exitCode = 1
+      return
+    }
+
+    if (opts.copilot === true || isCopilotTranscript(resolvedPath)) {
+      const copilotReport = buildCopilotWasteReport(resolvedPath)
+      if (opts.json === true) {
+        process.stdout.write(`${displaySafeJson(copilotReport, 0)}\n`)
+        return
+      }
+      printCopilotReport(copilotReport)
+      return
+    }
+
+    const report = await buildWasteReport(resolvedPath, opts.top !== undefined ? { topN: opts.top } : {})
+    if (opts.json === true) {
+      process.stdout.write(`${displaySafeJson(report, 0)}\n`)
+      return
+    }
+    printReport(report)
+    return
+  }
+
+  // 2. Explicit --copilot mode without explicit --transcript
   if (opts.copilot === true) {
-    const eventsPath = opts.transcript !== undefined ? path.resolve(opts.transcript) : findLatestCopilotSession()
+    const eventsPath = (opts.project !== undefined
+      ? findLatestCopilotSession({ projectRoot })
+      : (findLatestCopilotSession({ projectRoot }) ?? findLatestCopilotSession()))
     if (eventsPath === null || !fs.existsSync(eventsPath)) {
       const detail = eventsPath === null
         ? 'no Copilot CLI session found under <copilot-home>/session-state'
@@ -270,13 +320,10 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
     return
   }
 
-  const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
+  // 3. Automatic detection: choose active or newest transcript between Copilot CLI and Claude Code
+  const detected = findProjectSession(projectRoot)
 
-  const transcriptPath = opts.transcript !== undefined
-    ? path.resolve(opts.transcript)
-    : findLatestTranscript(projectRoot)
-
-  if (transcriptPath === null) {
+  if (detected === null) {
     if (opts.json === true) {
       process.stdout.write(`${displaySafeJson({ error: 'no session transcript found', project: projectRoot }, 0)}\n`)
     } else {
@@ -288,18 +335,20 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
     return
   }
 
-  if (!fs.existsSync(transcriptPath)) {
-    process.stderr.write(`token-goat: transcript not found: ${transcriptPath}\n`)
-    process.exitCode = 1
+  if (detected.kind === 'copilot') {
+    const copilotReport = buildCopilotWasteReport(detected.path)
+    if (opts.json === true) {
+      process.stdout.write(`${displaySafeJson(copilotReport, 0)}\n`)
+      return
+    }
+    printCopilotReport(copilotReport)
     return
   }
 
-  const report = await buildWasteReport(transcriptPath, opts.top !== undefined ? { topN: opts.top } : {})
-
+  const report = await buildWasteReport(detected.path, opts.top !== undefined ? { topN: opts.top } : {})
   if (opts.json === true) {
     process.stdout.write(`${displaySafeJson(report, 0)}\n`)
     return
   }
-
   printReport(report)
 }

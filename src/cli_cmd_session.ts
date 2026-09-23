@@ -15,6 +15,7 @@ import {
   cmdBootstrapAudit,
   cmdMemory,
   cmdWaste,
+  cmdAudit,
   cmdSessionOutline,
   cmdSessionSlice,
   cmdSessionAudit,
@@ -147,6 +148,14 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
     .option('--copilot', 'analyze a Copilot CLI session event log instead, reporting Copilot\'s own token split')
     .option('--json', 'output JSON')
     .action(guard(cmdWaste))
+
+  program
+    .command('audit')
+    .description('session retrospective: analyze the current session transcript (Copilot CLI or Claude Code) and emit a Maintainer Feedback Card')
+    .option('--project <path>', 'project root to analyze')
+    .option('--transcript <path>', 'explicit transcript path (default: active or newest session for this project)')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdAudit))
 
   program
     .command('session-outline [session-id-or-path]')

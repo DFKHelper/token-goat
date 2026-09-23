@@ -237,6 +237,10 @@ export interface IndexingConfig {
   // onnxruntime-node and sqlite-vec are actually installed - this flag only controls
   // whether embeddings are attempted at all.
   embeddings_enabled: boolean
+  // Maximum global.db size in megabytes before token-goat doctor flags a warning (default 1500 MB).
+  max_db_size_mb: number
+  // Whether token-goat doctor --repair automatically reclaims embedding vectors when the index exceeds max_db_size_mb.
+  auto_reclaim_embeddings: boolean
 }
 
 export interface CompressionConfig {
