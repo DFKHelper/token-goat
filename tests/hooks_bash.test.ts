@@ -1242,6 +1242,33 @@ describe('preBashHandler — cat source file recall', () => {
     expect(preBashHandler(other).hookType).toBe('deny')
   })
 
+  // The same exemption, reached through require() instead of readFileSync. It was keyed on the read rather than on the write, so this spelling -- the ordinary version-bump one-liner -- was denied while the byte-identical edit above was allowed, and the denial told the caller that `fs.readFileSync()` bypasses read hooks for a command that never calls it.
+  it('does not deny node -e that require()s a JSON file and writes the same file back', () => {
+    // CAPTURE: run against the shipped 2.9.25 binary on 2026-09-23, which answered {"decision":"block","reason":"[tg] Node.js `fs.readFileSync()` bypasses read hooks..."}.
+    const event = makeBashEvent(
+      `node -e "const p=require('./package.json'); p.version='9.9.9'; require('fs').writeFileSync('./package.json', JSON.stringify(p))"`,
+    )
+    expect(preBashHandler(event).hookType).not.toBe('deny')
+    // Writing a different file than the one required is still a read into context, matching the readFileSync branch's own rule.
+    const other = makeBashEvent(`node -e "require('fs').writeFileSync('v.txt', require('./package.json').version)"`)
+    expect(preBashHandler(other).hookType).toBe('deny')
+  })
+
+  // Same shape in the PowerShell extractor, which had no write guard of any kind. The substitute the denial offered -- `token-goat outline` -- cannot perform an edit, so the only route left was writing the script to a file and running it unchecked, which is the outcome the node exemption exists to prevent.
+  it('does not deny a PowerShell [IO.File] read-modify-write of one file', () => {
+    // CAPTURE: run against the shipped 2.9.25 binary on 2026-09-23, which answered {"decision":"block","reason":"[tg] PowerShell `[IO.File]::ReadAllText()` bypasses read hooks. Use `token-goat outline \"big.ts\"`..."}.
+    const event = makeBashEvent(
+      `powershell -Command "[IO.File]::WriteAllText('big.ts', [IO.File]::ReadAllText('big.ts').Replace('a','b'))"`,
+    )
+    expect(preBashHandler(event).hookType).not.toBe('deny')
+    // Both controls: a pure read is still intercepted, and a read of one file written to another is still a read into context.
+    expect(preBashHandler(makeBashEvent(`powershell -Command "[IO.File]::ReadAllText('big.ts')"`)).hookType).toBe('deny')
+    expect(
+      preBashHandler(makeBashEvent(`powershell -Command "[IO.File]::WriteAllText('copy.ts', [IO.File]::ReadAllText('big.ts'))"`))
+        .hookType,
+    ).toBe('deny')
+  })
+
   it('passes through node -e without readFileSync', () => {
     const event = makeBashEvent(`node -e "require('./scripts/lib/organic-pin-miner-action'); console.log('ok')"`)
     const result = preBashHandler(event)

@@ -2,6 +2,16 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.26] - 2026-09-23
+
+No reindex is needed.
+
+### Fixed
+
+- **A `--json` search is passed through instead of being summarised into a count that was never measured.** `rg --json` emits one JSON event per line, and none of them is a match line. The summariser reads each line as a match on the text before its first colon, and a JSON line's first colon sits inside `{"type"`, which holds no dot or slash, so every line fell into the unattributed bucket. A 403-line search of a single file was replaced by `grep: 403 matches across 0 file(s)` and one line noting 403 unattributed lines, which is the filter reporting that it had parsed nothing and shipping the result anyway. The count was the number of events rather than matches, the file count was wrong, and the output the caller asked for by name was gone. `--vimgrep` and `-o` were checked the same way and both attribute correctly, so neither changed.
+- **A `node -e` one-liner that reads a JSON file with `require()` and writes the same file back is no longer denied.** An in-place edit is not a read into context, and denying one only moves the same script into a file where it runs unchecked, so that shape was already exempt. The exemption was keyed on how the read was spelled rather than on the write, and sat inside the `readFileSync` branch alone: the ordinary version-bump one-liner was denied, while the byte-identical edit spelled `readFileSync` was allowed, and the denial told the caller that `fs.readFileSync()` bypasses read hooks for a command that never calls it. Reading one file and writing a different one is still treated as a read, unchanged.
+- **A PowerShell `[IO.File]` read-modify-write of one file is no longer denied.** That extractor had no write check of any kind, so replacing a file's text through `WriteAllText` was blocked as a read, and the substitute the message offered cannot perform an edit. It now bails on a write back to the same path, matching the rule the Node extractor already applied. Reading one file and writing another is still treated as a read.
+
 ## [2.9.25] - 2026-09-23
 
 Upgrading reparses the index. The change is in the indexer, so the parser stamp moves for every language and each file is read once more. Embeddings are untouched and keep serving throughout: nothing already stored is re-embedded, and no existing index loses chunks, because no file in a normal project comes close to the ceiling this restores.

@@ -212,6 +212,20 @@ export function extractCatFilesMulti(
 export const POWERSHELL_WRAP_RE = /^(?:powershell|pwsh)(?:\.exe)?(?:\s+-[a-zA-Z]+(?:\s+\S+)?)*\s+(?:-Command|-c|-EncodedCommand)\s+(?:"([^"]*)"|'([^']*)')\s*$/i
 export const PS_GETCONTENT_INNER_RE = /^(?:Get-Content|gc|cat|type)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*)?\s*$/i
 export const PS_FILE_METHOD_RE = /\[(?:System\.)?IO\.File\]::(?:ReadAllText|ReadAllLines|ReadAllBytes|ReadLines|OpenText)\(\s*['"]([^'"]+)['"]/i
+
+/**
+ * True when the command writes back the same path it read, making it an in-place edit rather than a read into context.
+ *
+ * Denying an in-place edit only forces the same script into a file, which then runs unchecked, so the extractors treat this shape as none of their business. The guard is keyed on the WRITE and takes the read's path as an argument, because keying it on the read is what broke twice: it lived inside {@link extractNodeFileRead}'s `readFileSync` branch alone, so `node -e "const p=require('./package.json'); ...writeFileSync('./package.json', ...)"` -- the ordinary version-bump one-liner -- was denied while the byte-identical edit spelled `readFileSync` was allowed, and the denial told the caller that `fs.readFileSync()` bypasses read hooks for a command that never calls it. {@link extractPowerShellFileMethodRead} had no such guard at all, so `[IO.File]::WriteAllText('a.ts', [IO.File]::ReadAllText('a.ts')...)` was denied outright with `token-goat outline` suggested as the substitute, which cannot perform an edit.
+ *
+ * `methods` is the writing API of the runtime in question, since the two share no spelling: Node writes with `writeFileSync`/`appendFileSync`, .NET with the `WriteAll*`/`AppendAll*` family.
+ */
+function writesBackSamePath(cmd: string, filePath: string, methods: string): boolean {
+  return new RegExp(`(?:${methods})\\(\\s*['"]${escapeRegExp(filePath)}['"]`, 'i').test(cmd)
+}
+
+const NODE_WRITE_METHODS = 'writeFileSync|appendFileSync'
+const PS_WRITE_METHODS = 'WriteAllText|WriteAllLines|WriteAllBytes|AppendAllText|AppendAllLines'
 // A temp-path read only floods context when the file is large; a small scratch read stays silent.
 export const PS_TEMP_READ_FLOOD_BYTES = 16 * 1024
 
@@ -269,6 +283,7 @@ export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent):
   if (!m?.[1]) return null
   const filePath = m[1]
   if (isOrchestratorStateFile(filePath)) return null
+  if (writesBackSamePath(inner, filePath, PS_WRITE_METHODS)) return null
   if (isTempPath(filePath)) {
     if (!commandPathIsTouchable(filePath, event)) return null
     if (!isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
@@ -871,8 +886,7 @@ export function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boo
     const filePath = readSync[1]
     if (isOrchestratorStateFile(filePath)) return null
     if (isTempPath(filePath)) return null
-    // A script that writes back the file it read is an in-place edit, not a read into context: denying it only forces the same script into a file, which runs unchecked.
-    if (new RegExp(`(?:writeFileSync|appendFileSync)\\(\\s*['"]${escapeRegExp(filePath)}['"]`).test(cmd)) return null
+    if (writesBackSamePath(cmd, filePath, NODE_WRITE_METHODS)) return null
     const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
     return { filePath, isDoc, isConfig, isSql }
   }
@@ -884,6 +898,7 @@ export function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boo
     if (filePath.includes('node_modules')) return null
     if (isOrchestratorStateFile(filePath)) return null
     if (isTempPath(filePath)) return null
+    if (writesBackSamePath(cmd, filePath, NODE_WRITE_METHODS)) return null
     return { filePath, isDoc: false, isConfig: true, isSql: false }
   }
   return null

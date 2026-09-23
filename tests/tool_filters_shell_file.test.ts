@@ -95,6 +95,35 @@ describe('GrepFilter compression', () => {
     }
   })
 
+  // CAPTURE: the NDJSON below is real `rg --json -n padding big.ts` output, run through the shipped 2.9.25 binary on 2026-09-23 in a scratch repo outside %TEMP% (a temp path suppresses the hook). Before the fix that invocation printed exactly `grep: 403 matches across 0 file(s)` / `  (unattributed lines: 403)` and nothing else: a 100% loss reported as `[token-goat: grep filter -100%]`. `--vimgrep` and `-o` were run the same way and both attributed correctly (`grep: 1600 matches across 1 file(s)` / `  big.ts: 1600 match(es)`), so neither is listed as a structured mode here.
+  it('releases a --json search whole, because its lines are events rather than match lines (regression: a JSON line\'s first colon sits inside `{"type"`, which holds no dot or slash, so every line fell to the unattributed bucket and a single-file search was summarised as "0 file(s)" with the count of NDJSON events standing in for a match count)', () => {
+    const events = [
+      '{"type":"begin","data":{"path":{"text":"big.ts"}}}',
+      ...Array.from(
+        { length: 40 },
+        (_, i) =>
+          `{"type":"match","data":{"path":{"text":"big.ts"},"lines":{"text":"const v${i} = ${i}; // padding\\n"},"line_number":${i + 1},"submatches":[{"match":{"text":"padding"},"start":6,"end":13}]}}`,
+      ),
+      '{"type":"end","data":{"path":{"text":"big.ts"},"stats":{"matches":40}}}',
+    ]
+    const out = events.join('\n')
+    for (const filter of [f, new RgFilter()]) {
+      const got = compress(filter, out, ['rg', '--json', '-n', 'padding', 'big.ts'])
+      expect(got, filter.constructor.name).toBe(out.trimEnd())
+      // The two tells of the old behavior, asserted separately: the fabricated header, and the loss of the payload the caller asked for by name.
+      expect(got, filter.constructor.name).not.toContain('file(s)')
+      expect(got, filter.constructor.name).toContain('"line_number":40')
+    }
+  })
+
+  // A guard on the fix above rather than on the bug: the pass-through must be the named mode only. An earlier attempt bailed whenever nothing was attributable, which also caught `grep -h` -- 14 occurrences against `rg --json`'s 1 across 10,420 grep-family events in the local ledger -- and there the summary is accurate, since every line really is a match and "0 file(s)" is just the suppressed filenames the caller asked for.
+  it('still summarises a filename-suppressed search, whose lines are real matches even though none can be attributed', () => {
+    const out = Array.from({ length: 40 }, (_, i) => `export const v${i} = ${i}; // padding`).join('\n')
+    const got = compress(f, out, ['grep', '-h', 'padding', 'a.ts', 'b.ts'])
+    expect(got).toContain('40 matches')
+    expect(got).toContain('unattributed lines: 40')
+  })
+
   it('releases a count-only search whole, keeping each file\'s real count (regression: every `path:6` line was counted as one match for `path`, so every count printed as 1, the header total was the file count rather than the match count, and the 20-file cap then ranked on a number the filter had invented)', () => {
     const rows = Array.from({ length: 40 }, (_, i) => `src/file_${i}.ts:${i + 2}`)
     const out = rows.join('\n')

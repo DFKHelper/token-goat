@@ -81,6 +81,19 @@ function isCountOnlySearch(argv: string[]): boolean {
   return grepFlagInCluster(argv, 'c', '--count')
 }
 
+/**
+ * True when the command asks for machine-readable output rather than match lines.
+ *
+ * `rg --json` emits one JSON object per line -- `begin`, `match`, `end`, `summary` events -- and none of them is a `path:lineno:text` match line. The summarizer below reads every line as one match on the text before its first colon, and a JSON line's first colon sits inside `{"type"`, which holds no `.`, `/` or `\`, so every line fell through to the unattributed bucket: a 403-line search reported `grep: 403 matches across 0 file(s)` with `(unattributed lines: 403)` underneath and every byte of the JSON gone. The count was invented, the file count was wrong for a single-file search, and the caller had asked for this shape precisely because it wanted to parse it.
+ *
+ * There is no short spelling and no value form -- `--json` is a bare long flag in rg, and grep has no equivalent -- so an exact token test is the whole rule here, unlike {@link grepFlagInCluster}'s cluster walk.
+ *
+ * Only `--json` qualifies. `--vimgrep` (`path:line:col:text`) and `-o` were checked against this filter and both attribute correctly, so neither is listed: a name added here on suspicion would be a name nobody can later tell is load-bearing.
+ */
+function isStructuredOutputSearch(argv: string[]): boolean {
+  return argv.includes('--json')
+}
+
 // ---------------------------------------------------------------------------
 // GrepFilter
 // ---------------------------------------------------------------------------
@@ -104,7 +117,7 @@ export class GrepFilter extends ToolFilter {
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[], ctx: CompressContext = {}): string {
     const text = this.combineOutput(stdout, stderr)
     // Released whole: the per-file summary below is a lossy restatement of match lines, and neither of these shapes has any. A files-only list IS the answer, and a count list is already one short line per file, so summarising either can only subtract. apply()'s line and byte caps still bound the result, and they disclose what they drop.
-    if (isFilesOnlySearch(argv) || isCountOnlySearch(argv)) return text
+    if (isFilesOnlySearch(argv) || isCountOnlySearch(argv) || isStructuredOutputSearch(argv)) return text
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
     // Under the summarise threshold the raw output ships verbatim, which used to include a 5,000-char hit inside a minified bundle at full length: neither this filter nor apply()'s line/byte caps ever looks at an individual line. Clip those to a window centred on the match instead. The >30-line branch below needs nothing, since it already discards line content entirely.
@@ -253,7 +266,7 @@ export class RgFilter extends ToolFilter {
 
   private _compressBody(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const text = this.combineOutput(stdout, stderr)
-    if (isFilesOnlySearch(argv) || isCountOnlySearch(argv)) return text
+    if (isFilesOnlySearch(argv) || isCountOnlySearch(argv) || isStructuredOutputSearch(argv)) return text
     const lines = text.split('\n')
     if (lines.length <= _RG_CONTEXT_THRESHOLD) return text
     if (!lines.some(l => l === RgFilter._SEP)) return text
