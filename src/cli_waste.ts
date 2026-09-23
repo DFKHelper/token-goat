@@ -1,13 +1,4 @@
-/**
- * CLI handler for `token-goat waste`.
- *
- * Discovers (or accepts an explicit `--transcript`) the current project's
- * Claude Code session transcript, parses its tool_use/tool_result events, and
- * prints a spend ledger: total tokens by tool, the top N most expensive
- * individual tool calls, files read once and never referenced again, and
- * Bash commands run repeatedly without a token-goat bash-output cache hit.
- * `--json` emits the same data as machine-readable JSON instead.
- */
+/** CLI handler for `token-goat waste`. Discovers (or accepts an explicit `--transcript`) the current project's Claude Code session transcript, parses its tool_use/tool_result events, and prints a spend ledger: total tokens by tool, the top N most expensive individual tool calls, files read once and never referenced again, and Bash commands run repeatedly without a token-goat bash-output cache hit. `--json` emits the same data as machine-readable JSON instead. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -19,6 +10,8 @@ import {
   findLatestCopilotSession,
   findProjectSession,
   isCopilotTranscript,
+  MCP_DISABLE_NOTE,
+  unusedMcpServers,
   type CopilotWasteReport,
 } from './copilot_waste.js'
 import { copilotCliMcpToolsDir } from './bridges/copilot_cli_install.js'
@@ -35,13 +28,7 @@ export interface WasteCommandOptions {
   copilot?: boolean
 }
 
-/**
- * Copilot's ledger, which is a different report rather than the same one with different inputs.
- *
- * The Claude Code report is denominated in bytes because nothing in a transcript states a token
- * count. Copilot states its own, so this one leads with them: reporting an estimate next to a
- * figure the harness already published would be strictly worse information.
- */
+/** Copilot's ledger, which is a different report rather than the same one with different inputs. The Claude Code report is denominated in bytes because nothing in a transcript states a token count. Copilot states its own, so this one leads with them: reporting an estimate next to a figure the harness already published would be strictly worse information. */
 function printCopilotReport(report: CopilotWasteReport): void {
   const w = (text: string) => { process.stdout.write(text) }
   w('\n# token-goat waste (Copilot CLI)\n')
@@ -60,19 +47,7 @@ function printCopilotReport(report: CopilotWasteReport): void {
     w(`  Conversation:      ${conversationTokens.toLocaleString()} tok\n`)
     if (total > 0) {
       const pct = ((fixed / total) * 100).toFixed(1)
-      // Deliberately not phrased as "N% of every request": the split is a snapshot taken at
-      // shutdown, and conversation grows over a session while the other two do not. The
-      // re-sent-every-request claim is true of the numerator; the percentage is true of this
-      // moment only, and saying otherwise would be the same overstatement this report exists
-      // to avoid.
-      // An earlier version of these lines said no hook can reach this and that fewer MCP servers
-      // is the only lever. The first half stands; the second was wrong. An adversarial read of the
-      // 1.0.80 bundle found --excluded-tools/--available-tools, --agent, --no-ask-user,
-      // disabledSkills and --no-custom-instructions all feeding the tool-filter state that
-      // sessionPrepareToolsForModelRequest builds from, and Copilot itself passes
-      // excludedTools:["*"] to make a cheap call. That those flags shrink the counted definitions
-      // rather than merely gating invocation is entailed by the wiring and the help text, not
-      // measured -- so it is offered as a place to look, not as a promised saving.
+      // Deliberately not phrased as "N% of every request": the split is a snapshot taken at shutdown, and conversation grows over a session while the other two do not. The re-sent-every-request claim is true of the numerator; the percentage is true of this moment only, and saying otherwise would be the same overstatement this report exists to avoid. An earlier version of these lines said no hook can reach this and that fewer MCP servers is the only lever. The first half stands; the second was wrong. An adversarial read of the 1.0.80 bundle found --excluded-tools/--available-tools, --agent, --no-ask-user, disabledSkills and --no-custom-instructions all feeding the tool-filter state that sessionPrepareToolsForModelRequest builds from, and Copilot itself passes excludedTools:["*"] to make a cheap call. That those flags shrink the counted definitions rather than merely gating invocation is entailed by the wiring and the help text, not measured -- so it is offered as a place to look, not as a promised saving.
       w(`  ${fixed.toLocaleString()} tok of system prompt and tool definitions ships with every\n`)
       w(`  request; at shutdown that was ${pct}% of the context. No hook can reach it: Copilot\n`)
       w('  assembles both natively, with nothing between assembly and send. The levers are all\n')
@@ -86,13 +61,7 @@ function printCopilotReport(report: CopilotWasteReport): void {
     }
   }
 
-  // The aggregate above is the largest number in this report and the least
-  // actionable one: it says the tool definitions are expensive without saying
-  // which tools. Copilot caches the resolved tool list per MCP server, so that
-  // question is answerable, but only as an estimate and only for part of the
-  // total -- Copilot's built-in tools are never cached there. Both limits are
-  // stated in the output rather than left for the reader to work out, because
-  // a per-server number printed under an exact one reads as a split of it.
+  // The aggregate above is the largest number in this report and the least actionable one: it says the tool definitions are expensive without saying which tools. Copilot caches the resolved tool list per MCP server, so that question is answerable, but only as an estimate and only for part of the total -- Copilot's built-in tools are never cached there. Both limits are stated in the output rather than left for the reader to work out, because a per-server number printed under an exact one reads as a split of it.
   w('\n## Tool definitions by MCP server (estimated)\n')
   const mcp = report.mcpTools
   if (!mcp.cacheFound) {
@@ -106,8 +75,9 @@ function printCopilotReport(report: CopilotWasteReport): void {
   } else {
     for (const server of mcp.servers) {
       const tokens = server.estimatedTokens.toLocaleString()
+      const calls = report.mcpCalls === null ? '' : `, ${countNoun(report.mcpCalls[server.serverName] ?? 0, 'call')} this session`
       w(`  ${server.serverName}: ${countNoun(server.toolCount, 'tool')}, `)
-      w(`${formatBytes(server.definitionBytes)}, ~${tokens} tok\n`)
+      w(`${formatBytes(server.definitionBytes)}, ~${tokens} tok${calls}\n`)
     }
     const mcpTokens = mcp.servers.reduce((sum, server) => sum + server.estimatedTokens, 0)
     w(`  ~${mcpTokens.toLocaleString()} tok estimated across `)
@@ -123,6 +93,13 @@ function printCopilotReport(report: CopilotWasteReport): void {
       w('  tool-filter flags above still can.\n')
     }
     w('  Dropping a server saves its line above on every request for the rest of the session.\n')
+    const unused = unusedMcpServers(report)
+    if (unused === null) {
+      w('  This log records no tool calls, so it cannot say which servers went unused.\n')
+    } else {
+      for (const server of unused) w(`  Never called this session: \`copilot mcp disable ${server.serverName}\` drops it from future sessions.\n`)
+      if (unused.length > 0) w(`  ${MCP_DISABLE_NOTE}\n`)
+    }
   }
   if (mcp.unreadable > 0) {
     const verb = mcp.unreadable === 1 ? 'is' : 'are'
@@ -197,8 +174,7 @@ function printReport(report: WasteReport): void {
     }
   }
 
-  // "ceiling"/"upper bound" MUST stay visible in the rendered label -- resendCeilingTokens is a
-  // cache-unaware worst case, not real spend; see the doc comment on AssistantOutputCost in waste.ts.
+  // "ceiling"/"upper bound" MUST stay visible in the rendered label -- resendCeilingTokens is a cache-unaware worst case, not real spend; see the doc comment on AssistantOutputCost in waste.ts.
   w('\n## Assistant output (re-send CEILING, not real spend)\n')
   const ao = report.assistantOutput
   w(`  ${countNoun(ao.turnCount, 'turn')}, ${ao.generatedTokens} tok generated\n`)
@@ -208,15 +184,7 @@ function printReport(report: WasteReport): void {
   printResidentContext(report.residentContext, w)
 }
 
-/**
- * The harness-injected half of the ledger: context that never passes through a hook and so was
- * never attributed above.
- *
- * Every figure here is *injected bytes*, read from the transcript's own records. How long any of it
- * stays resident and what it is billed at is not recorded anywhere this code can see, so the
- * heading says "injected" and the token figures stay marked as estimates -- the same discipline the
- * assistant-output section above applies to its re-send ceiling.
- */
+/** The harness-injected half of the ledger: context that never passes through a hook and so was never attributed above. Every figure here is *injected bytes*, read from the transcript's own records. How long any of it stays resident and what it is billed at is not recorded anywhere this code can see, so the heading says "injected" and the token figures stay marked as estimates -- the same discipline the assistant-output section above applies to its re-send ceiling. */
 function printResidentContext(resident: WasteReport['residentContext'], w: (text: string) => void): void {
   w('\n## Harness-injected context (never passes through a hook)\n')
   if (resident.attachmentClasses.length === 0) {

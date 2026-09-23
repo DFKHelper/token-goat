@@ -147,6 +147,8 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
 export interface JsonOutlineCliOptions {
   file: string
   json?: boolean
+  /** Keep only the top-level object keys containing this text, case-insensitively. */
+  filter?: string
 }
 
 function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) => unknown, formatLabel: string, kind: string): number {
@@ -164,7 +166,12 @@ function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) =>
     return 1
   }
 
-  const outline = outlineJson(data)
+  const outline = outlineJson(data, opts.filter === undefined ? {} : { keyFilter: opts.filter })
+  // Named rather than ignored: an array or scalar has no keys to narrow, and an unfiltered listing returned for a filtered request reads as though every entry matched.
+  if (opts.filter !== undefined && outline.kind !== 'object') {
+    emitErr(`--filter narrows an object's keys, and the top level of ${opts.file} is ${outline.kind === 'array' ? 'an array' : 'a scalar'}`)
+    return 1
+  }
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
     const jsonText = displaySafeJson(outline, 0)

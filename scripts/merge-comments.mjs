@@ -3,10 +3,7 @@
 //
 // The reason this is a script with a verifier rather than a regex someone re-derives per task: an ad-hoc version of it silently swallowed the closing `*/` of a JSDoc block in two guard files, which commented out the function bodies below them. Lint caught it, but only because those files happened to have unused imports afterwards; a merge that swallows a closer in the middle of a file can compile fine and mean something else. So every rewrite here is checked against an invariant: strip comments from the file before and after with esbuild, and the two results must be byte-identical. If they are not, the file is left untouched and the run fails.
 //
-// Usage:
-//   node scripts/merge-comments.mjs FILE...        rewrite in place
-//   node scripts/merge-comments.mjs --check FILE   report, change nothing, exit 1 if a file would change
-//   node scripts/merge-comments.mjs --self-test    run the cases below
+// Usage: `node scripts/merge-comments.mjs FILE...` rewrites in place, `--check FILE...` reports and changes nothing (exit 1 if a file would change), and `--self-test` runs the cases below.
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { transformSync } from 'esbuild'
@@ -15,6 +12,8 @@ import { pathToFileURL } from 'node:url'
 const BLOCK_OPEN = /^\s*\/\*/
 const BLOCK_CLOSE = /\*\//
 const LINE_COMMENT = /^(\s*)\/\/ ?(.*)$/
+// Comment text a tool reads as an instruction, which must stay on a line of its own. Folded onto the explanation above it, `// eslint-disable-next-line no-control-regex` became prose and the rule fired again; a `///` reference or a `#region` marker stops parsing the same way.
+const DIRECTIVE = /^(?:\/|eslint(?:-disable|-enable)?(?:[-\s]|$)|@ts-|(?:istanbul|c8|v8) ignore|prettier-ignore|biome-ignore|#(?:end)?region)/
 
 /** Fold `/* ... *\/` blocks and runs of `//` lines onto one line each. Purely line-leading lexical analysis, so a `*\/` or `//` appearing inside a string or regex mid-line is never mistaken for a comment delimiter. */
 export function mergeComments(source) {
@@ -49,13 +48,13 @@ export function mergeComments(source) {
     if (m) {
       const indent = m[1]
       // A run that opens on a blank `//` is a deliberate paragraph break, the same as one that hits a blank `//` further down.
-      if (!m[2].trim()) { out.push(line); continue }
+      if (!m[2].trim() || DIRECTIVE.test(m[2].trim())) { out.push(line); continue }
       const parts = [m[2].trim()]
       let j = i + 1
       for (; j < lines.length; j++) {
         const n = LINE_COMMENT.exec(lines[j])
         // Same indent only: a dedent or indent means a different comment attached to different code. A blank comment line (`//`) ends the run, since it was a deliberate paragraph break.
-        if (!n || n[1] !== indent || !n[2].trim()) break
+        if (!n || n[1] !== indent || !n[2].trim() || DIRECTIVE.test(n[2].trim())) break
         parts.push(n[2].trim())
       }
       if (j === i + 1) { out.push(line); continue }
@@ -84,6 +83,11 @@ function selfTest() {
     ['/* unterminated\nconst a = 1\n', '/* unterminated\nconst a = 1\n', 'an unterminated block is left verbatim'],
     ['/** already one line */\nconst a = 1\n', '/** already one line */\nconst a = 1\n', 'a single-line block is unchanged'],
     ['/**\n * one\n */\r\nconst a = 1\n'.replace(/\n/g, '\r\n'), '/** one */\r\nconst a = 1\r\n', 'CRLF is preserved'],
+    ['// why\n// eslint-disable-next-line no-control-regex\nconst a = 1\n', '// why\n// eslint-disable-next-line no-control-regex\nconst a = 1\n', 'a directive never joins the run above it'],
+    ['// eslint-disable-next-line no-explicit-any\n// why\nconst a = 1\n', '// eslint-disable-next-line no-explicit-any\n// why\nconst a = 1\n', 'a directive never starts a run'],
+    ['// why\n// @ts-expect-error untyped\nconst a = 1\n', '// why\n// @ts-expect-error untyped\nconst a = 1\n', 'a ts directive stays on its own line'],
+    ['/// <reference types="node" />\n/// <reference types="vite" />\n', '/// <reference types="node" />\n/// <reference types="vite" />\n', 'triple-slash references stay separate'],
+    ['// eslintrc notes\n// more\nconst a = 1\n', '// eslintrc notes more\nconst a = 1\n', 'a word that merely starts with eslint still folds'],
   ]
   let failed = 0
   for (const [src, want, name] of cases) {

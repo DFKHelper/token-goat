@@ -1,6 +1,7 @@
 import { indexableDir, tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
+import type { HookOutput } from '../src/types.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,11 +41,7 @@ import { makeHookEvent } from './helpers/hook-event.js'
 import { getDirtyPaths, clearDirtyQueue } from '../src/hooks_index.js'
 import { foldPath } from '../src/util.js'
 
-/**
- * The dirty queue, case-folded for comparison.
- *
- * The git-mutation tests build their expected path from `tmpdir()` (the environment's spelling, `C:\WINDOWS\TEMP`) while the enqueued path originates from git's own output (the on-disk spelling, `C:/Windows/Temp`). Both name the same file, so a case-sensitive `toContain` fails on a distinction the filesystem does not make. foldPath is the product's own path-comparison function, so folding both sides asserts the invariant that actually holds.
- */
+/** The dirty queue, case-folded for comparison. The git-mutation tests build their expected path from `tmpdir()` (the environment's spelling, `C:\WINDOWS\TEMP`) while the enqueued path originates from git's own output (the on-disk spelling, `C:/Windows/Temp`). Both name the same file, so a case-sensitive `toContain` fails on a distinction the filesystem does not make. foldPath is the product's own path-comparison function, so folding both sides asserts the invariant that actually holds. */
 function foldedDirtyPaths(): string[] {
   return getDirtyPaths().map(foldPath)
 }
@@ -420,7 +417,14 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
   })
 }
 
-// CAPTURE: real Codex session logs under ~/.codex/sessions on this machine show the harness executing shell-tool commands as ["...pwsh.exe","-Command","<script>"] on Windows, and a captured failure of the form `error: unknown option '--context'` after token-goat's own arg parser received a POSIX single-quote-escaped rewrite through PowerShell's different quoting convention -- confirming Codex on Windows runs the wrapped command through PowerShell, not the bash the rewrite assumes.
+// CAPTURE: real Codex session logs under ~/.codex/sessions on this machine show the harness executing shell-tool commands as ["...pwsh.exe","-Command","<script>"] on Windows, and a captured failure of the form `error: unknown option '--context'` after token-goat's own arg parser received a POSIX single-quote-escaped rewrite through PowerShell's different quoting convention -- confirming Codex on Windows runs the wrapped command through PowerShell, not the bash the rewrite assumes. An inline interpreter file read is intercepted one of two ways: run through the passthrough filter under a token cap, whose cap hint names the narrower command, or refused with that command where the wrapper cannot run. Returns the command-naming text either way, and null when the read was not intercepted, so a plain compress wrap of an exempt command reads as not intercepted.
+function interceptedReadHint(result: HookOutput): string | null {
+  if (result.hookType === 'deny') return result.message
+  if (result.hookType !== 'rewriteInput') return null
+  const m = / -f passthrough --timeout \d+ --max-tokens 2000 --cap-hint-b64 (\S+) /.exec(String(result.updatedInput['command']))
+  return m === null ? null : Buffer.from(m[1] as string, 'base64').toString('utf8')
+}
+
 describe('preBashHandler — Codex on Windows wraps via PowerShell runner or skips if unavailable', () => {
   const realPlatform = process.platform
 
@@ -462,8 +466,7 @@ describe('preBashHandler — Codex on Windows wraps via PowerShell runner or ski
     expect(result.hookType).toBe('rewriteInput')
   })
 
-  // No platform spoofing here: this must hold on whatever platform actually runs the suite, since
-  // Claude Code's own harness never matches the codex-on-win32 check regardless of process.platform.
+  // No platform spoofing here: this must hold on whatever platform actually runs the suite, since Claude Code's own harness never matches the codex-on-win32 check regardless of process.platform.
   it('still rewrites for claude code under bash', () => {
     const result = preBashHandler(makeBashEvent('rg "TODO" src/foo.ts'))
     expect(result.hookType).toBe('rewriteInput')
@@ -786,22 +789,14 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('deny')
   })
 
-  it('denies python -c with open() reading a source file', () => {
+  it('intercepts python -c with open() reading a source file', () => {
     const event = makeBashEvent("python3 -c \"\nwith open('C:/Projects/foo/bar.java') as f: content = f.read()\n\"")
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat outline')
-    }
+    expect(interceptedReadHint(preBashHandler(event))).toContain('token-goat outline')
   })
 
-  it('denies python heredoc that reads a markdown file', () => {
+  it('intercepts python heredoc that reads a markdown file', () => {
     const event = makeBashEvent("python3 - << 'PYEOF'\npath = 'C:/Projects/yeswehack/report-05/report.md'\nwith open(path, encoding='utf-8') as f: content = f.read()\nPYEOF")
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat section')
-    }
+    expect(interceptedReadHint(preBashHandler(event))).toContain('token-goat section')
   })
 
   it('does not false-positive on a command that merely contains the substring "python3" elsewhere', () => {
@@ -838,10 +833,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('recognizes head on a source file, and declines to hint when the replacement cannot be priced', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractHeadFile('head -n 46 src/app/analytics/page.tsx')).toMatchObject({ filePath: 'src/app/analytics/page.tsx', n: 46 })
     expect(preBashHandler(makeBashEvent('head -n 46 src/app/analytics/page.tsx')).hookType).toBe('pass')
   })
@@ -851,9 +843,7 @@ describe('preBashHandler — cat source file recall', () => {
       '(regression: classifyDocConfig folded .sql into isDoc with no isSql flag, so `head file.sql` got the ' +
       'generic "SectionHeading" doc phrasing instead of the table_name phrasing `cat file.sql` already gets)',
     () => {
-      // Priced gate: this fixture path is not on disk, so the replacement cannot be priced and no
-      // hint is emitted (bash_range_savings.ts). The SQL classification this title's regression is
-      // about is asserted on the extractor, which is where it actually lives.
+      // Priced gate: this fixture path is not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). The SQL classification this title's regression is about is asserted on the extractor, which is where it actually lives.
       expect(extractHeadFile('head -15 supabase/migrations/0001_init.sql')).toMatchObject({
         filePath: 'supabase/migrations/0001_init.sql',
         isSql: true,
@@ -872,19 +862,27 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  it('tail command on a config file suggests config-get, matching head\'s hint for the same file type (regression: extractTailFile did not classify isConfig, so `tail config.json` fell back to the generic read/skeleton hint that `head config.json` never gets)', () => {
+  it('tail command on a JSON config file names the JSON commands, matching head\'s hint for the same file type (regression: extractTailFile did not classify isConfig, so `tail config.json` fell back to the generic read/skeleton hint that `head config.json` never gets)', () => {
     const result = preBashHandler(makeBashEvent('tail -n 30 src/config.json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat json-outline "src/config.json"')
+    }
+  })
+
+  it('tail command on a TOML config file still names config-get', () => {
+    const result = preBashHandler(makeBashEvent('tail -n 30 src/config.toml'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('config-get')
     }
   })
 
-  it('Get-Content -Tail on a config file suggests config-get, matching Select-Object -First\'s hint for the same file type (regression: extractGetContentTail did not classify isConfig)', () => {
+  it('Get-Content -Tail on a JSON config file names the JSON commands, matching Select-Object -First\'s hint for the same file type (regression: extractGetContentTail did not classify isConfig)', () => {
     const result = preBashHandler(makeBashEvent('Get-Content -Tail 30 src/config.json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('config-get')
+      expect(result.context).toContain('token-goat json-outline "src/config.json"')
     }
   })
 
@@ -906,19 +904,13 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('recognizes a sed line range, and declines to hint when the replacement cannot be priced', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '13,31p' docs/report.md") ?? extractLineRangeReadsCompound("sed -n '13,31p' docs/report.md")?.[0]).toMatchObject({ filePath: 'docs/report.md', ranges: [[13, 31]], tool: 'sed' })
     expect(preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md")).hookType).toBe('pass')
   })
 
   it('strips a 2>/dev/null suffix off the sed path', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '250,300p' src/app/page.tsx 2>/dev/null") ?? extractLineRangeReadsCompound("sed -n '250,300p' src/app/page.tsx 2>/dev/null")?.[0]).toMatchObject({ filePath: 'src/app/page.tsx', ranges: [[250, 300]] })
     expect(preBashHandler(makeBashEvent("sed -n '250,300p' src/app/page.tsx 2>/dev/null")).hookType).toBe('pass')
   })
@@ -929,19 +921,13 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('sees through a formatting-only pipe stage (the read is the same span)', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160") ?? extractLineRangeReadsCompound("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160")?.[0]).toMatchObject({ filePath: 'src/pipe_fold_demo.tsx', ranges: [[10, 20]] })
     expect(preBashHandler(makeBashEvent("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160")).hookType).toBe('pass')
   })
 
   it('sees through chained formatting stages (cat -A then head)', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50") ?? extractLineRangeReadsCompound("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50")?.[0]).toMatchObject({ filePath: 'src/pipe_cata_demo.ts', ranges: [[30, 60]] })
     expect(preBashHandler(makeBashEvent("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50")).hookType).toBe('pass')
   })
@@ -952,28 +938,19 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('recognizes an unquoted sed range', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead('sed -n 120,180p src/unquoted_demo.ts') ?? extractLineRangeReadsCompound('sed -n 120,180p src/unquoted_demo.ts')?.[0]).toMatchObject({ filePath: 'src/unquoted_demo.ts', ranges: [[120, 180]] })
     expect(preBashHandler(makeBashEvent('sed -n 120,180p src/unquoted_demo.ts')).hookType).toBe('pass')
   })
 
   it('strips a 2>&1 suffix off the sed path', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1") ?? extractLineRangeReadsCompound("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1")?.[0]).toMatchObject({ filePath: 'src/stderr_suffix_demo.tsx', ranges: [[250, 300]] })
     expect(preBashHandler(makeBashEvent("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1")).hookType).toBe('pass')
   })
 
   it('resolves an echo-separated compound of sed reads to both files in command order', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const cmd = 'sed -n \'10,20p\' src/compound_a_demo.ts; echo "=== b ==="; sed -n \'30,40p\' src/compound_b_demo.ts'
     expect(extractLineRangeReadsCompound(cmd)).toMatchObject([
       { filePath: 'src/compound_a_demo.ts', ranges: [[10, 20]] },
@@ -983,10 +960,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('resolves an &&-separated compound of sed reads to both files', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const cmd = 'sed -n \'5,15p\' src/compound_and_a.ts && echo --- && sed -n \'25,35p\' src/compound_and_b.ts'
     expect(extractLineRangeReadsCompound(cmd)).toMatchObject([
       { filePath: 'src/compound_and_a.ts', ranges: [[5, 15]] },
@@ -996,10 +970,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('merges compound sed reads of the same file into one entry carrying both ranges', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const cmd = "sed -n '10,20p' src/compound_merge_demo.ts; echo x; sed -n '30,40p' src/compound_merge_demo.ts"
     const reads = extractLineRangeReadsCompound(cmd)
     expect(reads, 'one entry for one file').toHaveLength(1)
@@ -1032,46 +1003,31 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('recognizes a Markdown sed range (the language-shaped advice ladder is gone -- see sedRangeHint)', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '13,31p' docs/report.md") ?? extractLineRangeReadsCompound("sed -n '13,31p' docs/report.md")?.[0]).toMatchObject({ filePath: 'docs/report.md', ranges: [[13, 31]] })
     expect(preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md")).hookType).toBe('pass')
   })
 
   it('recognizes a source-file sed range', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '40,90p' src/auth.py") ?? extractLineRangeReadsCompound("sed -n '40,90p' src/auth.py")?.[0]).toMatchObject({ filePath: 'src/auth.py', ranges: [[40, 90]] })
     expect(preBashHandler(makeBashEvent("sed -n '40,90p' src/auth.py")).hookType).toBe('pass')
   })
 
   it('recognizes a config-file sed range', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '5,15p' pyproject.toml") ?? extractLineRangeReadsCompound("sed -n '5,15p' pyproject.toml")?.[0]).toMatchObject({ filePath: 'pyproject.toml', ranges: [[5, 15]] })
     expect(preBashHandler(makeBashEvent("sed -n '5,15p' pyproject.toml")).hookType).toBe('pass')
   })
 
   it('recognizes a sed range on an unknown extension', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '1,9p' notes/scratch.txt") ?? extractLineRangeReadsCompound("sed -n '1,9p' notes/scratch.txt")?.[0]).toMatchObject({ filePath: 'notes/scratch.txt', ranges: [[1, 9]] })
     expect(preBashHandler(makeBashEvent("sed -n '1,9p' notes/scratch.txt")).hookType).toBe('pass')
   })
 
   it('a first sed read on a file produces no overlap warning', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '10,60p' src/paging_demo.ts") ?? extractLineRangeReadsCompound("sed -n '10,60p' src/paging_demo.ts")?.[0]).toMatchObject({ filePath: 'src/paging_demo.ts', ranges: [[10, 60]] })
     expect(preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts")).hookType).toBe('pass')
   })
@@ -1089,19 +1045,9 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  /**
-   * `head` writes to the line-range ledger and never read from it.
-   *
-   * `recordBashFileReadsForSessionCache` has always recorded 1..n for a successful `head -n N file`
-   * -- leading-lines reads are the one truncated shape whose absolute range is known. Nothing ever read that entry back, so a second `head -30 CHANGELOG.md` produced the same generic advice as the first and never mentioned that those lines were already in context. Observed live: the same `head -30 CHANGELOG.md` twice verbatim in one session, and five near-identical CHANGELOG head-reads in another.
-   *
-   * A ledger's write half and read half are separately observable, and a guard holding only one of them is indistinguishable from a working guard unless both directions are asserted -- hence the paired "first read does not warn" test below.
-   */
+  /** `head` writes to the line-range ledger and never read from it. `recordBashFileReadsForSessionCache` has always recorded 1..n for a successful `head -n N file` -- leading-lines reads are the one truncated shape whose absolute range is known. Nothing ever read that entry back, so a second `head -30 CHANGELOG.md` produced the same generic advice as the first and never mentioned that those lines were already in context. Observed live: the same `head -30 CHANGELOG.md` twice verbatim in one session, and five near-identical CHANGELOG head-reads in another. A ledger's write half and read half are separately observable, and a guard holding only one of them is indistinguishable from a working guard unless both directions are asserted -- hence the paired "first read does not warn" test below. */
   it('a first head read produces no overlap warning', async () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const first = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_demo.md'))
     expect(first.hookType).toBe('pass')
     expect(extractHeadFile('head -n 30 docs/paging_head_demo.md')).toMatchObject({ filePath: 'docs/paging_head_demo.md', n: 30 })
@@ -1134,10 +1080,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a head read on a different file is not treated as an overlap', async () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     preBashHandler(makeBashEvent('head -n 30 docs/paging_head_a.md'))
     await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_a.md', 'line\n'.repeat(30)))
 
@@ -1187,10 +1130,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a non-overlapping later sed read on the same file gets no overlap warning', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts"))
     // 200-260 is disjoint from 10-60, so no overlap hint -- and the priced gate declines the rest.
     const result = preBashHandler(makeBashEvent("sed -n '200,260p' src/paging_demo.ts"))
@@ -1224,19 +1164,13 @@ describe('preBashHandler — cat source file recall', () => {
   it('denies node -e with readFileSync reading a source file', () => {
     const event = makeBashEvent(`node -e "const lines = require('fs').readFileSync('scripts/ads-orchestrator.js','utf8').split('\\n')"`)
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('readFileSync')
-    }
+    expect(interceptedReadHint(result)).toContain('token-goat outline "scripts/ads-orchestrator.js"')
   })
 
   it('denies node -e with readFileSync reading a JSON file', () => {
     const event = makeBashEvent(`node -e "const d = require('fs').readFileSync('memory/ads/action-hypotheses.json','utf8')"`)
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('readFileSync')
-    }
+    expect(interceptedReadHint(result)).toContain('token-goat json-outline "memory/ads/action-hypotheses.json"')
   })
 
   it('emits advisory (never deny) context for node -e readFileSync of a SQL migration file, matching cat\'s SQL hint (regression: this branch fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case, so a non-cd-prefixed node -e readFileSync of a .sql file was hard-denied while the equivalent `cat file.sql` was always advisory-only)', () => {
@@ -1253,10 +1187,10 @@ describe('preBashHandler — cat source file recall', () => {
   it('does not deny node -e that writes back the file it read (in-place edit)', () => {
     // CAPTURE: a denied command from a real session, trimmed to its fs calls.
     const event = makeBashEvent(`node -e 'const fs=require("fs");const cl=fs.readFileSync("CHANGELOG.md","utf8");fs.writeFileSync("CHANGELOG.md",cl.replace("a","b"))'`)
-    expect(preBashHandler(event).hookType).not.toBe('deny')
+    expect(interceptedReadHint(preBashHandler(event))).toBeNull()
     // Writing a different file than the one read is still a read into context.
     const other = makeBashEvent(`node -e 'const fs=require("fs");fs.writeFileSync("out.md",fs.readFileSync("CHANGELOG.md","utf8"))'`)
-    expect(preBashHandler(other).hookType).toBe('deny')
+    expect(interceptedReadHint(preBashHandler(other))).not.toBeNull()
   })
 
   // The same exemption, reached through require() instead of readFileSync. It was keyed on the read rather than on the write, so this spelling -- the ordinary version-bump one-liner -- was denied while the byte-identical edit above was allowed, and the denial told the caller that `fs.readFileSync()` bypasses read hooks for a command that never calls it.
@@ -1265,10 +1199,10 @@ describe('preBashHandler — cat source file recall', () => {
     const event = makeBashEvent(
       `node -e "const p=require('./package.json'); p.version='9.9.9'; require('fs').writeFileSync('./package.json', JSON.stringify(p))"`,
     )
-    expect(preBashHandler(event).hookType).not.toBe('deny')
+    expect(interceptedReadHint(preBashHandler(event))).toBeNull()
     // Writing a different file than the one required is still a read into context, matching the readFileSync branch's own rule.
     const other = makeBashEvent(`node -e "require('fs').writeFileSync('v.txt', require('./package.json').version)"`)
-    expect(preBashHandler(other).hookType).toBe('deny')
+    expect(interceptedReadHint(preBashHandler(other))).not.toBeNull()
   })
 
   // Same shape in the PowerShell extractor, which had no write guard of any kind. The substitute the denial offered -- `token-goat outline` -- cannot perform an edit, so the only route left was writing the script to a file and running it unchecked, which is the outcome the node exemption exists to prevent.
@@ -1277,30 +1211,25 @@ describe('preBashHandler — cat source file recall', () => {
     const event = makeBashEvent(
       `powershell -Command "[IO.File]::WriteAllText('big.ts', [IO.File]::ReadAllText('big.ts').Replace('a','b'))"`,
     )
-    expect(preBashHandler(event).hookType).not.toBe('deny')
+    expect(interceptedReadHint(preBashHandler(event))).toBeNull()
     // Both controls: a pure read is still intercepted, and a read of one file written to another is still a read into context.
-    expect(preBashHandler(makeBashEvent(`powershell -Command "[IO.File]::ReadAllText('big.ts')"`)).hookType).toBe('deny')
-    expect(
-      preBashHandler(makeBashEvent(`powershell -Command "[IO.File]::WriteAllText('copy.ts', [IO.File]::ReadAllText('big.ts'))"`))
-        .hookType,
-    ).toBe('deny')
+    expect(interceptedReadHint(preBashHandler(makeBashEvent(`powershell -Command "[IO.File]::ReadAllText('big.ts')"`)))).not.toBeNull()
+    expect(interceptedReadHint(preBashHandler(makeBashEvent(`powershell -Command "[IO.File]::WriteAllText('copy.ts', [IO.File]::ReadAllText('big.ts'))"`)))).not.toBeNull()
   })
 
   it('passes through node -e without readFileSync', () => {
     const event = makeBashEvent(`node -e "require('./scripts/lib/organic-pin-miner-action'); console.log('ok')"`)
     const result = preBashHandler(event)
     // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
-    expect(result.hookType).not.toBe('deny')
+    expect(interceptedReadHint(result)).toBeNull()
     expect(result.hookType).toBe('rewriteInput')
   })
 
   it('denies node -e with require of a project JSON file', () => {
     const event = makeBashEvent(`node -e "console.log(require('./package.json').version)"`)
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('config-get')
-    }
+    expect(interceptedReadHint(result)).not.toBeNull()
+    expect(interceptedReadHint(result)).toContain('json-query')
   })
 
   it('wraps node -e requiring a node_modules JSON in compress (NodeFilter; not denied)', () => {
@@ -1313,10 +1242,8 @@ describe('preBashHandler — cat source file recall', () => {
   it('denies node -e requiring a nested config JSON', () => {
     const event = makeBashEvent(`node -e "const v=require('.claude/config.json'); console.log(v.model)"`)
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('config-get')
-    }
+    expect(interceptedReadHint(result)).not.toBeNull()
+    expect(interceptedReadHint(result)).toContain('json-query')
   })
 
   it('emits advisory context for tail command on source file', () => {
@@ -1340,12 +1267,14 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('cat of JSON file suggests config-get not symbol read', () => {
+  it('cat of JSON file names the JSON query commands, not a symbol read or the flat-key reader', () => {
     const event = makeBashEvent('cat memory/ads/keyword-opportunity-actions.json')
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('config-get')
+      expect(result.message).toContain('token-goat json-outline "memory/ads/keyword-opportunity-actions.json"')
+      expect(result.message).toContain('token-goat json-query')
+      expect(result.message).not.toContain('config-get')
     }
   })
 
@@ -1549,37 +1478,25 @@ describe('preBashHandler — PowerShell read commands', () => {
   })
 
   it('Get-Content "src/auth.ts" | Select-Object -First 50 (quoted path) -> resolves the real path, and the priced gate declines the hint', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractGetContentSelectFirst('Get-Content "src/auth.ts" | Select-Object -First 50')).toMatchObject({ filePath: 'src/auth.ts', n: 50 })
     expect(preBashHandler(makeBashEvent('Get-Content "src/auth.ts" | Select-Object -First 50')).hookType).toBe('pass')
   })
 
   it('Get-Content src/auth.ts | Select-Object -First 50 -> resolves the real path, and the priced gate declines the hint', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractGetContentSelectFirst('Get-Content src/auth.ts | Select-Object -First 50')).toMatchObject({ filePath: 'src/auth.ts', n: 50 })
     expect(preBashHandler(makeBashEvent('Get-Content src/auth.ts | Select-Object -First 50')).hookType).toBe('pass')
   })
 
   it('gc src/auth.ts | select -First 30 -> resolves the real path, and the priced gate declines the hint', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractGetContentSelectFirst('gc src/auth.ts | select -First 30')).toMatchObject({ filePath: 'src/auth.ts', n: 30 })
     expect(preBashHandler(makeBashEvent('gc src/auth.ts | select -First 30')).hookType).toBe('pass')
   })
 
   it('Get-Content -Path src/auth.ts | Select-Object -First 50 (explicit -Path flag) -> resolves the real path, and the priced gate declines the hint', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractGetContentSelectFirst('Get-Content -Path src/auth.ts | Select-Object -First 50')).toMatchObject({ filePath: 'src/auth.ts', n: 50 })
     expect(preBashHandler(makeBashEvent('Get-Content -Path src/auth.ts | Select-Object -First 50')).hookType).toBe('pass')
   })
@@ -1591,19 +1508,13 @@ describe('preBashHandler — PowerShell read commands', () => {
   })
 
   it('Get-Content src/config.json | Select-Object -First 30 (config) -> resolves the real path, and the priced gate declines the hint', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractGetContentSelectFirst('Get-Content src/config.json | Select-Object -First 30')).toMatchObject({ filePath: 'src/config.json', isConfig: true, n: 30 })
     expect(preBashHandler(makeBashEvent('Get-Content src/config.json | Select-Object -First 30')).hookType).toBe('pass')
   })
 
   it('Get-Content README.md | Select-Object -First 30 (doc) -> resolves the real path, and the priced gate declines the hint', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractGetContentSelectFirst('Get-Content README.md | Select-Object -First 30')).toMatchObject({ filePath: 'README.md', isDoc: true, n: 30 })
     expect(preBashHandler(makeBashEvent('Get-Content README.md | Select-Object -First 30')).hookType).toBe('pass')
   })
@@ -1761,7 +1672,7 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     const event = makeBashEvent("python3 -c \"with open('src/app/route.ts','r') as f: c=f.read(); open('src/app/route.ts','w').write(c.replace('old','new'))\"")
     const result = preBashHandler(event)
     // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
-    expect(result.hookType).not.toBe('deny')
+    expect(interceptedReadHint(result)).toBeNull()
     expect(result.hookType).toBe('rewriteInput')
   })
 
@@ -1783,7 +1694,7 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     const event = makeBashEvent("python3 -c \"c=open('src/index.ts').read(); open('src/index.ts','w').write(c)\"")
     const result = preBashHandler(event)
     // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
-    expect(result.hookType).not.toBe('deny')
+    expect(interceptedReadHint(result)).toBeNull()
     expect(result.hookType).toBe('rewriteInput')
   })
 
@@ -1791,90 +1702,88 @@ describe('preBashHandler — python read-modify-write exemption', () => {
   it('passes through a write whose path argument is itself a call', () => {
     const event = makeBashEvent("python3 -c \"import json; json.dump(d, open(os.path.join(t,'out.json'),'w'))\"")
     const result = preBashHandler(event)
-    expect(result.hookType, 'a pure write was denied as a read').not.toBe('deny')
+    expect(interceptedReadHint(result), 'a pure write was denied as a read').toBeNull()
   })
 
   it('passes through a write that names its mode with the mode= keyword', () => {
     const event = makeBashEvent("python3 -c \"import json; json.dump(d, open('out.json', mode='w'))\"")
     const result = preBashHandler(event)
-    expect(result.hookType, 'a pure write was denied as a read').not.toBe('deny')
+    expect(interceptedReadHint(result), 'a pure write was denied as a read').toBeNull()
   })
 
   it("passes through a write in exclusive-creation mode 'x'", () => {
     const event = makeBashEvent("python3 -c \"import json; json.dump(d, open('out.json','x'))\"")
     const result = preBashHandler(event)
-    expect(result.hookType, 'a pure write was denied as a read').not.toBe('deny')
+    expect(interceptedReadHint(result), 'a pure write was denied as a read').toBeNull()
   })
 
   // The counterweight: reading is still what the mode says it is, in each of the same shapes, so the wider guard cannot be satisfied by any open() call at all.
   it('still denies a read whose path argument is itself a call', () => {
     const event = makeBashEvent("python3 -c \"import json; d=json.load(open(os.path.join(t,'out.json'), 'r'))\"")
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
+    expect(interceptedReadHint(result)).not.toBeNull()
   })
 
   it('still denies a read that names its mode with the mode= keyword', () => {
     const event = makeBashEvent("python3 -c \"import json; d=json.load(open('out.json', mode='r'))\"")
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
+    expect(interceptedReadHint(result)).not.toBeNull()
   })
 
   // `.write(` on its own used to exempt a command from the read check, and a standard stream has a .write too. These two commands put the same whole file into the conversation; only the print one was ever caught.
   it('denies a whole-file read piped to sys.stdout.write, as it does the print spelling', () => {
     const viaPrint = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts').read())\""))
     const viaStdout = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stdout.write(open('src/cli.ts').read())\""))
-    expect(viaPrint.hookType, 'the control read stopped being denied').toBe('deny')
-    expect(viaStdout.hookType, 'writing to a stream is not a file write').toBe('deny')
+    expect(interceptedReadHint(viaPrint), 'the control read stopped being denied').not.toBeNull()
+    expect(interceptedReadHint(viaStdout), 'writing to a stream is not a file write').not.toBeNull()
   })
 
   it('denies a whole-file read piped to sys.stderr.write', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stderr.write(open('src/cli.ts').read())\""))
-    expect(result.hookType, 'writing to a stream is not a file write').toBe('deny')
+    expect(interceptedReadHint(result), 'writing to a stream is not a file write').not.toBeNull()
   })
 
   // The counterweight: a write through a real file object is still a write, so narrowing the receiver has not turned every write back into a denied read.
   it('still passes through a write made through a file-object variable', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"f = something(); f.write(open('src/cli.ts').read())\""))
-    expect(result.hookType, 'a real file write was denied as a read').not.toBe('deny')
+    expect(interceptedReadHint(result), 'a real file write was denied as a read').toBeNull()
   })
 
   // `.buffer` is how the byte half of a standard stream is reached. It is the same stream, so a read sent through it puts just as much of the file into the conversation as the print spelling.
   it('denies a whole-file read piped to sys.stdout.buffer.write', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stdout.buffer.write(open('src/cli.ts','rb').read())\""))
-    expect(result.hookType, 'writing to a stream buffer is not a file write').toBe('deny')
+    expect(interceptedReadHint(result), 'writing to a stream buffer is not a file write').not.toBeNull()
   })
 
   // The guards search for `open(` and `.write(` as text, and a snippet can carry either inside a string. This one only reads, but the trailing literal used to look like a write and exempt it.
   it('denies a whole-file read that mentions .write( inside a string literal', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts').read()); note='logger.write('\""))
-    expect(result.hookType, 'a string literal was read as a file write').toBe('deny')
+    expect(interceptedReadHint(result), 'a string literal was read as a file write').not.toBeNull()
   })
 
   // A mode that is passed but not written out cannot be read, and the harmless answer is to let it past: denying a write blocks the command and advises extracting a symbol from a file that does not exist yet, while letting a read past only costs the hint.
   it('passes through a write whose mode is held in a variable', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"m='w'; open('src/out.ts', m).write('x')\""))
-    expect(result.hookType, 'an unreadable mode was treated as a read').not.toBe('deny')
+    expect(interceptedReadHint(result), 'an unreadable mode was treated as a read').toBeNull()
   })
 
   // `encoding=` sits in the slot a positional mode would use. Reading it as an unreadable mode would call this plain read a write and drop the hint entirely.
   it('still denies a read that names a keyword argument where the mode would go', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts', encoding='utf-8').read())\""))
-    expect(result.hookType, 'a keyword argument was read as a write mode').toBe('deny')
+    expect(interceptedReadHint(result), 'a keyword argument was read as a write mode').not.toBeNull()
   })
 
   // The indirect branch guesses the file from any literal in the command, for `open(path_var)`. Here the call already names its own file, one with no source extension, so there is nothing to guess: the command was denied naming a file it never opens.
   it('does not deny a read of an unrelated file because a source path appears elsewhere', () => {
     const result = preBashHandler(makeBashEvent("python3 -c \"path='src/cli.ts'; print(open('notes').read())\""))
-    expect(result.hookType, 'denied naming a file the command never opens').not.toBe('deny')
+    expect(interceptedReadHint(result), 'denied naming a file the command never opens').toBeNull()
   })
 
   it('still denies pure python read with no write', () => {
     const event = makeBashEvent("python3 -c \"with open('src/lib/auth.ts') as f: print(f.read())\"")
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat outline')
-    }
+    expect(interceptedReadHint(result)).not.toBeNull()
+    expect(interceptedReadHint(result)).toContain('token-goat outline')
   })
 })
 
@@ -1909,9 +1818,7 @@ describe('preBashHandler — orchestrator state file exemption', () => {
     }
   })
 
-  // The .output extension is shared by two unrelated kinds of file: an agent task's JSONL transcript, and a background bash task's plain stdout, which the harness itself tells the model to read. This path judged on the extension alone, so reading a build log was refused with advice to run
-  // --transcript on it, which would have returned nothing. The cat/tail guard on the same directory
-  // already sniffed the first byte; only this caller did not. Both halves are pinned here, because a sniff that answers "transcript" for everything passes the first test on its own.
+  // The .output extension is shared by two unrelated kinds of file: an agent task's JSONL transcript, and a background bash task's plain stdout, which the harness itself tells the model to read. This path judged on the extension alone, so reading a build log was refused with advice to run --transcript on it, which would have returned nothing. The cat/tail guard on the same directory already sniffed the first byte; only this caller did not. Both halves are pinned here, because a sniff that answers "transcript" for everything passes the first test on its own.
   it('does not deny python open() of a .output file that is a background command\'s plain stdout', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-pyout-'))
     const plainFile = join(tmpDir, 'b1l6az05r.output')
@@ -2136,9 +2043,7 @@ describe('preBashHandler — task output file interception', () => {
     }
   })
 
-  // CAPTURE: real tool-results filenames use Claude Code's tool_use id shape, `toolu_` plus a
-  // mixed-case alphanumeric id (e.g. `toolu_01UGdBrbnv2yATVaMR4ZYPkQ.txt`) -- the underscore and
-  // mixed case a bare `[a-z0-9-]+` class missed, silently dropping the recall hint for those files.
+  // CAPTURE: real tool-results filenames use Claude Code's tool_use id shape, `toolu_` plus a mixed-case alphanumeric id (e.g. `toolu_01UGdBrbnv2yATVaMR4ZYPkQ.txt`) -- the underscore and mixed case a bare `[a-z0-9-]+` class missed, silently dropping the recall hint for those files.
   it('emits bash-output hint for cat on a tool-results file with a toolu_ id', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tool-results-'))
     const toolResultsDir = join(tmpDir, 'tool-results')
@@ -2203,19 +2108,13 @@ describe('preBashHandler — sed line-range interception', () => {
   })
 
   it('recognizes a single-quoted sed range', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '10,50p' src/hooks_read.ts") ?? extractLineRangeReadsCompound("sed -n '10,50p' src/hooks_read.ts")?.[0]).toMatchObject({ filePath: 'src/hooks_read.ts', ranges: [[10, 50]] })
     expect(preBashHandler(makeBashEvent("sed -n '10,50p' src/hooks_read.ts")).hookType).toBe('pass')
   })
 
   it('recognizes a double-quoted sed range', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead('sed -n "100,200p" README.md') ?? extractLineRangeReadsCompound('sed -n "100,200p" README.md')?.[0]).toMatchObject({ filePath: 'README.md', ranges: [[100, 200]] })
     expect(preBashHandler(makeBashEvent('sed -n "100,200p" README.md')).hookType).toBe('pass')
   })
@@ -2225,19 +2124,13 @@ describe('preBashHandler — sed line-range interception', () => {
     expect(result.hookType).toBe('pass')
   })
   it('recognizes a semicolon multi-range on a .md file', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '24,28p;65,84p' file.md") ?? extractLineRangeReadsCompound("sed -n '24,28p;65,84p' file.md")?.[0]).toMatchObject({ filePath: 'file.md', ranges: [[24, 28], [65, 84]] })
     expect(preBashHandler(makeBashEvent("sed -n '24,28p;65,84p' file.md")).hookType).toBe('pass')
   })
 
   it('recognizes a multi-range on a source file', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '40,90p;200,260p' src/auth.py") ?? extractLineRangeReadsCompound("sed -n '40,90p;200,260p' src/auth.py")?.[0]).toMatchObject({ filePath: 'src/auth.py', ranges: [[40, 90], [200, 260]] })
     expect(preBashHandler(makeBashEvent("sed -n '40,90p;200,260p' src/auth.py")).hookType).toBe('pass')
   })
@@ -2253,28 +2146,19 @@ describe('preBashHandler — sed line-range interception', () => {
   })
 
   it('recognizes all three of a three-range sed', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '10,20p;100,110p;200,210p' src/foo.ts") ?? extractLineRangeReadsCompound("sed -n '10,20p;100,110p;200,210p' src/foo.ts")?.[0]).toMatchObject({ filePath: 'src/foo.ts', ranges: [[10, 20], [100, 110], [200, 210]] })
     expect(preBashHandler(makeBashEvent("sed -n '10,20p;100,110p;200,210p' src/foo.ts")).hookType).toBe('pass')
   })
 
   it('a single range still resolves through the multi-range path', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("sed -n '13,31p' docs/report.md") ?? extractLineRangeReadsCompound("sed -n '13,31p' docs/report.md")?.[0]).toMatchObject({ filePath: 'docs/report.md', ranges: [[13, 31]] })
     expect(preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md")).hookType).toBe('pass')
   })
 
   it('resolves Salesforce Apex, metadata, and markup line ranges to their files', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     for (const file of [
       'force-app/main/default/classes/ExampleController.cls',
       'force-app/main/default/flows/Example.flow-meta.xml',
@@ -2287,47 +2171,33 @@ describe('preBashHandler — sed line-range interception', () => {
   })
 })
 
-/**
- * `awk 'NR>=A && NR<=B' file` and `awk 'NR==A,NR==B' file` print exactly the lines `sed -n 'A,Bp' file` prints, bypass the read hooks identically, and cost the same context. Only the sed spelling was recognized, so the awk one drew no surgical-read hint and, worse, no overlap dedup -- a file read by both spellings looked like two unrelated files, so the second read was never reported as already served.
- *
- * Why didn't a test catch this: every case in the sed block above spells the command `sed`, because the block was written to cover that extractor's own patterns (quoting, multi-range, the -n guard). Nothing asked whether a different tool could express the same read, so the gap was in the command vocabulary, not in any tested branch. These cases pin both awk spellings, the shared dedup ledger across the two tools, and the programs that must still be left alone.
- */
+/** `awk 'NR>=A && NR<=B' file` and `awk 'NR==A,NR==B' file` print exactly the lines `sed -n 'A,Bp' file` prints, bypass the read hooks identically, and cost the same context. Only the sed spelling was recognized, so the awk one drew no surgical-read hint and, worse, no overlap dedup -- a file read by both spellings looked like two unrelated files, so the second read was never reported as already served. Why didn't a test catch this: every case in the sed block above spells the command `sed`, because the block was written to cover that extractor's own patterns (quoting, multi-range, the -n guard). Nothing asked whether a different tool could express the same read, so the gap was in the command vocabulary, not in any tested branch. These cases pin both awk spellings, the shared dedup ledger across the two tools, and the programs that must still be left alone. */
 describe('preBashHandler — awk line-range interception', () => {
   beforeEach(() => {
     clearModuleCaches()
   })
 
   it('recognizes the awk NR>= && NR<= spelling, and reports it as awk rather than sed', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("awk 'NR>=10 && NR<=50' src/hooks_read.ts") ?? extractLineRangeReadsCompound("awk 'NR>=10 && NR<=50' src/hooks_read.ts")?.[0]).toMatchObject({ filePath: 'src/hooks_read.ts', ranges: [[10, 50]], tool: 'awk' })
     expect(preBashHandler(makeBashEvent("awk 'NR>=10 && NR<=50' src/hooks_read.ts")).hookType).toBe('pass')
   })
 
   it('recognizes the awk NR==A,NR==B spelling', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("awk 'NR==100,NR==200' README.md") ?? extractLineRangeReadsCompound("awk 'NR==100,NR==200' README.md")?.[0]).toMatchObject({ filePath: 'README.md', ranges: [[100, 200]], tool: 'awk' })
     expect(preBashHandler(makeBashEvent("awk 'NR==100,NR==200' README.md")).hookType).toBe('pass')
   })
 
   it('tolerates the unspaced && form', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractLineRangeRead("awk 'NR>=3&&NR<=7' src/cli.ts") ?? extractLineRangeReadsCompound("awk 'NR>=3&&NR<=7' src/cli.ts")?.[0]).toMatchObject({ filePath: 'src/cli.ts', ranges: [[3, 7]], tool: 'awk' })
     expect(preBashHandler(makeBashEvent("awk 'NR>=3&&NR<=7' src/cli.ts")).hookType).toBe('pass')
   })
 
   it('shares one dedup ledger with the sed spelling of the same range', () => {
     const ev = makeBashEvent("sed -n '10,50p' src/shared_ledger_probe.ts")
-    // The first read's own hint is declined by the priced gate, but it still records its range --
-    // the ledger write happens before the gate, which is what the second read below depends on.
+    // The first read's own hint is declined by the priced gate, but it still records its range -- the ledger write happens before the gate, which is what the second read below depends on.
     expect(preBashHandler(ev).hookType).toBe('pass')
     const second = preBashHandler({ ...ev, toolInput: { command: "awk 'NR>=10 && NR<=50' src/shared_ledger_probe.ts" } })
     expect(second.hookType).toBe('context')
@@ -2927,8 +2797,7 @@ describe('extractCurlDownload', () => {
     expect(r?.url).toBe('https://viaflag.example.com/f.zip')
   })
 
-  // --url-query appends data to the query string; it does not name the request target. Reading it
-  // as an explicit target keyed the download on the query service rather than the file fetched.
+  // --url-query appends data to the query string; it does not name the request target. Reading it as an explicit target keyed the download on the query service rather than the file fetched.
   it('does not read --url-query as the target', () => {
     const r = extractCurlDownload('curl --url-query https://query.example.com/q -o f7.zip https://target7.example.com/a.zip')
     expect(r?.url).toBe('https://target7.example.com/a.zip')
@@ -3419,13 +3288,9 @@ describe('preBashHandler — python heredoc file read', () => {
     clearModuleCaches()
   })
 
-  it('denies python heredoc that reads a .tsx file via direct open()', () => {
+  it('intercepts python heredoc that reads a .tsx file via direct open()', () => {
     const cmd = "python3 - << 'PYEOF'\nwith open(r'src/analytics/page.tsx') as f:\n    print(f.read())\nPYEOF"
-    const result = preBashHandler(makeBashEvent(cmd))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat outline')
-    }
+    expect(interceptedReadHint(preBashHandler(makeBashEvent(cmd)))).toContain('token-goat outline')
   })
 
   it('does not fire when heredoc body contains .write(', () => {
@@ -4083,9 +3948,7 @@ describe('postBashHandler — failing test-runner advisory', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Config-driven bash_compress.cache_min_bytes / timeout_seconds. Before this fix, hooks_bash.ts always used a hardcoded MIN_CACHE_BYTES=512 floor and never emitted --timeout at all (the compress action silently fell back to bash_runner.ts's hardcoded DEFAULT_TIMEOUT_SECONDS), so these two config.ts knobs were validated/saved but had zero effect on real behavior.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Config-driven bash_compress.cache_min_bytes / timeout_seconds. Before this fix, hooks_bash.ts always used a hardcoded MIN_CACHE_BYTES=512 floor and never emitted --timeout at all (the compress action silently fell back to bash_runner.ts's hardcoded DEFAULT_TIMEOUT_SECONDS), so these two config.ts knobs were validated/saved but had zero effect on real behavior. ---------------------------------------------------------------------------
 describe('postBashHandler — config-driven bash_compress.cache_min_bytes', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -4711,6 +4574,17 @@ describe('postBashHandler — feeds Bash file dumps into the session read-cache'
       rmSync(tempFile, { force: true })
     }
   })
+
+  it('an inline interpreter read records nothing, since it now runs and nearly always prints a projection rather than the file', async () => {
+    const target = resolveIndexPath('package.json', process.cwd())
+
+    await postBashHandler(makePostBashEvent(`python -c "import json;print(json.load(open('package.json'))['name'])"`, 'token-goat\n'))
+    await postBashHandler(makePostBashEvent(`node -e "console.log(require('fs').readFileSync('package.json','utf8').length)"`, '4096\n'))
+    await postBashHandler(makePostBashEvent(`powershell -Command "[IO.File]::ReadAllText('package.json').Length"`, '4096\n'))
+
+    // Recorded as a full read, one printed name would arm the Read hook's unchanged-file refusal against the whole file.
+    expect(wasFileReadThisSession(target)).toBe(false)
+  })
 })
 
 // Loop-46 corpus census (8,179 real cat-headed and 916 real awk-headed Bash commands): the same read respelled with a trailing stderr redirect, a `cat FILE |` pipe into head/tail/sed, or an awk action block that prints each whole line, fell through every extractor and got no hint. Each cluster below was counted against the pre-fix predicates before being admitted.
@@ -4737,10 +4611,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
   })
 
   it('admits the piped leading-lines spelling `cat FILE | head -50` as the same read as `head -50 FILE`', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     expect(extractHeadFile('cat src/loop46_pipe.ts | head -50')).toMatchObject({ filePath: 'src/loop46_pipe.ts', n: 50 })
     expect(preBashHandler(makeBashEvent('cat src/loop46_pipe.ts | head -50')).hookType).toBe('pass')
   })
@@ -4764,10 +4635,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
   })
 
   it('admits `cat FILE | sed -n RANGE` as the same line-range read as `sed -n RANGE FILE`', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const cmd = "cat docs/loop46_guide.md | sed -n '29,36p'"
     expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'docs/loop46_guide.md', ranges: [[29, 36]], tool: 'sed' })
     expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
@@ -4787,20 +4655,14 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
 
 describe('preBashHandler — awk range reads with a pure line-print action (loop-46 census)', () => {
   it('admits an NR range whose action prints each whole line with its number', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const cmd = 'awk \'NR>=84 && NR<=116 {print NR": "$0}\' docs/loop46_awk.md'
     expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'docs/loop46_awk.md', ranges: [[84, 116]], tool: 'awk' })
     expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 
   it('admits the printf spelling of the same whole-line print', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const cmd = 'awk \'NR>=10 && NR<=40 {printf "%d|%s\\n", NR, $0}\' src/loop46_awk.ts'
     expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'src/loop46_awk.ts', ranges: [[10, 40]], tool: 'awk' })
     expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
@@ -4812,21 +4674,14 @@ describe('preBashHandler — awk range reads with a pure line-print action (loop
   })
 
   it('admits the `2>&1` suffix on a plain awk range, matching the sed suffix parity from loop 45', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and
-    // no hint is emitted (bash_range_savings.ts). What this case is really about -- that the
-    // command shape is recognized and resolves to this file and range -- is asserted on the
-    // extractor, which is a stricter oracle than the sentence the hint used to render.
+    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     const cmd = "awk 'NR>=5 && NR<=30' src/loop46_awk2.ts 2>&1"
     expect(extractLineRangeRead(cmd)).toMatchObject({ filePath: 'src/loop46_awk2.ts', ranges: [[5, 30]], tool: 'awk' })
     expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('pass')
   })
 })
 
-/**
- * Bash was the one site in the codebase where token-goat substituted its own text for a tool result and handed it to the model with no untrusted-content fence. Every other substitution site fences first: `hooks_fetch.ts`, `hooks_websearch.ts`, `hooks_mcp.ts`, and the splice points in `hooks_read.ts`. The gap survived the 448 tests above because every one of them asserts on the recall pointer, the compressed size, or the cache round-trip, and not one ever looked at what the emitted body was wrapped in -- a missing wrapper produces silence, not a failure.
- *
- * Fixture provenance: HAND-DERIVED. The output strings are synthetic and carry no claim about what a real command emits; they exercise routing, containment and gate arithmetic only. The fence tag comes from the producer's own exported constant on purpose, because the assertions that carry weight here are positional -- what sits inside the fence versus outside it, and whether the fence is paid for before the gate rather than after -- and no restatement of the tag can satisfy those by construction.
- */
+/** Bash was the one site in the codebase where token-goat substituted its own text for a tool result and handed it to the model with no untrusted-content fence. Every other substitution site fences first: `hooks_fetch.ts`, `hooks_websearch.ts`, `hooks_mcp.ts`, and the splice points in `hooks_read.ts`. The gap survived the 448 tests above because every one of them asserts on the recall pointer, the compressed size, or the cache round-trip, and not one ever looked at what the emitted body was wrapped in -- a missing wrapper produces silence, not a failure. Fixture provenance: HAND-DERIVED. The output strings are synthetic and carry no claim about what a real command emits; they exercise routing, containment and gate arithmetic only. The fence tag comes from the producer's own exported constant on purpose, because the assertions that carry weight here are positional -- what sits inside the fence versus outside it, and whether the fence is paid for before the gate rather than after -- and no restatement of the tag can satisfy those by construction. */
 describe('postBashHandler fences the bytes it substitutes', () => {
   const OPEN = `<${UNTRUSTED_TOOL_TAG}>`
   const CLOSE = `</${UNTRUSTED_TOOL_TAG}>`
@@ -4961,19 +4816,14 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
 
   it('denies a source code .NET file read with surgical symbol read hint', () => {
     const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('src/auth.ts')`))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('PowerShell `[IO.File]::ReadAllText()` bypasses read hooks')
-      expect(result.message).toContain('token-goat outline "src/auth.ts"')
-    }
+    expect(interceptedReadHint(result)).not.toBeNull()
+    expect(interceptedReadHint(result)).toContain('token-goat outline "src/auth.ts"')
   })
 
   it('denies a doc .NET file read with section hint', () => {
     const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('README.md')`))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat section "README.md::SectionHeading"')
-    }
+    expect(interceptedReadHint(result)).not.toBeNull()
+    expect(interceptedReadHint(result)).toContain('token-goat section "README.md::SectionHeading"')
   })
 
   it('emits advisory contextOutput for SQL .NET file read', () => {
@@ -4995,11 +4845,9 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
   // HAND-DERIVED: surgicalHintFor (src/hooks_bash.ts) points an isEnv read at `config-get ... KEY_NAME`, and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy.
   it('denies a .NET .env file read with a config-get hint, not the generic symbol hint', () => {
     const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('.env')`))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat config-get ".env" KEY_NAME')
-      expect(result.message).not.toContain('SymbolName')
-    }
+    expect(interceptedReadHint(result)).not.toBeNull()
+    expect(interceptedReadHint(result)).toContain('token-goat config-get ".env" KEY_NAME')
+    expect(interceptedReadHint(result)).not.toContain('SymbolName')
   })
 })
 
@@ -5035,14 +4883,9 @@ describe('extractPythonFileRead — PowerShell here-string and multi-format supp
     expect(r).toBeNull()
   })
 
-  it('denies PowerShell here-string python read of source file with symbol read hint', () => {
+  it('intercepts PowerShell here-string python read of source file with symbol read hint', () => {
     const cmd = "@'\nwith open(\"src/worker.py\") as f:\n  content = f.read()\n'@ | python -"
-    const result = preBashHandler(makeBashEvent(cmd))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('Python `open()` file reads bypass read hooks')
-      expect(result.message).toContain('token-goat outline "src/worker.py"')
-    }
+    expect(interceptedReadHint(preBashHandler(makeBashEvent(cmd)))).toContain('token-goat outline "src/worker.py"')
   })
 
   it('emits advisory contextOutput for Python reading a SQL file', () => {

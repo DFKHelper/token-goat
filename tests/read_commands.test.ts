@@ -54,9 +54,7 @@ vi.mock('../src/hooks_index.js', async () => ({
   enqueueDirtyPathSafe: vi.fn(),
 }))
 
-// Partial-mock rather than a bare factory: only globalDbPath needs redirecting, and a factory
-// listing it alone silently drops every other export, so any module reaching for a different one
-// fails to load with "No X export is defined on the mock" rather than getting the real value.
+// Partial-mock rather than a bare factory: only globalDbPath needs redirecting, and a factory listing it alone silently drops every other export, so any module reaching for a different one fails to load with "No X export is defined on the mock" rather than getting the real value.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return { ...actual, globalDbPath: vi.fn(() => ':memory:') }
@@ -68,8 +66,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   return { ...actual, runGit: vi.fn() }
 })
 
-// Stub config so overflow-guard tests can set a small max_tokens without writing a real
-// config.toml; other tests get a permissive default (enabled, 25000) from beforeEach below.
+// Stub config so overflow-guard tests can set a small max_tokens without writing a real config.toml; other tests get a permissive default (enabled, 25000) from beforeEach below.
 vi.mock('../src/config.js', () => ({
   loadConfig: vi.fn(),
 }))
@@ -157,39 +154,45 @@ function capture(fn: () => void): { stdout: string; stderr: string } {
   let stderr = ''
   const origOut = process.stdout.write.bind(process.stdout)
   const origErr = process.stderr.write.bind(process.stderr)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(process.stdout as any).write = (s: string) => { stdout += s; return true }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(process.stderr as any).write = (s: string) => { stderr += s; return true }
   try {
     fn()
   } finally {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(process.stdout as any).write = origOut
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(process.stderr as any).write = origErr
   }
   return { stdout, stderr }
 }
 
-/** Async twin of {@link capture}. The zip commands became async when fflate moved to a lazy
- * import, and awaiting inside a sync `capture(fn)` would restore the real streams before the
- * command had written anything. */
+/** Async twin of {@link capture}. The zip commands became async when fflate moved to a lazy import, and awaiting inside a sync `capture(fn)` would restore the real streams before the command had written anything. */
 async function captureAsync(fn: () => Promise<void>): Promise<{ stdout: string; stderr: string }> {
   let stdout = ''
   let stderr = ''
   const origOut = process.stdout.write.bind(process.stdout)
   const origErr = process.stderr.write.bind(process.stderr)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(process.stdout as any).write = (s: string) => { stdout += s; return true }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(process.stderr as any).write = (s: string) => { stderr += s; return true }
   try {
     await fn()
   } finally {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(process.stdout as any).write = origOut
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(process.stderr as any).write = origErr
   }
   return { stdout, stderr }
@@ -206,8 +209,7 @@ type MockSymbol = {
   parent?: string
 }
 
-// Reads the most recently recorded bytes_saved for a stats `kind` straight out of the real
-// (test-isolated) global.db, so a stat-accounting regression is caught without mocking recordStat.
+// Reads the most recently recorded bytes_saved for a stats `kind` straight out of the real (test-isolated) global.db, so a stat-accounting regression is caught without mocking recordStat.
 function latestStatBytesSaved(kind: string): number {
   const db = getDb(path.join(dataDir(), 'global.db'))
   const row = db.prepare('SELECT bytes_saved FROM stats WHERE kind = ? ORDER BY id DESC LIMIT 1').get(kind) as
@@ -219,13 +221,7 @@ function latestStatBytesSaved(kind: string): number {
 describe('read_commands', () => {
   let tempDir: string
 
-  /**
-   * An empty real file with the given extension, inside this test's temp dir. Several tests below
-   * assert on the message an *empty index result* produces, and used to pass a bare name like
-   * `missing.scala` that never existed on disk. A nonexistent path is now reported as unreadable --
-   * which outranks every language branch -- so those tests would have kept passing while pinning
-   * nothing about the branch they were named for.
-   */
+  /** An empty real file with the given extension, inside this test's temp dir. Several tests below assert on the message an *empty index result* produces, and used to pass a bare name like `missing.scala` that never existed on disk. A nonexistent path is now reported as unreadable -- which outranks every language branch -- so those tests would have kept passing while pinning nothing about the branch they were named for. */
   function emptyFixture(ext: string): string {
     const file = path.join(tempDir, `fixture${ext}`)
     fs.writeFileSync(file, '')
@@ -239,10 +235,7 @@ describe('read_commands', () => {
       indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
-    // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo
-    // top-level; default to "not a git repo" so it falls through to its findProject/cwd fallback
-    // instead of exploding on the bare vi.fn() this file's util.js mock otherwise leaves runGit
-    // as. Individual tests below (e.g. runChanged) override this per-test as needed.
+    // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo top-level; default to "not a git repo" so it falls through to its findProject/cwd fallback instead of exploding on the bare vi.fn() this file's util.js mock otherwise leaves runGit as. Individual tests below (e.g. runChanged) override this per-test as needed.
     vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
   })
 
@@ -283,7 +276,8 @@ describe('read_commands', () => {
     })
 
     it('appends a Did you mean block with near-name candidates on a miss', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name !== undefined) return [] // the primary lookup misses
         // the near-name scan (no `name` filter) sees the full indexed set
@@ -300,11 +294,11 @@ describe('read_commands', () => {
     })
 
     it('excludes 1-2 char indexed names from the reverse-containment match and ranks the closest-length candidate first (regression: unfloored reverse containment let `b`/`n`/etc. bury the real match)', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name !== undefined) return []
-        // `b`, `n`, `mb` are all substrings of 'runSymbo' and would previously match via
-        // reverse containment (query.includes(shortSymbol)), crowding out the real answer.
+        // `b`, `n`, `mb` are all substrings of 'runSymbo' and would previously match via reverse containment (query.includes(shortSymbol)), crowding out the real answer.
         return [
           { name: 'b', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
           { name: 'n', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '', parent: '' },
@@ -318,8 +312,7 @@ describe('read_commands', () => {
       expect(text).not.toContain('  - b')
       expect(text).not.toContain('  - n')
       expect(text).not.toContain('  - mb')
-      // 'runSymbol' (9 chars) is closer in length to the 8-char query than 'run' (3 chars),
-      // so it must be listed first even though `run` also qualifies via forward containment.
+      // 'runSymbol' (9 chars) is closer in length to the 8-char query than 'run' (3 chars), so it must be listed first even though `run` also qualifies via forward containment.
       const lines = text.split('\n')
       const runSymbolIdx = lines.indexOf('  - runSymbol')
       const runIdx = lines.indexOf('  - run')
@@ -330,7 +323,8 @@ describe('read_commands', () => {
 
     // Substring ranking cannot reach a typo that DROPS or SWAPS a character: `parseConfg` is neither a substring of `parseConfig` nor the reverse, so every candidate is filtered out and the caller is sent to outline for a name one keystroke away. A bounded edit-distance pass runs only when substring matching found nothing, so it can add an answer where there was none but can never reorder or displace a substring match.
     it('surfaces a one-character-typo symbol that substring matching cannot reach', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name !== undefined) return []
         return [
@@ -345,7 +339,8 @@ describe('read_commands', () => {
 
     // The edit-distance pass must stay a fallback rather than a net: a query far from every candidate still yields no suggestion, so the block never fills with noise simply because the substring pass came back empty.
     it('still suggests nothing when no candidate is within the typo threshold', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name !== undefined) return []
         return [
@@ -377,7 +372,8 @@ describe('read_commands', () => {
     })
 
     it('leaves --json output on a miss unchanged by the Did you mean suggestion', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name !== undefined) return []
         return [{ name: 'runSymbol', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '', parent: '' }]
@@ -396,7 +392,8 @@ describe('read_commands', () => {
 
     it('emits JSON when json flag is set', () => {
       const sym: MockSymbol = { name: 'fn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'function fn() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockCountSymbols.mockReturnValue(1)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
@@ -408,7 +405,8 @@ describe('read_commands', () => {
 
     it('reports the true DB total (ignoring the SQL LIMIT already applied to `results`) in --json totalCount, marking truncated even when overflow_guard never kicks in (regression: totalCount used to equal results.length, silently hiding matches beyond --limit)', () => {
       const sym: MockSymbol = { name: 'main', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'function main() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       // 105 real matches in the DB; querySymbols's own LIMIT already cut that down to the 1 row returned above.
       mockCountSymbols.mockReturnValue(105)
@@ -433,7 +431,8 @@ describe('read_commands', () => {
         body: 'x'.repeat(50),
         docstring: '',
       }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockCountSymbols.mockReturnValue(50)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
@@ -457,7 +456,8 @@ describe('read_commands', () => {
         body: 'x'.repeat(50),
         docstring: '',
       }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockCountSymbols.mockReturnValue(50)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
@@ -479,7 +479,8 @@ describe('read_commands', () => {
         body: '',
         docstring: '',
       }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
 
       const { text: stdout } = runSymbol({ name: 'Example' })
@@ -505,43 +506,39 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'stale-symbol.ts')
       fs.writeFileSync(f, content)
       const sym: MockSymbol = { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: content, docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockGetFileEntry.mockReturnValueOnce({
         filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
       } as never)
       const { text: stdout } = runSymbol({ name: 'foo', file: f })
-      // Fix: a stale sha triggers an inline reparse (indexFileSync) before the query runs,
-      // instead of just prepending a warning telling the agent to burn a full-file read.
+      // Fix: a stale sha triggers an inline reparse (indexFileSync) before the query runs, instead of just prepending a warning telling the agent to burn a full-file read.
       expect(mockIndexFileSync).toHaveBeenCalled()
       expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f), { alreadyResolved: true })
       expect(stdout).not.toContain('STALE')
       expect(stdout).toContain('foo')
     })
 
-    // This used to assert getFileEntry was never called on a file-less query, on the reasoning that
-    // there is no single file to stale-check. There is no file the *caller named*, but the query's
-    // own results name several, and skipping them is what let a bare `symbol NAME` answer from a
-    // stale row while `read "file::symbol"` on the same file self-healed. The banner is still never
-    // printed -- a healed row needs no warning -- but the check now happens.
+    // This used to assert getFileEntry was never called on a file-less query, on the reasoning that there is no single file to stale-check. There is no file the *caller named*, but the query's own results name several, and skipping them is what let a bare `symbol NAME` answer from a stale row while `read "file::symbol"` on the same file self-healed. The banner is still never printed -- a healed row needs no warning -- but the check now happens.
     it('stale-checks the files its own results came from on a broad (file-less) symbol query', () => {
       const content = 'export function foo() {}\n'
       const f = path.join(tempDir, 'broad-symbol.ts')
       fs.writeFileSync(f, content)
       const sym: MockSymbol = { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: content, docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runSymbol({ name: 'foo' })
       expect(stdout).not.toContain('STALE')
       expect(mockGetFileEntry).toHaveBeenCalledWith(f)
     })
 
-    // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely exists would
-    // otherwise be reported as "no matches" -- a wrong answer, not just a permissive input.
-    // limit: 0 (or negative) must be rejected up front instead of reaching querySymbols.
+    // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely exists would otherwise be reported as "no matches" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be rejected up front instead of reaching querySymbols.
     it('rejects limit: 0 as an explicit invalid-argument error instead of querying with it', () => {
       const sym: MockSymbol = { name: 'loadGrammar', kind: 'function', filePath: 'src/parser.ts', lineStart: 1, lineEnd: 2, body: 'function loadGrammar() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text, code } = runSymbol({ name: 'loadGrammar', limit: 0 })
       expect(code).toBe(1)
@@ -557,17 +554,14 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).not.toHaveBeenCalled()
     })
 
-    // getDisplayRoot()/toDisplayPath() wiring: runSymbol never resolved its own project root
-    // before this fix, so its header always printed the raw absolute filePath. process.cwd() in
-    // this test process is this repo's own root (no chdir happens anywhere in this file), so
-    // findProject(cwd) resolves to this repo, and a fixture path genuinely inside it is now
-    // shortened for human output while a path outside it (an unrelated temp dir) stays absolute.
+    // getDisplayRoot()/toDisplayPath() wiring: runSymbol never resolved its own project root before this fix, so its header always printed the raw absolute filePath. process.cwd() in this test process is this repo's own root (no chdir happens anywhere in this file), so findProject(cwd) resolves to this repo, and a fixture path genuinely inside it is now shortened for human output while a path outside it (an unrelated temp dir) stays absolute.
     describe('project-relative display paths (toDisplayPath/getDisplayRoot wiring)', () => {
       const inProjectAbs = path.join(process.cwd(), 'src', 'display-fixture.ts')
       const outOfProjectAbs = path.join(os.tmpdir(), 'tg-outside-project-fixture', 'far.ts')
 
       it('shortens an in-project symbol path to project-relative in human (non-JSON) output', () => {
         const sym: MockSymbol = { name: 'inProjSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         const { text } = runSymbol({ name: 'inProjSym' })
@@ -578,18 +572,19 @@ describe('read_commands', () => {
       it('leaves an out-of-project symbol path absolute in human output, even alongside an in-project row', () => {
         const inRow: MockSymbol = { name: 'mixedSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
         const outRow: MockSymbol = { name: 'mixedSym', kind: 'function', filePath: outOfProjectAbs, lineStart: 2, lineEnd: 2, body: 'y', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([inRow, outRow] as any)
         const { text } = runSymbol({ name: 'mixedSym' })
         expect(text).toContain('src/display-fixture.ts:1-1')
-        // Out-of-project rows are returned unchanged by toDisplayPath (absolute, un-normalized) --
-        // it only ever normalizes slashes for a path it actually shortens.
+        // Out-of-project rows are returned unchanged by toDisplayPath (absolute, un-normalized) -- it only ever normalizes slashes for a path it actually shortens.
         expect(text).toContain(`${outOfProjectAbs}:2-2`)
       })
 
       // Oracle replaced: this used to assert --json "stays absolute", pinning the very inconsistency being fixed -- outline/skeleton/refs/types/dead/callers/test-for --json all render rows through toDisplayPath because root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, and `symbol` was the last holdout. The invariant that was worth keeping -- an out-of-project path must NOT be mangled into something relative -- is kept below as the negative control.
       it('--json renders an in-project filePath root-relative, matching human output and the outline/skeleton/refs --json convention', () => {
         const sym: MockSymbol = { name: 'jsonSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockCountSymbols.mockReturnValue(1)
@@ -600,6 +595,7 @@ describe('read_commands', () => {
 
       it('--json leaves an out-of-project filePath absolute (negative control: root-relativising is not applied blindly)', () => {
         const sym: MockSymbol = { name: 'jsonFarSym', kind: 'function', filePath: outOfProjectAbs, lineStart: 2, lineEnd: 2, body: 'y', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockCountSymbols.mockReturnValue(1)
@@ -610,6 +606,7 @@ describe('read_commands', () => {
 
       it('produces identical output whether process.cwd() is the project root or a subdirectory of it (cwd-independence)', () => {
         const sym: MockSymbol = { name: 'cwdIndepSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         const before = process.cwd()
@@ -649,6 +646,7 @@ describe('read_commands', () => {
           { name: 'runWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
           { name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '' },
         ]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
         const { text, code } = runSymbol({ grep: '^run' })
@@ -662,6 +660,7 @@ describe('read_commands', () => {
           { name: 'run(worker)', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
           { name: 'runOther', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '' },
         ]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
         // '(worker' is invalid regex (unbalanced paren) -- must fall back to literal substring.
@@ -671,12 +670,7 @@ describe('read_commands', () => {
         expect(text).not.toContain('runOther')
       })
 
-      // This is the trap called out in the task spec: querySymbols applies a SQL LIMIT before
-      // --grep ever sees the rows. If the implementation naively passed the caller's small
-      // --limit straight through to the SQL query and filtered afterward, the unfiltered top-N
-      // would be dominated by non-matching noise and the matching rows past row N would never
-      // even be fetched. The over-fetch-then-filter-then-slice fix must still return a full
-      // --limit worth of MATCHING rows.
+      // This is the trap called out in the task spec: querySymbols applies a SQL LIMIT before --grep ever sees the rows. If the implementation naively passed the caller's small --limit straight through to the SQL query and filtered afterward, the unfiltered top-N would be dominated by non-matching noise and the matching rows past row N would never even be fetched. The over-fetch-then-filter-then-slice fix must still return a full --limit worth of MATCHING rows.
       it('filters the SQL result BEFORE the --limit slice, not after (regression: --limit N --grep P must return up to N matching rows, not N unfiltered rows filtered down)', () => {
         const items: MockSymbol[] = []
         for (let i = 0; i < 40; i++) {
@@ -685,10 +679,7 @@ describe('read_commands', () => {
         for (let i = 0; i < 10; i++) {
           items.push({ name: `run${i}`, kind: 'function', filePath: 'a.ts', lineStart: 100 + i, lineEnd: 100 + i, body: '', docstring: '' })
         }
-        // Mimics the real SQL `LIMIT ?` behavior: only returns as many rows as the query asked
-        // for. If runSymbol passes the caller's small --limit straight through instead of
-        // over-fetching, this mock hands back only noise rows and every 'run*' row is lost
-        // before --grep ever runs.
+        // Mimics the real SQL `LIMIT ?` behavior: only returns as many rows as the query asked for. If runSymbol passes the caller's small --limit straight through instead of over-fetching, this mock hands back only noise rows and every 'run*' row is lost before --grep ever runs.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockImplementation((opts?: any) => {
           const lim = (opts?.limit as number | undefined) ?? items.length
@@ -705,6 +696,7 @@ describe('read_commands', () => {
         const items: MockSymbol[] = [
           { name: 'runFoo', kind: 'function', filePath: 'src/bar.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
         ]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
         const { code } = runSymbol({ grep: '^run', kind: 'function', file: 'src/bar.ts' })
@@ -718,6 +710,7 @@ describe('read_commands', () => {
         const items: MockSymbol[] = [
           { name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
         ]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
         const { text, code } = runSymbol({ grep: '^run' })
@@ -731,6 +724,7 @@ describe('read_commands', () => {
         const items: MockSymbol[] = [
           { name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
         ]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
         const { text, code } = runSymbol({ grep: '^run', json: true })
@@ -746,11 +740,10 @@ describe('read_commands', () => {
           { name: 'runB', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '' },
           { name: 'stopC', kind: 'function', filePath: 'a.ts', lineStart: 3, lineEnd: 3, body: '', docstring: '' },
         ]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
-        // countSymbols would report the whole pre-grep scope (3) if it were used for grep's
-        // totalCount instead of the post-grep filtered count (2) -- contradicting the 2 rows
-        // actually returned.
+        // countSymbols would report the whole pre-grep scope (3) if it were used for grep's totalCount instead of the post-grep filtered count (2) -- contradicting the 2 rows actually returned.
         mockCountSymbols.mockReturnValue(3)
         const { text } = runSymbol({ grep: '^run', json: true })
         const parsed = JSON.parse(text) as { items: unknown[]; truncated: boolean; totalCount: number }
@@ -763,6 +756,7 @@ describe('read_commands', () => {
     describe('--stats', () => {
       it('text mode: header line carries the ref count and documented flag', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: '', docstring: 'does a thing' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['myFn', 7]]))
@@ -773,24 +767,22 @@ describe('read_commands', () => {
 
       it('without --stats: output is byte-identical to the pre-existing (no-suffix) expectation, and queryRefCounts is not called', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         const withStats = runSymbol({ name: 'myFn', stats: true })
         mockQueryRefCounts.mockClear()
         const withoutStats = runSymbol({ name: 'myFn' })
         expect(withoutStats.text).toBe('# myFn (function) — src/foo.ts:1-1')
-        // Dead-wiring guard: prove --stats actually changes output rather than merely being
-        // accepted and ignored -- a byte-identical assertion alone can't catch a flag that was
-        // registered on the CLI but never forwarded into the handler.
+        // Dead-wiring guard: prove --stats actually changes output rather than merely being accepted and ignored -- a byte-identical assertion alone can't catch a flag that was registered on the CLI but never forwarded into the handler.
         expect(withStats.text).not.toBe(withoutStats.text)
         expect(mockQueryRefCounts).not.toHaveBeenCalled()
       })
 
       it('a relative filePath is never labelled deleted, because it would be resolved against the wrong directory', () => {
-        // `symbol NAME` searches every indexed project. Resolving a relative row against the
-        // current directory would report another project's live file as gone, so the deleted tag
-        // is only claimed for absolute paths. This path does not exist relative to the repo root.
+        // `symbol NAME` searches every indexed project. Resolving a relative row against the current directory would report another project's live file as gone, so the deleted tag is only claimed for absolute paths. This path does not exist relative to the repo root.
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/nowhere-at-all.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         expect(runSymbol({ name: 'myFn' }).text).not.toContain('DELETED')
@@ -798,6 +790,7 @@ describe('read_commands', () => {
 
       it('JSON mode: refCount and hasDoc are present with --stats, absent without it', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['myFn', 5]]))
@@ -816,6 +809,7 @@ describe('read_commands', () => {
 
       it('queryRefCounts is not called when a --grep search filters to zero matches, even with --stats set', () => {
         const items: MockSymbol[] = [{ name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
         mockQueryRefCounts.mockClear()
@@ -828,6 +822,7 @@ describe('read_commands', () => {
           { name: 'runA', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
           { name: 'runB', kind: 'function', filePath: 'b.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
         ]
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue(items as any)
         mockQueryRefCounts.mockReturnValue(new Map([['runA', 1], ['runB', 2]]))
@@ -848,10 +843,7 @@ describe('read_commands', () => {
     })
 
     it('caps an oversized plain-file dump per config.overflow_guard.max_tokens (#52)', () => {
-      // Regression: checkOverflow/trimToBudget had zero production callers, so tuning
-      // config.overflow_guard.max_tokens did nothing. Fails on pre-fix code (full content
-      // passes through untouched, no marker) and passes once runRead's whole-file emit
-      // routes through emitGuarded.
+      // Regression: checkOverflow/trimToBudget had zero production callers, so tuning config.overflow_guard.max_tokens did nothing. Fails on pre-fix code (full content passes through untouched, no marker) and passes once runRead's whole-file emit routes through emitGuarded.
       mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 50 },
@@ -887,8 +879,7 @@ describe('read_commands', () => {
       expect(code).toBe(1)
     })
 
-    // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own
-    // not-found wording untouched -- only the bare-name (no `::` at all) case below changes.
+    // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own not-found wording untouched -- only the bare-name (no `::` at all) case below changes.
     it('a proper file::symbol spec with a bad symbol keeps its existing not-found wording', () => {
       mockQuerySymbols.mockReturnValue([])
       const { text, code } = runRead({ spec: 'src/foo.ts::missingSymbol' })
@@ -897,11 +888,10 @@ describe('read_commands', () => {
       expect(text).not.toContain('Invalid spec')
     })
 
-    // Cross-file "did you mean": `walkProject` is guessed against the wrong file (`src/util.ts`)
-    // but is actually defined in `src/baseline.ts`. The new lead line must name that file and
-    // spec BEFORE the existing (unchanged) same-file "Did you mean" list.
+    // Cross-file "did you mean": `walkProject` is guessed against the wrong file (`src/util.ts`) but is actually defined in `src/baseline.ts`. The new lead line must name that file and spec BEFORE the existing (unchanged) same-file "Did you mean" list.
     it('leads with the cross-file spec when the symbol name exists in a different, indexed file', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'walkProject' && opts?.filePath === undefined) {
           return [{ name: 'walkProject', kind: 'function', filePath: 'src/baseline.ts', lineStart: 10, lineEnd: 20, body: '', docstring: '', parent: '' }]
@@ -910,9 +900,7 @@ describe('read_commands', () => {
           return []
         }
         if (opts?.filePath !== undefined) {
-          // Similar (not just any) names, so the fixed ranking still surfaces them -- an
-          // unrelated same-file candidate would now correctly be filtered out, defeating this
-          // test's actual point (lead-line ordering ahead of the same-file did-you-mean list).
+          // Similar (not just any) names, so the fixed ranking still surfaces them -- an unrelated same-file candidate would now correctly be filtered out, defeating this test's actual point (lead-line ordering ahead of the same-file did-you-mean list).
           return [
             { name: 'walkProjectSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' },
             { name: 'walkProjectHelper', kind: 'function', filePath: 'src/util.ts', lineStart: 3, lineEnd: 4, body: '', docstring: '', parent: '' },
@@ -937,7 +925,8 @@ describe('read_commands', () => {
     })
 
     it('a symbol name that exists nowhere still gets the plain not-found message plus the unchanged same-file list only', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'totallyMissingEverywhere') return []
         if (opts?.filePath !== undefined) {
@@ -954,11 +943,10 @@ describe('read_commands', () => {
       expect(text).toContain('totallyMissingEverywhereToo')
     })
 
-    // Defect fix: the did-you-mean list used to be an arbitrary same-file dump regardless of
-    // relevance to the query. When nothing in the file resembles the query, point at `outline`
-    // (the command that lists the file's real symbols) instead of dead-ending silently.
+    // Defect fix: the did-you-mean list used to be an arbitrary same-file dump regardless of relevance to the query. When nothing in the file resembles the query, point at `outline` (the command that lists the file's real symbols) instead of dead-ending silently.
     it('points at outline when a symbol miss has no similar same-file candidates', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'zzz_totally_unrelated') return []
         if (opts?.filePath !== undefined) {
@@ -972,20 +960,14 @@ describe('read_commands', () => {
       expect(text).toContain('token-goat outline src/util.ts')
     })
 
-    // The database-layer cap used to be applied BEFORE ranking (querySymbols({ limit:
-    // DIDYOUMEAN_LIMIT })), so on a file with many symbols the true near-match could be
-    // outside the arbitrary storage-order first-N and never even considered for ranking.
-    // Fixed by scanning a bounded superset (FIND_SCAN_LIMIT) and ranking BEFORE capping.
-    // Query is 'parseConf' (a genuine forward-substring prefix of 'parseConfig'), not a typo
-    // like 'parseConfg' -- the reused substring-based matcher (same one runSymbol already
-    // uses) does not catch a missing-interior-character typo, only real substring relations.
+    // The database-layer cap used to be applied BEFORE ranking (querySymbols({ limit: DIDYOUMEAN_LIMIT })), so on a file with many symbols the true near-match could be outside the arbitrary storage-order first-N and never even considered for ranking. Fixed by scanning a bounded superset (FIND_SCAN_LIMIT) and ranking BEFORE capping. Query is 'parseConf' (a genuine forward-substring prefix of 'parseConfig'), not a typo like 'parseConfg' -- the reused substring-based matcher (same one runSymbol already uses) does not catch a missing-interior-character typo, only real substring relations.
     it('finds the true near-match even when it is not among the first DIDYOUMEAN_LIMIT symbols in storage order (defect-B regression)', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'parseConf') return []
         if (opts?.filePath !== undefined) {
-          // Twelve unrelated names first (storage order), then the true near-match last --
-          // capping at DIDYOUMEAN_LIMIT (5) before ranking would never see it.
+          // Twelve unrelated names first (storage order), then the true near-match last -- capping at DIDYOUMEAN_LIMIT (5) before ranking would never see it.
           const unrelated = Array.from({ length: 12 }, (_, i) => ({
             name: `alpha${i + 1}`, kind: 'function', filePath: 'src/util.ts', lineStart: i + 1, lineEnd: i + 1, body: '', docstring: '', parent: '',
           }))
@@ -1000,13 +982,11 @@ describe('read_commands', () => {
       expect(text).not.toContain('alpha')
     })
 
-    // Regression: a bare symbol name with no `::` used to say "Could not read: <name>" once
-    // readFileText failed, which frames a spec-format mistake as a filesystem problem and
-    // sends an agent hunting for a file that was never the argument's intent. When the bare
-    // name IS indexed, point at the exact `file::symbol` spec to retry with instead.
+    // Regression: a bare symbol name with no `::` used to say "Could not read: <name>" once readFileText failed, which frames a spec-format mistake as a filesystem problem and sends an agent hunting for a file that was never the argument's intent. When the bare name IS indexed, point at the exact `file::symbol` spec to retry with instead.
     it('a bare indexed name (no :: separator) points at the resolved file::symbol spec instead of falsely claiming a file could not be read', () => {
       const sym: MockSymbol = { name: 'didYouMean', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text, code } = runRead({ spec: 'didYouMean' })
       expect(code).toBe(1)
@@ -1015,9 +995,7 @@ describe('read_commands', () => {
       expect(text).toContain('token-goat read "src/read_commands.ts::didYouMean"')
     })
 
-    // When the bare name matches nothing indexed either, fall back to the same "Invalid spec"
-    // wording `similar`/`blame` (graph_commands.ts) already use for this exact case, instead
-    // of a third, differently-worded dialect of the same error.
+    // When the bare name matches nothing indexed either, fall back to the same "Invalid spec" wording `similar`/`blame` (graph_commands.ts) already use for this exact case, instead of a third, differently-worded dialect of the same error.
     it('a bare unindexed name (no :: separator) gets the shared "Invalid spec" wording, not a false "Could not read"', () => {
       mockQuerySymbols.mockReturnValue([])
       const { text, code } = runRead({ spec: 'totallyUnknownSymbolXyz' })
@@ -1028,7 +1006,8 @@ describe('read_commands', () => {
 
     it('prints body when symbol found', () => {
       const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
       expect(stdout).toContain('myFn')
@@ -1046,7 +1025,8 @@ describe('read_commands', () => {
         body: '',
         docstring: '',
       }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
 
       const { text: stdout } = runRead({ spec: `${filePath}::Example` })
@@ -1062,7 +1042,8 @@ describe('read_commands', () => {
         overflow_guard: { enabled: true, max_tokens: 50 },
       } as unknown as ReturnType<typeof loadConfig>)
       const sym: MockSymbol = { name: 'hugeFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 500, body: 'x'.repeat(2000), docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runRead({ spec: 'src/foo.ts::hugeFn' })
       expect(stdout).toContain('output capped at ~50 tokens')
@@ -1073,7 +1054,8 @@ describe('read_commands', () => {
     it('prints correct line count in header (inclusive both ends)', () => {
       // lineStart=5, lineEnd=10 spans 6 lines, not 5
       const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 5, lineEnd: 10, body: 'function myFn() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
       expect(stdout).toContain('# 6 lines')
@@ -1083,7 +1065,8 @@ describe('read_commands', () => {
     it('adds a narrower-slice header when the read body spans more than the large-symbol threshold', () => {
       const body = Array.from({ length: 400 }, (_, i) => `  line${i + 1}()`).join('\n')
       const sym: MockSymbol = { name: 'bigFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 400, body, docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runRead({ spec: 'src/foo.ts::bigFn' })
       expect(stdout).toContain('# for a narrower slice: token-goat grep "<pattern>" src/foo.ts -C 15 --symbol')
@@ -1091,7 +1074,8 @@ describe('read_commands', () => {
 
     it('does not add the narrower-slice header for a symbol under the large-symbol threshold', () => {
       const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 5, lineEnd: 10, body: 'function myFn() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
       expect(stdout).not.toContain('narrower slice')
@@ -1122,11 +1106,11 @@ describe('read_commands', () => {
     })
 
     it('does not let a bare filename match an indexed path with a different prefix in the partial-path fallback (M34)', () => {
-      // 'src/myutils.ts'.endsWith('utils.ts') is true, but requesting `utils.ts` must not
-      // resolve to a completely different file that merely happens to share a suffix.
+      // 'src/myutils.ts'.endsWith('utils.ts') is true, but requesting `utils.ts` must not resolve to a completely different file that merely happens to share a suffix.
       const wrongMatch: MockSymbol = { name: 'helper', kind: 'function', filePath: 'src/myutils.ts', lineStart: 1, lineEnd: 3, body: 'function helper() {}', docstring: '' }
       mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.filePath !== undefined) return []
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return [wrongMatch as any]
       })
@@ -1138,6 +1122,7 @@ describe('read_commands', () => {
       const rightMatch: MockSymbol = { name: 'helper', kind: 'function', filePath: 'src/utils.ts', lineStart: 1, lineEnd: 3, body: 'function helper() {}', docstring: '' }
       mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.filePath !== undefined) return []
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return [rightMatch as any]
       })
@@ -1146,8 +1131,7 @@ describe('read_commands', () => {
     })
 
     it('disambiguates a dotted symbol by its class qualifier when two classes share a method name (M35)', () => {
-      // ClassA and ClassB both define `render`; `ClassB.render` must resolve to ClassB's copy,
-      // not silently fall through to whichever same-named method the index happens to list first.
+      // ClassA and ClassB both define `render`; `ClassB.render` must resolve to ClassB's copy, not silently fall through to whichever same-named method the index happens to list first.
       const classB: MockSymbol = { name: 'ClassB', kind: 'class', filePath: 'src/comp.ts', lineStart: 20, lineEnd: 30, body: 'class ClassB {}', docstring: '' }
       const renderInA: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 3, lineEnd: 5, body: 'ClassA.render body', docstring: '' }
       const renderInB: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 22, lineEnd: 24, body: 'ClassB.render body', docstring: '' }
@@ -1162,12 +1146,7 @@ describe('read_commands', () => {
     })
 
     it('disambiguates a dotted symbol by docstring parent when the class symbol is a single-line span (regex adapters, M35b)', () => {
-      // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a
-      // class symbol at lineStart === lineEnd (the header line only, not the full body), so
-      // the line-containment check the M35 test above exercises always misses for them. These
-      // adapters instead record the parent class name in the method symbol's own docstring
-      // field. B.foo must resolve to B's copy via that docstring match, not silently fall
-      // through to whichever same-named method the index lists first.
+      // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a class symbol at lineStart === lineEnd (the header line only, not the full body), so the line-containment check the M35 test above exercises always misses for them. These adapters instead record the parent class name in the method symbol's own docstring field. B.foo must resolve to B's copy via that docstring match, not silently fall through to whichever same-named method the index lists first.
       const classA: MockSymbol = { name: 'A', kind: 'class', filePath: 'src/widget.php', lineStart: 1, lineEnd: 1, body: 'class A {', docstring: '' }
       const classB: MockSymbol = { name: 'B', kind: 'class', filePath: 'src/widget.php', lineStart: 10, lineEnd: 10, body: 'class B {', docstring: '' }
       const fooInA: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 3, lineEnd: 5, body: 'A.foo body', docstring: 'A' }
@@ -1184,13 +1163,7 @@ describe('read_commands', () => {
     })
 
     it('backward-compat: rows with parent === "" (schema v8, not yet reindexed since the v8->v9 parent-column migration) still resolve via the docstring-as-parent fallback', () => {
-      // Explicit regression coverage for the migration's compatibility contract: a symbol
-      // written before this change (parent column defaulted to '' by the ALTER TABLE) but
-      // whose docstring still holds the old overloaded parent-name convention must keep
-      // resolving correctly until the file is reindexed and a real `parent` is populated.
-      // (M35b above exercises the same fallback implicitly via MockSymbol objects that omit
-      // `parent` entirely -- TypeScript's optional field defaults it to undefined, not the
-      // real schema's '', so this test pins the exact post-migration on-disk shape.)
+      // Explicit regression coverage for the migration's compatibility contract: a symbol written before this change (parent column defaulted to '' by the ALTER TABLE) but whose docstring still holds the old overloaded parent-name convention must keep resolving correctly until the file is reindexed and a real `parent` is populated. (M35b above exercises the same fallback implicitly via MockSymbol objects that omit `parent` entirely -- TypeScript's optional field defaults it to undefined, not the real schema's '', so this test pins the exact post-migration on-disk shape.)
       const classA: MockSymbol = { name: 'A', kind: 'class', filePath: 'src/widget.php', lineStart: 1, lineEnd: 1, body: 'class A {', docstring: '', parent: '' }
       const classB: MockSymbol = { name: 'B', kind: 'class', filePath: 'src/widget.php', lineStart: 10, lineEnd: 10, body: 'class B {', docstring: '', parent: '' }
       const fooInA: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 3, lineEnd: 5, body: 'A.foo body', docstring: 'A', parent: '' }
@@ -1207,10 +1180,7 @@ describe('read_commands', () => {
     })
 
     describe('ambiguous resolution (formatAmbiguity)', () => {
-      // Generic pool-filter mock: matches real querySymbols' AND-of-provided-fields semantics
-      // (unlike other tests in this file, which special-case each expected call by hand) so a
-      // spec resolved through the ambiguity path and then fed back in via a suggested retry
-      // both go through the exact same filtering logic.
+      // Generic pool-filter mock: matches real querySymbols' AND-of-provided-fields semantics (unlike other tests in this file, which special-case each expected call by hand) so a spec resolved through the ambiguity path and then fed back in via a suggested retry both go through the exact same filtering logic.
       function poolMock(pool: MockSymbol[]): void {
         mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
           let rows = pool
@@ -1235,8 +1205,7 @@ describe('read_commands', () => {
         // Same-file candidates: the label itself (before the arrow) carries no file-path prefix.
         expect(stdout).not.toContain('src/comp.ts::ClassA.render (line')
         expect(stdout).not.toContain('src/comp.ts::ClassB.render (line')
-        // Retry re-targets the original (already-unambiguous-per-file) spec, byte-for-byte
-        // unchanged from the pre-fix same-file suggestion.
+        // Retry re-targets the original (already-unambiguous-per-file) spec, byte-for-byte unchanged from the pre-fix same-file suggestion.
         expect(stdout).toContain('token-goat read "src/comp.ts::ClassA.render"')
         expect(stdout).toContain('token-goat read "src/comp.ts::ClassB.render"')
 
@@ -1250,9 +1219,7 @@ describe('read_commands', () => {
       })
 
       it('cross-file ambiguity: two different files each defining a same-named top-level symbol get distinguishable labels and per-file working retries', () => {
-        // findParentName has no cross-file concept of "parent" -- both candidates are genuine
-        // top-level definitions in different files, so it returns null for both. Before the
-        // fix both rendered as the identical "- helper (line N)" with no file shown.
+        // findParentName has no cross-file concept of "parent" -- both candidates are genuine top-level definitions in different files, so it returns null for both. Before the fix both rendered as the identical "- helper (line N)" with no file shown.
         const fileA = resolveIndexPath('src/utils.ts')
         const fileB = resolveIndexPath('lib/utils.ts')
         const helperInA: MockSymbol = { name: 'helper', kind: 'function', filePath: fileA, lineStart: 3, lineEnd: 5, body: 'function helper() { return 1 }', docstring: '' }
@@ -1262,20 +1229,15 @@ describe('read_commands', () => {
         const { text: stdout, code } = runRead({ spec: 'utils.ts::helper' })
         expect(code).toBe(1)
         expect(stdout).toContain("Ambiguous symbol 'helper'")
-        // Distinguishable: each label carries its own file path, not an identical bare "helper (line N)".
-        // fileA/fileB resolve to absolute paths inside this repo's own project root (the test
-        // process's cwd), so formatAmbiguity's toDisplayPath() shortens them to project-relative
-        // form for human output -- src/utils.ts / lib/utils.ts, not the raw absolute fileA/fileB.
+        // Distinguishable: each label carries its own file path, not an identical bare "helper (line N)". fileA/fileB resolve to absolute paths inside this repo's own project root (the test process's cwd), so formatAmbiguity's toDisplayPath() shortens them to project-relative form for human output -- src/utils.ts / lib/utils.ts, not the raw absolute fileA/fileB.
         expect(stdout).toContain('  - src/utils.ts::helper (line 3)')
         expect(stdout).toContain('  - lib/utils.ts::helper (line 7)')
-        // Each retry targets that candidate's own file -- not the original ambiguous "utils.ts" spec,
-        // which would just re-enter this same ambiguous resolution path.
+        // Each retry targets that candidate's own file -- not the original ambiguous "utils.ts" spec, which would just re-enter this same ambiguous resolution path.
         expect(stdout).toContain('token-goat read "src/utils.ts::helper"')
         expect(stdout).toContain('token-goat read "lib/utils.ts::helper"')
         expect(stdout).not.toMatch(/token-goat read "utils\.ts::/)
 
-        // Feed the exact printed retry specs back in and confirm each resolves to exactly one,
-        // correct, distinct candidate -- not just that the text looks right.
+        // Feed the exact printed retry specs back in and confirm each resolves to exactly one, correct, distinct candidate -- not just that the text looks right.
         const retries = [...stdout.matchAll(/token-goat read "([^"]+)"/g)].map((m) => m[1] ?? '')
         expect(retries).toHaveLength(2)
         const a = runRead({ spec: retries[0]! })
@@ -1301,9 +1263,7 @@ describe('read_commands', () => {
         const { text: stdout, code } = runRead({ spec: 'compress.ts::compress' })
         expect(code).toBe(1)
         expect(stdout).toContain("Ambiguous symbol 'compress'")
-        // Cross-file span -> every label is file-prefixed, even the ones with a same-file parent.
-        // Both fixture paths live inside this repo's own project root (the test process's cwd),
-        // so formatAmbiguity's toDisplayPath() shortens fileA/fileB to project-relative form.
+        // Cross-file span -> every label is file-prefixed, even the ones with a same-file parent. Both fixture paths live inside this repo's own project root (the test process's cwd), so formatAmbiguity's toDisplayPath() shortens fileA/fileB to project-relative form.
         expect(stdout).toContain('  - src/compress.ts::ClassA.compress (line 3)')
         expect(stdout).toContain('  - src/compress.ts::ClassB.compress (line 22)')
         expect(stdout).toContain('  - lib/compress.ts::compress (line 7)')
@@ -1325,10 +1285,7 @@ describe('read_commands', () => {
       })
 
       it('a parentless top-level candidate sharing its file with a parented sibling (the original bug: cli.ts::run) gets an @LINE-anchored retry, while the parented sibling keeps its plain qualifier', () => {
-        // Reproduces the reported defect literally: a class method `cmdUninstall.run` (has a
-        // parent) and a top-level function `run` (no parent) both named 'run' in the same file.
-        // Before the fix, the top-level one's suggested retry was the bare 'run' qualifier --
-        // byte-identical to the spec that was already ambiguous, an infinite retry loop.
+        // Reproduces the reported defect literally: a class method `cmdUninstall.run` (has a parent) and a top-level function `run` (no parent) both named 'run' in the same file. Before the fix, the top-level one's suggested retry was the bare 'run' qualifier -- byte-identical to the spec that was already ambiguous, an infinite retry loop.
         const cmdUninstall: MockSymbol = { name: 'cmdUninstall', kind: 'class', filePath: 'src/cli.ts', lineStart: 680, lineEnd: 720, body: '', docstring: '', parent: '' }
         const parentedRun: MockSymbol = { name: 'run', kind: 'method', filePath: 'src/cli.ts', lineStart: 691, lineEnd: 695, body: 'cmdUninstall.run body', docstring: '', parent: 'cmdUninstall' }
         const topLevelRun: MockSymbol = { name: 'run', kind: 'function', filePath: 'src/cli.ts', lineStart: 3999, lineEnd: 4010, body: 'top-level run body', docstring: '', parent: '' }
@@ -1379,16 +1336,7 @@ describe('read_commands', () => {
       })
 
       it('an outer symbol and a same-named symbol nested inside it (HTML heading + html_id colliding on "Overview") get a Parent.symbol retry that actually resolves, not a self-referential qualifier that stays ambiguous', () => {
-        // Reproduces the reported defect literally: an HTML `heading` symbol named "Overview"
-        // spans lines 5-12 (a heading's section extends until the next heading), and an
-        // unrelated `html_id` symbol -- also named "Overview" -- sits on line 12, inside that
-        // span. findParentName (used to LABEL the ambiguity) finds the heading as the html_id's
-        // innermost enclosing symbol and renders the qualifier "Overview.Overview". Before the
-        // fix, feeding that exact qualifier back into resolveSymbolSpec's container-scoping
-        // filter let the heading satisfy containment against ITSELF (a container's span
-        // trivially contains itself when the check doesn't exclude the identical span), so both
-        // candidates stayed in scope and the retry reported ambiguous again -- a hint that could
-        // never resolve the condition it was emitted for.
+        // Reproduces the reported defect literally: an HTML `heading` symbol named "Overview" spans lines 5-12 (a heading's section extends until the next heading), and an unrelated `html_id` symbol -- also named "Overview" -- sits on line 12, inside that span. findParentName (used to LABEL the ambiguity) finds the heading as the html_id's innermost enclosing symbol and renders the qualifier "Overview.Overview". Before the fix, feeding that exact qualifier back into resolveSymbolSpec's container-scoping filter let the heading satisfy containment against ITSELF (a container's span trivially contains itself when the check doesn't exclude the identical span), so both candidates stayed in scope and the retry reported ambiguous again -- a hint that could never resolve the condition it was emitted for.
         const heading: MockSymbol = { name: 'Overview', kind: 'heading', filePath: 'sample.html', lineStart: 5, lineEnd: 12, body: '', docstring: '', parent: '' }
         const htmlId: MockSymbol = { name: 'Overview', kind: 'html_id', filePath: 'sample.html', lineStart: 12, lineEnd: 12, body: '', docstring: '', parent: '' }
         poolMock([heading, htmlId])
@@ -1476,8 +1424,7 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).toHaveBeenCalledWith(expect.objectContaining({ name: 'mySymbol' }))
     })
 
-    // ---- line-range reads (file@N-M) --------------------------------------
-    // These exercise the @N-M syntax the Python build had and the TS port dropped. Each asserts on sliced content, so it fails on pre-feature code (where `file@2-4` fell through to symbol resolution and errored "Could not read") and passes once the range path exists.
+    // ---- line-range reads (file@N-M) -------------------------------------- These exercise the @N-M syntax the Python build had and the TS port dropped. Each asserts on sliced content, so it fails on pre-feature code (where `file@2-4` fell through to symbol resolution and errored "Could not read") and passes once the range path exists.
     describe('line-range reads (file@N-M)', () => {
       function rangeFile(): string {
         const f = path.join(tempDir, 'lines.txt')
@@ -1594,8 +1541,7 @@ describe('read_commands', () => {
           filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
         } as never)
         const { text: stdout } = runRead({ spec: `${f}::foo` })
-        // Fix: a stale sha triggers an inline reparse before the symbol lookup, instead of just
-        // prepending a warning telling the agent to burn a full-file read.
+        // Fix: a stale sha triggers an inline reparse before the symbol lookup, instead of just prepending a warning telling the agent to burn a full-file read.
         expect(mockIndexFileSync).toHaveBeenCalled()
         expect(stdout).not.toContain('STALE')
         expect(stdout).toContain('foo')
@@ -1630,11 +1576,7 @@ describe('read_commands', () => {
         ])
         runRead({ spec: `${f}::newSymbol`, forceRefresh: true })
         expect(mockIndexFileSync).toHaveBeenCalled()
-        // Regression: a --force-refresh reindexFileSync call wipes files.embed_sha (writeParseResult
-        // deletes and reinserts the files row without one) but, before this fix, never enqueued the
-        // file for the worker to re-embed -- token-goat semantic would then serve stale embedded
-        // content (or match nothing) for this file indefinitely. Mirrors cmdReplace's (cli.ts)
-        // enqueueDirtyPathSafe call after its own write.
+        // Regression: a --force-refresh reindexFileSync call wipes files.embed_sha (writeParseResult deletes and reinserts the files row without one) but, before this fix, never enqueued the file for the worker to re-embed -- token-goat semantic would then serve stale embedded content (or match nothing) for this file indefinitely. Mirrors cmdReplace's (cli.ts) enqueueDirtyPathSafe call after its own write.
         expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f), { alreadyResolved: true })
       })
 
@@ -1642,11 +1584,7 @@ describe('read_commands', () => {
         const content = 'export function foo() {\n  return 1\n}'
         const f = path.join(tempDir, 'no-refresh.ts')
         fs.writeFileSync(f, content)
-        // The index is already present and current (sha matches the on-disk bytes), so neither the
-        // stale-sha reparse nor the never-indexed on-demand parse should fire -- and thus no
-        // gratuitous dirty-queue enqueue (which would trigger a needless re-embed). A null
-        // getFileEntry here would instead be the "never indexed" case, which now correctly parses
-        // on demand and DOES enqueue.
+        // The index is already present and current (sha matches the on-disk bytes), so neither the stale-sha reparse nor the never-indexed on-demand parse should fire -- and thus no gratuitous dirty-queue enqueue (which would trigger a needless re-embed). A null getFileEntry here would instead be the "never indexed" case, which now correctly parses on demand and DOES enqueue.
         mockGetFileEntry.mockReturnValueOnce({
           filePath: f, sha: fingerprintContent(content), mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
         } as never)
@@ -1661,9 +1599,7 @@ describe('read_commands', () => {
         const content = 'export function foo() {\n  return 1\n}'
         const f = path.join(tempDir, 'never-indexed.ts')
         fs.writeFileSync(f, content)
-        // getFileEntry null (default mock) == not indexed; the file exists on disk, so the read
-        // path parses it once on demand rather than returning "symbol not found" and forcing a
-        // full-file Read. That reparse enqueues the file for the worker to (re-)embed.
+        // getFileEntry null (default mock) == not indexed; the file exists on disk, so the read path parses it once on demand rather than returning "symbol not found" and forcing a full-file Read. That reparse enqueues the file for the worker to (re-)embed.
         mockGetFileEntry.mockReturnValue(null)
         mockQuerySymbols.mockReturnValue([
           { name: 'foo', filePath: f, lineStart: 1, lineEnd: 3, body: 'export function foo() {}' } as never,
@@ -1691,11 +1627,7 @@ describe('read_commands', () => {
       })
     })
 
-    // ---- `::` numeric line-range fallback ----------------------------------
-    // Agents naturally type `read "file::120-140"` (the `::` symbol separator) instead of the
-    // documented `file@120-140`. Before this fallback that failed with "Symbol not found" and the
-    // agent burned a sed/full-Read round-trip. When the `::` token is a pure numeric range and no
-    // symbol matched, serve those lines instead.
+    // ---- `::` numeric line-range fallback ---------------------------------- Agents naturally type `read "file::120-140"` (the `::` symbol separator) instead of the documented `file@120-140`. Before this fallback that failed with "Symbol not found" and the agent burned a sed/full-Read round-trip. When the `::` token is a pure numeric range and no symbol matched, serve those lines instead.
     describe('read "file::N-M" numeric line-range fallback', () => {
       function rangeFile(): string {
         const f = path.join(tempDir, 'colon-range.txt')
@@ -1735,8 +1667,7 @@ describe('read_commands', () => {
       })
 
       it('does NOT hijack a real symbol whose lookup succeeds (fallback only fires on a miss)', () => {
-        // A genuine symbol match must win; the numeric fallback is a last resort. (No all-digit
-        // identifier is valid anyway, but prove a matched symbol is served, not a line range.)
+        // A genuine symbol match must win; the numeric fallback is a last resort. (No all-digit identifier is valid anyway, but prove a matched symbol is served, not a line range.)
         const f = rangeFile()
         mockQuerySymbols.mockReturnValue([
           { name: 'realSym', filePath: f, lineStart: 1, lineEnd: 2, body: 'real symbol body' } as never,
@@ -1910,6 +1841,7 @@ describe('read_commands', () => {
     describe('--stats', () => {
       it('text mode: header line carries the ref count and documented flag', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: 'does a thing' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['myFn', 7]]))
@@ -1920,6 +1852,7 @@ describe('read_commands', () => {
 
       it('text mode: an undocumented symbol renders "undocumented", not just the documented case', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['myFn', 0]]))
@@ -1930,6 +1863,7 @@ describe('read_commands', () => {
 
       it('text mode: a single ref renders "1 ref", not "1 refs" -- the plural-only assertions above pass either way, so the singular branch needs its own pin', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: 'does a thing' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['myFn', 1]]))
@@ -1940,6 +1874,7 @@ describe('read_commands', () => {
 
       it('JSON mode: refCount is present with the right number', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['myFn', 5]]))
@@ -1950,6 +1885,7 @@ describe('read_commands', () => {
 
       it('without --stats: output is byte-identical to the pre-existing expectation, and queryRefCounts is not called', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
@@ -1959,6 +1895,7 @@ describe('read_commands', () => {
 
       it('text mode: a bare parent-name docstring (regex-adapter overload of the docstring column) renders "undocumented", not "documented" (regression: M35b parent-name convention)', () => {
         const sym: MockSymbol = { name: 'undocumentedMethod', kind: 'method', filePath: 'src/Widget.kt', lineStart: 1, lineEnd: 1, body: 'fun undocumentedMethod() {}', docstring: 'Widget' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['undocumentedMethod', 0]]))
@@ -1969,6 +1906,7 @@ describe('read_commands', () => {
 
       it('text mode: a real doc comment with spaces still renders "documented" (fix must not over-correct)', () => {
         const sym: MockSymbol = { name: 'add', kind: 'method', filePath: 'src/Widget.kt', lineStart: 1, lineEnd: 1, body: 'fun add() {}', docstring: 'Adds two numbers.' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['add', 0]]))
@@ -1978,6 +1916,7 @@ describe('read_commands', () => {
 
       it('text mode: a genuine one-word doc comment ending in punctuation (e.g. "Deprecated.") still renders "documented" (edge case: punctuation defeats the bare-identifier regex)', () => {
         const sym: MockSymbol = { name: 'legacy', kind: 'method', filePath: 'src/Widget.kt', lineStart: 1, lineEnd: 1, body: 'fun legacy() {}', docstring: 'Deprecated.' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockQueryRefCounts.mockReturnValue(new Map([['legacy', 0]]))
@@ -2015,7 +1954,8 @@ describe('read_commands', () => {
   describe('multi-file listing --json', () => {
     // Text blocks are joined with a blank line, which for --json produced N complete documents back to back -- no parser accepts that, so the flag failed outright on exactly the input it exists to serve.
     it('returns one parseable document for a comma-separated spec, not concatenated ones', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         const f = String(opts?.filePath ?? '')
         if (f.includes('b.ts')) return [{ name: 'fromB', kind: 'function', filePath: 'b.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never
@@ -2030,7 +1970,8 @@ describe('read_commands', () => {
     })
 
     it('merges skeleton the same way', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         const f = String(opts?.filePath ?? '')
         if (f.includes('b.ts')) return [{ name: 'fromB', kind: 'function', filePath: 'b.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never
@@ -2043,7 +1984,8 @@ describe('read_commands', () => {
 
     // A file that yields prose rather than JSON (unreadable, or no indexed symbols) must neither be spliced in as text -- which breaks parsing again -- nor dropped, which would let a failed file read as an empty one.
     it('reports a failing file in errors while staying parseable', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         const f = String(opts?.filePath ?? '')
         if (f.includes('b.ts')) return [] as never
@@ -2389,9 +2331,7 @@ describe('read_commands', () => {
       mockReadSection.mockReturnValue(null)
       mockListSections.mockReturnValue([])
       runSection({ spec: 'a::b::Heading' })
-      // Third arg is the pin-aware readFileText helper, threaded through so a section read
-      // re-verifies file identity under MCP confinement (see src/section_reader.ts's readFn
-      // param) instead of section_reader.ts's raw fs.readFileSync bypassing the pin entirely.
+      // Third arg is the pin-aware readFileText helper, threaded through so a section read re-verifies file identity under MCP confinement (see src/section_reader.ts's readFn param) instead of section_reader.ts's raw fs.readFileSync bypassing the pin entirely.
       expect(mockReadSection).toHaveBeenCalledWith('a::b', 'Heading', expect.any(Function))
     })
 
@@ -2448,14 +2388,10 @@ describe('read_commands', () => {
       expect(stderr).not.toContain("Section 'Some Heading' not found")
     })
 
-    // Updated for the similarity filter (defect-1 fix): every listed heading now shares the
-    // query word "Setup" so all 7 pass the filter and the DIDYOUMEAN_LIMIT cap is still the
-    // thing under test, instead of an unrelated query ('Nonexistent') that the filter would
-    // now correctly drop to zero candidates.
+    // Updated for the similarity filter (defect-1 fix): every listed heading now shares the query word "Setup" so all 7 pass the filter and the DIDYOUMEAN_LIMIT cap is still the thing under test, instead of an unrelated query ('Nonexistent') that the filter would now correctly drop to zero candidates.
     it('caps the heading list on section miss at DIDYOUMEAN_LIMIT (5), matching runRead\'s "did you mean" cap, instead of dumping every heading (regression: unbounded "Available sections" dump)', () => {
       mockReadSection.mockReturnValue(null)
-      // Distinct, strictly increasing lengths so the similarity ranking (closest length to the
-      // query first) has no ties to break -- which 5 of the 7 survive the cap is deterministic.
+      // Distinct, strictly increasing lengths so the similarity ranking (closest length to the query first) has no ties to break -- which 5 of the 7 survive the cap is deterministic.
       mockListSections.mockReturnValue([
         'Setup1', 'Setup12', 'Setup123', 'Setup1234', 'Setup12345', 'Setup123456', 'Setup1234567',
       ])
@@ -2469,8 +2405,7 @@ describe('read_commands', () => {
       // Only the 5 closest-in-length candidates are shown — the 2 longest are suppressed.
       expect(stderr).not.toContain('Setup123456')
       expect(stderr).not.toContain('Setup1234567')
-      // Regression: the cap used to be silent, giving no indication that 2 more headings
-      // existed beyond the 5 shown.
+      // Regression: the cap used to be silent, giving no indication that 2 more headings existed beyond the 5 shown.
       expect(stderr).toContain('(2 more not shown)')
     })
 
@@ -2504,14 +2439,16 @@ describe('read_commands', () => {
     })
 
     it('prints section content when found', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '## Install\nrun npm install', heading: 'Install', startLine: 5, endLine: 10 } as any)
       const { text: stdout } = runSection({ spec: 'README.md::Install' })
       expect(stdout).toContain('npm install')
     })
 
     it('annotates the header with a redirect note when a prefix redirect resolved it (#92)', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Business / logic\nbody', heading: 'Business / logic', lineStart: 1, lineEnd: 2, redirectedFrom: 'Business' } as any)
       const { text: stdout } = runSection({ spec: 'doc.md::Business' })
       expect(stdout).toContain("redirected from: 'Business'")
@@ -2519,14 +2456,16 @@ describe('read_commands', () => {
     })
 
     it('omits the redirect note on an exact match (#92)', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Setup\nbody', heading: 'Setup', lineStart: 1, lineEnd: 2 } as any)
       const { text: stdout } = runSection({ spec: 'doc.md::Setup' })
       expect(stdout).not.toContain('redirected from')
     })
 
     it('emits JSON when json flag is set', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Hello', heading: 'Hello', startLine: 1, endLine: 2 } as any)
       const { text: stdout } = runSection({ spec: 'doc.md::Hello', json: true })
       const parsed = JSON.parse(stdout) as { heading: string }
@@ -2538,7 +2477,8 @@ describe('read_commands', () => {
       indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 50 },
       } as unknown as ReturnType<typeof loadConfig>)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: 'x'.repeat(2000), heading: 'Install', lineStart: 1, lineEnd: 400 } as any)
       const { text: stdout } = runSection({ spec: 'README.md::Install' })
       expect(stdout).toContain('output capped at ~50 tokens')
@@ -2550,7 +2490,8 @@ describe('read_commands', () => {
     describe('multi-heading section (file::A,B)', () => {
       function headingMock(sections: Record<string, { content: string; heading: string; lineStart: number; lineEnd: number }>): void {
         mockReadSection.mockImplementation((_file: string, heading: string) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
           return (sections[heading] ?? null) as any
         })
       }
@@ -2604,6 +2545,7 @@ describe('read_commands', () => {
       })
 
       it('single-heading section output is byte-identical to before (no comma path regression)', () => {
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockReadSection.mockReturnValue({ content: '## Install\nrun npm install', heading: 'Install', startLine: 5, endLine: 10 } as any)
         const { text: stdout, code } = runSection({ spec: 'README.md::Install' })
@@ -2616,11 +2558,11 @@ describe('read_commands', () => {
 
     // ---- cross-file multi-heading section (a.md::H1,b.md::H2) --------------
     describe('cross-file multi-heading section (a.md::H1,b.md::H2)', () => {
-      // Keyed by [file][heading] (unlike the same-file headingMock above, which is keyed by
-      // heading alone) so two different files can supply the same heading name independently.
+      // Keyed by [file][heading] (unlike the same-file headingMock above, which is keyed by heading alone) so two different files can supply the same heading name independently.
       function crossFileHeadingMock(byFile: Record<string, Record<string, { content: string; heading: string; lineStart: number; lineEnd: number }>>): void {
         mockReadSection.mockImplementation((file: string, heading: string) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
           return (byFile[file]?.[heading] ?? null) as any
         })
       }
@@ -2648,12 +2590,7 @@ describe('read_commands', () => {
           },
         })
         mockListSections.mockReturnValue([])
-        // The trailing 'Layout' has no '::' of its own, so it must inherit the MOST RECENT file
-        // ('CLAUDE.md'), not the first one -- a spec must cross a file boundary before the
-        // inheritance rule is exercised at all. An earlier version of this test used
-        // 'README.md::Commands,Install', which parseCrossFileMultiSpec declines outright (only one
-        // segment carries '::'), so it ran the pre-existing same-file path and passed identically
-        // before and after cross-file support existed -- it asserted nothing about inheritance.
+        // The trailing 'Layout' has no '::' of its own, so it must inherit the MOST RECENT file ('CLAUDE.md'), not the first one -- a spec must cross a file boundary before the inheritance rule is exercised at all. An earlier version of this test used 'README.md::Commands,Install', which parseCrossFileMultiSpec declines outright (only one segment carries '::'), so it ran the pre-existing same-file path and passed identically before and after cross-file support existed -- it asserted nothing about inheritance.
         const { text: stdout, code } = runSection({ spec: 'README.md::Commands,CLAUDE.md::Install,Layout' })
         expect(code).toBe(0)
         // Third arg is the pin-aware readFileText helper (see the #m2 test above for why).
@@ -2676,8 +2613,7 @@ describe('read_commands', () => {
         const { text: stdout, code } = runSection({ spec: 'README.md::Commands,CLAUDE.md::Commands', json: true })
         expect(code).toBe(0)
         const payload = JSON.parse(stdout) as Record<string, { content: string }>
-        // Bare 'Commands' would only ever hold one of the two -- proves neither call clobbered
-        // the other.
+        // Bare 'Commands' would only ever hold one of the two -- proves neither call clobbered the other.
         expect(payload['Commands']).toBeUndefined()
         expect(payload['README.md::Commands']?.content).toContain('npm run readme-cmd')
         expect(payload['CLAUDE.md::Commands']?.content).toContain('npm run claude-cmd')
@@ -2731,6 +2667,7 @@ describe('read_commands', () => {
       })
 
       it('single-file single-heading specs (file::Heading) are unaffected: parseCrossFileMultiSpec declines outright (no comma)', () => {
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockReadSection.mockReturnValue({ content: '## Install\nrun npm install', heading: 'Install', startLine: 5, endLine: 10 } as any)
         const { text: stdout, code } = runSection({ spec: 'README.md::Install' })
@@ -2751,8 +2688,7 @@ describe('read_commands', () => {
 
     it('distinguishes a recognized-but-unsupported language from a plain empty index (regression: Scala/Lua/etc. are indistinguishable from an empty file)', () => {
       mockQuerySymbols.mockReturnValue([])
-      // The file has to exist on disk: a path that does not is now reported as unreadable, which
-      // outranks every language branch, so a nonexistent fixture would pass this for the wrong reason.
+      // The file has to exist on disk: a path that does not is now reported as unreadable, which outranks every language branch, so a nonexistent fixture would pass this for the wrong reason.
       const { text, code } = runSkeleton({ file: emptyFixture('.scala') })
       expect(code).toBe(1)
       // Scala now has an extractor, so empty file gets the standard message
@@ -2761,8 +2697,7 @@ describe('read_commands', () => {
 
     it('does not claim an unsupported language for a plain empty result on a supported extension', () => {
       mockQuerySymbols.mockReturnValue([])
-      // Existing file again -- this assertion is a not-contains, so an unreadable-path message
-      // would satisfy it vacuously and stop pinning the language branch at all.
+      // Existing file again -- this assertion is a not-contains, so an unreadable-path message would satisfy it vacuously and stop pinning the language branch at all.
       const { text } = runSkeleton({ file: emptyFixture('.ts') })
       expect(text).not.toContain('no symbol extractor')
       expect(text).not.toContain(ISSUES_URL)
@@ -2808,7 +2743,8 @@ describe('read_commands', () => {
         { name: 'foo', kind: 'function', filePath: 'a.ts', lineStart: 5, lineEnd: 15, body: 'function foo() {}', docstring: '' },
         { name: 'bar', kind: 'class', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: 'class bar {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts' })
       expect(stdout).toContain('Skeleton')
@@ -2819,7 +2755,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'foo', kind: 'function', filePath: 'a.ts', lineStart: 5, lineEnd: 15, body: 'function foo() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       runSkeleton({ file: 'a.ts', forceRefresh: true })
       expect(mockIndexFileSync).toHaveBeenCalled()
@@ -2830,7 +2767,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'foo', kind: 'function', filePath: 'a.ts', lineStart: 5, lineEnd: 15, body: 'function foo() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       runSkeleton({ file: 'a.ts' })
       expect(mockAppendDirtyPath).not.toHaveBeenCalled()
@@ -2841,7 +2779,8 @@ describe('read_commands', () => {
         { name: 'tiny', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
         { name: 'large', kind: 'class', filePath: 'a.ts', lineStart: 10, lineEnd: 30, body: 'class {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts', minLines: 10 })
       expect(stdout).toContain('1 symbol')
@@ -2853,7 +2792,8 @@ describe('read_commands', () => {
         { name: 'tiny', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
         { name: 'large', kind: 'class', filePath: 'a.ts', lineStart: 10, lineEnd: 30, body: 'class {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts', minLines: 10, json: true })
       const parsed = JSON.parse(stdout) as { items: Array<{ name: string }> }
@@ -2875,7 +2815,8 @@ describe('read_commands', () => {
         body: 'x'.repeat(50),
         docstring: '',
       }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts', json: true })
       const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
@@ -2885,15 +2826,13 @@ describe('read_commands', () => {
     })
 
     it('reports the true max lineEnd across all symbols, not the last-by-lineStart symbol (nested-symbol regression)', () => {
-      // querySymbols orders rows by (file_path, line_start), so the last element
-      // by array order is the symbol with the greatest lineStart, not the
-      // greatest lineEnd. Here the nested method starts after the class but
-      // ends well before it, so a naive `filtered.at(-1)?.lineEnd` undercounts.
+      // querySymbols orders rows by (file_path, line_start), so the last element by array order is the symbol with the greatest lineStart, not the greatest lineEnd. Here the nested method starts after the class but ends well before it, so a naive `filtered.at(-1)?.lineEnd` undercounts.
       const syms: MockSymbol[] = [
         { name: 'Foo', kind: 'class', filePath: 'a.ts', lineStart: 5, lineEnd: 100, body: 'class Foo {}', docstring: '' },
         { name: 'bar', kind: 'method', filePath: 'a.ts', lineStart: 50, lineEnd: 60, body: 'bar() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts' })
       expect(stdout).toContain('2 symbols')
@@ -2906,14 +2845,14 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: 'export function foo() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockGetFileEntry.mockReturnValueOnce({
         filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
       } as never)
       const { text: stdout } = runSkeleton({ file: f })
-      // Fix: a stale sha triggers an inline reparse before the symbol listing query, instead of
-      // just prepending a warning telling the agent to burn a full-file read.
+      // Fix: a stale sha triggers an inline reparse before the symbol listing query, instead of just prepending a warning telling the agent to burn a full-file read.
       expect(mockIndexFileSync).toHaveBeenCalled()
       expect(stdout).not.toContain('STALE')
       expect(stdout).toContain('foo')
@@ -2926,7 +2865,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: content, docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const realSha = fingerprintContent(content)
       mockGetFileEntry.mockReturnValueOnce({
@@ -2939,11 +2879,7 @@ describe('read_commands', () => {
 
   // ---- runOutline ---------------------------------------------------------
 
-  // The per-file symbol cap cut the list short and both text headers stated the capped number as
-  // though it were the whole file: 130,000 symbols printed as `(5000 symbols)` with nothing in the
-  // output to say otherwise. `--json` reported `truncated: true` and the real `totalCount` from the
-  // same values, so the honest number reached the renderer and only one of the two paths used it --
-  // and the text one is the default an agent reads.
+  // The per-file symbol cap cut the list short and both text headers stated the capped number as though it were the whole file: 130,000 symbols printed as `(5000 symbols)` with nothing in the output to say otherwise. `--json` reported `truncated: true` and the real `totalCount` from the same values, so the honest number reached the renderer and only one of the two paths used it -- and the text one is the default an agent reads.
   describe('a file with more symbols than the per-file cap', () => {
     const CAP = 5000
 
@@ -3014,7 +2950,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 30, body: 'function myFunc() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       runOutline({ file: 'f.ts', forceRefresh: true })
       expect(mockIndexFileSync).toHaveBeenCalled()
@@ -3025,7 +2962,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 30, body: 'function myFunc() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       runOutline({ file: 'f.ts' })
       expect(mockAppendDirtyPath).not.toHaveBeenCalled()
@@ -3035,7 +2973,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 30, body: 'function myFunc() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runOutline({ file: 'f.ts' })
       expect(stdout).toContain('10')
@@ -3047,7 +2986,8 @@ describe('read_commands', () => {
         { name: 'tiny', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
         { name: 'large', kind: 'class', filePath: 'f.ts', lineStart: 10, lineEnd: 30, body: 'class {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runOutline({ file: 'f.ts', minLines: 10, json: true })
       const parsed = JSON.parse(stdout) as { items: Array<{ name: string }> }
@@ -3069,7 +3009,8 @@ describe('read_commands', () => {
         body: 'x'.repeat(50),
         docstring: '',
       }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runOutline({ file: 'f.ts', json: true })
       const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
@@ -3084,14 +3025,14 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: 'export function foo() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockGetFileEntry.mockReturnValueOnce({
         filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
       } as never)
       const { text: stdout } = runOutline({ file: f })
-      // Fix: a stale sha triggers an inline reparse before the symbol listing query, instead of
-      // just prepending a warning telling the agent to burn a full-file read.
+      // Fix: a stale sha triggers an inline reparse before the symbol listing query, instead of just prepending a warning telling the agent to burn a full-file read.
       expect(mockIndexFileSync).toHaveBeenCalled()
       expect(stdout).not.toContain('STALE')
       expect(stdout).toContain('foo')
@@ -3104,7 +3045,8 @@ describe('read_commands', () => {
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'does a thing' },
         { name: 'unused', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 15, body: 'y', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
       const { text: stdout } = runOutline({ file: 'f.ts', stats: true, json: true })
@@ -3122,7 +3064,8 @@ describe('read_commands', () => {
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'does a thing' },
         { name: 'unused', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 15, body: 'y', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
       const { text: stdout } = runSkeleton({ file: 'f.ts', stats: true, json: true })
@@ -3140,7 +3083,8 @@ describe('read_commands', () => {
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'does a thing' },
         { name: 'unused', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 15, body: 'y', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
       const { text: stdout } = runOutline({ file: 'f.ts', stats: true })
@@ -3154,21 +3098,20 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'foo', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       runOutline({ file: 'f.ts' })
       expect(mockQueryRefCounts).not.toHaveBeenCalled()
     })
 
-    // Regression: global.db is a single machine-wide index shared across every project ever
-    // indexed (constants.ts). runOutline/runSkeleton used to call queryRefCounts with no
-    // project-root argument, so --stats ref counts summed references across every project
-    // sharing a symbol name.
+    // Regression: global.db is a single machine-wide index shared across every project ever indexed (constants.ts). runOutline/runSkeleton used to call queryRefCounts with no project-root argument, so --stats ref counts summed references across every project sharing a symbol name.
     it('runOutline JSON mode: a bare parent-name docstring reports hasDoc: false, not a false positive (regression: M35b parent-name convention)', () => {
       const syms: MockSymbol[] = [
         { name: 'undocumentedMethod', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Widget' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       const { text: stdout } = runOutline({ file: 'f.kt', stats: true, json: true })
@@ -3180,7 +3123,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'undocumentedMethod', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Widget' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       const { text: stdout } = runSkeleton({ file: 'f.kt', stats: true, json: true })
@@ -3192,7 +3136,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'undocumentedMethod', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Widget' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runOutline({ file: 'f.kt' })
       expect(stdout).not.toContain('# Widget')
@@ -3202,7 +3147,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'add', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Adds two numbers.' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runOutline({ file: 'f.kt' })
       expect(stdout).toContain('# Adds two numbers.')
@@ -3212,7 +3158,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       runOutline({ file: 'f.ts', stats: true })
@@ -3223,21 +3170,21 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       runSkeleton({ file: 'f.ts', stats: true })
       expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(resolveProjectRoot({ project: process.cwd() }))
     })
 
-    // Regression: runOutline/runSkeleton used to pass a raw `process.cwd()` as the rootDir, so
-    // invoking the command from a subdirectory of the project silently shrank the ref-count scope
-    // to that subtree instead of the whole project.
+    // Regression: runOutline/runSkeleton used to pass a raw `process.cwd()` as the rootDir, so invoking the command from a subdirectory of the project silently shrank the ref-count scope to that subtree instead of the whole project.
     it('runOutline --stats scopes queryRefCounts to the whole project root, not the subdirectory cwd', () => {
       const syms: MockSymbol[] = [
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       const subdir = path.join(process.cwd(), 'src')
@@ -3256,7 +3203,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       const subdir = path.join(process.cwd(), 'src')
@@ -3285,7 +3233,8 @@ describe('read_commands', () => {
       // formatAmbiguity defaults its commandName to 'read', so an unparameterized call site sends the user to a command that answers a different question than the one they asked.
       const candA: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '', parent: '' }
       const candB: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 23, body: '', docstring: '', parent: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([candA, candB] as any)
       const { stderr } = capture(() => {
         expect(runBrief({ spec: 'a.ts::render' })).toBe(1)
@@ -3295,9 +3244,7 @@ describe('read_commands', () => {
       expect(stderr).not.toContain('token-goat read "')
     })
 
-    // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own
-    // "Symbol not found" wording untouched -- only the bare-name (no `::` at all) case below
-    // changes.
+    // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own "Symbol not found" wording untouched -- only the bare-name (no `::` at all) case below changes.
     it('a proper file::symbol spec with a bad symbol keeps its existing "Symbol not found" wording', () => {
       mockQuerySymbols.mockReturnValue([])
       const { stderr } = capture(() => {
@@ -3307,12 +3254,11 @@ describe('read_commands', () => {
       expect(stderr).toContain('Symbol not found: f.ts::missing')
     })
 
-    // Regression: a bare symbol name with no `::` used to say "Symbol not found", which is
-    // false when the name IS indexed -- an agent reads that as "does not exist" and stops
-    // looking. Point at the exact `file::symbol` spec to retry with instead.
+    // Regression: a bare symbol name with no `::` used to say "Symbol not found", which is false when the name IS indexed -- an agent reads that as "does not exist" and stops looking. Point at the exact `file::symbol` spec to retry with instead.
     it('a bare indexed name (no :: separator) points at the resolved file::symbol spec instead of falsely claiming the symbol is missing', () => {
       const sym: MockSymbol = { name: 'didYouMean', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { stderr } = capture(() => {
         const code = runBrief({ spec: 'didYouMean' })
@@ -3323,8 +3269,7 @@ describe('read_commands', () => {
       expect(stderr).toContain('token-goat brief "src/read_commands.ts::didYouMean"')
     })
 
-    // When the bare name matches nothing indexed either, fall back to the same "Invalid spec"
-    // wording `similar`/`blame` already use for this exact case.
+    // When the bare name matches nothing indexed either, fall back to the same "Invalid spec" wording `similar`/`blame` already use for this exact case.
     it('a bare unindexed name (no :: separator) gets the shared "Invalid spec" wording, not a false "Symbol not found"', () => {
       mockQuerySymbols.mockReturnValue([])
       const { stderr } = capture(() => {
@@ -3335,12 +3280,11 @@ describe('read_commands', () => {
       expect(stderr).toContain('Invalid spec - expected "file::symbol", got: totallyUnknownSymbolXyz')
     })
 
-    // Same reasoning as runSymbol/runRefs/runFind: limit: 0 (or negative) must be rejected up
-    // front instead of silently slicing the caller list to zero, consistent with every other
-    // --limit flag in this codebase.
+    // Same reasoning as runSymbol/runRefs/runFind: limit: 0 (or negative) must be rejected up front instead of silently slicing the caller list to zero, consistent with every other --limit flag in this codebase.
     it('rejects limit: 0 as an explicit invalid-argument error instead of silently showing zero callers', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { stderr } = capture(() => {
         const code = runBrief({ spec: 'f.ts::myFunc', limit: 0 })
@@ -3359,17 +3303,14 @@ describe('read_commands', () => {
       expect(mockResolveCallers).not.toHaveBeenCalled()
     })
 
-    // ---- brief --exclude-tests ---------------------------------------------
-    // brief was the last member of the refs/callers/dead/symbol/semantic/changed family without
-    // this flag, and the one where it bites hardest: it caps callers at --limit 20 by default, so
-    // for a symbol exercised mostly by tests the whole window is noise (measured on this repo's own
-    // index, loadConfig's caller output is 56% test call sites).
+    // ---- brief --exclude-tests --------------------------------------------- brief was the last member of the refs/callers/dead/symbol/semantic/changed family without this flag, and the one where it bites hardest: it caps callers at --limit 20 by default, so for a symbol exercised mostly by tests the whole window is noise (measured on this repo's own index, loadConfig's caller output is 56% test call sites).
     const briefSym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
     const prodCaller = { caller: 'prodCaller', kind: 'function', file: 'src/g.ts', line: 3 }
     const testCaller = { caller: 'testCaller', kind: 'function', file: 'tests/g.test.ts', line: 9 }
 
     it('--exclude-tests drops callers whose call site is a test file, keeping production ones', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, testCaller])
       const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', excludeTests: true }) })
@@ -3378,7 +3319,8 @@ describe('read_commands', () => {
     })
 
     it('--exclude-tests makes the caller count agree with the rows actually shown', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, testCaller])
       // The uncapped COUNT(*) counts test refs too. Trusting it while filtering the list would print "Callers (2):" above a single row -- the exact count-vs-rows disagreement tests/guards/count_agreement_dedup.test.ts exists to catch.
@@ -3390,7 +3332,8 @@ describe('read_commands', () => {
     })
 
     it('--exclude-tests scans unbounded rather than filtering a pre-capped page', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller])
       capture(() => { runBrief({ spec: 'f.ts::myFunc', excludeTests: true }) })
@@ -3399,7 +3342,8 @@ describe('read_commands', () => {
     })
 
     it('--exclude-tests says the filter emptied the caller block rather than reporting zero callers', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([testCaller])
       const { stdout } = capture(() => {
@@ -3411,7 +3355,8 @@ describe('read_commands', () => {
     })
 
     it('omitting --exclude-tests leaves output byte-identical, test callers and all', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, testCaller])
       mockQueryRefCounts.mockReturnValueOnce(new Map([['myFunc', 2]]))
@@ -3422,7 +3367,8 @@ describe('read_commands', () => {
     })
 
     it('--json reports hiddenByExcludeTests only when the filter actually hid something', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, testCaller])
       const withFlag = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true, excludeTests: true }) }).stdout
@@ -3436,21 +3382,20 @@ describe('read_commands', () => {
     })
 
     it('--exclude-tests that hides nothing adds no note and no JSON field', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller])
       const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true, excludeTests: true }) })
       expect(JSON.parse(stdout)).not.toHaveProperty('hiddenByExcludeTests')
     })
 
-    // ---- brief --grep --------------------------------------------------------
-    // Mirrors refs/call-chain's own --grep: a high-fanout symbol's caller block is capped at
-    // --limit 20 by default with no way to narrow it, forcing a separate `refs --callers --grep`
-    // round-trip that loses the body+section brief already bundled.
+    // ---- brief --grep -------------------------------------------------------- Mirrors refs/call-chain's own --grep: a high-fanout symbol's caller block is capped at --limit 20 by default with no way to narrow it, forcing a separate `refs --callers --grep` round-trip that loses the body+section brief already bundled.
     const otherCaller = { caller: 'otherCaller', kind: 'function', file: 'src/h.ts', line: 5 }
 
     it('--grep narrows the caller block to callers whose name matches', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
       const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', grep: 'prod' }) })
@@ -3460,7 +3405,8 @@ describe('read_commands', () => {
     })
 
     it('--grep scans unbounded rather than filtering a pre-capped page', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller])
       capture(() => { runBrief({ spec: 'f.ts::myFunc', grep: 'prod' }) })
@@ -3468,7 +3414,8 @@ describe('read_commands', () => {
     })
 
     it('--grep filtering everything out is distinguished from a genuinely caller-less symbol', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
       const { stdout } = capture(() => {
@@ -3479,7 +3426,8 @@ describe('read_commands', () => {
     })
 
     it('--json reports hiddenByGrep only when the filter actually hid something', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
       const withFlag = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true, grep: 'prod' }) }).stdout
@@ -3492,7 +3440,8 @@ describe('read_commands', () => {
     })
 
     it('omitting --grep leaves output byte-identical', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([briefSym as any])
       mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
       mockQueryRefCounts.mockReturnValueOnce(new Map([['myFunc', 2]]))
@@ -3504,7 +3453,8 @@ describe('read_commands', () => {
 
     it('assembles symbol, callers, and section into JSON shape', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockResolveCallers.mockReturnValue([{ caller: 'caller1', kind: 'function', file: 'g.ts', line: 3 }])
       mockFindContainingSection.mockReturnValue({ heading: 'Usage', content: 'body', lineStart: 8, lineEnd: 25 })
@@ -3520,15 +3470,13 @@ describe('read_commands', () => {
       expect(parsed.section?.heading).toBe('Usage')
     })
 
-    // --json path-spelling: symbol.filePath and callers[].file used to echo the raw row verbatim
-    // even though the plain-text block above already renders both via toDisplayPath(rootDir, ...)
-    // -- same command, same repo, two spellings decided only by --json. Matches
-    // outline/skeleton/refs/types/dead/callers/test-for/symbol --json.
+    // --json path-spelling: symbol.filePath and callers[].file used to echo the raw row verbatim even though the plain-text block above already renders both via toDisplayPath(rootDir, ...) -- same command, same repo, two spellings decided only by --json. Matches outline/skeleton/refs/types/dead/callers/test-for/symbol --json.
     it('renders --json symbol.filePath and callers[].file root-relative, matching the plain-text block', () => {
       const briefDisplayFixture = path.join(process.cwd(), 'src', 'brief-display-fixture.ts')
       const briefCallerFixture = path.join(process.cwd(), 'src', 'brief-caller-fixture.ts')
       const sym: MockSymbol = { name: 'briefJsonSym', kind: 'function', filePath: briefDisplayFixture, lineStart: 10, lineEnd: 20, body: 'function briefJsonSym() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockResolveCallers.mockReturnValue([{ caller: 'caller1', kind: 'function', file: briefCallerFixture, line: 3 }])
       mockFindContainingSection.mockReturnValue(null)
@@ -3542,7 +3490,8 @@ describe('read_commands', () => {
       const outOfProjectSym = path.join(os.tmpdir(), 'tg-brief-outside-project-fixture', 'far.ts')
       const outOfProjectCaller = path.join(os.tmpdir(), 'tg-brief-outside-project-fixture', 'farCaller.ts')
       const sym: MockSymbol = { name: 'briefFarSym', kind: 'function', filePath: outOfProjectSym, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockResolveCallers.mockReturnValue([{ caller: 'farCaller', kind: 'function', file: outOfProjectCaller, line: 1 }])
       mockFindContainingSection.mockReturnValue(null)
@@ -3554,7 +3503,8 @@ describe('read_commands', () => {
 
     it('renders plain text with symbol body, callers, and section line', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockResolveCallers.mockReturnValue([{ caller: 'caller1', kind: 'function', file: 'g.ts', line: 3 }])
       mockFindContainingSection.mockReturnValue({ heading: 'Usage', content: 'body', lineStart: 8, lineEnd: 25 })
@@ -3568,7 +3518,8 @@ describe('read_commands', () => {
 
     it('omits the Section line entirely when no containing section is found', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockResolveCallers.mockReturnValue([])
       mockFindContainingSection.mockReturnValue(null)
@@ -3578,18 +3529,14 @@ describe('read_commands', () => {
 
     it('shows a real elided-count message when true caller count exceeds the display limit', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const tenCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
       mockResolveCallers.mockReturnValue(tenCallers)
       mockFindContainingSection.mockReturnValue(null)
       const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5 }) })
-      // resolveCallers must be queried for the true count, not capped at the display limit --
-      // otherwise callers.length can never exceed shown.length and the elided message can't fire.
-      // Third arg is the resolved symbol's own filePath -- runBrief passes it through so
-      // resolveCallers can disambiguate a same-named symbol defined elsewhere (regression:
-      // task #136, same-project name-collision merging in callers/dead).
-      // Original intent preserved: no explicit limit is passed, so the elided count must come from the full scoped caller list, not from the display-limited slice. The trailing rootDir/excludeTests args arrived with `brief --exclude-tests`; rootDir is already resolved here, so threading it avoids a second git shell-out for the same value, and `true` pins that the unbounded scan is now unconditional so resolveCallers' own 500-row default page can never cut the total.
+      // resolveCallers must be queried for the true count, not capped at the display limit -- otherwise callers.length can never exceed shown.length and the elided message can't fire. Third arg is the resolved symbol's own filePath -- runBrief passes it through so resolveCallers can disambiguate a same-named symbol defined elsewhere (regression: task #136, same-project name-collision merging in callers/dead). Original intent preserved: no explicit limit is passed, so the elided count must come from the full scoped caller list, not from the display-limited slice. The trailing rootDir/excludeTests args arrived with `brief --exclude-tests`; rootDir is already resolved here, so threading it avoids a second git shell-out for the same value, and `true` pins that the unbounded scan is now unconditional so resolveCallers' own 500-row default page can never cut the total.
       expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts', expect.any(String), true)
       expect(stdout).toContain('Callers (10):')
       expect(stdout).toContain('...(5 more elided)')
@@ -3597,7 +3544,8 @@ describe('read_commands', () => {
 
     it('signals the true caller count and truncation in JSON mode', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const tenCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
       mockResolveCallers.mockReturnValue(tenCallers)
@@ -3610,14 +3558,10 @@ describe('read_commands', () => {
     })
 
     it('takes the caller total from the scoped unbounded scan, never from queryRefCounts name-keyed count', () => {
-      // Regression: runBrief used to take its total from queryRefCounts, a COUNT(*) keyed by symbol
-      // NAME across the project, while the rows it printed came from resolveCallers, which also
-      // scopes to THIS definition site. For a name defined in two files the header counted the other
-      // definition's callers and promised elided rows that could never be listed. queryRefCounts is
-      // mocked to a wildly different number here: if runBrief still consults it for the total, the
-      // header and the elided tail both go wrong.
+      // Regression: runBrief used to take its total from queryRefCounts, a COUNT(*) keyed by symbol NAME across the project, while the rows it printed came from resolveCallers, which also scopes to THIS definition site. For a name defined in two files the header counted the other definition's callers and promised elided rows that could never be listed. queryRefCounts is mocked to a wildly different number here: if runBrief still consults it for the total, the header and the elided tail both go wrong.
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const scopedCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
       mockResolveCallers.mockReturnValue(scopedCallers)
@@ -3636,14 +3580,12 @@ describe('read_commands', () => {
     })
 
     it('re-reads the body from disk when the indexed symbol has an empty body (regression)', () => {
-      // Regression: symbols with an empty stored `body` exist by construction -- e.g. HTML/Liquid
-      // heading symbols produced by `sectionsToHeadingSymbols` (parser.ts) always store
-      // `body: ''`. Unlike runRead and runSymbol, runBrief rendered `match.body` directly with no
-      // disk fallback, so those symbols showed header lines and a `~0 tok` estimate but a blank body.
+      // Regression: symbols with an empty stored `body` exist by construction -- e.g. HTML/Liquid heading symbols produced by `sectionsToHeadingSymbols` (parser.ts) always store `body: ''`. Unlike runRead and runSymbol, runBrief rendered `match.body` directly with no disk fallback, so those symbols showed header lines and a `~0 tok` estimate but a blank body.
       const file = path.join(tempDir, 'page.html')
       fs.writeFileSync(file, '<html>\n<h2>Some Heading</h2>\n<p>content</p>\n</html>\n')
       const sym: MockSymbol = { name: 'Some Heading', kind: 'heading', filePath: file, lineStart: 2, lineEnd: 2, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockResolveCallers.mockReturnValue([])
       mockFindContainingSection.mockReturnValue(null)
@@ -3813,11 +3755,7 @@ describe('read_commands', () => {
           const code = runBrief({ spec: 'src/a.ts::x,src/b.ts::y,z' })
           expect(code).toBe(0)
         })
-        // The load-bearing assertion: `z` (a bare segment) resolved -- proving the spec crossed a
-        // file boundary and `z` was looked up against src/b.ts (the file to its left), not src/a.ts.
-        // A spec like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path
-        // at all -- it would still resolve today via the pre-existing same-file multi-symbol path,
-        // proving nothing about this change.
+        // The load-bearing assertion: `z` (a bare segment) resolved -- proving the spec crossed a file boundary and `z` was looked up against src/b.ts (the file to its left), not src/a.ts. A spec like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all -- it would still resolve today via the pre-existing same-file multi-symbol path, proving nothing about this change.
         expect(stdout).toContain('src/a.ts::x:\n')
         expect(stdout).toContain('x body')
         expect(stdout).toContain('src/b.ts::y:\n')
@@ -3849,16 +3787,14 @@ describe('read_commands', () => {
       it('applies --limit per symbol on the cross-file path, not once globally, matching runBriefMulti\'s same-file behavior', () => {
         poolMock([symA, symB])
         const tenCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
-        // Both symbols independently have 10 resolvable callers -- --limit 3 must cap each pair's
-        // own shown list to 3, not share one global slice across the whole call.
+        // Both symbols independently have 10 resolvable callers -- --limit 3 must cap each pair's own shown list to 3, not share one global slice across the whole call.
         mockResolveCallers.mockReturnValue(tenCallers)
         mockFindContainingSection.mockReturnValue(null)
         const { stdout } = capture(() => {
           const code = runBrief({ spec: 'src/foo.ts::alphaFn,src/bar.ts::betaFn', limit: 3 })
           expect(code).toBe(0)
         })
-        // Pin WHICH symbols were resolved first -- the pre-fix mis-parse would fold this spec into
-        // one bogus lookup and satisfy a bare per-call property assertion vacuously.
+        // Pin WHICH symbols were resolved first -- the pre-fix mis-parse would fold this spec into one bogus lookup and satisfy a bare per-call property assertion vacuously.
         expect(mockResolveCallers.mock.calls.map((c) => c[0])).toEqual(['alphaFn', 'betaFn'])
         // Each block independently reports the true count (10) and elides down to the per-symbol limit (3), proving --limit was applied per symbol, not once for the whole call.
         expect(stdout).toContain('src/foo.ts::alphaFn:\n')
@@ -3886,8 +3822,7 @@ describe('read_commands', () => {
         poolMock([symA, { ...symB, filePath: 'src/foo.ts' }])
         mockResolveCallers.mockReturnValue([])
         mockFindContainingSection.mockReturnValue(null)
-        // Only one `::` segment in this spec (`src/foo.ts::alphaFn`), so parseCrossFileMultiSpec
-        // declines and this still runs the pre-existing runBriefMulti same-file path, unchanged.
+        // Only one `::` segment in this spec (`src/foo.ts::alphaFn`), so parseCrossFileMultiSpec declines and this still runs the pre-existing runBriefMulti same-file path, unchanged.
         const { stdout } = capture(() => { runBrief({ spec: 'src/foo.ts::alphaFn,betaFn' }) })
         expect(stdout).toContain('alphaFn:\n')
         expect(stdout).toContain('betaFn:\n')
@@ -3946,9 +3881,7 @@ describe('read_commands', () => {
     })
 
     it('does not report truncated:true when hit count exactly equals --max-lines (boundary, not off-by-one)', () => {
-      // Regression/mutation-verification target: the JSON truncation flag is `hits.length >
-      // maxLines`, not `>=` -- when the real hit count exactly equals the cap, every hit was
-      // returned and nothing was actually elided, so truncated must stay false.
+      // Regression/mutation-verification target: the JSON truncation flag is `hits.length > maxLines`, not `>=` -- when the real hit count exactly equals the cap, every hit was returned and nothing was actually elided, so truncated must stay false.
       const f = path.join(tempDir, 'jexact.txt')
       fs.writeFileSync(f, 'needle\nneedle')
       const { stdout } = capture(() => { runGrep({ pattern: 'needle', path: f, maxLines: 2, json: true }) })
@@ -3959,8 +3892,7 @@ describe('read_commands', () => {
     })
 
     it('matches a $-anchored pattern on CRLF line endings (M3)', () => {
-      // A trailing \r left on each line by a naive split('\n') sits between the match
-      // text and the string end, so a $-anchor never lines up on CRLF files.
+      // A trailing \r left on each line by a naive split('\n') sits between the match text and the string end, so a $-anchor never lines up on CRLF files.
       const f = path.join(tempDir, 'crlf.txt')
       fs.writeFileSync(f, 'line one\r\nhello world\r\nline three\r\n')
       const code = runGrep({ pattern: 'world$', path: f })
@@ -4017,8 +3949,7 @@ describe('read_commands', () => {
       const parsed = JSON.parse(stdout) as { items: Array<{ file: string; line: number; text: string; context?: Array<{ line: number; text: string }> }> }
       expect(parsed.items).toHaveLength(1)
       const hit = parsed.items[0]
-      // Match is on line 1 -- there are no lines above it, so context is clamped to
-      // start at line 1 instead of extending to a nonexistent line -1.
+      // Match is on line 1 -- there are no lines above it, so context is clamped to start at line 1 instead of extending to a nonexistent line -1.
       expect(hit?.context?.map((c) => c.line)).toEqual([1, 2, 3])
       expect(hit?.context?.[2]?.text).toBe('line3')
     })
@@ -4042,17 +3973,9 @@ describe('read_commands', () => {
       expect(parsed.items[0]).not.toHaveProperty('context')
     })
 
-    // Confinement-vs-unconfined behavior split (see src/read_commands.ts's searchDir comment):
-    // under confinement (activePins non-null), a recursive grep resolves each symlink entry once
-    // and then traverses the REALPATH only, so the link cannot be repointed out from under the
-    // walk. Plain CLI grep -- never wrapped in withPinnedReads, so activePins stays null -- must
-    // keep its long-standing behavior of following the symlink pathname exactly as before.
+    // Confinement-vs-unconfined behavior split (see src/read_commands.ts's searchDir comment): under confinement (activePins non-null), a recursive grep resolves each symlink entry once and then traverses the REALPATH only, so the link cannot be repointed out from under the walk. Plain CLI grep -- never wrapped in withPinnedReads, so activePins stays null -- must keep its long-standing behavior of following the symlink pathname exactly as before.
     //
-    // The real target is placed under a dot-prefixed directory (`.hidden-target`), which
-    // searchDir's own leading-dot filter (`entry.startsWith('.') continue`) already excludes from
-    // direct recursion -- so the content is reachable ONLY via the `alias` symlink, isolating
-    // whether the symlink itself was traversed from whether the real directory would have been
-    // found anyway by ordinary recursion (it would not, dot-prefixed or not, if placed directly).
+    // The real target is placed under a dot-prefixed directory (`.hidden-target`), which searchDir's own leading-dot filter (`entry.startsWith('.') continue`) already excludes from direct recursion -- so the content is reachable ONLY via the `alias` symlink, isolating whether the symlink itself was traversed from whether the real directory would have been found anyway by ordinary recursion (it would not, dot-prefixed or not, if placed directly).
     function makeSymlinkOnlyReachableFixture(): void {
       const real = path.join(tempDir, '.hidden-target')
       fs.mkdirSync(real)
@@ -4066,12 +3989,7 @@ describe('read_commands', () => {
       expect(stdout).toContain('reachable only via symlink')
     })
 
-    // Rewritten, not deleted: this test previously asserted the opposite (`code === 1`, i.e. the
-    // confined walk skipped every symlink outright and found nothing). That blanket skip closed
-    // the TOCTOU window at the cost of a real capability -- an in-root file reachable only via a
-    // legitimate in-root symlink became invisible to confined MCP grep. Resolving the entry once
-    // and traversing the realpath closes the same window without the capability loss, so the
-    // expectation is inverted deliberately.
+    // Rewritten, not deleted: this test previously asserted the opposite (`code === 1`, i.e. the confined walk skipped every symlink outright and found nothing). That blanket skip closed the TOCTOU window at the cost of a real capability -- an in-root file reachable only via a legitimate in-root symlink became invisible to confined MCP grep. Resolving the entry once and traversing the realpath closes the same window without the capability loss, so the expectation is inverted deliberately.
     it.skipIf(!CAN_SYMLINK)('runGrep finds a file reachable only through a legitimate in-root symlink when confined', () => {
       makeSymlinkOnlyReachableFixture()
       let code = 1
@@ -4082,9 +4000,7 @@ describe('read_commands', () => {
       expect(stdout).toContain('reachable only via symlink')
     })
 
-    // A symlink cycle (`loop` -> tempDir itself) makes a naive walk recurse forever. The visited-
-    // realpath set must terminate it. Built with fs.symlinkSync, never Git Bash `ln -s`, which on
-    // Windows produces a junction that lstatSync().isSymbolicLink() reports as false.
+    // A symlink cycle (`loop` -> tempDir itself) makes a naive walk recurse forever. The visited- realpath set must terminate it. Built with fs.symlinkSync, never Git Bash `ln -s`, which on Windows produces a junction that lstatSync().isSymbolicLink() reports as false.
     it.skipIf(!CAN_SYMLINK)('runGrep terminates on a symlink cycle when confined', () => {
       fs.writeFileSync(path.join(tempDir, 'plain.txt'), 'FINDME cycle fixture\n')
       const sub = path.join(tempDir, 'sub')
@@ -4095,10 +4011,7 @@ describe('read_commands', () => {
         code = withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
       })
       expect(code).toBe(0)
-      // Occurrence count, not a bare `toContain`: without the visited-realpath set the walk does
-      // eventually stop on its own (readdirSync throws once the accumulated path exceeds the
-      // platform limit), so termination alone is not falsifiable -- but it re-reports the same
-      // file once per loop level on the way there, which is.
+      // Occurrence count, not a bare `toContain`: without the visited-realpath set the walk does eventually stop on its own (readdirSync throws once the accumulated path exceeds the platform limit), so termination alone is not falsifiable -- but it re-reports the same file once per loop level on the way there, which is.
       expect(stdout.split('cycle fixture').length - 1).toBe(1)
     })
 
@@ -4160,9 +4073,7 @@ describe('read_commands', () => {
     })
 
     it('reads a TOML/INI key with aligned multi-space formatting before the equals sign', () => {
-      // Regression: startsWith(`${leafKey} =`) / startsWith(`${leafKey}=`) only recognized
-      // exactly zero or one space before '=', so aligned-key files (tox.ini/setup.cfg style)
-      // failed to resolve a present, valid key.
+      // Regression: startsWith(`${leafKey} =`) / startsWith(`${leafKey}=`) only recognized exactly zero or one space before '=', so aligned-key files (tox.ini/setup.cfg style) failed to resolve a present, valid key.
       const f = path.join(tempDir, 'aligned.toml')
       fs.writeFileSync(f, '[testenv]\ndeps       = pytest\n')
       const { stdout } = capture(() => { runConfigGet({ file: f, key: 'testenv.deps' }) })
@@ -4184,8 +4095,7 @@ describe('read_commands', () => {
     })
 
     it('does not match a longer key name as a prefix of the requested key', () => {
-      // Regression guard: the fix must not turn `startsWith` into an unanchored regex that
-      // lets "deps" match a "deps2 = ..." line.
+      // Regression guard: the fix must not turn `startsWith` into an unanchored regex that lets "deps" match a "deps2 = ..." line.
       const f = path.join(tempDir, 'prefix.toml')
       fs.writeFileSync(f, '[testenv]\ndeps2 = wrong\ndeps       = pytest\n')
       const { stdout } = capture(() => { runConfigGet({ file: f, key: 'testenv.deps' }) })
@@ -4193,8 +4103,7 @@ describe('read_commands', () => {
     })
 
     it('treats a key containing regex metacharacters as a literal, not a pattern', () => {
-      // leafKey is embedded in a RegExp; it must be escaped so metacharacters in a
-      // user-supplied key are matched literally instead of throwing or misbehaving.
+      // leafKey is embedded in a RegExp; it must be escaped so metacharacters in a user-supplied key are matched literally instead of throwing or misbehaving.
       const f = path.join(tempDir, 'special.toml')
       fs.writeFileSync(f, '[testenv]\na(b)+  = special\n')
       const { stdout } = capture(() => { runConfigGet({ file: f, key: 'testenv.a(b)+' }) })
@@ -4202,11 +4111,7 @@ describe('read_commands', () => {
     })
 
     it('does not resolve a bare key to a value found only inside a named section', () => {
-      // Regression guard (task #109): a bare (non-dotted) key lookup must only match a
-      // genuinely top-level key -- one appearing before any [section] header -- not a
-      // same-named key nested inside an unrelated section. Before the fix, the section
-      // check was skipped entirely whenever no section was requested, so this incorrectly
-      // resolved to the section-scoped value.
+      // Regression guard (task #109): a bare (non-dotted) key lookup must only match a genuinely top-level key -- one appearing before any [section] header -- not a same-named key nested inside an unrelated section. Before the fix, the section check was skipped entirely whenever no section was requested, so this incorrectly resolved to the section-scoped value.
       const f = path.join(tempDir, 'bare-key-section.toml')
       fs.writeFileSync(f, '[some_section]\nsome_key = "wrong"\n')
       const code = runConfigGet({ file: f, key: 'some_key' })
@@ -4277,9 +4182,7 @@ describe('read_commands', () => {
     })
 
     it('falls back to TOML/INI-style lookup for a Markdown file with no frontmatter', () => {
-      // Regression guard: a .md file that never opens a frontmatter fence must keep
-      // resolving through the pre-existing TOML/INI fallback, unaffected by the new
-      // frontmatter branch.
+      // Regression guard: a .md file that never opens a frontmatter fence must keep resolving through the pre-existing TOML/INI fallback, unaffected by the new frontmatter branch.
       const f = path.join(tempDir, 'notes.md')
       fs.writeFileSync(f, '[project]\nversion = "9.9.9"\n')
       const { stdout } = capture(() => { runConfigGet({ file: f, key: 'project.version' }) })
@@ -4287,9 +4190,7 @@ describe('read_commands', () => {
     })
 
     it('does not crash on an unclosed frontmatter fence and falls through to extension-based dispatch', () => {
-      // No closing '---' -- consistent with doc_compact.ts, this is not treated as
-      // frontmatter. It falls through to the TOML/INI fallback, which finds no
-      // 'title =' line either, so the lookup reports not-found rather than throwing.
+      // No closing '---' -- consistent with doc_compact.ts, this is not treated as frontmatter. It falls through to the TOML/INI fallback, which finds no 'title =' line either, so the lookup reports not-found rather than throwing.
       const f = path.join(tempDir, 'unclosed.md')
       fs.writeFileSync(f, '---\ntitle: Draft\nno closing fence here\n')
       const code = runConfigGet({ file: f, key: 'title' })
@@ -4330,8 +4231,7 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'json.csv')
       fs.writeFileSync(f, CSV)
       const { stdout } = capture(() => { runCsvQuery({ file: f, json: true }) })
-      // guardJsonRows wraps the rows in an { items, truncated, totalCount } envelope so large
-      // results can be capped without changing the top-level JSON shape (see read_commands.ts).
+      // guardJsonRows wraps the rows in an { items, truncated, totalCount } envelope so large results can be capped without changing the top-level JSON shape (see read_commands.ts).
       const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
       expect(parsed.items[0]).toEqual({ id: '1', name: 'Alice', status: 'active' })
       expect(parsed.truncated).toBe(false)
@@ -4424,10 +4324,7 @@ describe('read_commands', () => {
       expect(stdout).toContain('col1,col2')
     })
 
-    // Regression: an empty or header-only CSV silently produced zero stdout output (just a
-    // blank/empty header line from formatCsvTable) instead of a clear message, unlike every
-    // other format handler's "not found"/no-match miss (section, read, symbol, xlsx-sheets,
-    // pdf-meta).
+    // Regression: an empty or header-only CSV silently produced zero stdout output (just a blank/empty header line from formatCsvTable) instead of a clear message, unlike every other format handler's "not found"/no-match miss (section, read, symbol, xlsx-sheets, pdf-meta).
     it('prints a clear message instead of silent empty output for a fully empty CSV', () => {
       const f = path.join(tempDir, 'empty.csv')
       fs.writeFileSync(f, '')
@@ -4454,11 +4351,7 @@ describe('read_commands', () => {
       expect(stdout).not.toContain('Bob')
     })
 
-    // Regression: --json + --head reported totalCount/truncated off the already-head-limited
-    // rows array (queryCsv applies --head internally before returning), so a 50-row CSV capped
-    // to --head 5 showed totalCount:5 truncated:false -- indistinguishable from "the file only
-    // has 5 rows" even though 45 real rows were silently dropped. Fixed by reading
-    // queryCsv's own pre-head result.totalRows instead of the post-head array's length.
+    // Regression: --json + --head reported totalCount/truncated off the already-head-limited rows array (queryCsv applies --head internally before returning), so a 50-row CSV capped to --head 5 showed totalCount:5 truncated:false -- indistinguishable from "the file only has 5 rows" even though 45 real rows were silently dropped. Fixed by reading queryCsv's own pre-head result.totalRows instead of the post-head array's length.
     it('reflects --head truncation honestly in the --json envelope (regression: totalCount used to equal the head-limited count, not the true row count)', () => {
       const f = path.join(tempDir, 'head_json.csv')
       const lines = ['id,name']
@@ -4471,10 +4364,7 @@ describe('read_commands', () => {
       expect(parsed.totalCount).toBe(50)
     })
 
-    // Regression: --head was parsed with raw parseInt instead of the same
-    // requireNonNegativeInt validation the parallel xlsx --head path already uses. A
-    // non-numeric value produced NaN, which `.slice(0, NaN)` silently turns into 0 rows
-    // with a misleading "N more rows elided" message instead of a clear error.
+    // Regression: --head was parsed with raw parseInt instead of the same requireNonNegativeInt validation the parallel xlsx --head path already uses. A non-numeric value produced NaN, which `.slice(0, NaN)` silently turns into 0 rows with a misleading "N more rows elided" message instead of a clear error.
     it('returns 1 and reports a clear error for a non-numeric --head', () => {
       const f = path.join(tempDir, 'badhead.csv')
       fs.writeFileSync(f, CSV)
@@ -4485,8 +4375,7 @@ describe('read_commands', () => {
       expect(stderr).toContain('abc')
     })
 
-    // Regression: a negative --head silently returned all-but-the-last-N rows instead of
-    // erroring, because `.slice(0, -5)` reinterprets a negative count as "from the end".
+    // Regression: a negative --head silently returned all-but-the-last-N rows instead of erroring, because `.slice(0, -5)` reinterprets a negative count as "from the end".
     it('returns 1 and reports a clear error for a negative --head', () => {
       const f = path.join(tempDir, 'neghead.csv')
       fs.writeFileSync(f, CSV)
@@ -4595,6 +4484,38 @@ describe('read_commands', () => {
       const { stderr } = capture(() => { code = runJsonOutline({ file: f }) })
       expect(code).toBe(1)
       expect(stderr).toContain('Failed to parse JSON')
+    })
+
+    // HAND-DERIVED: numeric-id registry keys, the shape an agent narrows to the two entries it is comparing.
+    it('lists only the keys matching --filter, with the matched-of-total tally', () => {
+      const f = path.join(tempDir, 'registry.json')
+      fs.writeFileSync(f, JSON.stringify({ '118615': { brand: 'a' }, '118623': { brand: 'b' }, '118700': { brand: 'c' } }))
+      let code = -1
+      const { stdout } = capture(() => { code = runJsonOutline({ file: f, filter: '1186' }) })
+      expect(code).toBe(0)
+      expect(stdout).toContain('118615: object (1)')
+      expect(stdout).toContain('(2 of 3 keys contain "1186")')
+      expect(stdout).not.toContain('118700')
+    })
+
+    it('refuses --filter on a top-level array instead of returning the unfiltered listing', () => {
+      const f = path.join(tempDir, 'arr.json')
+      fs.writeFileSync(f, JSON.stringify([{ id: 1 }]))
+      let code = -1
+      const { stdout, stderr } = capture(() => { code = runJsonOutline({ file: f, filter: 'id' }) })
+      expect(code).toBe(1)
+      expect(stdout).toBe('')
+      expect(stderr).toContain('--filter narrows an object')
+    })
+
+    it('applies --filter to yaml-outline through the same path', () => {
+      const f = path.join(tempDir, 'registry.yaml')
+      fs.writeFileSync(f, 'alpha: 1\nbeta: 2\nalphabet: x\n')
+      const { stdout } = capture(() => { runYamlOutline({ file: f, filter: 'ALPHA' }) })
+      expect(stdout).toContain('alpha: number')
+      expect(stdout).toContain('alphabet: string')
+      expect(stdout).not.toContain('beta: number')
+      expect(stdout).toContain('(2 of 3 keys contain "ALPHA")')
     })
   })
 
@@ -5035,9 +4956,7 @@ describe('read_commands', () => {
         expect(parsed.truncated).toBe(true)
       })
 
-      // Regression: totalCount was read off the already-head-sliced rows array (capped.totalCount),
-      // so --head 1 against a 3-row result reported totalCount:1 instead of the true row count 3 --
-      // a JSON consumer had no honest signal of how many rows the query actually matched.
+      // Regression: totalCount was read off the already-head-sliced rows array (capped.totalCount), so --head 1 against a 3-row result reported totalCount:1 instead of the true row count 3 -- a JSON consumer had no honest signal of how many rows the query actually matched.
       it('reports the true row count in totalCount, not the --head-limited count', () => {
         const f = makeFixtureDb()
         const { stdout } = capture(() => {
@@ -5127,20 +5046,14 @@ describe('read_commands', () => {
         expect(stderr).toContain('not a valid SQLite database')
       })
 
-      // Regression: sqlite_query used to book bytes_saved against the SIZE OF THE DATABASE FILE
-      // ON DISK, as if the alternative to running this query were pasting the whole binary .db
-      // into model context -- nobody does that, and no tool even offers it. Seeds a database whose
-      // on-disk size is inflated by an unrelated table the query never touches, then asserts the
-      // recorded saving tracks the actual result set (here: 0 extra bytes, since nothing was
-      // --head-truncated), never the multi-megabyte file size.
+      // Regression: sqlite_query used to book bytes_saved against the SIZE OF THE DATABASE FILE ON DISK, as if the alternative to running this query were pasting the whole binary .db into model context -- nobody does that, and no tool even offers it. Seeds a database whose on-disk size is inflated by an unrelated table the query never touches, then asserts the recorded saving tracks the actual result set (here: 0 extra bytes, since nothing was --head-truncated), never the multi-megabyte file size.
       it('books bytes_saved against the result set, not the database file size on disk', () => {
         const f = path.join(tempDir, 'inflated.db')
         const db = new Database(f)
         db.exec('CREATE TABLE users (id INTEGER, name TEXT)')
         db.exec('CREATE TABLE junk (blob TEXT)')
         db.prepare('INSERT INTO users (id, name) VALUES (1, ?)').run('Alice')
-        // Inflate the file's on-disk size well past anything the query result could plausibly
-        // account for, without touching the queried table.
+        // Inflate the file's on-disk size well past anything the query result could plausibly account for, without touching the queried table.
         db.prepare('INSERT INTO junk (blob) VALUES (?)').run('x'.repeat(2_000_000))
         db.close()
         const fileBytes = fs.statSync(f).size
@@ -5152,9 +5065,7 @@ describe('read_commands', () => {
         expect(stdout).toContain('Alice')
 
         const bytesSaved = latestStatBytesSaved('sqlite_query')
-        // No --head truncation happened, so the honest baseline (the same query's untruncated
-        // output) equals what was actually emitted: bytesSaved must sit at the Math.max(1, ...)
-        // floor, nowhere near the inflated multi-megabyte file size.
+        // No --head truncation happened, so the honest baseline (the same query's untruncated output) equals what was actually emitted: bytesSaved must sit at the Math.max(1, ...) floor, nowhere near the inflated multi-megabyte file size.
         expect(bytesSaved).toBeGreaterThan(0)
         expect(bytesSaved).toBeLessThan(1000)
       })
@@ -5190,7 +5101,8 @@ describe('read_commands', () => {
         { name: 'fooHelper', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 5, body: 'function fooHelper() {}', docstring: '' },
         { name: 'fooUtil', kind: 'function', filePath: 'src/foo.ts', lineStart: 6, lineEnd: 10, body: 'function fooUtil() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runFind({ pattern: 'foo' }) })
       const lines = stdout.trim().split('\n')
@@ -5199,13 +5111,13 @@ describe('read_commands', () => {
     })
 
     it('matches a substring pattern, not just an exact symbol name (m31)', () => {
-      // The command's own help text promises "pattern"-style matching over an exact name —
-      // a partial pattern like 'Helper' must find a symbol named 'sessionHelper'.
+      // The command's own help text promises "pattern"-style matching over an exact name — a partial pattern like 'Helper' must find a symbol named 'sessionHelper'.
       const syms: MockSymbol[] = [
         { name: 'sessionHelper', kind: 'function', filePath: 'src/session.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
         { name: 'unrelatedThing', kind: 'function', filePath: 'src/other.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runFind({ pattern: 'Helper' }) })
       expect(stdout).toContain('session.ts')
@@ -5216,7 +5128,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'SessionHelper', kind: 'function', filePath: 'src/session.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runFind({ pattern: 'helper' }) })
       expect(stdout).toContain('session.ts')
@@ -5232,21 +5145,21 @@ describe('read_commands', () => {
         body: '',
         docstring: '',
       }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runFind({ pattern: 'foo', limit: 2 }) })
       const lines = stdout.trim().split('\n')
       expect(lines).toHaveLength(2)
     })
 
-    // `.slice(0, 0)` always returns zero files, so a pattern that genuinely matches indexed
-    // files would otherwise be reported as "no indexed files match" -- a wrong answer, not
-    // just a permissive input. limit: 0 (or negative) must be rejected up front.
+    // `.slice(0, 0)` always returns zero files, so a pattern that genuinely matches indexed files would otherwise be reported as "no indexed files match" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be rejected up front.
     it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no matches"', () => {
       const syms: MockSymbol[] = [
         { name: 'fooHelper', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stderr } = capture(() => {
         const code = runFind({ pattern: 'foo', limit: 0 })
@@ -5266,16 +5179,9 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).not.toHaveBeenCalled()
     })
 
-    // The scan-window warning this block used to assert is gone: `find` no longer takes a capped
-    // page and hopes it was big enough -- src/symbol_scan.ts walks the whole scope, so there is no
-    // window to be incomplete against and nothing to disclose. The property that replaced it, that
-    // a match sorting past one page is still returned, is covered against a real index in
-    // tests/symbol_scan_beyond_one_page.test.ts; a mocked querySymbols cannot cover it, because the
-    // mock is what decides whether paging works.
+    // The scan-window warning this block used to assert is gone: `find` no longer takes a capped page and hopes it was big enough -- src/symbol_scan.ts walks the whole scope, so there is no window to be incomplete against and nothing to disclose. The property that replaced it, that a match sorting past one page is still returned, is covered against a real index in tests/symbol_scan_beyond_one_page.test.ts; a mocked querySymbols cannot cover it, because the mock is what decides whether paging works.
 
-    // Regression: runFind used to pass a raw `process.cwd()` as querySymbols's rootDir, so
-    // invoking the command from a subdirectory of the project silently shrank the scan to that
-    // subtree instead of the whole project.
+    // Regression: runFind used to pass a raw `process.cwd()` as querySymbols's rootDir, so invoking the command from a subdirectory of the project silently shrank the scan to that subtree instead of the whole project.
     it('scopes querySymbols to the whole project root, not the subdirectory cwd', () => {
       mockQuerySymbols.mockReturnValue([])
       const subdir = path.join(process.cwd(), 'src')
@@ -5306,7 +5212,8 @@ describe('read_commands', () => {
         { name: 'updateChart1', kind: 'function', filePath: 'scripts/dashboard.js', lineStart: 10, lineEnd: 50, body: '', docstring: '' },
         { name: 'chartOptions', kind: 'config', filePath: 'scripts/dashboard.js', lineStart: 55, lineEnd: 80, body: '', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
 
       const { stdout } = capture(() => {
@@ -5320,7 +5227,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'plugins', kind: 'config', filePath: 'scripts/dashboard.js', lineStart: 60, lineEnd: 75, body: '', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
 
       const { stdout } = capture(() => {
@@ -5339,13 +5247,12 @@ describe('read_commands', () => {
 
   describe('runExports', () => {
     it('reports no exported symbols for a real file with genuinely nothing to export (pinned exit code)', () => {
-      // 'a.ts' is not readable from disk here, so this also proves the empty-result branch is
-      // reached only because `symbols` is non-empty (indexed) -- not because the disk check was
-      // skipped entirely.
+      // 'a.ts' is not readable from disk here, so this also proves the empty-result branch is reached only because `symbols` is non-empty (indexed) -- not because the disk check was skipped entirely.
       const syms: MockSymbol[] = [
         { name: 'internal', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'function internal() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => {
         const code = runExports({ file: 'a.ts' })
@@ -5358,7 +5265,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'pubFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubFn() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runExports({ file: 'a.ts' }) })
       expect(stdout).toContain('pubFn')
@@ -5375,12 +5283,12 @@ describe('read_commands', () => {
     })
 
     it('still reports from the index when the file is indexed but has since been deleted from disk (no error)', () => {
-      // The path is never written to disk in this test -- readFileText() naturally returns null
-      // for it, so this exercises the "indexed but absent from disk" side of the conjunction.
+      // The path is never written to disk in this test -- readFileText() naturally returns null for it, so this exercises the "indexed but absent from disk" side of the conjunction.
       const syms: MockSymbol[] = [
         { name: 'pubFn', kind: 'function', filePath: 'gone.ts', lineStart: 1, lineEnd: 5, body: 'export function pubFn() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout, stderr } = capture(() => {
         const code = runExports({ file: 'gone.ts' })
@@ -5397,7 +5305,8 @@ describe('read_commands', () => {
         { name: 'pubAlpha', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubAlpha() {}', docstring: '' },
         { name: 'pubBeta', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 9, body: 'export function pubBeta() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => {
         const code = runExports({ file: 'a.ts', grep: 'Alpha' })
@@ -5407,14 +5316,14 @@ describe('read_commands', () => {
       expect(stdout).not.toContain('pubBeta')
     })
 
-    // Negative control: proves --grep actually narrows the set rather than the plumbing being a
-    // no-op that happens to pass the positive test above.
+    // Negative control: proves --grep actually narrows the set rather than the plumbing being a no-op that happens to pass the positive test above.
     it('negative control: an unfiltered call still returns both exports', () => {
       const syms: MockSymbol[] = [
         { name: 'pubAlpha', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubAlpha() {}', docstring: '' },
         { name: 'pubBeta', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 9, body: 'export function pubBeta() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runExports({ file: 'a.ts' }) })
       expect(stdout).toContain('pubAlpha')
@@ -5425,7 +5334,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'pubGamma', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubGamma() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => {
         const code = runExports({ file: 'a.ts', grep: '__no_such_export_xyzzy__' })
@@ -5439,7 +5349,8 @@ describe('read_commands', () => {
       const syms: MockSymbol[] = [
         { name: 'pubDelta', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubDelta() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => {
         const code = runExports({ file: 'a.ts', grep: '[unclosed' })
@@ -5466,9 +5377,7 @@ describe('read_commands', () => {
     })
 
     it('extracts imports for .mts/.cts (explicit-ESM/explicit-CJS TypeScript), not just .ts/.js', () => {
-      // Regression test: .mts/.cts were missing from the dispatch list, so these files fell
-      // through to the far weaker generic `import|require|use|#include` fallback instead of
-      // the dedicated TS/JS matcher used here.
+      // Regression test: .mts/.cts were missing from the dispatch list, so these files fell through to the far weaker generic `import|require|use|#include` fallback instead of the dedicated TS/JS matcher used here.
       const src = "import { a } from './mod'\nconst x = require('cjs-pkg')"
       expect(extractImports(src, '.mts')).toEqual(['./mod', 'cjs-pkg'])
       expect(extractImports(src, '.cts')).toEqual(['./mod', 'cjs-pkg'])
@@ -5542,8 +5451,7 @@ describe('read_commands', () => {
       const targets = extractImports(src, '.rs')
       expect(targets).toContain('std::fs')
       expect(targets).toContain('std::io')
-      // `self` inside `io::{self, Read}` resolves to the group's own module (std::io), not a
-      // literal "std::io::self".
+      // `self` inside `io::{self, Read}` resolves to the group's own module (std::io), not a literal "std::io::self".
       expect(targets).not.toContain('std::io::self')
       expect(targets).toContain('std::io::Read')
       // A rename (`Write as W`) resolves to the original name callers reference.
@@ -5644,8 +5552,7 @@ describe('read_commands', () => {
     })
 
     it('extracts every target from a comma-separated legacy @import line, not just the first', () => {
-      // Regression test: a single .exec() capturing one quoted group silently dropped every
-      // target after the first on a line like `@import "reset", "base", "layout";`.
+      // Regression test: a single .exec() capturing one quoted group silently dropped every target after the first on a line like `@import "reset", "base", "layout";`.
       expect(extractImports('@import "reset", "base", "layout";', '.css')).toEqual([
         'reset', 'base', 'layout',
       ])
@@ -5657,8 +5564,7 @@ describe('read_commands', () => {
         'import Foo.Bar', // real generic-fallback import, should still match
       ].join('\n')
       expect(extractImports(src, '.dart')).toEqual(['Foo.Bar'])
-      // #include's leading "#" is itself a non-word character, so the same guard must not
-      // also break the pre-existing C/C++ #include branch's sibling keyword form.
+      // #include's leading "#" is itself a non-word character, so the same guard must not also break the pre-existing C/C++ #include branch's sibling keyword form.
       expect(extractImports('#include <stdio.h>', '.unknownext')).toEqual(['stdio.h'])
     })
 
@@ -5680,9 +5586,7 @@ describe('read_commands', () => {
     })
 
     it('extracts Swift imports carrying an attribute or a Swift 6 access level', () => {
-      // This branch used to hold its own copy of swift.ts's pattern. When the extractor learned
-      // these two forms the copy did not, so `imports` reported nothing for a file the index had
-      // indexed correctly. It now shares the one pattern, and this pins that the two agree.
+      // This branch used to hold its own copy of swift.ts's pattern. When the extractor learned these two forms the copy did not, so `imports` reported nothing for a file the index had indexed correctly. It now shares the one pattern, and this pins that the two agree.
       const src = ['@preconcurrency import Foundation', 'public import Core'].join('\n')
       expect(extractImports(src, '.swift')).toEqual(['Foundation', 'Core'])
     })
@@ -5896,13 +5800,7 @@ describe('read_commands', () => {
     })
   })
 
-  // Regression (command-entry-point coverage gap): extractImports(text, '.mk') and
-  // importsExtensionFor() are both unit-proven above, but nothing exercised them wired together
-  // through the real `token-goat imports` command handler against an actual file named
-  // "Makefile" on disk -- the exact injected-seam failure mode this project's own CLAUDE.md
-  // warns about (a helper-level test proving the pieces work individually while the real
-  // command-entry-point wiring could still be broken). Found via an independent Codex pre-push
-  // review of this batch's diff.
+  // Regression (command-entry-point coverage gap): extractImports(text, '.mk') and importsExtensionFor() are both unit-proven above, but nothing exercised them wired together through the real `token-goat imports` command handler against an actual file named "Makefile" on disk -- the exact injected-seam failure mode this project's own CLAUDE.md warns about (a helper-level test proving the pieces work individually while the real command-entry-point wiring could still be broken). Found via an independent Codex pre-push review of this batch's diff.
   describe('runImports against a real Makefile (command-entry-point wiring)', () => {
     it('reports the include directives of a file literally named "Makefile"', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imports-makefile-'))
@@ -5938,8 +5836,7 @@ describe('read_commands', () => {
       }
     })
 
-    // Negative control: proves --grep actually narrows the set rather than the plumbing being a
-    // no-op that happens to pass the positive test above.
+    // Negative control: proves --grep actually narrows the set rather than the plumbing being a no-op that happens to pass the positive test above.
     it('negative control: an unfiltered call still returns both imports', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imports-grep-neg-'))
       try {
@@ -6030,7 +5927,8 @@ describe('read_commands', () => {
     const mockRunGit = vi.mocked(runGit)
 
     function gitOk(stdout: string): void {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockRunGit.mockReturnValue({ exitCode: 0, stdout, stderr: '' } as any)
     }
 
@@ -6099,24 +5997,25 @@ describe('read_commands', () => {
     })
 
     it('lists changed symbols with kind and location in symbol mode', () => {
-      // Distinguish the rev-parse (project root) call from git diff --name-only -- gitOk's single
-      // canned response for every runGit call would otherwise make resolveProjectRoot's toplevel
-      // resolve to the literal string 'a.ts', which then collides with the symbol's own indexed
-      // filePath ('a.ts') and toDisplayPath prints '.' instead of the real relative path.
+      // Distinguish the rev-parse (project root) call from git diff --name-only -- gitOk's single canned response for every runGit call would otherwise make resolveProjectRoot's toplevel resolve to the literal string 'a.ts', which then collides with the symbol's own indexed filePath ('a.ts') and toDisplayPath prints '.' instead of the real relative path.
       const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
       const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
       const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
       mockRunGit
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(toplevel as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(nameOnly as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(noHunkDiff as any)
       const syms: MockSymbol[] = [
         { name: 'changedFn', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 9, body: 'function changedFn() {}', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runChanged({ symbolMode: true }) })
       expect(stdout).toContain('changedFn (function)')
@@ -6124,7 +6023,8 @@ describe('read_commands', () => {
     })
 
     it('returns 1 when git diff fails', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' } as any)
       const { stderr } = capture(() => {
         expect(runChanged({ ref: 'nope' })).toBe(1)
@@ -6148,17 +6048,21 @@ describe('read_commands', () => {
         stderr: '',
       }
       mockRunGit
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(toplevel as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(nameOnly as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(unifiedDiff as any)
       const syms: MockSymbol[] = [
         { name: 'untouchedFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
         { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 10, body: '', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runChanged({ symbolMode: true }) })
       expect(stdout).toContain('touchedFn')
@@ -6170,26 +6074,27 @@ describe('read_commands', () => {
       const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
       const diffFail = { exitCode: 128, stdout: '', stderr: 'boom' }
       mockRunGit
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(toplevel as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(nameOnly as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(diffFail as any)
       const syms: MockSymbol[] = [
         { name: 'anyFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
       ]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runChanged({ symbolMode: true }) })
       expect(stdout).toContain('anyFn')
     })
 
     it('resolves changed-file paths against the real git repo top-level (rev-parse), not the invoking cwd, so running from a subdirectory does not double the subdirectory segment (regression, item2)', () => {
-      // Simulate the command having been invoked from a subdirectory: `projectRoot` here
-      // stands in for that subdirectory, while the mocked `rev-parse --show-toplevel`
-      // reports the real repo root one level up — exactly the mismatch that occurs when
-      // `token-goat changed --symbol` is run from e.g. `src/`.
+      // Simulate the command having been invoked from a subdirectory: `projectRoot` here stands in for that subdirectory, while the mocked `rev-parse --show-toplevel` reports the real repo root one level up — exactly the mismatch that occurs when `token-goat changed --symbol` is run from e.g. `src/`.
       const repoRoot = path.join(process.cwd(), 'fixture-repo')
       const subdir = path.join(repoRoot, 'subdir')
       const toplevel = { exitCode: 0, stdout: `${repoRoot}\n`, stderr: '' }
@@ -6197,10 +6102,13 @@ describe('read_commands', () => {
       const nameOnly = { exitCode: 0, stdout: 'subdir/touched.ts\n', stderr: '' }
       const diffFail = { exitCode: 128, stdout: '', stderr: 'boom' }
       mockRunGit
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(toplevel as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(nameOnly as any)
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(diffFail as any)
       mockQuerySymbols.mockReturnValue([])
@@ -6211,16 +6119,12 @@ describe('read_commands', () => {
         expect.objectContaining({ filePath: resolveIndexPath('subdir/touched.ts', repoRoot) }),
       )
       const arg = mockQuerySymbols.mock.calls[0]?.[0] as { filePath?: string }
-      // The bug resolved the git-relative path against the subdirectory cwd instead of the
-      // repo root, doubling the "subdir" segment (subdir/subdir/touched.ts).
+      // The bug resolved the git-relative path against the subdirectory cwd instead of the repo root, doubling the "subdir" segment (subdir/subdir/touched.ts).
       expect(arg.filePath).not.toBe(resolveIndexPath('subdir/touched.ts', subdir))
       expect(arg.filePath).not.toContain(path.join('subdir', 'subdir'))
     })
 
-    // --json emitting prose is a success status with an unparseable body: the caller gets exit 0
-    // and JSON.parse throws. `callers`/`dead`/`deps`/`types` were migrated to always emit the
-    // envelope; `changed` kept prose on all three of its zero-row paths. Each is pinned
-    // separately because they are three distinct early returns, not one shared branch.
+    // --json emitting prose is a success status with an unparseable body: the caller gets exit 0 and JSON.parse throws. `callers`/`dead`/`deps`/`types` were migrated to always emit the envelope; `changed` kept prose on all three of its zero-row paths. Each is pinned separately because they are three distinct early returns, not one shared branch.
     describe('--json always emits a parseable envelope, never prose', () => {
       function parse(stdout: string): { items: unknown[]; truncated: boolean; totalCount: number } {
         return JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
@@ -6244,8 +6148,7 @@ describe('read_commands', () => {
         gitOk('src/a.ts\nsrc/b.ts\n')
         const { stdout } = capture(() => { expect(runChanged({ ref: 'HEAD~1', json: true, grep: '^nomatch/' })).toBe(0) })
         expect(() => parse(stdout)).not.toThrow()
-        // totalCount is the POST-filter count, matching the populated branch and the siblings --
-        // never the pre-filter 2, which would claim rows the payload does not carry.
+        // totalCount is the POST-filter count, matching the populated branch and the siblings -- never the pre-filter 2, which would claim rows the payload does not carry.
         expect(parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
       })
 
@@ -6253,6 +6156,7 @@ describe('read_commands', () => {
         const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
         const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
         const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
         mockQuerySymbols.mockReturnValue([])
@@ -6261,8 +6165,7 @@ describe('read_commands', () => {
         expect(parse(stdout).items).toEqual([])
       })
 
-      // Text mode is the control: the human notices must survive the migration verbatim, so this
-      // fix cannot be "made green" by deleting the prose branch outright.
+      // Text mode is the control: the human notices must survive the migration verbatim, so this fix cannot be "made green" by deleting the prose branch outright.
       it('keeps the human notices in text mode', () => {
         gitOk('')
         expect(capture(() => { runChanged({}) }).stdout).toContain('No files changed')
@@ -6272,9 +6175,7 @@ describe('read_commands', () => {
       })
     })
 
-    // --exclude-tests: the last member of the refs/callers/dead/call-chain/impact/semantic/symbol
-    // family that lacked it. Filters the changed-FILE path, so it applies in --symbol mode too,
-    // exactly as --grep already documents for itself.
+    // --exclude-tests: the last member of the refs/callers/dead/call-chain/impact/semantic/symbol family that lacked it. Filters the changed-FILE path, so it applies in --symbol mode too, exactly as --grep already documents for itself.
     describe('--exclude-tests', () => {
       it('drops changed test files and keeps the rest', () => {
         gitOk('src/a.ts\ntests/a.test.ts\nsrc/b.spec.ts\n')
@@ -6310,8 +6211,7 @@ describe('read_commands', () => {
         expect(all).not.toContain('No files changed')
       })
 
-      // Singular branch pinned separately: a fixture landing on count===1 is otherwise never
-      // asserted, which is exactly how "1 in test files" shipped across the rest of the family.
+      // Singular branch pinned separately: a fixture landing on count===1 is otherwise never asserted, which is exactly how "1 in test files" shipped across the rest of the family.
       it('uses singular wording when exactly one test file was hidden', () => {
         gitOk('tests/only.test.ts\n')
         const result = capture(() => { expect(runChanged({ ref: 'HEAD~1', excludeTests: true })).toBe(0) })
@@ -6320,9 +6220,7 @@ describe('read_commands', () => {
         expect(all).not.toContain('1 in test files')
       })
 
-      // Found in review. --grep runs first, so when it leaves only test files and
-      // --exclude-tests then empties the list, the unqualified "No non-test files changed" is
-      // true of the --grep slice but false of the diff: src/app.ts changed and is not a test.
+      // Found in review. --grep runs first, so when it leaves only test files and --exclude-tests then empties the list, the unqualified "No non-test files changed" is true of the --grep slice but false of the diff: src/app.ts changed and is not a test.
       it('names --grep too when it is what hid the non-test files, instead of claiming none changed', () => {
         gitOk('src/app.ts\ntests/app.test.ts\n')
         const result = capture(() => {
@@ -6343,8 +6241,7 @@ describe('read_commands', () => {
         expect(all).not.toContain('did not match the filter')
       })
 
-      // --grep active but discarding nothing: every changed file matched, so there is no
-      // second filter to blame and the unqualified wording is the accurate one.
+      // --grep active but discarding nothing: every changed file matched, so there is no second filter to blame and the unqualified wording is the accurate one.
       it('keeps the unqualified wording when --grep matched everything it saw', () => {
         gitOk('tests/a.test.ts\ntests/b.test.ts\n')
         const result = capture(() => { runChanged({ ref: 'HEAD~1', grep: '^tests/', excludeTests: true }) })
@@ -6360,15 +6257,12 @@ describe('read_commands', () => {
         expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
       })
 
-      // Found in review: --symbol capped each file's symbol query at a bare 1000. A changed
-      // symbol past that cutoff read as absent -- "No symbols changed." in text, and an empty
-      // envelope with `truncated: false` under --json, which asserts nothing was cut. Asserted on
-      // the query argument rather than via a 1000-symbol fixture, which would be slow to build
-      // and would pin the old cap's exact value rather than the intent.
+      // Found in review: --symbol capped each file's symbol query at a bare 1000. A changed symbol past that cutoff read as absent -- "No symbols changed." in text, and an empty envelope with `truncated: false` under --json, which asserts nothing was cut. Asserted on the query argument rather than via a 1000-symbol fixture, which would be slow to build and would pin the old cap's exact value rather than the intent.
       it('does not silently cap each file\'s symbol query, which would hide a changed symbol past the cutoff', () => {
         const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
         const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
         const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
         mockQuerySymbols.mockReturnValue([])
@@ -6382,12 +6276,12 @@ describe('read_commands', () => {
         const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
         const nameOnly = { exitCode: 0, stdout: 'a.ts\ntests/a.test.ts\n', stderr: '' }
         const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
+        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
         mockQuerySymbols.mockReturnValue([])
         capture(() => { runChanged({ symbolMode: true, excludeTests: true }) })
-        // The test file must never reach the index query at all -- filtering the rendered output
-        // instead would still pay the lookup and still leak via any file-level side effect.
+        // The test file must never reach the index query at all -- filtering the rendered output instead would still pay the lookup and still leak via any file-level side effect.
         for (const call of mockQuerySymbols.mock.calls) {
           expect((call[0] as { filePath?: string }).filePath ?? '').not.toContain('a.test.ts')
         }
@@ -6419,7 +6313,8 @@ describe('read_commands', () => {
 
     it('shows only the hunk overlapping the symbol\'s line range, not an unrelated hunk in the same file', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       const { stdout, stderr } = capture(() => {
@@ -6432,7 +6327,8 @@ describe('read_commands', () => {
 
     it('runs a plain `git diff -- file` (no ref) by default', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn' })
@@ -6441,7 +6337,8 @@ describe('read_commands', () => {
 
     it('passes an explicit ref range straight through to git diff as a single token', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn', ref: 'HEAD~3..HEAD' })
@@ -6450,7 +6347,8 @@ describe('read_commands', () => {
 
     it('reports "no changes" (non-error) when a hunk exists but does not overlap the symbol', () => {
       const sym: MockSymbol = { name: 'untouchedFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({
         exitCode: 0,
@@ -6474,7 +6372,8 @@ describe('read_commands', () => {
 
     it('reports "no changes" (non-error) when the file has no diff at all', () => {
       const sym: MockSymbol = { name: 'anyFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: '', stderr: '' })
       const { stdout } = capture(() => {
@@ -6492,10 +6391,10 @@ describe('read_commands', () => {
       expect(mockRunGit).not.toHaveBeenCalled()
     })
 
-    // Second call site for the cross-file lead: resolveSymbolSpecOrEmitError, shared by
-    // runDiff/runLog. Same shape as runRead's own cross-file test above.
+    // Second call site for the cross-file lead: resolveSymbolSpecOrEmitError, shared by runDiff/runLog. Same shape as runRead's own cross-file test above.
     it('leads with the cross-file spec (runDiff, second call site) when the symbol exists in a different indexed file', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'walkProject' && opts?.filePath === undefined) {
           return [{ name: 'walkProject', kind: 'function', filePath: 'src/baseline.ts', lineStart: 10, lineEnd: 20, body: '', docstring: '', parent: '' }]
@@ -6504,8 +6403,7 @@ describe('read_commands', () => {
           return []
         }
         if (opts?.filePath !== undefined) {
-          // Similar to the query so it survives the similarity ranking -- see the comment on
-          // runRead's equivalent test above.
+          // Similar to the query so it survives the similarity ranking -- see the comment on runRead's equivalent test above.
           return [{ name: 'walkProjectSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
         }
         return []
@@ -6522,7 +6420,8 @@ describe('read_commands', () => {
     })
 
     it('a symbol name that exists nowhere (runDiff) still gets the plain not-found message plus the unchanged same-file list only', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'totallyMissingEverywhere') return []
         if (opts?.filePath !== undefined) {
@@ -6540,10 +6439,10 @@ describe('read_commands', () => {
       expect(stderr).toContain('totallyMissingEverywhereToo')
     })
 
-    // Same shared resolveSymbolSpecOrEmitError code path as runRead's equivalent tests above
-    // -- covers the second (:3423-area) call site named in the task.
+    // Same shared resolveSymbolSpecOrEmitError code path as runRead's equivalent tests above -- covers the second (:3423-area) call site named in the task.
     it('points at outline when a symbol miss (runDiff) has no similar same-file candidates', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'zzz_totally_unrelated') return []
         if (opts?.filePath !== undefined) {
@@ -6558,11 +6457,10 @@ describe('read_commands', () => {
       expect(stderr).toContain('token-goat outline src/util.ts')
     })
 
-    // Defect-B regression for the shared resolveSymbolSpecOrEmitError path: the DB-layer cap
-    // used to be applied before ranking, so the true near-match could be outside the arbitrary
-    // storage-order first-N and never considered.
+    // Defect-B regression for the shared resolveSymbolSpecOrEmitError path: the DB-layer cap used to be applied before ranking, so the true near-match could be outside the arbitrary storage-order first-N and never considered.
     it('finds the true near-match even when it is not among the first DIDYOUMEAN_LIMIT symbols in storage order (runDiff, defect-B regression)', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'parseConf') return []
         if (opts?.filePath !== undefined) {
@@ -6584,7 +6482,8 @@ describe('read_commands', () => {
     it('fails with formatAmbiguity\'s shape when the symbol matches several distinct definitions', () => {
       const candA: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
       const candB: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 23, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([candA, candB] as any)
       const { stderr } = capture(() => {
         expect(runDiff({ spec: 'a.ts::render' })).toBe(1)
@@ -6603,7 +6502,8 @@ describe('read_commands', () => {
 
     it('returns 1 and reports the git failure when git diff itself errors', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' })
       const { stderr } = capture(() => {
@@ -6614,7 +6514,8 @@ describe('read_commands', () => {
 
     it('emits a structured items envelope in --json mode, scoped to the same overlapping hunk', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       const { stdout } = capture(() => {
@@ -6652,7 +6553,8 @@ describe('read_commands', () => {
 
     it('shows the symbol\'s scoped history', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
       const { stdout, stderr } = capture(() => {
@@ -6665,7 +6567,8 @@ describe('read_commands', () => {
 
     it('builds a `git log -L<start>,<end>:<file> --max-count=<default>` call with no ref', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
       runLog({ spec: 'a.ts::touchedFn' })
@@ -6674,7 +6577,8 @@ describe('read_commands', () => {
 
     it('appends an explicit ref as the starting point and respects a custom --max-count', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
       runLog({ spec: 'a.ts::touchedFn', ref: 'HEAD~3', maxCount: 5 })
@@ -6683,7 +6587,8 @@ describe('read_commands', () => {
 
     it('reports a clean "no history" message (non-error) when git log has no output', () => {
       const sym: MockSymbol = { name: 'anyFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: '', stderr: '' })
       const { stdout } = capture(() => {
@@ -6704,7 +6609,8 @@ describe('read_commands', () => {
     it('fails with formatAmbiguity\'s shape when the symbol matches several distinct definitions', () => {
       const candA: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
       const candB: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 23, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([candA, candB] as any)
       const { stderr } = capture(() => {
         expect(runLog({ spec: 'a.ts::render' })).toBe(1)
@@ -6723,7 +6629,8 @@ describe('read_commands', () => {
 
     it('returns 1 and reports the git failure when git log itself errors', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' })
       const { stderr } = capture(() => {
@@ -6734,7 +6641,8 @@ describe('read_commands', () => {
 
     it('emits a structured commits envelope in --json mode with hash/author/date/message/diff per entry', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const hash = 'b'.repeat(40)
       mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts', hash), stderr: '' })
@@ -6756,7 +6664,8 @@ describe('read_commands', () => {
 
     it('parses multiple commit blocks into separate entries', () => {
       const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const hashA = 'c'.repeat(40)
       const hashB = 'd'.repeat(40)
@@ -7030,10 +6939,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(stdout).toContain('nope2: (no references found)')
   })
 
-  // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has references would
-  // otherwise be reported as "no references found" -- a wrong answer, not just a permissive
-  // input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs, for
-  // both the single-symbol path and the multi-symbol merged path.
+  // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has references would otherwise be reported as "no references found" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs, for both the single-symbol path and the multi-symbol merged path.
   it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no references found" (single symbol)', () => {
     mockQueryRefs.mockReturnValue([ref('src/auth.ts', 10, 'login()')])
     const { stderr } = capture(() => {
@@ -7065,10 +6971,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
   })
 })
 
-// Cross-file multi-spec: `src/a.ts::x,src/b.ts::y`. Regression coverage for the reported bug --
-// parseMultiRefsSpec's findSpecSeparator is a lastIndexOf('::'), so a spec crossing a file
-// boundary used to fold into one bogus file/symbol-list pair (file=`src/read_commands.ts::runSection,src/install.ts`,
-// symbol=`installHooks`) and silently report a genuinely-referenced symbol as unreferenced.
+// Cross-file multi-spec: `src/a.ts::x,src/b.ts::y`. Regression coverage for the reported bug -- parseMultiRefsSpec's findSpecSeparator is a lastIndexOf('::'), so a spec crossing a file boundary used to fold into one bogus file/symbol-list pair (file=`src/read_commands.ts::runSection,src/install.ts`, symbol=`installHooks`) and silently report a genuinely-referenced symbol as unreferenced.
 describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -7096,9 +6999,7 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
   })
 
   it('regression: the exact reported spec no longer reports a false "no references found" for a referenced symbol', () => {
-    // Before the fix, lastIndexOf('::') folded this whole spec into file=`src/read_commands.ts::runSection,src/install.ts`
-    // symbol=`installHooks`, that bogus file never matched anything, and installHooks -- which
-    // genuinely has references -- was reported as unreferenced.
+    // Before the fix, lastIndexOf('::') folded this whole spec into file=`src/read_commands.ts::runSection,src/install.ts` symbol=`installHooks`, that bogus file never matched anything, and installHooks -- which genuinely has references -- was reported as unreferenced.
     mockQueryRefs.mockImplementation((opts: { name: string }) => {
       if (opts.name === 'installHooks') return [ref('src/cli.ts', 491, 'installHooks()'), ref('tests/install.test.ts', 12, 'installHooks()')]
       return []
@@ -7113,9 +7014,7 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
     expect(stdout).toContain('src/cli.ts:491: installHooks()')
   })
 
-  // The two pairs below query the same symbol name ('run') with no filePath scoping (the fix), so
-  // mockQueryRefs can no longer differentiate them by opts.filePath -- differentiate by call order
-  // instead, pinning WHICH queries ran (via keyFor's block keys) rather than a query-argument property.
+  // The two pairs below query the same symbol name ('run') with no filePath scoping (the fix), so mockQueryRefs can no longer differentiate them by opts.filePath -- differentiate by call order instead, pinning WHICH queries ran (via keyFor's block keys) rather than a query-argument property.
   it('keeps blocks distinct when the same symbol name is defined in two different files, keying each by its full file::symbol pair', () => {
     mockQueryRefs.mockImplementationOnce(() => [ref('src/caller1.ts', 1, 'a.run()')]).mockImplementationOnce(() => [ref('src/caller2.ts', 2, 'b.run()')])
     const { stdout } = capture(() => {
@@ -7147,9 +7046,7 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
     expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'x' }, { name: 'y' }, { name: 'z' }])
     const symbolCalls = mockQuerySymbols.mock.calls as [{ name: string; filePath?: string }][]
     const zSymbolCall = symbolCalls.find((c) => c[0].name === 'z')?.[0]
-    // The load-bearing assertion: `z` (a bare segment) must resolve against src/b.ts (the file
-    // to its left), not src/a.ts -- proving the spec actually crossed a file boundary. A spec
-    // like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all.
+    // The load-bearing assertion: `z` (a bare segment) must resolve against src/b.ts (the file to its left), not src/a.ts -- proving the spec actually crossed a file boundary. A spec like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all.
     expect(zSymbolCall?.filePath).toBe('src/b.ts')
     expect(stdout).toContain('src/callerZ.ts:3: z()')
   })
@@ -7212,9 +7109,7 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
 describe('runRefs --exclude-tests (single-symbol path, additive opt-in)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // vi.clearAllMocks() clears calls but not a prior test's mockReturnValue implementation --
-    // an earlier describe block in this file leaves mockLoadConfig pinned to a small
-    // overflow_guard.max_tokens, which would otherwise truncate this block's small fixtures.
+    // vi.clearAllMocks() clears calls but not a prior test's mockReturnValue implementation -- an earlier describe block in this file leaves mockLoadConfig pinned to a small overflow_guard.max_tokens, which would otherwise truncate this block's small fixtures.
     mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true }, overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
   })
@@ -7313,8 +7208,7 @@ describe('runRefs --grep (single-symbol path, filters on call-site file path)', 
     expect(all).not.toContain('no references found')
   })
 
-  // The same branch under --json handed the caller exit 0 plus an unparseable prose body, the
-  // defect already fixed for callers/dead/deps/types. Text mode above is the control.
+  // The same branch under --json handed the caller exit 0 plus an unparseable prose body, the defect already fixed for callers/dead/deps/types. Text mode above is the control.
   it('emits an empty envelope under --json when --grep filters every reference out', () => {
     const rows = [ref('src/a.ts', 1, 'f()'), ref('src/b.ts', 2, 'f()')]
     mockQueryRefs.mockReturnValue(rows)
@@ -7323,10 +7217,7 @@ describe('runRefs --grep (single-symbol path, filters on call-site file path)', 
       expect(runRefs({ spec: 'f', grep: '^nomatch/', json: true })).toBe(0)
     })
     expect(() => JSON.parse(stdout)).not.toThrow()
-    // totalCount is the post-filter count, never the pre-filter 2. hiddenByGrep carries that
-    // pre-filter count instead, so the empty envelope is legible as a filtered view rather than
-    // as a symbol with no references -- exact-shape assertion updated for the added field rather
-    // than loosened, so a future accidental key still fails here.
+    // totalCount is the post-filter count, never the pre-filter 2. hiddenByGrep carries that pre-filter count instead, so the empty envelope is legible as a filtered view rather than as a symbol with no references -- exact-shape assertion updated for the added field rather than loosened, so a future accidental key still fails here.
     expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0, hiddenByGrep: 2 })
   })
 
@@ -7484,14 +7375,7 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
     expect(withFlag).toContain('all 1 reference was filtered out by --grep')
   })
 
-  // Pins both halves of a divergence that renderRefsTargets now carries as one named option
-  // (`annotateHiddenByGrep`) instead of as a silent difference between two loops a hundred lines
-  // apart. The same-file multi-symbol path emits `hiddenByGrep`, so an entry emptied by --grep is
-  // distinguishable from one that genuinely has no references; the cross-file path never has.
-  // Neither half was asserted anywhere, so flipping that option in either direction left the whole
-  // suite green -- which is how the two loops came apart to begin with. This does not endorse the
-  // difference. It makes changing it a deliberate act with a failing test attached, in the
-  // direction the same-file comment argues is correct.
+  // Pins both halves of a divergence that renderRefsTargets now carries as one named option (`annotateHiddenByGrep`) instead of as a silent difference between two loops a hundred lines apart. The same-file multi-symbol path emits `hiddenByGrep`, so an entry emptied by --grep is distinguishable from one that genuinely has no references; the cross-file path never has. Neither half was asserted anywhere, so flipping that option in either direction left the whole suite green -- which is how the two loops came apart to begin with. This does not endorse the difference. It makes changing it a deliberate act with a failing test attached, in the direction the same-file comment argues is correct.
   it('emits hiddenByGrep on the same-file multi-symbol JSON path, and -- today -- not on the cross-file one', () => {
     mockQueryRefs.mockImplementation((opts: { name: string }) => {
       if (opts.name === 'alpha') return [ref('src/cli.ts', 5, 'alpha()'), ref('vendor/x.ts', 1, 'alpha()')]
@@ -7518,10 +7402,7 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
   })
 })
 
-// getDisplayRoot()/toDisplayPath() wiring: runRefsSingle never resolved its own project root
-// before this fix, so plain (non --top/--callers) `refs` output always printed the raw absolute
-// filePath. process.cwd() in this test process is this repo's own root (no chdir happens
-// elsewhere in this file), so findProject(cwd) resolves to this repo.
+// getDisplayRoot()/toDisplayPath() wiring: runRefsSingle never resolved its own project root before this fix, so plain (non --top/--callers) `refs` output always printed the raw absolute filePath. process.cwd() in this test process is this repo's own root (no chdir happens elsewhere in this file), so findProject(cwd) resolves to this repo.
 describe('runRefs — project-relative display paths (toDisplayPath/getDisplayRoot wiring)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -7675,9 +7556,7 @@ describe('runRefs — path spelling is independent of arity (single vs multi-sym
       const row = stdout.split('\n').find((l) => l.includes(':7:')) ?? ''
       expect(row).not.toContain('undefined')
       expect(row.trim()).not.toBe(':7: noRootSym()')
-      // Either an absolute path (no root resolved) or a root-relative one (a root did resolve
-      // above the temp dir) is acceptable; a bare cwd-relative `nested/thing.ts` is not, since it
-      // would render the same query differently depending on where it was run from.
+      // Either an absolute path (no root resolved) or a root-relative one (a root did resolve above the temp dir) is acceptable; a bare cwd-relative `nested/thing.ts` is not, since it would render the same query differently depending on where it was run from.
       expect(row).toContain('noRootSym()')
       expect(row.includes(target) || row.includes(toDisplayPath(process.cwd(), target))).toBe(true)
       expect(row).not.toContain(' nested/thing.ts')
@@ -7838,15 +7717,7 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
     expect(mockQueryRefs).not.toHaveBeenCalled()
   })
 
-  // Regression: queryRefs defaults to a 100-row cap ordered by file_path/line (an alphabetical
-  // ordering, not count-based) -- sized for "read these individual matches", not for the
-  // by-file aggregation --top exists specifically to serve on high-fanout (100+ ref) symbols.
-  // Without overriding that default, --top's ranking silently drops every ref in
-  // alphabetically-later files before the count comparison ever happens. The assertion is on the
-  // unbounded sentinel rather than on "bigger than 100", because a finite cap of any size is the
-  // same defect one project size later: this path once scanned 20,000 rows, which comfortably
-  // passed a >100 check while ranking `expect` (143,666 references in the live index) off a
-  // seventh of its call sites.
+  // Regression: queryRefs defaults to a 100-row cap ordered by file_path/line (an alphabetical ordering, not count-based) -- sized for "read these individual matches", not for the by-file aggregation --top exists specifically to serve on high-fanout (100+ ref) symbols. Without overriding that default, --top's ranking silently drops every ref in alphabetically-later files before the count comparison ever happens. The assertion is on the unbounded sentinel rather than on "bigger than 100", because a finite cap of any size is the same defect one project size later: this path once scanned 20,000 rows, which comfortably passed a >100 check while ranking `expect` (143,666 references in the live index) off a seventh of its call sites.
   it('scans unbounded when --top is given without an explicit --limit (single-symbol spec)', () => {
     mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x')])
     capture(() => runRefs({ spec: 'login', top: 2 }))
@@ -7871,10 +7742,7 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
   })
 })
 
-// A synthetic multi-file fixture, not a single-file stub: `queryRefs` is faked with the
-// SAME filtering semantics as the real SQL query (name always filters; filePath, when
-// present, additionally restricts rows to that exact file) so these tests exercise the
-// real scoping bug rather than merely asserting on call arguments.
+// A synthetic multi-file fixture, not a single-file stub: `queryRefs` is faked with the SAME filtering semantics as the real SQL query (name always filters; filePath, when present, additionally restricts rows to that exact file) so these tests exercise the real scoping bug rather than merely asserting on call arguments.
 function fakeRefsTable(rows: Array<{ filePath: string; name: string; line: number; context: string }>) {
   return (opts: { name: string; filePath?: string }) =>
     rows
@@ -7888,8 +7756,7 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
   })
 
   it('runRefsSingle: finds callers in other files, not just the file the symbol is defined in', () => {
-    // helperFn is DEFINED in src/util.ts but CALLED from three other files — the
-    // realistic shape of a flagship "find all callers" query.
+    // helperFn is DEFINED in src/util.ts but CALLED from three other files — the realistic shape of a flagship "find all callers" query.
     mockQueryRefs.mockImplementation(
       fakeRefsTable([
         { filePath: 'src/a.ts', name: 'helperFn', line: 10, context: 'helperFn()' },
@@ -7928,10 +7795,7 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
     expect(stdout).toContain('src/z.ts')
   })
 
-  // Regression: without --callers, a file::symbol spec used to scope queryRefs to that file too --
-  // exactly the reported bug (`refs "src/install.ts::installHooks"` found zero references because
-  // installHooks is defined in src/install.ts but called only from src/cli.ts and tests/install.test.ts).
-  // The `::`-prefixed file must disambiguate which same-named symbol is meant, never restrict the search.
+  // Regression: without --callers, a file::symbol spec used to scope queryRefs to that file too -- exactly the reported bug (`refs "src/install.ts::installHooks"` found zero references because installHooks is defined in src/install.ts but called only from src/cli.ts and tests/install.test.ts). The `::`-prefixed file must disambiguate which same-named symbol is meant, never restrict the search.
   it('without --callers, a file::symbol spec is still NOT scoped to that file (regression: same fix as --callers)', () => {
     mockQueryRefs.mockImplementation(
       fakeRefsTable([
@@ -7950,10 +7814,7 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
     expect(stdout).toContain('src/b.ts:20: helperFn()')
   })
 
-  // The headline reported bug, reproduced with the exact spec from the report: installHooks is
-  // DEFINED in src/install.ts but referenced only from src/cli.ts and tests/install.test.ts --
-  // files other than the one in the spec. Before the fix this printed "No references found" and
-  // exited 1, even though the symbol demonstrably has references.
+  // The headline reported bug, reproduced with the exact spec from the report: installHooks is DEFINED in src/install.ts but referenced only from src/cli.ts and tests/install.test.ts -- files other than the one in the spec. Before the fix this printed "No references found" and exited 1, even though the symbol demonstrably has references.
   it('regression: "refs src/install.ts::installHooks" finds references that occur in OTHER files', () => {
     mockQueryRefs.mockImplementation(
       fakeRefsTable([
@@ -7974,10 +7835,7 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
   })
 })
 
-// Type-resolved "exact" tier (ts_refs.ts): name-based matching alone conflates two unrelated
-// symbols sharing a name. These tests exercise the real querySymbols->resolveTypedRefs wiring
-// end to end through runRefs/runRefsSingle (index_reader.js is mocked at the top of this file,
-// but ts_refs.ts is NOT, so these hit the real TypeScript compiler API against real temp files).
+// Type-resolved "exact" tier (ts_refs.ts): name-based matching alone conflates two unrelated symbols sharing a name. These tests exercise the real querySymbols->resolveTypedRefs wiring end to end through runRefs/runRefsSingle (index_reader.js is mocked at the top of this file, but ts_refs.ts is NOT, so these hit the real TypeScript compiler API against real temp files).
 describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_refs.ts)', () => {
   let dir: string
 
@@ -8011,9 +7869,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
       { name: 'run', kind: 'method', filePath: fileA, lineStart: 2, lineEnd: 4, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
     ])
     mockQueryRefs.mockReturnValue([
-      // col 0 mirrors the real indexer's column semantics for `foo.run()` -- parser.ts's
-      // extractRefs records the call-expression's own start (at `foo`), not the callee
-      // identifier's column; both lines below start flush left, so that start column is 0.
+      // col 0 mirrors the real indexer's column semantics for `foo.run()` -- parser.ts's extractRefs records the call-expression's own start (at `foo`), not the callee identifier's column; both lines below start flush left, so that start column is 0.
       { filePath: callerA, name: 'run', line: 3, col: 0, context: '' },
       { filePath: callerB, name: 'run', line: 3, col: 0, context: '' },
     ])
@@ -8027,17 +7883,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
     expect(stdout).not.toContain(callerB)
   })
 
-  // Defect 5 (batch fix): the typed-refs filter above is a client-side filter over the same
-  // scanned window --exclude-tests/--grep already account for, and runRefsSingle omitted it from
-  // the `clientFiltered` flag fed to refsTotal, so a query where typed filtering alone dropped
-  // rows from a filled window printed the SQL-wide `countRefs` total (mocked to 0 below, since
-  // it cannot replicate a JS-side type-checker filter) as if it were exact, instead of the
-  // honest post-typed-filter floor. HAND-DERIVED: the window this test fills is the `--limit 2`
-  // it passes -- with neither --exclude-tests, --grep nor --top set, runRefsSingle queries under
-  // the requested limit itself, so `scanLimit` is 2 and refsTotal's `preScanCount < scanLimit`
-  // check is what the 20,001 mocked rows have to exceed. Any count above 2 would do; 20,001 is
-  // kept because it also reads as "far past any plausible window". Neither number comes from
-  // running this fix and pasting its output back.
+  // Defect 5 (batch fix): the typed-refs filter above is a client-side filter over the same scanned window --exclude-tests/--grep already account for, and runRefsSingle omitted it from the `clientFiltered` flag fed to refsTotal, so a query where typed filtering alone dropped rows from a filled window printed the SQL-wide `countRefs` total (mocked to 0 below, since it cannot replicate a JS-side type-checker filter) as if it were exact, instead of the honest post-typed-filter floor. HAND-DERIVED: the window this test fills is the `--limit 2` it passes -- with neither --exclude-tests, --grep nor --top set, runRefsSingle queries under the requested limit itself, so `scanLimit` is 2 and refsTotal's `preScanCount < scanLimit` check is what the 20,001 mocked rows have to exceed. Any count above 2 would do; 20,001 is kept because it also reads as "far past any plausible window". Neither number comes from running this fix and pasting its output back.
   it('reports a floor, not a bare exact total, when the typed-refs filter alone drops rows from a filled scan window', () => {
     const fooSrc = ['export class Foo {', '  run(): void {', "    console.log('foo')", '  }', '}', ''].join('\n')
     const barSrc = ['export class Bar {', '  run(): void {', "    console.log('bar')", '  }', '}', ''].join('\n')
@@ -8054,20 +7900,14 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
     mockQuerySymbols.mockReturnValue([
       { name: 'run', kind: 'method', filePath: fileA, lineStart: 2, lineEnd: 4, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
     ])
-    // 5 genuine refs to Foo.run (kept: the type checker resolves callerA's `foo.run()` to the
-    // real definition) plus 19,996 false-positive refs to Bar's unrelated same-named `run`
-    // (dropped: the checker resolves callerB's `bar.run()` to a different declaration) -- 20,001
-    // total, far past the `--limit 2` window these rows are fetched under, so it reads as filled.
+    // 5 genuine refs to Foo.run (kept: the type checker resolves callerA's `foo.run()` to the real definition) plus 19,996 false-positive refs to Bar's unrelated same-named `run` (dropped: the checker resolves callerB's `bar.run()` to a different declaration) -- 20,001 total, far past the `--limit 2` window these rows are fetched under, so it reads as filled.
     const genuineRef = { filePath: callerA, name: 'run', line: 3, col: 0, context: '' }
     const falsePositiveRef = { filePath: callerB, name: 'run', line: 3, col: 0, context: '' }
     mockQueryRefs.mockReturnValue([
       ...Array.from({ length: 5 }, () => ({ ...genuineRef })),
       ...Array.from({ length: 19_996 }, () => ({ ...falsePositiveRef })),
     ])
-    // countRefs cannot rerun a JS-side type-checker filter, so it can only answer the raw
-    // name-matched SQL count -- deliberately 0 here (a value the honest floor must never equal)
-    // to make a pre-fix "showing 2 of 0" (suppressed by refsTotal's own count<=shown guard) and
-    // a post-fix "showing 2 of at least 5" unambiguous to tell apart.
+    // countRefs cannot rerun a JS-side type-checker filter, so it can only answer the raw name-matched SQL count -- deliberately 0 here (a value the honest floor must never equal) to make a pre-fix "showing 2 of 0" (suppressed by refsTotal's own count<=shown guard) and a post-fix "showing 2 of at least 5" unambiguous to tell apart.
     mockCountRefs.mockReturnValue(0)
 
     const { stdout } = capture(() => {
@@ -8130,11 +7970,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
   })
 })
 
-// Overflow-guard coverage for the surgical-read commands that previously returned
-// unguarded text (#5): runSymbol / runRefs / runSkeleton / runOutline now route their
-// text output through emitGuarded/guardText the same way runRead/runSection do. Each test
-// forces output past a tiny max_tokens and asserts the truncation marker appears — all four
-// fail on pre-fix code (full, unbounded output, no marker).
+// Overflow-guard coverage for the surgical-read commands that previously returned unguarded text (#5): runSymbol / runRefs / runSkeleton / runOutline now route their text output through emitGuarded/guardText the same way runRead/runSection do. Each test forces output past a tiny max_tokens and asserts the truncation marker appears — all four fail on pre-fix code (full, unbounded output, no marker).
 describe('overflow guard applies to symbol/refs/skeleton/outline (#5)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -8155,7 +7991,8 @@ describe('overflow guard applies to symbol/refs/skeleton/outline (#5)', () => {
       body: Array.from({ length: 5 }, () => bigLine).join('\n'),
       docstring: '',
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockQuerySymbols.mockReturnValue([sym as any])
     const { text } = runSymbol({ name: 'huge' })
     expect(text).toContain('output capped at ~20 tokens')
@@ -8172,7 +8009,8 @@ describe('overflow guard applies to symbol/refs/skeleton/outline (#5)', () => {
       body: `function sym${i}() {}`,
       docstring: '',
     }))
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockQuerySymbols.mockReturnValue(syms as any)
     const { text } = runSkeleton({ file: 'big.ts' })
     expect(text).toContain('output capped at ~20 tokens')
@@ -8189,7 +8027,8 @@ describe('overflow guard applies to symbol/refs/skeleton/outline (#5)', () => {
       body: `function sym${i}() {}`,
       docstring: '',
     }))
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockQuerySymbols.mockReturnValue(syms as any)
     const { text } = runOutline({ file: 'big.ts' })
     expect(text).toContain('output capped at ~20 tokens')
@@ -8214,10 +8053,7 @@ describe('runScreenshot --width/--height validation', () => {
   })
 
   it('rejects a non-numeric --width before launching a browser', async () => {
-    // Regression: parseInt(opts.width, 10) on garbage input produces NaN, which isn't
-    // nullish, so it survives takeScreenshot's `?? 1280` fallback and reaches Chrome DevTools
-    // Protocol, producing an opaque Emulation.setDeviceMetricsOverride failure after a full
-    // browser launch. Validating up front must reject before takeScreenshot is ever called.
+    // Regression: parseInt(opts.width, 10) on garbage input produces NaN, which isn't nullish, so it survives takeScreenshot's `?? 1280` fallback and reaches Chrome DevTools Protocol, producing an opaque Emulation.setDeviceMetricsOverride failure after a full browser launch. Validating up front must reject before takeScreenshot is ever called.
     await expect(
       runScreenshot('https://example.com', '/tmp/out.png', { width: 'abc' }),
     ).rejects.toThrow('--width must be a number')
@@ -8328,9 +8164,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
     }
   })
 
-  // Defect fix: an unrelated query used to print every entry in the archive regardless of
-  // relevance. It now gets no list at all -- pointing at zip-list (the command that lists
-  // every entry) instead of a dead end.
+  // Defect fix: an unrelated query used to print every entry in the archive regardless of relevance. It now gets no list at all -- pointing at zip-list (the command that lists every entry) instead of a dead end.
   it('points at zip-list instead of an unranked full dump when no entry resembles the query', async () => {
     const { zipSync, strToU8 } = await import('fflate')
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-zipread-test-'))
@@ -8352,9 +8186,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
   })
 })
 
-// Gap 2: unlike readOoxmlZip's MAX_OOXML_INPUT_BYTES check, zip-list/zip-read had no cap at all
-// on the archive's on-disk (compressed) size before this fix -- readFileBytes read the whole
-// file unconditionally. Both commands now share MAX_ZIP_INPUT_BYTES with the OOXML readers.
+// Gap 2: unlike readOoxmlZip's MAX_OOXML_INPUT_BYTES check, zip-list/zip-read had no cap at all on the archive's on-disk (compressed) size before this fix -- readFileBytes read the whole file unconditionally. Both commands now share MAX_ZIP_INPUT_BYTES with the OOXML readers.
 describe('zip-list / zip-read reject an over-large compressed archive before reading it', () => {
   let dir: string
 
@@ -8371,8 +8203,7 @@ describe('zip-list / zip-read reject an over-large compressed archive before rea
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  // Sparse file: only metadata is touched, so the guard must reject by stat size before ever
-  // reading the (fake, all-zero) content into memory.
+  // Sparse file: only metadata is touched, so the guard must reject by stat size before ever reading the (fake, all-zero) content into memory.
   function writeSparseFile(name: string, sizeBytes: number): string {
     const file = path.join(dir, name)
     const fd = fs.openSync(file, 'w')
@@ -8421,16 +8252,15 @@ describe('runRefs unknown symbol vs zero-references distinction', () => {
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true }, overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
-    // resolveProjectRoot (not mocked in this file) shells out via runGit; the empty-result
-    // branch under test now always resolves rootDir (for the existence check), so this must be
-    // stubbed here too, matching the outer 'read_commands' describe's own beforeEach.
+    // resolveProjectRoot (not mocked in this file) shells out via runGit; the empty-result branch under test now always resolves rootDir (for the existence check), so this must be stubbed here too, matching the outer 'read_commands' describe's own beforeEach.
     vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
   })
 
   it('reports "Symbol not found" plus a Did you mean suggestion for a typo of a real, indexed symbol', () => {
     mockQueryRefs.mockReturnValue([])
     mockCountRefs.mockReturnValue(0)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockQuerySymbols.mockImplementation((opts?: any) => {
       if (opts?.name !== undefined) return [] // the existence check misses
       // the near-name scan (no `name` filter) sees the full indexed set
@@ -8452,8 +8282,7 @@ describe('runRefs unknown symbol vs zero-references distinction', () => {
   it('keeps today\'s exact "No references found" message, with no "Symbol not found" and no suggestion, for a real symbol that genuinely has zero references', () => {
     mockQueryRefs.mockReturnValue([])
     mockCountRefs.mockReturnValue(0)
-    // The symbol IS indexed (the existence check, called with `name`, finds it) -- only the
-    // reference query came back empty.
+    // The symbol IS indexed (the existence check, called with `name`, finds it) -- only the reference query came back empty.
     mockQuerySymbols.mockReturnValue([
       { name: 'refsUnrefFn2p6j', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
     ])

@@ -95,8 +95,8 @@ describe('buildFeedbackCardFromClaude', () => {
 })
 
 describe('buildFeedbackCardFromCopilot', () => {
-  it('reports repeated prompt blocks and heavy MCP tools', () => {
-    const mockReport: CopilotWasteReport = {
+  function mockReport(mcpCalls: Record<string, number> | null): CopilotWasteReport {
+    return {
       sessionPath: '/fake/events.jsonl',
       sessionId: 'sess-123',
       turns: 5,
@@ -121,13 +121,26 @@ describe('buildFeedbackCardFromCopilot', () => {
         ],
         unreadable: 0,
       },
+      mcpCalls,
     }
-    const card = buildFeedbackCardFromCopilot(mockReport)
+  }
+
+  it('reports repeated prompt blocks and heavy MCP tools', () => {
+    const card = buildFeedbackCardFromCopilot(mockReport(null))
     expect(card.preAuditFindings[0]).toContain('Repeated prompt blocks across turns: custom_instruction')
     expect(card.preAuditFindings[1]).toContain('High fixed MCP tool definition overhead: heavy-mcp')
     expect(card.preAuditFindings[1]).toContain('10 tool(s), ~3,000 tok/turn')
     expect(card.preAuditFindings[1]).toContain('~15,000 cumulative tokens')
-    expect(card.recommendedFix[1]).toContain('copilot mcp disable')
+    // With no tool events in the log, the card must not claim the server went unused.
+    expect(card.recommendedFix[1]).toContain('cannot say which went unused')
+  })
+
+  it('names the exact disable command for a server the session never called', () => {
+    expect(buildFeedbackCardFromCopilot(mockReport({})).recommendedFix[1]).toContain("'copilot mcp disable heavy-mcp' (~3,000 tok/turn)")
+  })
+
+  it('does not recommend disabling a heavy server the session did call', () => {
+    expect(buildFeedbackCardFromCopilot(mockReport({ 'heavy-mcp': 2 })).recommendedFix.join('\n')).not.toContain('copilot mcp disable')
   })
 })
 

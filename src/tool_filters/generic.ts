@@ -3,6 +3,11 @@
 import { ToolFilter } from './base.js'
 import { capTokens, dedupeConsecutive } from './helpers.js'
 
+// Leaves the output exactly as the command printed it, for a caller that wants `--max-tokens` and nothing else. The runner falls back to it when no filter matches, and the Bash hook names it for an inline interpreter file read, whose output is a file's contents: the Python filter folds repeated lines, which is right for a traceback and silently drops rows of a data file.
+export class PassthroughFilter extends ToolFilter {
+  readonly name = 'passthrough'
+}
+
 export class GenericFilter extends ToolFilter {
   readonly name = 'generic'
 

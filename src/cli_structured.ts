@@ -30,7 +30,7 @@ export function cmdCsvProfile(file: string, opts: { delimiter?: string; header?:
   process.exitCode = runCsvProfile({ file, ...rest, ...(header === false ? { noHeader: true } : {}) })
 }
 
-export function cmdJsonOutline(file: string, opts: { json?: boolean }): void {
+export function cmdJsonOutline(file: string, opts: { json?: boolean; filter?: string }): void {
   process.exitCode = runJsonOutline({ file, ...opts })
 }
 
@@ -38,7 +38,7 @@ export function cmdJsonQuery(file: string, jsonPath: string, opts: { head?: stri
   process.exitCode = runJsonQuery({ file, path: jsonPath, ...opts })
 }
 
-export function cmdYamlOutline(file: string, opts: { json?: boolean }): void {
+export function cmdYamlOutline(file: string, opts: { json?: boolean; filter?: string }): void {
   process.exitCode = runYamlOutline({ file, ...opts })
 }
 

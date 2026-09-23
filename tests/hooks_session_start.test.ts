@@ -5,8 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Redirect configPath()/globalDbPath() to per-test-file temp locations so config-gating and
-// indexed-project tests are deterministic -- mirrors tests/hooks_compact.test.ts's config mock.
+// Redirect configPath()/globalDbPath() to per-test-file temp locations so config-gating and indexed-project tests are deterministic -- mirrors tests/hooks_compact.test.ts's config mock.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -23,9 +22,7 @@ const _testDataDir = tempConfigPath('tg-hooks-session-start-data')
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
-// symbol_body_probe.ts, not cli_doctor.ts: the hook imports the check from its own module so that
-// cli_doctor's dependency graph stays off the hook path, and a spy on cli_doctor's re-export of it
-// would watch a binding the hook never calls.
+// symbol_body_probe.ts, not cli_doctor.ts: the hook imports the check from its own module so that cli_doctor's dependency graph stays off the hook path, and a spy on cli_doctor's re-export of it would watch a binding the hook never calls.
 import * as symbolBodyProbe from '../src/symbol_body_probe.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
@@ -35,6 +32,8 @@ import { recordEvidence } from '../src/evidence_cache.js'
 import { exportSessionState, recordFileEdit } from '../src/session.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { SESSIONS_SUBDIR } from '../src/session_store.js'
+import { findProject } from '../src/project.js'
+import { setEntry } from '../src/project_memory.js'
 
 function makeEvent(cwd?: string, source?: string): HookEvent {
   return {
@@ -121,11 +120,7 @@ describe('sessionStartHandler', () => {
     }
   })
 
-  // Regression: the whole point of dropping the exact symbol count is that the SessionStart
-  // context is byte-identical across a reindex that changes symbol counts, since it lands in
-  // the earliest, most cacheable position of the request. Asserting the absence of a digit
-  // (above) proves the count is gone but not that the string is actually stable end to end --
-  // this drives the real change (inserting a symbol between two calls) and diffs full strings.
+  // Regression: the whole point of dropping the exact symbol count is that the SessionStart context is byte-identical across a reindex that changes symbol counts, since it lands in the earliest, most cacheable position of the request. Asserting the absence of a digit (above) proves the count is gone but not that the string is actually stable end to end -- this drives the real change (inserting a symbol between two calls) and diffs full strings.
   it('emits byte-identical context across a reindex that changes the symbol count', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-stable-'))
     try {
@@ -184,6 +179,38 @@ describe('sessionStartHandler', () => {
     }
   })
 
+  it('carries the project notes and tells the model how to add one', async () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-notes-'))
+    try {
+      fs.writeFileSync(path.join(projectDir, 'package.json'), '{}')
+      setEntry(findProject(projectDir)!.hash, 'registry', '118615 and 118623 are the same brand under two ids')
+      const result = await sessionStartHandler(makeEvent(projectDir))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('- **registry**: 118615 and 118623 are the same brand under two ids')
+        expect(result.context).toContain('`token-goat note set <key> "<finding>"`; notes come back at every session start.')
+      }
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  it('still carries the project notes when the routing reminder is turned off', async () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-notes-off-'))
+    try {
+      fs.writeFileSync(path.join(projectDir, 'package.json'), '{}')
+      setEntry(findProject(projectDir)!.hash, 'registry', 'kept')
+      const cfg = defaultConfig()
+      cfg.hints.session_start_reminder = false
+      saveConfig(cfg)
+      invalidateConfigCache()
+      const result = await sessionStartHandler(makeEvent(projectDir))
+      expect(result).toEqual({ hookType: 'context', context: '### Project notes (`token-goat note set <key> "<finding>"`)\n- **registry**: kept' })
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
+
   it('emits nothing (pass) when hints.session_start_reminder is disabled', async () => {
     const cfg = defaultConfig()
     cfg.hints.session_start_reminder = false
@@ -206,9 +233,7 @@ describe('sessionStartHandler', () => {
     if (result.hookType === 'context') {
       expect(result.context).toContain('exceed the')
       expect(result.context).toContain('reclaim-index')
-      // Regression: the message must never leak the specific offending file path or exact
-      // char length -- both are data-derived and not guaranteed stable across two runs
-      // against the same DB (LIMIT 1, no ORDER BY), let alone across a reindex.
+      // Regression: the message must never leak the specific offending file path or exact char length -- both are data-derived and not guaranteed stable across two runs against the same DB (LIMIT 1, no ORDER BY), let alone across a reindex.
       expect(result.context).not.toContain('/some/generated.js')
       expect(result.context).not.toMatch(/is \d+ chars/)
     }
@@ -227,12 +252,7 @@ describe('sessionStartHandler', () => {
     }
   })
 
-  // Regression: the assertion above (`.not.toContain('reclaim-index')`) is tautological on its
-  // own -- the base reminder never contains that substring, so it still passes even if the
-  // entire health-check block (the try/catch wrapping checkSymbolBodySize) were deleted from the
-  // hook outright. This test proves the block actually runs by spying on checkSymbolBodySize
-  // itself: deleting the block makes this spy assertion fail regardless of DB content, closing
-  // the gap the negative-content assertion above cannot cover on its own.
+  // Regression: the assertion above (`.not.toContain('reclaim-index')`) is tautological on its own -- the base reminder never contains that substring, so it still passes even if the entire health-check block (the try/catch wrapping checkSymbolBodySize) were deleted from the hook outright. This test proves the block actually runs by spying on checkSymbolBodySize itself: deleting the block makes this spy assertion fail regardless of DB content, closing the gap the negative-content assertion above cannot cover on its own.
   it('actually invokes checkSymbolBodySize while building context', async () => {
     const spy = vi.spyOn(symbolBodyProbe, 'checkSymbolBodySize')
     const result = await sessionStartHandler(makeEvent(undefined))
@@ -242,8 +262,7 @@ describe('sessionStartHandler', () => {
   })
 
   it('fails soft (pass) when the underlying DB lookup throws', async () => {
-    // Point at a path that can never be a valid sqlite file (a directory), so getDb()/countSymbols()
-    // throws inside buildReminder() and the handler's own try/catch must still return cleanly.
+    // Point at a path that can never be a valid sqlite file (a directory), so getDb()/countSymbols() throws inside buildReminder() and the handler's own try/catch must still return cleanly.
     const badDbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-baddb-'))
     fs.rmSync(_testDbPath, { force: true })
     fs.renameSync(badDbDir, _testDbPath)

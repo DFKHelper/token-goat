@@ -12,9 +12,10 @@ import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { wrappedShell, resolvePowerShell } from './shell.js'
 import { recordStat } from './stats.js'
+import { PassthroughFilter } from './tool_filters/generic.js'
 import {
   type CompressedOutput,
-  ToolFilter,
+  type ToolFilter,
   compressedTokensSaved,
   capTokens,
   deliverCompressed,
@@ -24,21 +25,10 @@ import {
   shlexSplit,
 } from './tool_filters/index.js'
 
-/**
- * Identity filter used only to route an otherwise-unfiltered command through
- * {@link wrapAndCompress} so `--max-tokens` still applies. `ToolFilter`'s
- * default `compressBody` already just combines stdout/stderr unchanged (no
- * per-tool structural compression), so no override is needed here.
- */
-class IdentityFilter extends ToolFilter {
-  readonly name = 'passthrough'
-}
-
 /** Default wall-clock timeout for the wrapped subprocess, in seconds. */
 export const DEFAULT_TIMEOUT_SECONDS = 600
 
-/** Per-process capture cap (stdout and stderr each). Beyond this the child is
- * killed and an overflow marker is appended — 32 MiB covers any real command. */
+/** Per-process capture cap (stdout and stderr each). Beyond this the child is killed and an overflow marker is appended — 32 MiB covers any real command. */
 export const MAX_CAPTURE_BYTES = 32 * 1024 * 1024
 
 /** Minimum bytes saved before a stat row is worth writing (skips noise rows). */
@@ -55,6 +45,8 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv | undefined
   compressionProfile?: string | undefined
   maxTokens?: number
+  /** Printed after the recall line when the output was cut, by `maxTokens` or by the filter's own line and byte limits:the narrower command that answers the question, since a capped dump is exactly the case where running it again is the wrong next move. */
+  capHint?: string | undefined
   writeStdout?: (s: string) => void
   writeStderr?: (s: string) => void
   quietSuccess?: boolean | undefined
@@ -111,14 +103,7 @@ function scheduleHeartbeat(startTime: number, intervalMs: number, write: (elapse
   }
 }
 
-/**
- * Look up the filter by name first, falling back to argv-based dispatch, and return the argv
- * that filter was chosen from alongside it. Selection and argv derivation share one
- * `shlexSplit` + `dispatchArgv` here on purpose: they used to be computed independently (here
- * and again in `wrapAndCompress`), so on a `cd DIR && grep ...` command the filter was picked
- * from the peeled tokens while `compressOutput` still received an argv starting with `cd` --
- * every argv-reading filter then read the wrong flags/pattern/subcommand.
- */
+/** Look up the filter by name first, falling back to argv-based dispatch, and return the argv that filter was chosen from alongside it. Selection and argv derivation share one `shlexSplit` + `dispatchArgv` here on purpose: they used to be computed independently (here and again in `wrapAndCompress`), so on a `cd DIR && grep ...` command the filter was picked from the peeled tokens while `compressOutput` still received an argv starting with `cd` -- every argv-reading filter then read the wrong flags/pattern/subcommand. */
 export function resolveFilter(
   command: string,
   filterName: string | undefined,
@@ -148,14 +133,7 @@ function baseSpawnOptions(timeout: number, cwd: string | undefined) {
   return { timeout: timeout * 1000, cwd }
 }
 
-// Resolve what spawnSync should actually invoke, plus any extra env needed to carry the command
-// text intact. On Windows there is no real argv array at the OS level: CreateProcess always takes
-// one command-line string, and Git-Bash's MSYS runtime reconstructs its own argv from that string
-// with its own backslash-unescaping rules -- which fire the same way whether Node built the string
-// via spawnSync's `shell` option or via a literal `['-c', command]` argv element, silently dropping
-// a level of backslashes (`\\` becomes `\`) either way. Environment variables cross the process
-// boundary as raw bytes with no command-line parsing at all, so carrying the command through
-// `TG_CMD` and running `eval "$TG_CMD"` sidesteps the mangling entirely.
+// Resolve what spawnSync should actually invoke, plus any extra env needed to carry the command text intact. On Windows there is no real argv array at the OS level: CreateProcess always takes one command-line string, and Git-Bash's MSYS runtime reconstructs its own argv from that string with its own backslash-unescaping rules -- which fire the same way whether Node built the string via spawnSync's `shell` option or via a literal `['-c', command]` argv element, silently dropping a level of backslashes (`\\` becomes `\`) either way. Environment variables cross the process boundary as raw bytes with no command-line parsing at all, so carrying the command through `TG_CMD` and running `eval "$TG_CMD"` sidesteps the mangling entirely.
 function spawnTarget(
   command: string,
   nativeShell: boolean | undefined,
@@ -191,11 +169,7 @@ function signalExitCode(signal: NodeJS.Signals): number {
   return 128 + (num ?? 0)
 }
 
-/**
- * Resolve the effective compression profile: explicit argument wins; otherwise
- * read from config, treating `"auto"` (no harness detection in the wrapper) as
- * `"balanced"`. Config errors fall back to `"balanced"`.
- */
+/** Resolve the effective compression profile: explicit argument wins; otherwise read from config, treating `"auto"` (no harness detection in the wrapper) as `"balanced"`. Config errors fall back to `"balanced"`. */
 function resolveProfile(explicit: string | undefined): string {
   if (explicit) return explicit
   try {
@@ -216,35 +190,21 @@ function resolveCompressLimits(): { maxLines: number; maxBytes: number } {
   }
 }
 
-/**
- * Run *command* through the system shell, compress its output, and return the
- * wrapped subprocess's exit code (124 on wrapper-induced timeout, `128 + signum`
- * when killed by a signal). When no filter applies the command is streamed
- * through unchanged so the cost is limited to one subprocess fork.
- */
+/** Run *command* through the system shell, compress its output, and return the wrapped subprocess's exit code (124 on wrapper-induced timeout, `128 + signum` when killed by a signal). When no filter applies the command is streamed through unchanged so the cost is limited to one subprocess fork. */
 export async function run(command: string, opts: RunOptions = {}): Promise<number> {
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT_SECONDS
   const { filter, argv } = resolveFilter(command, opts.filterName, opts.cwd)
   if (filter === null) {
-    // No tool filter matches this command. Ordinarily that means streaming it
-    // through raw is cheapest (one subprocess fork, no capture). But when the
-    // caller asked for a `--max-tokens` cap or `--quiet-success`, raw passthrough
-    // would silently bypass it — `passthrough()` uses `stdio: 'inherit'` and
-    // never sees the output. Route through the capture-and-compress path with
-    // an identity filter instead, so the options apply.
+    // No tool filter matches this command. Ordinarily that means streaming it through raw is cheapest (one subprocess fork, no capture). But when the caller asked for a `--max-tokens` cap or `--quiet-success`, raw passthrough would silently bypass it — `passthrough()` uses `stdio: 'inherit'` and never sees the output. Route through the capture-and-compress path with an identity filter instead, so the options apply.
     if ((opts.maxTokens ?? 0) > 0 || opts.quietSuccess) {
-      return wrapAndCompress(command, argv, new IdentityFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
+      return wrapAndCompress(command, argv, new PassthroughFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
     }
     return passthrough(command, timeout, opts.cwd, opts.env, opts.nativeShell, opts.shellType)
   }
   return wrapAndCompress(command, argv, filter, timeout, resolveProfile(opts.compressionProfile), opts)
 }
 
-/**
- * Run *command* raw with no compression, inheriting the parent's stdio and
- * returning its exit code. Used by `compress --no-compress` to debug the
- * wrapper by streaming output straight through.
- */
+/** Run *command* raw with no compression, inheriting the parent's stdio and returning its exit code. Used by `compress --no-compress` to debug the wrapper by streaming output straight through. */
 export function runRaw(
   command: string,
   timeout: number = DEFAULT_TIMEOUT_SECONDS,
@@ -360,12 +320,7 @@ async function wrapAndCompress(
   }
 
   const limits = resolveCompressLimits()
-  // The net-benefit gate lives in `deliverCompressed`: a rewrite whose bytesSaved doesn't
-  // clear the marker's own cost plus the configured floor destabilises the bytes (breaks
-  // provider prefix caching) for a saving too small to be worth it, so below the floor that
-  // function returns the ORIGINAL streams with no marker -- exactly as though no filter had
-  // matched. `token-goat bench` measures delivery through the same function, so a benchmark
-  // cannot drift from what actually ships.
+  // The net-benefit gate lives in `deliverCompressed`: a rewrite whose bytesSaved doesn't clear the marker's own cost plus the configured floor destabilises the bytes (breaks provider prefix caching) for a saving too small to be worth it, so below the floor that function returns the ORIGINAL streams with no marker -- exactly as though no filter had matched. `token-goat bench` measures delivery through the same function, so a benchmark cannot drift from what actually ships.
   const { applied, marker, compressed, text: delivered } = deliverCompressed(filter, stdoutText, stderrText, exitCode, argv, {
     compressionProfile: profile,
     maxLines: limits.maxLines,
@@ -375,12 +330,15 @@ async function wrapAndCompress(
   let text = delivered
   const maxTokens = opts.maxTokens ?? 0
   if (maxTokens > 0) text = capTokens(text, maxTokens)
+  const capped = text !== delivered
   let body = text + marker
-  if (applied) {
+  // A cap that cut the output is a loss the same as a filter that did, so it gets the same recall. Keyed on `applied` alone, a passthrough run capped to 2,000 tokens dropped the rest with nothing to recover it from.
+  if (applied || capped) {
     // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, but that env var has to be set in the environment that launches the harness, not inline in this same command -- the hook process reads its own environment, never the wrapped command's, so an inline prefix here can never reach it. A recall of the untruncated bytes is the actionable follow-up, so store them the same way the compound post-hook path already does and point at it.
     const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
     const recallId = storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
     body += '\n[token-goat] full output: bash-output ' + recallId + ' --full'
+    if (opts.capHint) body +='\n[token-goat] ' + opts.capHint
   }
   writeStdout(body.endsWith('\n') ? body : body + '\n')
 
@@ -388,20 +346,7 @@ async function wrapAndCompress(
   return exitCode
 }
 
-/**
- * Best-effort: record the savings stat. recordStat already swallows DB errors.
- *
- * Measured against the DELIVERED size, not the original. The harness caps how much of a Bash
- * result reaches the model (see {@link deliveredOutputBytes}), so compressing a 30 MB output to
- * 8 KB spares it at most `cap - 8 KB`, never 30 MB. Booking `result.bytesSaved` credited output
- * the model was never going to be shown.
- *
- * The APPLY decision above deliberately still runs on the uncapped bytes. The two answer different
- * questions: the gate asks whether a compressed body beats the harness's arbitrary head-truncation
- * of the same output (it does -- the model sees a coherent summary instead of the first 20 KB),
- * while this figure asks how many tokens were actually spared. Capping the gate would suppress the
- * rewrites with the most to offer, which is a behaviour change this accounting fix must not make.
- */
+/** Best-effort: record the savings stat. recordStat already swallows DB errors. Measured against the DELIVERED size, not the original. The harness caps how much of a Bash result reaches the model (see {@link deliveredOutputBytes}), so compressing a 30 MB output to 8 KB spares it at most `cap - 8 KB`, never 30 MB. Booking `result.bytesSaved` credited output the model was never going to be shown. The APPLY decision above deliberately still runs on the uncapped bytes. The two answer different questions: the gate asks whether a compressed body beats the harness's arbitrary head-truncation of the same output (it does -- the model sees a coherent summary instead of the first 20 KB), while this figure asks how many tokens were actually spared. Capping the gate would suppress the rewrites with the most to offer, which is a behaviour change this accounting fix must not make. */
 function recordSavings(result: CompressedOutput): void {
   const delivered = deliveredOutputBytes(result.originalBytes)
   const bytesSaved = Math.max(0, delivered - result.compressedBytes)

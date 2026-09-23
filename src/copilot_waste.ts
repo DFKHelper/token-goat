@@ -1,35 +1,10 @@
-/**
- * Waste analysis for Copilot CLI sessions.
- *
- * Copilot records every session as an append-only event log at
- * `<copilot-home>/session-state/<id>/events.jsonl`, which makes it a better measurement target
- * than a Claude Code transcript rather than a worse one, for two reasons.
- *
- * First, `user.message.transformedContent` is the *assembled* prompt: it carries the
- * `<current_datetime>` and `<system_reminder>` envelope that the sibling `content` field does not.
- * So the harness-injected context can be read directly instead of reconstructed by working out
- * what the renderer would have done with each record.
- *
- * Second, `session.shutdown` carries Copilot's own token accounting -- `systemTokens`,
- * `toolDefinitionsTokens`, `conversationTokens` -- so the dominant cost can be reported in the
- * unit that actually bills instead of a byte count standing in for one. On a real session here
- * those read 6569 + 7268 + 111, i.e. over 13k tokens of fixed per-request overhead against 111
- * tokens of conversation. That ratio is the finding; no estimator of ours would have been
- * trusted to produce it.
- *
- * The counterweight is that most of the file is not model-visible at all. `hook.start` and
- * `hook.end` are the largest event types on disk in a token-goat-instrumented session and reach
- * the model exactly never -- the same shape as Claude Code's `hook_success` attachments, which
- * are ~10% of a transcript and ~0% of the bill. Reporting on-disk size as if it were context is
- * the specific error this module exists to avoid, so hook records are measured separately and
- * labelled as not billed.
- */
+/** Waste analysis for Copilot CLI sessions. Copilot records every session as an append-only event log at `<copilot-home>/session-state/<id>/events.jsonl`, which makes it a better measurement target than a Claude Code transcript rather than a worse one, for two reasons. First, `user.message.transformedContent` is the *assembled* prompt: it carries the `<current_datetime>` and `<system_reminder>` envelope that the sibling `content` field does not. So the harness-injected context can be read directly instead of reconstructed by working out what the renderer would have done with each record. Second, `session.shutdown` carries Copilot's own token accounting -- `systemTokens`, `toolDefinitionsTokens`, `conversationTokens` -- so the dominant cost can be reported in the unit that actually bills instead of a byte count standing in for one. On a real session here those read 6569 + 7268 + 111, i.e. over 13k tokens of fixed per-request overhead against 111 tokens of conversation. That ratio is the finding; no estimator of ours would have been trusted to produce it. The counterweight is that most of the file is not model-visible at all. `hook.start` and `hook.end` are the largest event types on disk in a token-goat-instrumented session and reach the model exactly never -- the same shape as Claude Code's `hook_success` attachments, which are ~10% of a transcript and ~0% of the bill. Reporting on-disk size as if it were context is the specific error this module exists to avoid, so hook records are measured separately and labelled as not billed. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { copilotCliUserRoot } from './bridges/copilot_cli_install.js'
-import { readCopilotMcpTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
+import { readCopilotMcpTools, type CopilotMcpServerTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
 import { canonicalize } from './path_containment.js'
 import { findLatestTranscript, readFileLines } from './waste.js'
 
@@ -73,25 +48,13 @@ export interface CopilotWasteReport {
   /** Bytes of hook.start/hook.end records: on disk, never in context. */
   hookRecordBytes: number
   totalEventBytes: number
-  /**
-   * Per-MCP-server tool-definition weight, read from Copilot's own cache
-   * rather than from this session log. The log carries no tool events at all
-   * -- verified across every session on this machine, none of which contains
-   * a single one -- so the log cannot say which server the tool-definition
-   * budget went to. The cache can.
-   */
+  /** Per-MCP-server tool-definition weight, read from Copilot's own cache rather than from this session log. The log carries no tool events at all -- verified across every session on this machine, none of which contains a single one -- so the log cannot say which server the tool-definition budget went to. The cache can. */
   mcpTools: CopilotMcpToolsReport
+  /** Calls this session made to each MCP server, keyed by the `mcpServerName` Copilot writes on every `tool.execution_start` for an MCP tool. Null when the log holds no tool executions at all, since a log that predates tool events cannot tell an unused server from an unrecorded one. */
+  mcpCalls: Record<string, number> | null
 }
 
-/**
- * Split an assembled prompt into its injected blocks.
- *
- * Only top-level `<tag>...</tag>` wrappers are treated as blocks; the user's own prose between
- * them is deliberately not counted, since it is the one part of the prompt that is not overhead.
- * A `<system_reminder>` is labelled by its first inner tag (`sql_tables`, `todo_status`, ...)
- * because the wrapper name alone would collapse every distinct reminder into one bucket and hide
- * which of them is actually repeating.
- */
+/** Split an assembled prompt into its injected blocks. Only top-level `<tag>...</tag>` wrappers are treated as blocks; the user's own prose between them is deliberately not counted, since it is the one part of the prompt that is not overhead. A `<system_reminder>` is labelled by its first inner tag (`sql_tables`, `todo_status`, ...) because the wrapper name alone would collapse every distinct reminder into one bucket and hide which of them is actually repeating. */
 export function splitInjectedBlocks(transformed: string): { kind: string; body: string }[] {
   const out: { kind: string; body: string }[] = []
   const blockRe = /<([a-z_][a-z0-9_]*)>([\s\S]*?)<\/\1>/gi
@@ -121,10 +84,7 @@ function pathsMatch(a: string | undefined, b: string | undefined): boolean {
   return canonicalize(a) === canonicalize(b)
 }
 
-/**
- * Extract `cwd` and `git_root` from Copilot's `workspace.yaml` in a session directory.
- * Returns null if the file cannot be read or parsed.
- */
+/** Extract `cwd` and `git_root` from Copilot's `workspace.yaml` in a session directory. Returns null if the file cannot be read or parsed. */
 export function readCopilotWorkspace(sessionDir: string): { cwd?: string | undefined; gitRoot?: string | undefined; id?: string | undefined } | null {
   const wsFile = path.join(sessionDir, 'workspace.yaml')
   let raw: string
@@ -215,10 +175,7 @@ export function findActiveCopilotSession(projectRoot?: string): string | null {
   return findLatestCopilotSession({ projectRoot, onlyActive: true })
 }
 
-/**
- * Discover the newest (or active) `events.jsonl` under the Copilot session-state directory.
- * If projectRoot is specified, only sessions whose workspace.yaml cwd or git_root matches are returned.
- */
+/** Discover the newest (or active) `events.jsonl` under the Copilot session-state directory. If projectRoot is specified, only sessions whose workspace.yaml cwd or git_root matches are returned. */
 export function findLatestCopilotSession(projectRootOrOpts?: string | FindCopilotSessionOptions): string | null {
   const opts: FindCopilotSessionOptions = typeof projectRootOrOpts === 'string'
     ? { projectRoot: projectRootOrOpts }
@@ -302,10 +259,7 @@ export interface DetectedSession {
   kind: 'copilot' | 'claude'
 }
 
-/**
- * Discovers the active or most recent session for a project across Copilot CLI and Claude Code.
- * Active sessions take priority over inactive sessions; otherwise newest modification time wins.
- */
+/** Discovers the active or most recent session for a project across Copilot CLI and Claude Code. Active sessions take priority over inactive sessions; otherwise newest modification time wins. */
 export function findProjectSession(projectRoot: string): DetectedSession | null {
   const copilotSession = findActiveCopilotSession(projectRoot) ?? findLatestCopilotSession(projectRoot)
   const claudeTranscript = findLatestTranscript(projectRoot)
@@ -347,6 +301,15 @@ function readNumber(source: Record<string, unknown>, key: string): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+/** Cached MCP servers this session never called, largest first, or null when the log cannot tell (see {@link CopilotWasteReport.mcpCalls}). */
+export function unusedMcpServers(report: CopilotWasteReport): CopilotMcpServerTools[] | null {
+  const calls = report.mcpCalls
+  return calls === null ? null : report.mcpTools.servers.filter((server) => (calls[server.serverName] ?? 0) === 0)
+}
+
+/** How to undo a disable and how to drop a server for one run, both verified against Copilot CLI 1.0.88's own help; `mcp disable` accepts the built-in github-mcp-server too, persisting it under `disabledMcpServers` in settings.json. */
+export const MCP_DISABLE_NOTE = "'copilot mcp enable <name>' restores one, and '--disable-mcp-server <name>' drops one for a single run instead."
+
 /** Parse one Copilot session event log into a waste report. */
 export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport {
   const report: CopilotWasteReport = {
@@ -359,15 +322,15 @@ export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport 
     hookRecordBytes: 0,
     // Measured off the file rather than off a string of its contents: an event log large enough for this number to matter is exactly the one readFileSync cannot return, since V8 caps a string at about 512 MB.
     totalEventBytes: fs.statSync(eventsPath).size,
-    // Read through the real resolution chain rather than passed in. Copilot's
-    // own COPILOT_CACHE_HOME override is what tests point at a fixture, so the
-    // shipping path is the tested path and there is no seam here that only a
-    // test ever supplies.
+    // Read through the real resolution chain rather than passed in. Copilot's own COPILOT_CACHE_HOME override is what tests point at a fixture, so the shipping path is the tested path and there is no seam here that only a test ever supplies.
     mcpTools: readCopilotMcpTools(),
+    mcpCalls: null,
   }
 
   const classes = new Map<string, CopilotBlockClass>()
   const seen = new Map<string, Set<string>>()
+  const mcpCalls = new Map<string, number>()
+  let toolExecutions = 0
 
   for (const line of readFileLines(eventsPath)) {
     const trimmed = line.trim()
@@ -409,6 +372,13 @@ export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport 
       continue
     }
 
+    if (type === 'tool.execution_start') {
+      toolExecutions += 1
+      const server = data['mcpServerName']
+      if (typeof server === 'string') mcpCalls.set(server, (mcpCalls.get(server) ?? 0) + 1)
+      continue
+    }
+
     if (type !== 'user.message') continue
     const transformed = typeof data['transformedContent'] === 'string' ? (data['transformedContent'] as string) : ''
     if (transformed === '') continue
@@ -438,5 +408,6 @@ export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport 
   }
 
   report.blocks = [...classes.values()].sort((a, b) => b.bytes - a.bytes)
+  report.mcpCalls = toolExecutions === 0 ? null : Object.fromEntries(mcpCalls)
   return report
 }

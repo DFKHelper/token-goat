@@ -1,6 +1,4 @@
-/**
- * Command line extractors, classification, and surgical hint builders for bash hook handlers.
- */
+/** Command line extractors, classification, and surgical hint builders for bash hook handlers. */
 import { statSync, openSync, readSync, closeSync } from 'node:fs'
 
 import { isUnderSystemTemp, escapesOntoNetworkThroughLinks } from './project.js'
@@ -16,27 +14,27 @@ function genericSurgicalFallback(shown: string): string {
   return '`token-goat outline "' + shown + '"`'
 }
 
-/**
- * Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL-specific hint and lead-in text, then falls through to this for the rest.
- */
+// JSON and YAML get their own pair rather than the flat-key reader: the query command walks the parsed document and takes `['a.b']` for a key holding a dot, which config-get cannot spell, and the outline lists every top-level key with its type and size, narrowed by `--filter` when a registry holds hundreds. The outline comes first because it runs verbatim, where the query needs a key the agent may not know yet.
+function structuredDataHint(hintPath: string, target: string | null): string | null {
+  const ext = /\.(json|ya?ml)$/i.exec(hintPath)?.[1]
+  if (ext === undefined) return null
+  const fmt = ext.toLowerCase() === 'json' ? 'json' : 'yaml'
+  const outline = '`token-goat ' + fmt + '-outline "' + hintPath + '"`'
+  // Double quotes around the key, never single: the relay's stripUnsafeSuggestions accepts only a double-quoted argument, and replaced a single-quoted one with a placeholder that took the rest of the sentence with it. A key the shell would expand or unquote inside double quotes gets the generic form instead.
+  const query = (path: string): string => '`token-goat ' + fmt + '-query "' + hintPath + '" "' + path + '"`'
+  if (target === null || /["'`$\\]/.test(target)) {
+    return 'Use ' + outline + ' to list the top-level keys with their type and size (`--filter TEXT` narrows a large one), then ' + query('KEY') + ' to read one value (`"[\'a.b\']"` for a key holding a dot).'
+  }
+  const path = /^[\w-]+$/.test(target) ? target : "['" + target + "']"
+  return 'Use ' + query(path) + ' to read that value, or ' + outline + ' for every top-level key with its type and size.'
+}
+
+/** Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL-specific hint and lead-in text, then falls through to this for the rest. */
 // Every caller passes a hintPath already through displaySafePath, because the path here comes out of the shell command's own arguments and so is whatever a repository named its files, while the hint is delivered on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Sanitizing at the fifteen assignment sites rather than at the thirty interpolations below is what keeps that invariant checkable, and it is the identity function on every path that does not contain a marker or a control character, so the index lookups keyed on the same value are unaffected for any real file.
 export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml = false, target: string | null = null): string {
-  // The whole-file branches are a hard deny, so the sentence they print is the agent's only next
-  // move, and the placeholders it used to print do not run: verified against the built binary on
-  // 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section
-  // 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with
-  // "Key 'KEY_NAME' not found". `target`, when the caller could resolve one out of the index, is a
-  // name that file really holds, so the command runs verbatim. A null target keeps the old
-  // wording, which is exactly what shipped before. Resolution lives in bash_surgical_target.ts,
-  // not here: this module has no index/DB access on purpose (see genericSurgicalFallback above).
+  // The whole-file branches are a hard deny, so the sentence they print is the agent's only next move, and the placeholders it used to print do not run: verified against the built binary on 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with "Key 'KEY_NAME' not found". `target`, when the caller could resolve one out of the index, is a name that file really holds, so the command runs verbatim. A null target keeps the old wording, which is exactly what shipped before. Resolution lives in bash_surgical_target.ts, not here: this module has no index/DB access on purpose (see genericSurgicalFallback above).
   //
-  // The config branch substitutes into the config-get half ONLY. Its `section "file::sectionName"`
-  // half takes a section, and the name the index yields for a JSON/YAML file is a property --
-  // measured, `token-goat section "package.json::name"` exits 1 while `token-goat config-get
-  // "package.json" name` returns the value -- so putting the resolved name there would replace a
-  // placeholder the agent knows to substitute with a broken command it has no reason to doubt.
-  // With a real key in hand that half has nothing to add, and outline is offered instead: it is
-  // always runnable and lists every key with its line range.
+  // The config branch substitutes into the config-get half ONLY. Its `section "file::sectionName"` half takes a section, and the name the index yields for a JSON/YAML file is a property -- measured, `token-goat section "package.json::name"` exits 1 while `token-goat config-get "package.json" name` returns the value -- so putting the resolved name there would replace a placeholder the agent knows to substitute with a broken command it has no reason to doubt. With a real key in hand that half has nothing to add, and outline is offered instead: it is always runnable and lists every key with its line range.
   const key = target ?? 'KEY_NAME'
   const section = target ?? 'SectionHeading'
   return isXml
@@ -44,22 +42,20 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
     : isEnv
       ? 'Use `token-goat config-get "' + hintPath + '" ' + key + '` to read a specific variable.'
       : isConfig
-        ? target === null
+        ? structuredDataHint(hintPath, target) ?? (target === null
           ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-          : 'Use `token-goat config-get "' + hintPath + '" ' + key + '` to read a specific value, or ' + genericSurgicalFallback(hintPath) + ' for every key with line ranges.'
+          : 'Use `token-goat config-get "' + hintPath + '" ' + key + '` to read a specific value, or ' + genericSurgicalFallback(hintPath) + ' for every key with line ranges.')
         : isDoc
           ? 'Use `token-goat section "' + hintPath + '::' + section + '"` to read one section' + (target === null ? '.' : ', or ' + genericSurgicalFallback(hintPath) + ' for every heading with line ranges.')
           : 'Use ' + genericSurgicalFallback(hintPath) + ' to read one function or class.'
 }
 
-/**
- * Shared hint ladder for `tail`/`head`/`Get-Content -Tail`/`Select-Object -First`-style partial-file-read commands, which (unlike the whole-file-dump commands {@link surgicalHintFor} covers) can also point at `token-goat skeleton` for the non-doc, non-config case since the caller already knows the file structure is what's wanted.
- */
+/** Shared hint ladder for `tail`/`head`/`Get-Content -Tail`/`Select-Object -First`-style partial-file-read commands, which (unlike the whole-file-dump commands {@link surgicalHintFor} covers) can also point at `token-goat skeleton` for the non-doc, non-config case since the caller already knows the file structure is what's wanted. */
 export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean, isSql: boolean, isXml = false): string {
   return isXml
     ? 'Use `token-goat xml-outline "' + filePath + '"` to inspect structure, or `token-goat xml-query "' + filePath + '" "<selector>"` to query specific nodes.'
     : isConfig
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+      ? structuredDataHint(filePath, null) ?? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
       : isSql
         ? 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
         : isDoc
@@ -68,11 +64,7 @@ export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, is
 }
 
 
-/**
- * Split a compound command into the individual simple commands the shell would run, on `|`, `||`, `&&`, `;` and newline.
- *
- * Quote-aware on purpose: a plain `cmd.split(/\|/)` would tear `sed -i 's/a|b/c/' f` apart at the alternation inside the script and lose the file argument entirely -- a silent miss in exactly the case this detection exists for.
- */
+/** Split a compound command into the individual simple commands the shell would run, on `|`, `||`, `&&`, `;` and newline. Quote-aware on purpose: a plain `cmd.split(/\|/)` would tear `sed -i 's/a|b/c/' f` apart at the alternation inside the script and lose the file argument entirely -- a silent miss in exactly the case this detection exists for. */
 export function splitShellSegments(cmd: string): string[] {
   const segments: string[] = []
   let cur = ''
@@ -113,11 +105,7 @@ export function splitShellSegments(cmd: string): string[] {
 }
 
 
-/**
- * True when the path is a temp file (not indexed by token-goat).
- *
- * The literal patterns cover shapes `os.tmpdir()` does not report: the unix `/tmp`, macOS `/var/folders`, and the Git-Bash/MSYS `/c/Users/...` spelling of a Windows path, none of which a plain prefix test against `os.tmpdir()` would catch. `isUnderSystemTemp` then covers the actual system temp directory, whatever it happens to be on this machine -- which the pattern list alone does not: it assumes the per-user `AppData\Local\Temp` shape, so on a machine (or a service account) whose temp is `C:\WINDOWS\TEMP`, every temp-path gate here silently stopped firing. Reusing the canonical helper rather than adding another pattern keeps the two definitions of "temp" from drifting apart again.
- */
+/** True when the path is a temp file (not indexed by token-goat). The literal patterns cover shapes `os.tmpdir()` does not report: the unix `/tmp`, macOS `/var/folders`, and the Git-Bash/MSYS `/c/Users/...` spelling of a Windows path, none of which a plain prefix test against `os.tmpdir()` would catch. `isUnderSystemTemp` then covers the actual system temp directory, whatever it happens to be on this machine -- which the pattern list alone does not: it assumes the per-user `AppData\Local\Temp` shape, so on a machine (or a service account) whose temp is `C:\WINDOWS\TEMP`, every temp-path gate here silently stopped firing. Reusing the canonical helper rather than adding another pattern keeps the two definitions of "temp" from drifting apart again. */
 export function isTempPath(fp: string): boolean {
   const norm = fp.replace(/\\/g, '/')
   return (
@@ -144,9 +132,7 @@ export function extractCatSourceFile(cmd: string): string | null {
 
 /** Extracts the file path from a simple `cat [flags] <path>` command (quoted or unquoted), returning it and whether it is a doc, env, config, or sql file. Returns null for multi-file cat, piped cat, etc. */
 // Classify a single candidate `cat`/`bat`/`type`/`Get-Content` path: returns the per-path flags used by the deny/hint logic, or null if the path is a temp scratch file or lacks a known source/doc/config extension. Shared by the single-path extractCatFile and the multi-path extractCatFilesMulti so both apply identical rules.
-/**
- * Classify a file path's extension into the doc/env/config/sql flags shared by every cat-family extractor below. Returns null when the path has neither a known source/doc/config extension nor an `.env`-shaped basename (the "not a file we care about" case). Does NOT apply temp-path filtering -- callers differ on that (some exclude temp paths outright, `extractPowerShellWrappedGetContent` instead size-gates them), so that check stays with each caller.
- */
+/** Classify a file path's extension into the doc/env/config/sql flags shared by every cat-family extractor below. Returns null when the path has neither a known source/doc/config extension nor an `.env`-shaped basename (the "not a file we care about" case). Does NOT apply temp-path filtering -- callers differ on that (some exclude temp paths outright, `extractPowerShellWrappedGetContent` instead size-gates them), so that check stays with each caller. */
 export function classifyFileExtensions(filePath: string): { isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
@@ -213,13 +199,7 @@ export const POWERSHELL_WRAP_RE = /^(?:powershell|pwsh)(?:\.exe)?(?:\s+-[a-zA-Z]
 export const PS_GETCONTENT_INNER_RE = /^(?:Get-Content|gc|cat|type)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*)?\s*$/i
 export const PS_FILE_METHOD_RE = /\[(?:System\.)?IO\.File\]::(?:ReadAllText|ReadAllLines|ReadAllBytes|ReadLines|OpenText)\(\s*['"]([^'"]+)['"]/i
 
-/**
- * True when the command writes back the same path it read, making it an in-place edit rather than a read into context.
- *
- * Denying an in-place edit only forces the same script into a file, which then runs unchecked, so the extractors treat this shape as none of their business. The guard is keyed on the WRITE and takes the read's path as an argument, because keying it on the read is what broke twice: it lived inside {@link extractNodeFileRead}'s `readFileSync` branch alone, so `node -e "const p=require('./package.json'); ...writeFileSync('./package.json', ...)"` -- the ordinary version-bump one-liner -- was denied while the byte-identical edit spelled `readFileSync` was allowed, and the denial told the caller that `fs.readFileSync()` bypasses read hooks for a command that never calls it. {@link extractPowerShellFileMethodRead} had no such guard at all, so `[IO.File]::WriteAllText('a.ts', [IO.File]::ReadAllText('a.ts')...)` was denied outright with `token-goat outline` suggested as the substitute, which cannot perform an edit.
- *
- * `methods` is the writing API of the runtime in question, since the two share no spelling: Node writes with `writeFileSync`/`appendFileSync`, .NET with the `WriteAll*`/`AppendAll*` family.
- */
+/** True when the command writes back the same path it read, making it an in-place edit rather than a read into context. Denying an in-place edit only forces the same script into a file, which then runs unchecked, so the extractors treat this shape as none of their business. The guard is keyed on the WRITE and takes the read's path as an argument, because keying it on the read is what broke twice: it lived inside {@link extractNodeFileRead}'s `readFileSync` branch alone, so `node -e "const p=require('./package.json'); ...writeFileSync('./package.json', ...)"` -- the ordinary version-bump one-liner -- was denied while the byte-identical edit spelled `readFileSync` was allowed, and the denial told the caller that `fs.readFileSync()` bypasses read hooks for a command that never calls it. {@link extractPowerShellFileMethodRead} had no such guard at all, so `[IO.File]::WriteAllText('a.ts', [IO.File]::ReadAllText('a.ts')...)` was denied outright with `token-goat outline` suggested as the substitute, which cannot perform an edit. `methods` is the writing API of the runtime in question, since the two share no spelling: Node writes with `writeFileSync`/`appendFileSync`, .NET with the `WriteAll*`/`AppendAll*` family. */
 function writesBackSamePath(cmd: string, filePath: string, methods: string): boolean {
   return new RegExp(`(?:${methods})\\(\\s*['"]${escapeRegExp(filePath)}['"]`, 'i').test(cmd)
 }
@@ -237,13 +217,7 @@ export function isLargeFileOnDisk(filePath: string, floor: number): boolean {
   }
 }
 
-/**
- * Whether a path this hook parsed OUT OF a command may be touched on disk before the user has approved that command.
- *
- * Every other pre_tool_use handler asks {@link preToolPathDeclined} before its first fs call, because the harness fires the hook before the approval prompt and the path is the model's choice until then -- and on Windows a `statSync` of `\\host\share\...` opens an SMB session, carrying an authentication attempt, to a host a repository named. This handler was outside that discipline for one reason that reads plausible and is wrong: its tool carries a command rather than a path. It carries about twenty paths, extracted from the command, and stats two of them.
- *
- * Answers false rather than throwing: the caller's only use for the size is deciding whether to emit a hint, and declining to measure is the same outcome as measuring and finding nothing. `event === undefined` still refuses a network or device path, including one reached through a link, so a caller that has no event to hand -- a direct unit test of an extractor, or a future one -- loses only the workspace half of the rule, never the network half.
- */
+/** Whether a path this hook parsed OUT OF a command may be touched on disk before the user has approved that command. Every other pre_tool_use handler asks {@link preToolPathDeclined} before its first fs call, because the harness fires the hook before the approval prompt and the path is the model's choice until then -- and on Windows a `statSync` of `\\host\share\...` opens an SMB session, carrying an authentication attempt, to a host a repository named. This handler was outside that discipline for one reason that reads plausible and is wrong: its tool carries a command rather than a path. It carries about twenty paths, extracted from the command, and stats two of them. Answers false rather than throwing: the caller's only use for the size is deciding whether to emit a hint, and declining to measure is the same outcome as measuring and finding nothing. `event === undefined` still refuses a network or device path, including one reached through a link, so a caller that has no event to hand -- a direct unit test of an extractor, or a future one -- loses only the workspace half of the rule, never the network half. */
 export function commandPathIsTouchable(filePath: string, event: HookEvent | undefined): boolean {
   if (event === undefined) return !escapesOntoNetworkThroughLinks(filePath)
   return !preToolPathDeclined(event, filePath)
@@ -270,9 +244,7 @@ export function extractPowerShellWrappedGetContent(cmd: string, event?: HookEven
   return { filePath, ...flags }
 }
 
-/**
- * Extracts file path from PowerShell .NET static file read calls: `[System.IO.File]::ReadAllText(...)`, `[IO.File]::ReadAllLines(...)`, `[IO.File]::ReadAllBytes(...)`, `[IO.File]::ReadLines(...)`, etc.
- */
+/** Extracts file path from PowerShell .NET static file read calls: `[System.IO.File]::ReadAllText(...)`, `[IO.File]::ReadAllLines(...)`, `[IO.File]::ReadAllBytes(...)`, `[IO.File]::ReadLines(...)`, etc. */
 export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
   let inner = cmd.trim()
   const w = POWERSHELL_WRAP_RE.exec(inner)
@@ -296,9 +268,7 @@ export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent):
   return { filePath, isDoc: flags.isDoc, isEnv: flags.isEnv, isConfig: flags.isConfig, isSql: flags.isSql, isXml: flags.isXml }
 }
 
-/**
- * Returns identifier info when command is `rg`/`grep` with `-n` flag targeting a pure identifier (or `|`-joined identifiers) against exactly one source file. Used to suggest `token-goat symbol` as a cheaper alternative to scanning the file.
- */
+/** Returns identifier info when command is `rg`/`grep` with `-n` flag targeting a pure identifier (or `|`-joined identifiers) against exactly one source file. Used to suggest `token-goat symbol` as a cheaper alternative to scanning the file. */
 export function extractRgSymbolSearch(cmd: string): { filePath: string; identifier: string } | null {
   if (!/^(?:rg|grep)\s+/.test(cmd)) return null
   if (!/-n\b/.test(cmd)) return null
@@ -344,9 +314,7 @@ export function extractCatJsonPipe(cmd: string): { filePath: string; isDirectJq?
   return null
 }
 
-/**
- * Extracts info when a command involves PowerShell `ConvertFrom-Json`. Detects pipelines like `Get-Content <file> | ConvertFrom-Json`, `cat <file> | ConvertFrom-Json`, `[IO.File]::ReadAllText(<file>) | ConvertFrom-Json`, or assignment expressions.
- */
+/** Extracts info when a command involves PowerShell `ConvertFrom-Json`. Detects pipelines like `Get-Content <file> | ConvertFrom-Json`, `cat <file> | ConvertFrom-Json`, `[IO.File]::ReadAllText(<file>) | ConvertFrom-Json`, or assignment expressions. */
 export function extractPowerShellJsonPipeline(cmd: string): { filePath: string | null } | null {
   let inner = cmd.trim()
   const w = POWERSHELL_WRAP_RE.exec(inner)
@@ -428,11 +396,7 @@ export function extractWslCatFile(cmd: string): { filePath: string; isDoc: boole
   return { filePath, ...flags }
 }
 
-/**
- * The Python snippet inside `text`, paired with a copy of it that has string contents blanked out.
- *
- * The guards below look for `open(` and `.write(`, and a snippet is free to carry either as ordinary text inside a string, so they scan a masked copy. But masking only makes sense on Python. What arrives here is usually a shell command line with the snippet inside the shell's own quotes, and masking that as it stands treats the shell's opening quote as the start of a Python string and blanks the whole snippet, leaving the guards nothing to find. So the snippet is lifted out of `python -c` first. A command whose snippet cannot be lifted cleanly (a pipeline, a trailing `&&`) is scanned unmasked, which is what these guards did before. A heredoc body is already Python and is masked as it stands. `source` and `masked` always share offsets, so a caller can find an opener in `masked` and read the real arguments out of `source`.
- */
+/** The Python snippet inside `text`, paired with a copy of it that has string contents blanked out. The guards below look for `open(` and `.write(`, and a snippet is free to carry either as ordinary text inside a string, so they scan a masked copy. But masking only makes sense on Python. What arrives here is usually a shell command line with the snippet inside the shell's own quotes, and masking that as it stands treats the shell's opening quote as the start of a Python string and blanks the whole snippet, leaving the guards nothing to find. So the snippet is lifted out of `python -c` first. A command whose snippet cannot be lifted cleanly (a pipeline, a trailing `&&`) is scanned unmasked, which is what these guards did before. A heredoc body is already Python and is masked as it stands. `source` and `masked` always share offsets, so a caller can find an opener in `masked` and read the real arguments out of `source`. */
 export function pythonScanText(text: string): { source: string; masked: string } {
   const dashC = /^python3?\s+-c\s*(['"])([\s\S]*)\1\s*$/.exec(text)
   if (dashC) {
@@ -443,11 +407,7 @@ export function pythonScanText(text: string): { source: string; masked: string }
   return { source: text, masked: maskPythonStrings(text) }
 }
 
-/**
- * The same text with the contents of every Python string literal replaced by spaces, quotes and length left alone.
- *
- * The guards below look for `open(` and `.write(` in a one-liner, and a one-liner is free to carry either of those as ordinary text inside a string. Searching the raw command let `print(open('src/cli.ts').read()); note='logger.write('` look like a file write and escape the read check entirely. Offsets are preserved so a caller can find an opener in this masked copy and then read the real arguments, quotes and all, out of the original: the mode a call asks for is itself a string literal, so it cannot be masked away.
- */
+/** The same text with the contents of every Python string literal replaced by spaces, quotes and length left alone. The guards below look for `open(` and `.write(` in a one-liner, and a one-liner is free to carry either of those as ordinary text inside a string. Searching the raw command let `print(open('src/cli.ts').read()); note='logger.write('` look like a file write and escape the read check entirely. Offsets are preserved so a caller can find an opener in this masked copy and then read the real arguments, quotes and all, out of the original: the mode a call asks for is itself a string literal, so it cannot be masked away. */
 export function maskPythonStrings(text: string): string {
   const out = text.split('')
   let i = 0
@@ -478,11 +438,7 @@ export interface PythonOpenCall {
   modeLiteral: string | null
 }
 
-/**
- * Every `open(...)` call in `text`, with its path and mode as far as they can be read off.
- *
- * The arguments are walked with a depth counter rather than matched with a regex, because the argument list is not a flat span: the span this replaces was `open\s*\([^)]*,\s*['"][wa]`, and `[^)]*` cannot reach past a nested call, so `open(os.path.join(d, name), 'w')` never looked like a write and a command that only ever created a file was denied as if it were reading one. The walk ignores commas inside quotes and inside a nested call, so the top-level arguments come out whole.
- */
+/** Every `open(...)` call in `text`, with its path and mode as far as they can be read off. The arguments are walked with a depth counter rather than matched with a regex, because the argument list is not a flat span: the span this replaces was `open\s*\([^)]*,\s*['"][wa]`, and `[^)]*` cannot reach past a nested call, so `open(os.path.join(d, name), 'w')` never looked like a write and a command that only ever created a file was denied as if it were reading one. The walk ignores commas inside quotes and inside a nested call, so the top-level arguments come out whole. */
 export function pythonOpenCalls(text: string): PythonOpenCall[] {
   const { source, masked } = pythonScanText(text)
   const calls: PythonOpenCall[] = []
@@ -528,22 +484,14 @@ export function pythonOpenCalls(text: string): PythonOpenCall[] {
   return calls
 }
 
-/**
- * True when any `open(...)` in `text` asks for a mode that creates or modifies a file.
- *
- * A mode that is passed but not written out as a literal (`open(p, m)`, `open(p, mode=m)`) counts as writing. The two mistakes are not equal: denying a write blocks a command outright and hands back advice to extract a symbol from a file that is about to be created, while letting a read past only costs the hint. When the mode cannot be read, the harmless answer is the one to give.
- */
+/** True when any `open(...)` in `text` asks for a mode that creates or modifies a file. A mode that is passed but not written out as a literal (`open(p, m)`, `open(p, mode=m)`) counts as writing. The two mistakes are not equal: denying a write blocks a command outright and hands back advice to extract a symbol from a file that is about to be created, while letting a read past only costs the hint. When the mode cannot be read, the harmless answer is the one to give. */
 export function pythonOpenWritesAFile(text: string): boolean {
   return pythonOpenCalls(text).some(
     (call) => call.hasMode && (call.modeLiteral === null || /[wax+]/.test(call.modeLiteral)),
   )
 }
 
-/**
- * True when `text` writes through a file object, as opposed to a standard stream.
- *
- * `.write(` alone used to be the signal, and it exempted the command from the whole-file-read check. A standard stream has a .write too, so `sys.stdout.write(open('src/cli.ts').read())` put exactly as much of a file into the conversation as the `print` spelling of the same read and only the second one was caught. Writing to a stream is output, not a file write. The receiver is read back off the text rather than required to be a plain name, so a write straight onto the result of a call (`open(p, m).write(...)`) still counts as one.
- */
+/** True when `text` writes through a file object, as opposed to a standard stream. `.write(` alone used to be the signal, and it exempted the command from the whole-file-read check. A standard stream has a .write too, so `sys.stdout.write(open('src/cli.ts').read())` put exactly as much of a file into the conversation as the `print` spelling of the same read and only the second one was caught. Writing to a stream is output, not a file write. The receiver is read back off the text rather than required to be a plain name, so a write straight onto the result of a call (`open(p, m).write(...)`) still counts as one. */
 export function pythonWritesThroughFileObject(text: string): boolean {
   const { masked } = pythonScanText(text)
   for (const call of masked.matchAll(/\.write(?:lines)?\s*\(/g)) {
@@ -556,11 +504,7 @@ export function pythonWritesThroughFileObject(text: string): boolean {
 }
 
 
-/**
- * True when every `open(...)` in `text` names its file with a plain string literal.
- *
- * The indirect branches below exist for `open(path_variable)`, where the file being read can only be guessed at from a literal somewhere else in the command. That guess is wrong whenever the command already says outright what it opens: `path='src/cli.ts'; print(open('notes').read())` opens `notes`, which has no source extension and is not the hook's business, yet the scan found `src/cli.ts` elsewhere in the line and denied the command naming a file it never touched. When every call already names its own path, there is nothing left to infer.
- */
+/** True when every `open(...)` in `text` names its file with a plain string literal. The indirect branches below exist for `open(path_variable)`, where the file being read can only be guessed at from a literal somewhere else in the command. That guess is wrong whenever the command already says outright what it opens: `path='src/cli.ts'; print(open('notes').read())` opens `notes`, which has no source extension and is not the hook's business, yet the scan found `src/cli.ts` elsewhere in the line and denied the command naming a file it never touched. When every call already names its own path, there is nothing left to infer. */
 export function pythonOpenPathsAreAllLiteral(text: string): boolean {
   const calls = pythonOpenCalls(text)
   return calls.length > 0 && calls.every((call) => call.pathLiteral !== null)
@@ -587,9 +531,7 @@ export function extractPythonFileRead(cmd: string): PythonFileReadResult | null 
     inner = (w[1] ?? w[2] ?? '').trim()
   }
 
-  // Check for PowerShell here-string piped to Python:
-  // @'
-  // ... '@ | python -
+  // Check for PowerShell here-string piped to Python: @' ... '@ | python -
   const psHereMatch =
     /^@'([\s\S]*?)'@\s*\|\s*(?:python3?|py)(?:\.exe)?(?:\s+-\S*|\s+-)?\s*$/i.exec(inner) ??
     /^@"([\s\S]*?)"@\s*\|\s*(?:python3?|py)(?:\.exe)?(?:\s+-\S*|\s+-)?\s*$/i.exec(inner)
@@ -712,9 +654,7 @@ export function extractSedRange(cmd: string): { filePath: string; ranges: Array<
   return { filePath, ranges }
 }
 
-/**
- * `awk` spelling of the same line-range read `extractSedRange` handles: `awk 'NR>=A && NR<=B' file` and `awk 'NR==A,NR==B' file` show exactly the lines a `sed -n 'A,Bp' file` would, bypass the read hooks the same way, and cost the same context -- but matched none of the sed patterns, so they drew neither the surgical-read hint nor the overlap dedup the sed spelling has had all along. Recognized here so both spellings of one read reach the same machinery, including sharing a dedup ledger: reading lines 1-40 with `sed` and then with `awk` is one file read twice, not two files.
- */
+/** `awk` spelling of the same line-range read `extractSedRange` handles: `awk 'NR>=A && NR<=B' file` and `awk 'NR==A,NR==B' file` show exactly the lines a `sed -n 'A,Bp' file` would, bypass the read hooks the same way, and cost the same context -- but matched none of the sed patterns, so they drew neither the surgical-read hint nor the overlap dedup the sed spelling has had all along. Recognized here so both spellings of one read reach the same machinery, including sharing a dedup ledger: reading lines 1-40 with `sed` and then with `awk` is one file read twice, not two files. */
 export function extractAwkRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
   const m = /^awk\s+(?:'([^']+)'|"([^"]+)")\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>(?:\/dev\/null|&1))?\s*$/.exec(cmd)
   if (!m) return null
@@ -786,11 +726,7 @@ export function extractLineRangeReadsCompound(cmd: string): Array<{ filePath: st
   return [...merged.values()]
 }
 
-/**
- * Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`) that has already been priced and found cheaper than the read it replaces -- see bash_range_savings.ts, which owns that comparison and whose result `sub` is.
- *
- * This used to be a language ladder that named the file and left the agent to supply the heading, key or symbol: `token-goat section "CHANGELOG.md::<heading>"`. Measured, that advice cost more than it saved and could not be followed well even in principle -- the obvious substitution on the largest real case returned 15,150 bytes against the 10,572 the `sed` window asked for, and the heading whose name an agent would guess (`Unreleased`) is not the one the index holds (`[Unreleased]`) -- recoverable, as it happens, because `section` resolves fuzzily and prints "redirected from", but only by a fallback catching it, not because the advice was answerable as written. So the hint now names the exact regions the pricing resolved and the saving it measured, rather than a shape for the agent to fill in.
- */
+/** Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`) that has already been priced and found cheaper than the read it replaces -- see bash_range_savings.ts, which owns that comparison and whose result `sub` is. This used to be a language ladder that named the file and left the agent to supply the heading, key or symbol: `token-goat section "CHANGELOG.md::<heading>"`. Measured, that advice cost more than it saved and could not be followed well even in principle -- the obvious substitution on the largest real case returned 15,150 bytes against the 10,572 the `sed` window asked for, and the heading whose name an agent would guess (`Unreleased`) is not the one the index holds (`[Unreleased]`) -- recoverable, as it happens, because `section` resolves fuzzily and prints "redirected from", but only by a fallback catching it, not because the advice was answerable as written. So the hint now names the exact regions the pricing resolved and the saving it measured, rather than a shape for the agent to fill in. */
 export function sedRangeHint(
   filePath: string,
   ranges: ReadonlyArray<readonly [number, number]>,
@@ -823,19 +759,7 @@ function substituteSentence(filePath: string, ranges: ReadonlyArray<readonly [nu
 }
 
 // Returns the previously-served range that overlaps [start, end] the most (by shared line count), or null if none overlap.
-/**
- * Hint for a leading-lines read (`head -n N file`, `Get-Content file | Select-Object -First N`): the overlap warning when those lines were already served this session, the ordinary surgical hint when they were not.
- *
- * The lead-in plus a language-shaped surgical suggestion used to be the unconditional else-branch here. It is now the priced substitute sentence instead, for the reason recorded on {@link sedRangeHint}: the language ladder named the file and left the agent to supply a heading or symbol, and on the largest measured real case the obvious substitution cost 43% more than the read it objected to.
- *
- * These commands have always *written* to the line-range ledger -- `recordBashFileReadsForSessionCache` records 1..n once the command succeeds, because leading-lines reads are the one truncated shape whose absolute range is known -- but nothing ever read that entry back. So a second `head -30 CHANGELOG.md` produced the same generic advice as the first, and never mentioned that the lines were already in context. A ledger's write half and read half are separately observable, and a guard holding only one of them is indistinguishable from a working guard from the outside.
- *
- * `tail` deliberately stays out of this: its absolute start line depends on the file's total length, which this hook does not know, so it is recorded as truncated rather than as a range and there is no trustworthy range here to compare against.
- *
- * Checks without recording, because for these shapes the recording is the post-hook's job and happens only if the command actually succeeds.
- *
- * Returns null when there is nothing worth saying: the lines were not already served AND the caller's pricing (`substitute`, null when the replacement could not be priced or was not cheaper -- see bash_range_savings.ts) found no saving to offer. The already-served overlap warning is never gated on that pricing: it reports that this content is already in context, which is a saving of the whole read and owes nothing to whatever command replaces it.
- */
+/** Hint for a leading-lines read (`head -n N file`, `Get-Content file | Select-Object -First N`): the overlap warning when those lines were already served this session, the ordinary surgical hint when they were not. The lead-in plus a language-shaped surgical suggestion used to be the unconditional else-branch here. It is now the priced substitute sentence instead, for the reason recorded on {@link sedRangeHint}: the language ladder named the file and left the agent to supply a heading or symbol, and on the largest measured real case the obvious substitution cost 43% more than the read it objected to. These commands have always *written* to the line-range ledger -- `recordBashFileReadsForSessionCache` records 1..n once the command succeeds, because leading-lines reads are the one truncated shape whose absolute range is known -- but nothing ever read that entry back. So a second `head -30 CHANGELOG.md` produced the same generic advice as the first, and never mentioned that the lines were already in context. A ledger's write half and read half are separately observable, and a guard holding only one of them is indistinguishable from a working guard from the outside. `tail` deliberately stays out of this: its absolute start line depends on the file's total length, which this hook does not know, so it is recorded as truncated rather than as a range and there is no trustworthy range here to compare against. Checks without recording, because for these shapes the recording is the post-hook's job and happens only if the command actually succeeds. Returns null when there is nothing worth saying: the lines were not already served AND the caller's pricing (`substitute`, null when the replacement could not be priced or was not cheaper -- see bash_range_savings.ts) found no saving to offer. The already-served overlap warning is never gated on that pricing: it reports that this content is already in context, which is a saving of the whole read and owes nothing to whatever command replaces it. */
 export function leadingLinesHint(
   lead: string,
   hintPath: string,
@@ -980,18 +904,8 @@ export function extractGetContentHead(cmd: string): { filePath: string; isDoc: b
   return { filePath, isDoc, isConfig, isSql, isXml, n }
 }
 
-/**
- * Detects `cat` or `tail` commands on a tasks output path and returns the task ID so the caller can emit a `token-goat bash-output` recall hint.
- *
- * Tasks output files follow the pattern `…/tasks/<id>.output`. They are written to disk by the harness (not through the bash-output cache), so re-reading via cat/tail wastes tokens that `token-goat bash-output --file <path>` returns surgically. The matched path is returned so the recall hint can name a command that actually works (`bash-output <id>` misses, since the task id is not a bash-output cache key).
- */
-/**
- * Whether a `…/tasks/<id>.output` file holds an agent's JSONL transcript rather than a background command's stdout.
- *
- * Both kinds land in the same directory under the same extension, so the extension answers nothing: an agent task's file is JSONL and worth several hundred kilobytes, while a background bash task's file is whatever the command printed and is meant to be read. The first non-whitespace byte tells them apart, and only that byte is read -- the transcripts this guards against are large enough that pulling the whole file in to look at its first character is the cost the guard exists to avoid. Anything unreadable answers false, so a missing file leaves the command alone.
- *
- * `normalizePath` first: Git Bash yields `/c/Users/...` and WSL `/mnt/c/Users/...`, neither of which Node can resolve on Windows, so an unnormalized read always throws ENOENT and silently turns the guard off for those shells.
- */
+/** Detects `cat` or `tail` commands on a tasks output path and returns the task ID so the caller can emit a `token-goat bash-output` recall hint. Tasks output files follow the pattern `…/tasks/<id>.output`. They are written to disk by the harness (not through the bash-output cache), so re-reading via cat/tail wastes tokens that `token-goat bash-output --file <path>` returns surgically. The matched path is returned so the recall hint can name a command that actually works (`bash-output <id>` misses, since the task id is not a bash-output cache key). */
+/** Whether a `…/tasks/<id>.output` file holds an agent's JSONL transcript rather than a background command's stdout. Both kinds land in the same directory under the same extension, so the extension answers nothing: an agent task's file is JSONL and worth several hundred kilobytes, while a background bash task's file is whatever the command printed and is meant to be read. The first non-whitespace byte tells them apart, and only that byte is read -- the transcripts this guards against are large enough that pulling the whole file in to look at its first character is the cost the guard exists to avoid. Anything unreadable answers false, so a missing file leaves the command alone. `normalizePath` first: Git Bash yields `/c/Users/...` and WSL `/mnt/c/Users/...`, neither of which Node can resolve on Windows, so an unnormalized read always throws ENOENT and silently turns the guard off for those shells. */
 export function taskOutputIsJsonlTranscript(outPath: string): boolean {
   let fd: number | null = null
   try {
@@ -1093,9 +1007,7 @@ export function extractToolResultsFile(cmd: string): { path: string } | null {
   return null
 }
 
-/**
- * Returns true when the command is a directory listing (eza --long or ls … | head) for which `token-goat map --compact` is a cheaper alternative.
- */
+/** Returns true when the command is a directory listing (eza --long or ls … | head) for which `token-goat map --compact` is a cheaper alternative. */
 export function extractDirectoryListing(cmd: string): boolean {
   return (
     /^eza\s+.*--long\s+\S+/.test(cmd) ||
@@ -1114,11 +1026,7 @@ export function extractForLoopWcL(cmd: string): boolean {
   return /^for\s+\w+\s+in\s+.*;\s*do\s+wc\s+-l/.test(cmd)
 }
 
-/**
- * Returns a parsed find command descriptor when the command is a `find` invocation.
- * - `extGlob`: the glob pattern from `-name "*.ext"`, or null when absent.
- * - `isXargsGrepL`: true when the pipeline ends with `| xargs grep -l` (symbol search anti-pattern). Returns null when the command does not start with `find`.
- */
+/** Returns a parsed find command descriptor when the command is a `find` invocation. - `extGlob`: the glob pattern from `-name "*.ext"`, or null when absent. - `isXargsGrepL`: true when the pipeline ends with `| xargs grep -l` (symbol search anti-pattern). Returns null when the command does not start with `find`. */
 export function extractFindCommand(cmd: string): { extGlob: string | null; isXargsGrepL: boolean } | null {
   if (!/^find\b/.test(cmd)) return null
   const isXargsGrepL = /[|]\s*xargs\s+(?:grep|rg)\s+.*-l\b/.test(cmd)
@@ -1127,11 +1035,7 @@ export function extractFindCommand(cmd: string): { extGlob: string | null; isXar
   return { extGlob, isXargsGrepL }
 }
 
-/**
- * Returns the file path when the command is a grep/rg -n heading-anchor search on a markdown file (`.md` or `.markdown`). These are used as a hand-rolled "show me the table of contents" idiom; `token-goat outline` is cheaper and gives line ranges.
- *
- * Triggers on patterns like: `^#`, `^##`, `^###`, `^#+`, `^## |^### `, `^#\+`. Does NOT trigger for non-markdown files (e.g. `.sh`, `.ts`) or patterns that are not heading anchors.
- */
+/** Returns the file path when the command is a grep/rg -n heading-anchor search on a markdown file (`.md` or `.markdown`). These are used as a hand-rolled "show me the table of contents" idiom; `token-goat outline` is cheaper and gives line ranges. Triggers on patterns like: `^#`, `^##`, `^###`, `^#+`, `^## |^### `, `^#\+`. Does NOT trigger for non-markdown files (e.g. `.sh`, `.ts`) or patterns that are not heading anchors. */
 export function extractMarkdownHeadingGrep(cmd: string): { filePath: string } | null {
   if (!/^(?:rg|grep)\s+/.test(cmd)) return null
 
@@ -1156,9 +1060,7 @@ export function extractMarkdownHeadingGrep(cmd: string): { filePath: string } | 
   return { filePath }
 }
 
-/**
- * Returns the file path when the command is an rg/grep structural definition search on a single source file. Structural patterns are those that find function/class/import definitions (^def, ^class, ^function, ^import, etc.) — the common "show me the structure of this file" idiom that token-goat skeleton does better.
- */
+/** Returns the file path when the command is an rg/grep structural definition search on a single source file. Structural patterns are those that find function/class/import definitions (^def, ^class, ^function, ^import, etc.) — the common "show me the structure of this file" idiom that token-goat skeleton does better. */
 export function extractRgStructuralSearch(cmd: string): { filePath: string } | null {
   if (!/^(?:rg|grep)\s+/.test(cmd)) return null
 
@@ -1182,16 +1084,12 @@ export function extractRgStructuralSearch(cmd: string): { filePath: string } | n
   return { filePath }
 }
 
-/**
- * Returns true when a command chains two grep/rg stages together (e.g. `grep … | grep …`). Only matches when BOTH pipeline stages are grep or rg — does not fire for `grep | wc`, `grep | head`, `grep | sort`, `grep | awk`, etc.
- */
+/** Returns true when a command chains two grep/rg stages together (e.g. `grep … | grep …`). Only matches when BOTH pipeline stages are grep or rg — does not fire for `grep | wc`, `grep | head`, `grep | sort`, `grep | awk`, etc. */
 export function extractGrepPipeChain(cmd: string): boolean {
   return /^(?:rg|grep)\b.*\|\s*(?:rg|grep)\b/.test(cmd)
 }
 
-/**
- * Splits a command into shell-ish words, honouring single and double quotes and dropping the quote characters, so a flag value that contains spaces stays one word.
- */
+/** Splits a command into shell-ish words, honouring single and double quotes and dropping the quote characters, so a flag value that contains spaces stays one word. */
 export function splitCommandWords(cmd: string): string[] {
   const words: string[] = []
   let cur = ''
@@ -1234,9 +1132,7 @@ export function splitCommandWords(cmd: string): string[] {
   return words
 }
 
-/**
- * curl flags whose next word is a value rather than the request target. A URL sitting in one of these is not what curl fetches -- `-H 'Referer: https://cdn…'` and `-A 'Bot https://bot…'` both carry one -- so the target has to be picked by argument position, not by "first URL in the string".
- */
+/** curl flags whose next word is a value rather than the request target. A URL sitting in one of these is not what curl fetches -- `-H 'Referer: https://cdn…'` and `-A 'Bot https://bot…'` both carry one -- so the target has to be picked by argument position, not by "first URL in the string". */
 export const CURL_VALUE_FLAGS = new Set([
   '-H', '--header', '-A', '--user-agent', '-e', '--referer', '-b', '--cookie', '-c', '--cookie-jar',
   '-o', '--output', '--output-dir', '-u', '--user', '-U', '--proxy-user', '-x', '--proxy', '-X',
@@ -1250,11 +1146,7 @@ export const CURL_VALUE_FLAGS = new Set([
   '--etag-compare', '--trace', '--trace-ascii', '--dump-header', '-D',
 ])
 
-/**
- * The URL curl actually requests: the first bare (non-flag-value) `https?://` argument, or the value of an explicit `--url`. Returns null when none is present.
- *
- * Used to key the bash-output cache and the download-recall map on the URL rather than the full command string, so `curl -s <url> | jq …` and `curl -s <url> | python3 …` share one entry. Reading the first URL anywhere in the string instead made every command carrying a URL in a header collapse onto that header's URL: two genuinely different downloads shared one key, and the second was refused as "already downloaded" to the first one's file.
- */
+/** The URL curl actually requests: the first bare (non-flag-value) `https?://` argument, or the value of an explicit `--url`. Returns null when none is present. Used to key the bash-output cache and the download-recall map on the URL rather than the full command string, so `curl -s <url> | jq …` and `curl -s <url> | python3 …` share one entry. Reading the first URL anywhere in the string instead made every command carrying a URL in a header collapse onto that header's URL: two genuinely different downloads shared one key, and the second was refused as "already downloaded" to the first one's file. */
 export function extractCurlUrl(cmd: string): string | null {
   const words = splitCommandWords(cmd)
   let positional: string | null = null
@@ -1330,9 +1222,7 @@ export function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: s
   return { sub, spec, filePath }
 }
 
-/**
- * Returns true when `cmd` carries an explicit non-GET method, a request-body flag, or auth credentials -- the three curl-unsafe-to-cache conditions shared by {@link isCurlGetCommand} and {@link extractCurlDownload}. Callers still check `^curl\b` themselves since only they know whether to return `false` or `null` on mismatch.
- */
+/** Returns true when `cmd` carries an explicit non-GET method, a request-body flag, or auth credentials -- the three curl-unsafe-to-cache conditions shared by {@link isCurlGetCommand} and {@link extractCurlDownload}. Callers still check `^curl\b` themselves since only they know whether to return `false` or `null` on mismatch. */
 export function curlHasUnsafeFlags(cmd: string): boolean {
   // Explicit non-GET method
   if (/-X\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return true
@@ -1345,17 +1235,13 @@ export function curlHasUnsafeFlags(cmd: string): boolean {
   return false
 }
 
-/**
- * Returns true when the command is a `curl` GET request whose response is safe to cache (no -X POST/PUT/PATCH/DELETE, no request body flags, no auth credentials).
- */
+/** Returns true when the command is a `curl` GET request whose response is safe to cache (no -X POST/PUT/PATCH/DELETE, no request body flags, no auth credentials). */
 export function isCurlGetCommand(cmd: string): boolean {
   if (!/^curl\b/.test(cmd)) return false
   return !curlHasUnsafeFlags(cmd)
 }
 
-/**
- * Returns true when the command is a read-only `gh api` GET whose response is safe to cache: not GraphQL (always a POST query), no mutating method, and no request-body/field flags (gh defaults to POST when -f/-F/--field/--raw-field/--input are present). An explicit `--method GET` / `-X GET` is honored even with other flags. An embedded Authorization header is skipped so a credential is never persisted into the cached command string.
- */
+/** Returns true when the command is a read-only `gh api` GET whose response is safe to cache: not GraphQL (always a POST query), no mutating method, and no request-body/field flags (gh defaults to POST when -f/-F/--field/--raw-field/--input are present). An explicit `--method GET` / `-X GET` is honored even with other flags. An embedded Authorization header is skipped so a credential is never persisted into the cached command string. */
 export function isReadOnlyGhApi(cmd: string): boolean {
   if (!/^gh\s+api\b/.test(cmd)) return false
   if (/\bgraphql\b/.test(cmd)) return false
@@ -1393,9 +1279,7 @@ export function buildGhViewBatchAdvisory(sub: 'pr' | 'issue', ref: string | unde
   return '`gh ' + sub + ' view` field queries can be batched: fetch every field you need in one round-trip with `' + example + '` (slice it with `--jq`) instead of querying field-by-field across multiple calls.'
 }
 
-/**
- * Extracts {url, outputPath} from a `curl -o <file> <url>` download command. Returns null for non-curl commands, commands without `-o`/`--output`, or commands with auth/POST/body flags that should not be cached.
- */
+/** Extracts {url, outputPath} from a `curl -o <file> <url>` download command. Returns null for non-curl commands, commands without `-o`/`--output`, or commands with auth/POST/body flags that should not be cached. */
 export function extractCurlDownload(cmd: string): { url: string; outputPath: string } | null {
   if (!/^curl\b/.test(cmd)) return null
   // Must have -o / --output flag
@@ -1420,11 +1304,7 @@ export function isDevServerCommand(cmd: string): boolean {
   return /^\s*(vite\s+dev|next\s+dev|nuxt\s+dev)\b/i.test(cmd)
 }
 
-/**
- * Build the recall hint text for a cached build command output.
- *
- * Returns a hint tailored to the command type (tsc, dev server, or generic).
- */
+/** Build the recall hint text for a cached build command output. Returns a hint tailored to the command type (tsc, dev server, or generic). */
 export function buildRecallHint(cmd: string, outputId: string): string {
   const cmdPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
   if (isTscCommand(cmd)) {
@@ -1453,9 +1333,7 @@ export function shellQuoteSingle(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
-/**
- * True when `cmd` is a single command with no shell control operators — the same shape {@link detectFromCommand} requires. Gates the generic-filter fallback so a pipeline / compound / command-substitution / redirect is never wrapped (its `&&`/`|`/`>` would confuse both the outer shell and the `compress -c` arg).
- */
+/** True when `cmd` is a single command with no shell control operators — the same shape {@link detectFromCommand} requires. Gates the generic-filter fallback so a pipeline / compound / command-substitution / redirect is never wrapped (its `&&`/`|`/`>` would confuse both the outer shell and the `compress -c` arg). */
 export function isCompressibleSingleCommand(cmd: string): boolean {
   if (!cmd || cmd.length > 65536) return false
   if (['$(', '`'].some((op) => cmd.includes(op))) return false
@@ -1471,9 +1349,7 @@ export interface TerminalXmlParsingResult {
   toolOrScript: string
 }
 
-/**
- * Detects terminal commands attempting to parse XML via PowerShell (Select-Xml, [xml]), Python (xml.etree, BeautifulSoup, minidom, lxml), scratch PowerShell inspect scripts (inspect_*.ps1), or shell XML tools (xmllint, xmlstarlet, xidel).
- */
+/** Detects terminal commands attempting to parse XML via PowerShell (Select-Xml, [xml]), Python (xml.etree, BeautifulSoup, minidom, lxml), scratch PowerShell inspect scripts (inspect_*.ps1), or shell XML tools (xmllint, xmlstarlet, xidel). */
 export function extractTerminalXmlParsing(cmd: string): TerminalXmlParsingResult | null {
   const trimmed = cmd.trim()
   if (!trimmed) return null

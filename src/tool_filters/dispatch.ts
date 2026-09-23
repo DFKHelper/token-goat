@@ -5,7 +5,7 @@
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { resolveMinNetSavingsBytes } from './base.js'
 import { resolveIndexPath } from '../paths.js'
-import { GenericFilter } from './generic.js'
+import { GenericFilter, PassthroughFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, combineStreams, hasBareBackgroundOrNewline, hasUnquotedOperator, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
 import { redactSecrets } from '../secret_redact.js'
@@ -23,12 +23,7 @@ import { PACKAGE_MANAGER_FILTERS } from './package_managers.js'
 import { pytestFilter } from './pytest.js'
 import { TEST_RUNNER_FILTERS } from './test_runners.js'
 
-/**
- * Ordered per-tool filter registry. Filled batch by batch; `selectFilter`
- * returns null (and the hook leaves the command unwrapped) for anything no entry
- * matches. Order matters: more specific filters must precede the generic
- * package-manager handlers they overlap with — each batch documents its placement.
- */
+/** Ordered per-tool filter registry. Filled batch by batch; `selectFilter` returns null (and the hook leaves the command unwrapped) for anything no entry matches. Order matters: more specific filters must precede the generic package-manager handlers they overlap with — each batch documents its placement. */
 export const TOOL_FILTERS: ToolFilter[] = [
   // Batch A — test runners. Node family (jest/mocha/ava/tap, vitest) first, then the bespoke runners (pytest, go test) that need their own structural logic. No overlap with later batches; safe at the head — except `go-test`, which must precede any future `go build`/`go run` filter (both match `go`), so it is registered here ahead of the build batch.
   ...TEST_RUNNER_FILTERS,
@@ -69,19 +64,7 @@ export const TOOL_FILTERS: ToolFilter[] = [
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
 const PROFILE_CAPS: Record<string, number> = { aggressive: 50, balanced: 200, minimal: 500 }
 
-/**
- * Peel a leading `cd DIR &&`/`cd DIR ;` off `argv` so the real command lands at argv[0] for
- * matching, and shift `cwd` to DIR so package-manager script resolution (below) resolves
- * against the right `package.json`. Deliberately narrow: only a single `cd` immediately
- * followed by exactly one directory token and a top-level `&&`/`;` separator qualifies. A
- * bare `cd`, a `cd DIR` with nothing following, or a `cd` displaced from argv[0] by an earlier
- * pass-through (e.g. inside a subshell, where shlexSplit tokenizes `(cd` as one token) are left
- * untouched -- this is filter-selection routing, not general shell-grammar parsing.
- *
- * When `cwd` is `undefined` (the caller never had one), the peeled cwd stays `undefined` too:
- * peeling must not conjure a cwd that lets script resolution run somewhere it previously
- * couldn't -- callers that never pass cwd see no behaviour change beyond the peel itself.
- */
+/** Peel a leading `cd DIR &&`/`cd DIR ;` off `argv` so the real command lands at argv[0] for matching, and shift `cwd` to DIR so package-manager script resolution (below) resolves against the right `package.json`. Deliberately narrow: only a single `cd` immediately followed by exactly one directory token and a top-level `&&`/`;` separator qualifies. A bare `cd`, a `cd DIR` with nothing following, or a `cd` displaced from argv[0] by an earlier pass-through (e.g. inside a subshell, where shlexSplit tokenizes `(cd` as one token) are left untouched -- this is filter-selection routing, not general shell-grammar parsing. When `cwd` is `undefined` (the caller never had one), the peeled cwd stays `undefined` too: peeling must not conjure a cwd that lets script resolution run somewhere it previously couldn't -- callers that never pass cwd see no behaviour change beyond the peel itself. */
 function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[]; cwd: string | undefined } | null {
   if (argv.length < 3 || argv[0] !== 'cd') return null
   const sep = argv[2]
@@ -92,34 +75,12 @@ function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[
   return { argv: remainder, cwd: cwd === undefined ? undefined : resolveIndexPath(dir, cwd) }
 }
 
-/**
- * The argv (and cwd) a command is actually dispatched on: `cd DIR &&` peeled off when
- * {@link peelLeadingCd} applies, otherwise the input unchanged. Single source of truth so a
- * caller that needs the same tokens the filter was CHOSEN from -- notably `bash_runner`, which
- * hands argv to `compressOutput` for flag/pattern extraction -- cannot drift from
- * `selectFilter`. Deriving argv independently left `cd` and a directory at argv[0..1], so every
- * argv-reading filter (grep's pattern, cargo/dotnet/gh's subcommand, make's target, ...) read
- * the wrong tokens on a cd-prefixed command.
- */
+/** The argv (and cwd) a command is actually dispatched on: `cd DIR &&` peeled off when {@link peelLeadingCd} applies, otherwise the input unchanged. Single source of truth so a caller that needs the same tokens the filter was CHOSEN from -- notably `bash_runner`, which hands argv to `compressOutput` for flag/pattern extraction -- cannot drift from `selectFilter`. Deriving argv independently left `cd` and a directory at argv[0..1], so every argv-reading filter (grep's pattern, cargo/dotnet/gh's subcommand, make's target, ...) read the wrong tokens on a cd-prefixed command. */
 export function dispatchArgv(argv: string[], cwd?: string): { argv: string[]; cwd: string | undefined } {
   return peelLeadingCd(argv, cwd) ?? { argv, cwd }
 }
 
-/**
- * Return the first registered filter whose `matches(argv)` is true, or null
- * when none applies (callers should NOT wrap such commands — the subprocess
- * overhead would be pure cost). argv is prefix-stripped first so
- * `sudo time python -m pytest` resolves to the pytest filter.
- *
- * When `cwd` is supplied and `argv` is a package-manager run-script form
- * (`npm test`, `npm run build`, `yarn lint`, `pnpm run build`, `bun run
- * build`), this first tries resolving the aliased script (via the nearest
- * ancestor `package.json`) and dispatching on THAT — so `npm test` backed by
- * `"test": "vitest run"` matches the vitest filter instead of the generic
- * npm one. If resolution isn't applicable/safe or the resolved command
- * matches no filter, this falls through to the unresolved `argv` exactly as
- * before (which still lets the generic npm/pnpm/yarn/bun filter claim it).
- */
+/** Return the first registered filter whose `matches(argv)` is true, or null when none applies (callers should NOT wrap such commands — the subprocess overhead would be pure cost). argv is prefix-stripped first so `sudo time python -m pytest` resolves to the pytest filter. When `cwd` is supplied and `argv` is a package-manager run-script form (`npm test`, `npm run build`, `yarn lint`, `pnpm run build`, `bun run build`), this first tries resolving the aliased script (via the nearest ancestor `package.json`) and dispatching on THAT — so `npm test` backed by `"test": "vitest run"` matches the vitest filter instead of the generic npm one. If resolution isn't applicable/safe or the resolved command matches no filter, this falls through to the unresolved `argv` exactly as before (which still lets the generic npm/pnpm/yarn/bun filter claim it). */
 export function selectFilter(argv: string[], cwd?: string): ToolFilter | null {
   if (argv.length === 0) return null
   const { argv: effectiveArgv, cwd: effectiveCwd } = dispatchArgv(argv, cwd)
@@ -159,14 +120,7 @@ function hasRedirect(argv: string[]): boolean {
   return argv.some((tok) => REDIRECT_TOKEN_RE.test(tok))
 }
 
-/**
- * Parse a shell command string and return `{ filter, argv }`, or null when the
- * command is empty/oversized, contains unquoted control operators (`&&`, `||`,
- * `|`, `;`, `$()`, backticks), a bare `&` (background operator), an embedded
- * newline, uses redirects, or matches no filter. The wrapper only intercepts
- * a single command, so compounds/pipelines/backgrounded/multi-line commands
- * are left untouched.
- */
+/** Parse a shell command string and return `{ filter, argv }`, or null when the command is empty/oversized, contains unquoted control operators (`&&`, `||`, `|`, `;`, `$()`, backticks), a bare `&` (background operator), an embedded newline, uses redirects, or matches no filter. The wrapper only intercepts a single command, so compounds/pipelines/backgrounded/multi-line commands are left untouched. */
 export function detectFromCommand(command: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   if (!command || command.length > 65536) return null
   if (['$(', '`'].some((op) => command.includes(op))) return null
@@ -192,12 +146,7 @@ export interface CompressOptions {
   compressionProfile?: string
 }
 
-/**
- * Canonical wrapper entry point: run `filter` over the captured output and
- * return a {@link CompressedOutput}. Always succeeds (the filter's own
- * `apply` catches exceptions and falls back to truncation). The profile sets
- * the effective line cap; an explicit tighter `maxLines` still wins.
- */
+/** Canonical wrapper entry point: run `filter` over the captured output and return a {@link CompressedOutput}. Always succeeds (the filter's own `apply` catches exceptions and falls back to truncation). The profile sets the effective line cap; an explicit tighter `maxLines` still wins. */
 export function compressOutput(
   filter: ToolFilter,
   stdout: string,
@@ -216,10 +165,7 @@ export function compressOutput(
   return filter.apply(stdout, stderr, exitCode, argv, applyOpts)
 }
 
-/**
- * What a caller actually delivers after {@link compressOutput}, split into the
- * pieces so each caller can assemble its own body.
- */
+/** What a caller actually delivers after {@link compressOutput}, split into the pieces so each caller can assemble its own body. */
 export interface DeliveredCompression {
   /** True when the rewrite cleared the net-benefit floor and the compressed body ships. */
   readonly applied: boolean
@@ -231,26 +177,7 @@ export interface DeliveredCompression {
   readonly compressed: CompressedOutput
 }
 
-/**
- * The single definition of "what does the model actually receive for this command".
- *
- * A rewrite whose savings do not clear the marker's own byte cost plus the configured
- * floor destabilises the bytes for too small a gain, so below the floor the ORIGINAL
- * streams ship untouched (no compression marker) -- exactly as though no filter had
- * matched, EXCEPT redaction: `compressed` already ran `filter.apply()`, which redacts
- * secret-shaped values before any truncator can cut one below its recognition floor
- * (see base.ts's Step 1.5/9.5 comments). Falling back to the raw `combineStreams(stdout,
- * stderr)` here used to throw that redaction away -- a credential in a command whose
- * compression didn't clear the net-benefit floor shipped to the model raw, live, on this
- * exact rewrite surface. Re-redacting the raw streams on the fallback path keeps the
- * invariant "the net-benefit gate only ever discards compression, never redaction" true
- * for both branches; it is a no-op whenever nothing in stdout/stderr looked like a secret.
- *
- * Callers assemble `text + marker` themselves rather than receiving a finished body,
- * because the runner caps tokens BETWEEN the two so the savings marker survives
- * truncation. Anything measuring delivery (see `token-goat bench`) must go through
- * here rather than re-deriving the gate, or the measurement can disagree with what ships.
- */
+/** The single definition of "what does the model actually receive for this command". A rewrite whose savings do not clear the marker's own byte cost plus the configured floor destabilises the bytes for too small a gain, so below the floor the ORIGINAL streams ship untouched (no compression marker) -- exactly as though no filter had matched, EXCEPT redaction: `compressed` already ran `filter.apply()`, which redacts secret-shaped values before any truncator can cut one below its recognition floor (see base.ts's Step 1.5/9.5 comments). Falling back to the raw `combineStreams(stdout, stderr)` here used to throw that redaction away -- a credential in a command whose compression didn't clear the net-benefit floor shipped to the model raw, live, on this exact rewrite surface. Re-redacting the raw streams on the fallback path keeps the invariant "the net-benefit gate only ever discards compression, never redaction" true for both branches; it is a no-op whenever nothing in stdout/stderr looked like a secret. Callers assemble `text + marker` themselves rather than receiving a finished body, because the runner caps tokens BETWEEN the two so the savings marker survives truncation. Anything measuring delivery (see `token-goat bench`) must go through here rather than re-deriving the gate, or the measurement can disagree with what ships. */
 export function deliverCompressed(
   filter: ToolFilter,
   stdout: string,
@@ -267,14 +194,10 @@ export function deliverCompressed(
   return { applied, text, marker, compressed }
 }
 
-/**
- * Look up a registered filter by name. `"generic"` resolves to a fresh
- * {@link GenericFilter} (the explicit opt-in fallback, not in `TOOL_FILTERS`).
- * Returns null for unknown names; the wrapper then falls back to
- * {@link selectFilter}.
- */
+/** Look up a registered filter by name. `"generic"` resolves to a fresh {@link GenericFilter} (the explicit opt-in fallback, not in `TOOL_FILTERS`). Returns null for unknown names; the wrapper then falls back to {@link selectFilter}. */
 export function filterByName(name: string): ToolFilter | null {
   if (name === 'generic') return new GenericFilter()
+  if (name === 'passthrough') return new PassthroughFilter()
   for (const f of TOOL_FILTERS) if (f.name === name) return f
   return null
 }

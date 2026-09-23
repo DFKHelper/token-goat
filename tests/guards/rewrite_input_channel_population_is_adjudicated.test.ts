@@ -1,18 +1,4 @@
-/**
- * Guard for a third channel a hook can speak on: constructing `{ hookType: 'rewriteInput', ... }`
- * directly, rather than through a shared helper like contextOutput() or emitRewrite(). This bypasses
- * both of the sibling guards in this directory, which each anchor on a named helper call and cannot
- * see a raw object literal that reaches the same output. It is exactly this shape that let
- * hooks_agent_spawn.ts::preAgentHandler build a duplicate-spawn advisory embedding a prior outstanding
- * prompt (duplicateOf, truncated to 80 chars) behind a raw, unescaped `[token-goat]` prefix -- a
- * prompt relayed from untrusted content could forge that marker into text shaped as token-goat
- * speaking, and nothing here noticed because no guard walked this literal at all.
- *
- * Every top-level function that reaches this literal, directly or by calling a same-file function
- * that does, must appear below with what it interpolates and why that is safe. A new arrival fails
- * until someone answers the question, the same discipline context_channel_population_is_adjudicated
- * enforces for contextOutput().
- */
+/** Guard for a third channel a hook can speak on: constructing `{ hookType: 'rewriteInput', ... }` directly, rather than through a shared helper like contextOutput() or emitRewrite(). This bypasses both of the sibling guards in this directory, which each anchor on a named helper call and cannot see a raw object literal that reaches the same output. It is exactly this shape that let hooks_agent_spawn.ts::preAgentHandler build a duplicate-spawn advisory embedding a prior outstanding prompt (duplicateOf, truncated to 80 chars) behind a raw, unescaped `[token-goat]` prefix -- a prompt relayed from untrusted content could forge that marker into text shaped as token-goat speaking, and nothing here noticed because no guard walked this literal at all. Every top-level function that reaches this literal, directly or by calling a same-file function that does, must appear below with what it interpolates and why that is safe. A new arrival fails until someone answers the question, the same discipline context_channel_population_is_adjudicated enforces for contextOutput(). */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,15 +14,13 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
 /** The emit boundary this guard walks: a literal rewriteInput object, not the shared helpers the sibling guards anchor on. */
 const REWRITE_INPUT_LITERAL = "hookType: 'rewriteInput'"
 
-/**
- * Every function that reaches the literal, with what it interpolates and why that is safe.
- * Keyed `file.ts::function`.
- */
+/** Every function that reaches the literal, with what it interpolates and why that is safe. Keyed `file.ts::function`. */
 const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_agent_spawn.ts::preAgentHandler':
     'Builds the duplicate-spawn advisory, which embeds a prior outstanding prompt (duplicateOf, truncated to 80 chars) -- a value the caller controls and may itself relay from untrusted content. Escaped with neutralizeSpokenMarkers before interpolation; the advisory prefix itself is now the pre-escaped `&#91;token-goat]` spelling rather than a raw bracket, matching the other advisories in this file.',
   'hooks_bash.ts::maybeCompressRewrite':
     'Rewrites the Bash tool_input to wrap the command in `token-goat compress`, quoted with shellQuoteSingle. This is an executed shell command, not prose spoken in token-goat\'s voice, and contains no `[token-goat]`/`[tg]` marker literal for a caller-supplied bracket to forge.',
+  'hooks_bash.ts::cappedInterpreterRead': 'Reaches maybeCompressRewrite, adjudicated above. The narrower-command hint it passes rides inside that shell command base64-encoded as `--cap-hint-b64`, so nothing it interpolates reaches this channel as raw text.',
   'hooks_bash.ts::preBashHandlerInner': 'Reaches maybeCompressRewrite, adjudicated above. Interpolates nothing of its own on this channel.',
   'hooks_bash.ts::preBashHandler': 'Wrapper over preBashHandlerInner. Interpolates nothing of its own.',
   'image_shrink.ts::finalizeShrinkResult':
@@ -44,14 +28,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'image_shrink.ts::preReadImageHandler': 'Reaches finalizeShrinkResult, adjudicated above. Interpolates nothing of its own on this channel.',
 }
 
-/**
- * How many functions must reach the channel for this file to be saying anything.
- *
- * CAPTURE: 4 reached it against the build at the time this was written (hooks_agent_spawn.ts's
- * preAgentHandler, and hooks_bash.ts's maybeCompressRewrite plus its two callers). Pinned at 3 so an
- * ordinary refactor that collapses one wrapper does not fire it, while a scan that starts matching
- * nothing still fails loudly.
- */
+/** How many functions must reach the channel for this file to be saying anything. CAPTURE: 4 reached it against the build at the time this was written (hooks_agent_spawn.ts's preAgentHandler, and hooks_bash.ts's maybeCompressRewrite plus its two callers). Pinned at 3 so an ordinary refactor that collapses one wrapper does not fire it, while a scan that starts matching nothing still fails loudly. */
 const POPULATION_FLOOR = 3
 
 function srcFiles(): string[] {
@@ -61,13 +38,7 @@ function srcFiles(): string[] {
     .map((e) => path.join(SRC_DIR, e.name))
 }
 
-/**
- * Same traversal shape as reachability.ts's `reaches`, but walking RAW bodies rather than
- * `codeOnly`'d ones. `codeOnly` blanks every quoted string literal (not just template literals,
- * for parity with the other guard that strips both), so a plain single-quoted marker like
- * `hookType: 'rewriteInput'` is invisible to it -- the exact "stripping hides the very thing being
- * scanned for" trap this repo's own guard notes warn about, just one layer further than usual.
- */
+/** Same traversal shape as reachability.ts's `reaches`, but walking RAW bodies rather than `codeOnly`'d ones. `codeOnly` blanks every quoted string literal (not just template literals, for parity with the other guard that strips both), so a plain single-quoted marker like `hookType: 'rewriteInput'` is invisible to it -- the exact "stripping hides the very thing being scanned for" trap this repo's own guard notes warn about, just one layer further than usual. */
 export function reachesRaw(fn: FnInfo, byName: Map<string, string>, predicate: (body: string) => boolean): boolean {
   const visited = new Set<string>()
   const stack: string[] = [fn.name]

@@ -1,16 +1,4 @@
-/**
- * Narrow structural summary + path-based extraction for `token-goat json-outline` /
- * `json-query`, so a multi-thousand-line JSON document never needs a full `Read` just to
- * answer "what does this contain" or "what's at path X". Deliberately no JSONPath/jq
- * compatibility -- a dot-path with `[n]` index, `[*]` wildcard, and `[field=value]` filter
- * segments covers the common case, matching the project's "no premature abstraction" bar
- * (see csv_query.ts for the same philosophy applied to CSV).
- *
- * `json-query` is the general-purpose sibling of `config-get`'s JSON branch: config-get only
- * resolves a single dotted key to a scalar (no array indexing/wildcard/filter), which is
- * enough for flat config lookups. json-query adds array navigation and filtering on top,
- * for querying JSON data files rather than config.
- */
+/** Narrow structural summary + path-based extraction for `token-goat json-outline` / `json-query`, so a multi-thousand-line JSON document never needs a full `Read` just to answer "what does this contain" or "what's at path X". Deliberately no JSONPath/jq compatibility -- a dot-path with `[n]` index, `[*]` wildcard, and `[field=value]` filter segments covers the common case, matching the project's "no premature abstraction" bar (see csv_query.ts for the same philosophy applied to CSV). `json-query` is the general-purpose sibling of `config-get`'s JSON branch: config-get only resolves a single dotted key to a scalar (no array indexing/wildcard/filter), which is enough for flat config lookups. json-query adds array navigation and filtering on top, for querying JSON data files rather than config. */
 
 import { displaySafeText } from './paths.js'
 import { pushAll } from './util.js'
@@ -47,6 +35,8 @@ export interface JsonOutlineArray {
 export interface JsonOutlineObject {
   kind: 'object'
   fields: JsonFieldSummary[]
+  /** Set when `keyFilter` narrowed `fields`: the substring asked for and how many keys the object holds in all. */
+  filter?: { needle: string; total: number }
 }
 
 export interface JsonOutlinePrimitive {
@@ -56,14 +46,8 @@ export interface JsonOutlinePrimitive {
 
 export type JsonOutline = JsonOutlineArray | JsonOutlineObject | JsonOutlinePrimitive
 
-/**
- * Structural summary of a parsed JSON document: for an array, element count plus the merged
- * key set / type shape of the first `sampleSize` elements (and whether that shape varies
- * across the sample); for an object, each top-level key's type and (for arrays/objects) size;
- * for a scalar, just its type. Mirrors what `outline`/`skeleton` do for source symbols, but for
- * JSON structure instead of code.
- */
-export function outlineJson(data: unknown, opts: { sampleSize?: number } = {}): JsonOutline {
+/** Structural summary of a parsed JSON document: for an array, element count plus the merged key set / type shape of the first `sampleSize` elements (and whether that shape varies across the sample); for an object, each top-level key's type and (for arrays/objects) size; for a scalar, just its type. Mirrors what `outline`/`skeleton` do for source symbols, but for JSON structure instead of code. `keyFilter` keeps only the object keys containing it, case-insensitively, so a registry of hundreds of entries can be narrowed to the few an agent is after without listing them all. */
+export function outlineJson(data: unknown, opts: { sampleSize?: number; keyFilter?: string } = {}): JsonOutline {
   const sampleSize = opts.sampleSize ?? 5
   const type = jsonType(data)
 
@@ -80,9 +64,7 @@ export function outlineJson(data: unknown, opts: { sampleSize?: number } = {}): 
       const objects = sample as Array<Record<string, unknown>>
       const keySets = objects.map((el) => Object.keys(el))
       const allKeys = [...new Set(keySets.flat())]
-      // Report each key's type/size from whichever sampled element actually has it, not just
-      // the first element -- a key that's absent on the first element but present on a later
-      // one (a heterogeneous sample) would otherwise be misreported as type 'undefined'.
+      // Report each key's type/size from whichever sampled element actually has it, not just the first element -- a key that's absent on the first element but present on a later one (a heterogeneous sample) would otherwise be misreported as type 'undefined'.
       result.sampleKeys = allKeys.map((k) => {
         const owner = objects.find((el) => Object.prototype.hasOwnProperty.call(el, k))
         return fieldSummary(k, owner?.[k])
@@ -95,7 +77,11 @@ export function outlineJson(data: unknown, opts: { sampleSize?: number } = {}): 
 
   if (type === 'object') {
     const obj = data as Record<string, unknown>
-    return { kind: 'object', fields: Object.keys(obj).map((k) => fieldSummary(k, obj[k])) }
+    const keys = Object.keys(obj)
+    const needle = opts.keyFilter?.toLowerCase()
+    if (needle === undefined) return { kind: 'object', fields: keys.map((k) => fieldSummary(k, obj[k])) }
+    const kept = keys.filter((k) => k.toLowerCase().includes(needle))
+    return { kind: 'object', fields: kept.map((k) => fieldSummary(k, obj[k])), filter: { needle: opts.keyFilter as string, total: keys.length } }
   }
 
   return { kind: 'primitive', type }
@@ -105,10 +91,12 @@ export function formatJsonOutline(outline: JsonOutline): string {
   if (outline.kind === 'primitive') return `(scalar ${outline.type})`
 
   if (outline.kind === 'object') {
-    if (outline.fields.length === 0) return '(empty object)'
-    // A JSON object key may hold a newline, and this listing is one entry per line: unescaped, a
-    // key could add a line of its own that reads exactly like another field of the document.
-    return outline.fields.map((f) => `${displaySafeText(f.name)}: ${f.type}${f.size !== undefined ? ` (${f.size})` : ''}`).join('\n')
+    const { filter } = outline
+    const tally = filter === undefined ? '' : `(${outline.fields.length} of ${filter.total} keys contain "${displaySafeText(filter.needle)}")`
+    if (outline.fields.length === 0) return filter === undefined ? '(empty object)' : tally
+    // A JSON object key may hold a newline, and this listing is one entry per line: unescaped, a key could add a line of its own that reads exactly like another field of the document.
+    const lines = outline.fields.map((f) => `${displaySafeText(f.name)}: ${f.type}${f.size !== undefined ? ` (${f.size})` : ''}`)
+    return (filter === undefined ? lines : [...lines, tally]).join('\n')
   }
 
   const lines = [`array of ${outline.length} element${outline.length === 1 ? '' : 's'} (${outline.elementType})`]
@@ -186,14 +174,7 @@ function collectRecursiveKey(root: unknown, keyName: string, out: unknown[], bud
   walk(root, 0)
 }
 
-/**
- * Parses a dot-path query spec into a sequence of ops. Grammar: `(..key|key)(.key)*` where any key
- * may be followed by zero or more bracket segments -- `[n]` (array index), `[*]` (wildcard, fans
- * out every element), or `[field=value]` (filter, keeps array elements whose `field` stringifies
- * to `value`). `..key` performs recursive descent, searching for `key` across all nested objects and
- * arrays. An empty spec means "the whole document". Examples: `data.items[3].name`,
- * `items[*].id`, `items[status=active]`, `items[status="active"][0].name`, `..raw`, `..request.url.raw`.
- */
+/** Parses a dot-path query spec into a sequence of ops. Grammar: `(..key|key)(.key)*` where any key may be followed by zero or more bracket segments -- `[n]` (array index), `[*]` (wildcard, fans out every element), or `[field=value]` (filter, keeps array elements whose `field` stringifies to `value`). `..key` performs recursive descent, searching for `key` across all nested objects and arrays. An empty spec means "the whole document". Examples: `data.items[3].name`, `items[*].id`, `items[status=active]`, `items[status="active"][0].name`, `..raw`, `..request.url.raw`. */
 /** Own keys only, at both steps. `in` and a bare property read both see the prototype chain, so `[constructor.name=Object]` resolved to `'Object'` on every plain object in an array and the filter matched all of them -- a filter that selects everything is worse than one that selects nothing, because it looks like data. A document parsed from JSON never puts a data key on the chain, so nothing legitimate is lost by refusing to look there. */
 function getNestedField(obj: unknown, fieldPath: string): unknown {
   if (obj === null || typeof obj !== 'object') return undefined
@@ -253,6 +234,10 @@ export function parseJsonPath(spec: string): PathOp[] {
       const inner = spec.slice(i + 1, close)
       if (inner === '*') {
         ops.push({ kind: 'wildcard' })
+      } else if (/^\s*(["'])(?:\\.|(?!\1)[^\\])*\1\s*$/.test(inner)) {
+        // A quoted segment is a literal key, the only way to address one holding a dot or a space: a bare segment ends at the first `.`, so `a.b` always meant two keys and a key named `a.b` had no spelling at all.
+        const quoted = inner.trim()
+        ops.push({ kind: 'key', name: quoted.slice(1, -1).replace(/\\(["'\\])/g, '$1') })
       } else if (/^-?\d+$/.test(inner)) {
         ops.push({ kind: 'index', index: Number(inner) })
       } else {
@@ -270,7 +255,7 @@ export function parseJsonPath(spec: string): PathOp[] {
           if (bareOperator !== null) {
             throw new Error(`unsupported comparison operator '${bareOperator[0]}' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
           }
-          throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], or [field=value])`)
+          throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], ["key"], or [field=value])`)
         }
         let field = (m[1] as string).trim()
         if (field.startsWith('@.')) field = field.slice(2).trim()
@@ -311,13 +296,7 @@ export interface JsonQueryResult {
   truncated: boolean
 }
 
-/**
- * Evaluates a parsed path against a JSON document. Plain key/index traversal (no wildcard or
- * filter yet reached) throws on a missing key or out-of-range index, since there is exactly one
- * intended target. Once fanned out by `[*]` or `[field=value]`, a per-item miss (a key absent on
- * one of several matched objects, say) is dropped rather than failing the whole query --
- * projecting across a heterogeneous array is the normal case, not an error.
- */
+/** Evaluates a parsed path against a JSON document. Plain key/index traversal (no wildcard or filter yet reached) throws on a missing key or out-of-range index, since there is exactly one intended target. Once fanned out by `[*]` or `[field=value]`, a per-item miss (a key absent on one of several matched objects, say) is dropped rather than failing the whole query -- projecting across a heterogeneous array is the normal case, not an error. */
 export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryResult {
   let current: unknown[] = [data]
   let fanned = false

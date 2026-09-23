@@ -1,12 +1,10 @@
-/**
- * Per-project persistent key-value memory for session-start context injection.
- * Stored as TOML for reads at startup.
- */
+/** Per-project persistent key-value memory for session-start context injection. Stored as TOML for reads at startup. */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { dataDir } from './constants.js';
+import { findProject } from './project.js';
 import { atomicWriteText, ensureDirSync, withFileLock } from './util.js';
 
 const MAX_ENTRIES = 30;
@@ -19,9 +17,7 @@ function ordinal(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/**
- * Return the TOML file path for this project's memory entries.
- */
+/** Return the TOML file path for this project's memory entries. */
 export function memoryPath(projectHash: string): string {
   // Uses the shared platform-aware data-dir resolver (constants.ts::dataDir), which branches Windows (%LOCALAPPDATA%\dfk-helper\token-goat) vs macOS (~/Library/Application Support/token-goat) vs Linux XDG, and validates any env-var override via safeEnvDir before using it. constants.ts is a dependency-free leaf module (only imports version.js), so there is no circular-dependency risk here.
   return path.join(dataDir(), 'projects', `${projectHash}_memory.toml`);
@@ -35,9 +31,7 @@ function validateKey(key: string): void {
   }
 }
 
-/**
- * Simple TOML parser for key=value format (no nested tables).
- */
+/** Simple TOML parser for key=value format (no nested tables). */
 function parseTOML(content: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const line of content.split('\n')) {
@@ -66,9 +60,7 @@ function parseTOML(content: string): Record<string, string> {
   return result;
 }
 
-/**
- * Read and parse the TOML file; return empty dict on failure.
- */
+/** Read and parse the TOML file; return empty dict on failure. */
 function loadRaw(filePath: string): Record<string, string> {
   try {
     if (!fs.existsSync(filePath)) {
@@ -81,9 +73,7 @@ function loadRaw(filePath: string): Record<string, string> {
   }
 }
 
-/**
- * Serialize entries to TOML and write atomically.
- */
+/** Serialize entries to TOML and write atomically. */
 function save(filePath: string, entries: Record<string, string>): void {
   const lines: string[] = [];
   const sorted = Object.entries(entries).sort(([a], [b]) => ordinal(a, b));
@@ -104,17 +94,12 @@ function save(filePath: string, entries: Record<string, string>): void {
   atomicWriteText(filePath, content);
 }
 
-/**
- * Return all memory entries for project_hash, or empty dict.
- */
+/** Return all memory entries for project_hash, or empty dict. */
 export function loadEntries(projectHash: string): Record<string, string> {
   return loadRaw(memoryPath(projectHash));
 }
 
-/**
- * Set key to value in this project's memory.
- * Enforces MAX_ENTRIES by evicting alphabetically-last entries to make room for new entries.
- */
+/** Set key to value in this project's memory. Enforces MAX_ENTRIES by evicting alphabetically-last entries to make room for new entries. */
 export function setEntry(projectHash: string, key: string, value: string): void {
   validateKey(key);
   const p = memoryPath(projectHash);
@@ -142,9 +127,7 @@ export function setEntry(projectHash: string, key: string, value: string): void 
   if (withFileLock(`${p}.lock`, doSet) === undefined) doSet();
 }
 
-/**
- * Remove key from this project's memory (no-op if absent).
- */
+/** Remove key from this project's memory (no-op if absent). */
 export function unsetEntry(projectHash: string, key: string): void {
   validateKey(key);
   const p = memoryPath(projectHash);
@@ -159,9 +142,7 @@ export function unsetEntry(projectHash: string, key: string): void {
   if (withFileLock(`${p}.lock`, doUnset) === undefined) doUnset();
 }
 
-/**
- * Remove all memory entries for project_hash.
- */
+/** Remove all memory entries for project_hash. */
 export function clearAll(projectHash: string): void {
   const p = memoryPath(projectHash);
   const doClear = (): true => {
@@ -173,10 +154,7 @@ export function clearAll(projectHash: string): void {
   if (withFileLock(`${p}.lock`, doClear) === undefined) doClear();
 }
 
-/**
- * Build a compact Markdown block of memory entries for session-start injection.
- * Returns null when no entries stored.
- */
+/** Build a compact Markdown block of memory entries for session-start injection. Returns null when no entries stored. */
 export function buildInjection(projectHash: string): string | null {
   try {
     const entries = loadEntries(projectHash);
@@ -184,7 +162,7 @@ export function buildInjection(projectHash: string): string | null {
       return null;
     }
 
-    const header = '## Project Memory';
+    const header = '### Project notes (`token-goat note set <key> "<finding>"`)';
     const lines: string[] = [header];
     let total = header.length;
     let skipped = 0;
@@ -204,21 +182,31 @@ export function buildInjection(projectHash: string): string | null {
       total += line.length + 1;
     }
 
-    // The trailer itself counts against MAX_TOTAL_CHARS too -- pop entries back off until it
-    // fits, so the returned string never exceeds the bound the whole function exists to enforce.
+    // The trailer itself counts against MAX_TOTAL_CHARS too -- pop entries back off until it fits, so the returned string never exceeds the bound the whole function exists to enforce.
     if (skipped > 0) {
       while (
         lines.length > 1 &&
-        total + `- (+${skipped} more memory entries omitted — total size limit reached)`.length + 1 > MAX_TOTAL_CHARS
+        total + `- (+${skipped} more memory entries omitted -- total size limit reached)`.length + 1 > MAX_TOTAL_CHARS
       ) {
         const popped = lines.pop() as string;
         total -= popped.length + 1;
         skipped++;
       }
-      lines.push(`- (+${skipped} more memory entries omitted — total size limit reached)`);
+      lines.push(`- (+${skipped} more memory entries omitted -- total size limit reached)`);
     }
 
     return lines.join('\n');
+  } catch {
+    return null;
+  }
+}
+
+/** The notes block for the project containing `cwd`, or null when `cwd` is in no project, the project has no notes, or the lookup fails. Session start and the compaction manifest both carry it, since a finding recorded with `note set` exists precisely to outlive the context it was found in, and both run on hook paths that must never throw. */
+export function projectNotesFor(cwd: string | undefined): string | null {
+  if (cwd === undefined) return null;
+  try {
+    const project = findProject(cwd);
+    return project === null ? null : buildInjection(project.hash);
   } catch {
     return null;
   }

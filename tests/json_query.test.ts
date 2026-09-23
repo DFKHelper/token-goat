@@ -47,11 +47,7 @@ describe('outlineJson', () => {
   });
 
   it('does not leak Object.prototype members when locating a sampled key\'s owner', () => {
-    // The first element genuinely owns a key named `toString` (a real, if unusual, JSON key).
-    // The second element has no own `toString` key at all. Locating the "owner" of `toString`
-    // via `k in el` walks the prototype chain, so the second element (which merely inherits
-    // Object.prototype.toString) would be misreported as owning it -- summarizing the built-in
-    // function instead of `undefined`.
+    // The first element genuinely owns a key named `toString` (a real, if unusual, JSON key). The second element has no own `toString` key at all. Locating the "owner" of `toString` via `k in el` walks the prototype chain, so the second element (which merely inherits Object.prototype.toString) would be misreported as owning it -- summarizing the built-in function instead of `undefined`.
     const outline = outlineJson([{ other: 1 }, { toString: 'real-value' }]);
     expect(outline.kind).toBe('array');
     if (outline.kind !== 'array') throw new Error('unreachable');
@@ -132,6 +128,17 @@ describe('formatJsonOutline', () => {
   it('renders a scalar as (scalar TYPE)', () => {
     expect(formatJsonOutline(outlineJson('x'))).toBe('(scalar string)');
   });
+
+  // HAND-DERIVED: a registry keyed by numeric ids, the shape of the flat sample registries an agent lists to find the two entries it is comparing.
+  it('narrows an object to the keys containing the filter text, case-insensitively, and says how many of how many matched', () => {
+    const registry = { '118615': { brand: 'a' }, '118623': { brand: 'b' }, '118700': { brand: 'c' }, Meta: 'x' };
+    expect(formatJsonOutline(outlineJson(registry, { keyFilter: '1186' }))).toBe('118615: object (1)\n118623: object (1)\n(2 of 4 keys contain "1186")');
+    expect(formatJsonOutline(outlineJson(registry, { keyFilter: 'META' }))).toBe('Meta: string\n(1 of 4 keys contain "META")');
+  });
+
+  it('reports a filter that matched nothing as a count rather than an empty object', () => {
+    expect(formatJsonOutline(outlineJson({ a: 1, b: 2 }, { keyFilter: 'zz' }))).toBe('(0 of 2 keys contain "zz")');
+  });
 });
 
 describe('parseJsonPath', () => {
@@ -176,6 +183,16 @@ describe('parseJsonPath', () => {
     expect(parseJsonPath('')).toEqual([]);
   });
 
+  it('reads a quoted bracket segment as one literal key, dots and spaces included', () => {
+    expect(parseJsonPath('["a.b"].c')).toEqual([{ kind: 'key', name: 'a.b' }, { kind: 'key', name: 'c' }]);
+    expect(parseJsonPath("root['with space']")).toEqual([{ kind: 'key', name: 'root' }, { kind: 'key', name: 'with space' }]);
+    expect(parseJsonPath('["say \\"hi\\""]')).toEqual([{ kind: 'key', name: 'say "hi"' }]);
+  });
+
+  it('keeps an equality filter whose value alone is quoted a filter', () => {
+    expect(parseJsonPath('items[name="a.b"]')).toEqual([{ kind: 'key', name: 'items' }, { kind: 'filter', field: 'name', value: 'a.b' }]);
+  });
+
   it('throws on an unterminated bracket', () => {
     expect(() => parseJsonPath('items[3')).toThrow(/unterminated/);
   });
@@ -186,6 +203,12 @@ describe('parseJsonPath', () => {
 });
 
 describe('evalJsonPath / queryJson', () => {
+  it('addresses a key holding a dot, which a bare path splits into two keys', () => {
+    const doc = { 'a.b': { c: 1 }, a: { b: { c: 2 } } };
+    expect(queryJson(doc, '["a.b"].c').items).toEqual([1]);
+    expect(queryJson(doc, 'a.b.c').items).toEqual([2]);
+  });
+
   it('extracts a single scalar at a non-fanned path', () => {
     const result = queryJson(PEOPLE, 'items[0].name');
     expect(result.fanned).toBe(false);
@@ -251,9 +274,7 @@ describe('evalJsonPath / queryJson', () => {
   });
 
   it('throws on a missing key that collides with an inherited Object.prototype member', () => {
-    // 'toString', 'constructor', 'hasOwnProperty', etc. are visible via the `in` operator on
-    // any plain object even when absent as an own property -- a key lookup must only ever
-    // succeed for a real own property, never fall through to the prototype chain.
+    // 'toString', 'constructor', 'hasOwnProperty', etc. are visible via the `in` operator on any plain object even when absent as an own property -- a key lookup must only ever succeed for a real own property, never fall through to the prototype chain.
     const data = { id: 1 };
     expect(() => queryJson(data, 'toString')).toThrow(/path not found/);
     expect(() => queryJson(data, 'constructor')).toThrow(/path not found/);
@@ -279,11 +300,7 @@ describe('evalJsonPath / queryJson', () => {
   });
 });
 
-// A wildcard step appended its matches with `next.push(...item)`, which is a call with one
-// argument per item, so it failed with "Maximum call stack size exceeded" above roughly 125,000
-// elements -- a limit on the engine's call stack, not on memory. A 5 MB JSON array reached it,
-// and `json-query` exists precisely so a file that size never has to be read whole. `yaml-query`
-// runs the same evaluator, so it crashed on the same shape.
+// A wildcard step appended its matches with `next.push(...item)`, which is a call with one argument per item, so it failed with "Maximum call stack size exceeded" above roughly 125,000 elements -- a limit on the engine's call stack, not on memory. A 5 MB JSON array reached it, and `json-query` exists precisely so a file that size never has to be read whole. `yaml-query` runs the same evaluator, so it crashed on the same shape.
 describe('a wildcard over an array too large to spread as call arguments', () => {
   const HUGE = 200_000
 

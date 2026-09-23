@@ -1,10 +1,4 @@
-/**
- * CLI handler for `token-goat audit`.
- *
- * Runs a session retrospective for the current project (Copilot CLI or Claude Code),
- * separating pre-audit session findings from audit execution self-checks, and emits
- * a structured Maintainer Feedback Card (or JSON via `--json`).
- */
+/** CLI handler for `token-goat audit`. Runs a session retrospective for the current project (Copilot CLI or Claude Code), separating pre-audit session findings from audit execution self-checks, and emits a structured Maintainer Feedback Card (or JSON via `--json`). */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -15,6 +9,8 @@ import {
   buildCopilotWasteReport,
   findProjectSession,
   isCopilotTranscript,
+  MCP_DISABLE_NOTE,
+  unusedMcpServers,
   type CopilotWasteReport,
 } from './copilot_waste.js'
 import { displaySafeJson } from './paths.js'
@@ -87,10 +83,16 @@ export function buildFeedbackCardFromCopilot(report: CopilotWasteReport): Mainta
       preAudit.push(
         `High fixed MCP tool definition overhead: ${details}; total ~${totalMcpTokens.toLocaleString()} tok/turn re-sent across ${turns} turn(s) (~${cumulative.toLocaleString()} cumulative tokens).`
       )
-      const heavyNames = (heavy.length > 0 ? heavy : report.mcpTools.servers).map((s) => s.serverName).join(', ')
-      fixes.push(
-        `Disable unused MCP server(s) (${heavyNames}) via 'copilot mcp disable <name>' or exclude individual tools with '--excluded-tools'.`
-      )
+      const unused = unusedMcpServers(report)
+      if (unused === null) {
+        const heavyNames = (heavy.length > 0 ? heavy : report.mcpTools.servers).map((s) => s.serverName).join(', ')
+        fixes.push(
+          `Disable the MCP server(s) you do not use among ${heavyNames} with 'copilot mcp disable <name>', or exclude individual tools with '--excluded-tools'. This session's log records no tool calls, so it cannot say which went unused.`
+        )
+      } else if (unused.length > 0) {
+        const commands = unused.map((s) => `'copilot mcp disable ${s.serverName}' (~${s.estimatedTokens.toLocaleString()} tok/turn)`).join(', ')
+        fixes.push(`Disable the MCP server(s) this session never called: ${commands}. ${MCP_DISABLE_NOTE}`)
+      }
     }
   }
 

@@ -1,6 +1,4 @@
-/**
- * Tests for compact.ts functions.
- */
+/** Tests for compact.ts functions. */
 
 import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
@@ -9,9 +7,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted — this redirects configPath() to a per-test temp file so the
-// getEffectiveAutoTriggerWindow regression test below can write a real config.toml
-// without touching the machine's real config file.
+// vi.mock is hoisted — this redirects configPath() to a per-test temp file so the getEffectiveAutoTriggerWindow regression test below can write a real config.toml without touching the machine's real config file.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -44,6 +40,8 @@ import {
   type SessionCacheObject,
 } from '../src/compact.js'
 import { buildManifest } from '../src/manifest.js'
+import { findProject } from '../src/project.js'
+import { setEntry } from '../src/project_memory.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
@@ -108,10 +106,7 @@ describe('compact', () => {
   })
 
   describe('getContextPressure', () => {
-    // Pin harness detection so these assertions don't depend on the ambient
-    // environment the test runner happens to execute in ('generic''s
-    // multiplier is 1.0, matching CONTEXT_AUTOCOMPACT_TOKENS unscaled --
-    // keeps every existing expected-value formula below unchanged).
+    // Pin harness detection so these assertions don't depend on the ambient environment the test runner happens to execute in ('generic''s multiplier is 1.0, matching CONTEXT_AUTOCOMPACT_TOKENS unscaled -- keeps every existing expected-value formula below unchanged).
     let savedHarnessOverride: string | undefined
     beforeEach(() => {
       savedHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
@@ -171,13 +166,7 @@ describe('compact', () => {
       expect(pressure.fillFraction).toBeCloseTo(expected, 5)
     })
 
-    // Regression: SessionCacheObject.bashHistory/webHistory used to be a placeholder
-    // Record<string, unknown> shape no writer ever populated. The real on-disk shape
-    // (session_store.ts::SerializedSession.webFetches/bashOutputs, and the
-    // _webFetches/_bashOutputs maps in session.ts) is an array of [key, id] pairs.
-    // This drives the real save -> load -> getContextPressure pipeline end to end so
-    // it fails against a reader that still expects the old bashHistory/webHistory
-    // dict shape and passes once loadSessionCache forwards the real fields.
+    // Regression: SessionCacheObject.bashHistory/webHistory used to be a placeholder Record<string, unknown> shape no writer ever populated. The real on-disk shape (session_store.ts::SerializedSession.webFetches/bashOutputs, and the _webFetches/_bashOutputs maps in session.ts) is an array of [key, id] pairs. This drives the real save -> load -> getContextPressure pipeline end to end so it fails against a reader that still expects the old bashHistory/webHistory dict shape and passes once loadSessionCache forwards the real fields.
     it('reflects real recorded bash/web activity loaded from disk (not just a hand-built cache object)', () => {
       const prevHome = process.env['TOKEN_GOAT_HOME']
       const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compact-pressure-'))
@@ -206,12 +195,7 @@ describe('compact', () => {
       }
     })
 
-    // Regression: getAutoTriggerMultiplier() computed a real harness-tuned
-    // multiplier but getContextPressure's window was CONTEXT_AUTOCOMPACT_TOKENS
-    // unscaled, so the multiplier had zero production callers. This drives the
-    // real pressure-computing path against a harness whose default multiplier
-    // (3.0) differs from 'generic''s (1.0), so it fails against a reader that
-    // still ignores the multiplier and passes once the window is scaled by it.
+    // Regression: getAutoTriggerMultiplier() computed a real harness-tuned multiplier but getContextPressure's window was CONTEXT_AUTOCOMPACT_TOKENS unscaled, so the multiplier had zero production callers. This drives the real pressure-computing path against a harness whose default multiplier (3.0) differs from 'generic''s (1.0), so it fails against a reader that still ignores the multiplier and passes once the window is scaled by it.
     it('scales the pressure window by the detected harness multiplier', () => {
       process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'gemini'
       const cache = {
@@ -222,16 +206,7 @@ describe('compact', () => {
       expect(pressure.fillFraction).toBeCloseTo(expected, 5)
     })
 
-    // Regression: getEffectiveAutoTriggerWindow() called getAutoTriggerMultiplier() without
-    // passing isConfigDefault, so that function fell back to a heuristic (isDefault = config
-    // === 2.0) that can't tell "user explicitly wrote 2.0" apart from "field never touched,
-    // still holding the 2.0 default". A user who explicitly sets auto_trigger_multiplier =
-    // 2.0 on a harness whose own default is NOT 2.0 (gemini's is 3.0) got their explicit
-    // value silently discarded in favor of the harness default -- backwards. This writes a
-    // real config.toml (via the mocked configPath()) with harness = 'gemini' and an explicit
-    // auto_trigger_multiplier = 2.0, then drives the real getContextPressure() path: it fails
-    // against a reader that still applies gemini's 3.0 harness default and passes once the
-    // real "was this explicitly set in the raw file" signal is threaded through.
+    // Regression: getEffectiveAutoTriggerWindow() called getAutoTriggerMultiplier() without passing isConfigDefault, so that function fell back to a heuristic (isDefault = config === 2.0) that can't tell "user explicitly wrote 2.0" apart from "field never touched, still holding the 2.0 default". A user who explicitly sets auto_trigger_multiplier = 2.0 on a harness whose own default is NOT 2.0 (gemini's is 3.0) got their explicit value silently discarded in favor of the harness default -- backwards. This writes a real config.toml (via the mocked configPath()) with harness = 'gemini' and an explicit auto_trigger_multiplier = 2.0, then drives the real getContextPressure() path: it fails against a reader that still applies gemini's 3.0 harness default and passes once the real "was this explicitly set in the raw file" signal is threaded through.
     it('respects an explicit auto_trigger_multiplier that happens to equal the global default, even when the harness default differs', () => {
       fs.writeFileSync(
         _testConfigPath,
@@ -260,17 +235,7 @@ auto_trigger_multiplier = 2.0
       }
     })
 
-    // Regression: isAutoTriggerMultiplierExplicit() only read the raw global config.toml,
-    // never the per-project .token-goat.toml override. A project that sets
-    // auto_trigger_multiplier solely via its .token-goat.toml (no global config.toml entry at
-    // all) had that explicit value misdetected as "still the default", so
-    // getEffectiveAutoTriggerWindow() discarded it in favor of the harness's own default
-    // multiplier -- the same "explicit vs default" bug the sibling test above covers, but for
-    // the per-project override file instead of the global one. This writes a real
-    // .token-goat.toml (via the mocked projectConfigPath()) with harness = 'gemini' and an
-    // explicit auto_trigger_multiplier = 2.0, and a global config.toml that sets neither, then
-    // drives the real getContextPressure() path: it fails against a reader that only checks the
-    // global file and passes once the per-project file is checked too.
+    // Regression: isAutoTriggerMultiplierExplicit() only read the raw global config.toml, never the per-project .token-goat.toml override. A project that sets auto_trigger_multiplier solely via its .token-goat.toml (no global config.toml entry at all) had that explicit value misdetected as "still the default", so getEffectiveAutoTriggerWindow() discarded it in favor of the harness's own default multiplier -- the same "explicit vs default" bug the sibling test above covers, but for the per-project override file instead of the global one. This writes a real .token-goat.toml (via the mocked projectConfigPath()) with harness = 'gemini' and an explicit auto_trigger_multiplier = 2.0, and a global config.toml that sets neither, then drives the real getContextPressure() path: it fails against a reader that only checks the global file and passes once the per-project file is checked too.
     it('respects an explicit auto_trigger_multiplier set only via the per-project .token-goat.toml override', () => {
       fs.writeFileSync(_testConfigPath, '', 'utf8')
       fs.writeFileSync(
@@ -484,9 +449,7 @@ auto_trigger_multiplier = 2.0
       expect(eventCount({})).toBe(0)
     })
 
-    // Regression: eventCount used to read cache.bashHistory/cache.webHistory, field
-    // names loadSessionCache never populated (it only ever set `files`), so real
-    // recorded bash/web activity was silently excluded from every event count.
+    // Regression: eventCount used to read cache.bashHistory/cache.webHistory, field names loadSessionCache never populated (it only ever set `files`), so real recorded bash/web activity was silently excluded from every event count.
     it('counts real recorded bash/web activity loaded via loadSessionCache', () => {
       const prevHome = process.env['TOKEN_GOAT_HOME']
       const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compact-eventcount-'))
@@ -517,13 +480,7 @@ auto_trigger_multiplier = 2.0
   })
 
   describe('session directory resolution (regression)', () => {
-    // findLatestSessionId / loadSessionCache must read from the same base
-    // directory the real session writer (session_store.ts) uses — tokenGoatHome()
-    // (honors TOKEN_GOAT_HOME) — not dataDir() (honors XDG_DATA_HOME), a
-    // different directory nothing ever writes session blobs under. storeBlob
-    // writes through the same tokenGoatHome()-based path as the production
-    // writer, so this exercises the real read/write pairing instead of an
-    // injected seam.
+    // findLatestSessionId / loadSessionCache must read from the same base directory the real session writer (session_store.ts) uses — tokenGoatHome() (honors TOKEN_GOAT_HOME) — not dataDir() (honors XDG_DATA_HOME), a different directory nothing ever writes session blobs under. storeBlob writes through the same tokenGoatHome()-based path as the production writer, so this exercises the real read/write pairing instead of an injected seam.
     let prevHome: string | undefined
     let tmpHome: string
 
@@ -550,17 +507,7 @@ auto_trigger_multiplier = 2.0
       expect(findLatestSessionId()).toBe('real-session-id')
     })
 
-    // Regression for the array-vs-dict shape mismatch: SessionCacheObject.files
-    // used to be typed as a path-keyed dict (`Record<string, unknown>`), the OLD
-    // Python-era on-disk format. The real writer, session_store.ts's
-    // saveSessionState (driven here through its actual public API — recordFileRead
-    // / recordFileEdit / saveSessionState — not a hand-built blob), persists
-    // `files` as a `FileEntry[]` array. Object.keys() on that array yields
-    // numeric indices ("0", "1") instead of real paths, so a manifest built from
-    // a real on-disk session used to render garbage instead of the actual
-    // read/edited files. These tests drive the real save -> load -> manifest
-    // pipeline end to end so they fail on the buggy dict-shaped reader and pass
-    // once compact.ts reads the real FileEntry[] shape.
+    // Regression for the array-vs-dict shape mismatch: SessionCacheObject.files used to be typed as a path-keyed dict (`Record<string, unknown>`), the OLD Python-era on-disk format. The real writer, session_store.ts's saveSessionState (driven here through its actual public API — recordFileRead / recordFileEdit / saveSessionState — not a hand-built blob), persists `files` as a `FileEntry[]` array. Object.keys() on that array yields numeric indices ("0", "1") instead of real paths, so a manifest built from a real on-disk session used to render garbage instead of the actual read/edited files. These tests drive the real save -> load -> manifest pipeline end to end so they fail on the buggy dict-shaped reader and pass once compact.ts reads the real FileEntry[] shape.
     it('loadSessionCache and the manifest builder both read real session data written under TOKEN_GOAT_HOME', () => {
       recordFileRead('C:/proj/src/gamma.ts')
       recordFileRead('C:/proj/src/gamma.ts')
@@ -574,19 +521,31 @@ auto_trigger_multiplier = 2.0
       expect(manifest).toContain('delta.ts')
     })
 
+    it('carries the project notes behind the edits and ahead of the reads, so a long read list cannot cut them', () => {
+      const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-manifest-notes-'))
+      try {
+        fs.writeFileSync(path.join(projectDir, 'package.json'), '{}')
+        setEntry(findProject(projectDir)!.hash, 'registry', '118615 and 118623 are the same brand under two ids')
+        recordFileEdit('/proj/src/edited.ts')
+        for (let i = 0; i < 45; i++) recordFileRead(`/proj/src/read-only-file-number-${i}.ts`)
+        saveSessionState('notes-session')
+
+        const manifest = buildManifest('notes-session', projectDir)
+        const note = manifest.indexOf('- **registry**: 118615 and 118623 are the same brand under two ids')
+        expect(note, 'the note must survive the character cap').toBeGreaterThan(-1)
+        expect(manifest.indexOf('/proj/src/edited.ts')).toBeLessThan(note)
+        expect(note).toBeLessThan(manifest.indexOf('### Read files'))
+      } finally {
+        fs.rmSync(projectDir, { recursive: true, force: true })
+      }
+    })
+
     // ---- manifest disclosure -------------------------------------------------------------
     //
-    // Why nothing caught this: every manifest test above asserts the manifest CONTAINS an
-    // expected path. None asserted anything about what it left out, and the three sections
-    // ("Edited files", "Files read", "Web fetches") each dropped rows two ways -- a row cap and
-    // a mid-loop token-budget break -- while rendering the survivors as a plain bullet list. A
-    // short list was byte-identical to a complete one. The manifest is handed to the model
-    // immediately before compaction, so that list reads as the record of the session.
+    // Why nothing caught this: every manifest test above asserts the manifest CONTAINS an expected path. None asserted anything about what it left out, and the three sections ("Edited files", "Files read", "Web fetches") each dropped rows two ways -- a row cap and a mid-loop token-budget break -- while rendering the survivors as a plain bullet list. A short list was byte-identical to a complete one. The manifest is handed to the model immediately before compaction, so that list reads as the record of the session.
 
     it('discloses the files it left out of the read section rather than rendering a short list as a complete one', () => {
-      // 45 short paths: past the 40-row section cap, and small enough in total that the
-      // max_manifest_chars cap does not also fire -- otherwise the outer truncation would eat the
-      // very disclosure line this asserts on, and the test would be measuring the wrong layer.
+      // 45 short paths: past the 40-row section cap, and small enough in total that the max_manifest_chars cap does not also fire -- otherwise the outer truncation would eat the very disclosure line this asserts on, and the test would be measuring the wrong layer.
       const TOTAL = 45
       for (let i = 0; i < TOTAL; i++) recordFileRead(`/proj/src/f${String(i).padStart(2, '0')}.ts`)
       saveSessionState('read-cap-session')
@@ -594,17 +553,14 @@ auto_trigger_multiplier = 2.0
       const manifest = buildManifest('read-cap-session')
       const shown = manifest.split('\n').filter((l: string) => /^- \/proj\/src\/f\d\d\.ts/i.test(l)).length
 
-      // Calibration: the cap must actually engage, or the disclosure assertion below is asserting
-      // on an uncapped list and proves nothing.
+      // Calibration: the cap must actually engage, or the disclosure assertion below is asserting on an uncapped list and proves nothing.
       expect(shown, `${TOTAL} files were read but ${shown} rendered; the cap is not engaging`).toBeLessThan(TOTAL)
       expect(shown).toBeGreaterThan(0)
       expect(manifest, 'the read section dropped rows and said nothing').toContain(`- ...and ${TOTAL - shown} more`)
     })
 
     it('spends the read cap on files it will actually show, not on noise paths it then drops', () => {
-      // The cap used to be applied BEFORE the noise filter, so a session whose most-read paths
-      // were all noise rendered "## Files read" as a heading with nothing under it -- a heading
-      // that asserts the list below is what was read.
+      // The cap used to be applied BEFORE the noise filter, so a session whose most-read paths were all noise rendered "## Files read" as a heading with nothing under it -- a heading that asserts the list below is what was read.
       for (let i = 0; i < 18; i++) {
         recordFileRead(`C:/proj/node_modules/pkg${i}/index.js`)
         recordFileRead(`C:/proj/node_modules/pkg${i}/index.js`)
@@ -613,16 +569,14 @@ auto_trigger_multiplier = 2.0
       saveSessionState('noise-first-session')
 
       const manifest = buildManifest('noise-first-session')
-      // Must-not-drop anchor: the one real file has to survive. A collapse that hid everything
-      // would satisfy any "no noise in the output" assertion on its own.
+      // Must-not-drop anchor: the one real file has to survive. A collapse that hid everything would satisfy any "no noise in the output" assertion on its own.
       const readSection = manifest.split('### Read files')[1]?.split('###')[0] ?? ''
       expect(readSection, 'the only non-noise file read was dropped in favour of noise paths').toContain('real.ts')
       expect(readSection, 'noise paths must not reach the read section').not.toContain('node_modules')
     })
 
     it('says nothing about omissions when every file fits', () => {
-      // The negative half. A disclosure line emitted unconditionally would pass the case above
-      // on its own while lying on every ordinary session.
+      // The negative half. A disclosure line emitted unconditionally would pass the case above on its own while lying on every ordinary session.
       recordFileRead('C:/proj/src/only.ts')
       recordFileEdit('C:/proj/src/edited.ts')
       saveSessionState('fits-session')
@@ -641,8 +595,7 @@ auto_trigger_multiplier = 2.0
       const manifest = buildManifest('real-shape-session')
       expect(manifest).toContain('alpha.ts')
       expect(manifest).toContain('beta.ts')
-      // Against the dict-shaped reader, Object.keys() on the real FileEntry[]
-      // array would render "- 0" / "- 1" instead of the actual paths.
+      // Against the dict-shaped reader, Object.keys() on the real FileEntry[] array would render "- 0" / "- 1" instead of the actual paths.
       expect(manifest).not.toMatch(/^- 0(\s|$)/m)
       expect(manifest).not.toMatch(/^- 1(\s|$)/m)
     })
@@ -661,10 +614,7 @@ auto_trigger_multiplier = 2.0
       expect(readSection).not.toContain('edited.ts')
     })
 
-    // Regression: the web ledger used to be dropped on the way from disk into the manifest, so a
-    // session's fetched URLs never rendered no matter how many it recorded. Bash output is not
-    // asserted here -- it reaches the manifest through SAFE_TO_DISCARD, which is covered against
-    // real stored output in hooks_compact.test.ts.
+    // Regression: the web ledger used to be dropped on the way from disk into the manifest, so a session's fetched URLs never rendered no matter how many it recorded. Bash output is not asserted here -- it reaches the manifest through SAFE_TO_DISCARD, which is covered against real stored output in hooks_compact.test.ts.
     it('renders fetched URLs from real recorded activity', () => {
       recordWebFetch('https://example.com/page', 'prompt', 'wout1')
       saveSessionState('real-web-session')
@@ -675,13 +625,7 @@ auto_trigger_multiplier = 2.0
     })
   })
 
-  // End-to-end coverage for two fields that compact.ts reads but that nothing
-  // used to write, so their contributions were permanently dead:
-  //   - symbols_read -> symbolsBonus (was always 0)
-  //   - created_ts   -> session-age budget multiplier (was always the young/0.6 tier)
-  // These drive the REAL production path (postBashHandler hook / saveSessionState
-  // writer -> loadSessionCache reader -> compact consumer), not a hand-built cache,
-  // so they fail against the pre-fix dead-code behavior and pass once wired.
+  // End-to-end coverage for two fields that compact.ts reads but that nothing used to write, so their contributions were permanently dead: - symbols_read -> symbolsBonus (was always 0) - created_ts   -> session-age budget multiplier (was always the young/0.6 tier) These drive the REAL production path (postBashHandler hook / saveSessionState writer -> loadSessionCache reader -> compact consumer), not a hand-built cache, so they fail against the pre-fix dead-code behavior and pass once wired.
   describe('dead-field wiring (symbolsBonus + created_ts)', () => {
     let prevHome: string | undefined
     let tmpHome: string
@@ -716,10 +660,7 @@ auto_trigger_multiplier = 2.0
       )
     }
 
-    // Bug 1: a surgical `token-goat read file::symbol` must, via the real hook,
-    // mark the file's session entry with symbols_read so computeAdaptiveBudget's
-    // symbolsBonus fires. Pre-fix nothing wrote the field, so symbolFiles was
-    // always 0 and the bonus 0 (budget would be 200 here, not 350).
+    // Bug 1: a surgical `token-goat read file::symbol` must, via the real hook, mark the file's session entry with symbols_read so computeAdaptiveBudget's symbolsBonus fires. Pre-fix nothing wrote the field, so symbolFiles was always 0 and the bonus 0 (budget would be 200 here, not 350).
     it('rewards surgical reads recorded through the real postBashHandler hook path', async () => {
       const files = ['alpha', 'beta', 'gamma', 'delta', 'epsilon']
       for (const name of files) {
@@ -736,20 +677,14 @@ auto_trigger_multiplier = 2.0
       // All five surgical reads must have persisted their symbols_read token.
       expect(symbolFiles).toHaveLength(5)
 
-      // age 4000s + zero edits -> activity factor 1.0, so no minTotal floor masks
-      // the bonus: rawTotal = base(200) + symbolsBonus(min(150, 5*30)=150) = 350.
+      // age 4000s + zero edits -> activity factor 1.0, so no minTotal floor masks the bonus: rawTotal = base(200) + symbolsBonus(min(150, 5*30)=150) = 350.
       const budget = computeAdaptiveBudget(cache ?? {}, 4000)
       expect(budget).toBe(350)
       // Sanity: with no symbol reads the same age yields only the base 200.
       expect(computeAdaptiveBudget({}, 4000)).toBe(200)
     })
 
-    // Bug 2: the manifest budget scales by the session cache's real age, derived from the
-    // persisted created_ts. Pre-fix created_ts was never written and loadSessionCache dropped it,
-    // so age was always 0 (young tier) and an old cache produced the same budget as a fresh one.
-    // Asserted on the round trip itself rather than through a rendered manifest: the two things
-    // that broke are the writer stamping the field and the reader returning it, and a row count
-    // downstream of a character cap only observes them through two more layers of budgeting.
+    // Bug 2: the manifest budget scales by the session cache's real age, derived from the persisted created_ts. Pre-fix created_ts was never written and loadSessionCache dropped it, so age was always 0 (young tier) and an old cache produced the same budget as a fresh one. Asserted on the round trip itself rather than through a rendered manifest: the two things that broke are the writer stamping the field and the reader returning it, and a row count downstream of a character cap only observes them through two more layers of budgeting.
     it('persists created_ts and lets it drive the session-age budget tier', () => {
       for (let i = 0; i < 40; i++) recordFileEdit(`/proj/src/edited${i}.ts`)
       saveSessionState('age-e2e')
@@ -759,8 +694,7 @@ auto_trigger_multiplier = 2.0
       const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>
       expect(typeof raw['created_ts'], 'saveSessionState must stamp created_ts').toBe('number')
 
-      // Mature cache: created ~4000s ago (>3600s tier). 40 edits over ~66min keeps edit density
-      // above the 0.3/min floor, so the multiplier stays at 1.4.
+      // Mature cache: created ~4000s ago (>3600s tier). 40 edits over ~66min keeps edit density above the 0.3/min floor, so the multiplier stays at 1.4.
       raw['created_ts'] = nowSecs - 4000
       fs.writeFileSync(p, JSON.stringify(raw), 'utf8')
       const mature = loadSessionCache('age-e2e')

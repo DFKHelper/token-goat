@@ -1,4 +1,4 @@
-import { builtinModules } from 'node:module'
+import { isBuiltin } from 'node:module'
 
 import { describe, expect, it } from 'vitest'
 
@@ -6,7 +6,7 @@ import { distSources, expectMatcherStillWorks, packageOf, resolvedSpecifiers } f
 
 /** Every package the shipped bundle can resolve at run time, reviewed by name. `runtime_dependency_set_is_locked.test.ts` locks the other end of this: the packages a consumer's `npm install` puts on disk. That list is necessary and it is not sufficient, because the lockfile is not the only thing that decides what gets loaded. The bundle can reach a package the manifest never declares -- a module the *host application* provides, a devDependency behind a guarded require -- and none of that moves a single byte in `package-lock.json`. A dependency review that reads only the lockfile passes while the bundle grows a new import. So this reads the artifact instead. Every bare specifier `dist/*.mjs` resolves must be named below, which makes "the bundle started loading something new" a build failure that prints the specifier rather than a change nobody sees. Four of the entries are exactly the ones the lockfile guard cannot see, which is the argument for having both. Provenance: CAPTURE. The list was read out of the built bundle by running the enumerator over a real `npm run build` output, not transcribed from `src/` imports or from the manifest. The guard recomputes it from `dist/` on every run, so it compares the artifact as built against the artifact as reviewed. Known limit, stated rather than papered over: a specifier assembled at run time from a variable is invisible here, because there is no literal to read. `tesseract.js` is the live example -- it is an optionalDependency the bundle really does load, and it does not appear in this list. That makes the guard a floor on the import surface, never a ceiling, and it is why the lockfile guard is the other half rather than a duplicate. */
 
-const BUILTIN = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)])
+// isBuiltin rather than a set built from builtinModules: on Node 22 that list omits the builtins that exist only under the `node:` scheme, so `node:sqlite`, which the database driver loads, read as an unreviewed package on every CI runner while passing on Node 24.
 
 /** Packages the bundle is allowed to resolve by name at run time. Adding one here is the review. Answer what loads it, whether a consumer install actually has it, and what happens on the install that does not -- a resolution that throws where nothing catches is a crash on someone else's machine. */
 const REVIEWED_RUNTIME_IMPORTS: ReadonlyMap<string, string> = new Map([
@@ -37,7 +37,7 @@ function bundleRuntimePackages(): string[] {
   const found = new Set<string>()
   for (const source of distSources()) {
     for (const specifier of resolvedSpecifiers(source)) {
-      if (specifier.startsWith('.') || specifier.startsWith('/') || BUILTIN.has(specifier)) continue
+      if (specifier.startsWith('.') || specifier.startsWith('/') || isBuiltin(specifier)) continue
       // A Windows drive letter: an absolute path, not a package.
       if (/^[a-z]:/i.test(specifier)) continue
       found.add(packageOf(specifier))

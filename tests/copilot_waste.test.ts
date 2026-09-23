@@ -37,8 +37,7 @@ describe('splitInjectedBlocks', () => {
   })
 
   it('counts only tagged blocks, never the user prose between them', () => {
-    // The user's own words are the one part of the prompt that is not overhead. Counting them
-    // would inflate every future "injected bytes" number by the length of the conversation.
+    // The user's own words are the one part of the prompt that is not overhead. Counting them would inflate every future "injected bytes" number by the length of the conversation.
     const blocks = splitInjectedBlocks(
       '<current_datetime>2026-08-23T01:22:27.150-05:00</current_datetime>\n\nreply with just the word pong\n\n<system_reminder>\n<sql_tables>t</sql_tables>\n</system_reminder>',
     )
@@ -93,8 +92,7 @@ describe('buildCopilotWasteReport', () => {
   })
 
   it('leaves tokens null when the session never shut down, instead of reporting zeros as a real split', () => {
-    // Zeros would render as a 0-token system prompt, which reads as "no overhead" -- the exact
-    // opposite of the truth for a session still running.
+    // Zeros would render as a 0-token system prompt, which reads as "no overhead" -- the exact opposite of the truth for a session still running.
     const p = writeLog([userMessage('hi', '<current_datetime>t</current_datetime>')])
     expect(buildCopilotWasteReport(p).tokens).toBeNull()
   })
@@ -114,8 +112,7 @@ describe('buildCopilotWasteReport', () => {
   })
 
   it('does not count a changed reminder as a repeat, even though its kind is unchanged', () => {
-    // The kind is the bucket, but the payload is what decides repetition. Hashing the kind
-    // instead of the body would report a growing todo list as pure waste.
+    // The kind is the bucket, but the payload is what decides repetition. Hashing the kind instead of the body would report a growing todo list as pure waste.
     const p = writeLog([
       userMessage('one', '<system_reminder>\n<sql_tables>todos</sql_tables>\n</system_reminder>'),
       userMessage('two', '<system_reminder>\n<sql_tables>todos, inbox</sql_tables>\n</system_reminder>'),
@@ -126,9 +123,7 @@ describe('buildCopilotWasteReport', () => {
   })
 
   it('keeps hook records out of the injected-block ledger and reports them as unbilled instead', () => {
-    // This is the Copilot analogue of Claude Code's hook_success attachments: the largest event
-    // type on disk in an instrumented session, and zero model-visible bytes. Counting it as
-    // context would make an instrumented session look like the worst offender.
+    // This is the Copilot analogue of Claude Code's hook_success attachments: the largest event type on disk in an instrumented session, and zero model-visible bytes. Counting it as context would make an instrumented session look like the worst offender.
     const hookLine = ev('hook.end', { hookName: 'token-goat', output: { additionalContext: 'x'.repeat(500) } })
     const p = writeLog([hookLine, userMessage('one', '<system_reminder>\n<sql_tables>t</sql_tables>\n</system_reminder>')])
     const report = buildCopilotWasteReport(p)
@@ -156,6 +151,22 @@ describe('buildCopilotWasteReport', () => {
       '{"type":"user.message","data":{"transformed',
     ])
     expect(buildCopilotWasteReport(p).tokens?.systemTokens).toBe(5)
+  })
+
+  // CAPTURE: Copilot CLI 1.0.88, 2026-09-23, one `copilot -p` run calling the built-in GitHub server's search_users; the MCP line is its tool.execution_start verbatim (ids and timestamp kept), the built-in line one from a session on this machine that only ran `view`.
+  const MCP_CALL = '{"type":"tool.execution_start","data":{"toolCallId":"toolu_01VXk6Rc1jidoHdu29cV5brg","toolName":"github-mcp-server-search_users","arguments":{"query":"torvalds"},"turnId":"0","model":"claude-sonnet-5","toolTitle":"Search users","mcpServerName":"github-mcp-server","mcpConfigServerName":"github-mcp-server","mcpTransport":"http","mcpConfigSource":"builtin","mcpToolName":"search_users"},"id":"f2466609-b73a-4ff2-9ab0-d8da279986c1","timestamp":"2026-09-23T23:08:17.688Z"}'
+  const BUILTIN_CALL = '{"type":"tool.execution_start","data":{"toolCallId":"toolu_01P7wTUEpvThzKp3vEpYJ8SL","toolName":"view","arguments":{"path":"README.md"},"turnId":"0","model":"claude-sonnet-5"},"id":"00d15f54-7e83-4e3d-b66f-2e8f4cb25a44","timestamp":"2026-08-28T22:42:58.771Z"}'
+
+  it('counts MCP calls per server from the server name Copilot writes on each tool execution', () => {
+    expect(buildCopilotWasteReport(writeLog([MCP_CALL, BUILTIN_CALL, MCP_CALL])).mcpCalls).toEqual({ 'github-mcp-server': 2 })
+  })
+
+  it('records a session that ran only built-in tools as zero MCP calls, which is what makes a server provably unused', () => {
+    expect(buildCopilotWasteReport(writeLog([BUILTIN_CALL])).mcpCalls).toEqual({})
+  })
+
+  it('leaves MCP calls unknown when the log holds no tool executions, rather than calling every server unused', () => {
+    expect(buildCopilotWasteReport(writeLog([userMessage('one', 'hi')])).mcpCalls).toBeNull()
   })
 })
 
@@ -195,8 +206,7 @@ describe('findLatestCopilotSession', () => {
   })
 
   it('skips a session directory that has no events.jsonl rather than returning its path', () => {
-    // Real sessions in this state exist: Copilot creates the directory at start and one on this
-    // machine never got an events file. Returning it would make the command fail on a stat.
+    // Real sessions in this state exist: Copilot creates the directory at start and one on this machine never got an events file. Returning it would make the command fail on a stat.
     mkdirSync(join(root, 'session-state', 'started-only'), { recursive: true })
     const real = session('real', 1_500_000)
     expect(findLatestCopilotSession()).toBe(real)

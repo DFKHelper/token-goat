@@ -9,9 +9,7 @@ import * as path from 'node:path'
 
 import { stripAnsiEscapes } from '../render/ansi.js'
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Constants ---------------------------------------------------------------------------
 
 /** Maximum line count produced by any filter before middle-truncation. */
 export const DEFAULT_MAX_LINES = 1000
@@ -47,29 +45,8 @@ function utf8SafeEnd(buf: Buffer, n: number): number {
   return end
 }
 
-/**
- * Clamp `text` to `maxBytes`, keeping its head **and** its tail. Returns `null` when it already fits.
- *
- * A head-only cut is wrong for very nearly every command a filter runs over, because the verdict lives at the end: a test runner's summary and its failure bodies, a linter's error count, a compiler's last diagnostic, an installer's result. Measured on this repository's own suite, a 2,406,737-byte `npm test` cut to its first 512,000 bytes delivered 5.5KB holding none of `Test Files 577 passed`, `Tests 12100 passed | 17 skipped` or `Duration` -- those four lines sit in the final 200 bytes. Had that run failed, vitest prints its failure section at the end too, so a red suite would have arrived looking green.
- *
- * The budget is split evenly. Both ends carry content worth keeping (the head has the command echo and the earliest failures, the tail has the verdict) and nothing measured here justifies a ratio between them, so this does not invent one. Cuts land on line boundaries, which both keeps a UTF-8 sequence intact and avoids presenting half a line as whole; the marker matches {@link headTailCompress} rather than adding a second spelling of the same idea. A single line wider than the whole budget has no boundary to cut on and falls back to a character-safe prefix.
- */
-/**
- * Bound the width of every line before any per-tool filter regex sees it.
- *
- * The filter regexes are line-oriented and 205 of them carry a standing
- * `no-super-linear-backtracking` suppression, on the stated grounds that polynomial backtracking
- * "for the line-at-a-time inputs these patterns see is not the same class of risk". Nothing
- * enforced that premise: the input clamp in step 2 bounds a stream's total bytes, not any single
- * line, so one wide line passed through intact. Measured against the shipped bundle, a single
- * 480 KB adversarial line took 47.5 s inside the hook the harness blocks on, against 0.16 s for
- * the same bytes in ordinary shape.
- *
- * A per-line bound is the fix that covers all 205 at once rather than one pattern at a time.
- * Every line survives -- only the middle of an over-wide one is dropped, and it says so -- since
- * discarding whole lines here would put a head bias back into output whose verdict often sits at
- * the end.
- */
+/** Clamp `text` to `maxBytes`, keeping its head **and** its tail. Returns `null` when it already fits. A head-only cut is wrong for very nearly every command a filter runs over, because the verdict lives at the end: a test runner's summary and its failure bodies, a linter's error count, a compiler's last diagnostic, an installer's result. Measured on this repository's own suite, a 2,406,737-byte `npm test` cut to its first 512,000 bytes delivered 5.5KB holding none of `Test Files 577 passed`, `Tests 12100 passed | 17 skipped` or `Duration` -- those four lines sit in the final 200 bytes. Had that run failed, vitest prints its failure section at the end too, so a red suite would have arrived looking green. The budget is split evenly. Both ends carry content worth keeping (the head has the command echo and the earliest failures, the tail has the verdict) and nothing measured here justifies a ratio between them, so this does not invent one. Cuts land on line boundaries, which both keeps a UTF-8 sequence intact and avoids presenting half a line as whole; the marker matches {@link headTailCompress} rather than adding a second spelling of the same idea. A single line wider than the whole budget has no boundary to cut on and falls back to a character-safe prefix. */
+/** Bound the width of every line before any per-tool filter regex sees it. The filter regexes are line-oriented and 205 of them carry a standing `no-super-linear-backtracking` suppression, on the stated grounds that polynomial backtracking "for the line-at-a-time inputs these patterns see is not the same class of risk". Nothing enforced that premise: the input clamp in step 2 bounds a stream's total bytes, not any single line, so one wide line passed through intact. Measured against the shipped bundle, a single 480 KB adversarial line took 47.5 s inside the hook the harness blocks on, against 0.16 s for the same bytes in ordinary shape. A per-line bound is the fix that covers all 205 at once rather than one pattern at a time. Every line survives -- only the middle of an over-wide one is dropped, and it says so -- since discarding whole lines here would put a head bias back into output whose verdict often sits at the end. */
 export const INPUT_MAX_LINE_CHARS = 4000
 
 export function clipWideLines(text: string, maxChars = INPUT_MAX_LINE_CHARS): string {
@@ -117,20 +94,13 @@ export function compressionMarker(filter: string, pct: number): string {
   return `\n[token-goat: ${filter} filter -${Math.round(pct)}%; disable via TOKEN_GOAT_BASH_COMPRESS]`
 }
 
-/**
- * Combine stdout/stderr with a `---` separator when both are present. Shared
- * by {@link ToolFilter.combineOutput} (per-tool compression) and the
- * below-floor original-output fallback in `bash_runner.ts`, so "what the
- * agent would have seen with no filter at all" is defined once.
- */
+/** Combine stdout/stderr with a `---` separator when both are present. Shared by {@link ToolFilter.combineOutput} (per-tool compression) and the below-floor original-output fallback in `bash_runner.ts`, so "what the agent would have seen with no filter at all" is defined once. */
 export function combineStreams(stdout: string, stderr: string): string {
   if (stderr.trim() && stdout.trim()) return `${stdout.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
   return stdout.trim() ? stdout.replace(/\s+$/, '') : stderr.replace(/\s+$/, '')
 }
 
-// ---------------------------------------------------------------------------
-// Shared regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Shared regexes ---------------------------------------------------------------------------
 
 /** Lines that signal an error/failure worth preserving through truncation. */
 export const ERROR_SIGNAL_RE =
@@ -147,13 +117,7 @@ export const TIMESTAMP_PREFIX_RE =
 /** A single token that is a shell redirect (`>`, `2>`, `>>`, `<`, `&>`, ...). */
 export const REDIRECT_TOKEN_RE = /^(\d*)(>>?|<<?).*$|^&>$|^>&.*$/
 
-/**
- * Replace the contents of single- and double-quoted spans in `cmd` with `x`
- * filler (same length, no quote/escape metacharacters preserved) so control-
- * operator detection on the raw string doesn't false-positive on a literal
- * `&`, `|`, `;`, etc. inside a quoted argument. Malformed/unterminated quotes
- * mask through to the end of the string rather than throwing.
- */
+/** Replace the contents of single- and double-quoted spans in `cmd` with `x` filler (same length, no quote/escape metacharacters preserved) so control- operator detection on the raw string doesn't false-positive on a literal `&`, `|`, `;`, etc. inside a quoted argument. Malformed/unterminated quotes mask through to the end of the string rather than throwing. */
 function maskQuotedSpans(cmd: string): string {
   let out = ''
   let i = 0
@@ -189,17 +153,13 @@ function maskQuotedSpans(cmd: string): string {
   return out
 }
 
-/**
- * True when `cmd` contains an embedded newline, or an unquoted bare `&`
- * (the background operator) that is not part of `&&`. Used to gate the
- * bash-compress single-command wrapper: a backgrounded or newline-separated
- * compound command must never be rewritten into `token-goat compress -c
- * '<cmd>'`, since `spawnSync`'s piped stdio blocks on the backgrounded
- * grandchild's inherited stdout until it exits or the wrapper times out,
- * turning a fire-and-forget dev server into a hang.
- */
+/** True when `cmd` contains an embedded newline, or an unquoted bare `&` (the background operator) that is not part of `&&`. Used to gate the bash-compress single-command wrapper: a backgrounded or newline-separated compound command must never be rewritten into `token-goat compress -c '<cmd>'`, since `spawnSync`'s piped stdio blocks on the backgrounded grandchild's inherited stdout until it exits or the wrapper times out, turning a fire-and-forget dev server into a hang. */
 export function hasBareBackgroundOrNewline(cmd: string): boolean {
-  if (cmd.includes('\n') || cmd.includes('\r')) return true
+  return cmd.includes('\n') || cmd.includes('\r') || hasBareBackground(cmd)
+}
+
+// The background half alone, for a wrapper that runs the command's output through untouched and so has no single-command filter to protect: a newline is harmless to it, a detached job still hangs it.
+export function hasBareBackground(cmd: string): boolean {
   const masked = maskQuotedSpans(cmd)
   for (let i = 0; i < masked.length; i++) {
     if (masked[i] !== '&') continue
@@ -215,28 +175,13 @@ export function hasBareBackgroundOrNewline(cmd: string): boolean {
   return false
 }
 
-/**
- * True when the `&` at `index` duplicates a file descriptor rather than detaching the job: `2>&1`, `>&2` and `0<&3` put it against a preceding `<`/`>`, and `cmd &> log` against a following `>`. Bash requires that adjacency, so no whitespace is skipped on either side.
- *
- * Exported because `splitShellSegments` needs the same answer and used to reach it by a different route. It treats a bare `&` as a segment separator, so `rg -n pat src >&2 | tail -20` sheared into `['rg -n pat src >', '2', 'tail -20']` and the `2` remnant read as an unknown pipeline stage; three callers in `hooks_bash_commands.ts` compensated by deleting the literal strings ` 2>&1` and ` 2>/dev/null` from the command first, which covered the one spelling each had met and left `>&2`, `1>&2` and `&>` shearing. Those strips stay -- they also keep the two halves of a redirect out of separate segments for callers that walk them -- but the splitter and this gate now decide what counts as a background `&` the same way, once.
- */
+/** True when the `&` at `index` duplicates a file descriptor rather than detaching the job: `2>&1`, `>&2` and `0<&3` put it against a preceding `<`/`>`, and `cmd &> log` against a following `>`. Bash requires that adjacency, so no whitespace is skipped on either side. Exported because `splitShellSegments` needs the same answer and used to reach it by a different route. It treats a bare `&` as a segment separator, so `rg -n pat src >&2 | tail -20` sheared into `['rg -n pat src >', '2', 'tail -20']` and the `2` remnant read as an unknown pipeline stage; three callers in `hooks_bash_commands.ts` compensated by deleting the literal strings ` 2>&1` and ` 2>/dev/null` from the command first, which covered the one spelling each had met and left `>&2`, `1>&2` and `&>` shearing. Those strips stay -- they also keep the two halves of a redirect out of separate segments for callers that walk them -- but the splitter and this gate now decide what counts as a background `&` the same way, once. */
 export function isRedirectAmpersand(cmd: string, index: number): boolean {
   const before = cmd[index - 1]
   return before === '<' || before === '>' || cmd[index + 1] === '>'
 }
 
-/**
- * True when any of `ops` appears in `cmd` OUTSIDE a quoted span. The compound-command gates
- * used plain `cmd.includes('|')`, which cannot tell a shell pipeline from a quoted regex
- * alternation: `grep -E 'foo|bar' src/` is a single command, but the naive check disqualified
- * it from compression entirely. Reuses `maskQuotedSpans` -- the same masking
- * `hasBareBackgroundOrNewline` already applies one line above those gates -- rather than
- * adding a second masking implementation that could drift from it.
- *
- * Deliberately NOT for `$(` or a backtick: double quotes do not suppress command
- * substitution, so masking double-quoted spans would wave through `echo "$(rm -rf /)"`. Those
- * two operators keep their unmasked substring check.
- */
+/** True when any of `ops` appears in `cmd` OUTSIDE a quoted span. The compound-command gates used plain `cmd.includes('|')`, which cannot tell a shell pipeline from a quoted regex alternation: `grep -E 'foo|bar' src/` is a single command, but the naive check disqualified it from compression entirely. Reuses `maskQuotedSpans` -- the same masking `hasBareBackgroundOrNewline` already applies one line above those gates -- rather than adding a second masking implementation that could drift from it. Deliberately NOT for `$(` or a backtick: double quotes do not suppress command substitution, so masking double-quoted spans would wave through `echo "$(rm -rf /)"`. Those two operators keep their unmasked substring check. */
 export function hasUnquotedOperator(cmd: string, ops: readonly string[]): boolean {
   const masked = maskQuotedSpans(cmd)
   return ops.some((op) => masked.includes(op))
@@ -244,29 +189,11 @@ export function hasUnquotedOperator(cmd: string, ops: readonly string[]): boolea
 
 const BYTES_ELIDED_MARKER_RE = /\n\.\.\. \[\d+ bytes elided by token-goat\]$/
 
-/**
- * The trailing lines {@link capBytes} and {@link capTokens} append in token-goat's own voice,
- * as one anchored pattern. Both spellings, repeated, at the very end and nowhere else.
- */
+/** The trailing lines {@link capBytes} and {@link capTokens} append in token-goat's own voice, as one anchored pattern. Both spellings, repeated, at the very end and nowhere else. */
 const OWN_TRAILING_NOTICE_RE =
   /(?:\n(?:\[token-goat: output capped at ~\d+ tokens\]|\.\.\. \[\d+ bytes elided by token-goat\]))+$/
 
-/**
- * Split a filtered body into the bytes the command produced and the notices token-goat appended
- * to the end of them.
- *
- * A caller that fences its output needs this. The fence's contract is that everything inside it
- * came from somewhere else, and a cap notice is not from somewhere else -- it is token-goat
- * explaining what it just did. Left inside, it makes our own voice indistinguishable from a
- * forgery of it, which is the ambiguity the fence exists to remove; the marker neutraliser in
- * `injection_scan.ts` makes that visible by escaping it, and an escaped notice of our own is the
- * symptom, not the disease. Exempting the notice from that escape would be worse than either:
- * the string is not a secret, so anything an attacker's output prints would inherit the same
- * exemption.
- *
- * Nothing positional is lost by moving it out. Both cappers truncate the tail, so the point they
- * are describing is the end of the body, which the closing tag already marks.
- */
+/** Split a filtered body into the bytes the command produced and the notices token-goat appended to the end of them. A caller that fences its output needs this. The fence's contract is that everything inside it came from somewhere else, and a cap notice is not from somewhere else -- it is token-goat explaining what it just did. Left inside, it makes our own voice indistinguishable from a forgery of it, which is the ambiguity the fence exists to remove; the marker neutraliser in `injection_scan.ts` makes that visible by escaping it, and an escaped notice of our own is the symptom, not the disease. Exempting the notice from that escape would be worse than either: the string is not a secret, so anything an attacker's output prints would inherit the same exemption. Nothing positional is lost by moving it out. Both cappers truncate the tail, so the point they are describing is the end of the body, which the closing tag already marks. */
 export function splitOwnTrailingNotices(text: string): { body: string; notices: string } {
   const m = OWN_TRAILING_NOTICE_RE.exec(text)
   return m ? { body: text.slice(0, m.index), notices: m[0] } : { body: text, notices: '' }
@@ -276,17 +203,13 @@ const DIGITS_RE = /\d+/g
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHAR_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g
 
-// ---------------------------------------------------------------------------
-// Byte helpers (UTF-8, matching Python's .encode('utf-8'))
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Byte helpers (UTF-8, matching Python's .encode('utf-8')) ---------------------------------------------------------------------------
 
 function utf8Len(s: string): number {
   return Buffer.byteLength(s, 'utf8')
 }
 
-// ---------------------------------------------------------------------------
-// Encoding + normalisation
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Encoding + normalisation ---------------------------------------------------------------------------
 
 /** Strip null bytes so they never break regex matchers or line splitters. */
 export function safeDecode(text: string): string {
@@ -298,16 +221,7 @@ export function sanitizeControlChars(text: string): string {
   return text.replace(CONTROL_CHAR_RE, '')
 }
 
-/**
- * Collapse `\r`-overwrite progress lines to their final rendered state.
- * Keeps only the segment after the last `\r` within each line. A line whose
- * only `\r` is its own trailing character (e.g. curl on Windows emits `\r\n`
- * per verbose line, and the preceding CRLF→LF pass only ever consumes one
- * `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real content with
- * leftover line-ending debris, not a terminal overwrite — strip that single
- * trailing `\r` first so it isn't mistaken for an overwrite marker that wipes
- * the whole line to empty.
- */
+/** Collapse `\r`-overwrite progress lines to their final rendered state. Keeps only the segment after the last `\r` within each line. A line whose only `\r` is its own trailing character (e.g. curl on Windows emits `\r\n` per verbose line, and the preceding CRLF→LF pass only ever consumes one `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real content with leftover line-ending debris, not a terminal overwrite — strip that single trailing `\r` first so it isn't mistaken for an overwrite marker that wipes the whole line to empty. */
 export function stripProgress(text: string): string {
   if (!text.includes('\r')) return text
   return text
@@ -319,11 +233,7 @@ export function stripProgress(text: string): string {
     .join('\n')
 }
 
-/**
- * Universal pre-filter pipeline: CRLF→LF, progress collapse, ANSI strip,
- * control-char sanitise. Idempotent. Every filter runs its input through this
- * before per-tool logic.
- */
+/** Universal pre-filter pipeline: CRLF→LF, progress collapse, ANSI strip, control-char sanitise. Idempotent. Every filter runs its input through this before per-tool logic. */
 export function normalise(text: string, opts: { skipProgress?: boolean } = {}): string {
   if (!text) return ''
   let t = text.replace(/\r\n/g, '\n')
@@ -332,19 +242,13 @@ export function normalise(text: string, opts: { skipProgress?: boolean } = {}): 
   return sanitizeControlChars(t)
 }
 
-// ---------------------------------------------------------------------------
-// High-entropy token detection (UUID / SHA / JWT / API key)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- High-entropy token detection (UUID / SHA / JWT / API key) ---------------------------------------------------------------------------
 
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i
 const LONG_HEX_RE = /\b[0-9a-f]{32,}\b/i
 const JWT_RE = /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/
 
-/**
- * Heuristic: does the line carry a high-entropy token (UUID, 32+ hex run, JWT,
- * or a long mixed-class base64/alnum secret)? Such lines are emitted verbatim
- * by `dedupeConsecutive(entropyBypass)` so unique IDs are never collapsed.
- */
+/** Heuristic: does the line carry a high-entropy token (UUID, 32+ hex run, JWT, or a long mixed-class base64/alnum secret)? Such lines are emitted verbatim by `dedupeConsecutive(entropyBypass)` so unique IDs are never collapsed. */
 export function hasHighEntropyToken(line: string): boolean {
   if (UUID_RE.test(line) || LONG_HEX_RE.test(line) || JWT_RE.test(line)) return true
   // Long token mixing upper, lower, and digits — base64-ish secrets/keys.
@@ -357,15 +261,9 @@ export function hasHighEntropyToken(line: string): boolean {
   return false
 }
 
-// ---------------------------------------------------------------------------
-// Run-length dedupe
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Run-length dedupe ---------------------------------------------------------------------------
 
-/**
- * Collapse runs of identical consecutive lines to `line  (×N)`. Runs shorter
- * than `minRun` are emitted verbatim (never adds spurious `(×1)`). With
- * `entropyBypass`, lines carrying high-entropy tokens are always emitted intact.
- */
+/** Collapse runs of identical consecutive lines to `line  (×N)`. Runs shorter than `minRun` are emitted verbatim (never adds spurious `(×1)`). With `entropyBypass`, lines carrying high-entropy tokens are always emitted intact. */
 export function dedupeConsecutive(
   lines: Iterable<string>,
   opts: { minRun?: number; fmt?: (line: string, count: number) => string; entropyBypass?: boolean } = {},
@@ -401,11 +299,7 @@ export function dedupeConsecutive(
   return out
 }
 
-/**
- * Collapse runs of lines that are identical after normalising digit runs to a
- * placeholder — e.g. repeated diff line numbers or per-item counters that
- * differ only in their numeric component.
- */
+/** Collapse runs of lines that are identical after normalising digit runs to a placeholder — e.g. repeated diff line numbers or per-item counters that differ only in their numeric component. */
 export function dedupeNumericRuns(
   lines: Iterable<string>,
   opts: { minRun?: number } = {},
@@ -430,15 +324,9 @@ export function dedupeNumericRuns(
   return out
 }
 
-// ---------------------------------------------------------------------------
-// Line / byte / token capping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Line / byte / token capping ---------------------------------------------------------------------------
 
-/**
- * Cap `lines` at `maxLines` by keeping head + tail with an omission marker.
- * Favours the tail (where summaries/failures live) via `headRatio`. The marker
- * is one extra line, so output length is `maxLines + 1` by design.
- */
+/** Cap `lines` at `maxLines` by keeping head + tail with an omission marker. Favours the tail (where summaries/failures live) via `headRatio`. The marker is one extra line, so output length is `maxLines + 1` by design. */
 export function truncateMiddle(
   lines: string[],
   maxLines: number,
@@ -453,11 +341,7 @@ export function truncateMiddle(
   return [...lines.slice(0, headKeep), markerFmt(elided), ...lines.slice(lines.length - tailKeep)]
 }
 
-/**
- * Cap `lines` at `maxLines` while preserving error-signal lines from the
- * middle (a stack trace after 200 progress lines must survive). Falls back to
- * `truncateMiddle` when no error signals are present.
- */
+/** Cap `lines` at `maxLines` while preserving error-signal lines from the middle (a stack trace after 200 progress lines must survive). Falls back to `truncateMiddle` when no error signals are present. */
 export function truncateMiddleSmart(
   lines: string[],
   maxLines: number,
@@ -547,11 +431,7 @@ export function truncateMiddleSmart(
   return result
 }
 
-/**
- * Truncate `text` to `maxBytes` UTF-8 bytes, cutting at a line boundary when
- * one exists in budget and never splitting a multibyte code point. Appends a
- * bytes-elided marker.
- */
+/** Truncate `text` to `maxBytes` UTF-8 bytes, cutting at a line boundary when one exists in budget and never splitting a multibyte code point. Appends a bytes-elided marker. */
 export function capBytes(text: string, maxBytes: number): string {
   const encoded = Buffer.from(text, 'utf8')
   if (encoded.length <= maxBytes) return text
@@ -565,10 +445,7 @@ export function capBytes(text: string, maxBytes: number): string {
   return `${kept}\n... [${encoded.length - Buffer.byteLength(kept, 'utf8')} bytes elided by token-goat]`
 }
 
-/**
- * Truncate `text` to approximately `maxTokens` tokens, measured on the
- * ANSI-stripped string so escape sequences don't trip the cap early.
- */
+/** Truncate `text` to approximately `maxTokens` tokens, measured on the ANSI-stripped string so escape sequences don't trip the cap early. */
 export function capTokens(text: string, maxTokens: number): string {
   const clean = stripAnsiEscapes(text)
   if (clean.length / 3.5 <= maxTokens) return text
@@ -582,14 +459,9 @@ export function capTokens(text: string, maxTokens: number): string {
   return truncated
 }
 
-// ---------------------------------------------------------------------------
-// Line-shaping utilities shared across filters
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Line-shaping utilities shared across filters ---------------------------------------------------------------------------
 
-/**
- * Head lines + count marker + tail lines when `lines` exceeds `head + tail`;
- * otherwise the lines joined unchanged.
- */
+/** Head lines + count marker + tail lines when `lines` exceeds `head + tail`; otherwise the lines joined unchanged. */
 export function headTailCompress(lines: string[], head: number, tail: number, label = 'items'): string {
   const total = lines.length
   if (total <= head + tail) return lines.join('\n')
@@ -599,17 +471,7 @@ export function headTailCompress(lines: string[], head: number, tail: number, la
   )
 }
 
-/**
- * Truncate a `--output table`/`kubectl get`-shaped result (header + N rows) to its first
- * `maxRows` non-empty lines, appending an elision marker whose `hint` names the tool-specific
- * flag(s) that actually narrow the row count. Shared by cloud.ts's AWS table truncation and
- * containers.ts's kubectl table truncation, which each used to carry their own copy of this
- * exact loop -- one of those copies once carried a hint borrowed verbatim from the other tool
- * (kubectl's `--selector`/`-l` shown to AWS CLI users, who have no such flag), with nothing
- * structural preventing a hint from drifting onto the wrong tool's copy again. One shared
- * implementation with a required, per-call-site `hint` argument makes that mismatch
- * impossible to reintroduce silently.
- */
+/** Truncate a `--output table`/`kubectl get`-shaped result (header + N rows) to its first `maxRows` non-empty lines, appending an elision marker whose `hint` names the tool-specific flag(s) that actually narrow the row count. Shared by cloud.ts's AWS table truncation and containers.ts's kubectl table truncation, which each used to carry their own copy of this exact loop -- one of those copies once carried a hint borrowed verbatim from the other tool (kubectl's `--selector`/`-l` shown to AWS CLI users, who have no such flag), with nothing structural preventing a hint from drifting onto the wrong tool's copy again. One shared implementation with a required, per-call-site `hint` argument makes that mismatch impossible to reintroduce silently. */
 export function truncateTableRows(text: string, maxRows: number, hint: string): string {
   const lines = text.split('\n')
   const nonEmpty = lines.filter((l) => l.trim())
@@ -654,11 +516,7 @@ export function stripTimestamps(lines: string[]): string[] {
   return lines.map((ln) => ln.replace(TIMESTAMP_PREFIX_RE, ''))
 }
 
-/**
- * Split `text` into blocks demarcated by lines matching `blockRe` (the match is
- * the first line of each block). Leading content before the first match is the
- * first block.
- */
+/** Split `text` into blocks demarcated by lines matching `blockRe` (the match is the first line of each block). Leading content before the first match is the first block. */
 export function splitBlocks(text: string, blockRe: RegExp): string[] {
   const blocks: string[] = []
   let current: string[] = []
@@ -684,10 +542,7 @@ export function squeezeBlankLines(text: string): string {
   return text.replace(/\n\s*\n\s*\n+/g, '\n\n')
 }
 
-/**
- * Combined output when a command failed (non-zero exit) and produced stderr;
- * `null` otherwise (signalling the caller to continue normal compression).
- */
+/** Combined output when a command failed (non-zero exit) and produced stderr; `null` otherwise (signalling the caller to continue normal compression). */
 export function preserveStderrOnError(stdout: string, stderr: string, exitCode: number): string | null {
   if (exitCode !== 0 && stderr.trim()) {
     return stdout.trim() ? `${stdout.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}` : stderr
@@ -695,9 +550,7 @@ export function preserveStderrOnError(stdout: string, stderr: string, exitCode: 
   return null
 }
 
-// ---------------------------------------------------------------------------
-// Command prefix stripping + argv parsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Command prefix stripping + argv parsing ---------------------------------------------------------------------------
 
 const PASSTHROUGH_PREFIXES = new Set([
   'sudo', 'doas', 'time', 'nice', 'ionice', 'nohup', 'exec', 'env', 'stdbuf', 'unbuffer', 'script',
@@ -707,11 +560,7 @@ const TWO_TOKEN_PREFIXES: Record<string, ReadonlySet<string>> = {
   python: new Set(['-m']),
   python3: new Set(['-m']),
   py: new Set(['-m']),
-  // `tool` is deliberately absent: `uv tool install/upgrade/uninstall/update <bin>`
-  // produces uv's own package-management output (handled by UvFilter.matches()'s
-  // own `tool` branch on the unstripped argv) -- it must not be consumed here.
-  // `uv tool run <bin>` is the one `tool` subcommand that really does execute
-  // `<bin>` and stream its output; it gets a dedicated 3-token strip below.
+  // `tool` is deliberately absent: `uv tool install/upgrade/uninstall/update <bin>` produces uv's own package-management output (handled by UvFilter.matches()'s own `tool` branch on the unstripped argv) -- it must not be consumed here. `uv tool run <bin>` is the one `tool` subcommand that really does execute `<bin>` and stream its output; it gets a dedicated 3-token strip below.
   uv: new Set(['run']),
   uvx: new Set(),
   poetry: new Set(['run']),
@@ -723,9 +572,7 @@ const TWO_TOKEN_PREFIXES: Record<string, ReadonlySet<string>> = {
   yarn: new Set(['exec', 'dlx']),
   bundle: new Set(['exec']),
   hatch: new Set(['run']),
-  // `tox` is deliberately absent: `tox -e py312`'s `-e py312` is an environment
-  // selector, not a launcher token, so argv[2] (`py312`) is never a real binary.
-  // ToxFilter matches on the unstripped `tox` stem directly (see misc.ts).
+  // `tox` is deliberately absent: `tox -e py312`'s `-e py312` is an environment selector, not a launcher token, so argv[2] (`py312`) is never a real binary. ToxFilter matches on the unstripped `tox` stem directly (see misc.ts).
 }
 
 /** Return the final path segment (basename), normalising backslashes. */
@@ -742,18 +589,7 @@ export function pathStem(p: string): string {
   return dot > 0 ? name.slice(0, dot) : name
 }
 
-/**
- * Positional arguments only (drop `-x` / `--xyz` flags). Optionally accepts `valueFlags`, the
- * set of long flags (e.g. `--profile`) that take a SEPARATE next-token value rather than a
- * `--flag=value` or a no-value boolean form -- without it, that value token (which itself
- * doesn't start with `-`) survives the filter and shifts every real positional after it by one.
- * This matters for callers (AwsCliFilter's `s3 cp`/`cloudformation describe-stack-events`
- * subcommand routing, say) that key off `positionals[0]`/`positionals[1]`: a real-world
- * `aws --profile prod s3 cp ...` invocation -- global flags placed before the subcommand are
- * valid AWS CLI syntax, not a rare edge case -- silently misrouted to the generic JSON/table
- * fallback instead of the dedicated S3-transfer compressor, with no error, just a permanently
- * over-verbose upload/download log. Omitted (the default), this behaves exactly as before.
- */
+/** Positional arguments only (drop `-x` / `--xyz` flags). Optionally accepts `valueFlags`, the set of long flags (e.g. `--profile`) that take a SEPARATE next-token value rather than a `--flag=value` or a no-value boolean form -- without it, that value token (which itself doesn't start with `-`) survives the filter and shifts every real positional after it by one. This matters for callers (AwsCliFilter's `s3 cp`/`cloudformation describe-stack-events` subcommand routing, say) that key off `positionals[0]`/`positionals[1]`: a real-world `aws --profile prod s3 cp ...` invocation -- global flags placed before the subcommand are valid AWS CLI syntax, not a rare edge case -- silently misrouted to the generic JSON/table fallback instead of the dedicated S3-transfer compressor, with no error, just a permanently over-verbose upload/download log. Omitted (the default), this behaves exactly as before. */
 export function positionalArgs(args: string[], valueFlags?: ReadonlySet<string>): string[] {
   const out: string[] = []
   for (let i = 0; i < args.length; i++) {
@@ -767,23 +603,14 @@ export function positionalArgs(args: string[], valueFlags?: ReadonlySet<string>)
   return out
 }
 
-// `-i` is deliberately absent: for the passthrough wrappers this set gates
-// (sudo, env, ...), `-i` takes no value (`sudo -i`, `env -i`), so treating
-// it as value-taking would consume the real binary token as its "value".
+// `-i` is deliberately absent: for the passthrough wrappers this set gates (sudo, env, ...), `-i` takes no value (`sudo -i`, `env -i`), so treating it as value-taking would consume the real binary token as its "value".
 const SHORT_FLAGS_WITH_VALUE = new Set(['-n', '-c', '-u', '-e'])
 
-/**
- * Strip pass-through wrappers (sudo/env/nice/...) and resolve multi-token
- * launchers (`python -m pytest`, `uv run pytest`, `npx jest`) to the real
- * binary. Returns a new argv whose first element is the resolved binary.
- */
+/** Strip pass-through wrappers (sudo/env/nice/...) and resolve multi-token launchers (`python -m pytest`, `uv run pytest`, `npx jest`) to the real binary. Returns a new argv whose first element is the resolved binary. */
 export function stripPrefixes(argv: string[]): string[] {
   if (argv.length === 0) return []
   let out = [...argv]
-  // Strip leading env assignments and pass-through prefixes to a fixpoint:
-  // each can reveal more of the other (e.g. `env FOO=bar cmd` has an
-  // assignment after the wrapper, `FOO=bar sudo cmd` has a wrapper after
-  // the assignment), so alternate both passes until neither strips anything.
+  // Strip leading env assignments and pass-through prefixes to a fixpoint: each can reveal more of the other (e.g. `env FOO=bar cmd` has an assignment after the wrapper, `FOO=bar sudo cmd` has a wrapper after the assignment), so alternate both passes until neither strips anything.
   for (;;) {
     const before = out.length
     // Strip leading env assignments (FOO=bar BAZ=qux cmd ...).
@@ -804,11 +631,7 @@ export function stripPrefixes(argv: string[]): string[] {
     if (out.length === before) break
   }
   if (out.length === 0) return out
-  // `uv tool run <bin>` (the long form of `uvx <bin>`) really does execute
-  // <bin> and stream its output — the real binary sits one token further out
-  // than `uv run <bin>`, so it needs its own 3-token strip rather than the
-  // generic two-token launcher table below (which deliberately excludes
-  // `tool`; see TWO_TOKEN_PREFIXES).
+  // `uv tool run <bin>` (the long form of `uvx <bin>`) really does execute <bin> and stream its output — the real binary sits one token further out than `uv run <bin>`, so it needs its own 3-token strip rather than the generic two-token launcher table below (which deliberately excludes `tool`; see TWO_TOKEN_PREFIXES).
   if (pathStem(out[0]!).toLowerCase() === 'uv' && out[1] === 'tool' && out[2] === 'run' && out.length > 3) {
     return skipLauncherOptions(out.slice(3))
   }
@@ -832,11 +655,7 @@ const LAUNCHER_VALUE_FLAGS: ReadonlySet<string> = new Set([
   '--filter', '--dir', '--workspace-root', '--shell-mode',
 ])
 
-/**
- * Drop the launcher's own options from the front of an already-resolved argv, so the real binary lands at index 0.
- *
- * `npx vitest run` resolved to `vitest` and matched its filter; `npx --yes vitest run` resolved to `--yes` and matched nothing, falling the most common scripted spelling of a test run back to generic compression. Same for `npx -y`, `uv run --no-sync pytest` and `pnpm exec --silent eslint .`. Only the *leading* run is skipped: a filter reads the flags belonging to the binary itself, so `positionalArgs` -- which drops flags wherever they appear -- is the wrong tool here even though it looks like the same job.
- */
+/** Drop the launcher's own options from the front of an already-resolved argv, so the real binary lands at index 0. `npx vitest run` resolved to `vitest` and matched its filter; `npx --yes vitest run` resolved to `--yes` and matched nothing, falling the most common scripted spelling of a test run back to generic compression. Same for `npx -y`, `uv run --no-sync pytest` and `pnpm exec --silent eslint .`. Only the *leading* run is skipped: a filter reads the flags belonging to the binary itself, so `positionalArgs` -- which drops flags wherever they appear -- is the wrong tool here even though it looks like the same job. */
 function skipLauncherOptions(args: string[]): string[] {
   let i = 0
   while (i < args.length && args[i]!.startsWith('-') && args[i] !== '--') {
@@ -849,28 +668,17 @@ function skipLauncherOptions(args: string[]): string[] {
   return i < args.length ? args.slice(i) : args
 }
 
-// ---------------------------------------------------------------------------
-// Package-manager run-script resolution
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Package-manager run-script resolution ---------------------------------------------------------------------------
 //
-// `npm test` / `npm run build` / `yarn lint` / `pnpm run build` / `bun run build` invoke a
-// package.json script alias that never appears in the command string, so `selectFilter`
-// dispatching on `argv[0]` (`npm`) can only ever land on the generic package-manager filter --
-// it has no way to see that `scripts.test` is `vitest run`. This resolves the script to the
-// argv it actually executes so dispatch can match the specific filter (vitest, eslint, ...)
-// instead, the same way `python -m pytest` resolves to `pytest` above.
+// `npm test` / `npm run build` / `yarn lint` / `pnpm run build` / `bun run build` invoke a package.json script alias that never appears in the command string, so `selectFilter` dispatching on `argv[0]` (`npm`) can only ever land on the generic package-manager filter -- it has no way to see that `scripts.test` is `vitest run`. This resolves the script to the argv it actually executes so dispatch can match the specific filter (vitest, eslint, ...) instead, the same way `python -m pytest` resolves to `pytest` above.
 
 /** Package-manager binaries whose subcommands can name a package.json script. */
 const PACKAGE_MANAGER_SCRIPT_STEMS = new Set(['npm', 'pnpm', 'yarn', 'bun'])
 
-/** Bound on `scripts.a` → `scripts.b` → ... chains, so a self-referencing script
- * (`"test": "npm run test"`) terminates instead of looping forever. */
+/** Bound on `scripts.a` → `scripts.b` → ... chains, so a self-referencing script (`"test": "npm run test"`) terminates instead of looping forever. */
 const MAX_SCRIPT_RESOLUTION_DEPTH = 5
 
-/** A script body containing a shell control operator isn't one dispatchable command
- * (`"test": "vitest run && eslint ."`) -- resolving to the first segment would silently
- * discard the rest, so such scripts decline to resolve and fall through to the generic
- * package-manager filter, which still compresses the *whole* combined output faithfully. */
+/** A script body containing a shell control operator isn't one dispatchable command (`"test": "vitest run && eslint ."`) -- resolving to the first segment would silently discard the rest, so such scripts decline to resolve and fall through to the generic package-manager filter, which still compresses the *whole* combined output faithfully. */
 const COMPOUND_SCRIPT_RE = /&&|\|\||[|;]|`|\$\(/
 
 interface PackageJsonScriptsCacheEntry {
@@ -878,13 +686,10 @@ interface PackageJsonScriptsCacheEntry {
   scripts: Record<string, string>
 }
 
-/** Cache of `package.json` path → (mtime, parsed `scripts`), so the hot dispatch path re-reads
- * a given package.json only when it changes on disk, not on every Bash call. */
+/** Cache of `package.json` path → (mtime, parsed `scripts`), so the hot dispatch path re-reads a given package.json only when it changes on disk, not on every Bash call. */
 const packageJsonScriptsCache = new Map<string, PackageJsonScriptsCacheEntry>()
 
-/** Parse `candidate`'s `scripts` map, using the mtime-gated cache. Returns `{}` (and caches
- * that) on any read/parse failure or a missing/malformed `scripts` field -- callers treat an
- * empty map the same as "no script found" rather than a hard error. */
+/** Parse `candidate`'s `scripts` map, using the mtime-gated cache. Returns `{}` (and caches that) on any read/parse failure or a missing/malformed `scripts` field -- callers treat an empty map the same as "no script found" rather than a hard error. */
 function loadPackageScripts(candidate: string, stat: fs.Stats): Record<string, string> {
   const cached = packageJsonScriptsCache.get(candidate)
   if (cached && cached.mtimeMs === stat.mtimeMs) return cached.scripts
@@ -896,16 +701,13 @@ function loadPackageScripts(candidate: string, stat: fs.Stats): Record<string, s
       if (raw && typeof raw === 'object' && !Array.isArray(raw)) scripts = raw as Record<string, string>
     }
   } catch {
-    // Unreadable or malformed JSON -- cached as empty so the hot path doesn't re-parse a
-    // known-broken file on every call until it changes.
+    // Unreadable or malformed JSON -- cached as empty so the hot path doesn't re-parse a known-broken file on every call until it changes.
   }
   packageJsonScriptsCache.set(candidate, { mtimeMs: stat.mtimeMs, scripts })
   return scripts
 }
 
-/** Find the nearest ancestor `package.json` starting at `startDir` (the command's own working
- * directory, NOT the repo root -- a monorepo subpackage's scripts must win over the root's) and
- * return its `scripts` map, or `null` when none exists up to the filesystem root. */
+/** Find the nearest ancestor `package.json` starting at `startDir` (the command's own working directory, NOT the repo root -- a monorepo subpackage's scripts must win over the root's) and return its `scripts` map, or `null` when none exists up to the filesystem root. */
 function findNearestPackageScripts(startDir: string): Record<string, string> | null {
   let dir = startDir
   for (;;) {
@@ -931,32 +733,23 @@ const YARN_BUILTIN_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'upgrade', 'upgrade-interactive', 'version', 'versions', 'why', 'workspace', 'workspaces',
 ])
 
-/** Extract the script name a package-manager invocation names, or `null` when `args` isn't a
- * run-script form this resolver handles (bare subcommands like `npm install`, `npm ci`, `npm
- * ls` are deliberately left alone -- see the module doc comment). */
+/** Extract the script name a package-manager invocation names, or `null` when `args` isn't a run-script form this resolver handles (bare subcommands like `npm install`, `npm ci`, `npm ls` are deliberately left alone -- see the module doc comment). */
 function scriptNameFromArgs(stem: string, args: string[]): string | null {
   const [a0, a1] = args
   if (a0 === undefined) return null
   switch (stem) {
     case 'npm':
     case 'pnpm':
-      // `npm test`/`npm t` and `pnpm test`/`pnpm t` are package-manager shorthands for the
-      // `test` script even without an explicit `run`.
+      // `npm test`/`npm t` and `pnpm test`/`pnpm t` are package-manager shorthands for the `test` script even without an explicit `run`.
       if (a0 === 'test' || a0 === 't') return 'test'
       if ((a0 === 'run' || a0 === 'run-script') && a1 !== undefined) return a1
       return null
     case 'bun':
-      // Bare `bun test` is bun's own built-in test runner, not a script alias -- only the
-      // explicit `bun run <script>` form names a package.json script.
+      // Bare `bun test` is bun's own built-in test runner, not a script alias -- only the explicit `bun run <script>` form names a package.json script.
       if (a0 === 'run' && a1 !== undefined) return a1
       return null
     case 'yarn':
-      // Yarn's classic CLI runs a script by bare name (`yarn lint`) as well as via `run`. A bare
-      // first token that is also a yarn built-in must be refused here rather than looked up: the
-      // lookup was assumed to decline on its own by missing the scripts map, and it does not miss
-      // when a script of that name exists. `"install": "husky install"` and a `"version"` release
-      // script are both ordinary entries, and with either present `yarn install` resolved to the
-      // script's argv -- so yarn's own dependency-install output was handed to husky's filter.
+      // Yarn's classic CLI runs a script by bare name (`yarn lint`) as well as via `run`. A bare first token that is also a yarn built-in must be refused here rather than looked up: the lookup was assumed to decline on its own by missing the scripts map, and it does not miss when a script of that name exists. `"install": "husky install"` and a `"version"` release script are both ordinary entries, and with either present `yarn install` resolved to the script's argv -- so yarn's own dependency-install output was handed to husky's filter.
       if (a0 === 'run' && a1 !== undefined) return a1
       if (!a0.startsWith('-') && !YARN_BUILTIN_SUBCOMMANDS.has(a0)) return a0
       return null
@@ -965,16 +758,7 @@ function scriptNameFromArgs(stem: string, args: string[]): string | null {
   }
 }
 
-/**
- * Resolve `npm test` / `npm run <script>` / `yarn <script>` / `pnpm run <script>` / `bun run
- * <script>` to the argv of the command the script actually executes, by reading the nearest
- * ancestor `package.json`'s `scripts` map (relative to `cwd`, the command's own working
- * directory). Returns `null` -- meaning "fall through to ordinary dispatch on the unresolved
- * argv" -- for anything this can't safely resolve: not a package-manager invocation at all, not
- * a run-script form, no ancestor `package.json`, an unreadable/malformed one, the named script
- * missing, or a script body that isn't a single dispatchable command (compound `&&`/`||`/`;`/
- * pipe scripts, or a chain exceeding {@link MAX_SCRIPT_RESOLUTION_DEPTH} hops). Never throws.
- */
+/** Resolve `npm test` / `npm run <script>` / `yarn <script>` / `pnpm run <script>` / `bun run <script>` to the argv of the command the script actually executes, by reading the nearest ancestor `package.json`'s `scripts` map (relative to `cwd`, the command's own working directory). Returns `null` -- meaning "fall through to ordinary dispatch on the unresolved argv" -- for anything this can't safely resolve: not a package-manager invocation at all, not a run-script form, no ancestor `package.json`, an unreadable/malformed one, the named script missing, or a script body that isn't a single dispatchable command (compound `&&`/`||`/`;`/ pipe scripts, or a chain exceeding {@link MAX_SCRIPT_RESOLUTION_DEPTH} hops). Never throws. */
 export function resolvePackageManagerScript(argv: string[], cwd: string): string[] | null {
   try {
     let current = argv
@@ -1007,15 +791,9 @@ export function resolvePackageManagerScript(argv: string[], cwd: string): string
   }
 }
 
-// ---------------------------------------------------------------------------
-// Minimal POSIX-ish shlex split (for command detection)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Minimal POSIX-ish shlex split (for command detection) ---------------------------------------------------------------------------
 
-/**
- * Split a command line into tokens, honouring single quotes, double quotes,
- * and backslash escapes — enough for dispatch (binary + subcommand detection).
- * Throws on an unterminated quote, matching Python's `shlex.split`.
- */
+/** Split a command line into tokens, honouring single quotes, double quotes, and backslash escapes — enough for dispatch (binary + subcommand detection). Throws on an unterminated quote, matching Python's `shlex.split`. */
 export function shlexSplit(cmd: string): string[] {
   const tokens: string[] = []
   let cur = ''
@@ -1075,9 +853,7 @@ export function shlexSplit(cmd: string): string[] {
   return tokens
 }
 
-// ---------------------------------------------------------------------------
-// Fallback compression pipelines (shared by apply() and structural filters)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Fallback compression pipelines (shared by apply() and structural filters) ---------------------------------------------------------------------------
 
 /** Truncate individual lines exceeding `maxChars` with an inline marker. */
 export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS): string[] {

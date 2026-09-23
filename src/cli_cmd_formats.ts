@@ -1,7 +1,4 @@
-/**
- * CLI command registration for file formats: PDF, Office, Structured Data,
- * SQLite, Media, and Text utilities.
- */
+/** CLI command registration for file formats: PDF, Office, Structured Data, SQLite, Media, and Text utilities. */
 
 import type { Command } from 'commander'
 import { loadConfig } from './config.js'
@@ -348,6 +345,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .command('json-outline <file>')
     .description('structural summary of a JSON document (array shape / object key types) instead of a raw Read')
     .option('--json', 'emit the outline as JSON instead of text')
+    .option('--filter <text>', 'list only the top-level keys containing TEXT (case-insensitive), with a count of how many matched')
     .action(guard(cmdJsonOutline))
 
   program
@@ -356,7 +354,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
       "extract one value or a projected/filtered subset from a JSON document by dot-path instead of a raw Read\n\n" +
         "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
         '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
-        "stringifies to value). Examples: data.items[3].name, items[*].id, items[status=active]",
+        "stringifies to value), [\"key\"] for a key holding a dot or space. Examples: data.items[3].name, items[*].id, items[status=active], [\"a.b\"].c",
     )
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')
@@ -366,6 +364,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .command('yaml-outline <file>')
     .description('structural summary of a YAML document (array shape / object key types) instead of a raw Read -- multi-document streams (---separated) outline as an array of documents')
     .option('--json', 'emit the outline as JSON instead of text')
+    .option('--filter <text>', 'list only the top-level keys containing TEXT (case-insensitive), with a count of how many matched')
     .action(guard(cmdYamlOutline))
 
   program
@@ -374,7 +373,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
       "extract one value or a projected/filtered subset from a YAML document by dot-path instead of a raw Read (same grammar as json-query)\n\n" +
         "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
         '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
-        "stringifies to value). Examples: spec.containers[0].image, items[*].name, items[kind=Service]",
+        "stringifies to value), [\"key\"] for a key holding a dot or space. Examples: spec.containers[0].image, items[*].name, items[kind=Service]",
     )
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')

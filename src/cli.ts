@@ -442,13 +442,7 @@ async function cmdMcpServe(): Promise<void> {
   })
 }
 
-/**
- * Print the "how well is this bridge actually verified" caveat, if the bridge has one.
- *
- * Routed through {@link installVerificationNotice} rather than spelled out per branch: a caveat
- * enumerated at nine callsites is a caveat that goes missing from the tenth, which is precisely
- * the whitelist-drops-a-field shape that has shipped dead features from this codebase before.
- */
+/** Print the "how well is this bridge actually verified" caveat, if the bridge has one. Routed through {@link installVerificationNotice} rather than spelled out per branch: a caveat enumerated at nine callsites is a caveat that goes missing from the tenth, which is precisely the whitelist-drops-a-field shape that has shipped dead features from this codebase before. */
 function printBridgeVerificationNotice(harness: HarnessName): void {
   const notice = installVerificationNotice(harness)
   if (notice !== null) out(notice)
@@ -482,19 +476,7 @@ export function visualStudioManualSteps(scope: 'project' | 'user'): string[] {
   ]
 }
 
-/**
- * Whether an `install`/`uninstall` invocation should touch the base Claude Code integration:
- * the `~/.claude/settings.json` (or project `.claude/settings.json`) hooks, the user's own
- * `~/.claude/CLAUDE.md` routing block, and `~/.claude/skills/token-goat`. A bare
- * `install`/`uninstall` with no other harness flag always means Claude Code, so it runs.
- * Any *other* harness flag (`--vscode`, `--codex`, `--gemini`, ...) asks for that harness's own
- * scope only -- none of them read or write anything under `~/.claude/`, confirmed by reading
- * each bridge's install writer (e.g. `installVscode` writes only its own `mcp.json`, an
- * instructions file, and the shared `~/.copilot/hooks` file). Wanting both is what running the
- * command twice, or passing both flags in one invocation, is for -- not a silent side effect of
- * asking for one. `--hermes` is the one exception: its CLI delegates to `claude -p`, which loads
- * these same Claude Code hooks, so its branches below genuinely depend on this base having run.
- */
+/** Whether an `install`/`uninstall` invocation should touch the base Claude Code integration: the `~/.claude/settings.json` (or project `.claude/settings.json`) hooks, the user's own `~/.claude/CLAUDE.md` routing block, and `~/.claude/skills/token-goat`. A bare `install`/`uninstall` with no other harness flag always means Claude Code, so it runs. Any *other* harness flag (`--vscode`, `--codex`, `--gemini`, ...) asks for that harness's own scope only -- none of them read or write anything under `~/.claude/`, confirmed by reading each bridge's install writer (e.g. `installVscode` writes only its own `mcp.json`, an instructions file, and the shared `~/.copilot/hooks` file). Wanting both is what running the command twice, or passing both flags in one invocation, is for -- not a silent side effect of asking for one. `--hermes` is the one exception: its CLI delegates to `claude -p`, which loads these same Claude Code hooks, so its branches below genuinely depend on this base having run. */
 function wantsClaudeCodeBase(opts: {
   codex?: boolean
   gemini?: boolean
@@ -882,21 +864,14 @@ function cmdUninstall(opts: {
   if (opts.purge === true) runPurge()
 }
 
-/**
- * The destructive half of uninstall, opt-in behind --purge. Refuses while the worker is alive:
- * it would rewrite the pid file and re-open the database under the directory being deleted, so
- * the purge would report success over a directory that grows back.
- */
+/** The destructive half of uninstall, opt-in behind --purge. Refuses while the worker is alive: it would rewrite the pid file and re-open the database under the directory being deleted, so the purge would report success over a directory that grows back. */
 /** An integration still on disk whose removal flag the caller did not pass, so uninstall can name it rather than leave it wired in silence. */
 interface LeftoverIntegration {
   flag: string
   label: string
 }
 
-/**
- * Detects, never removes. Each entry pairs the flag that was not passed with a detector that reads
- * the harness's own config, so a caller who only ever installed the Claude Code hooks sees nothing.
- */
+/** Detects, never removes. Each entry pairs the flag that was not passed with a detector that reads the harness's own config, so a caller who only ever installed the Claude Code hooks sees nothing. */
 export function leftoverIntegrations(opts: {
   codex?: boolean
   gemini?: boolean
@@ -1106,19 +1081,7 @@ export function _applyFiltersAndPrint(
 
   const applyElision = (lines: string[], headN: number, tailN: number): string[] => lines.length > headN + tailN + 1 ? [...lines.slice(0, headN), '...(elided)...', ...lines.slice(lines.length - tailN)] : lines
 
-  /**
-   * Say on stderr how much of the body an explicit --head/--tail dropped.
-   *
-   * The two-sided paths above leave a `...(elided)...` marker in the body, so a reader can see the
-   * middle went missing. The one-sided branches left nothing at all: `web-output <id> --head 3`
-   * against a 60-line body returned three lines inside a content fence that looked exactly like a
-   * complete short document. Asking for three lines tells the caller how many they get; it does not
-   * tell them whether the body held three or sixty thousand, which is the number that decides
-   * whether to look again.
-   *
-   * stderr rather than stdout because stdout here is fenced untrusted content -- a token-goat line
-   * inside the fence would read as part of the payload it is describing.
-   */
+  /** Say on stderr how much of the body an explicit --head/--tail dropped. The two-sided paths above leave a `...(elided)...` marker in the body, so a reader can see the middle went missing. The one-sided branches left nothing at all: `web-output <id> --head 3` against a 60-line body returned three lines inside a content fence that looked exactly like a complete short document. Asking for three lines tells the caller how many they get; it does not tell them whether the body held three or sixty thousand, which is the number that decides whether to look again. stderr rather than stdout because stdout here is fenced untrusted content -- a token-goat line inside the fence would read as part of the payload it is describing. */
   const noteLineCap = (which: 'first' | 'last', flag: 'head' | 'tail', shown: number, total: number): void => {
     if (shown >= total) return
     process.stderr.write(`Showing ${which} ${shown} of ${total} lines (raise --${flag}, or --full for the whole body).\n`)
@@ -1419,6 +1382,7 @@ async function cmdCompress(
     compress?: boolean
     profile?: string
     maxTokens?: string
+    capHintB64?: string
     quietSuccess?: boolean
     native?: boolean
     shell?: string
@@ -1453,6 +1417,7 @@ async function cmdCompress(
       filterName: opts.filter,
       timeout: parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
       maxTokens,
+      ...(opts.capHintB64 !== undefined ? { capHint: Buffer.from(opts.capHintB64, 'base64').toString('utf8') } : {}),
       ...(opts.profile !== undefined ? { compressionProfile: opts.profile } : {}),
       ...(opts.quietSuccess === true ? { quietSuccess: true } : {}),
       ...(opts.native === true ? { nativeShell: true } : {}),
@@ -1505,13 +1470,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
 /** Generate a compact grouped help text for the top-level command. */
-/**
- * Commander's own `helpInformation` for the top-level program, captured before
- * `buildProgram` shadows it with the compact grouped index. `help --full` calls
- * this to emit the long per-command listing the compact index replaces; without
- * it the long form is unreachable, since the override is an own property that
- * hides the prototype method for every later caller.
- */
+/** Commander's own `helpInformation` for the top-level program, captured before `buildProgram` shadows it with the compact grouped index. `help --full` calls this to emit the long per-command listing the compact index replaces; without it the long form is unreachable, since the override is an own property that hides the prototype method for every later caller. */
 let originalHelpInformation: (() => string) | null = null
 
 export function buildProgram(): Command {
@@ -2030,6 +1989,7 @@ export function buildProgram(): Command {
     .option('--no-compress', 'stream output raw without compression (debug the wrapper)')
     .option('--profile <name>', 'compression profile: aggressive | balanced | minimal')
     .option('--max-tokens <n>', 'post-compress token cap (0 = no cap)')
+    .option('--cap-hint-b64 <payload>', 'base64 text printed after the output when --max-tokens cut it (the Bash hook sets it to the narrower read command)')
     .option('-q, --quiet-success', 'on exit code 0, emit only [tg: ok] summary and store full output for recall via bash-output')
     .option('--native', 'use native platform shell (e.g. cmd.exe on Windows) instead of bash, preserving Windows path backslashes')
     .action(cmdCompress)
@@ -2106,10 +2066,7 @@ export function applyExitOverride(command: Command): void {
   for (const sub of command.commands) applyExitOverride(sub)
 }
 
-/**
- * Parse `argv` and dispatch. Sets `process.exitCode`; callers (main.ts) should
- * let the process exit naturally so buffered stdout flushes first.
- */
+/** Parse `argv` and dispatch. Sets `process.exitCode`; callers (main.ts) should let the process exit naturally so buffered stdout flushes first. */
 export async function run(argv: string[] = process.argv): Promise<void> {
   // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts): `spawn(node, [thisModule, '--worker-daemon'])`, i.e. always argv[2]. It is not a registered commander option or command anywhere in buildProgram, so it must be intercepted here, before parseAsync ever sees argv -- otherwise commander rejects it as an unknown option and the freshly-spawned daemon child exits immediately, silently disabling the entire detached background-indexing feature (`token-goat worker start`). Checking only argv[2] (rather than "anywhere in argv") avoids hijacking an unrelated command that merely carries that literal string as one of its own arguments, e.g. `token-goat grep -- --worker-daemon`.
   if (argv[2] === '--worker-daemon') {

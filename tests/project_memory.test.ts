@@ -3,11 +3,7 @@ import * as path from 'node:path';
 import type * as NodeFs from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// vi.mock is hoisted — wrap renameSync/writeFileSync (still delegating to the real
-// implementation) so the #M27 test below can observe the temp filename each write used, and
-// the file-lock regression test below can observe the `.lock` file being created, without
-// touching Node's non-configurable fs module properties directly (vi.spyOn on a builtin fails
-// at runtime).
+// vi.mock is hoisted — wrap renameSync/writeFileSync (still delegating to the real implementation) so the #M27 test below can observe the temp filename each write used, and the file-lock regression test below can observe the `.lock` file being created, without touching Node's non-configurable fs module properties directly (vi.spyOn on a builtin fails at runtime).
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof NodeFs>();
   return {
@@ -28,11 +24,7 @@ import {
 } from '../src/project_memory.js';
 
 describe('project_memory', () => {
-  // memoryPath() now resolves through constants.ts::dataDir(), which caches DATA_DIR once at
-  // module load (see tests/setup/isolate-home.ts), so per-test isolation can no longer be done
-  // by swapping XDG_DATA_HOME/LOCALAPPDATA in beforeEach. Instead, wipe the shared
-  // `${dataDir()}/projects` directory before/after each test so project-hash fixtures (e.g.
-  // 'test') never leak state between tests in this file.
+  // memoryPath() now resolves through constants.ts::dataDir(), which caches DATA_DIR once at module load (see tests/setup/isolate-home.ts), so per-test isolation can no longer be done by swapping XDG_DATA_HOME/LOCALAPPDATA in beforeEach. Instead, wipe the shared `${dataDir()}/projects` directory before/after each test so project-hash fixtures (e.g. 'test') never leak state between tests in this file.
   const projectsDir = path.join(dataDir(), 'projects');
 
   beforeEach(() => {
@@ -203,7 +195,7 @@ describe('project_memory', () => {
     it('should format entries as Markdown', () => {
       setEntry('test', 'key1', 'value1');
       const result = buildInjection('test');
-      expect(result).toContain('## Project Memory');
+      expect(result).toContain('### Project notes (`token-goat note set <key> "<finding>"`)');
       expect(result).toContain('**key1**');
       expect(result).toContain('value1');
     });
@@ -234,10 +226,7 @@ describe('project_memory', () => {
       expect(result!.length).toBeLessThan(4100); // MAX_TOTAL_CHARS + some margin
     });
 
-    // Regression guard: the "+N more entries omitted" trailer line was appended after the
-    // MAX_TOTAL_CHARS budget check, uncounted against it, so it could push the returned string
-    // past the exact bound the function exists to enforce (by up to the trailer's own length,
-    // ~70 chars). This asserts the strict bound, not the old test's loose "+100 char margin".
+    // Regression guard: the "+N more entries omitted" trailer line was appended after the MAX_TOTAL_CHARS budget check, uncounted against it, so it could push the returned string past the exact bound the function exists to enforce (by up to the trailer's own length, ~70 chars). This asserts the strict bound, not the old test's loose "+100 char margin".
     it('never exceeds MAX_TOTAL_CHARS even when the omitted-entries trailer is appended', () => {
       for (let i = 0; i < 40; i++) {
         setEntry('test', `key${i}`, 'x'.repeat(122));
@@ -298,8 +287,7 @@ describe('project_memory', () => {
       setEntry('proj-m27', 'k1', 'v1');
       setEntry('proj-m27', 'k2', 'v2');
       const renamedFrom = renameMock.mock.calls.map((args: unknown[]) => String(args[0]));
-      // The old hand-rolled implementation always wrote to the exact same fixed `${filePath}.tmp`
-      // name, so two concurrent writers to the same project's memory file could collide on it.
+      // The old hand-rolled implementation always wrote to the exact same fixed `${filePath}.tmp` name, so two concurrent writers to the same project's memory file could collide on it.
       expect(renamedFrom).toHaveLength(2);
       expect(renamedFrom[0]).not.toBe(renamedFrom[1]);
     });
@@ -312,8 +300,7 @@ describe('project_memory', () => {
       setEntry('proj-lock', 'k1', 'v1');
       const lockWrites = writeMock.mock.calls.filter((args: unknown[]) => String(args[0]).endsWith('.lock'));
       expect(lockWrites.length).toBe(1);
-      // The lock must be released (unlinked) once the write completes, or a later call under a
-      // fresh process would find a live-looking lock file it can never acquire.
+      // The lock must be released (unlinked) once the write completes, or a later call under a fresh process would find a live-looking lock file it can never acquire.
       const lockPath = String(lockWrites[0]?.[0]);
       expect(fs.existsSync(lockPath)).toBe(false);
     });
@@ -328,9 +315,7 @@ describe('project_memory', () => {
 
   describe('MAX_ENTRIES enforcement (regression test for bug: setEntry never enforces MAX_ENTRIES)', () => {
     it('should keep file size at most MAX_ENTRIES by evicting old entries when adding beyond the cap', () => {
-      // Add entries with late-sorting keys to expose the bug: if MAX_ENTRIES is not enforced
-      // at write time, entries with late-sorting keys would be silently dropped by
-      // buildInjection's slice(0, MAX_ENTRIES) even though they were recently added.
+      // Add entries with late-sorting keys to expose the bug: if MAX_ENTRIES is not enforced at write time, entries with late-sorting keys would be silently dropped by buildInjection's slice(0, MAX_ENTRIES) even though they were recently added.
       for (let i = 0; i < 35; i++) {
         setEntry('test-max', `entry_${String(i).padStart(3, '0')}`, `value${i}`);
       }
@@ -344,14 +329,11 @@ describe('project_memory', () => {
       const lines = injection!.split('\n');
       const entryLines = lines.filter(line => line.startsWith('- **'));
       expect(entryLines.length).toBeLessThanOrEqual(30);
-      // Verify that the most recently added entries are present (even if they sort late)
-      // Entry 34 should be in the result since we only keep 30 and it was added last
+      // Verify that the most recently added entries are present (even if they sort late) Entry 34 should be in the result since we only keep 30 and it was added last
       if (entryLines.length >= 1) {
         const latestEntryKey = `entry_034`;
         const hasLatestEntry = injection!.includes(`**${latestEntryKey}**`);
-        // With correct enforcement, recently-added late-sorting entries should be kept
-        // (The exact behavior depends on the eviction policy, but at least it shouldn't
-        // silently drop all entries that sort after position 30.)
+        // With correct enforcement, recently-added late-sorting entries should be kept (The exact behavior depends on the eviction policy, but at least it shouldn't silently drop all entries that sort after position 30.)
         expect(hasLatestEntry).toBe(true);
       }
     });
