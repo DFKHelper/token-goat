@@ -169,7 +169,7 @@ function spawnTarget(
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        '[scriptblock]::Create($env:TG_CMD).Invoke(); if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+        '$c = $env:TG_CMD; Remove-Item Env:\\TG_CMD -ErrorAction SilentlyContinue; [scriptblock]::Create($c).Invoke(); if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
       ],
       shell: false,
       cmdEnv: { TG_CMD: command },

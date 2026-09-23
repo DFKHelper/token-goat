@@ -284,6 +284,19 @@ describe('rewrite ↔ recall interaction', () => {
     }
   })
 
+  it.skipIf(process.platform !== 'win32')('refuses to wrap a PowerShell command if base64 command length exceeds 24000 characters', () => {
+    const hugeCmd = 'Write-Output ' + 'a'.repeat(25000)
+    const event = makeHookEvent({
+      toolName: 'Bash',
+      toolInput: { command: hugeCmd },
+      sessionId: 's',
+      raw: { tool_name: 'powershell', tool_input: { command: hugeCmd }, _tg_harness: 'copilot_cli' },
+    })
+
+    const result = preBashHandler(event)
+    expect(result.hookType).not.toBe('rewriteInput')
+  })
+
   it('post-hook unwraps the compress wrapper so recall keys on the original command', async () => {
     const original = 'cargo build'
     const wrapped = "token-goat compress -f generic -c 'cargo build'"

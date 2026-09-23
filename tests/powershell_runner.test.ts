@@ -36,4 +36,18 @@ describe('PowerShell runner integration and resolution', () => {
 
     expect(exitCode).toBe(37)
   })
+
+  it('clears TG_CMD before executing user script to prevent leakage to child processes', async () => {
+    let captured = ''
+    const exitCode = await run('Write-Output "TG_CMD_VAL:[$env:TG_CMD]"', {
+      filterName: 'powershell',
+      shellType: 'pwsh',
+      writeStdout: (s) => {
+        captured += s
+      },
+    })
+
+    expect(exitCode).toBe(0)
+    expect(captured).toContain('TG_CMD_VAL:[]')
+  })
 })

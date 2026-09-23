@@ -181,6 +181,9 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
     if (Buffer.from(b64, 'base64').toString('utf8') !== rawCmd) return null
 
     const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds} --shell pwsh --cmd-b64 ${b64}`
+    // Guard against Windows CreateProcess 32,767 character command-line limit
+    if (wrapped.length > 24000) return null
+
     return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }
   }
 
