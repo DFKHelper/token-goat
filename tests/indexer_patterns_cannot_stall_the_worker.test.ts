@@ -19,6 +19,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { extractApex } from '../src/languages/apex.js'
+import { extractLwcTemplate } from '../src/languages/salesforce_frontend.js'
 import { extractSalesforceMetadata } from '../src/languages/salesforce_metadata.js'
 
 describe('a pattern built from the file being indexed', () => {
@@ -66,6 +67,30 @@ describe('a pattern built from the file being indexed', () => {
     const { symbols } = extractApex(content, 'Account_Service.cls')
     expect(symbols.find((s) => s.name === 'account_service')?.kind).toBe('apex_constructor')
     expect(symbols.find((s) => s.name === 'helper')?.kind).toBe('apex_method')
+  })
+
+  it('does not re-read the whole template for every component tag on its one line', () => {
+    // PROVENANCE: CAPTURE. The numbers below are from running this shape against the adapter as it
+    // stood before the fix, over a doubling sweep: 84 ms at 290 KB, 320 ms at 586 KB, 1,323 ms at
+    // 1.2 MB -- four times the work for twice the input. The same sweep afterwards reads 7 / 14 /
+    // 28 ms, which is twice the work for twice the input. A generated LWC template is the real
+    // shape: every tag lands on line 1, so recomputing a line number by slicing from character 0
+    // and its text by splitting the document cost the whole file once per match.
+    //
+    // The ceiling is an order-of-magnitude assertion, not a stopwatch: forty times what the linear
+    // implementation costs here, and a twentieth of what the quadratic one did.
+    const tags = Array.from({ length: 16_000 }, (_, i) => `<c-widget-${i} lwc:ref="r${i}" id="i${i}" onclick={h${i}}></c-widget-${i}>`)
+    const content = `<template>${tags.join('')}</template>`
+
+    const started = Date.now()
+    const { symbols, refs } = extractLwcTemplate(content, 'force-app/main/default/lwc/x/x.html')
+    const elapsed = Date.now() - started
+
+    expect(elapsed, 'the adapter reads the whole template once per match again').toBeLessThan(1_200)
+    // The other half: doing nothing would also be fast. The last tag is the one furthest from
+    // character 0, so it is the one a cheap-but-broken pass is likeliest to lose.
+    expect(symbols.some((s) => s.name === 'r15999' && s.kind === 'lwc_ref')).toBe(true)
+    expect(refs.some((r) => r.name === 'c-widget-15999' && r.line === 1)).toBe(true)
   })
 
   it('does not read a dot in an XML root name as a wildcard', () => {

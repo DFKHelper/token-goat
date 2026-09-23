@@ -2,6 +2,14 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.22] - 2026-09-23
+
+Upgrading reparses the index. The line-number arithmetic described below is shared by every adapter, so the parser stamp moves for all of them and each file is read once more. Embeddings are untouched and keep serving throughout.
+
+### Fixed
+
+- **The Salesforce front-end and single-file-component adapters read a template once, not once per match.** Both worked out a match's line number by slicing the document from character 0 and counting newlines, and its text by splitting the whole document, so each cost the entire file once for every symbol and reference found in it. On a file a human wrote that is invisible; on a generated LWC template, where every tag lands on line 1, it is quadratic. A 1.2 MB template took 1,323 ms to index and a 290 KB one took 84 ms: four times the work for twice the input. They take 28 ms and 7 ms now, twice the work for twice the input. Both adapters had grown their own copy of the same two helpers, so the arithmetic now lives once in the shared line-index helpers every other adapter already uses.
+
 ## [2.9.21] - 2026-09-23
 
 Upgrading reparses the index. The stored reference rows described below are the ones that change, so the parser stamp moves for every language and each file is read once more. Embeddings are untouched and keep serving throughout.

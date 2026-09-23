@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildLineIndex, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripNestedBlockCommentSpan, stripSqlLineComments } from '../src/languages/common.js'
+import { buildLineIndex, findMatchingBraceEndLine, lineTextAt, stripBlockCommentSpan, stripCstyleComments, stripNestedBlockCommentSpan, stripSqlLineComments } from '../src/languages/common.js'
 import { countContentLines } from '../src/util.js'
 import { extractR } from '../src/languages/r.js'
 import { extractLwcJavaScript } from '../src/languages/salesforce_frontend.js'
@@ -425,5 +425,33 @@ describe('flat-section adapters never end a symbol past EOF', () => {
     const content = '[first]\nkey = 1\n\n[second]\nother = 2'
     const symbols = extractIni(content, 'h.ini')
     expect(maxEnd(symbols)).toBe(countContentLines(content))
+  })
+})
+
+describe('lineTextAt', () => {
+  // PROVENANCE: HAND-DERIVED. Every expectation is read off the literal input rather than off the implementation. The helper replaced `content.split('\n')[line - 1]?.trim()` in two adapters, so the cases worth asserting are the ones a split gets right by construction and an index-and-slice has to be written to get right: the last line with no terminator, a CRLF line, and a line number outside the file.
+  const src = 'alpha\nbeta  \ngamma'
+
+  it('returns each line trimmed, including the last one with no terminator', () => {
+    const idx = buildLineIndex(src)
+    expect(lineTextAt(src, idx, 1)).toBe('alpha')
+    expect(lineTextAt(src, idx, 2)).toBe('beta')
+    expect(lineTextAt(src, idx, 3)).toBe('gamma')
+  })
+
+  it('drops the carriage return of a CRLF line rather than storing it', () => {
+    const crlf = 'alpha\r\nbeta\r\n'
+    expect(lineTextAt(crlf, buildLineIndex(crlf), 1)).toBe('alpha')
+  })
+
+  it('answers empty for a line number outside the file instead of throwing', () => {
+    const idx = buildLineIndex(src)
+    expect(lineTextAt(src, idx, 0)).toBe('')
+    expect(lineTextAt(src, idx, 99)).toBe('')
+  })
+
+  it('returns the whole of a file that is one long line', () => {
+    const oneLine = '<template><c-a></c-a><c-b></c-b></template>'
+    expect(lineTextAt(oneLine, buildLineIndex(oneLine), 1)).toBe(oneLine)
   })
 })

@@ -44,6 +44,7 @@ import * as path from 'node:path'
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import {
   buildLineIndex,
+  lineTextAt,
   makeLineSymbol,
   offsetToLine,
   scanQuotedStringEnd,
@@ -79,14 +80,6 @@ function finalize(symbols: SymbolEntry[], refs: RefEntry[]): SfcResult {
 function componentName(filePath: string): string {
   const normalized = filePath.replaceAll('\\', '/')
   return path.posix.basename(normalized).replace(/\.[^.]+$/, '')
-}
-
-function matchLine(content: string, offset: number): number {
-  return content.slice(0, offset).split('\n').length
-}
-
-function lineContext(content: string, line: number): string {
-  return content.split('\n')[line - 1]?.trim() ?? ''
 }
 
 /**
@@ -177,13 +170,15 @@ function extractComponentRefs(
   allowKebab: boolean,
 ): RefEntry[] {
   const refs: RefEntry[] = []
+  // One index over the block, reused by every match. Recomputing a line number by slicing from character 0, and its text by splitting the whole block, costs the block once per match: quadratic on a generated single-line template.
+  const lineIndex = buildLineIndex(markup)
   for (const m of markup.matchAll(OPEN_TAG_RE)) {
     const tag = m[1] ?? ''
     if (!tag || !isComponentTag(tag, allowKebab)) continue
     const offset = m.index ?? 0
-    const relLine = matchLine(markup, offset)
+    const relLine = offsetToLine(lineIndex, offset)
     const line = startLine - 1 + relLine
-    refs.push({ filePath, name: tag, line, col: 0, context: lineContext(markup, relLine) })
+    refs.push({ filePath, name: tag, line, col: 0, context: lineTextAt(markup, lineIndex, relLine) })
   }
   return refs
 }
