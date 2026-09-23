@@ -24,19 +24,46 @@ interface LockEntry {
   readonly version?: string
 }
 
-/** Package names in the production tree, deduplicated -- the same package nested under two parents is one name. */
+interface Lock {
+  readonly packages?: Record<string, LockEntry & { readonly dependencies?: Record<string, string>; readonly optionalDependencies?: Record<string, string> }>
+}
+
+const marker = 'node_modules/'
+
+/** The package a lockfile key names, unnested: `node_modules/a/node_modules/b` is `b`. */
+function nameOf(lockPath: string): string {
+  return lockPath.slice(lockPath.lastIndexOf(marker) + marker.length)
+}
+
+/**
+ * Package names in the production tree, deduplicated -- the same package nested under two parents is one name.
+ *
+ * Two producers decide this, not one. The lockfile's `dev`/`optional` flags are the obvious source, but npm collapses a package declared in BOTH `optionalDependencies` and `devDependencies` down to a bare `dev: true`, which reads as "never reaches a user" for a package a consumer's `npm install` really does fetch. The manifest's own declarations are the second producer and they win: a name the root block declares is production whatever the flags say.
+ */
 function productionPackageNames(opts: { readonly optionalOnly?: boolean; readonly requiredOnly?: boolean } = {}): string[] {
-  const lock = JSON.parse(readFileSync(lockPath, 'utf8')) as { packages?: Record<string, LockEntry> }
+  const lock = JSON.parse(readFileSync(lockPath, 'utf8')) as Lock
+  const root = lock.packages?.[''] ?? {}
+  const declaredRequired = new Set(Object.keys(root.dependencies ?? {}))
+  const declaredOptional = new Set(Object.keys(root.optionalDependencies ?? {}))
   const names = new Set<string>()
   for (const [path, entry] of Object.entries(lock.packages ?? {})) {
-    // The root package is keyed by the empty string; dev-only trees never reach a user.
-    if (path === '' || entry.dev === true || entry.devOptional === true) continue
-    if (opts.optionalOnly === true && entry.optional !== true) continue
-    if (opts.requiredOnly === true && entry.optional === true) continue
-    const marker = 'node_modules/'
-    names.add(path.slice(path.lastIndexOf(marker) + marker.length))
+    // The root package is keyed by the empty string.
+    if (path === '') continue
+    const name = nameOf(path)
+    const declared = declaredRequired.has(name) || declaredOptional.has(name)
+    if (!declared && (entry.dev === true || entry.devOptional === true)) continue
+    const optional = declaredOptional.has(name) || (!declaredRequired.has(name) && entry.optional === true)
+    if (opts.optionalOnly === true && !optional) continue
+    if (opts.requiredOnly === true && optional) continue
+    names.add(name)
   }
   return [...names].sort()
+}
+
+/** Names the manifest's own root block declares as production, read straight from the lockfile's copy of it. */
+function declaredProductionNames(): string[] {
+  const root = (JSON.parse(readFileSync(lockPath, 'utf8')) as Lock).packages?.[''] ?? {}
+  return [...new Set([...Object.keys(root.dependencies ?? {}), ...Object.keys(root.optionalDependencies ?? {})])].sort()
 }
 
 /**
@@ -105,6 +132,9 @@ const REVIEWED_PRODUCTION_PACKAGES: readonly string[] = [
   'tree-sitter-rust',
   'tree-sitter-typescript',
   'typed-query-selector',
+  // Declared in optionalDependencies AND devDependencies, so the lockfile marks it plain `dev`. It is
+  // still a package a consumer's install can fetch, and the bundle resolves it by name.
+  'typescript',
   'wasm-feature-detect',
   'webdriver-bidi-protocol',
   'webidl-conversions',
@@ -129,6 +159,21 @@ describe('the set of packages that can run in a user process', () => {
     expect(
       added,
       'these packages entered the production tree without review. A malicious package cannot run in a user process unless its name is here first, which is the point of the list: decide each one, then add it.',
+    ).toEqual([])
+  })
+
+  it('sees every package the manifest itself declares as production', () => {
+    // The regression this guard shipped with: the sweep read the lockfile's `dev`/`optional` flags and
+    // nothing else, so `typescript` -- declared in both optionalDependencies and devDependencies, and
+    // therefore flagged plain `dev` -- was absent from the very list that claims to name everything able
+    // to run in a user's process. Reading the manifest's declarations is the independent second opinion.
+    const declared = declaredProductionNames()
+    expect(declared.length, 'no production dependencies declared -- the root lockfile block has changed shape').toBeGreaterThan(5)
+
+    const resolved = new Set(productionPackageNames())
+    expect(
+      declared.filter((n) => !resolved.has(n)),
+      'the manifest declares these as production and the sweep does not see them, so the reviewed list below is not the full set',
     ).toEqual([])
   })
 

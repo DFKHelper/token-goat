@@ -26,6 +26,14 @@ pre-commit:
     ts-typecheck-vscode:
       priority: 2
       run: npm run typecheck:vscode-extension && npm run typecheck:vscode-extension:tests
+    # Glob'd to the lockfile because that is the only thing that changes which
+    # tarballs get verified, and the check costs a round trip to the registry
+    # for every resolved package. A commit that does not move the lockfile
+    # cannot change the answer, so it does not pay for it.
+    dependency-signatures:
+      priority: 3
+      run: npm audit signatures
+      glob: "package-lock.json"
     vscode-extension-tests:
       priority: 3
       run: npm run test:vscode-extension

@@ -40,6 +40,9 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm ci --prefix vscode-extension
+      # Checks every resolved package against the registry's signature for that exact version, so a tarball swapped after publication -- at the registry or in transit -- fails here rather than being installed. It is deliberately not the defence against the runtime-trigger class: a package published maliciously by its own maintainer carries a perfectly valid signature. tests/guards/runtime_dependency_set_is_locked.test.ts is the control for that; this one closes the tampering half.
+      - name: Verify dependency signatures
+        run: npm audit signatures
       - name: Lint
         run: npm run lint
       - name: Type check
