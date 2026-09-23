@@ -4,7 +4,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [2.9.27] - 2026-09-23
 
-No reindex is needed.
+Upgrading reindexes PowerShell files. The change is in the PowerShell parser, so its parser fingerprint moves and PowerShell files are reparsed on the next run. Embeddings and other languages are untouched.
 
 ### Security
 

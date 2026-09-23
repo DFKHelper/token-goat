@@ -33,6 +33,7 @@ import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSe
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath } from '../src/paths.js'
+import { canRunPowerShell } from '../src/shell.js'
 import * as pathsModule from '../src/paths.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -420,14 +421,14 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
 }
 
 // CAPTURE: real Codex session logs under ~/.codex/sessions on this machine show the harness executing shell-tool commands as ["...pwsh.exe","-Command","<script>"] on Windows, and a captured failure of the form `error: unknown option '--context'` after token-goat's own arg parser received a POSIX single-quote-escaped rewrite through PowerShell's different quoting convention -- confirming Codex on Windows runs the wrapped command through PowerShell, not the bash the rewrite assumes.
-describe('preBashHandler — Codex on Windows skips the compress rewrite', () => {
+describe('preBashHandler — Codex on Windows wraps via PowerShell runner or skips if unavailable', () => {
   const realPlatform = process.platform
 
   afterEach(() => {
     Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
   })
 
-  it('does not rewrite when the harness is codex and the platform is win32', () => {
+  it('wraps with PowerShell runner when the harness is codex and the platform is win32 and PowerShell is available', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     const event = makeHookEvent({
       toolName: 'Bash',
@@ -437,7 +438,15 @@ describe('preBashHandler — Codex on Windows skips the compress rewrite', () =>
       raw: { tool_name: 'Bash', tool_input: { command: 'rg "TODO" src/foo.ts' }, _tg_harness: 'codex' },
     })
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    if (canRunPowerShell()) {
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') {
+        expect(result.updatedInput['command']).toContain('--shell pwsh')
+        expect(result.updatedInput['command']).toContain('--cmd-b64')
+      }
+    } else {
+      expect(result.hookType).toBe('pass')
+    }
   })
 
   it('still rewrites for codex on a non-Windows platform', () => {
@@ -462,14 +471,14 @@ describe('preBashHandler — Codex on Windows skips the compress rewrite', () =>
 })
 
 // FORMAT-DERIVED: Copilot CLI's own shellConfig?.shellToolName ?? "bash" resolution (bridges/copilot_cli.ts's shellToolName comment) defaults to "powershell" on Windows -- the same PowerShell executor Codex uses -- so a rewrite quoted for POSIX bash hits the identical quoting hazard captured above for Codex.
-describe('preBashHandler — Copilot CLI on Windows skips the compress rewrite', () => {
+describe('preBashHandler — Copilot CLI on Windows wraps via PowerShell runner or skips if unavailable', () => {
   const realPlatform = process.platform
 
   afterEach(() => {
     Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
   })
 
-  it('does not rewrite when the harness is copilot_cli and the platform is win32', () => {
+  it('wraps with PowerShell runner when the harness is copilot_cli and the platform is win32 and PowerShell is available', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     const event = makeHookEvent({
       toolName: 'Bash',
@@ -479,7 +488,15 @@ describe('preBashHandler — Copilot CLI on Windows skips the compress rewrite',
       raw: { tool_name: 'Bash', tool_input: { command: 'rg "TODO" src/foo.ts' }, _tg_harness: 'copilot_cli' },
     })
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    if (canRunPowerShell()) {
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') {
+        expect(result.updatedInput['command']).toContain('--shell pwsh')
+        expect(result.updatedInput['command']).toContain('--cmd-b64')
+      }
+    } else {
+      expect(result.hookType).toBe('pass')
+    }
   })
 
   it('still rewrites for copilot_cli on a non-Windows platform', () => {

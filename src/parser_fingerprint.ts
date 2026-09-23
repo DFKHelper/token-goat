@@ -40,7 +40,7 @@ export const LANGUAGE_PARSER_FINGERPRINTS: ReadonlyMap<string, string> = new Map
   ['perl', '428dedff631b186c'],
   ['php', '0750539f6b26a427'],
   ['pli', '46f375df7d0473a7'],
-  ['powershell', '3d28c178cbf8b7c1'],
+  ['powershell', '76318e45df322ae9'],
   ['proto', '124edf63697ed35f'],
   ['r', '88a4246ba6d3280d'],
   ['racket', 'b24c7e2ab9ec4b9a'],

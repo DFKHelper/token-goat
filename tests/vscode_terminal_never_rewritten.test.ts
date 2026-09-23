@@ -15,6 +15,7 @@ import { normalizePayload } from '../src/hooks_cli.js'
 import { buildEvent } from '../src/relay.js'
 import { runHook, serializeOutput } from '../src/hook_registry.js'
 import type { HarnessName } from '../src/bridges/types.js'
+import { canRunPowerShell } from '../src/shell.js'
 
 const savedOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-terminal-'))
@@ -46,7 +47,7 @@ function updatedInput(out: Record<string, unknown>): Record<string, unknown> | u
   return (out['hookSpecificOutput'] as Record<string, unknown> | undefined)?.['updatedInput'] as Record<string, unknown> | undefined
 }
 
-const WRAPPED = /^token-goat compress -f \S+ --timeout \d+ -c 'npm run build'$/
+const WRAPPED = /^token-goat compress -f \S+ --timeout \d+ (?:-c 'npm run build'|--shell pwsh --cmd-b64 [A-Za-z0-9+/=]+)$/
 
 describe('run_in_terminal on VS Code is never rewritten', () => {
   it('a compressible build command gets no updatedInput', async () => {
@@ -66,10 +67,10 @@ describe('the same command is still rewritten where the shell is known to be bas
     expect(input?.['description']).toBe('build')
   })
 
-  // Copilot CLI's shell tool defaults to bash everywhere except Windows, where it runs through PowerShell instead (see the shellToolName comment in src/bridges/copilot_cli.ts) -- the same reason Codex is skipped on win32 in tests/hooks_bash.test.ts, so this test is platform-aware rather than spoofing one.
+  // Copilot CLI's shell tool defaults to bash everywhere except Windows, where it runs through PowerShell instead (see the shellToolName comment in src/bridges/copilot_cli.ts) -- on Windows it wraps with PowerShell runner when available.
   it('Copilot CLI wraps npm run build in token-goat compress, except on Windows where its shell tool is PowerShell', async () => {
     const input = updatedInput(await preToolUse('copilot_cli', 'npm run build'))
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && !canRunPowerShell()) {
       expect(input).toBeUndefined()
     } else {
       expect(input?.['command']).toMatch(WRAPPED)
