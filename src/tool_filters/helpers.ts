@@ -808,7 +808,7 @@ export function stripPrefixes(argv: string[]): string[] {
   // generic two-token launcher table below (which deliberately excludes
   // `tool`; see TWO_TOKEN_PREFIXES).
   if (pathStem(out[0]!).toLowerCase() === 'uv' && out[1] === 'tool' && out[2] === 'run' && out.length > 3) {
-    return out.slice(3)
+    return skipLauncherOptions(out.slice(3))
   }
   // Resolve two-token launchers (python -m pytest → pytest).
   const stem = pathStem(out[0]!).toLowerCase()
@@ -817,10 +817,34 @@ export function stripPrefixes(argv: string[]): string[] {
     const nextTok = out[1]!
     if (triggers.size === 0 || triggers.has(nextTok)) {
       const consume = triggers.size === 0 ? 1 : 2
-      if (out.length > consume) out = out.slice(consume)
+      if (out.length > consume) out = skipLauncherOptions(out.slice(consume))
     }
   }
   return out
+}
+
+/** Launcher flags that take their value as the next token, so skipping the flag must skip the value with it. Everything absent here is assumed value-less, which is the safe direction: an unrecognised `--flag value` leaves `value` at the front, no filter claims it, and the command falls back to generic -- where it already was. Consuming a token too many is the direction that hurts, because `npx --package vitest jest` would then match vitest's filter against jest's output. */
+const LAUNCHER_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '-p', '--package', '-c', '--call', '--userconfig', '--cache', '--shell', '--node-arg', '--npm',
+  '--with', '--with-requirements', '--with-editable', '--python', '--directory', '--project', '--extra', '--group', '--index-url', '--index', '--find-links', '--constraint', '--override',
+  '--filter', '--dir', '--workspace-root', '--shell-mode',
+])
+
+/**
+ * Drop the launcher's own options from the front of an already-resolved argv, so the real binary lands at index 0.
+ *
+ * `npx vitest run` resolved to `vitest` and matched its filter; `npx --yes vitest run` resolved to `--yes` and matched nothing, falling the most common scripted spelling of a test run back to generic compression. Same for `npx -y`, `uv run --no-sync pytest` and `pnpm exec --silent eslint .`. Only the *leading* run is skipped: a filter reads the flags belonging to the binary itself, so `positionalArgs` -- which drops flags wherever they appear -- is the wrong tool here even though it looks like the same job.
+ */
+function skipLauncherOptions(args: string[]): string[] {
+  let i = 0
+  while (i < args.length && args[i]!.startsWith('-') && args[i] !== '--') {
+    const flag = args[i]!
+    i++
+    if (LAUNCHER_VALUE_FLAGS.has(flag) && i < args.length) i++
+  }
+  // `--` ends option parsing for every launcher in TWO_TOKEN_PREFIXES; the binary is the token after it.
+  if (i < args.length && args[i] === '--') i++
+  return i < args.length ? args.slice(i) : args
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +920,15 @@ function findNearestPackageScripts(startDir: string): Record<string, string> | n
   }
 }
 
+/** Yarn's own subcommands, classic and berry. A bare `yarn <name>` runs the built-in when the name is one of these, whatever the package.json says, so the scripts map must not be consulted for them. `test`, `build`, `start` and `lint` are deliberately absent: none is a yarn built-in, and `yarn test` is yarn's documented shorthand for `yarn run test`. Provenance: FORMAT-DERIVED from yarn's published command list (classic 1.x plus berry's additions), not from any matcher here. */
+const YARN_BUILTIN_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'access', 'add', 'audit', 'autoclean', 'bin', 'cache', 'check', 'config', 'create', 'dedupe', 'dlx',
+  'exec', 'explain', 'generate-lock-entry', 'global', 'help', 'import', 'info', 'init', 'install',
+  'licenses', 'link', 'list', 'login', 'logout', 'node', 'npm', 'outdated', 'owner', 'pack', 'patch',
+  'plugin', 'policies', 'rebuild', 'remove', 'set', 'stage', 'tag', 'team', 'unlink', 'unplug', 'up',
+  'upgrade', 'upgrade-interactive', 'version', 'versions', 'why', 'workspace', 'workspaces',
+])
+
 /** Extract the script name a package-manager invocation names, or `null` when `args` isn't a
  * run-script form this resolver handles (bare subcommands like `npm install`, `npm ci`, `npm
  * ls` are deliberately left alone -- see the module doc comment). */
@@ -916,12 +949,14 @@ function scriptNameFromArgs(stem: string, args: string[]): string | null {
       if (a0 === 'run' && a1 !== undefined) return a1
       return null
     case 'yarn':
-      // Yarn's classic CLI runs a script by bare name (`yarn lint`) as well as via `run`; a
-      // bare first token that happens to also be a yarn built-in (`yarn install`) is still
-      // safe to try here because the scripts-map lookup below silently misses when there's no
-      // matching script, which is the same "decline to resolve" outcome as any other subcommand.
+      // Yarn's classic CLI runs a script by bare name (`yarn lint`) as well as via `run`. A bare
+      // first token that is also a yarn built-in must be refused here rather than looked up: the
+      // lookup was assumed to decline on its own by missing the scripts map, and it does not miss
+      // when a script of that name exists. `"install": "husky install"` and a `"version"` release
+      // script are both ordinary entries, and with either present `yarn install` resolved to the
+      // script's argv -- so yarn's own dependency-install output was handed to husky's filter.
       if (a0 === 'run' && a1 !== undefined) return a1
-      if (!a0.startsWith('-')) return a0
+      if (!a0.startsWith('-') && !YARN_BUILTIN_SUBCOMMANDS.has(a0)) return a0
       return null
     default:
       return null

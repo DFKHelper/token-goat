@@ -29,7 +29,7 @@ const _savedLocal = process.env['LOCALAPPDATA']
 const _savedXdg = process.env['XDG_DATA_HOME']
 process.env['LOCALAPPDATA'] = DATA_DIR_TMP
 process.env['XDG_DATA_HOME'] = DATA_DIR_TMP
-const { run, runRaw } = await import('../src/bash_runner.js')
+const { resolveFilter, run, runRaw } = await import('../src/bash_runner.js')
 const { defaultConfig, invalidateConfigCache, saveConfig } = await import('../src/config.js')
 const { configPath } = await import('../src/constants.js')
 const { getBashOutput } = await import('../src/bash_output_cache.js')
@@ -401,5 +401,37 @@ describe('compress command (built-bundle e2e)', () => {
     const r = compress(['--no-compress', '--cmd', nodeCmd(s)])
     expect(r.status).toBe(5)
     expect(r.stdout).toContain('raw-line')
+  })
+})
+
+describe('resolveFilter cwd default', () => {
+  // HAND-DERIVED: the package.json shape and the `yarn lint` spelling are both from the npm/yarn docs
+  // for `scripts`, and the expected filter name is computed from what the script resolves to (`eslint .`),
+  // independently of how resolveFilter reaches it.
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-br-cwd-'))
+  let saved: string
+
+  beforeAll(() => {
+    fs.writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({ name: 'p', scripts: { lint: 'eslint .' } }))
+    saved = process.cwd()
+    process.chdir(projectDir)
+  })
+  afterAll(() => {
+    process.chdir(saved)
+    fs.rmSync(projectDir, { recursive: true, force: true })
+  })
+
+  it('resolves a package-manager script against the running process directory when no cwd is supplied', () => {
+    expect(resolveFilter('yarn lint', undefined, undefined).filter?.name).toBe('eslint')
+  })
+
+  it('still prefers an explicitly supplied cwd over the process directory', () => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-br-cwd-other-'))
+    try {
+      fs.writeFileSync(path.join(other, 'package.json'), JSON.stringify({ name: 'q', scripts: { lint: 'pytest -q' } }))
+      expect(resolveFilter('yarn lint', undefined, other).filter?.name).toBe('pytest')
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true })
+    }
   })
 })

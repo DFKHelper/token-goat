@@ -186,6 +186,32 @@ describe('helpers: command parsing', () => {
     expect(stripPrefixes(['FOO=bar', 'eslint', '.'])).toEqual(['eslint', '.'])
   })
 
+  // Fixture provenance: HAND-DERIVED. The flag spellings are read off each launcher's own
+  // documented CLI (`npx --yes`/`-y`/`--package`, `uv run --no-sync`, `uv tool run --python`,
+  // `pnpm exec --silent`), not off token-goat's tables. `npx --yes vitest run` used to resolve to
+  // `--yes`, which no filter claims, so the most common scripted spelling of a test run fell back
+  // to generic compression.
+  it('stripPrefixes skips a launcher’s own options to reach the binary behind them', () => {
+    expect(stripPrefixes(['npx', '--yes', 'vitest', 'run'])).toEqual(['vitest', 'run'])
+    expect(stripPrefixes(['npx', '-y', 'vitest', 'run'])).toEqual(['vitest', 'run'])
+    expect(stripPrefixes(['uv', 'run', '--no-sync', 'pytest'])).toEqual(['pytest'])
+    expect(stripPrefixes(['pnpm', 'exec', '--silent', 'eslint', '.'])).toEqual(['eslint', '.'])
+    expect(stripPrefixes(['uv', 'tool', 'run', '--python', '3.12', 'ruff', 'check'])).toEqual(['ruff', 'check'])
+    // A value-taking flag takes its value with it, and `--` ends the launcher's options.
+    expect(stripPrefixes(['npx', '-p', 'some-pkg', 'vitest', 'run'])).toEqual(['vitest', 'run'])
+    expect(stripPrefixes(['npx', '--', 'vitest', 'run'])).toEqual(['vitest', 'run'])
+  })
+
+  // The over-consume direction is the one that hurts: resolving to a flag's value rather than the
+  // binary would run vitest's filter over jest's output, and dropping the lines you wanted improves
+  // the ratio. The flags belonging to the binary itself must also survive, since filters read them.
+  it('stripPrefixes stops at the binary and keeps the binary’s own flags', () => {
+    expect(stripPrefixes(['npx', '--package', 'vitest', 'jest'])).toEqual(['jest'])
+    expect(stripPrefixes(['npx', '--yes', 'vitest', 'run', '--reporter=json'])).toEqual(['vitest', 'run', '--reporter=json'])
+    // Nothing but options: there is no binary to find, so the argv is returned as it arrived rather than emptied.
+    expect(stripPrefixes(['npx', '--yes'])).toEqual(['--yes'])
+  })
+
   it('stripPrefixes strips a leading env assignment whose value is a path', () => {
     expect(stripPrefixes(['PATH=/usr/local/bin', 'git', 'log'])).toEqual(['git', 'log'])
   })

@@ -118,11 +118,13 @@ function scheduleHeartbeat(startTime: number, intervalMs: number, write: (elapse
  * from the peeled tokens while `compressOutput` still received an argv starting with `cd` --
  * every argv-reading filter then read the wrong flags/pattern/subcommand.
  */
-function resolveFilter(
+export function resolveFilter(
   command: string,
   filterName: string | undefined,
   cwd: string | undefined,
 ): { filter: ToolFilter | null; argv: string[] } {
+  // No caller-supplied cwd means the command runs in this process's own directory, which is the one whose package.json `npm test` / `yarn lint` resolves against. Leaving it undefined here left `resolvePackageManagerScript` unreachable from the CLI entirely, so a wrapped `compress -c "yarn lint"` fell through to the generic filter while the pre-hook, which does pass a cwd, picked the script's real one.
+  const effectiveCwd = cwd ?? process.cwd()
   let split: string[] | null
   try {
     split = shlexSplit(command)
@@ -130,14 +132,14 @@ function resolveFilter(
     split = null
   }
   // Same fallback wrapAndCompress used when the command is unsplittable: hand the filter the raw command as a single token.
-  const argv = split === null ? [command] : dispatchArgv(split, cwd).argv
+  const argv = split === null ? [command] : dispatchArgv(split, effectiveCwd).argv
   if (filterName) {
     const named = filterByName(filterName)
     if (named !== null) return { filter: named, argv }
     // Unknown name — fall through to auto-detect rather than failing.
   }
   if (split === null) return { filter: null, argv }
-  return { filter: selectFilter(split, cwd), argv }
+  return { filter: selectFilter(split, effectiveCwd), argv }
 }
 
 // Shared spawnSync options for the two run paths: timeout, cwd. Each caller adds its own stdio (and maxBuffer for the capture path) plus the file/args/shell/env from spawnTarget.

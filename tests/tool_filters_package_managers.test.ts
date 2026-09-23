@@ -1481,6 +1481,22 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('vitest')
   })
 
+  // PROVENANCE: FORMAT-DERIVED. `install`, `version` and `why` are yarn's own subcommands, read
+  // off yarn's published command list; `"install": "husky install"` and a `"version"` release
+  // script are ordinary package.json entries. The bare-name branch used to justify itself on the
+  // scripts-map lookup missing for a built-in, which is true only until someone writes a script
+  // by that name -- and then yarn's own install output was handed to husky's filter.
+  it('a bare yarn built-in runs the built-in, even when a script shares its name', () => {
+    writePkg({ install: 'husky install', version: 'vitest run', why: 'eslint .', lint: 'eslint .' })
+    expect(resolvePackageManagerScript(['yarn', 'install'], dir)).toBeNull()
+    expect(resolvePackageManagerScript(['yarn', 'version'], dir)).toBeNull()
+    expect(resolvePackageManagerScript(['yarn', 'why', 'lodash'], dir)).toBeNull()
+    expect(selectFilter(['yarn', 'install'], dir)?.name).not.toBe('husky')
+    // The bare-name form must still resolve for a name yarn does not claim, and an explicit `run` is authoritative for any name at all.
+    expect(resolvePackageManagerScript(['yarn', 'lint'], dir)).toEqual(['eslint', '.'])
+    expect(resolvePackageManagerScript(['yarn', 'run', 'install'], dir)).toEqual(['husky', 'install'])
+  })
+
   // Unit-level guard on the resolver itself, complementing (not replacing) the end-to-end dispatch assertions above: without a cwd, selectFilter must behave exactly as before (existing callers that never pass cwd must see no change in behaviour).
   it('resolvePackageManagerScript returns null for a non-run-script form', () => {
     expect(resolvePackageManagerScript(['npm', 'install'], dir)).toBeNull()
