@@ -30,7 +30,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
 import { buildEmbeddingBoundaries, indexFileEmbeddings, indexFileSync, maxChunksEmbedSha } from '../src/parser.js'
@@ -39,8 +39,17 @@ import { extractEmbeddableDocumentText, isEmbeddableDocument } from '../src/doc_
 import { modelFilesPresent } from '../src/embed_model.js'
 import { fingerprintFile } from '../src/fingerprint.js'
 import { getFileEntry } from '../src/index_reader.js'
+// Redirects configPath() to a per-test-FILE temp file. tests/setup/isolate-home.ts pins TOKEN_GOAT_HOME once per Vitest worker, so the real config.toml is shared by every test file that worker runs, and this file rewrites `max_chunks_per_file` in beforeEach: any file sharing the worker would read a cap of 6 mid-run, including the ones whose beforeAll walks and embeds the whole src tree. The same hazard is documented at the head of tests/cache_session_commands.test.ts, where mutating one unrelated field of the shared config broke a test further down that same file.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return { ...original, configPath: () => _testConfigPath }
+})
+
+const _testConfigPath = tempConfigPath('tg-embed-stored-chunk-cap-config-test.toml')
+
 import { configPath } from '../src/constants.js'
 import { loadConfig } from '../src/config.js'
+import { tempConfigPath } from './helpers/temp-config.js'
 import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
 import Database from '../src/sqlite_driver.js'
 
@@ -86,24 +95,19 @@ function storedChunkCount(dbPath: string): number {
 
 let TMP: string
 let prevEmbeddings: string | undefined
-let prevConfigText: string | null
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-stored-chunk-cap-'))
   prevEmbeddings = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
-  // loadConfig keys its cache on a content hash of this file, so writing it is enough to invalidate; the assertion in each test confirms the value really took effect rather than assuming it. TOKEN_GOAT_HOME is isolated for the run by tests/setup/isolate-home.ts, so this is not a real ~/.token-goat, but it IS shared with other test files in the same run -- hence the restore in afterEach.
+  // loadConfig keys its cache on a content hash of this file, so writing it is enough to invalidate; the assertion in each test confirms the value really took effect rather than assuming it. The path is this file's own, per the vi.mock at the head, so there is nothing to save and restore: no other test file can observe it, and tempConfigPath's root is removed when the process exits.
   const p = configPath()
-  prevConfigText = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null
   fs.mkdirSync(path.dirname(p), { recursive: true })
   fs.writeFileSync(p, `[indexing]\nmax_chunks_per_file = ${CAP}\n`)
 })
 
 afterEach(() => {
   closeAllDbs()
-  const p = configPath()
-  if (prevConfigText === null) fs.rmSync(p, { force: true })
-  else fs.writeFileSync(p, prevConfigText)
   fs.rmSync(TMP, { recursive: true, force: true })
   if (prevEmbeddings === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
   else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbeddings
