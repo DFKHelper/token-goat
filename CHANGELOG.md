@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.23] - 2026-09-23
+
+### Fixed
+
+- **A file the index never managed to parse is read fresh from disk instead of being reported as up to date.** The index's file table had one row per indexed file, and three separate checks read a row with no content hash as a record written before content hashing existed, accepting it as current. No version of token-goat has ever written such a row from a parse: every insert back to the first commit records the hash alongside the timestamp. The only thing that ever produced one was the read-retry counter the table carried until 2.9.22, which added a row for a path it had merely failed to open. On any index created before that release, a file that hit a single lock or permission error was therefore treated as current from then on, with no symbols to serve, no reparse, and no warning, and nothing short of editing the file could recover it. Those rows are now recognised as what they are, so the first surgical read of such a file parses it once and replaces the row. The stale-file warning stays silent for them, since a file that is missing from the index is a different thing to say than a file the index holds an older copy of.
+
 ## [2.9.22] - 2026-09-23
 
 Upgrading reparses the index. The line-number arithmetic described below is shared by every adapter, so the parser stamp moves for all of them and each file is read once more. Embeddings are untouched and keep serving throughout.

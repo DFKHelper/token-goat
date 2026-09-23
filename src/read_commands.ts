@@ -446,6 +446,7 @@ export function fileIsGone(absPath: string): boolean {
  */
 export function staleWarning(resolvedPath: string): string {
   const entry = getFileEntry(resolvedPath)
+  // A sha-less row is not an indexed file (see indexMatchesDisk), and it stays quiet here for the same reason entry === null does: "stale" says the index holds an older version of this file, which is a different and more alarming claim than "this file is not indexed", and the caller's own no-symbols message already covers the latter. This is the one place the two cases should agree, so it is deliberately NOT the false-means-stale treatment the other two readers now give a sha-less row.
   if (entry === null || entry.sha === '') return ''
   const diskSha = fingerprintFile(resolvedPath)
   if (diskSha === null) {
@@ -483,7 +484,8 @@ export function staleWarning(resolvedPath: string): string {
  */
 export function healStaleIndex(resolvedPath: string): void {
   const entry = getFileEntry(resolvedPath)
-  if (entry === null) {
+  // A sha-less row joins the never-indexed case rather than being accepted as a legacy row: no parse writer has ever left that column empty, so the only rows that reach it came from the read-retry counter files used to carry (removed in 2.9.22), which minted a row for a path it had failed to READ. See indexMatchesDisk in index_freshness.ts for the full history. writeParseResult deletes the file's rows before inserting, so parsing here replaces the stub rather than colliding with its primary key.
+  if (entry === null || entry.sha === '') {
     // Never indexed. If the file is actually present on disk, parse it once on demand so
     // symbol/read/skeleton/outline can serve a surgical slice instead of returning "no symbols"
     // and forcing the caller to fall back to a full-file Read/grep -- the exact token cost this
@@ -503,7 +505,6 @@ export function healStaleIndex(resolvedPath: string): void {
     }
     return
   }
-  if (entry.sha === '') return
   const diskSha = fingerprintFile(resolvedPath)
   if (diskSha === null || diskSha === entry.sha) return
   try {
