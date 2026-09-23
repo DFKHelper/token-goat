@@ -1,15 +1,9 @@
 /**
  * Seed a suite's isolated index with the token-goat repo's own `src` tree.
  *
- * Two suites need it (`graph_commands`, `json_envelope_shape`): their integration cases run
- * `types`/`callers`/`impact` against real code, and on a fresh checkout with an empty index those
- * commands find nothing and exit 1. Each test file gets its own data dir (see
- * tests/setup/isolate-home.ts, which keys the sandbox per file), so this really is paid once per
- * file and cannot be shared between them.
+ * Three suites need it (`graph_commands`, `json_envelope_shape`, `answer_router`): their integration cases run `types`/`callers`/`impact` against real code, and on a fresh checkout with an empty index those commands find nothing and exit 1. Each test file gets its own data dir (see tests/setup/isolate-home.ts, which keys the sandbox per file), so this really is paid once per file and cannot be shared between them.
  *
- * It lived twice, copied line for line, along with a timeout constant whose comment described a
- * tree of "213 files, ~4.2MB" that had since grown. One shared home means the measurement can only
- * be wrong in one place.
+ * It lived twice, copied line for line, along with a timeout constant whose comment described a tree of "213 files, ~4.2MB" that had since grown. One shared home means the measurement can only be wrong in one place -- which only helps if the measurement is actually refreshed, so the figures below carry the date they were taken and every reader should distrust them once that date is old.
  */
 import { readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -20,12 +14,11 @@ import { normalizePath } from '../../src/util.js'
 /**
  * Per-hook timeout for {@link indexSrcTree}.
  *
- * The hook tree-sitter-parses the whole src tree from scratch: 226 files, 4.24 MB as measured on
- * 2026-08-19. That is ~14s wall on a 26-core developer machine with nothing else running. CI is the
- * hard case: windows-latest has 4 vCPUs and vitest runs four test files at once, so two of these
- * hooks can overlap and contend. At 120s this timed out on all three retry attempts of one run --
- * not a hang, just bounded work that no longer fit. The bound is here to catch a hook that never
- * finishes, and 300s still catches that while leaving room for a loaded runner.
+ * The hook tree-sitter-parses the whole src tree from scratch: 393 files, 6.65 MB, 4.6s wall on a 26-core developer machine with nothing else running, as measured on 2026-09-23 (three runs, 4618/4608/4623 ms). CI is the hard case: windows-latest has 4 vCPUs and vitest runs four test files at once, so two of these hooks can overlap and contend.
+ *
+ * The tree grew 74% in files and 57% in bytes over the previous measurement (226 files, 4.24 MB on 2026-08-19) while the hook got roughly three times faster over the same span, which covers the indexing-performance fixes in 2.9.21 and 2.9.22. Which of those accounts for it was not isolated, so treat the speedup as measured and its cause as unattributed. Both halves had to be re-measured together regardless: the file count alone would have argued for raising this bound, and the wall time says the opposite.
+ *
+ * The bound is here to catch a hook that never finishes, not to budget its work, so it is left far above what the work costs: 300s against 4.6s is roughly 65x. It fired once anyway, on windows-latest shard 1 of run 35852365360 (2026-09-23), in both `graph_commands` and `json_envelope_shape` at once; an immediate re-run of the identical commit passed. At 65x headroom that is a stalled runner rather than work that no longer fits, which is why the number did not move. Raise it only when a fresh measurement of the wall time above says the work itself has grown into it.
  */
 export const WHOLE_SRC_INDEX_TIMEOUT_MS = 300_000
 
