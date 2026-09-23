@@ -66,8 +66,9 @@ export function emitExtraFileArgsNote(command: string, first: string, extras: st
   out(extraFileArgsNote(command, first, extras, opts))
 }
 
-// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind.
+// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which SQLite rejects with an opaque "datatype mismatch" error). These three live here rather than in cli.ts because cli.ts already imports from this module: callers reach them either directly or through cli.ts's re-export, and a single definition means a fix to the parse cannot land on one import path and miss the other.
 export function requireInt(flag: string, raw: string): number {
+  // Only accept exact integer literals (optional leading minus, followed by digits)
   if (!/^-?\d+$/.test(raw)) {
     throw new CliError(`${flag} must be a number, got: "${raw}"`)
   }
@@ -78,6 +79,7 @@ export function requireInt(flag: string, raw: string): number {
   return n
 }
 
+// Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit" (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected.
 export function requireNonNegativeInt(flag: string, raw: string): number {
   const n = requireInt(flag, raw)
   if (n < 0) {

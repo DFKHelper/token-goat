@@ -89,6 +89,9 @@ import {
   runExitText,
   noteExtraFileArgs,
   emitExtraFileArgsNote,
+  requireInt,
+  requireNonNegativeInt,
+  requirePositiveInt,
 } from './cli_dispatch.js'
 import { generateCompactHelp } from './cli_help.js'
 import { registerFormatCommands } from './cli_cmd_formats.js'
@@ -187,35 +190,8 @@ function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
   out(typeof result === 'string' ? result : formatCompression(result, false, 'payload withheld: inlining it would cost more tokens than the original text; pass --full to get the original text back outright'))
 }
 
-// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which SQLite rejects with an opaque "datatype mismatch" error).
-export function requireInt(flag: string, raw: string): number {
-  // Only accept exact integer literals (optional leading minus, followed by digits)
-  if (!/^-?\d+$/.test(raw)) {
-    throw new CliError(`${flag} must be a number, got: "${raw}"`)
-  }
-  const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n)) {
-    throw new CliError(`${flag} must be a number, got: "${raw}"`)
-  }
-  return n
-}
-
-// Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit" (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected.
-export function requireNonNegativeInt(flag: string, raw: string): number {
-  const n = requireInt(flag, raw)
-  if (n < 0) {
-    throw new CliError(`${flag} must be a non-negative number, got: "${raw}"`)
-  }
-  return n
-}
-
-export function requirePositiveInt(flag: string, raw: string): number {
-  const n = requireInt(flag, raw)
-  if (n <= 0) {
-    throw new CliError(`${flag} must be a positive number, got: "${raw}"`)
-  }
-  return n
-}
+// The numeric CLI-flag validators live in cli_dispatch.ts; re-exported here because half the command modules import them from this path and half from that one, and one definition behind both spellings is what keeps the two from drifting.
+export { requireInt, requireNonNegativeInt, requirePositiveInt }
 
 // --- Command handlers -------------------------------------------------------
 
