@@ -31,7 +31,7 @@ import * as path from 'node:path'
 import { copilotCliUserRoot } from './bridges/copilot_cli_install.js'
 import { readCopilotMcpTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
 import { canonicalize } from './path_containment.js'
-import { findLatestTranscript } from './waste.js'
+import { findLatestTranscript, readFileLines } from './waste.js'
 
 /** Event types verified to carry no model-visible content: they exist only in the on-disk log. */
 const HOOK_RECORD_TYPES = new Set(['hook.start', 'hook.end'])
@@ -349,7 +349,6 @@ function readNumber(source: Record<string, unknown>, key: string): number {
 
 /** Parse one Copilot session event log into a waste report. */
 export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport {
-  const raw = fs.readFileSync(eventsPath, 'utf-8')
   const report: CopilotWasteReport = {
     sessionPath: eventsPath,
     sessionId: path.basename(path.dirname(eventsPath)),
@@ -358,7 +357,8 @@ export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport 
     blocks: [],
     compactions: [],
     hookRecordBytes: 0,
-    totalEventBytes: Buffer.byteLength(raw, 'utf-8'),
+    // Measured off the file rather than off a string of its contents: an event log large enough for this number to matter is exactly the one readFileSync cannot return, since V8 caps a string at about 512 MB.
+    totalEventBytes: fs.statSync(eventsPath).size,
     // Read through the real resolution chain rather than passed in. Copilot's
     // own COPILOT_CACHE_HOME override is what tests point at a fixture, so the
     // shipping path is the tested path and there is no seam here that only a
@@ -369,7 +369,7 @@ export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport 
   const classes = new Map<string, CopilotBlockClass>()
   const seen = new Map<string, Set<string>>()
 
-  for (const line of raw.split('\n')) {
+  for (const line of readFileLines(eventsPath)) {
     const trimmed = line.trim()
     if (trimmed === '') continue
     let event: Record<string, unknown>

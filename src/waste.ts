@@ -15,6 +15,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 
 import { claudeConfigDir } from './claude_config_dir.js'
 import { estimateTokens } from './overflow_guard.js'
@@ -164,16 +165,36 @@ export function extractResultText(content: unknown): string {
   return ''
 }
 
+/** Read a text file's lines without ever holding the whole file as one string. A JSONL transcript is read line by line anyway, but reading it whole first puts a ceiling on it that has nothing to do with memory: V8 refuses any string past about 512 MB, and readFileSync throws there rather than returning a short read, so every command that parses a transcript died outright on a long session -- `Cannot create a string longer than 0x1fffffe8 characters`, against a real 570 MB transcript, on exactly the sessions an audit is most worth running against. The decoder carries a partial multi-byte character across the chunk boundary, which a plain buffer-to-string per chunk would corrupt. */
+export function* readFileLines(filePath: string): Generator<string> {
+  const fd = fs.openSync(filePath, 'r')
+  try {
+    const buf = Buffer.allocUnsafe(1 << 20)
+    const decoder = new StringDecoder('utf8')
+    let carry = ''
+    for (;;) {
+      const bytes = fs.readSync(fd, buf, 0, buf.length, null)
+      if (bytes === 0) break
+      const lines = (carry + decoder.write(buf.subarray(0, bytes))).split('\n')
+      carry = lines.pop() ?? ''
+      for (const line of lines) yield line
+    }
+    carry += decoder.end()
+    if (carry !== '') yield carry
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 /** Parse a transcript JSONL file into ordered tool calls plus a map of tool_use id -> result text. */
 export function parseTranscript(transcriptPath: string): ParsedTranscript {
-  const raw = fs.readFileSync(transcriptPath, 'utf-8')
   const calls: ParsedToolCall[] = []
   const resultTextById = new Map<string, string>()
   const assistantTurns: number[] = []
   const resident = createResidentContextStats()
   let seq = 0
 
-  for (const line of raw.split('\n')) {
+  for (const line of readFileLines(transcriptPath)) {
     const trimmed = line.trim()
     if (trimmed === '') continue
     let obj: unknown

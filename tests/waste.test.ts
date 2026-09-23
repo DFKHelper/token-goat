@@ -23,6 +23,7 @@ import {
   neverTouchedAgain,
   parseTranscript,
   projectTranscriptsDir,
+  readFileLines,
   repeatedUncompressedBashCommands,
   tokensByFile,
   tokensByTool,
@@ -121,7 +122,29 @@ describe('projectTranscriptsDir / findLatestTranscript', () => {
   })
 })
 
+// HAND-DERIVED: the expected lines are the ones this test writes, and the byte offsets it aims at are computed from the chunk size rather than read off the reader. A real transcript cannot be the fixture here -- the case that broke is a file past V8's string cap of about 512 MB, which no fixture can afford to create -- so the two properties that failure actually rests on are asserted directly instead: that a line spanning a chunk boundary is not cut there, and that the parse path never materializes the file as one string, which is the shape that threw `Cannot create a string longer than 0x1fffffe8 characters` against a real 570 MB session transcript.
+describe('readFileLines', () => {
+  it('reassembles lines and multi-byte characters split across the 1 MiB chunk boundary', () => {
+    const CHUNK = 1 << 20
+    const file = path.join(tempDir, 'chunked.txt')
+    // A run of single-byte filler that ends a few bytes before the first chunk boundary, so the
+    // following multi-byte character straddles it and the line containing it spans two reads.
+    const filler = 'a'.repeat(CHUNK - 3)
+    fs.writeFileSync(file, `${filler}étail\nsecond\nno-trailing-newline`, 'utf8')
+
+    expect([...readFileLines(file)]).toEqual([`${filler}étail`, 'second', 'no-trailing-newline'])
+  })
+
+  it('yields nothing for an empty file rather than one empty line', () => {
+    const file = path.join(tempDir, 'empty.txt')
+    fs.writeFileSync(file, '', 'utf8')
+
+    expect([...readFileLines(file)]).toEqual([])
+  })
+})
+
 describe('parseTranscript', () => {
+
   it('extracts tool_use calls in order and matches tool_result text by id', () => {
     const transcript = writeFixture(tempDir, [
       toolUseLine('t1', 'Read', { file_path: '/repo/foo.ts' }),
