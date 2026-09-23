@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -69,8 +70,22 @@ import {
   pruneSystemTempFiles,
   findOrphanedChunkPaths,
   pruneOrphanedChunks,
+  pruneOrphanedVectors,
 } from '../src/index_prune.js'
 import * as embeddingsModule from '../src/embeddings.js'
+
+// Resolved at collection time so the vector test below can be a real skip rather than a body that
+// returns having asserted nothing. Resolution alone, not a vec0 load probe: the test asserts on
+// reclamation, and a build where the module resolves but vec0 will not load already has a
+// dedicated three-state test elsewhere (tests/embeddings_vec_insert.test.ts) whose job that is.
+function sqliteVecInstalled(): boolean {
+  try {
+    createRequire(import.meta.url).resolve('sqlite-vec')
+    return true
+  } catch {
+    return false
+  }
+}
 
 // Count symbol rows for a given normalized path key in the isolated DB.
 function symbolCount(dbPath: string, key: string): number {
@@ -817,6 +832,59 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     expect(vectorCount()).toBe(1)
     expect(pruneOrphanedChunks(dbPath)).toEqual([key])
     expect(vectorCount()).toBe(0)
+  })
+
+  // The mirror of the case above: the chunk row goes and the vector stays. deleteFileEmbeddings
+  // produces this whenever chunk_vectors is unusable (sqlite-vec absent) and purgeDotenvEmbeddings
+  // produces it whenever the vector delete throws, both deliberately -- a leaked chunk row is worse
+  // than a leaked vector. What made it a defect is that nothing then collected the leftover: every
+  // other sweep takes its population from chunks or files rows, which for an orphan are already
+  // gone, so only a full rebuild cleared them.
+  //
+  // Provenance: the ORPHAN SHAPE is CAPTURE -- a read-only query against the maintainer's live
+  // global.db on 2026-09-22 found 6,685 vectors with no chunks row against 212,089 chunks (3.1%),
+  // with rowids spanning both below min(chunks.id) and inside the live id range, so this is an
+  // ongoing leak rather than one historical migration. The rows below are HAND-DERIVED to that
+  // shape: a chunk and its vector, then the chunk row deleted on its own.
+  it.skipIf(!sqliteVecInstalled())('reclaims a vector whose chunk row is already gone, and leaves a live one alone', () => {
+    const db = getDb(dbPath)
+
+    // Through the production helper for the reason the test above records: vec0 rejects a plain JS number for its rowid.
+    const insertVectorStmt = db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)')
+    const insertVector = (id: number): void => { embeddingsModule.insertChunkVector(insertVectorStmt, id, Array(384).fill(0)) }
+    const insertChunk = db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
+    const idOf = (key: string): number => db.prepare('SELECT id FROM chunks WHERE file_path = ?').pluck().get(key) as number
+    const vectorCount = (id: number): number => (db.prepare('SELECT COUNT(*) AS n FROM chunk_vectors_rowids WHERE rowid = ?').get(id) as { n: number }).n
+
+    const orphanKey = normalizePath(path.join(dir, 'orphan-vector.ts'))
+    insertChunk.run(orphanKey, 1, 1, 'export const orphanVectorSym = 1', 'symbol')
+    const orphanId = idOf(orphanKey)
+    insertVector(orphanId)
+
+    // The survival anchor. Without it this test passes just as well against a sweep that deletes
+    // every vector in the table, which would destroy the whole index rather than reclaim a leak.
+    const livePath = path.join(dir, 'live-vector.ts')
+    fs.writeFileSync(livePath, 'export const liveVectorSym = 1\n')
+    const liveKey = normalizePath(livePath)
+    indexFileSync(liveKey, dbPath)
+    insertChunk.run(liveKey, 1, 1, 'export const liveVectorSym = 1', 'symbol')
+    const liveId = idOf(liveKey)
+    insertVector(liveId)
+
+    // Orphan it: the chunk row alone, exactly as the two writers above leave it.
+    db.prepare('DELETE FROM chunks WHERE id = ?').run(orphanId)
+    expect(vectorCount(orphanId)).toBe(1)
+
+    // The gap this function closes. Neither existing sweep can see a row with no chunks entry, so
+    // both report nothing to do while the vector is still there.
+    expect(findOrphanedChunkPaths(dbPath)).not.toContain(orphanKey)
+    expect(pruneOrphanedChunks(dbPath)).toEqual([])
+    expect(vectorCount(orphanId)).toBe(1)
+
+    expect(pruneOrphanedVectors(dbPath)).toBe(1)
+    expect(vectorCount(orphanId)).toBe(0)
+    expect(vectorCount(liveId)).toBe(1)
+    expect(pruneOrphanedVectors(dbPath)).toBe(0)
   })
 
   // Same file, two spellings that differ by separator rather than by case. deleteFileEmbeddings

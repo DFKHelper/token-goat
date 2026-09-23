@@ -187,8 +187,8 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hint_stats.min_sample_size': {min: 1, max: 10000},
   'semantic.archive_weight': {min: 0.05, max: 1},
   'semantic.docs_weight': {min: 0.05, max: 1},
-  // Upper bound 2 is the metric's own ceiling (an L2 distance between unit vectors cannot exceed 2), so the maximum is 'admit everything' rather than an arbitrary cap. The lower bound is not 0: a floor of 0 admits only an exact vector match, which would disable the vector half entirely while `semantic` went on answering in the words it uses for a genuine absence.
-  'semantic.max_distance': {min: 0.05, max: 2},
+  // Upper bound is DEFAULT_DISTANCE_THRESHOLD, not the metric's own ceiling of 2. An L2 distance between unit vectors cannot exceed 2, so 2 reads like 'admit everything' -- but this floor only ever narrows what searchSemantic already returned, and runSemantic lets that scan keep its own 1.2 bound (see the max_distance comment on SemanticConfig for why the scan is the wrong place for a relevance decision). Anything between 1.2 and 2 was therefore discarded inside the scan before the floor could see it: a user raising this to widen recall got the setting accepted, validated and persisted, and identical results, with no diagnostic able to say why. validatedFloat clamps rather than rejects, so an existing value above the new bound becomes 1.2 and behaves exactly as it already did. The lower bound is not 0: a floor of 0 admits only an exact vector match, which would disable the vector half entirely while `semantic` went on answering in the words it uses for a genuine absence.
+  'semantic.max_distance': {min: 0.05, max: 1.2},
 }
 
 /** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/

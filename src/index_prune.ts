@@ -261,6 +261,49 @@ export function pruneOrphanedChunks(dbPath: string = globalDbPath()): string[] {
 }
 
 /**
+ * Delete vectors whose `chunks` row is gone.
+ *
+ * Two writers create them, both deliberately: `deleteFileEmbeddings` makes its vector delete
+ * conditional on `chunk_vectors` being usable but its chunk delete unconditional, and
+ * `purgeDotenvEmbeddings` catches a failed vector delete and clears the chunk row regardless. Both
+ * are right to -- leaking a chunk row is worse than leaking a vector, since the chunk row is what
+ * every scoped query reads. But the leftover vector is then unreachable by every other sweep in
+ * this file and in embeddings.ts: `pruneOrphanedChunks`, `pruneDeletedFiles`, `resetAllEmbeddings`
+ * and `resetEmbeddingsForKinds` all take their population from `chunks` or `files` rows, which for
+ * an orphan are by definition already deleted. Only a full `reclaimIndex({rebuild: true})` -- which
+ * truncates every derived table for every project on the machine -- clears them today.
+ *
+ * Unreclaimed, they cost twice. They inflate the on-disk `chunk_vectors` size that `doctor` reports
+ * without being able to attribute, and every KNN pass spends candidate slots on rows that join to
+ * nothing: `fetchScopedHits` drops them silently, so the loss is invisible at every surface. The
+ * leak is monotonic and has no ceiling, which is why this runs on the same schedule as the others
+ * rather than waiting for a rebuild someone has to ask for.
+ *
+ * Point-deletes by rowid rather than `rowid IN (subquery)`, for the `xBestIndex` reason
+ * `deleteFileEmbeddings` documents: a subquery is opaque to the vec0 planner and degrades to a scan
+ * of the whole index. The whole body is wrapped in one try, which is also the usability probe --
+ * an install without sqlite-vec throws `no such table` or `no such module: vec0` on the first
+ * statement, and has no vectors to reclaim either way.
+ */
+export function pruneOrphanedVectors(dbPath: string = globalDbPath()): number {
+  const db = getDb(dbPath)
+  try {
+    const ids = db
+      .prepare('SELECT v.rowid AS id FROM chunk_vectors v LEFT JOIN chunks c ON c.id = v.rowid WHERE c.id IS NULL')
+      .pluck()
+      .all() as number[]
+    if (ids.length === 0) return 0
+    const deleteVector = db.prepare('DELETE FROM chunk_vectors WHERE rowid = ?')
+    db.transaction(() => {
+      for (const id of ids) deleteVector.run(id)
+    }).immediate()
+    return ids.length
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Record that `filePath`'s project root was just observed alive (an edit was made under it).
  *
  * Feeds {@link sweepKnownRoots}: without a registry of which roots have ever been indexed, the
@@ -296,6 +339,8 @@ export interface KnownRootsSweepResult {
   readonly flaggedRoots: readonly string[]
   /** Paths whose embedding chunks outlived their `files` row -- see {@link findOrphanedChunkPaths}. */
   readonly prunedOrphanChunkPaths: readonly string[]
+  /** Vectors whose `chunks` row was already gone -- see {@link pruneOrphanedVectors}. */
+  readonly prunedOrphanVectors: number
 }
 
 /**
@@ -391,8 +436,11 @@ export function sweepKnownRoots(
   // loop just deleted has already released its chunks through removeFileFromIndex's transaction,
   // leaving only genuinely half-applied leftovers for this pass to clear.
   const prunedOrphanChunkPaths = pruneOrphanedChunks(dbPath)
+  // After the chunk sweep, not before: that pass deletes chunk rows, and any vector it could not
+  // delete alongside them becomes an orphan this pass then collects in the same run.
+  const prunedOrphanVectors = pruneOrphanedVectors(dbPath)
 
-  return { prunedRows, prunedRoots, flaggedRoots, prunedOrphanChunkPaths }
+  return { prunedRows, prunedRoots, flaggedRoots, prunedOrphanChunkPaths, prunedOrphanVectors }
 }
 
 /** Minimum time between {@link recordKnownRootThrottled} writes for the SAME parent directory, so a burst of edit-hook calls (e.g. a multi-file refactor within one folder) doesn't hit the DB on every single one -- roots don't change often enough to need per-edit tracking. */

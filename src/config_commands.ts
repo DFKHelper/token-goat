@@ -19,7 +19,7 @@ import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
-import { findOrphanedChunkPaths, findSystemTempFiles, pruneBlockedRoot, pruneOrphanedChunks, pruneSystemTempFiles } from './index_prune.js'
+import { findOrphanedChunkPaths, findSystemTempFiles, pruneBlockedRoot, pruneOrphanedChunks, pruneOrphanedVectors, pruneSystemTempFiles } from './index_prune.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
@@ -625,13 +625,15 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     invalidateConfigCache()
     const prunedTempFiles = pruneSystemTempFiles()
     const prunedOrphanChunks = pruneOrphanedChunks()
+    const prunedOrphanVectors = pruneOrphanedVectors()
     if (opts.json === true) {
-      emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length }))
+      emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length, prunedOrphanVectors }))
       return
     }
     emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
     emit(`Pruned ${prunedTempFiles.length} stale indexed temp-dir file(s).`)
     emit(`Pruned orphaned embedding chunks for ${prunedOrphanChunks.length} file(s).`)
+    emit(`Pruned ${prunedOrphanVectors} orphaned embedding vector(s).`)
     return
   }
 
