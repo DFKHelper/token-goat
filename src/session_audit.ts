@@ -566,7 +566,8 @@ function deepStringBytes(value: unknown): number {
 }
 
 /** The generic mid-trim marker every tool filter's line cap emits (tool_filters/helpers.ts), plus the git.ts spellings. */
-const OMISSION_MARKER_RE = /(?:--- (\d+) lines omitted ---|\[token-goat: \+?(\d+) more [a-z ]*lines omitted\]|--- patch: (\d+) lines omitted by token-goat ---|\.\.\. (\d+) lines omitted by token-goat \.\.\.)/g
+// `more` is optional because not every filter writes it: the cloud filter's spelling is `[token-goat: N plan detail lines omitted]`, which fell straight through this and left its discarded lines out of the census entirely. tests/guards/omission_markers_are_all_countable.test.ts renders every marker template in src/tool_filters against this pattern, so the next spelling fails the suite rather than going uncounted.
+export const OMISSION_MARKER_RE = /(?:--- (\d+) lines omitted ---|\[token-goat: \+?(\d+) (?:more )?[a-z ]*lines omitted\]|--- patch: (\d+) lines omitted by token-goat ---|\.\.\. (\d+) lines omitted by token-goat \.\.\.)/g
 
 /** Flatten a tool_result `content` field (string or array of text blocks) to its text length and text. */
 function toolResultText(content: unknown): string {
@@ -826,7 +827,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
               // which open deny they belong to -- a call can resolve several open denies from earlier
               // in the file.
               if (openDenies.length > 0) {
-                const bashCommand = name === 'Bash' && typeof input['command'] === 'string' ? input['command'] : undefined
+                // Folded, because the only thing this is compared against is o.basename, which comes from readPathById and so has already been through normalizeReadPath's toLowerCase. Matching a lower-cased basename against a raw command line booked every capitalised filename as abandoned -- CLAUDE.md, README.md, MEMORY.md -- which is most of the corpus for the markdown deny kinds. SURGICAL_COMMAND_RE and SHELL_READER_TOKEN_RE hold only lower-case literals, so folding cannot weaken either. Used for matching only; nothing downstream displays it.
+                const bashCommand = name === 'Bash' && typeof input['command'] === 'string' ? input['command'].toLowerCase() : undefined
                 for (const o of openDenies) {
                   if (o.toolCalls.length >= 10) continue
                   const isReadSamePath = readNorm !== undefined && o.path !== '' && readNorm === o.path

@@ -608,3 +608,53 @@ describe('Edit-error canary and corpus-wide baseline (TASK C)', () => {
     expect(parsed.denyOutcomes).toEqual(s.denyOutcomes)
   })
 })
+
+/**
+ * Regression: a denied path's basename is taken from readPathById, which stores
+ * normalizeReadPath's output -- lower-cased. The two Bash-side classifiers beside it matched that
+ * lower-cased basename against the raw command line: `bashCommand.includes(o.basename)` for
+ * 'substituted', and shellReadMatch's own `command.includes(basename)` plus an un-flagged RegExp
+ * for 'shell_read'. Any file whose name carries an upper-case character therefore never matched,
+ * and its follow-up was booked as 'abandoned'. The kinds this hit are the ones whose targets are
+ * conventionally capitalised -- CLAUDE.md, README.md, MEMORY.md, SKILL.md -- so the census
+ * under-reported exactly the denies it is most often read for. The retry and edit classifiers were
+ * always immune: both normalise each side before comparing.
+ *
+ * HAND-DERIVED: the two commands are the ordinary spellings a follow-up takes, written against an
+ * upper-case filename rather than read off either matcher.
+ */
+describe('deny outcomes for an upper-case basename', () => {
+  let caseDir = ''
+
+  beforeAll(() => {
+    caseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-case-'))
+
+    writeProject(caseDir, 'surgical-uppercase', [
+      use('u1', 'Read', { file_path: 'docs/CLAUDE.md' }),
+      result('u1', LARGE_DENY_TEXT),
+      use('u2', 'Bash', { command: 'token-goat section "docs/CLAUDE.md::Commands"' }),
+      result('u2', 'ok'),
+    ])
+
+    writeProject(caseDir, 'shell-read-uppercase', [
+      use('u3', 'Read', { file_path: 'docs/README.md' }),
+      result('u3', LARGE_DENY_TEXT),
+      use('u4', 'Bash', { command: "sed -n '1,40p' docs/README.md" }),
+      result('u4', 'file contents'),
+    ])
+  })
+
+  afterAll(() => {
+    fs.rmSync(caseDir, { recursive: true, force: true })
+  })
+
+  it('credits a surgical command and a shell read against a capitalised filename', async () => {
+    const s = await auditSessionCorpus({ dir: caseDir })
+    const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
+    expect(row).toBeDefined()
+    expect(row!.count).toBe(2)
+    expect(row!.substitutedRate * row!.count).toBe(1)
+    expect(row!.shellReadRate * row!.count).toBe(1)
+    expect(row!.abandonedRate).toBe(0)
+  })
+})

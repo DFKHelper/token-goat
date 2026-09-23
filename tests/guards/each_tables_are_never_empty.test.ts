@@ -70,6 +70,11 @@ const EXEMPT: readonly Exemption[] = [
     reason: 'jobsRestoringTheModelCache() returns the result of pinnedPopulation(), which fails on an empty or under-floor population before any table is built from it.',
   },
   {
+    file: 'tests/guards/omission_markers_are_all_countable.test.ts',
+    table: 'markers.map((m) => [`${m.file}: ${m.template}`, m.rendered] as const)',
+    reason: 'markers is the return value of renderedMarkers(), which passes its scan through pinnedPopulation() with a floor of 8 and two anchors before returning, so a filter tree that stopped yielding markers fails there rather than registering zero cases here.',
+  },
+  {
     file: 'tests/guards/no_color_bypass.test.ts',
     table: 'SCANNED',
     reason: 'SCANNED is the direct return value of pinnedPopulation(), which fails on an empty or under-350 population before this table is used.',
