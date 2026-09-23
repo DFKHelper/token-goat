@@ -228,12 +228,24 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
 
   // HAND-DERIVED: the dirty state is made on disk by this test and the expectation follows from what the adaptive bonus is for -- a wider cap prints more rows, so a sample taken under the wider cap must be at least as large as one taken under the narrower. Nothing is read off the budget arithmetic. The post-compact canary used to rebuild the manifest with no cwd at all, scoring survival against a manifest shorter than the one that was actually sent: the rows it silently dropped were the tail, which is exactly what a summary is least likely to keep, so the ratio came back better than the truth -- the one direction a canary is not allowed to be wrong in.
   it('samples the manifest the hook emitted, not a narrower rebuild of it', async () => {
-    // The cap scales with the row width this host produces rather than staying at CONFIGURED_CAP, because the bonus is a fixed character budget while a row costs whatever an absolute path costs here: how many rows each side prints is floor(budget / rowWidth) against floor((budget + bonus) / rowWidth), and at a fixed budget there are row widths where those two floors are equal. Measured on this repo, a 300-char cap gives 4 against 3 at a 75-char row but 2 against 2 at 112 to 114 -- and a row is a path under the OS temp directory, so which band a runner lands in is decided by where that directory sits. macOS puts it under /private/var/folders/..., which is long enough to reach the dead band that Linux's /tmp never does, and this read 2 > 2 there while passing everywhere else. Holding the budget proportional to the row keeps both floors fixed on every platform.
-    const capForRow = path.join(repoDir, 'edited0.ts').length * 4
-    const scaled = defaultConfig()
-    scaled.compact_assist.max_manifest_chars = capForRow
-    scaled.hints.git_hint_max_ms = 5000
-    saveConfig(scaled)
+    // Short fixed-width rows, and a cap read off the manifest this run rendered, because the bonus is a fixed number of CHARACTERS while a row costs whatever an absolute path costs: the rows each side prints are floor(budget / rowWidth) against floor((budget + bonus) / rowWidth), so once a row is wider than the whole bonus the two floors are equal and the boost buys nothing. The seeded rows used to be repoDir-shaped, which makes their width a property of where the OS puts its temp directory -- macOS's /private/var/folders/... reaches that point and Linux's /tmp does not, so this read 2 > 2 on macOS alone. Scaling the cap with the row does not fix it either, since the bonus stays fixed as the row grows; only taking the host's path length out of the row does. repoDir remains the cwd, so the git signal under test is still the real one, and recordFileEdit never opens these paths.
+    resetSessionState()
+    for (let i = 0; i < 5; i++) recordFileEdit(`/tg-budget/e${i}.ts`)
+    saveSessionState(SESSION_ID)
+
+    const wide = defaultConfig()
+    wide.compact_assist.max_manifest_chars = 100_000
+    wide.hints.git_hint_max_ms = 5000
+    saveConfig(wide)
+    invalidateConfigCache()
+    const full = buildManifest(SESSION_ID)
+    const firstRowEnd = full.indexOf('\n', full.indexOf('- /tg-budget/e0.ts'))
+    expect(firstRowEnd, 'the seeded rows must render, or this asserts nothing').toBeGreaterThan(0)
+
+    const narrow = defaultConfig()
+    narrow.compact_assist.max_manifest_chars = firstRowEnd + 1
+    narrow.hints.git_hint_max_ms = 5000
+    saveConfig(narrow)
     invalidateConfigCache()
 
     fs.writeFileSync(path.join(repoDir, 'tracked.txt'), 'changed\n')

@@ -188,11 +188,13 @@ function propertyElements(content: string): Array<{ name: string; offset: number
   return out
 }
 
-function makeRef(content: string, filePath: string, name: string, offset: number): RefEntry {
-  const before = content.slice(0, offset)
-  const line = before.split(/\r?\n/).length
-  const lineStart = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) + 1
-  const sourceLine = content.slice(lineStart).split(/\r?\n/, 1)[0] ?? ''
+/** Locate one ref, resolving its line through the shared index this file already builds for symbols rather than by measuring the prefix again per ref. Copying and splitting `content.slice(0, offset)` costs the whole prefix on every call, so extraction was quadratic in the number of refs: a FlexiPage with 10,000 component references, a shape a large org really produces, copied several gigabytes of string -- 2.8 s here and over 132 s on a slower machine, past the suite's own per-test timeout. The curve measured exactly quadratic, 46, 177, 693 and 2794 ms as the count doubled from 1,250 to 10,000. Reading the line start out of the index costs a binary search instead, and a single `indexOf` bounds the context slice to one line rather than to everything after it. */
+function makeRef(content: string, lineIndex: readonly number[], filePath: string, name: string, offset: number): RefEntry {
+  const line = offsetToLine(lineIndex, offset)
+  const lineStart = lineIndex[line - 1] ?? 0
+  // The next line's start, not a search for the next newline: on a document written as one long line -- which is how a generated FlexiPage or a serialized Flow usually arrives -- there is no newline to find, so each search ran to the end of the file and put the quadratic straight back, at the same cost as the prefix slice this replaced.
+  const nextStart = lineIndex[line] ?? content.length + 1
+  const sourceLine = content.slice(lineStart, nextStart - 1)
   return { filePath, name, line, col: offset - lineStart, context: sourceLine.trim() }
 }
 
@@ -208,13 +210,14 @@ function addTagRefs(
   refs: RefEntry[],
   seen: Set<string>,
   content: string,
+  lineIndex: readonly number[],
   filePath: string,
   tags: readonly string[],
 ): void {
   for (const tag of tags) {
     for (const block of elementBlocks(content, tag)) {
       const name = decodeXml(block.inner.trim())
-      if (name !== '') emitRef(refs, seen, makeRef(content, filePath, name, block.offset))
+      if (name !== '') emitRef(refs, seen, makeRef(content, lineIndex, filePath, name, block.offset))
     }
   }
 }
@@ -285,6 +288,8 @@ export function extractSalesforceMetadata(
 ): { symbols: SymbolEntry[]; refs: RefEntry[] } {
   // Blank `<!-- ... -->` spans up front so every regex-based extractor below scans only live XML and never mistakes commented-out metadata for the real thing; blanking (not deleting) preserves line/column offsets.
   const content = stripXmlComments(rawContent)
+  // Built once for the whole extraction rather than per branch: two branches below each built their own from this same string, while every ref resolved its line by re-measuring the prefix instead of consulting an index at all.
+  const lineIndex = buildLineIndex(content)
   const symbols: SymbolEntry[] = []
   const seen = new Set<string>()
   const refs: RefEntry[] = []
@@ -316,7 +321,7 @@ export function extractSalesforceMetadata(
     const name = basenameWithout(filePath, '.flow-meta.xml')
     emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_flow', whole))
     addFlowElements(symbols, seen, content, filePath, name)
-    addTagRefs(refs, seenRefs, content, filePath, ['actionName', 'flowName'])
+    addTagRefs(refs, seenRefs, content, lineIndex, filePath, ['actionName', 'flowName'])
     for (const tag of ['recordLookups', 'recordCreates', 'recordUpdates', 'recordDeletes']) {
       for (const block of elementBlocks(content, tag)) {
         const objectBlock = elementBlocks(block.text, 'object')[0]
@@ -328,7 +333,7 @@ export function extractSalesforceMetadata(
         // almost always a substring of the enclosing <name> tag, which serializes before <object> --
         // a plain indexOf locks onto that earlier, unrelated occurrence instead of the real <object> tag.
         const objectOffset = block.offset + objectBlock.offset
-        emitRef(refs, seenRefs, makeRef(content, filePath, objectName, objectOffset))
+        emitRef(refs, seenRefs, makeRef(content, lineIndex, filePath, objectName, objectOffset))
         // A running cursor into block.text, not a fresh indexOf(field.text) each time: two
         // <filters>/<inputAssignments> entries referencing the same field name inside one
         // recordLookups/recordCreates/recordUpdates/recordDeletes block is a normal Flow
@@ -343,7 +348,7 @@ export function extractSalesforceMetadata(
           const idx = block.text.indexOf(field.text, fieldSearchFrom)
           const offset = block.offset + (idx >= 0 ? idx : 0)
           if (idx >= 0) fieldSearchFrom = idx + field.text.length
-          emitRef(refs, seenRefs, makeRef(content, filePath, `${objectName}.${fieldName}`, offset))
+          emitRef(refs, seenRefs, makeRef(content, lineIndex, filePath, `${objectName}.${fieldName}`, offset))
         }
       }
     }
@@ -393,7 +398,6 @@ export function extractSalesforceMetadata(
   emit(symbols, seen, makeSpanSymbol(filePath, name, `sf_${snakeCase(root)}`, whole))
 
   if (base.endsWith('.labels-meta.xml')) {
-    const lineIndex = buildLineIndex(content)
     for (const block of elementBlocks(content, 'labels')) {
       const labelName = xmlText(block.inner, 'fullName')
       if (labelName === null) continue
@@ -411,7 +415,6 @@ export function extractSalesforceMetadata(
   }
 
   if (base.endsWith('.js-meta.xml')) {
-    const lineIndex = buildLineIndex(content)
     const lwcSeen = new Set<string>()
     for (const target of elementBlocks(content, 'target')) {
       const targetName = decodeXml(target.inner.trim())
@@ -450,11 +453,11 @@ export function extractSalesforceMetadata(
   }
 
   if (base.endsWith('.flexipage-meta.xml')) {
-    addTagRefs(refs, seenRefs, content, filePath, ['sobjectType', 'componentName'])
+    addTagRefs(refs, seenRefs, content, lineIndex, filePath, ['sobjectType', 'componentName'])
   } else if (base.endsWith('.quickaction-meta.xml')) {
-    addTagRefs(refs, seenRefs, content, filePath, ['targetObject', 'lightningComponent'])
+    addTagRefs(refs, seenRefs, content, lineIndex, filePath, ['targetObject', 'lightningComponent'])
   } else if (base.endsWith('.messagechannel-meta.xml')) {
-    addTagRefs(refs, seenRefs, content, filePath, ['fieldName'])
+    addTagRefs(refs, seenRefs, content, lineIndex, filePath, ['fieldName'])
   }
 
   return { symbols, refs }
