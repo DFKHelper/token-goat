@@ -49,6 +49,8 @@ const DISCLOSED_TABLES = [
   'hint_emissions',
   'hint_manual_marks',
   'hint_suppression_probes',
+  // Holds a file path and a small integer counting how many times reading that path failed -- no file content, same judgement as known_roots just below. It exists so a failed read can be counted without minting a row in `files`, where a row is supposed to mean "this file is indexed".
+  'index_retries',
   'known_roots',
   'notes',
   // Holds a file path (the resume point for a budget-truncated reconcile sweep) and a timestamp --

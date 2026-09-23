@@ -75,8 +75,7 @@ type Bucket =
   /** Deliberately invalidates embed_sha (sets it NULL) because the chunks/vectors it described were
    * just removed or are about to be recomputed -- an intentional reset, not an accidental drop. */
   | 'deliberately-clears-embed-sha'
-  /** Touches only unrelated columns (retry_count, mtime bookkeeping); embed_sha is not part of this
-   * statement's column list at all, so there is nothing to carry forward or drop. */
+  /** Touches only unrelated columns (mtime or other bookkeeping); embed_sha is not part of this statement's column list at all, so there is nothing to carry forward or drop. No write site is in this bucket today -- the retry counters that used to be were moved out of `files` into `index_retries`, so a `files` row again means "this file is indexed". */
   | 'does-not-touch-the-embed-sha-column'
 
 interface Classification {
@@ -128,27 +127,6 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     {
       bucket: 'deliberately-clears-embed-sha',
       reason: 'clearEmbedSha explicitly invalidates the stamp before this file\'s content is re-chunked/re-embedded from scratch, so a crash between the clear and the next successful embed leaves the row correctly marked stale rather than falsely current.',
-    },
-  ],
-  [
-    'worker.ts::UPDATE files SET retry_count = ? WHERE',
-    {
-      bucket: 'does-not-touch-the-embed-sha-column',
-      reason: 'Bumps only the transient-read-failure retry counter; embed_sha is not in this statement\'s column list.',
-    },
-  ],
-  [
-    'worker.ts::INSERT INTO files (path, retry_count) VALUES (?, 1',
-    {
-      bucket: 'does-not-touch-the-embed-sha-column',
-      reason: 'First-failure bookkeeping row for a path with no files row yet; only path/retry_count are written, embed_sha is left at its column default (NULL), which is correct for a file that has never been parsed or embedded.',
-    },
-  ],
-  [
-    'worker.ts::UPDATE files SET retry_count = 0 WHERE',
-    {
-      bucket: 'does-not-touch-the-embed-sha-column',
-      reason: 'Clears the retry counter once a fingerprint read succeeds; embed_sha is not in this statement\'s column list.',
     },
   ],
   [

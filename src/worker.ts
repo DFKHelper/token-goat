@@ -123,7 +123,7 @@ function listDrainingFiles(queuePath: string): string[] {
 const MAX_TRANSIENT_RETRIES = 5
 
 /**
- * Read and increment `files.retry_count` for `absPath` in the index DB at `dbPath`, creating a placeholder `files` row (every other column left unset) if the path has never been indexed yet. Returns the count AFTER incrementing.
+ * Read and increment `index_retries.retry_count` for `absPath` in the index DB at `dbPath`, creating the row if the path has no streak yet. Returns the count AFTER incrementing. The counter lives in its own table rather than in `files` because a path that has never been indexed has no `files` row: minting one here to hold the counter made a `files` row stop meaning "this file is in the index", and `indexMatchesDisk`, `healStaleIndex` and `staleWarning` all read such a row as a legacy pre-fingerprinting entry and accept it as-is. See the `index_retries` comment in db.ts.
  *
  * Persisted in the index DB rather than an in-memory Map so the count survives across the hook-process/daemon-process boundary -- see {@link clearRetryCount}'s doc comment for the cross-process bug this closes. Matched by the same folded-path convention as every other file_path/path comparison in this codebase (see {@link foldPath}, {@link pathEqClause}), so a case-variant reference to the same file on a case-insensitive filesystem shares one counter. Wrapped in a transaction so the read-then-write is atomic against a concurrent writer (the daemon and a CLI hook process both have DB access).
  */
@@ -133,15 +133,15 @@ function bumpRetryCount(dbPath: string, absPath: string): number {
   const normalized = normalizePath(absPath)
   const folded = foldPath(normalized)
   const tx = db.transaction((): number => {
-    const row = db.prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`).get(folded) as
+    const row = db.prepare(`SELECT retry_count FROM index_retries WHERE ${pathEqClause('path')}`).get(folded) as
       | { retry_count: number | null }
       | undefined
     if (row !== undefined) {
       const next = (row.retry_count ?? 0) + 1
-      db.prepare(`UPDATE files SET retry_count = ? WHERE ${pathEqClause('path')}`).run(next, folded)
+      db.prepare(`UPDATE index_retries SET retry_count = ? WHERE ${pathEqClause('path')}`).run(next, folded)
       return next
     }
-    db.prepare('INSERT INTO files (path, retry_count) VALUES (?, 1)').run(normalized)
+    db.prepare('INSERT INTO index_retries (path, retry_count) VALUES (?, 1)').run(normalized)
     return 1
   })
   // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN, which takes a read snapshot first and only asks for the write lock at the first writing statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright. This database is shared by the worker daemon, the hook processes and the CLI at once, so that is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
@@ -149,11 +149,11 @@ function bumpRetryCount(dbPath: string, absPath: string): number {
 }
 
 /**
- * Reset `files.retry_count` to 0 for `absPath` in the index DB at `dbPath`. Best-effort: a DB error here (e.g. the DB does not exist yet) must not block the caller's own already-completed work. No-op if the path has no `files` row yet -- nothing to reset.
+ * Drop `absPath`'s transient-failure streak in the index DB at `dbPath`. Best-effort: a DB error here (e.g. the DB does not exist yet) must not block the caller's own already-completed work. No-op if the path has no streak -- nothing to reset.
  *
  * Called from {@link processDirtyBatch} for every path whose `fingerprintFile` read succeeds during a drain, so a path that built up a retry streak during a transient lock episode (an antivirus scan, an editor holding the file, a OneDrive sync) starts from a full budget again the moment it can actually be read.
  *
- * The count is kept in the index DB (`files.retry_count`) rather than an in-memory Map because the processes involved do not share a heap: the edit hook runs in a short-lived CLI process while the drain loop that reads the count runs in the long-lived detached daemon. A reset that only mutated a module-level Map would be invisible to the daemon's own copy of it and would silently do nothing in the real deployed topology -- an exhausted path would stay permanently given-up-on. The index DB is the one thing both processes already share, as they do for `files.sha` and `files.embed_sha`.
+ * The count is kept in the index DB (`index_retries`) rather than an in-memory Map because the processes involved do not share a heap: the edit hook runs in a short-lived CLI process while the drain loop that reads the count runs in the long-lived detached daemon. A reset that only mutated a module-level Map would be invisible to the daemon's own copy of it and would silently do nothing in the real deployed topology -- an exhausted path would stay permanently given-up-on. The index DB is the one thing both processes already share, as they do for `files.sha` and `files.embed_sha`.
  *
  * `appendDirtyPath` (`hooks_index.ts`) deliberately does NOT call this on the edit-hook path; its comment there explains why, and the drain-time reset above is what covers that case.
  */
@@ -162,7 +162,7 @@ export function clearRetryCount(dbPath: string, absPath: string): void {
     const db = getDb(dbPath)
     // See bumpRetryCount's doc comment: normalize defensively to match the normalized form the row was written under.
     const folded = foldPath(normalizePath(absPath))
-    db.prepare(`UPDATE files SET retry_count = 0 WHERE ${pathEqClause('path')}`).run(folded)
+    db.prepare(`DELETE FROM index_retries WHERE ${pathEqClause('path')}`).run(folded)
   } catch {
     // best-effort -- see doc comment above.
   }

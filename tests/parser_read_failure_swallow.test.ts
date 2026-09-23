@@ -154,13 +154,10 @@ describe('indexFileSync read-failure handling (regression)', () => {
 
     // The bad file must not be counted as a successful index...
     expect(count).toBe(1)
-    // ...and no index content was written for it. A bare `toBeNull()` here used to stand in for that, and it stopped being true once a failed index started leaving a retry-bookkeeping row (see processDirtyBatch's INDEX_FAILED branch): the row is the retry budget, carrying a path and a count and nothing else. What must hold is that it carries no extraction -- no sha, no timestamp, no symbols.
-    // Looked up in the spelling `bumpRetryCount` writes (normalizePath's forward-slash form), not the native one: `getFileEntry` folds case but does not normalize separators, so a bare `path.join` spelling misses the row on Windows and hits it on Linux. That divergence is what let the old assertion read as green here and fail in CI.
+    // ...and it has no `files` row at all. This assertion was inverted for a while: the retry budget used to be kept as a placeholder `files` row carrying a path and a count and nothing else, and rather than treat that as the defect it is, the test was rewritten to assert the placeholder was there and merely carried no extraction. A `files` row is what `indexMatchesDisk`, `healStaleIndex` and `staleWarning` read as "this file is in the index", so a row with no sha reads to all three as a legacy pre-fingerprinting entry and suppresses the on-demand heal for a file that was never indexed. The budget now lives in `index_retries`; see the db.ts comment there.
+    // Looked up in the normalizePath (forward-slash) spelling rather than the native one: `getFileEntry` folds case but does not normalize separators, so a bare `path.join` spelling misses on Windows and hits on Linux -- the divergence that once let a wrong assertion read green here and fail in CI.
     const badEntry = getFileEntry(normalizePath(bad), projectDb)
-    // The retry row is found, not merely absent: without this the two checks below would pass just as well on a lookup that matched nothing.
-    expect(badEntry).not.toBeNull()
-    expect(badEntry?.sha ?? '').toBe('')
-    expect(badEntry?.indexedAt ?? 0).toBe(0)
+    expect(badEntry, 'a files row means the file is in the index').toBeNull()
     expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, projectDb).length).toBe(0)
     // ...and the path is back in the queue rather than dropped, which is the guarantee that row exists to serve.
     expect(fs.readFileSync(path.join(TMP, 'queue', 'dirty.txt'), 'utf8')).toContain(bad)

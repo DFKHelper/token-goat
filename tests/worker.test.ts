@@ -59,13 +59,22 @@ function writeWorkerHeartbeat(dir: string, pid = process.pid): void {
   fs.writeFileSync(heartbeatPath, `${pid}\n`)
 }
 
-// Reads files.retry_count for absPath the same way bumpRetryCount (worker.ts) writes it -- via normalizePath()/foldPath()/pathEqClause() -- so this observes the exact same row a real transient-failure requeue bumps, regardless of which textual form (backslash or normalized) the caller passes in.
+// Reads index_retries.retry_count for absPath the same way bumpRetryCount (worker.ts) writes it -- via normalizePath()/foldPath()/pathEqClause() -- so this observes the exact same row a real transient-failure requeue bumps, regardless of which textual form (backslash or normalized) the caller passes in.
 function getRetryCount(dbPath: string, absPath: string): number {
   const db = getDb(dbPath)
   const row = db
-    .prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`)
+    .prepare(`SELECT retry_count FROM index_retries WHERE ${pathEqClause('path')}`)
     .get(foldPath(normalizePath(absPath))) as { retry_count: number | null } | undefined
   return row?.retry_count ?? 0
+}
+
+// How many `files` rows exist for absPath, read under the same folded-path convention.
+function countFilesRows(dbPath: string, absPath: string): number {
+  const db = getDb(dbPath)
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM files WHERE ${pathEqClause('path')}`)
+    .get(foldPath(normalizePath(absPath))) as { n: number }
+  return row.n
 }
 
 beforeEach(() => {
@@ -571,6 +580,19 @@ describe('processDirtyBatch', () => {
 
     processDirtyBatch([lockedPathNormalized], undefined, undefined, DIR)
     expect(getRetryCount(dbPath, lockedPath)).toBe(2)
+  })
+
+  // PROVENANCE: CAPTURE. Reproduced against the code this replaced, by the same technique the two tests above use (a directory at the queued path, so the read fails for real). One transient failure on a never-indexed file inserted `(path, retry_count=1)` into `files` with every other column NULL. `getFileEntry` coerces a NULL sha to '', and three readers -- `indexMatchesDisk` (index_freshness.ts) and `healStaleIndex`/`staleWarning` (read_commands.ts) -- read a row with no sha as a legacy pre-fingerprinting entry and accept it as-is. So the file looked indexed while having no symbols at all, and the on-demand heal that exists for exactly this case ("the worker has not caught up") was disabled for it permanently: `token-goat read "file::sym"` answered "not found" until something edited the file again. Measured on the shipped CLI: the same command returned the symbol body once the placeholder row was deleted.
+  it('does not mint a files row for a path that failed to be read and was never indexed', () => {
+    const lockedPath = path.join(DIR, 'locked-noplaceholder.ts')
+    fs.mkdirSync(lockedPath) // exists, but reading it as a file throws EISDIR (transient failure)
+    const dbPath = path.join(DIR, 'global.db')
+
+    processDirtyBatch([lockedPath], undefined, undefined, DIR)
+
+    // The counter still has to work -- a fix that simply stopped counting would also pass the line below it.
+    expect(getRetryCount(dbPath, lockedPath)).toBe(1)
+    expect(countFilesRows(dbPath, lockedPath), 'a files row means the file is in the index').toBe(0)
   })
 
   it('clearRetryCount clears the counter even when called with a differently-formed path than the one that wrote it', () => {
