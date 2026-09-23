@@ -62,6 +62,7 @@ import { canShrinkFormat, isImagePath, probeImageMeta, shrinkImage, ImageDecodeE
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
+import { forEachSymbol } from './symbol_scan.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
 import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
 
@@ -840,18 +841,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
   if (opts.name !== undefined) queryOpts.name = queryOpts.filePath !== undefined ? stripHtmlIdSpelling(opts.name, queryOpts.filePath) : opts.name
   if (opts.kind !== undefined) queryOpts.kind = opts.kind
-  // `--grep` filters client-side on NAME (no regex support in SQL), so the SQL `LIMIT` must
-  // scan well past the caller's requested --limit -- otherwise a project whose matching symbols
-  // aren't in the first `limit` unfiltered rows silently under-returns. Over-fetch with
-  // FIND_SCAN_LIMIT (the same bound the near-name scan below already uses), filter, THEN slice
-  // to the real requested limit below: filtering after the slice would return however many of
-  // the top-N unfiltered rows happen to match, not N matching rows.
-  // `--exclude-tests` filters client-side on file path for the same reason and needs the same
-  // headroom: with a plain `--limit N`, N test-file symbols could fill the SQL result set and
-  // leave nothing to show after filtering, reporting "no matches" for a symbol that is indexed.
-  if (matchesGrep !== undefined || excludeTests || excludeVendored) {
-    queryOpts.limit = FIND_SCAN_LIMIT
-  } else if (opts.limit !== undefined) {
+  // `--grep` filters client-side on NAME (no regex support in SQL) and `--exclude-tests`/`--exclude-vendored` on file path, so none of the three can become a SQL `LIMIT`: filtering after the slice returns however many of the top-N unfiltered rows happen to match, not N matching rows, and N test-file symbols could fill the result set and leave nothing to show, reporting "no matches" for a symbol that is indexed. That was papered over by over-fetching 20,000 rows first, which is a cap all the same -- three indexed projects on the machine this was measured on exceed it -- so the filtered path now walks the whole scope (src/symbol_scan.ts) and keeps only what it will print. The unfiltered path keeps its SQL `LIMIT`, which is exact there because nothing narrows the rows after the query.
+  const anyClientFilter = matchesGrep !== undefined || excludeTests || excludeVendored
+  // Matches querySymbols's own fallback, so the unfiltered path's SQL `LIMIT` and the filtered path's keep-ceiling stay the same number rather than two spellings of it.
+  const effectiveLimit = opts.limit ?? DEFAULT_QUERY_LIMIT
+  if (!anyClientFilter && opts.limit !== undefined) {
     queryOpts.limit = opts.limit
   }
   // Only scope a bare-name search to projectRoot; when `file` already pins an exact indexed
@@ -861,31 +855,43 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // searches this project instead of the whole machine.
   if (opts.file === undefined && queryOpts.rootDir === undefined && confinedRoot !== null) queryOpts.rootDir = confinedRoot
 
-  let rawResults = querySymbols(queryOpts)
+  // One pass over the scope that keeps only the rows this call can print, alongside the exact counts the notices below quote. Both shapes run through it so the filter, the counts and the heal retry stay in one place: a client-filtered call walks every row, a plain lookup takes the single SQL-limited page it always did.
+  interface SymbolSweep { kept: SymbolEntry[]; keptCount: number; scanned: number; hiddenByExcludeTests: number; files: Set<string> }
+  const runSweep = (): SymbolSweep => {
+    const found: SymbolSweep = { kept: [], keptCount: 0, scanned: 0, hiddenByExcludeTests: 0, files: new Set() }
+    const take = (s: SymbolEntry): void => {
+      found.scanned++
+      found.files.add(s.filePath)
+      const nameKept = matchesGrep === undefined || matchesGrep(s.name)
+      if (nameKept && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath))) {
+        found.keptCount++
+        if (found.kept.length < effectiveLimit) found.kept.push(s)
+      } else if (excludeTests && nameKept && isTestFile(s.filePath)) {
+        // Counted after --grep so the two filters never report the same row twice; only used to explain an empty result below.
+        found.hiddenByExcludeTests++
+      }
+    }
+    if (anyClientFilter) forEachSymbol(queryOpts, take)
+    else for (const row of querySymbols(queryOpts)) take(row)
+    return found
+  }
+
+  let sweep = runSweep()
   // A bare `symbol NAME` names no file, so the pre-query heal above never ran for it -- and that is the form `symbol --help` documents first. It answered from stale rows with no warning at all, while `read "file::symbol"` against the same file self-healed and returned the current body: the same data, two documented commands, two different answers. Heal whatever the query actually hit, then ask again.
   let stillStale: ReadonlySet<string> = EMPTY_PATH_SET
   if (opts.file === undefined) {
-    const heal = healStaleResultFiles(rawResults.map((s) => s.filePath))
+    const heal = healStaleResultFiles([...sweep.files])
     stillStale = heal.stillStale
-    if (heal.healed) rawResults = querySymbols(queryOpts)
+    if (heal.healed) sweep = runSweep()
   }
-  const preFilterCount = rawResults.length
-  const effectiveLimit = opts.limit ?? 100
-  const anyClientFilter = matchesGrep !== undefined || excludeTests || excludeVendored
-  const filtered = anyClientFilter
-    ? rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(s.name)) && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath)))
-    : rawResults
-  const unordered = anyClientFilter ? filtered.slice(0, effectiveLimit) : filtered
+  const preFilterCount = sweep.scanned
+  const unordered = sweep.kept.slice(0, effectiveLimit)
   // An exact-name lookup asks where a thing is defined, and `file_path, line_start` answers it by alphabet: `const { ambigProbeFn } = await import('../src/thing.js')` in scripts/ sorts ahead of the real function in src/ purely because "scripts" precedes "src", so the first block a caller reads is an import statement rather than the body it went looking for. Sink the rows that only re-bind an imported name, keeping the query's own order within each group so the existing tie-breaks and paging behaviour are untouched. Nothing is dropped -- every candidate still prints, so a misjudged row costs one position and never an answer, which is the reason this reorders rather than filters. `--grep` listings are deliberately excluded: those are a browse of many different names, where file order is the useful one.
   const results = opts.name === undefined ? unordered : stableSortImportBindsLast(unordered)
 
-  // How many rows `--exclude-tests` alone removed, counted after any `--grep` so the two filters
-  // don't double-report the same row. Only used to explain an empty result below.
-  const hiddenByExcludeTests = excludeTests
-    ? rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(s.name)) && isTestFile(s.filePath)).length
-    : 0
+  const hiddenByExcludeTests = sweep.hiddenByExcludeTests
 
-  if (excludeTests && filtered.length === 0 && hiddenByExcludeTests > 0) {
+  if (excludeTests && sweep.keptCount === 0 && hiddenByExcludeTests > 0) {
     // The symbol IS indexed, just only ever in test files. Saying "No matches" here would be a
     // lie that stops the caller looking; name the filter that hid them instead.
     const label = opts.name ?? opts.grep ?? '*'
@@ -896,7 +902,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     return { text: `token-goat: ${notice}`, code: 0 }
   }
 
-  if (matchesGrep !== undefined && filtered.length === 0 && preFilterCount > 0) {
+  if (matchesGrep !== undefined && sweep.keptCount === 0 && preFilterCount > 0) {
     // The scope (--file/--kind/--project) genuinely has symbols, but --grep matched none of
     // them -- distinct from the `results.length === 0` branch below, which means there was
     // nothing in scope at all. Same "filtered store renders as populated" trap already fixed
@@ -920,9 +926,16 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       // substring in either direction, so a typo'd or partial name still gets a cheap next
       // step instead of dead-ending into a full-file Read or a wide Grep.
       const rootDir = emptyIndexRoot
-      const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
+      // Walked in full rather than fetched as one capped page: a cap is applied by SQLite, ahead of the name tests below, so a symbol that sorts past it is reported as absent by the very branch whose job is to say it is present but out of scope. Only names, distinct paths and exact hits are retained, none of which grows with the project's symbol count. See src/symbol_scan.ts.
+      const exactMatches: SymbolEntry[] = []
+      const allNames = new Set<string>()
+      const structuredFileSet = new Set<string>()
+      forEachSymbol({ rootDir }, (s) => {
+        allNames.add(s.name)
+        structuredFileSet.add(s.filePath)
+        if (s.name === opts.name) exactMatches.push(s)
+      })
       // An EXACT name match in this scan cannot be a typo: the caller spelled the symbol correctly and the lookup above only came back empty because a scope filter (--kind/--file) narrowed it away. Reporting that as "Did you mean: alphaOne" for the query `alphaOne` prints a correction byte-identical to what was typed, and pairs it with a "No matches" line that reads as proof the symbol does not exist -- so the caller concludes it is absent and falls back to a full Read. Name the scope that hid it instead.
-      const exactMatches = rawSymbols.filter((s) => s.name === opts.name)
       if (exactMatches.length > 0) {
         const shown = exactMatches.slice(0, DIDYOUMEAN_LIMIT)
         const where = shown.map((s) => `${s.kind} at ${formatSymbolLocation(toDisplayPath(rootDir, s.filePath), s.lineStart)}`).join('; ')
@@ -932,11 +945,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
         text += `\n'${opts.name}' IS indexed (${where}${more}) -- ${widen}`
       } else {
         // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
-        const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), opts.name)
+        const candidates = rankSimilarNames([...allNames], opts.name)
         text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
       }
       // Appended in BOTH branches on purpose: the didYouMean case is exactly the one that needs correcting, since a near-name suggestion ("Did you mean: sql" for `better-sqlite3`) reads as a confident answer and points away from the real one. Candidate files come from the scan already in hand above, so this costs no extra DB round trip.
-      const structuredFiles = [...new Set(rawSymbols.map((s) => s.filePath))].sort()
+      const structuredFiles = [...structuredFileSet].sort()
       const hit = findStructuredKeyPath(opts.name, structuredFiles)
       if (hit !== null) {
         const display = toDisplayPath(rootDir, hit.filePath)
@@ -972,13 +985,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     let trueTotal: number
     let truncatedFlag: boolean
     if (anyClientFilter) {
-      // No SQL regex support, and no SQL notion of "is a test file" either -- `filtered` is the
-      // exact post-filter count within the FIND_SCAN_LIMIT scan window queried above, so it is
-      // the honest total for what --grep/--exclude-tests actually matched. countSymbols(queryOpts)
-      // would instead report the pre-filter count of the whole kind/file/rootDir scope, which
-      // contradicts the filtered rows below.
-      trueTotal = filtered.length
-      truncatedFlag = capped.truncated || results.length < filtered.length
+      // No SQL regex support, and no SQL notion of "is a test file" either -- `keptCount` is the post-filter count over the whole scope, since the sweep above walks every row rather than a window, so it is the honest total for what --grep/--exclude-tests actually matched. countSymbols(queryOpts) would instead report the pre-filter count of the whole kind/file/rootDir scope, which contradicts the filtered rows below.
+      trueTotal = sweep.keptCount
+      truncatedFlag = capped.truncated || results.length < sweep.keptCount
     } else {
       // `results` is already truncated by querySymbols's own SQL `LIMIT` (opts.limit, or the
       // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
@@ -1032,7 +1041,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // Under a client-side filter the count is only as complete as the FIND_SCAN_LIMIT window the rows
   // were drawn from, so a scan that filled reports its count as a floor rather than as a total.
   const symbolTotal = (): TruncationTotal =>
-    anyClientFilter ? { count: filtered.length, exact: rawResults.length < FIND_SCAN_LIMIT } : { count: countSymbols(queryOpts), exact: true }
+    anyClientFilter ? { count: sweep.keptCount, exact: true } : { count: countSymbols(queryOpts), exact: true }
   return { text: text + truncationFooter(results.length, effectiveLimit, symbolTotal, 'matches', '--limit'), code: 0 }
 }
 

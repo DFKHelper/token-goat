@@ -193,6 +193,12 @@ vscode-extension/*.vsix
 # It lives outside tests/ so guards that walk tests/ cannot race its creation and deletion.
 .vitest-probe/
 
+# Scratch fixtures written INTO tests/ by a test that needs a real in-project file (e.g. the
+# vendored-definition fixture in tests/answer_router.test.ts). They exist only for the length of
+# one `it`, so a `git add -A` landing during a run would otherwise track one permanently -- and
+# the guards that walk git's own file list then fail on a path that is already gone.
+tests/.tg-*
+
 coverage.json
 
 # Proprietary internal deliverables and generators

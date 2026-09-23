@@ -5,6 +5,7 @@ import { displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { readFileText } from './read_commands.js'
 import { parseYamlDocument } from './read_structured_data.js'
+import { forEachSymbol } from './symbol_scan.js'
 import { foldPath } from './util.js'
 
 export const DIDYOUMEAN_LIMIT = 5
@@ -16,7 +17,6 @@ export const MIN_WORD_SIMILARITY_LEN = 3
 export const STRUCTURED_MISS_MAX_BYTES = 128 * 1024
 export const STRUCTURED_MISS_MAX_FILES = 12
 export const STRUCTURED_MISS_MAX_NODES = 20_000
-const FIND_SCAN_LIMIT = 20_000
 
 export function endsWithPathBoundary(full: string, suffix: string): boolean {
   if (!full.endsWith(suffix)) return false
@@ -105,8 +105,10 @@ export function didYouMean(candidates: string[]): string {
 }
 
 export function unknownSymbolSuggestion(name: string, rootDir: string): string {
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
-  const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), name)
+  // Ranked over every name in the project rather than a capped page of rows: a near-name suggestion drawn from the alphabetically first slice of a large project proposes whatever happens to sort early, which reads as the closest match and points away from the real one. Only the distinct names are retained, so the cost is the project's vocabulary rather than its symbol count.
+  const names = new Set<string>()
+  forEachSymbol({ rootDir }, (s) => names.add(s.name))
+  const candidates = rankSimilarNames([...names], name)
   return candidates.length > 0 ? `\n${didYouMean(candidates)}` : ''
 }
 

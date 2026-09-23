@@ -460,6 +460,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/sql_path.ts`](src/sql_path.ts) | Exports: `pathEqClause`, `pathSuffixClause`, `projectScopeClause` |
 | [`src/stdin_json.ts`](src/stdin_json.ts) | Reading a JSON payload off stdin, with a timeout and a byte cap. |
 | [`src/symbol_body_probe.ts`](src/symbol_body_probe.ts) | Doctor's oversized-stored-body check, hosted outside cli_doctor.ts. |
+| [`src/symbol_scan.ts`](src/symbol_scan.ts) | Full-scope symbol scanning for the commands that filter symbol names client-side. |
 | [`src/tool_name_fold.ts`](src/tool_name_fold.ts) | The one fold applied to a tool name before it is compared to another tool name. |
 | [`src/transcript_extract.ts`](src/transcript_extract.ts) | Zero-dependency WebVTT/SRT transcript reader. |
 | [`src/ts_refs.ts`](src/ts_refs.ts) | Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. |

@@ -2,6 +2,18 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.25] - 2026-09-22
+
+Upgrading leaves your index alone: no parser or embedding stamp moved, so nothing is reparsed or re-embedded. Downgrading is free.
+
+### Fixed
+
+- **`find`, `locate` and `symbol` searched only the first twenty thousand symbols of a project.** All three match names in JavaScript rather than in SQL, so the database had already chosen which rows they would see before the name test ever ran. Twenty thousand reads as a generous margin and is not one: of the projects indexed on the machine this was found on, three are larger, and the largest holds 234,675 symbols, so a search there ran over the alphabetically first eight and a half percent of it. A name past that point came back as absent -- and since all three fall back to near-name matching when nothing matched, the result was not silence but a confident list of unrelated files for a symbol that is in the index. They now walk the whole project, keeping only the names and paths they are going to print, so memory follows the project's vocabulary rather than its symbol count. The near-name suggestion offered after a failed `symbol` lookup is ranked over every name for the same reason.
+
+### Changed
+
+- **`find --json`'s `truncated` flag now means only that `--limit` dropped files.** It used to also mean the scan had run out of window, and there is no window any more. The matching `Results may be incomplete` line is gone with it.
+
 ## [2.9.24] - 2026-09-22
 
 Upgrading reparses Nginx and Caddy files, and nothing else: the two adapters below changed, so their per-language stamps moved and every other language keeps its existing index. Downgrading is free.

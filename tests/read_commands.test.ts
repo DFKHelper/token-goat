@@ -5265,37 +5265,12 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).not.toHaveBeenCalled()
     })
 
-    it('warns when index scan hits FIND_SCAN_LIMIT', () => {
-      // Test that truncation is detected and reported. We create an array with length ===
-      // FIND_SCAN_LIMIT (20_000) so that rawSymbols.length === FIND_SCAN_LIMIT and
-      // the truncated flag is set.
-      const limit = 20_000 // matches FIND_SCAN_LIMIT in read_commands.ts
-      const syms: MockSymbol[] = Array.from({ length: limit }, (_, i) => ({
-        name: i < 5 ? `match${i}` : `unmatch${i}`, // first 5 match our pattern
-        kind: 'function',
-        filePath: `src/file${i}.ts`,
-        lineStart: 1,
-        lineEnd: 5,
-        body: '',
-        docstring: '',
-      }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mockQuerySymbols.mockReturnValue(syms as any)
-
-      // Plain-text mode should emit truncation warning to stderr
-      const { stdout, stderr } = capture(() => { runFind({ pattern: 'match' }) })
-      expect(stderr).toContain('Results may be incomplete')
-      expect(stderr).toContain('20000')
-      // Should still emit matching files to stdout
-      expect(stdout).toContain('file0.ts')
-
-      // JSON mode should include truncated flag
-      const jsonOutput = capture(() => { runFind({ pattern: 'match', json: true }) })
-      const parsed = JSON.parse(jsonOutput.stdout)
-      expect(parsed).toHaveProperty('truncated', true)
-      expect(parsed).toHaveProperty('files')
-      expect(Array.isArray(parsed.files)).toBe(true)
-    })
+    // The scan-window warning this block used to assert is gone: `find` no longer takes a capped
+    // page and hopes it was big enough -- src/symbol_scan.ts walks the whole scope, so there is no
+    // window to be incomplete against and nothing to disclose. The property that replaced it, that
+    // a match sorting past one page is still returned, is covered against a real index in
+    // tests/symbol_scan_beyond_one_page.test.ts; a mocked querySymbols cannot cover it, because the
+    // mock is what decides whether paging works.
 
     // Regression: runFind used to pass a raw `process.cwd()` as querySymbols's rootDir, so
     // invoking the command from a subdirectory of the project silently shrank the scan to that

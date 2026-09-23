@@ -35,9 +35,9 @@ import {
   resolveAgainstProjectRoot,
   sumFileSizes,
   healStaleResultFiles,
-  FIND_SCAN_LIMIT,
 } from './read_commands.js'
 import { listSections } from './section_reader.js'
+import { forEachSymbol } from './symbol_scan.js'
 import {
   formatSqliteQueryTable,
   formatSqliteSchema,
@@ -745,22 +745,28 @@ export function runFind(opts: FindOptions): number {
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const patternLower = opts.pattern.toLowerCase()
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
-  const symbols = rawSymbols.filter((s: SymbolEntry) =>
-    s.name.toLowerCase().includes(patternLower),
-  )
+  // Walk the whole scope rather than one capped page: the name test is a JS substring match with no SQL equivalent, so a cap applied ahead of it drops every match that sorted past it -- and that miss falls straight into the near-name branch below, which answers a symbol that IS indexed with a confident list of unrelated files. Only file paths and names are kept, both bounded by the project rather than by its symbol count.
+  const matchedFiles = new Set<string>()
+  const allNames = new Set<string>()
+  forEachSymbol({ rootDir }, (s: SymbolEntry) => {
+    allNames.add(s.name)
+    if (s.name.toLowerCase().includes(patternLower)) matchedFiles.add(s.filePath)
+  })
 
   let fuzzyNames: string[] = []
-  if (symbols.length === 0) {
-    fuzzyNames = rankSimilarNames(rawSymbols.map((s: SymbolEntry) => s.name), opts.pattern)
+  if (matchedFiles.size === 0) {
+    fuzzyNames = rankSimilarNames([...allNames], opts.pattern)
+    if (fuzzyNames.length > 0) {
+      // Grouped by name and emitted in ranked order, so the files listed for the closest name come first -- the same order the single-pass filter produced when every row was in hand at once.
+      const byName = new Map<string, string[]>(fuzzyNames.map((n: string) => [n, []]))
+      forEachSymbol({ rootDir }, (s: SymbolEntry) => { byName.get(s.name)?.push(s.filePath) })
+      for (const n of fuzzyNames) for (const f of byName.get(n) ?? []) matchedFiles.add(f)
+    }
   }
-  const matched = fuzzyNames.length > 0
-    ? fuzzyNames.flatMap((n: string) => rawSymbols.filter((s: SymbolEntry) => s.name === n))
-    : symbols
-  const allFiles = [...new Set(matched.map((s: SymbolEntry) => s.filePath))]
+  const allFiles = [...matchedFiles]
   const files = allFiles.slice(0, opts.limit ?? 50)
   const limitDropped = allFiles.length - files.length
-  const truncated = rawSymbols.length === FIND_SCAN_LIMIT || limitDropped > 0
+  const truncated = limitDropped > 0
 
   if (files.length === 0) {
     emitErr(`No indexed files match '${opts.pattern}'`)
@@ -783,9 +789,6 @@ export function runFind(opts: FindOptions): number {
 
   if (limitDropped > 0) {
     emitErr(`Showing ${files.length} of ${allFiles.length} matching files; rerun with --limit ${allFiles.length} to see them all`)
-  }
-  if (rawSymbols.length === FIND_SCAN_LIMIT) {
-    emitErr(`Results may be incomplete; index scan hit limit of ${FIND_SCAN_LIMIT} symbols`)
   }
 
   return 0
@@ -824,42 +827,61 @@ export function runLocate(opts: LocateOptions): number {
     targetSpec = targetSpec.slice(colonIdx + 2)
   }
 
-  const queryOpts: Parameters<typeof querySymbols>[0] = {
-    limit: FIND_SCAN_LIMIT,
-  }
+  const scanOpts: Parameters<typeof forEachSymbol>[0] = {}
 
   if (targetFile !== undefined) {
-    queryOpts.filePath = resolveIndexPath(targetFile, rootDir)
-    healStaleIndex(queryOpts.filePath)
+    scanOpts.filePath = resolveIndexPath(targetFile, rootDir)
+    healStaleIndex(scanOpts.filePath)
   } else {
-    queryOpts.rootDir = rootDir
+    scanOpts.rootDir = rootDir
   }
-
-  let rawSymbols = querySymbols(queryOpts)
-  if (targetFile === undefined) {
-    const heal = healStaleResultFiles(rawSymbols.map((s) => s.filePath))
-    if (heal.healed) rawSymbols = querySymbols(queryOpts)
-  }
-
-  const specLower = targetSpec.toLowerCase()
-  // Exact name matches first, then prefix/contains matches
-  const exactMatches = rawSymbols.filter((s: SymbolEntry) => s.name.toLowerCase() === specLower)
-  const partialMatches = rawSymbols.filter((s: SymbolEntry) =>
-    s.name.toLowerCase() !== specLower && s.name.toLowerCase().includes(specLower),
-  )
-
-  const combined = [...exactMatches, ...partialMatches]
-  let fuzzyNames: string[] = []
-  if (combined.length === 0) {
-    fuzzyNames = rankSimilarNames(rawSymbols.map((s: SymbolEntry) => s.name), targetSpec)
-  }
-
-  const matched = fuzzyNames.length > 0
-    ? fuzzyNames.flatMap((n: string) => rawSymbols.filter((s: SymbolEntry) => s.name === n))
-    : combined
 
   const limit = opts.limit ?? 25
-  const shown = matched.slice(0, limit)
+  const specLower = targetSpec.toLowerCase()
+  // Walked in full rather than fetched as one capped page, for the reason runFind gives above: the name tests below are JS string matches with no SQL equivalent, and a cap ahead of them hides matches that sorted past it behind the near-name fallback. Exact matches are kept ahead of contains matches, and each list stops at `limit` because that is all `shown` can display -- the counts beside them stay exact, so the totals reported below still describe every match in the project rather than the rows held in memory.
+  interface LocateScan { exact: SymbolEntry[]; exactCount: number; partial: SymbolEntry[]; partialCount: number; names: Set<string>; files: Set<string> }
+  const scan = (): LocateScan => {
+    const found: LocateScan = { exact: [], exactCount: 0, partial: [], partialCount: 0, names: new Set(), files: new Set() }
+    forEachSymbol(scanOpts, (s: SymbolEntry) => {
+      found.names.add(s.name)
+      found.files.add(s.filePath)
+      const nameLower = s.name.toLowerCase()
+      if (nameLower === specLower) {
+        found.exactCount++
+        if (found.exact.length < limit) found.exact.push(s)
+      } else if (nameLower.includes(specLower)) {
+        found.partialCount++
+        if (found.partial.length < limit) found.partial.push(s)
+      }
+    })
+    return found
+  }
+
+  let found = scan()
+  if (targetFile === undefined) {
+    const heal = healStaleResultFiles([...found.files])
+    if (heal.healed) found = scan()
+  }
+
+  let matchCount = found.exactCount + found.partialCount
+  let combined = [...found.exact, ...found.partial]
+  let fuzzyNames: string[] = []
+  if (matchCount === 0) {
+    fuzzyNames = rankSimilarNames([...found.names], targetSpec)
+    if (fuzzyNames.length > 0) {
+      // Grouped by name and emitted in ranked order so the closest name's locations come first, matching the order a single pass over every row produced.
+      const byName = new Map<string, SymbolEntry[]>(fuzzyNames.map((n: string) => [n, []]))
+      forEachSymbol(scanOpts, (s: SymbolEntry) => {
+        const bucket = byName.get(s.name)
+        if (bucket === undefined) return
+        matchCount++
+        if (bucket.length < limit) bucket.push(s)
+      })
+      combined = fuzzyNames.flatMap((n: string) => byName.get(n) ?? [])
+    }
+  }
+
+  const shown = combined.slice(0, limit)
 
   if (shown.length === 0) {
     emitErr(`No landmark or symbol located for '${targetSpec}'`)
@@ -878,8 +900,8 @@ export function runLocate(opts: LocateOptions): number {
   if (opts.json === true) {
     emit(displaySafeJson({
       items: hits,
-      totalCount: matched.length,
-      truncated: matched.length > limit,
+      totalCount: matchCount,
+      truncated: matchCount > limit,
       ...(fuzzyNames.length > 0 ? { fuzzy: true, matchedNames: fuzzyNames } : {}),
     }))
     return 0
@@ -893,8 +915,8 @@ export function runLocate(opts: LocateOptions): number {
     emit(`${displaySafeText(hit.filePath)}:${hit.span} [${displaySafeText(hit.kind)}] ${displaySafeText(hit.name)}`)
   }
 
-  if (matched.length > limit) {
-    emitErr(`Showing ${limit} of ${matched.length} locations; rerun with --limit ${matched.length} to see them all`)
+  if (matchCount > limit) {
+    emitErr(`Showing ${limit} of ${matchCount} locations; rerun with --limit ${matchCount} to see them all`)
   }
 
   return 0
