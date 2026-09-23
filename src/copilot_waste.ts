@@ -30,6 +30,7 @@ import * as path from 'node:path'
 
 import { copilotCliUserRoot } from './bridges/copilot_cli_install.js'
 import { readCopilotMcpTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
+import { canonicalize } from './path_containment.js'
 import { findLatestTranscript } from './waste.js'
 
 /** Event types verified to carry no model-visible content: they exist only in the on-disk log. */
@@ -113,15 +114,11 @@ export interface FindCopilotSessionOptions {
   onlyActive?: boolean | undefined
 }
 
-/** Check if two paths point to the same location, normalized for platform casing. */
+/** Check if two paths point to the same location, through the same canonicalizer every other project-root producer in this codebase uses. */
 function pathsMatch(a: string | undefined, b: string | undefined): boolean {
   if (a === undefined || b === undefined || a === '' || b === '') return false
-  const resA = path.resolve(a)
-  const resB = path.resolve(b)
-  if (process.platform === 'win32') {
-    return resA.toLowerCase() === resB.toLowerCase()
-  }
-  return resA === resB
+  // canonicalize, not a bare path.resolve: the project root this is compared against comes from resolveProjectRoot, which canonicalizes, and Copilot's workspace.yaml records whatever spelling its own process saw. path.resolve reconciles neither of the two aliases that differ between those producers -- macOS exposes /var as /private/var, and Windows varies drive-letter case and 8.3 short segments -- so a session whose cwd sat under either one never matched its own project and auto-discovery silently fell through to the Claude transcript instead. One shared canonicalizer rather than a hand-rolled win32 lowercase, so the rule cannot drift from the producer's.
+  return canonicalize(a) === canonicalize(b)
 }
 
 /**

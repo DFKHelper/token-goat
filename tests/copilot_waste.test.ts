@@ -320,8 +320,9 @@ describe('isCopilotSessionActive', () => {
 
 describe('isCopilotTranscript', () => {
   it('identifies events.jsonl by filename', () => {
-    expect(isCopilotTranscript('/path/to/events.jsonl')).toBe(true)
-    expect(isCopilotTranscript('C:\\Users\\test\\.copilot\\session-state\\id\\events.jsonl')).toBe(true)
+    // Host-native separators on both, because only the host's own spelling can ever reach here: both callers (runWasteCommand, runAuditCommand) pass a path that already went through resolve and an existence check. A hardcoded `C:\` literal asserted a Windows-only truth on every platform -- basename treats a backslash as an ordinary filename character on POSIX, so the whole string came back and the filename shortcut could never match.
+    expect(isCopilotTranscript(join('/path/to', 'events.jsonl'))).toBe(true)
+    expect(isCopilotTranscript(join(tmpdir(), '.copilot', 'session-state', 'id', 'events.jsonl'))).toBe(true)
   })
 
   it('identifies Copilot JSON content even if named differently', () => {

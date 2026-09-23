@@ -610,7 +610,8 @@ function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
     fs.writeFileSync(path.join(cwd, 'token-goat.cmd'), `@echo off\r\necho ${jsonStdout}\r\n`, 'utf8')
   } else {
     const scriptPath = path.join(cwd, 'token-goat')
-    fs.writeFileSync(scriptPath, `#!/bin/sh\necho '${jsonStdout}'\n`, 'utf8')
+    // printf, not echo: /bin/sh is dash on most Linux hosts and its builtin echo expands backslash escapes by default, so a response whose JSON carries a `\n` inside a string arrived at the shim as a real newline mid-string and failed to parse. The shim then saw no response at all, and the one test with a multi-line payload read that silence as "the hint was correctly suppressed" -- a green Windows run and a red POSIX one for the same code.
+    fs.writeFileSync(scriptPath, `#!/bin/sh\nprintf '%s\\n' '${jsonStdout}'\n`, 'utf8')
     fs.chmodSync(scriptPath, 0o755)
   }
   return { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
