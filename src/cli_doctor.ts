@@ -33,6 +33,7 @@ import { getDb } from './db.js'
 import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
 import { hookLatencyBreakdown } from './hook_latency.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
+import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
 
 // Both live outside this module so hooks_session_start.ts can run the one check it needs without pulling cli_doctor.ts's dependency graph into the hook bundle -- see symbol_body_probe.ts. They are re-exported here because the doctor command and its tests are the rest of their audience.
@@ -99,8 +100,8 @@ export {
   dataDirPermissionResult,
 }
 
-/** Size at which the index DB stops being merely large and starts being a functional problem: write transactions scale with it, and once one outlasts db.ts's 15s `busy_timeout` the failure reaches the user as "database is locked" rather than as anything mentioning size. A healthy index for a large multi-project tree is tens of MB, so 1 GB is well clear of normal use and still catches the pathology early. */
-const DB_SIZE_WARN_BYTES = 1024 * 1024 * 1024
+/** Size at which the index DB stops being merely large and starts being a functional problem: write transactions scale with it, and once one outlasts db.ts's 15s `busy_timeout` the failure reaches the user as "database is locked" rather than as anything mentioning size. A healthy index for a large multi-project tree is tens of MB, so exceeding max_db_size_mb (default 1500 MB) is well clear of normal use and still catches the pathology early. */
+export const DB_SIZE_WARN_BYTES = 1500 * 1024 * 1024
 
 /** Bytes a VACUUM would return: the page size (offset 16, where 1 means 65536) times the freelist page count (offset 36), both big-endian fields of the database header described at https://www.sqlite.org/fileformat.html#the_database_header. */
 export function freelistBytes(header: Buffer): number {
@@ -154,12 +155,24 @@ export function dbCategoryBreakdown(dbPath: string): CategoryByteShare[] {
 }
 
 /** The oversized-index warning, naming only what is measurably there to recover: sending someone to VACUUM a file with no free pages has them wait on a rewrite of gigabytes that frees nothing. */
-export function oversizeDbMessage(dbPath: string, sizeBytes: number, freeBytes: number, tempRows: number, categories: CategoryByteShare[] = [], topConsumers: ProjectIndexConsumer[] = []): string {
+export function oversizeDbMessage(
+  dbPath: string,
+  sizeBytes: number,
+  freeBytes: number,
+  tempRows: number,
+  categories: CategoryByteShare[] = [],
+  topConsumers: ProjectIndexConsumer[] = [],
+  thresholdMb: number = 1500,
+  autoReclaimEmbeddings: boolean = false,
+): string {
   const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024))
   const advice: string[] = []
   if (freeBytes >= sizeBytes / 10) advice.push(`'token-goat reclaim-index' returns the ${mb(freeBytes)} MB of it that is free pages`)
   if (tempRows > 0) advice.push(`'token-goat project prune' removes ${countNoun(tempRows, 'scratch file')} indexed under the OS temp dir`)
-  const head = `global.db is ${mb(sizeBytes)} MB at ${displaySafeText(dbPath)} (larger than recommended). `
+  if (autoReclaimEmbeddings) {
+    advice.push(`'token-goat doctor --repair' will automatically reclaim embedding vectors and compact global.db`)
+  }
+  const head = `global.db is ${mb(sizeBytes)} MB at ${displaySafeText(dbPath)} (larger than threshold of ${thresholdMb} MB). `
   const totalCategoryBytes = categories.reduce((sum, c) => sum + c.bytes, 0)
   const breakdown =
     totalCategoryBytes > 0
@@ -177,7 +190,7 @@ export function oversizeDbMessage(dbPath: string, sizeBytes: number, freeBytes: 
 }
 
 /** Check if the data directory and database files exist. */
-export function checkDbExists(dataDir: string): DoctorResult {
+export function checkDbExists(dataDir: string, maxDbSizeMb?: number): DoctorResult {
   const dbPath = path.join(dataDir, 'global.db')
   if (!fs.existsSync(dbPath)) {
     return {
@@ -186,7 +199,7 @@ export function checkDbExists(dataDir: string): DoctorResult {
       message: `global.db not found at ${dbPath}`,
     }
   }
-  const sizeBytes = fs.statSync(dbPath).size
+  const sizeBytes = indexSizeBytes(dbPath)
   const SQLITE_HEADER = 'SQLite format 3\0'
   let header = ''
   let headerBytes = Buffer.alloc(0)
@@ -210,8 +223,11 @@ export function checkDbExists(dataDir: string): DoctorResult {
       message: `global.db at ${dbPath} is not a valid SQLite file (${sizeBytes} bytes) — likely truncated or corrupt`,
     }
   }
-  // An index that has grown into the gigabytes is not merely a disk-space matter: every reindex transaction scales with it, and once a write outlasts db.ts's 15s busy_timeout the failure presents to the user as an unexplained "database is locked" plus long stalls during `token-goat index`. Surface the size directly, because the symptom points nowhere near the cause. A healthy index is tens of MB; 1 GB means something is storing far more per symbol than it should (see MAX_SYMBOL_BODY_CHARS in parser.ts).
-  if (sizeBytes > DB_SIZE_WARN_BYTES) {
+  // An index that has grown into the gigabytes is not merely a disk-space matter: every reindex transaction scales with it, and once a write outlasts db.ts's 15s busy_timeout the failure presents to the user as an unexplained "database is locked" plus long stalls during `token-goat index`. Surface the size directly, because the symptom points nowhere near the cause. A healthy index is tens of MB; exceeding max_db_size_mb (default 1500 MB) means something is storing far more per symbol than it should.
+  const cfg = loadConfig()
+  const thresholdMb = maxDbSizeMb ?? cfg.indexing.max_db_size_mb ?? 1500
+  const warnBytes = thresholdMb * 1024 * 1024
+  if (sizeBytes > warnBytes) {
     let tempRows = 0
     try {
       tempRows = findSystemTempFiles(dbPath).length
@@ -226,7 +242,20 @@ export function checkDbExists(dataDir: string): DoctorResult {
     }
     // findTopIndexedProjects catches internally and returns [] on an unreadable index, so no wrapper is needed here.
     const topConsumers = findTopIndexedProjects(dbPath, 3)
-    return { name: 'Database', status: 'warn', message: oversizeDbMessage(dbPath, sizeBytes, freelistBytes(headerBytes), tempRows, categories, topConsumers) }
+    return {
+      name: 'Database',
+      status: 'warn',
+      message: oversizeDbMessage(
+        dbPath,
+        sizeBytes,
+        freelistBytes(headerBytes),
+        tempRows,
+        categories,
+        topConsumers,
+        thresholdMb,
+        cfg.indexing.auto_reclaim_embeddings,
+      ),
+    }
   }
   // Name the resolved path even when healthy. The warn branch above already does, and the asymmetry actively misleads: TOKEN_GOAT_HOME and the data dir resolve independently, so exporting both to point at a scratch directory does NOT guarantee a command reads the isolated index. Without the path here, a dogfood run against the real global index is indistinguishable from an isolated one, and "which index am I actually on" is the first question worth answering when a command returns surprising output.
   return {
@@ -900,7 +929,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkWorkerRunning(actualDataDir) ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
 
   // File checks
-  results.push(checkDbExists(actualDataDir))
+  const cfg = loadConfig(rootDir)
+  results.push(checkDbExists(actualDataDir, cfg.indexing.max_db_size_mb))
   results.push(checkSymbolBodySize(path.join(actualDataDir, 'global.db')))
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))
@@ -1019,6 +1049,24 @@ export async function runDoctorRepair(opts?: {
     }
   } catch (e) {
     errors.push(`Failed to clean up ${displaySafeText(projectMcp)}: ${extractErrorMessage(e)}`)
+  }
+
+  // 5. Auto-reclaim embeddings if database exceeds max_db_size_mb and auto_reclaim_embeddings is enabled
+  const actualDataDir = opts?.dataDir ?? defaultDataDir()
+  const dbPath = path.join(actualDataDir, 'global.db')
+  if (cfg.indexing.auto_reclaim_embeddings && fs.existsSync(dbPath)) {
+    try {
+      const sizeBytes = indexSizeBytes(dbPath)
+      const thresholdMb = cfg.indexing.max_db_size_mb ?? 1500
+      const maxBytes = thresholdMb * 1024 * 1024
+      if (sizeBytes > maxBytes) {
+        const res = reclaimIndex(dbPath, { embeddingsOnly: true })
+        const savedMb = Math.round((res.beforeBytes - res.afterBytes) / (1024 * 1024))
+        repairs.push(`Auto-reclaimed embeddings and compacted global.db (${savedMb > 0 ? `reclaimed ${savedMb} MB` : 'compacted'})`)
+      }
+    } catch (e) {
+      errors.push(`Failed to auto-reclaim embeddings from global.db: ${extractErrorMessage(e)}`)
+    }
   }
 
   return { repairs, errors }

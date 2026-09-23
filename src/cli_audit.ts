@@ -76,11 +76,21 @@ export function buildFeedbackCardFromCopilot(report: CopilotWasteReport): Mainta
   }
 
   if (report.mcpTools && report.mcpTools.servers.length > 0) {
-    const heavy = report.mcpTools.servers.filter((s) => s.estimatedTokens > 2000)
-    if (heavy.length > 0) {
-      const names = heavy.map((s) => `${s.serverName} (~${s.estimatedTokens} tok)`).join(', ')
-      preAudit.push(`High fixed MCP tool definition overhead: ${names}`)
-      fixes.push('Disable unused MCP tools via Copilot tool filters or flags.')
+    const totalMcpTokens = report.mcpTools.servers.reduce((sum, s) => sum + s.estimatedTokens, 0)
+    const heavy = report.mcpTools.servers.filter((s) => s.estimatedTokens > 1000)
+    if (heavy.length > 0 || totalMcpTokens > 1500) {
+      const details = report.mcpTools.servers
+        .map((s) => `${s.serverName} (${s.toolCount} tool(s), ~${s.estimatedTokens.toLocaleString()} tok/turn)`)
+        .join(', ')
+      const turns = Math.max(1, report.turns)
+      const cumulative = totalMcpTokens * turns
+      preAudit.push(
+        `High fixed MCP tool definition overhead: ${details}; total ~${totalMcpTokens.toLocaleString()} tok/turn re-sent across ${turns} turn(s) (~${cumulative.toLocaleString()} cumulative tokens).`
+      )
+      const heavyNames = (heavy.length > 0 ? heavy : report.mcpTools.servers).map((s) => s.serverName).join(', ')
+      fixes.push(
+        `Disable unused MCP server(s) (${heavyNames}) via 'copilot mcp disable <name>' or exclude individual tools with '--excluded-tools'.`
+      )
     }
   }
 

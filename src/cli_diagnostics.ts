@@ -33,11 +33,12 @@ export function cmdCoverageReportGaps(file: string, opts: { file?: string; json?
   })
 }
 
-export function cmdConflicts(targetPath: string | undefined, opts: { json?: boolean; summary?: boolean }): void {
+export function cmdConflicts(targetPath: string | undefined, opts: { json?: boolean; summary?: boolean; context?: string }): void {
   process.exitCode = runConflicts({
     ...(targetPath !== undefined ? { path: targetPath } : {}),
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.summary === true ? { summary: true } : {}),
+    ...(opts.context !== undefined ? { context: parseInt(opts.context, 10) } : {}),
   })
 }
 

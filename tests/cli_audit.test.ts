@@ -125,6 +125,9 @@ describe('buildFeedbackCardFromCopilot', () => {
     const card = buildFeedbackCardFromCopilot(mockReport)
     expect(card.preAuditFindings[0]).toContain('Repeated prompt blocks across turns: custom_instruction')
     expect(card.preAuditFindings[1]).toContain('High fixed MCP tool definition overhead: heavy-mcp')
+    expect(card.preAuditFindings[1]).toContain('10 tool(s), ~3,000 tok/turn')
+    expect(card.preAuditFindings[1]).toContain('~15,000 cumulative tokens')
+    expect(card.recommendedFix[1]).toContain('copilot mcp disable')
   })
 })
 

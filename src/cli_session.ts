@@ -31,7 +31,6 @@ import { runContextStats } from './cli_context_stats.js'
 import { runBootstrapAudit } from './cli_bootstrap_audit.js'
 import { runMemoryCommand } from './cli_memory.js'
 import { runWasteCommand } from './cli_waste.js'
-import { runAuditCommand } from './cli_audit.js'
 import { runMcpAuditCommand } from './cli_mcp_audit.js'
 import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
@@ -81,7 +80,8 @@ export function cmdWaste(opts: { project?: string; transcript?: string; json?: b
   })
 }
 
-export function cmdAudit(opts: { project?: string; transcript?: string; json?: boolean } = {}): Promise<void> {
+export async function cmdAudit(opts: { project?: string; transcript?: string; json?: boolean } = {}): Promise<void> {
+  const { runAuditCommand } = await import('./cli_audit.js')
   return runAuditCommand({
     ...(opts.project !== undefined ? { project: opts.project } : {}),
     ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),

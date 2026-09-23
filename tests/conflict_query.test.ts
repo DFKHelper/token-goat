@@ -343,4 +343,33 @@ describe('runConflicts (CLI handler)', () => {
       process.chdir(origCwd)
     }
   })
+
+  it('supports configurable surrounding context lines', () => {
+    const f = path.join(tempDir, 'ctx.ts')
+    const content = [
+      '// line 1',
+      '// line 2',
+      '// line 3',
+      '<<<<<<< HEAD',
+      'ours text',
+      '=======',
+      'theirs text',
+      '>>>>>>> branch',
+      '// line 9',
+      '// line 10',
+    ].join('\n')
+    fs.writeFileSync(f, content)
+
+    const { stdout: defaultOut } = capture(() => { runConflicts({ path: f }) })
+    expect(defaultOut).toContain('1 | // line 1')
+    expect(defaultOut).toContain('2 | // line 2')
+    expect(defaultOut).toContain('3 | // line 3')
+    expect(defaultOut).toContain('9 | // line 9')
+    expect(defaultOut).toContain('10 | // line 10')
+
+    const { stdout: zeroOut } = capture(() => { runConflicts({ path: f, context: 0 }) })
+    expect(zeroOut).not.toContain('1 | // line 1')
+    expect(zeroOut).toContain('ours text')
+    expect(zeroOut).toContain('theirs text')
+  })
 })

@@ -188,6 +188,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'indexing.large_file_symbol_only_kb': {min: 1, max: 1048576, clampTo: 'indexing.large_file_skip_kb'},
   'indexing.large_file_skip_kb': {min: 1, max: 1048576},
   'indexing.max_chunks_per_file': {min: 1, max: 1_000_000},
+  'indexing.max_db_size_mb': {min: 1, max: 100_000},
   'context.model_window_tokens': {min: 10_000, max: 10_000_000},
   'hint_stats.suppress_threshold_pct': {min: 0, max: 100},
   'hint_stats.defiance_threshold_pct': {min: 0, max: 100},
@@ -321,6 +322,8 @@ const ENV_KEYS = [
   'TOKEN_GOAT_WEB_CACHE_MAX_BYTES',
   'TOKEN_GOAT_WRITE_REWRITE_MIN_LINES',
   'TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT',
+  'TOKEN_GOAT_INDEXING_MAX_DB_SIZE_MB',
+  'TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS',
 ]
 
 // Every env var actually consulted by _buildConfig's envInt/envBool/envStr calls is registered
@@ -956,6 +959,10 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   ix.embeddings_enabled = envBool('TOKEN_GOAT_EMBEDDINGS_ENABLED', ix.embeddings_enabled)
   ix.cross_project_symbols = validatedBool(ix_raw['cross_project_symbols'], ix.cross_project_symbols)
   ix.cross_project_symbols = envBool('TOKEN_GOAT_CROSS_PROJECT_SYMBOLS', ix.cross_project_symbols)
+  ix.max_db_size_mb = validatedInt(ix_raw['max_db_size_mb'], ix.max_db_size_mb, ...boundsOf('indexing.max_db_size_mb'))
+  ix.max_db_size_mb = envInt('TOKEN_GOAT_INDEXING_MAX_DB_SIZE_MB', ix.max_db_size_mb, ...boundsOf('indexing.max_db_size_mb'))
+  ix.auto_reclaim_embeddings = validatedBool(ix_raw['auto_reclaim_embeddings'], ix.auto_reclaim_embeddings)
+  ix.auto_reclaim_embeddings = envBool('TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS', ix.auto_reclaim_embeddings)
 
   const cpr_raw = section(raw, 'compression')
   const cpr = getDefaultConfig('compression') as CompressionConfig
@@ -1134,6 +1141,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'webfetch.allow': ['TOKEN_GOAT_WEBFETCH_ALLOW'],
   'webfetch.deny': ['TOKEN_GOAT_WEBFETCH_DENY'],
   'indexing.embeddings_enabled': ['TOKEN_GOAT_EMBEDDINGS_ENABLED'],
+  'indexing.max_db_size_mb': ['TOKEN_GOAT_INDEXING_MAX_DB_SIZE_MB'],
+  'indexing.auto_reclaim_embeddings': ['TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS'],
 }
 
 export function saveConfig(config: Config): void {
@@ -1302,6 +1311,8 @@ export function saveConfig(config: Config): void {
       skip_files: config.indexing.skip_files,
       embeddings_enabled: config.indexing.embeddings_enabled,
       cross_project_symbols: config.indexing.cross_project_symbols,
+      max_db_size_mb: config.indexing.max_db_size_mb,
+      auto_reclaim_embeddings: config.indexing.auto_reclaim_embeddings,
     },
     compression: {
       profile: config.compression.profile,

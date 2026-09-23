@@ -1693,17 +1693,32 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
     .option('--grep <pattern>', 'with --list, filter headings to this regex (literal substring if it is not valid regex)')
-    .action((spec: string, more: string[], opts: { json?: boolean; list?: boolean; grep?: string }) =>
-      opts.list === true
+    .option('--max-lines <n>', 'limit returned section content to at most N lines from the top')
+    .option('--head <n>', 'alias for --max-lines')
+    .action((spec: string, more: string[], opts: { json?: boolean; list?: boolean; grep?: string; maxLines?: string; head?: string }) => {
+      const maxLinesRaw = opts.maxLines ?? opts.head
+      const maxLines = maxLinesRaw !== undefined ? requireNonNegativeInt('--max-lines', maxLinesRaw) : undefined
+      return opts.list === true
         ? runExit(() => {
             // --list reads a plain file and has no comma form, so name no suggestion here.
             emitExtraFileArgsNote('section --list', spec, more, { mergeable: false })
             return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
           })
         : runExitText(() =>
-            noteExtraFileArgs('section', spec, more, () => runSection({ spec, ...(opts.json === true ? { json: true } : {}) }), { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) }),
-          ),
-    )
+            noteExtraFileArgs(
+              'section',
+              spec,
+              more,
+              () =>
+                runSection({
+                  spec,
+                  ...(opts.json === true ? { json: true } : {}),
+                  ...(maxLines !== undefined ? { maxLines } : {}),
+                }),
+              { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
+            ),
+          )
+    })
 
   program
     .command('semantic [query]')

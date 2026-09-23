@@ -500,6 +500,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
         'path may be a single file, a directory (scanned recursively), or omitted entirely (scans the whole project from the current directory); ' +
         'only files with at least one conflict region or malformed-marker warning are reported',
     )
+    .option('-C, --context <n>', 'lines of surrounding context to include before and after each conflict region (default: 3)')
     .option('--summary', 'line ranges and ours/base/theirs labels only, omitting the conflict content')
     .option('--json', 'emit the results as JSON instead of text')
     .action(guard(cmdConflicts))
