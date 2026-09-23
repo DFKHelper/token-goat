@@ -414,6 +414,14 @@ const READ_FULL_SERVE_MIN_BYTES = 10240
  * comment) and was never meant to distinguish kinds -- it only flags "this looks like one of
  * ours". A live corpus query saw divertedByMarker at 422 against a deny population believed to
  * be roughly 1512: most denies never had a kind at all before this table existed.
+ *
+ * When adding a kind, do not take a branch's own recorded `*_deny` stat name as evidence that it is
+ * already classified. Several branches share a stat name with a sibling while emitting wording no
+ * template for that name matches, and the census then drops them silently -- it gets shorter, never
+ * empty, so there is no error to notice. Both `range_reread_deny` and `sequential_paging_deny`
+ * below were found that way, each having ridden an existing stat name (`read_served_deny`,
+ * `read_count_deny`) and matched nothing here since the branch was written. A wording is covered
+ * only when a regex in this table matches the string the branch actually prints.
  */
 /**
  * `tool` is the tool whose result can legitimately carry this wording, and matching is refused for
@@ -459,8 +467,12 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   { kind: 'doc_unchanged_deny', re: /is unchanged since last read\. Use `token-goat (?:section|read)/, tool: 'Read' },
   { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?Use `token-goat (?:section|read)/, tool: 'Read' },
   { kind: 'read_served_deny', re: /was already served in this session, byte for byte/, tool: 'Read' },
+  // Its own kind rather than folded into read_served_deny above, whose stat name this branch shares: the wording is disjoint (a span, not a byte-for-byte whole serve) and so is the follow-up it invites, since the model still needs part of that span and has to choose a narrower call rather than recall the whole result.
+  { kind: 'range_reread_deny', re: /Lines \d+\.\.\d+ of [\s\S]*?was already read this session/, tool: 'Read' },
   { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\. Use `token-goat section/, tool: 'Read' },
   { kind: 'read_count_deny', re: /(?:Read|Tried to read) this file \d+ times already/, tool: 'Read' },
+  // Shares read_count_deny's stat name and matches none of its wording: this branch fires on the SHAPE of the reads (consecutive line windows walking one file) rather than on their count, and says so.
+  { kind: 'sequential_paging_deny', re: /Sequential line-range paging detected on /, tool: 'Read' },
   { kind: 'generic_reread_deny', re: /was already read this session \(\d+ read/, tool: 'Read' },
   { kind: 'large_file_deny', re: /is very large \(\d+(?:\.\d+)?KB\)\./, tool: 'Read' },
   { kind: 'file_type_handler_deny', re: /too large to preview \(exceeds the in-hook scan cap\)|cannot be read as text\.|Read cannot return spreadsheet content|Read cannot return slide content|Read cannot return document content|Use Read with offset and limit parameters to read specific line ranges/, tool: 'Read' },
