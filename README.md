@@ -494,6 +494,8 @@ never drift on where `mcp.json` lives or what key name it looks for.
 
 **What the index actually holds, in plain terms.** The point of a surgical read is returning a function body without the file around it, which means the database stores those bodies. `symbols.body` holds the source text of every indexed symbol, `symbols.docstring` its doc comment, `refs.context` the line around each reference, and `chunks.text` the passages that semantic search embeds. There is also a full-text index over the bodies and docstrings. So the database is not a list of names and line numbers: it is a substantial copy of your source, sitting in a plain unencrypted SQLite file outside the repository.
 
+**How branch switches work.** The database tracks the active working tree by absolute path, not git branches or commit history. When branches switch, the index updates to match what is currently on disk. In-session commands like `git checkout` or `git switch` trigger a hook that queues changed files for reindexing. If branches switch in another terminal, token-goat catches drifted files during session-start reconciliation, and surgical reads self-heal on the fly if they hit a modified file. For frequent multi-branch work, consider `git worktree`. Each worktree gets its own directory and distinct index, eliminating reindexing churn between branches.
+
 The file-by-file table for each harness, and the path that file sits at: **[What gets installed](docs/install.md#what-gets-installed)** (see also **[Permissions & auto-approval](docs/install.md#command-auto-approval-and-permissions)**).
 
 ## Zero maintenance
