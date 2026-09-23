@@ -3,6 +3,7 @@
 // Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. EzaFilter must precede LsFilter — both claim `ls` (an aliased `alias ls=eza` shell setup means token-goat only ever sees the literal "ls ..." command text), but EzaFilter's matches() only claims a bare 'ls' invocation when an eza-only flag (--tree/--icons/--git/--level/...) is present; a plain `ls` with none of those falls through to LsFilter's simpler truncation.
 
 import { ToolFilter, type CompressContext } from './base.js'
+import { collapseDiffBlocksToCap, isDiffAdd, isDiffRemove } from './diff_blocks.js'
 import { loadConfig } from '../config.js'
 import {
   headTailCompress,
@@ -986,14 +987,6 @@ function _isDiffBodyLine(line: string): boolean {
   return c === ' ' || c === '+' || c === '-' || c === '@' || c === '\\'
 }
 
-function _isDiffAdd(line: string): boolean {
-  return line.startsWith('+') && !line.startsWith('+++')
-}
-
-function _isDiffRemove(line: string): boolean {
-  return line.startsWith('-') && !line.startsWith('---')
-}
-
 // `diff -r`/`-ru` prints a `diff -ru <old> <new>` command-echo line immediately
 // before each file's `--- `/`+++ ` header pair. Both lines match
 // _DIFF_FILE_HEADER_RE, so a naive splitBlocks() call turns one real file into
@@ -1157,8 +1150,8 @@ export class DiffFilter extends ToolFilter {
           emitExtras(blockLines)
           continue
         }
-        const adds = blockLines.filter(_isDiffAdd).length
-        const dels = blockLines.filter(_isDiffRemove).length
+        const adds = blockLines.filter(isDiffAdd).length
+        const dels = blockLines.filter(isDiffRemove).length
         statLines.push(`${header}  +${adds} -${dels}`)
         emitExtras(blockLines.slice(1))
       }
@@ -1205,46 +1198,12 @@ export class DiffFilter extends ToolFilter {
   }
 }
 
-// Same shape as git.ts's _collapseDiffBlocksToCap, parameterized on plain diff's own file/hunk regexes
-// (`_DIFF_FILE_HEADER_RE`/`_DIFF_HUNK_RE`) instead of git's `diff --git`/`diff --cc` ones, since those never
-// match a plain `diff -ru a/x b/x` block and would treat every block here as non-file, pushing it through whole.
+// Plain diff's own dialect for the shared collapse: `diff -ru a/x b/x` file headers, matched against the block's first line only, and `@@` hunk headers. git's `diff --git`/`diff --cc` patterns never match a plain block, which would leave every block here non-file and push it through whole.
 function _collapsePlainDiffBlocksToCap(outBlocks: string[], maxLines: number): string[] {
-  const isFileBlock = outBlocks.map((block) => _DIFF_FILE_HEADER_RE.test(block.split('\n')[0] ?? ''))
-  const collapsedFormOf = (block: string): { headerLines: string[]; summary: string; size: number } => {
-    const blockLines = block.split('\n')
-    const hunkIdx = blockLines.findIndex((ln) => _DIFF_HUNK_RE.test(ln))
-    const headerLines = hunkIdx === -1 ? blockLines : blockLines.slice(0, hunkIdx)
-    const hunkCount = blockLines.filter((ln) => _DIFF_HUNK_RE.test(ln)).length
-    const added = blockLines.filter(_isDiffAdd).length
-    const removed = blockLines.filter(_isDiffRemove).length
-    const summary = `[token-goat: ${hunkCount} hunk(s), +${added} -${removed} lines collapsed to fit the line cap]`
-    return { headerLines, summary, size: headerLines.length + 1 }
-  }
-
-  const collapsedSizes = outBlocks.map((block, i) => (isFileBlock[i] ? collapsedFormOf(block).size : 0))
-  const reserve: number[] = new Array(outBlocks.length).fill(0)
-  for (let i = outBlocks.length - 2; i >= 0; i--) reserve[i] = reserve[i + 1]! + collapsedSizes[i + 1]!
-
-  let budget = maxLines
-  const result: string[] = []
-  for (let i = 0; i < outBlocks.length; i++) {
-    const block = outBlocks[i]!
-    if (!isFileBlock[i]) {
-      result.push(block)
-      budget -= block.split('\n').length
-      continue
-    }
-    const lineCount = block.split('\n').length
-    if (lineCount <= budget - reserve[i]!) {
-      result.push(block)
-      budget -= lineCount
-    } else {
-      const { headerLines, summary, size } = collapsedFormOf(block)
-      result.push(headerLines.join('\n') + '\n' + summary)
-      budget -= size
-    }
-  }
-  return result
+  return collapseDiffBlocksToCap(outBlocks, maxLines, {
+    isFileBlock: (block) => _DIFF_FILE_HEADER_RE.test(block.split('\n')[0] ?? ''),
+    isHunkHeader: (line) => _DIFF_HUNK_RE.test(line),
+  })
 }
 
 // ---------------------------------------------------------------------------

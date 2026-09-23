@@ -8,6 +8,7 @@
 
 import { ToolFilter } from './base.js'
 import type { CompressContext } from './base.js'
+import { collapseDiffBlocksToCap, isDiffAdd, isDiffRemove } from './diff_blocks.js'
 import { loadConfig } from '../config.js'
 import {
   ERROR_SIGNAL_RE,
@@ -443,14 +444,6 @@ function _diffStatLineCounts(statPart: string): { adds: number; dels: number } {
   return { adds, dels: total - adds }
 }
 
-function _isDiffAdd(line: string): boolean {
-  return line.startsWith('+') && !line.startsWith('+++')
-}
-
-function _isDiffRemove(line: string): boolean {
-  return line.startsWith('-') && !line.startsWith('---')
-}
-
 /** Roll up per-file stat lines into per-directory summaries. */
 // Resolves git's diff --stat rename notation for a single path column (the text before " | ")
 // to the path's NEW (post-rename) location, so the directory rollup below groups it under where
@@ -555,7 +548,7 @@ function _compressGitDiffStat(stdout: string, stderr: string, argv: string[]): s
  * and there are at least 8 valid lines.
  */
 function _isRepetitiveJsonHunk(hunkLines: string[]): boolean {
-  const added = hunkLines.filter(_isDiffAdd).map((ln) => ln.slice(1))
+  const added = hunkLines.filter(isDiffAdd).map((ln) => ln.slice(1))
   if (added.length < 8) return false
   let valid = 0
   const keySets = new Set<string>()
@@ -604,8 +597,8 @@ function _trimHunkTrailingContext(hunkLines: string[], maxTrail = 2): [string[],
  * be hidden by this collapse. Returns the pair count when eligible, else null.
  */
 function _hunkWhitespaceEolOnlyPairCount(hunkLines: string[]): number | null {
-  const removed = hunkLines.filter(_isDiffRemove).map((ln) => ln.slice(1))
-  const added = hunkLines.filter(_isDiffAdd).map((ln) => ln.slice(1))
+  const removed = hunkLines.filter(isDiffRemove).map((ln) => ln.slice(1))
+  const added = hunkLines.filter(isDiffAdd).map((ln) => ln.slice(1))
   if (removed.length === 0 || added.length === 0) return null
   if (removed.length !== added.length) return null
   for (let i = 0; i < removed.length; i++) {
@@ -653,44 +646,12 @@ function _capHunksByDensity(hunks: string[], maxHunksPerFile: number): { hunks: 
   }
 }
 
-// Collapses per-file diff blocks in order to fit maxLines when the per-hunk compression above still leaves the whole body over the cap: a block that is not a file block (the prelude before the first `diff --git`, e.g. a `git show` commit header) is always kept whole; a file block is kept whole if it fits within the remaining budget once the collapsed cost of every later file block is reserved, otherwise it is replaced by its header lines plus a one-line summary of how much was collapsed. This mirrors _compressGitLogCapped's rule that a diff already under the cap ships byte-identical, and keeps earlier files intact (git orders diff output by path) so a reader scanning top-down sees full hunks first and headers-only for the files that didn't fit.
+// Collapses per-file diff blocks in order to fit maxLines when the per-hunk compression above still leaves the whole body over the cap. The budgeting rule and its rationale live with the shared implementation; git's dialect is `diff --git`/`diff --cc` file blocks, matched against the whole block, and `@@` hunk headers.
 function _collapseDiffBlocksToCap(outBlocks: string[], maxLines: number): string[] {
-  const isFileBlock = outBlocks.map((block) => _GIT_DIFF_FILE_RE.test(block))
-  const collapsedFormOf = (block: string): { headerLines: string[]; summary: string; size: number } => {
-    const lines = block.split('\n')
-    const hunkIdx = lines.findIndex((ln) => _GIT_DIFF_HUNK_RE.test(ln))
-    const headerLines = hunkIdx === -1 ? lines : lines.slice(0, hunkIdx)
-    const hunkCount = lines.filter((ln) => _GIT_DIFF_HUNK_RE.test(ln)).length
-    const added = lines.filter(_isDiffAdd).length
-    const removed = lines.filter(_isDiffRemove).length
-    const summary = `[token-goat: ${hunkCount} hunk(s), +${added} -${removed} lines collapsed to fit the line cap]`
-    return { headerLines, summary, size: headerLines.length + 1 }
-  }
-
-  const collapsedSizes = outBlocks.map((block, i) => (isFileBlock[i] ? collapsedFormOf(block).size : 0))
-  const reserve: number[] = new Array(outBlocks.length).fill(0)
-  for (let i = outBlocks.length - 2; i >= 0; i--) reserve[i] = reserve[i + 1]! + collapsedSizes[i + 1]!
-
-  let budget = maxLines
-  const result: string[] = []
-  for (let i = 0; i < outBlocks.length; i++) {
-    const block = outBlocks[i]!
-    if (!isFileBlock[i]) {
-      result.push(block)
-      budget -= block.split('\n').length
-      continue
-    }
-    const lineCount = block.split('\n').length
-    if (lineCount <= budget - reserve[i]!) {
-      result.push(block)
-      budget -= lineCount
-    } else {
-      const { headerLines, summary, size } = collapsedFormOf(block)
-      result.push(headerLines.join('\n') + '\n' + summary)
-      budget -= size
-    }
-  }
-  return result
+  return collapseDiffBlocksToCap(outBlocks, maxLines, {
+    isFileBlock: (block) => _GIT_DIFF_FILE_RE.test(block),
+    isHunkHeader: (line) => _GIT_DIFF_HUNK_RE.test(line),
+  })
 }
 
 function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 10, maxLines?: number): string {
@@ -741,9 +702,9 @@ function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 
       const changed = hunkLines.filter((ln) => ln.startsWith('+') || ln.startsWith('-'))
       if (changed.length > MAX_HUNK_CHANGED) {
         if (_isRepetitiveJsonHunk(hunkLines)) {
-          const nAdded = hunkLines.filter(_isDiffAdd).length
-          const nRemoved = hunkLines.filter(_isDiffRemove).length
-          const sample = hunkLines.filter(_isDiffAdd).slice(0, 2)
+          const nAdded = hunkLines.filter(isDiffAdd).length
+          const nRemoved = hunkLines.filter(isDiffRemove).length
+          const sample = hunkLines.filter(isDiffAdd).slice(0, 2)
           const parts = [`+${nAdded} JSON records added`]
           if (nRemoved) parts.push(`-${nRemoved} removed`)
           compressedHunks.push(

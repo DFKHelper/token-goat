@@ -263,6 +263,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/tool_filters/ci.ts`](src/tool_filters/ci.ts) | Bash output compression and normalization filter for ci |
 | [`src/tool_filters/cloud.ts`](src/tool_filters/cloud.ts) | Bash output compression and normalization filter for cloud |
 | [`src/tool_filters/containers.ts`](src/tool_filters/containers.ts) | Bash output compression and normalization filter for containers |
+| [`src/tool_filters/diff_blocks.ts`](src/tool_filters/diff_blocks.ts) | Bash output compression and normalization filter for diff_blocks |
 | [`src/tool_filters/dispatch.ts`](src/tool_filters/dispatch.ts) | Bash output compression and normalization filter for dispatch |
 | [`src/tool_filters/families.ts`](src/tool_filters/families.ts) | Bash output compression and normalization filter for families |
 | [`src/tool_filters/generic.ts`](src/tool_filters/generic.ts) | Bash output compression and normalization filter for generic |
