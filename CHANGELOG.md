@@ -2,6 +2,14 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.21] - 2026-09-23
+
+Upgrading reparses the index. The stored reference rows described below are the ones that change, so the parser stamp moves for every language and each file is read once more. Embeddings are untouched and keep serving throughout.
+
+### Fixed
+
+- **A reference's stored context is bounded to a window around the reference.** A context is the source line the reference sits on, which is short in a file a human wrote and the whole document in one a machine generated: a FlexiPage, a serialized Flow, a minified bundle and a one-line JSON document all put everything on line 1. Every reference on that line stored a copy of the entire file, so the bytes written grew with the square of the input — a 779 KB FlexiPage carrying 10,000 component references wrote 7,789,990,000 characters of context and took 58 seconds to index. It takes 0.8 seconds now, and the time is linear in the file. The window is centred on the reference's own column rather than cut from the head of the line, so the row still shows what it is a reference to.
+
 ## [2.9.20] - 2026-09-23
 
 Upgrading reparses and re-embeds the whole index. Both digests moved across the work folded into this release: three new languages changed what `detectLanguage` answers for files that used to come back as unknown, and the extraction and chunking sources the embedding stamp is drawn from moved with them, so the first touch of each file after upgrading re-reads it. The database schema is unchanged at version 16, so 2.9.19 can still open an index this version wrote -- going back just costs the same reparse and re-embed in the other direction.

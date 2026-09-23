@@ -275,6 +275,26 @@ export function boundSymbolDocstring(docstring: string): string {
   return docstring.slice(0, Math.max(0, end)) + DOCSTRING_TRUNCATION_MARKER
 }
 
+/** Ceiling on a stored `refs.context`. A ref's context is one display line -- every consumer renders it as `path:line: context` -- so anything past a couple of KB is already unreadable where it is shown. */
+export const MAX_REF_CONTEXT_CHARS = 2048
+
+/** Marker standing in for the part of a context line cut at {@link MAX_REF_CONTEXT_CHARS}. */
+const REF_CONTEXT_ELISION = ' […] '
+
+/** Bound a stored ref context to a window around the reference itself, rather than to the head of its line. A "line" is only short in a file a human wrote: a generated FlexiPage, a serialized Flow, a minified bundle and a one-line JSON document all put the whole file on line 1, so every ref on that line stored the entire file as its context. Measured on a 779 KB FlexiPage with 10,000 component references: 7,789,990,000 characters written for a 779 KB input, quadratic in the file and the reason indexing it took 58 s. Keeping the head of the line would be no better than eliding it, since the reference itself is usually nowhere near character 0; the window is centred on `col` so the row still shows what it is a reference to. Bounded here, at the single write path, for the same reason {@link boundSymbolBody} is: it bounds every current and future extractor rather than the one that surfaced it. */
+export function boundRefContext(context: string, col: number): string {
+  if (context.length <= MAX_REF_CONTEXT_CHARS) return context
+  const budget = MAX_REF_CONTEXT_CHARS - REF_CONTEXT_ELISION.length * 2
+  // `col` is measured against the untrimmed source line while `context` is trimmed, so it is an approximate offset into this string; clamping is what makes an approximate centre safe rather than a source of empty windows.
+  const centre = Math.min(Math.max(col, 0), context.length)
+  let start = Math.max(0, Math.min(centre - Math.floor(budget / 2), context.length - budget))
+  let end = start + budget
+  // Never cut between the halves of a surrogate pair at either edge: storing a lone surrogate is not valid text and surfaces downstream as a replacement character.
+  if (start > 0 && context.charCodeAt(start) >= 0xdc00 && context.charCodeAt(start) <= 0xdfff) start += 1
+  if (end < context.length && context.charCodeAt(end - 1) >= 0xd800 && context.charCodeAt(end - 1) <= 0xdbff) end -= 1
+  return (start > 0 ? REF_CONTEXT_ELISION : '') + context.slice(start, end) + (end < context.length ? REF_CONTEXT_ELISION : '')
+}
+
 // precedingDocComment / DocCommentStyle live in doc_comment.ts (shared with languages/common.ts,
 // which parser.ts itself imports from -- defining them here would create an import cycle). See
 // that module's doc comment. Re-exported here so existing importers of `parser.js` keep working.
@@ -729,7 +749,7 @@ function writeParseResult(
     )
     for (const r of result.refs) {
       if (r.name === '' || COMPILER_ARTIFACT_REF_NAMES.has(r.name)) continue
-      insRef.run(r.filePath, r.name, r.line, r.col, r.context)
+      insRef.run(r.filePath, r.name, r.line, r.col, boundRefContext(r.context, r.col))
     }
   })
 
