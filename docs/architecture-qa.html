@@ -292,7 +292,7 @@
             <div class="header-top">
                 <div>
                     <h1>Token-Goat Architecture & Engineering Q&A</h1>
-                    <div class="subtitle">Architectural Inquiry Analysis · 31 Inquiries · Engineering Team & Senior Architecture</div>
+                    <div class="subtitle">Architectural Inquiry Analysis · 32 Inquiries · Engineering Team & Senior Architecture</div>
                     <div class="meta-badges">
                         <a href="https://github.com/DFKHelper/token-goat" target="_blank" style="text-decoration:none;"><span class="badge accent" style="cursor:pointer; display:inline-flex; align-items:center; gap:4px;">GitHub: DFKHelper/token-goat ↗</span></a>
                         <span class="badge accent">TypeScript / Rust / Tree-Sitter</span>
@@ -306,14 +306,14 @@
                     Repository <span><a href="https://github.com/DFKHelper/token-goat" target="_blank" style="color:var(--accent); text-decoration:underline;">DFKHelper/token-goat (Public)</a></span><br>
                     Format <span>spec_report_118114.html</span><br>
                     Generated <span>2026-09-09</span><br>
-                    Review Scope <span>31 Inquiries</span>
+                    Review Scope <span>32 Inquiries</span>
                 </div>
             </div>
         </div>
 
         <!-- Navigation Tabs -->
         <div class="tabs">
-            <button class="tab-btn active" data-tab="tab-inquiries">Inquiry Matrix (31)</button>
+            <button class="tab-btn active" data-tab="tab-inquiries">Inquiry Matrix (32)</button>
             <button class="tab-btn" data-tab="tab-deepdives">Detailed Analyses</button>
             <button class="tab-btn" data-tab="tab-config">Enterprise Config Audit</button>
             <button class="tab-btn" data-tab="tab-architecture">Architectural Comparison</button>
@@ -323,10 +323,10 @@
         <div id="tab-inquiries" class="tab-content active">
             <div class="filters" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                    <button class="filter-btn active" data-filter="all">All (31)</button>
+                    <button class="filter-btn active" data-filter="all">All (32)</button>
                     <button class="filter-btn" data-filter="security">Security &amp; Gov (11)</button>
                     <button class="filter-btn" data-filter="systems">Systems Arch (7)</button>
-                    <button class="filter-btn" data-filter="platform">Platform &amp; DevEx (6)</button>
+                    <button class="filter-btn" data-filter="platform">Platform &amp; DevEx (7)</button>
                     <button class="filter-btn" data-filter="devops">DevOps / Infra (2)</button>
                     <button class="filter-btn" data-filter="graph">Code Intel (2)</button>
                     <button class="filter-btn" data-filter="compiler">Language Tools (1)</button>
@@ -339,7 +339,7 @@
 
             <div style="font-size:12px; color:var(--text-dim); margin-bottom:8px; font-family:var(--font-mono); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
                 <span>Tip: Click any question row below to expand its dedicated question-by-question breakdown.</span>
-                <span style="color:var(--accent); font-weight:600;">Scroll inside table to view all 31 inquiries ↓</span>
+                <span style="color:var(--accent); font-weight:600;">Scroll inside table to view all 32 inquiries ↓</span>
             </div>
 
             <div class="table-wrapper">
@@ -3169,6 +3169,81 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                             </td>
                         </tr>
 
+                        <!-- Primary Question Row -->
+                        <tr class="inquiry-row" id="Q-32" data-author="platform" data-qid="Q-32">
+                            <td class="line-id"><span class="toggle-icon">▶</span> Q-32</td>
+                            <td><span class="author-badge">Platform &amp; DevEx Architect</span></td>
+                            <td style="font-size:11.5px; color:var(--text-dim); font-weight:500;">Cross-Platform Support &amp; WSL2 Architecture</td>
+                            <td class="field-name">Is it feasible to use token-goat on WSL?</td>
+                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#install" target="_blank" title="View section in public GitHub README">GitHub README: ## Install · ## Linux</a><span class="check">✓</span> <strong>Fully feasible and production-ready on WSL2.</strong> Runs natively on Linux (Ubuntu/Debian) with full POSIX locking and XDG compliance. Path normalizers automatically handle cross-boundary <code>/mnt/c/</code> paths, and native ext4 provides full I/O throughput.</td>
+                            <td><a href="https://github.com/DFKHelper/token-goat/blob/main/.github/workflows/ci.yml" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">.github/workflows/ci.yml</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/paths.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/paths.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/bash_extractors.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/bash_extractors.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/path_containment.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/path_containment.ts</code></a></td>
+                        </tr>
+
+                        <!-- Accordion Detail Row -->
+                        <tr class="detail-row" id="detail-Q-32" style="display:none;" data-author="platform">
+                            <td colspan="6" style="padding:0; background:var(--surface-2); border-bottom:2px solid var(--border);">
+                                <div class="inline-drawer">
+                                    <div class="inline-drawer-header">
+                                        <div><strong>Q-32 DETAILED BREAKDOWN</strong> · AUTHOR: <strong>Platform &amp; DevEx Architect</strong></div>
+                                        <div>REFERENCES (PUBLIC GITHUB): <code style="color:var(--accent); font-weight:600;"><a href="https://github.com/DFKHelper/token-goat/blob/main/.github/workflows/ci.yml" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">.github/workflows/ci.yml</a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/paths.ts" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">src/paths.ts</a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/bash_extractors.ts" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">src/bash_extractors.ts</a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/path_containment.ts" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">src/path_containment.ts</a></code></div>
+                                    </div>
+                                    <div class="readme-ref-banner">
+                                        <span class="readme-badge">PUBLIC GITHUB README</span>
+                                        <span>Covered in public GitHub README sections: <strong><a href="https://github.com/DFKHelper/token-goat/blob/main/README.md#install" target="_blank">## Install</a></strong> ("Node.js 22.16 or later, on any platform") and <strong><a href="https://github.com/DFKHelper/token-goat/blob/main/README.md#what-changes" target="_blank">## What changes</a></strong></span>
+                                    </div>
+                                    <div class="qa-answer-body" id="ans-Q-32">
+<div class="developer-callout">
+    <strong>Developer Takeaway — Production-Ready on WSL:</strong> token-goat runs natively inside WSL (Ubuntu/Debian) as a first-class Linux environment. Cross-boundary paths (<code>/mnt/c/</code>) are automatically canonicalized to Windows drive-letter equivalents, and running projects on native ext4 delivers optimal SQLite WAL and indexing throughput.
+</div>
+
+                    <div class="sub-qa-block">
+                        <div class="sub-question-title">
+                            <span class="sub-question-badge">PART 1</span>
+                            <span>Native Linux Execution &amp; Standards in WSL2</span>
+                        </div>
+                        <div class="sub-answer-text">
+                            <p>Inside WSL2, token-goat operates as a standard Linux service targeting Node.js 22.16+:</p>
+<ul>
+    <li><strong>XDG Base Directory Compliance:</strong> Global databases and local models follow Linux XDG conventions (<code>~/.local/share/token-goat/</code>), secured with POSIX directory permissions (<code>0700</code>) and database file permissions (<code>0600</code>).</li>
+    <li><strong>POSIX Concurrency &amp; WAL Locking:</strong> SQLite WAL mode (<code>better-sqlite3</code>) leverages Linux kernel <code>fcntl</code> file locks without the locking friction sometimes seen on remote network shares.</li>
+    <li><strong>CI Validation on Linux:</strong> Every commit is validated across Linux runners (<code>ubuntu-latest</code>) in <a href="https://github.com/DFKHelper/token-goat/blob/main/.github/workflows/ci.yml" target="_blank" class="github-inline-ref"><code>.github/workflows/ci.yml</code></a> across unit tests, guards, and built-bundle command matrix tiers.</li>
+</ul>
+                        </div>
+                    </div>
+
+                    <div class="sub-qa-block">
+                        <div class="sub-question-title">
+                            <span class="sub-question-badge">PART 2</span>
+                            <span>Cross-Boundary Filesystem Normalization (/mnt/c/ &lt;-&gt; C:/)</span>
+                        </div>
+                        <div class="sub-answer-text">
+                            <p>Development in enterprise environments often straddles Windows and WSL. Token-goat handles cross-environment path mapping transparently:</p>
+<ul>
+    <li><strong>Universal WSL Path Regex (<code>WSL_PATH_RE</code>):</strong> In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/paths.ts" target="_blank" class="github-inline-ref"><code>src/paths.ts</code></a> and <a href="https://github.com/DFKHelper/token-goat/blob/main/src/path_containment.ts" target="_blank" class="github-inline-ref"><code>src/path_containment.ts</code></a>, patterns matching <code>/mnt/([a-zA-Z])/(.*)</code> automatically map to normalized <code>c:/...</code> paths, ensuring consistent cache keys and index deduplication across both shells.</li>
+    <li><strong>WSL Interop Cat Interception:</strong> In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/bash_extractors.ts" target="_blank" class="github-inline-ref"><code>src/bash_extractors.ts</code></a>, <code>extractWslCatFile</code> intercepts proxied commands like <code>wsl bash -c "cat /mnt/c/..."</code>, preventing whole-file dumps and offering surgical symbol/section alternatives.</li>
+    <li><strong>Path Pinning &amp; Security Containment:</strong> In <code>src/mcp_server.ts</code>, both the raw WSL mount spelling and the normalized Windows spelling are pinned to eliminate directory traversal escapes while respecting configured root boundaries.</li>
+</ul>
+                        </div>
+                    </div>
+
+                    <div class="sub-qa-block">
+                        <div class="sub-question-title">
+                            <span class="sub-question-badge">PART 3</span>
+                            <span>Enterprise Performance Best Practices (ext4 vs 9P Bridge)</span>
+                        </div>
+                        <div class="sub-answer-text">
+                            <p>To maximize performance when using token-goat in WSL:</p>
+<ul>
+    <li><strong>Store Active Projects on Native ext4:</strong> Projects located inside the WSL filesystem (e.g., <code>/home/user/projects/</code>) benefit from native Linux ext4 filesystem speeds. Accessing projects across the Windows 9P mount bridge (<code>/mnt/c/...</code>) introduces cross-OS I/O overhead during initial cold indexing.</li>
+    <li><strong>Background Priority Scheduling:</strong> In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/process_priority.ts" target="_blank" class="github-inline-ref"><code>src/process_priority.ts</code></a>, worker indexing lowers process priority via native POSIX <code>nice</code> levels, ensuring background AST indexing never starves interactive developer shells.</li>
+    <li><strong>Windows Service Context Limitation:</strong> Automated background tasks running under Windows <code>NT AUTHORITY\SYSTEM</code> account cannot spawn <code>wsl.exe</code> directly (Microsoft limitation <code>WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED</code>); interactive developer sessions and user tokens execute WSL without restriction.</li>
+</ul>
+                        </div>
+                    </div>
+                                </div>
+                            </td>
+                        </tr>
+
                     </tbody>
                 </table>
             </div>
@@ -3177,7 +3252,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
             <div id="tableScrollIndicator" class="table-scroll-indicator">
                 <button type="button" class="scroll-pill" id="scrollTableBtn">
                     <span class="scroll-arrow">↓</span>
-                    <span>Scroll down for more inquiries (<span id="pillCount">31 total</span>)</span>
+                    <span>Scroll down for more inquiries (<span id="pillCount">32 total</span>)</span>
                     <span class="scroll-arrow">↓</span>
                 </button>
             </div>
@@ -3185,7 +3260,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
 
         <!-- Table Status Bar Below -->
         <div class="table-status-bar">
-            <div>Displaying <strong id="tableDisplayCount" style="color:var(--text);">31</strong> technical inquiries · <span style="color:var(--accent); font-weight:600;">Q-01 to Q-31</span></div>
+            <div>Displaying <strong id="tableDisplayCount" style="color:var(--text);">32</strong> technical inquiries · <span style="color:var(--accent); font-weight:600;">Q-01 to Q-32</span></div>
             <div class="status-hint" id="statusScrollHint">
                 <span class="scroll-arrow">↓</span>
                 <span id="statusScrollText">Scroll down inside table for remaining inquiries</span>
@@ -3724,6 +3799,23 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                     <span>Covered in public GitHub README sections: <strong><a href="https://github.com/DFKHelper/token-goat/blob/main/README.md#install" target="_blank">## Install</a></strong> ("Node.js 22.16 or later, on any platform") and <strong><a href="https://github.com/DFKHelper/token-goat/blob/main/README.md#stats-display-macos" target="_blank">### Stats display — macOS</a></strong></span>
                 </div>
                 <div class="card-answer-mount" data-source="ans-Q-31"></div>
+            </div>
+
+            <div class="deep-dive-card" id="card-Q-32" data-author="platform">
+                <div class="meta-bar">
+                    <span class="line-id">Q-32</span>
+                    <span>AUTHOR: <strong>Platform &amp; DevEx Architect</strong></span>
+                    <span>CATEGORY: <strong>Cross-Platform Support &amp; WSL2 Architecture</strong></span>
+                    <span>REFERENCES (PUBLIC GITHUB): <code style="font-family:var(--font-mono); font-size:11px; color:var(--accent); background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border);"><a href="https://github.com/DFKHelper/token-goat/blob/main/.github/workflows/ci.yml" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">.github/workflows/ci.yml</a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/paths.ts" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">src/paths.ts</a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/bash_extractors.ts" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">src/bash_extractors.ts</a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/path_containment.ts" target="_blank" class="github-file-link" style="color:var(--accent); text-decoration:underline;">src/path_containment.ts</a></code></span>
+                </div>
+                <div class="question-callout">
+                    "Is it feasible to use token-goat on WSL?"
+                </div>
+                <div class="readme-ref-banner">
+                    <span class="readme-badge">PUBLIC GITHUB README</span>
+                    <span>Covered in public GitHub README sections: <strong><a href="https://github.com/DFKHelper/token-goat/blob/main/README.md#install" target="_blank">## Install</a></strong> ("Node.js 22.16 or later, on any platform") and <strong><a href="https://github.com/DFKHelper/token-goat/blob/main/README.md#what-changes" target="_blank">## What changes</a></strong></span>
+                </div>
+                <div class="card-answer-mount" data-source="ans-Q-32"></div>
             </div>
 
             </div>

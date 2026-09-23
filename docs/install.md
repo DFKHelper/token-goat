@@ -20,6 +20,8 @@ token-goat doctor          # confirms the hooks, index, and integrations are hea
 
 Three commands. Done. Hooks register and start working immediately; no terminal popups, no tray icon, no service to babysit.
 
+> **WSL performance tip:** Keep active repositories on WSL's native ext4 filesystem (`~/projects/...`) rather than Windows mounts (`/mnt/c/...`) to avoid 9P cross-OS filesystem translation overhead during initial indexing.
+
 ### Agents choose the commands
 
 People install token-goat. Agents use it. You do not need to memorize its commands or tell the agent which file type it has.
