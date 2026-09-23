@@ -2,6 +2,15 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.27] - 2026-09-23
+
+No reindex is needed.
+
+### Fixed
+
+- **Three more search modes whose lines are the answer are passed through instead of being summarised into invented numbers.** A search that lists files or counts them per file emits no match lines, and the summariser reads every line as one match on the text before its first colon. `-l` and `-c` were released whole for that reason; their siblings were missed. `rg --count-matches` reports a per-file total of matches rather than matching lines, so each `path:18` line counted as a single match for `path`: a search of this project's own source printed `372 matches across 372 file(s)` with every file shown as one match, where the real total was 4466. `rg --files-without-match` and `rg --files` emit a bare path per line, and a 394-file listing became `394 matches across 1 file(s)` attributed entirely to the search root in the first case and `394 matches across 0 file(s)` with every line unattributed in the second. All three now release their output untouched.
+- **A `-L` search is still compressed when ripgrep runs it.** grep reads `-L` as the inverse file listing, but ripgrep reads it as `--follow`, so the short spelling belongs to grep alone and the long `--files-without-match` is shared. Treating the two alike would have released an ordinary symlink-following search whole and dropped the compression it exists to perform.
+
 ## [2.9.26] - 2026-09-23
 
 No reindex is needed.

@@ -88,6 +88,10 @@ describe('GrepFilter compression', () => {
       ['rg', '-l', 'export', 'src/'],
       ['rg', '--files-with-matches', 'export', 'src/'],
       ['grep', '-rl', 'export', 'src/'], // clustered short flag: the ordinary spelling
+      // CAPTURE: the two sibling spellings, missed when `-l` was fixed and failing the same way. Run against the shipped 2.9.26 binary in this repo on 2026-09-23, `rg --files-without-match zzzznomatch src` printed `grep: 394 matches across 1 file(s)` / `  C:/Projects/token-goat/src: 394 match(es)`, and `rg --files src` printed `grep: 394 matches across 0 file(s)` / `  (unattributed lines: 394)`. Both lost all 394 paths.
+      ['rg', '--files-without-match', 'zzz', 'src/'],
+      ['rg', '--files', 'src/'],
+      ['grep', '-rL', 'export', 'src/'], // grep's short spelling of the inverse listing, clustered
     ]) {
       const got = compress(f, out, argv)
       expect(got, argv.join(' ')).toBe(out.trimEnd())
@@ -131,12 +135,22 @@ describe('GrepFilter compression', () => {
       ['rg', '-c', 'export', 'src/'],
       ['rg', '--count', 'export', 'src/'],
       ['grep', '-rc', 'export', 'src/'],
+      // CAPTURE: rg's independently-spelled per-file match total, which the `--count` token test does not see. Against the shipped 2.9.26 binary in this repo on 2026-09-23, `rg --count-matches function src` printed `grep: 372 matches across 372 file(s)` with every file listed as `1 match(es)`; summing the real output with `awk -F: '{sum+=$NF}'` gives 4466.
+      ['rg', '--count-matches', 'export', 'src/'],
     ]) {
       const got = compress(f, out, argv)
       expect(got, argv.join(' ')).toBe(out.trimEnd())
       // The distinguishing detail: a real count survives, where the summarizer would have printed 1.
       expect(got, argv.join(' ')).toContain('src/file_39.ts:41')
     }
+  })
+
+  // A guard on the fix above rather than on the bug, and the reason the inverse listing's short spelling is grep's alone. FORMAT-DERIVED: `rg --help` prints `-L, --follow` where `grep --help` prints `-L, --files-without-match`, so one shared rule could only ever be right for one of them. Matching `-L` for rg would release an ordinary symlink-following search whole and silently suppress the compression it exists to do.
+  it('still summarises an rg -L search, because rg reads -L as --follow rather than as a file listing', () => {
+    const out = Array.from({ length: 40 }, (_, i) => `src/file_${i}.ts:${i + 1}:export const v${i} = ${i}`).join('\n')
+    const got = compress(f, out, ['rg', '-L', 'export', 'src/'])
+    expect(got).not.toBe(out.trimEnd())
+    expect(got).toContain('40 matches')
   })
 
   // HAND-DERIVED: the flag spellings are read off `rg --help`'s own synopsis (`-t, --type <TYPE>`, `-T, --type-not <TYPE>`, `-e, --regexp <PATTERN>`) and the expectation follows from what those flags mean, not from this filter's matcher. Every type name here contains the letter the cluster scan was looking for -- `css`, `html`, `c`, `clojure`, `log` -- which is what made an ordinary `rg -tcss` read as `--count` and ship 600 raw match lines where a summary was due.

@@ -68,17 +68,35 @@ const _RG_GLUED_VALUE_SHORT_FLAGS = 'ABCEMTdefgjmrt'
  * Which set applies is a property of the command, read off `argv[0]` -- not of the filter class that happens to be handling it. GrepFilter's binaries include `rg` and RgFilter's include `grep`, so either class can be handed either tool and "which filter am I" answers the wrong question.
  */
 function gluedValueShortFlags(argv: string[]): string {
-  return pathStem(argv[0] ?? '').toLowerCase() === 'rg' ? _RG_GLUED_VALUE_SHORT_FLAGS : _GREP_GLUED_VALUE_SHORT_FLAGS
+  return isRgCommand(argv) ? _RG_GLUED_VALUE_SHORT_FLAGS : _GREP_GLUED_VALUE_SHORT_FLAGS
 }
 
-/** `-l`/`--files-with-matches`: every line is a bare path, never a match. */
+/** Which tool `argv` actually runs, read off `argv[0]`. Several flag letters mean different things in the two tools, so every rule that differs between them asks this rather than the filter class handling the command. */
+function isRgCommand(argv: string[]): boolean {
+  return pathStem(argv[0] ?? '').toLowerCase() === 'rg'
+}
+
+/**
+ * Every line is a bare path, never a match. Three spellings produce that shape.
+ *
+ * `-l`/`--files-with-matches` is the original. Its two siblings were missed when it was fixed and failed the same way at scale: `rg --files-without-match` over `src` reported `394 matches across 1 file(s)` with all 394 paths attributed to the search root, and `rg --files` reported `394 matches across 0 file(s)` with `(unattributed lines: 394)` underneath. Both destroyed the listing the caller asked for; the second is the filter stating outright that it had parsed nothing and shipping a summary regardless.
+ *
+ * `-L` is grep's short spelling of the inverse listing, but rg reads `-L` as `--follow`, so matching it for both tools would pass an ordinary symlink-following search through whole and suppress real compression. The short form is grep's alone and the long form is shared. `--files` is rg's bare listing and grep has no equivalent, so an exact token test covers it.
+ */
 function isFilesOnlySearch(argv: string[]): boolean {
-  return grepFlagInCluster(argv, 'l', '--files-with-matches')
+  if (grepFlagInCluster(argv, 'l', '--files-with-matches')) return true
+  if (argv.includes('--files')) return true
+  if (isRgCommand(argv)) return argv.includes('--files-without-match')
+  return grepFlagInCluster(argv, 'L', '--files-without-match')
 }
 
-/** `-c`/`--count`: every line is `path:count`, and the count is the answer. */
+/**
+ * Every line is `path:count`, and the count is the answer.
+ *
+ * `--count-matches` is rg's per-file total of matches rather than matching lines. It shares `-c`'s shape exactly but is spelled independently, so the cluster walk's `--count` test does not see it, and it fell through to the summarizer: `rg --count-matches function src` reported `372 matches across 372 file(s)` with every file printed as `1 match(es)`, because each `path:N` line was read as a single match on `path`. The true total was 4466. grep has no such flag, so the token test needs no tool check.
+ */
 function isCountOnlySearch(argv: string[]): boolean {
-  return grepFlagInCluster(argv, 'c', '--count')
+  return grepFlagInCluster(argv, 'c', '--count') || argv.includes('--count-matches')
 }
 
 /**
