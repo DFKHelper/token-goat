@@ -5,8 +5,7 @@ on:
     types: [published]
   workflow_dispatch:
 
-# The default for this workflow is read-only. The publish job below re-declares exactly what it
-# needs (id-token: write, for npm provenance), so nothing else here can inherit that privilege.
+# The default for this workflow is read-only. The publish job below re-declares exactly what it needs (id-token: write, for npm provenance), so nothing else here can inherit that privilege.
 permissions:
   contents: read
 
@@ -14,24 +13,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  # Everything that executes dependency code lives here, and nothing here can reach the registry
-  # token. `npm ci` installs a tree of ~490 packages and `npm test` runs all of them; the current
-  # generation of npm supply-chain attacks installs cleanly and fires from inside a function the
-  # host calls during normal operation, so a compromised dependency executes in this job as a
-  # matter of course. What it must not also get is a job holding the credential: when build and
-  # publish shared one, dependency code ran on the same filesystem as the publish step and could
-  # rewrite `dist/`, or add a `prepublishOnly` to package.json that npm would then execute with
-  # NODE_AUTH_TOKEN in scope. Splitting the jobs closes both of those.
+  # Everything that executes dependency code lives here, and nothing here can reach the registry token. `npm ci` installs a tree of ~490 packages and `npm test` runs all of them; the current generation of npm supply-chain attacks installs cleanly and fires from inside a function the host calls during normal operation, so a compromised dependency executes in this job as a matter of course. What it must not also get is a job holding the credential: when build and publish shared one, dependency code ran on the same filesystem as the publish step and could rewrite `dist/`, or add a `prepublishOnly` to package.json that npm would then execute with NODE_AUTH_TOKEN in scope. Splitting the jobs closes both of those.
   #
-  # It does not make the release untamperable, and nothing here pretends otherwise: `npm run build`
-  # *is* esbuild, so dependency code always runs upstream of the artifact this hands over. What the
-  # split buys is that the artifact is the only thing that crosses, rather than a whole writable
-  # checkout plus a token.
+  # It does not make the release untamperable, and nothing here pretends otherwise: `npm run build` *is* esbuild, so dependency code always runs upstream of the artifact this hands over. What the split buys is that the artifact is the only thing that crosses, rather than a whole writable checkout plus a token.
   build:
     name: Build and verify
     runs-on: ubuntu-latest
-    # A manual workflow_dispatch run must come off main -- otherwise anyone with write
-    # access could publish an arbitrary feature-branch commit under the next npm version.
+    # A manual workflow_dispatch run must come off main -- otherwise anyone with write access could publish an arbitrary feature-branch commit under the next npm version.
     if: github.event_name == 'release' || github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -54,11 +42,7 @@ jobs:
             echo "::error::Release tag v$TAG does not match package.json version $PKG_VERSION"
             exit 1
           fi
-      # The workflow_dispatch route is pinned to main by the job-level `if`, but the release route
-      # was not pinned to anything: a GitHub release can be cut from any commit on any branch, and
-      # the tag-name check above only compares the tag to package.json. Someone with write access
-      # could tag a feature-branch commit `v9.9.9`, bump package.json to match on that branch, and
-      # publish it to npm under the project's name with provenance attached.
+      # The workflow_dispatch route is pinned to main by the job-level `if`, but the release route was not pinned to anything: a GitHub release can be cut from any commit on any branch, and the tag-name check above only compares the tag to package.json. Someone with write access could tag a feature-branch commit `v9.9.9`, bump package.json to match on that branch, and publish it to npm under the project's name with provenance attached.
       - name: Verify the released commit is on main
         if: github.event_name == 'release'
         run: |
@@ -83,9 +67,7 @@ jobs:
           npm install -g "$PACK_DIR/$TARBALL" --prefix "$INSTALL_DIR"
           BIN="$INSTALL_DIR/bin/token-goat"
           "$BIN" --version
-          # Index this checked-out repo through the installed tarball binary, then
-          # look up a real symbol, so the smoke test exercises the shipped critical
-          # path (parse -> index -> surgical read), not just the CLI entrypoint.
+          # Index this checked-out repo through the installed tarball binary, then look up a real symbol, so the smoke test exercises the shipped critical path (parse -> index -> surgical read), not just the CLI entrypoint.
           export XDG_DATA_HOME="$DATA_DIR"
           "$BIN" index .
           "$BIN" symbol indexFileSync
@@ -98,18 +80,12 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The only job that can reach the registry. It installs nothing: `npm publish` packs the `files`
-  # allowlist and uploads it, which needs the checkout and `dist/` and no dependency tree at all.
-  # `--ignore-scripts` then makes "no dependency code runs here" a property of the command rather
-  # than of what happens to be on disk, so the lifecycle hooks npm would otherwise fire on publish
-  # cannot run either. Held by tests/guards/publish_job_runs_no_dependency_code.test.ts.
+  # The only job that can reach the registry. It installs nothing: `npm publish` packs the `files` allowlist and uploads it, which needs the checkout and `dist/` and no dependency tree at all. `--ignore-scripts` then makes "no dependency code runs here" a property of the command rather than of what happens to be on disk, so the lifecycle hooks npm would otherwise fire on publish cannot run either. Held by tests/guards/publish_job_runs_no_dependency_code.test.ts.
   publish:
     name: Publish to npm
     needs: build
     runs-on: ubuntu-latest
-    # Repeated from the build job rather than inherited through `needs`, because this is the job
-    # that holds the token: it should refuse a non-main ref on its own terms, not because an
-    # upstream job happened to be skipped.
+    # Repeated from the build job rather than inherited through `needs`, because this is the job that holds the token: it should refuse a non-main ref on its own terms, not because an upstream job happened to be skipped.
     if: github.event_name == 'release' || github.ref == 'refs/heads/main'
     environment:
       name: npm

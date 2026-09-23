@@ -1,9 +1,6 @@
 pre-commit:
   commands:
-    # Fast structural gate: lint + typecheck, then the I/O-free guard suite
-    # (tests/guards) which catches implemented-but-unregistered/unfunctional
-    # commands before the commit lands. priority orders them lint -> typecheck
-    # -> guards; the full suite and built-bundle matrix stay on pre-push/CI.
+    # Fast structural gate: lint + typecheck, then the I/O-free guard suite (tests/guards) which catches implemented-but-unregistered/unfunctional commands before the commit lands. priority orders them lint -> typecheck -> guards; the full suite and built-bundle matrix stay on pre-push/CI.
     ts-lint:
       priority: 1
       run: npm run lint
@@ -16,20 +13,11 @@ pre-commit:
       priority: 2
       run: npm run typecheck:tests
       glob: "**/*.ts"
-    # The three checks below are the ones CI ran that nothing local did, which
-    # is the only way a green push could still turn the build red. They carry no
-    # glob on purpose, unlike the checks above: the extension compiles against
-    # its own package.json and tsconfig, and a secret can land in a .env, a
-    # .json or a fixture as easily as in a .ts file, so a TypeScript glob would
-    # let exactly the commits that break them through. Together they cost about
-    # seven seconds against the tier's existing minute.
+    # The three checks below are the ones CI ran that nothing local did, which is the only way a green push could still turn the build red. They carry no glob on purpose, unlike the checks above: the extension compiles against its own package.json and tsconfig, and a secret can land in a .env, a .json or a fixture as easily as in a .ts file, so a TypeScript glob would let exactly the commits that break them through. Together they cost about seven seconds against the tier's existing minute.
     ts-typecheck-vscode:
       priority: 2
       run: npm run typecheck:vscode-extension && npm run typecheck:vscode-extension:tests
-    # Glob'd to the lockfile because that is the only thing that changes which
-    # tarballs get verified, and the check costs a round trip to the registry
-    # for every resolved package. A commit that does not move the lockfile
-    # cannot change the answer, so it does not pay for it.
+    # Glob'd to the lockfile because that is the only thing that changes which tarballs get verified, and the check costs a round trip to the registry for every resolved package. A commit that does not move the lockfile cannot change the answer, so it does not pay for it.
     dependency-signatures:
       priority: 3
       run: npm audit signatures
@@ -39,31 +27,22 @@ pre-commit:
       run: npm run test:vscode-extension
     secrets:
       priority: 3
-      # Wrapped for the same reason as the guards below, plus one of its own:
-      # the wrapper hard-fails when gitleaks is absent rather than passing, so
-      # the gate cannot quietly stop existing. See the script's header.
+      # Wrapped for the same reason as the guards below, plus one of its own: the wrapper hard-fails when gitleaks is absent rather than passing, so the gate cannot quietly stop existing. See the script's header.
       run: bash .lefthook-scripts/run-secrets.sh
     fast-guards:
       priority: 3
-      # Wrapped rather than run directly so a passing run prints nothing: the
-      # guards' own stdout is ~150 lines that no reporter suppresses, and on a
-      # commit made by an agent every one of those lines is paid for. The
-      # wrapper replays the full output on failure. See the script's header.
+      # Wrapped rather than run directly so a passing run prints nothing: the guards' own stdout is ~150 lines that no reporter suppresses, and on a commit made by an agent every one of those lines is paid for. The wrapper replays the full output on failure. See the script's header.
       run: bash .lefthook-scripts/run-guards.sh
       glob: "**/*.ts"
 
 commit-msg:
   commands:
     no-tool-attribution:
-      # Runs on the message, not on files, so it has no glob: every commit is
-      # checked. See the script's header for why this cannot be left to memory.
+      # Runs on the message, not on files, so it has no glob: every commit is checked. See the script's header for why this cannot be left to memory.
       run: bash .lefthook-scripts/check-commit-msg.sh {1}
 
 pre-push:
   commands:
     all-checks:
-      # Single bash wrapper runs typecheck + tests in parallel internally.
-      # Avoids lefthook's parallel-mode EvalSymlinks canonicalize failure on
-      # Windows (affects commands with glob: on parallel runners when stdin
-      # is read concurrently).
+      # Single bash wrapper runs typecheck + tests in parallel internally. Avoids lefthook's parallel-mode EvalSymlinks canonicalize failure on Windows (affects commands with glob: on parallel runners when stdin is read concurrently).
       run: bash .lefthook-scripts/run-all-checks.sh

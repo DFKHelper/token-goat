@@ -5,17 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { ROOT } from '../helpers/bundle.js'
 
-/**
- * The job that holds the npm token must not be a job that runs dependency code.
- *
- * The npm supply-chain attacks worth defending against no longer need an install hook: the package installs cleanly and fires from inside a method the host calls during normal use. `runtime_dependency_set_is_locked.test.ts` bounds what that can reach on a *user's* machine. This bounds the other direction, which is much larger: a compromised **dev** dependency reaching users through a release. `npm ci` resolves roughly 490 packages here and `npm test` executes them, so when the build and the publish shared one job, that code ran on the same filesystem as the credential -- free to rewrite `dist/` before it shipped, or to add a `prepublishOnly` to package.json that `npm publish` would then run with NODE_AUTH_TOKEN in its environment. Provenance does not help: it attests that the official workflow produced the artifact, which would be true.
- *
- * So the checks below are about *separation*, not about detecting malice. The publishing job may not install anything, may not run the suite, and must pass `--ignore-scripts` so "nothing else runs here" is a property of the command rather than of whatever happens to be on disk.
- *
- * What this does not claim: that the release is untamperable. `npm run build` is esbuild, so dependency code runs upstream of the artifact no matter how the jobs are arranged. The artifact crossing the boundary is the residual risk, and it is smaller than a writable checkout plus a token.
- *
- * Provenance: CAPTURE. Parsed from `.github/workflows/publish.yml` itself -- the file GitHub executes -- not from a fixture or a transcription of it.
- */
+/** The job that holds the npm token must not be a job that runs dependency code. The npm supply-chain attacks worth defending against no longer need an install hook: the package installs cleanly and fires from inside a method the host calls during normal use. `runtime_dependency_set_is_locked.test.ts` bounds what that can reach on a *user's* machine. This bounds the other direction, which is much larger: a compromised **dev** dependency reaching users through a release. `npm ci` resolves roughly 490 packages here and `npm test` executes them, so when the build and the publish shared one job, that code ran on the same filesystem as the credential -- free to rewrite `dist/` before it shipped, or to add a `prepublishOnly` to package.json that `npm publish` would then run with NODE_AUTH_TOKEN in its environment. Provenance does not help: it attests that the official workflow produced the artifact, which would be true. So the checks below are about *separation*, not about detecting malice. The publishing job may not install anything, may not run the suite, and must pass `--ignore-scripts` so "nothing else runs here" is a property of the command rather than of whatever happens to be on disk. What this does not claim: that the release is untamperable. `npm run build` is esbuild, so dependency code runs upstream of the artifact no matter how the jobs are arranged. The artifact crossing the boundary is the residual risk, and it is smaller than a writable checkout plus a token. Provenance: CAPTURE. Parsed from `.github/workflows/publish.yml` itself -- the file GitHub executes -- not from a fixture or a transcription of it. */
 
 const workflow = path.join(ROOT, '.github', 'workflows', 'publish.yml')
 

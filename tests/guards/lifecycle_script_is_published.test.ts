@@ -1,19 +1,4 @@
-/**
- * Guard: every file an npm lifecycle script runs must actually be inside the published package.
- *
- * `package.json` is always included in a tarball, even when `files` lists nothing else -- so a
- * lifecycle script survives into the published manifest whether or not the file it points at does.
- * This project shipped exactly that: `"prepare": "node scripts/install-git-hooks.mjs"` in every
- * published manifest, with `scripts/` absent from the `files` allowlist. A plain
- * `npm install token-goat` never noticed, because npm does not run a dependency's `prepare` on a
- * registry install. Installing the package as a directory does run it, and it died on
- * `MODULE_NOT_FOUND` for a file the tarball never carried.
- *
- * Why didn't a test catch it: the existing prepare-script test copies the real script into a temp
- * project and asserts how it behaves, which is a question about the script, not about whether the
- * script is shipped. Nothing compared the `scripts` field against the `files` field at all, so a
- * manifest naming a file it does not publish satisfied every test in the suite.
- */
+/** Guard: every file an npm lifecycle script runs must actually be inside the published package. `package.json` is always included in a tarball, even when `files` lists nothing else -- so a lifecycle script survives into the published manifest whether or not the file it points at does. This project shipped exactly that: `"prepare": "node scripts/install-git-hooks.mjs"` in every published manifest, with `scripts/` absent from the `files` allowlist. A plain `npm install token-goat` never noticed, because npm does not run a dependency's `prepare` on a registry install. Installing the package as a directory does run it, and it died on `MODULE_NOT_FOUND` for a file the tarball never carried. Why didn't a test catch it: the existing prepare-script test copies the real script into a temp project and asserts how it behaves, which is a question about the script, not about whether the script is shipped. Nothing compared the `scripts` field against the `files` field at all, so a manifest naming a file it does not publish satisfied every test in the suite. */
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,11 +15,7 @@ const LIFECYCLE = [
 /** The three npm runs on `npm install` of a published tarball -- the ones a consumer cannot opt out of short of `--ignore-scripts`. */
 const INSTALL_TIME = ['preinstall', 'install', 'postinstall'] as const
 
-/**
- * Lifecycle scripts this package is allowed to declare, with what each is for.
- *
- * `prepare` is not in INSTALL_TIME because npm does not run it for a registry tarball -- only for a git dependency or a local `npm install` in the package directory -- and `scripts/install-git-hooks.mjs` exits 0 when lefthook is absent, which is every context except a dev checkout.
- */
+/** Lifecycle scripts this package is allowed to declare, with what each is for. `prepare` is not in INSTALL_TIME because npm does not run it for a registry tarball -- only for a git dependency or a local `npm install` in the package directory -- and `scripts/install-git-hooks.mjs` exits 0 when lefthook is absent, which is every context except a dev checkout. */
 const ALLOWED: ReadonlyMap<string, string> = new Map([['prepare', 'wires lefthook into a dev checkout; a no-op anywhere else']])
 
 /** Local file paths a script shell-invokes, e.g. the `scripts/x.mjs` in `node scripts/x.mjs`. */

@@ -1,23 +1,16 @@
 name: CI
-# `push` is scoped to main on purpose. With a bare `on: [push, pull_request]` a commit on a branch
-# with an open PR fires both events, so the entire suite ran twice for one commit.
+# `push` is scoped to main on purpose. With a bare `on: [push, pull_request]` a commit on a branch with an open PR fires both events, so the entire suite ran twice for one commit.
 on:
   push:
     branches: [main]
   pull_request:
 
-# A superseded run is wasted work that also delays the run you are waiting for: four pushes in an
-# hour meant four full suites queued against the same runner pool, and the newest one waited behind
-# three that no longer described any commit anyone cared about. Newest run per ref wins.
-# The cost is real and worth stating: an intermediate commit on main can now end without a green
-# run of its own. That is acceptable here because a release is cut from a tip that gets its own
-# full run, and it is the tip's result that gates publishing.
+# A superseded run is wasted work that also delays the run you are waiting for: four pushes in an hour meant four full suites queued against the same runner pool, and the newest one waited behind three that no longer described any commit anyone cared about. Newest run per ref wins. The cost is real and worth stating: an intermediate commit on main can now end without a green run of its own. That is acceptable here because a release is cut from a tip that gets its own full run, and it is the tip's result that gates publishing.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Least privilege by default. CI only ever reads the repository; a job that needs more has to
-# ask for it explicitly, so a future step cannot quietly inherit a writable token.
+# Least privilege by default. CI only ever reads the repository; a job that needs more has to ask for it explicitly, so a future step cannot quietly inherit a writable token.
 permissions:
   contents: read
 
@@ -30,9 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
-          # commit message. The default depth-1 checkout leaves it one commit to read, which it
-          # correctly refuses to call a history worth checking.
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable commit message. The default depth-1 checkout leaves it one commit to read, which it correctly refuses to call a history worth checking.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -54,13 +45,9 @@ jobs:
       - name: Type check (VS Code extension tests)
         run: npm run typecheck:vscode-extension:tests
 
-  # A secrets scan the repository configures but never runs is a document, not a control.
-  # `.gitleaks.toml` allowlists this suite's redaction fixtures; `tests/guards/gitleaks_allowlist_scope.test.ts`
-  # holds that allowlist away from `src/`, and this job is the thing that makes either matter.
+  # A secrets scan the repository configures but never runs is a document, not a control. `.gitleaks.toml` allowlists this suite's redaction fixtures; `tests/guards/gitleaks_allowlist_scope.test.ts` holds that allowlist away from `src/`, and this job is the thing that makes either matter.
   #
-  # The binary is fetched from a pinned release and checksum-verified rather than run through a
-  # marketplace action, so hardening the secrets scan does not add a third-party action to the
-  # supply chain of every CI run.
+  # The binary is fetched from a pinned release and checksum-verified rather than run through a marketplace action, so hardening the secrets scan does not add a third-party action to the supply chain of every CI run.
   secrets:
     runs-on: ubuntu-latest
     steps:
@@ -89,9 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
-          # commit message. The default depth-1 checkout leaves it one commit to read, which it
-          # correctly refuses to call a history worth checking.
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable commit message. The default depth-1 checkout leaves it one commit to read, which it correctly refuses to call a history worth checking.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -112,23 +97,11 @@ jobs:
         with:
           path: ${{ runner.temp }}/tg-model-cache
           key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
-      # The one place allowed to fetch the model. The suite itself never downloads it: the files that
-      # exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default.
-      # That gate also means the test run can no longer populate this cache as a side effect, which is
-      # why the download is a named step: on a restore miss it fetches once, the save step below then
-      # keeps it, and on the next run the restore makes this step a no-op that prints so and exits.
-      # Deliberately not conditioned on the restore missing: the script's own presence check is the
-      # cheaper guard, and it also repairs a cache that restored as a hit while being incomplete,
-      # which an `if` on cache-hit would leave broken for as long as the key survives. A failure here
-      # is reported as a failure, instead of silently degrading the whole population to skips.
+      # The one place allowed to fetch the model. The suite itself never downloads it: the files that exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default. That gate also means the test run can no longer populate this cache as a side effect, which is why the download is a named step: on a restore miss it fetches once, the save step below then keeps it, and on the next run the restore makes this step a no-op that prints so and exits. Deliberately not conditioned on the restore missing: the script's own presence check is the cheaper guard, and it also repairs a cache that restored as a hit while being incomplete, which an `if` on cache-hit would leave broken for as long as the key survives. A failure here is reported as a failure, instead of silently degrading the whole population to skips.
       - name: Warm the embedding model cache
         shell: bash
         run: npm run model:warm
-      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake
-      # with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also
-      # covers per-test instances of this). A real regression fails deterministically and still
-      # fails after 3 attempts. The embedding model download used to be retried here too; it now
-      # has its own retries in the warm step above, which is the only step that fetches it.
+      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -136,15 +109,11 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/3
-      # Explicit, so the extension's regression suite (vscode-extension/tests/security.test.ts)
-      # stays wired to a gate even if the root vitest config's default file discovery ever
-      # narrows its `include` -- `npm test` above already picks these tests up incidentally
-      # today, but that was never intentional and is not something to depend on silently.
+      # Explicit, so the extension's regression suite (vscode-extension/tests/security.test.ts) stays wired to a gate even if the root vitest config's default file discovery ever narrows its `include` -- `npm test` above already picks these tests up incidentally today, but that was never intentional and is not something to depend on silently.
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension
-      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in
-      # the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
       - name: Check the embedding model cache is worth saving
         id: model-cache-complete
         if: always() && steps.model-cache.outputs.cache-hit != 'true'
@@ -172,9 +141,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
-          # commit message. The default depth-1 checkout leaves it one commit to read, which it
-          # correctly refuses to call a history worth checking.
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable commit message. The default depth-1 checkout leaves it one commit to read, which it correctly refuses to call a history worth checking.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -195,23 +162,11 @@ jobs:
         with:
           path: ${{ runner.temp }}/tg-model-cache
           key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
-      # The one place allowed to fetch the model. The suite itself never downloads it: the files that
-      # exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default.
-      # That gate also means the test run can no longer populate this cache as a side effect, which is
-      # why the download is a named step: on a restore miss it fetches once, the save step below then
-      # keeps it, and on the next run the restore makes this step a no-op that prints so and exits.
-      # Deliberately not conditioned on the restore missing: the script's own presence check is the
-      # cheaper guard, and it also repairs a cache that restored as a hit while being incomplete,
-      # which an `if` on cache-hit would leave broken for as long as the key survives. A failure here
-      # is reported as a failure, instead of silently degrading the whole population to skips.
+      # The one place allowed to fetch the model. The suite itself never downloads it: the files that exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default. That gate also means the test run can no longer populate this cache as a side effect, which is why the download is a named step: on a restore miss it fetches once, the save step below then keeps it, and on the next run the restore makes this step a no-op that prints so and exits. Deliberately not conditioned on the restore missing: the script's own presence check is the cheaper guard, and it also repairs a cache that restored as a hit while being incomplete, which an `if` on cache-hit would leave broken for as long as the key survives. A failure here is reported as a failure, instead of silently degrading the whole population to skips.
       - name: Warm the embedding model cache
         shell: bash
         run: npm run model:warm
-      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake
-      # with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also
-      # covers per-test instances of this). A real regression fails deterministically and still
-      # fails after 3 attempts. The embedding model download used to be retried here too; it now
-      # has its own retries in the warm step above, which is the only step that fetches it.
+      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -222,8 +177,7 @@ jobs:
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension
-      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in
-      # the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
       - name: Check the embedding model cache is worth saving
         id: model-cache-complete
         if: always() && steps.model-cache.outputs.cache-hit != 'true'
@@ -251,9 +205,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
-          # commit message. The default depth-1 checkout leaves it one commit to read, which it
-          # correctly refuses to call a history worth checking.
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable commit message. The default depth-1 checkout leaves it one commit to read, which it correctly refuses to call a history worth checking.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -274,23 +226,11 @@ jobs:
         with:
           path: ${{ runner.temp }}/tg-model-cache
           key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
-      # The one place allowed to fetch the model. The suite itself never downloads it: the files that
-      # exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default.
-      # That gate also means the test run can no longer populate this cache as a side effect, which is
-      # why the download is a named step: on a restore miss it fetches once, the save step below then
-      # keeps it, and on the next run the restore makes this step a no-op that prints so and exits.
-      # Deliberately not conditioned on the restore missing: the script's own presence check is the
-      # cheaper guard, and it also repairs a cache that restored as a hit while being incomplete,
-      # which an `if` on cache-hit would leave broken for as long as the key survives. A failure here
-      # is reported as a failure, instead of silently degrading the whole population to skips.
+      # The one place allowed to fetch the model. The suite itself never downloads it: the files that exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default. That gate also means the test run can no longer populate this cache as a side effect, which is why the download is a named step: on a restore miss it fetches once, the save step below then keeps it, and on the next run the restore makes this step a no-op that prints so and exits. Deliberately not conditioned on the restore missing: the script's own presence check is the cheaper guard, and it also repairs a cache that restored as a hit while being incomplete, which an `if` on cache-hit would leave broken for as long as the key survives. A failure here is reported as a failure, instead of silently degrading the whole population to skips.
       - name: Warm the embedding model cache
         shell: bash
         run: npm run model:warm
-      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake
-      # with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also
-      # covers per-test instances of this). A real regression fails deterministically and still
-      # fails after 3 attempts. The embedding model download used to be retried here too; it now
-      # has its own retries in the warm step above, which is the only step that fetches it.
+      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -303,8 +243,7 @@ jobs:
         run: npm run test:vscode-extension
 
   # The stable check name the branch ruleset points at. The sharded jobs report as `test-linux (1)`, `test-windows (2)` and so on, so a required context naming a shard would stop gating the moment the shard count changed; this job keeps one name the ruleset can pin, and pulls Windows and macOS under the same gate while it is there.
-      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in
-      # the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
       - name: Check the embedding model cache is worth saving
         id: model-cache-complete
         if: always() && steps.model-cache.outputs.cache-hit != 'true'
