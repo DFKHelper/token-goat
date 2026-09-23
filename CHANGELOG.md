@@ -2,6 +2,14 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.9.25] - 2026-09-23
+
+Upgrading reparses the index. The change is in the indexer, so the parser stamp moves for every language and each file is read once more. Embeddings are untouched and keep serving throughout: nothing already stored is re-embedded, and no existing index loses chunks, because no file in a normal project comes close to the ceiling this restores.
+
+### Fixed
+
+- **The per-file chunk ceiling counts the chunks that were stored, not an estimate taken before they were cut.** `indexing.max_chunks_per_file` was checked against a character-budget cut taken just before embedding. The embedder then threw that cut away and re-cut the same content with the model's own tokenizer, which flushes on a token budget as well as a character one and so divides the file more finely. The ceiling was therefore applied to a count several times smaller than the one it was meant to bound: a chunk may run to 8000 characters on the character cut but is held to 510 tokens on the token one, which measured over 6117 stored chunks is roughly 810 to 1775 characters, so a file could clear a ceiling of 600 and store several thousand rows. Embeddable documents skipped the check entirely and had no ceiling at all. The ceiling is now re-applied to the rows in the index after embedding, for documents and source alike, and a file that breaches it has its chunks removed and is marked so the background sweep agrees. That sweep already counted stored rows, so the two now measure the same thing and cannot reach opposite verdicts on one file.
+
 ## [2.9.24] - 2026-09-23
 
 ### Fixed

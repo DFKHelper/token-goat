@@ -933,6 +933,37 @@ export function maxChunksEmbedSha(sha: string, maxChunks: number): string {
 }
 
 /**
+ * Apply `maxChunks` to the rows a just-finished embed actually wrote, dropping them and stamping the
+ * over-cap marker when it went over. Returns whether it did, so the caller can skip its own stamp.
+ *
+ * The cheap count taken before embedding cannot decide this on its own. It cuts with
+ * `chunkFile`'s char budget, and `indexFile` re-cuts with the model's tokenizer before inserting
+ * whenever the embedding deps are present -- the branch that exists precisely when this cap matters.
+ * The token cut is strictly the finer of the two: it flushes on a token budget as well as a char
+ * one, it sub-splits any single line past that budget, and it stops merging below-floor chunks
+ * ("a short vector costs one more row", as the flush in embeddings.ts puts it). So the pre-count is
+ * a lower bound, and a file can clear a 600-chunk ceiling on the coarse cut and store several
+ * hundred more than that on the fine one. The pre-count is kept because it is free and its
+ * rejections are all correct; it is just not the last word.
+ *
+ * Counting stored rows is also what makes this agree with `selectUnembeddableChunkFiles`
+ * (embed_backfill.ts), which sweeps on exactly this measure. When the two used different measures
+ * they could reach opposite verdicts on one file, and which one won came down to whether that
+ * sweep's version ledger had been stamped yet.
+ */
+function enforceStoredChunkCap(db: SqliteDatabase, filePath: string, sha: string | undefined, maxChunks: number): boolean {
+  // No sha means stampEmbedSha is a no-op, so there would be no marker to record the verdict. Dropping the rows anyway would leave the file looking un-embedded and send the next pass straight back through the same inference, so leave it alone and let the embed_backfill sweep take it.
+  if (sha === undefined || maxChunks <= 0) return false
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM chunks WHERE ${pathEqClause('file_path')}`).get(foldPath(filePath)) as
+    | { n: number }
+    | undefined
+  if ((row?.n ?? 0) <= maxChunks) return false
+  deleteFileEmbeddings(db, filePath)
+  stampEmbedSha(db, filePath, sha, (s) => maxChunksEmbedSha(s, maxChunks))
+  return true
+}
+
+/**
  * Return `absPath` with its final segment spelled the way the filesystem actually spells it.
  *
  * The companion of `indexedPathSpellingIsStale`. That guard notices when a stored row's spelling
@@ -1191,6 +1222,8 @@ export async function indexFileEmbeddings(
       // No symbol table exists for these formats, so boundaries is empty -- the whole extracted
       // text goes through chunkFile's generic windowed chunking instead of symbol-aligned chunks.
       const outcome = await embedIndexFile(db, filePath, extracted, [])
+      // Documents reach this point without having passed the chunk-count gate below, which sits in the generic-content branch this one returns before. A PDF or spreadsheet whose extracted text is under the byte threshold was therefore embedded with no ceiling at all, on the same windowed cut that the ceiling exists to bound. Enforcing it here rather than adding a second pre-count keeps one rule for both branches.
+      if (outcome !== 'unavailable' && enforceStoredChunkCap(db, filePath, sha, ixCfg.max_chunks_per_file)) return
       stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
     } catch (err) {
       onError?.(err)
@@ -1236,7 +1269,8 @@ export async function indexFileEmbeddings(
     return
   }
   const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
-  // Count what this file would contribute before embedding any of it. Byte size is already gated above and does not catch this case: chunk cuts snap to structure, so a generated data snapshot of a few hundred kilobytes -- thousands of one-line keys, each its own boundary -- becomes thousands of near-identical chunks, while a source file of the same size becomes a few hundred meaningful ones. On one real index the worst 32 files were nearly all under the byte threshold and held 22% of every chunk on the machine. The cut is repeated inside embedIndexFile, which is pure string work against content already in memory and costs nothing next to the model inference this gate exists to avoid; it is deliberately NOT hoisted into embeddings.ts, because that file is hashed into EMBED_FINGERPRINT and editing it would force every already-embedded file on every machine to be re-embedded.
+  // Count what this file would contribute before embedding any of it. Byte size is already gated above and does not catch this case: chunk cuts snap to structure, so a generated data snapshot of a few hundred kilobytes -- thousands of one-line keys, each its own boundary -- becomes thousands of near-identical chunks, while a source file of the same size becomes a few hundred meaningful ones. On one real index the worst 32 files were nearly all under the byte threshold and held 22% of every chunk on the machine. This cut is pure string work against content already in memory and costs nothing next to the model inference this gate exists to avoid; it is deliberately NOT hoisted into embeddings.ts, because that file is hashed into EMBED_FINGERPRINT and editing it would force every already-embedded file on every machine to be re-embedded.
+  // It is a LOWER bound, not the count that will be stored. embedIndexFile cuts again with the model's tokenizer whenever the embedding deps are present, and that cut is strictly finer, so clearing the ceiling here does not mean the rows will. enforceStoredChunkCap re-applies the ceiling to what actually landed; this stays as the free rejection of the files that are already over it on the coarse cut, which saves their inference entirely.
   const chunkCount = chunkFile(filePath, content, undefined, undefined, boundaries).length
   if (chunkCount > ixCfg.max_chunks_per_file) {
     const db = getDb(dbPath)
@@ -1247,6 +1281,7 @@ export async function indexFileEmbeddings(
   try {
     const db = getDb(dbPath)
     const outcome = await embedIndexFile(db, filePath, content, boundaries)
+    if (outcome !== 'unavailable' && enforceStoredChunkCap(db, filePath, sha, ixCfg.max_chunks_per_file)) return
     // When the optional embedding deps were absent, embedIndexFile reports 'unavailable' and no vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
     stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
   } catch (err) {
