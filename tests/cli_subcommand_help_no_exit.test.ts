@@ -19,8 +19,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { applyExitOverride, buildProgram, run } from '../src/cli.js'
 
-/** Runs `run(argv)` with `process.exit` stubbed, returning stdout and whether exit was attempted. */
-async function runInProcess(args: string[]): Promise<{ stdout: string; exited: boolean }> {
+/** Runs `run(argv)` with `process.exit` stubbed, returning stdout, stderr, the exit code it set, and whether exit was attempted. */
+async function runInProcess(args: string[]): Promise<{ stdout: string; stderr: string; code: number | undefined; exited: boolean }> {
   let exited = false
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     exited = true
@@ -33,13 +33,23 @@ async function runInProcess(args: string[]): Promise<{ stdout: string; exited: b
     stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
     return true
   }) as never)
+  let stderr = ''
+  const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+    stderr += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+    return true
+  }) as never)
+  // Cleared first so the assertion reads what this call set rather than what an earlier one left behind: `run()` only ever assigns, so a stale 1 would otherwise look like this command's own failure.
+  process.exitCode = undefined
   try {
     await run(['node', 'token-goat', ...args])
   } finally {
+    errSpy.mockRestore()
     writeSpy.mockRestore()
     exitSpy.mockRestore()
   }
-  return { stdout, exited }
+  const code = process.exitCode as number | undefined
+  process.exitCode = undefined
+  return { stdout, stderr, code, exited }
 }
 
 afterEach(() => {
@@ -54,7 +64,7 @@ describe('subcommand --help', () => {
     const result = await runInProcess([...args, '--help'])
     expect(result.exited, `\`${args.join(' ')} --help\` called the real process.exit()`).toBe(false)
     expect(result.stdout).toContain('Usage:')
-    expect(process.exitCode).toBe(0)
+    expect(result.code).toBe(0)
   })
 
   // The top-level program was always covered by the original single exitOverride() call. Kept so a
@@ -63,6 +73,36 @@ describe('subcommand --help', () => {
     const result = await runInProcess(['--help'])
     expect(result.exited).toBe(false)
     expect(result.stdout).toContain('Usage:')
+  })
+})
+
+/**
+ * `help <command>` is the other spelling of the same request, and it was broken for every command in the CLI while the block above was green.
+ *
+ * The action re-enters `program.parse([cmd, '--help'])`, which under the override above reports itself by throwing once commander has written the help text. That throw reached the generic action wrapper, which cannot tell a success signal from a failure, so every `help <command>` printed correct help on stdout and then `token-goat: (outputHelp)` on stderr and exited 1 -- including the spelling the compact help's own closing tip tells callers to use.
+ *
+ * Why the block above did not catch it: it exercises `<command> --help` only, which is the path that works, and it reads stdout alone. The defect lived entirely in the exit code and stderr of the sibling spelling, so nothing it asserts could have moved. Hence both streams and the code are checked here, and an unknown name is checked too -- commander answers that by printing the whole top-level help, which is why asking about one command and receiving the list of all of them has to be an error rather than a quiet success.
+ */
+describe('help <command>', () => {
+  it.each([['symbol'], ['scope'], ['worker'], ['install']])('succeeds silently for `help %s`', async (name) => {
+    const result = await runInProcess(['help', name])
+    expect(result.stdout, `\`help ${name}\` printed no usage`).toContain('Usage:')
+    expect(result.stderr, `\`help ${name}\` wrote to stderr on a successful help request`).toBe('')
+    expect(result.code, `\`help ${name}\` reported failure for a command that exists`).toBe(0)
+  })
+
+  it('reports an unknown name instead of printing the whole command list', async () => {
+    const result = await runInProcess(['help', 'nosuchcommand'])
+    expect(result.stderr, 'an unknown command name was not named back to the caller').toContain('nosuchcommand')
+    expect(result.code).toBe(1)
+    // The failure has to be legible as one: commander's own answer here is the top-level help, which reads like success.
+    expect(result.stdout, 'the top-level command list was printed in place of an error').not.toContain('Surgical token-reduction')
+  })
+
+  it('still prints the compact summary for a bare `help`', async () => {
+    const result = await runInProcess(['help'])
+    expect(result.stdout).toContain('Usage:')
+    expect(result.code).toBe(0)
   })
 })
 

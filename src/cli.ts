@@ -2060,8 +2060,21 @@ export function buildProgram(): Command {
           return
         }
         if (cmd) {
+          // Resolved before parsing, because commander answers `<unknown> --help` by printing the top-level help rather than by complaining: the caller asked about one command and silently got the list of all of them. Pre-existing behaviour exited 1 without ever saying why, which is the half of it worth keeping.
+          const known = program.commands.some((sub) => sub.name() === cmd || sub.aliases().includes(cmd))
+          if (!known) {
+            err(`token-goat: unknown command '${displaySafeText(cmd)}'. Run 'token-goat commands --grep <pattern>' to search the list.`)
+            process.exitCode = 1
+            return
+          }
           const argv: string[] = [process.argv[0] ?? 'node', process.argv[1] ?? 'token-goat', cmd, '--help']
-          program.parse(argv)
+          try {
+            program.parse(argv)
+          } catch (e) {
+            // `applyExitOverride` arms every subcommand, so `<cmd> --help` reports itself by throwing rather than by exiting -- and commander has already written the help text to stdout by the time it does. Letting that reach the action wrapper turned the success into `token-goat: (outputHelp)` on stderr and exit 1 for every `help <command>` there is, including the spelling the compact help's own closing tip recommends. Any other code is a real failure and still propagates.
+            const code = (e as { code?: string }).code
+            if (code !== 'commander.help' && code !== 'commander.helpDisplayed') throw e
+          }
         } else {
           out(generateCompactHelp())
         }
