@@ -67,6 +67,8 @@ import {
   findSystemTempFiles,
   pruneSystemTempFiles,
   findOrphanedChunkPaths,
+  findDeadRetryPaths,
+  pruneDeadRetryRows,
   pruneOrphanedChunks,
   pruneOrphanedVectors,
 } from '../src/index_prune.js'
@@ -207,6 +209,57 @@ describe('index_prune', () => {
     // app's row should be gone, app-2's row should remain
     expect(symbolCount(dbPath, appKey)).toBe(0)
     expect(symbolCount(dbPath, app2Key)).toBe(1)
+  })
+
+  // CAPTURE: this is the exact shape the real worker writes. The built 2.9.22 bundle, run against
+  // a scratch project holding a directory named `goner.ts` (an EISDIR read failure, the same class
+  // as a held lock), left `index_retries` = ('c:/.../goner.ts', 2) and NO `files` row -- which is
+  // the whole point of the table. The first version of this test seeded the counter for a path
+  // that also had a `files` row, and passed against an implementation that only ever cleared
+  // counters for already-indexed paths; the dogfood run is what showed the real row surviving.
+  it('reclaims a retry counter for a path that was never indexed at all', () => {
+    const neverIndexed = normalizePath(path.join(dir, 'goner.ts'))
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO index_retries (path, retry_count) VALUES (?, 2)').run(neverIndexed)
+    expect(
+      db.prepare('SELECT path FROM files WHERE path = ?').get(neverIndexed),
+      'the premise: no files row, so no path-scoped prune can even name this path',
+    ).toBeUndefined()
+
+    expect(pruneDeadRetryRows(dbPath)).toEqual([neverIndexed])
+    expect(db.prepare('SELECT count(*) AS n FROM index_retries').get()).toEqual({ n: 0 })
+  })
+
+  it('keeps the retry counter of a file that is still on disk, however many times it has failed', () => {
+    const lockedPath = path.join(dir, 'locked.ts')
+    fs.writeFileSync(lockedPath, 'export const lockedSym = 1\n')
+    const lockedKey = normalizePath(lockedPath)
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO index_retries (path, retry_count) VALUES (?, 9)').run(lockedKey)
+
+    expect(findDeadRetryPaths(dbPath)).toEqual([])
+    expect(pruneDeadRetryRows(dbPath)).toEqual([])
+    const row = db.prepare('SELECT retry_count FROM index_retries WHERE path = ?').get(lockedKey) as
+      | { retry_count: number }
+      | undefined
+    expect(row?.retry_count, 'clearing this would hand a still-locked file a fresh budget every sweep').toBe(9)
+  })
+
+  it('takes an indexed file\'s retry counter with it when the file is deleted', () => {
+    const stuckPath = path.join(dir, 'stuck.ts')
+    fs.writeFileSync(stuckPath, 'export const stuckSym = 1\n')
+    const stuckKey = normalizePath(stuckPath)
+    indexFileSync(stuckKey, dbPath)
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO index_retries (path, retry_count) VALUES (?, 3)').run(stuckKey)
+    fs.rmSync(stuckPath)
+
+    expect(pruneDeletedFiles(normalizePath(dir), dbPath)).toBe(1)
+
+    const left = db.prepare('SELECT retry_count FROM index_retries WHERE path = ?').get(stuckKey) as
+      | { retry_count: number }
+      | undefined
+    expect(left, 'the retry row went with the file it was counting failures for').toBeUndefined()
   })
 
   it('refuses to prune at a drive/too-shallow root', () => {

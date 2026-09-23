@@ -471,7 +471,7 @@ function bumpAndCheckRetry(dir: string, absPath: string): boolean {
   const dbPath = path.join(dir, 'global.db')
   const attempts = bumpRetryCount(dbPath, absPath)
   if (attempts > MAX_TRANSIENT_RETRIES) {
-    // Permanently stuck (e.g. a read lock that never clears): stop requeuing so this path doesn't get hammered every single drain cycle forever. Log exactly once -- on the cycle the cap is first exceeded, not on every subsequent cycle -- so the failure is visible without spamming the log. A future edit to this path re-dirties it through the normal queue-append path (not this function), which gives it a fresh retry budget.
+    // Permanently stuck (e.g. a read lock that never clears): stop requeuing so this path doesn't get hammered every single drain cycle forever. Log exactly once -- on the cycle the cap is first exceeded, not on every subsequent cycle -- so the failure is visible without spamming the log. A future edit to this path re-dirties it through the normal queue-append path (not this function), which gets it one more attempt -- and a fresh budget only once that attempt's read actually succeeds, since clearRetryCount runs on success and the edit hook deliberately does not reset the counter itself (see hooks_index.ts). An edit to a file whose lock has still not cleared therefore gets exactly that one attempt, not MAX_TRANSIENT_RETRIES more.
     if (attempts === MAX_TRANSIENT_RETRIES + 1) {
       appendWorkerErrorLog(
         dir,

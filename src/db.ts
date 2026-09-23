@@ -37,6 +37,10 @@ const _connections = new Map<string, SqliteDatabase>()
  *   - symbols_fts — FTS5 mirror of symbols for full-text name/body search.
  *
  * The FTS5 table is content-linked to `symbols` (external-content) so the row data lives once in `symbols`; triggers keep the index in sync on write.
+ *
+ * `index_retries` holds the worker's transient-read-failure counters instead of a column on `files`. The count has to survive across processes -- the edit hook is a short-lived CLI process, the drain loop a long-lived daemon -- so it has to be on disk in the DB they share. Putting it in `files` meant minting a row there for a path that had never been indexed, and a `files` row is what three readers take to mean "this file is in the index": indexMatchesDisk (index_freshness.ts) and healStaleIndex/staleWarning (read_commands.ts) each read a row with no sha as a pre-fingerprinting legacy row and accept it as-is, so a never-indexed file that hit one transient lock during a drain looked indexed and lost its on-demand self-heal for good. `files.retry_count` is still created for older databases and is no longer read or written.
+ *
+ * Prose belongs in this comment rather than in an SQL `--` line inside the template literal below: a comment here is stripped by the bundler, while one inside the string ships verbatim in every hook process's eager chunk set. tests/guards/dist_chunks_deduped.test.ts holds the ceiling that catches the difference.
  */
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS files (
@@ -61,7 +65,7 @@ CREATE TABLE IF NOT EXISTS files (
 -- -- no MIGRATIONS entry or SCHEMA_VERSION bump is needed for this index.
 CREATE INDEX IF NOT EXISTS idx_files_path_folded ON files(TG_LOWER(path));
 
--- Transient-read-failure counters, keyed by path. These live outside the files table on purpose. The worker has to count a path's consecutive failures across processes (the edit hook is a short-lived CLI process, the drain loop a long-lived daemon), so the count has to be on disk in the DB they share -- but a path that has never been indexed has no files row, and minting one to hold the counter made a files row stop meaning "this file is in the index". Three readers key on exactly that: indexMatchesDisk (index_freshness.ts) and healStaleIndex/staleWarning (read_commands.ts) read a row with no sha as a pre-fingerprinting legacy row and accept it as-is, so a never-indexed file that hit one transient lock during a drain looked indexed and lost its on-demand self-heal for good. The files.retry_count column is left in place for older databases and is no longer read or written.
+-- Transient-read-failure counters, keyed by path. See the note above SCHEMA_SQL for why they are not in files.
 CREATE TABLE IF NOT EXISTS index_retries (
   path TEXT PRIMARY KEY,
   retry_count INTEGER NOT NULL

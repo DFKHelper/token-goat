@@ -592,10 +592,11 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     // A third and fourth kind of staleness, both owned by sweepKnownRoots: file rows whose file was deleted under a root that is still very much alive, and embedding chunks whose `files` row is already gone. Neither of the checks above can see either -- one reads the config's blocked_roots list and the other enumerates the system temp dir -- so before this call the only thing that ever reclaimed them was the worker daemon's own sweep, on a 24-hour cadence, and `project prune` answered "Nothing to do" against an index that had plenty to do. Calling the sweep rather than restating its rules here is what keeps the one-off command and the daemon from drifting apart.
     const sweep = sweepKnownRoots(undefined, { dryRun: opts.dryRun === true })
     const orphanChunkPaths = sweep.prunedOrphanChunkPaths
+    const deadRetryPaths = sweep.prunedDeadRetryPaths
 
     if (opts.dryRun === true) {
       if (opts.json === true) {
-        emit(displaySafeJson({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, wouldPruneOrphanChunkFiles: orphanChunkPaths.length, orphanChunkPaths, wouldPruneDeadFileRows: sweep.prunedRows, deadRowRoots: sweep.prunedRoots, flaggedRoots: sweep.flaggedRoots, blocked_roots: before }))
+        emit(displaySafeJson({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, wouldPruneOrphanChunkFiles: orphanChunkPaths.length, orphanChunkPaths, wouldPruneDeadRetryPaths: deadRetryPaths.length, deadRetryPaths, wouldPruneDeadFileRows: sweep.prunedRows, deadRowRoots: sweep.prunedRoots, flaggedRoots: sweep.flaggedRoots, blocked_roots: before }))
         return
       }
       if (removed === 0) {
@@ -616,6 +617,12 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
         emit(`Would prune orphaned embedding chunks for ${orphanChunkPaths.length} file(s):`)
         for (const p of orphanChunkPaths) emit(`  ${p}`)
       }
+      if (deadRetryPaths.length === 0) {
+        emit('Would prune 0 dead read-retry counter(s). Nothing to do.')
+      } else {
+        emit(`Would prune ${deadRetryPaths.length} dead read-retry counter(s):`)
+        for (const p of deadRetryPaths) emit(`  ${p}`)
+      }
       if (sweep.prunedRows === 0) {
         emit('Would prune 0 dead file row(s) under known roots. Nothing to do.')
       } else {
@@ -634,13 +641,14 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     const prunedOrphanChunks = sweep.prunedOrphanChunkPaths
     const prunedOrphanVectors = sweep.prunedOrphanVectors
     if (opts.json === true) {
-      emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length, prunedOrphanVectors, prunedDeadFileRows: sweep.prunedRows, deadRowRoots: sweep.prunedRoots, flaggedRoots: sweep.flaggedRoots }))
+      emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length, prunedOrphanVectors, prunedDeadRetryPaths: sweep.prunedDeadRetryPaths.length, prunedDeadFileRows: sweep.prunedRows, deadRowRoots: sweep.prunedRoots, flaggedRoots: sweep.flaggedRoots }))
       return
     }
     emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
     emit(`Pruned ${prunedTempFiles.length} stale indexed temp-dir file(s).`)
     emit(`Pruned orphaned embedding chunks for ${prunedOrphanChunks.length} file(s).`)
     emit(`Pruned ${prunedOrphanVectors} orphaned embedding vector(s).`)
+    emit(`Pruned ${sweep.prunedDeadRetryPaths.length} dead read-retry counter(s).`)
     emit(`Pruned ${sweep.prunedRows} dead file row(s) under ${sweep.prunedRoots.length} known root(s).`)
     for (const r of sweep.flaggedRoots) emit(`  skipped (too many rows would go at once, root may be partly offline): ${r}`)
     return

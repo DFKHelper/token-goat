@@ -6,6 +6,7 @@ import { deleteFileEmbeddings } from './embeddings.js'
 import { isTooShallowToPrune } from './known_roots.js'
 import { deleteFileRows } from './parser.js'
 import { isUnderSystemTemp } from './project.js'
+import { pathEqClause } from './sql_path.js'
 import { foldPath, normalizePath } from './util.js'
 
 // Re-exported so the many callers and tests that have always imported the known-root writer from
@@ -14,11 +15,12 @@ import { foldPath, normalizePath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
 
-// Remove every indexed row (symbols, refs, files) and embedding chunk for one file. Shared primitive the full reindex prune and any future vanished-file reconciliation both build on. Wrapped in a single transaction (mirroring upsertChunks' pattern in embeddings.ts) so a crash or thrown error between the two deletes can never leave orphaned chunks/chunk_vectors rows for a files row that no longer exists -- nothing else ever cleans those up, since pruneDeletedFiles only iterates `SELECT DISTINCT path FROM files`, which the first delete alone (without the second) would already have removed the file from.
+// Remove every indexed row (symbols, refs, files), embedding chunk, and transient-read-failure counter for one file. Shared primitive the full reindex prune and any future vanished-file reconciliation both build on. Wrapped in a single transaction (mirroring upsertChunks' pattern in embeddings.ts) so a crash or thrown error between the deletes can never leave orphaned chunks/chunk_vectors rows for a files row that no longer exists -- nothing else ever cleans those up, since pruneDeletedFiles only iterates `SELECT DISTINCT path FROM files`, which the first delete alone (without the second) would already have removed the file from. The index_retries delete lives here rather than in deleteFileRows because parser.ts is one of the sources PARSER_FINGERPRINT digests, so a line added there costs every user a full reparse for a change that alters nothing a parse extracts -- and because a reindex, deleteFileRows' other caller, has already read the file successfully, which clears the counter anyway. Its rows are born on a failed read and cleared on a successful one, so a path still mid-streak when its file is deleted is the one case with no other way out.
 export function removeFileFromIndex(db: DbHandle, filePath: string): void {
   const tx = db.transaction(() => {
     deleteFileRows(db, filePath)
     deleteFileEmbeddings(db, filePath)
+    db.prepare(`DELETE FROM index_retries WHERE ${pathEqClause('path')}`).run(foldPath(filePath))
   })
   // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN,
   // which takes a read snapshot first and only asks for the write lock at the first writing
@@ -214,6 +216,52 @@ function orphanedChunkGroups(db: DbHandle): Array<{ representative: string; spel
 }
 
 /**
+ * Paths with a transient-read-failure counter whose file is no longer on disk.
+ *
+ * Exactly the same unreachability as {@link findOrphanedChunkPaths}, arrived at from the other
+ * direction. Every path-scoped prune enumerates `SELECT DISTINCT path FROM files`, and the whole
+ * point of keeping these counters out of `files` is that a path which has never been indexed has
+ * no row there -- so a counter for a file that was never successfully read is invisible to all of
+ * them, and its row would outlive the file forever. {@link removeFileFromIndex} covers the other
+ * case, a path that was indexed before it started failing.
+ *
+ * Existence is checked one path at a time and re-checked immediately before each delete, for the
+ * reason {@link removeDeletedFilesBestEffort} gives: a counter belongs to a file that exists but
+ * cannot be read right now, so deleting on a stale observation would hand a still-locked file a
+ * fresh retry budget on every sweep and let the worker hammer it indefinitely.
+ */
+export function findDeadRetryPaths(dbPath: string = globalDbPath()): string[] {
+  const rows = getDb(dbPath).prepare('SELECT path FROM index_retries').all() as Array<{ path: string }>
+  return rows.map((r) => r.path).filter(pathIsGone)
+}
+
+/** True when nothing is at `p` on disk. A stat that fails for any other reason (EPERM/EBUSY, the very conditions a retry counter exists for) answers false, so an unreadable file keeps its counter. */
+function pathIsGone(p: string): boolean {
+  try {
+    return fs.statSync(p, { throwIfNoEntry: false }) === undefined
+  } catch {
+    return false
+  }
+}
+
+/** Delete the retry counters {@link findDeadRetryPaths} finds, re-checking each path's absence immediately before its own delete. Returns the paths cleared. */
+export function pruneDeadRetryRows(dbPath: string = globalDbPath()): string[] {
+  const db = getDb(dbPath)
+  const stmt = db.prepare(`DELETE FROM index_retries WHERE ${pathEqClause('path')}`)
+  const removed: string[] = []
+  for (const p of findDeadRetryPaths(dbPath)) {
+    if (!pathIsGone(p)) continue
+    try {
+      stmt.run(foldPath(p))
+      removed.push(p)
+    } catch {
+      // Best-effort, same contract as removeFilesBestEffort: one row's failure must not abort the rest.
+    }
+  }
+  return removed
+}
+
+/**
  * Delete the chunks and vectors {@link findOrphanedChunkPaths} finds. Returns the paths cleared.
  *
  * The scan and the deletes run inside one `BEGIN IMMEDIATE` transaction, taking the write lock
@@ -306,6 +354,8 @@ export interface KnownRootsSweepResult {
   readonly prunedOrphanChunkPaths: readonly string[]
   /** Vectors whose `chunks` row was already gone -- see {@link pruneOrphanedVectors}. */
   readonly prunedOrphanVectors: number
+  /** Paths whose retry counter outlived the file it was counting failures for -- see {@link findDeadRetryPaths}. */
+  readonly prunedDeadRetryPaths: readonly string[]
 }
 
 /**
@@ -416,8 +466,17 @@ export function sweepKnownRoots(
   // delete alongside them becomes an orphan this pass then collects in the same run.
   // No read-only counterpart exists for the vector pass, and inventing one would restate sqlite-vec's own join rather than share it. A preview reports 0 and says so at the call site rather than guessing a number.
   const prunedOrphanVectors = dryRun ? 0 : pruneOrphanedVectors(dbPath)
+  // Unscoped for the same reason as the chunk sweep, and for a sharper one: a retry counter's whole purpose is to name a path that has no `files` row, so no per-root branch above could reach it even in principle. Runs after the loop so a path the loop just removed has already had its counter dropped by removeFileFromIndex, leaving only counters for files that were never indexed at all.
+  const prunedDeadRetryPaths = dryRun ? findDeadRetryPaths(dbPath) : pruneDeadRetryRows(dbPath)
 
-  return { prunedRows, prunedRoots, flaggedRoots, prunedOrphanChunkPaths, prunedOrphanVectors }
+  return {
+    prunedRows,
+    prunedRoots,
+    flaggedRoots,
+    prunedOrphanChunkPaths,
+    prunedOrphanVectors,
+    prunedDeadRetryPaths,
+  }
 }
 
 
