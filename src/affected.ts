@@ -26,7 +26,7 @@ import { buildImportGraph } from './import_graph.js'
 import { normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
 import { getDisplayRoot } from './project.js'
 import { compileGuardedRegex } from './regex_guard.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { countNoun, ensureNewline, foldPath, isTestFile } from './util.js'
 
 /** Default transitive-import depth. Deep enough for realistic helper chains, bounded so a
@@ -61,7 +61,7 @@ export interface AffectedResult {
 }
 
 function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 

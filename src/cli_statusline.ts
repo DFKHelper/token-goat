@@ -25,7 +25,7 @@
 // From stdin_json.ts, not relay.js: importing it from relay would pull in every hook handler
 // and the whole bash filter registry for one stdin read (see stdin_json.ts).
 import { readStdinJson } from './stdin_json.js'
-import { colorStdout, stripAnsi, fg, RESET, C } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes, fg, RESET, C } from './render/ansi.js'
 import { dataDir } from './constants.js'
 import { getDirtyPathsFor } from './worker.js'
 import { summarize } from './stats.js'
@@ -129,7 +129,7 @@ export function buildStatuslineData(payload: StatuslinePayload): StatuslineData 
 
 /**
  * Render `data` as one ANSI-colored line of status text (no trailing newline,
- * no embedded newlines). Callers strip color via {@link stripAnsi} when the
+ * no embedded newlines). Callers strip color via {@link stripAnsiEscapes} when the
  * destination isn't a color-capable stdout.
  */
 export function renderStatusline(data: StatuslineData): string {
@@ -176,5 +176,5 @@ export async function runStatuslineCommand(opts: StatuslineCommandOptions = {}):
   }
 
   const line = renderStatusline(data)
-  process.stdout.write(`${colorStdout() ? line : stripAnsi(line)}\n`)
+  process.stdout.write(`${colorStdout() ? line : stripAnsiEscapes(line)}\n`)
 }

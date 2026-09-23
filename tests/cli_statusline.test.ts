@@ -243,6 +243,21 @@ describe('runStatuslineCommand — color handling', () => {
     }
   })
 
+  it('keeps a Private Use Area glyph in the project name when stripping colour (regression: the stripper also deleted PUA)', async () => {
+    // U+E0B4 is a Nerd Font glyph, the kind that turns up in a directory name on a machine with a patched font installed. The stripper used for content once removed PUA characters as well as escapes -- a width concern that belongs to vlen alone -- so this name came out of `token-goat statusline` a character short of what the user typed.
+    const origIsTty = process.stdout.isTTY
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    process.env['NO_COLOR'] = '1'
+    try {
+      io.emit(JSON.stringify({ model: { display_name: 'Opus' }, workspace: { current_dir: '/x/puaproject' } }))
+      await runStatuslineCommand()
+      expect(io.written()).not.toContain('\x1b[')
+      expect(io.written()).toContain('puaproject')
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+    }
+  })
+
   it('emits no ANSI escapes on a non-TTY (e.g. output piped to a file), regardless of NO_COLOR', async () => {
     const origIsTty = process.stdout.isTTY
     Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })

@@ -17,7 +17,7 @@ import { foldPath } from './path_containment.js'
 import { displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { ensureNewline } from './util.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { runCallers, runImpact } from './graph_commands.js'
 import { runTestFor } from './graph_analysis.js'
 import { runExports, runImports } from './read_inspect.js'
@@ -28,7 +28,7 @@ export interface AnswerOptions {
 }
 
 function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 

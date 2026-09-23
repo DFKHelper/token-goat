@@ -81,23 +81,6 @@ export function stripAnsiEscapes(s: string): string {
 }
 
 /**
- * Remove all ANSI/VT escape sequences from *s*, plus Unicode Private Use Area characters
- * (U+E000–U+F8FF, U+F0000–U+FFFFD) -- PUA glyphs (e.g. Nerd Font icons) often report
- * inconsistent terminal cell widths, which breaks {@link vlen}'s padding/alignment math, so this
- * rendering-specific concern is layered on top of {@link stripAnsiEscapes} here rather than
- * folded into it (a plain output-cleaning caller like `bash_compress.ts` has no such width
- * concern and should not have PUA characters silently disappear from model-facing text).
- */
-export function stripAnsi(s: string): string {
-  // Preserves the original combined fast path exactly: PUA stripping is only reached when an ESC
-  // byte is present, same as before this function was split to share stripAnsiEscapes.
-  if (!s.includes('\x1b')) {
-    return s
-  }
-  return stripAnsiEscapes(s).replace(_PUA_RE, '')
-}
-
-/**
  * Format a byte count as a plain-text human-readable string (B/KB/MB/GB/TB/PB).
  * No ANSI codes — safe for use in Rich table cells and fallback renderers.
  */
@@ -121,10 +104,17 @@ export function fg(r: number, g: number, b: number): string {
 }
 
 /**
- * Visible length of a string, stripping all ANSI escape sequences.
+ * Visible length of a string: ANSI escape sequences and Unicode Private Use Area characters both
+ * removed before counting. PUA glyphs (Nerd Font icons and the like) report inconsistent terminal
+ * cell widths, so counting them at all skews the padding maths in {@link padR}/{@link padL}. This
+ * is the only place that concern belongs. It used to live in an exported `stripAnsi` that thirteen
+ * callers used as their output cleaner, and it carried a fast path returning early when the input
+ * held no ESC byte -- so PUA was stripped from file content and test-runner output that happened to
+ * contain an escape, and left in width measurements that happened not to. Both halves were wrong in
+ * opposite directions. Content cleaning now calls {@link stripAnsiEscapes}, which never touches PUA.
  */
 export function vlen(s: string): number {
-  return stripAnsi(s).length
+  return stripAnsiEscapes(s).replace(_PUA_RE, '').length
 }
 
 /**

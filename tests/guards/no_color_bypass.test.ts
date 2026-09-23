@@ -27,14 +27,19 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
 // Every file with a private out()/emit()/writeRaw()-style helper that decides
 // whether to strip ANSI codes before writing to stdout.
 const STDOUT_WRITER_FILES = [
+  'affected.ts',
+  'answer_router.ts',
   'cli.ts',
   'cli_stats.ts',
   'config_commands.ts',
+  'graph_analysis.ts',
   'graph_commands.ts',
+  'graph_inspection.ts',
   'read_commands.ts',
 ]
 
-const BARE_ISTTY_PATTERN = /process\.stdout\.isTTY\s*===\s*true\s*\?\s*text\s*:\s*stripAnsi\(text\)/
+// The stripper's name is optional in the pattern: this guard once named `stripAnsi` exactly, and that function has since been folded into `vlen` with every writer here moved to `stripAnsiEscapes`. A rename must not quietly empty the anti-pattern the guard exists to catch.
+const BARE_ISTTY_PATTERN = /process\.stdout\.isTTY\s*===\s*true\s*\?\s*text\s*:\s*stripAnsi\w*\(text\)/
 
 describe('NO_COLOR-aware stdout writers', () => {
   it.each(STDOUT_WRITER_FILES)('%s does not bypass colorStdout() with a bare isTTY check', (file) => {

@@ -4,7 +4,6 @@ import {
   vlen,
   padL,
   padR,
-  stripAnsi,
   stripAnsiEscapes,
   fmtBytes,
   lerpRgb,
@@ -72,51 +71,62 @@ describe('ANSI formatting', () => {
     expect(vlen(result)).toBe(10)
   })
 
-  it('stripAnsi removes all escape sequences', () => {
+  it('stripAnsiEscapes removes all escape sequences', () => {
     const ansiString = `${fg(255, 0, 0)}hello${RESET} world`
-    expect(stripAnsi(ansiString)).toBe('hello world')
+    expect(stripAnsiEscapes(ansiString)).toBe('hello world')
   })
 
-  it('stripAnsi handles plain text', () => {
-    expect(stripAnsi('plain text')).toBe('plain text')
+  it('stripAnsiEscapes handles plain text', () => {
+    expect(stripAnsiEscapes('plain text')).toBe('plain text')
   })
 
-  it('stripAnsi strips a terminated OSC 8 hyperlink down to just the visible link text', () => {
+  it('stripAnsiEscapes strips a terminated OSC 8 hyperlink down to just the visible link text', () => {
     const hyperlink = '\x1b]8;;http://example.com\x07visible text\x1b]8;;\x07'
-    expect(stripAnsi(hyperlink)).toBe('visible text')
+    expect(stripAnsiEscapes(hyperlink)).toBe('visible text')
   })
 
-  it('stripAnsi drops a truncated/unterminated OSC sequence at end of input without leaking raw escape bytes or eating preceding real content (regression)', () => {
+  it('stripAnsiEscapes drops a truncated/unterminated OSC sequence at end of input without leaking raw escape bytes or eating preceding real content (regression)', () => {
     const truncated = 'before text\x1b]8;;http://example.com/never-closed'
-    const result = stripAnsi(truncated)
+    const result = stripAnsiEscapes(truncated)
     expect(result).toBe('before text')
     expect(result).not.toContain('\x1b')
   })
 
-  it('stripAnsi drops a truncated/unterminated PM sequence (ESC ^) without leaking a raw escape byte or eating preceding real content (regression: ^ was missing from the bare-escape fallback range)', () => {
+  it('stripAnsiEscapes drops a truncated/unterminated PM sequence (ESC ^) without leaking a raw escape byte or eating preceding real content (regression: ^ was missing from the bare-escape fallback range)', () => {
     const truncated = 'before text\x1b^some pm payload with no terminator'
-    const result = stripAnsi(truncated)
+    const result = stripAnsiEscapes(truncated)
     expect(result.startsWith('before text')).toBe(true)
     expect(result).not.toContain('\x1b')
   })
 
-  it('stripAnsi drops a bare CSI introducer with no final byte at end of input (regression: [ was missing from the bare-escape fallback range)', () => {
+  it('stripAnsiEscapes drops a bare CSI introducer with no final byte at end of input (regression: [ was missing from the bare-escape fallback range)', () => {
     const truncated = 'before text\x1b['
-    const result = stripAnsi(truncated)
+    const result = stripAnsiEscapes(truncated)
     expect(result).toBe('before text')
     expect(result).not.toContain('\x1b')
   })
 
-  it('stripAnsi strips the full Supplementary PUA-A range through its last code point U+FFFFD (regression: upper bound was transposed to U+FFFDD, leaking U+FFFDE..U+FFFFD)', () => {
-    // PUA stripping only runs once the ESC fast-path is passed, so each input carries a RESET
-    // escape alongside the PUA char. U+FFFFD is the last code point of Supplementary Private
-    // Use Area-A (U+F0000..U+FFFFD).
-    expect(stripAnsi(`a\u{FFFFD}b${RESET}`)).toBe('ab')
-    expect(stripAnsi(`a\u{FFFDE}b${RESET}`)).toBe('ab')
+  it('vlen discounts the full Supplementary PUA-A range through its last code point U+FFFFD (regression: upper bound was transposed to U+FFFDD, leaking U+FFFDE..U+FFFFD)', () => {
+    // U+FFFFD is the last code point of Supplementary Private Use Area-A (U+F0000..U+FFFFD). Each astral code point is two UTF-16 units, so an uncounted one reads as 4 rather than 2.
+    expect(vlen(`a\u{FFFFD}b${RESET}`)).toBe(2)
+    expect(vlen(`a\u{FFFDE}b${RESET}`)).toBe(2)
     // Boundaries already covered by the old range must keep working.
-    expect(stripAnsi(`a\u{F0000}b${RESET}`)).toBe('ab')
-    // A noncharacter just past the PUA-A range must NOT be stripped.
-    expect(stripAnsi(`a\u{FFFFF}b${RESET}`)).toBe('a\u{FFFFF}b')
+    expect(vlen(`a\u{F0000}b${RESET}`)).toBe(2)
+    // A noncharacter just past the PUA-A range is not PUA and must still be counted.
+    expect(vlen(`a\u{FFFFF}b${RESET}`)).toBe(4)
+  })
+
+  it('vlen discounts Private Use Area glyphs in a string carrying no escape sequence at all', () => {
+    // The old shared helper returned early when the input held no ESC byte, so a Nerd Font icon in an uncoloured cell was counted at its UTF-16 length and skewed every padR/padL beside it.
+    expect(vlen('a\u{E000}b')).toBe(2)
+    expect(vlen('\u{F0000}')).toBe(0)
+    expect(padR('a\u{E000}b', 5)).toBe('a\u{E000}b   ')
+  })
+
+  it('stripAnsiEscapes leaves Private Use Area characters alone, so model-facing content keeps its glyphs', () => {
+    // PUA stripping is a width concern and belongs to vlen alone. This function cleans content -- file text, test-runner output, replayed terminal captures -- where deleting a glyph is data loss. Both inputs carry a RESET escape so the ESC fast path is passed and the body is actually rewritten, which is the case the old shared helper silently stripped PUA in.
+    expect(stripAnsiEscapes(`a\u{E000}b${RESET}`)).toBe('a\u{E000}b')
+    expect(stripAnsiEscapes(`a\u{F0000}b${RESET}`)).toBe('a\u{F0000}b')
   })
 
   it('lerpRgb interpolates colors', () => {
@@ -763,9 +773,9 @@ describe('Edge cases', () => {
     expect(result).toContain('…')
   })
 
-  it('stripAnsi handles multiple escape sequences', () => {
+  it('stripAnsiEscapes handles multiple escape sequences', () => {
     const colored = `${fg(255, 0, 0)}red${RESET}${fg(0, 255, 0)}green${RESET}${fg(0, 0, 255)}blue${RESET}`
-    expect(stripAnsi(colored)).toBe('redgreenblue')
+    expect(stripAnsiEscapes(colored)).toBe('redgreenblue')
   })
 
   it('padL and padR preserve ANSI codes', () => {

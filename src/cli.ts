@@ -101,7 +101,7 @@ import { buildCommandManifest, filterCommandManifest, formatCommandManifest } fr
 import { isWindows, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, isUnderBlockedRoot, countNoun, decodeSource, ensureDirSync } from './util.js'
 import { contentHash, extractCompactFromMarker, storeCompact, skillOutputsDir } from './skill_cache.js'
 import { findProject } from './project.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
 import { applyIndexingPriority } from './process_priority.js'
@@ -118,7 +118,7 @@ import { clipLongMatchLine } from './tool_filters/helpers.js'
 export class CliError extends Error {}
 
 export function out(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 

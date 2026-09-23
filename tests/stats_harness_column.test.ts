@@ -10,7 +10,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { summarize, recordStat, GLOBAL_SCHEMA_SQL, HARNESS_UNRECORDED } from '../src/stats.js'
 import { renderStats as richRenderStats } from '../src/render/stats_renderer.js'
 import { _buildStatsDataForTest } from '../src/stats.js'
-import { stripAnsi } from '../src/render/ansi.js'
+import { stripAnsiEscapes } from '../src/render/ansi.js'
 import type { HarnessStat, StatsData } from '../src/render/types.js'
 
 /**
@@ -183,7 +183,7 @@ describe('the harness breakdown on the renderer users actually see', () => {
   }
 
   it('renders a By harness section once two harnesses have been seen', () => {
-    const out = stripAnsi(
+    const out = stripAnsiEscapes(
       richRenderStats(
         statsDataWith([
           { harness: 'claudecode', bytes: 900, tokens: 220, events: 4 },
@@ -217,7 +217,7 @@ describe('the harness breakdown on the renderer users actually see', () => {
     closeAllDbs()
 
     const summary = summarize(30, undefined, customHome)
-    const rendered = stripAnsi(richRenderStats(_buildStatsDataForTest(summary, 30)))
+    const rendered = stripAnsiEscapes(richRenderStats(_buildStatsDataForTest(summary, 30)))
     expect(rendered, 'the builder must forward by_harness, not silently drop it').toContain(
       'By harness',
     )
@@ -226,7 +226,7 @@ describe('the harness breakdown on the renderer users actually see', () => {
   })
 
   it('stays silent when only one harness has ever been recorded', () => {
-    const out = stripAnsi(
+    const out = stripAnsiEscapes(
       richRenderStats(statsDataWith([{ harness: 'claudecode', bytes: 900, tokens: 220, events: 4 }])),
     )
     expect(out, 'a one-row breakdown equal to the total is noise, not information').not.toContain(

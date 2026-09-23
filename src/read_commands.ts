@@ -29,7 +29,7 @@ import { readSection, listSections, extractSection } from './section_reader.js'
 import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, isTestFile } from './util.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 export { requireNonNegativeStrictInt } from './util.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { loadConfig } from './config.js'
@@ -585,7 +585,7 @@ export function warnIfFilesStale(filePaths: readonly string[]): void {
 }
 
 export function emit(text: string): void {
-  const out = colorStdout() ? text : stripAnsi(text)
+  const out = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(out))
 }
 

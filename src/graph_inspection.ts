@@ -17,7 +17,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, isRefIndexedFile } from './ref_blindness.js'
 import { symbolExtractorGap, extractImports, importsExtensionFor, fileConfinementRefusal, guardJsonRows, rankSimilarNames, didYouMean } from './read_commands.js'
 import { decodeSource, ensureNewline, isTestFile, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun } from './util.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import type { SymbolEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
 import { formatSymbolLocation } from './indexed_source.js'
@@ -38,7 +38,7 @@ import {
 } from './graph_traversal.js'
 
 function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 

@@ -8,4 +8,4 @@
 
 export { renderStats, setStatsMessages } from './stats_renderer.js'
 export * from './types.js'
-export { C, RESET, fg, stripAnsi, vlen } from './ansi.js'
+export { C, RESET, fg, stripAnsiEscapes, vlen } from './ansi.js'

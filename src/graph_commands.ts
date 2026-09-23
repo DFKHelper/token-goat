@@ -34,7 +34,7 @@ import {
   windowsCmdQuoteArg,
 } from './util.js'
 import { buildContextWindow, renderContextWindow } from './util_context.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { globalDbPath } from './constants.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
@@ -61,7 +61,7 @@ export * from './graph_analysis.js'
 export { isTestFile }
 
 function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 

@@ -2,7 +2,7 @@
  * Extract failing test blocks from test runner output.
  */
 
-import { stripAnsi } from './render/ansi.js';
+import { stripAnsiEscapes } from './render/ansi.js';
 import { displaySafeJson } from './paths.js';
 
 /**
@@ -406,7 +406,7 @@ function extractGeneric(lines: string[]): FailureResult {
  * Parse test runner output and return only the failing blocks.
  */
 export function extractFailures(text: string, options?: { runner?: string }): FailureResult {
-  const cleaned = stripAnsi(text);
+  const cleaned = stripAnsiEscapes(text);
   const lines = cleaned.split('\n');
   const detected = options?.runner ?? detectRunner(cleaned);
 

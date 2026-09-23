@@ -20,7 +20,7 @@
  * come from ``ansi.C`` (GitHub dark palette).
  */
 
-import { RESET, C, fg, lerpRgb, padL, padR, stripAnsi, vlen } from './ansi.js'
+import { RESET, C, fg, lerpRgb, padL, padR, stripAnsiEscapes, vlen } from './ansi.js'
 import type { RGB } from './ansi.js'
 import type {
   CommandStat,
@@ -920,7 +920,7 @@ function _renderByProjectSection(stats: StatsData): string[] {
         nameColor: C.TEXT_PRIMARY,
       }),
     )
-    lines.push(`${_M}  ${fg(...C.TEXT_DIM)}└─ ${p.hash}  ${displaySafeText(stripAnsi(p.path))}${RESET}`)
+    lines.push(`${_M}  ${fg(...C.TEXT_DIM)}└─ ${p.hash}  ${displaySafeText(stripAnsiEscapes(p.path))}${RESET}`)
   }
 
   return lines

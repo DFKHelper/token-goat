@@ -15,14 +15,14 @@ import { renderHookLatencyStats } from './hook_latency.js'
 import { sessionsDir } from './sessions_dir.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { displaySafeJson } from './paths.js'
 
 // ---- helpers ----------------------------------------------------------------
 
 /** Write ``text`` directly to stdout (no colorama buffering layer needed in TS). */
 export function writeRaw(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 

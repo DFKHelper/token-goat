@@ -25,13 +25,13 @@ import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
 import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 
 function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 

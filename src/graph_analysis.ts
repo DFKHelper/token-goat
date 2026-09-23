@@ -14,7 +14,7 @@ import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, extractErrorMessage, countNoun } from './util.js'
-import { colorStdout, stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { globalDbPath } from './constants.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
@@ -29,7 +29,7 @@ import {
 } from './graph_traversal.js'
 
 function emit(text: string): void {
-  const payload = colorStdout() ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsiEscapes(text)
   process.stdout.write(ensureNewline(payload))
 }
 
