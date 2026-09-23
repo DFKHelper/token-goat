@@ -413,6 +413,33 @@ const KUBECTL_GLOBAL_VALUE_FLAGS = new Set([
 // KubectlFilter
 // ---------------------------------------------------------------------------
 
+/**
+ * Output formats that produce a document or a template result rather than a table.
+ *
+ * `kubectl get` defaults to a table, which {@link _compressKubectlTable} is right to truncate: the rows that survive stay readable and the marker says how many did not. A document is not a table, and truncating one leaves something the caller cannot parse at all. Measured against the shipped 2.9.27 binary on 2026-09-23, a 1445-line `-o json` listing was cut to ten lines in the middle of an object -- 99% gone, the remainder not valid JSON -- and a 121-line `-o yaml` one was cut mid-document, each under a marker offering `--selector` as the remedy, which does not make either parseable.
+ *
+ * `wide`, `name` and `custom-columns` are absent deliberately. All three stay line-oriented, so a truncated one is still valid and the marker still discloses the loss; they are the same case as the default table, not this one.
+ *
+ * Matched as prefixes rather than whole words, because every suffixed spelling kubectl accepts extends one of these four: `jsonpath`, `jsonpath-file` and `jsonpath-as-json` all extend `json`, `go-template-file` extends `go-template`, and `templatefile` extends `template`. Nothing line-oriented shares a prefix with them, and a format kubectl does not accept never reaches here at all -- it exits with the error on stderr and no stdout to compress. This regex is a string literal in the shipped bundle rather than a comment the bundler strips, and `containers.ts` is hook-eager through the bash filter registry, so the shorter form is bytes on every install as well as the simpler statement of the rule.
+ */
+const _KUBECTL_STRUCTURED_OUTPUT = /^(json|yaml|go-template|template)/
+
+/** The value of `-o`/`--output` in any of kubectl's four spellings -- separate, `=`-joined, or glued to the short flag -- lowercased, or an empty string when the flag is absent. */
+function kubectlOutputFormat(argv: string[]): string {
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i]!
+    if (a === '-o' || a === '--output') return (argv[i + 1] ?? '').toLowerCase()
+    if (a.startsWith('--output=')) return a.slice('--output='.length).toLowerCase()
+    if (a.startsWith('-o=')) return a.slice('-o='.length).toLowerCase()
+    if (a.startsWith('-o') && !a.startsWith('--') && a.length > 2) return a.slice(2).toLowerCase()
+  }
+  return ''
+}
+
+function isKubectlStructuredOutput(argv: string[]): boolean {
+  return _KUBECTL_STRUCTURED_OUTPUT.test(kubectlOutputFormat(argv))
+}
+
 export class KubectlFilter extends ToolFilter {
   readonly name = 'kubectl'
   override readonly binaries = new Set(['kubectl', 'k', 'k9s', 'oc'])
@@ -423,7 +450,7 @@ export class KubectlFilter extends ToolFilter {
     const subcommand = pos[0] ?? ''
     let text = stdout
 
-    if (subcommand === 'get' || subcommand === 'top') {
+    if ((subcommand === 'get' || subcommand === 'top') && !isKubectlStructuredOutput(argv)) {
       if (text.includes('\n')) {
         const resource = pos[1] ?? ''
         if (resource === 'events' || resource === 'ev' || resource === 'event') {

@@ -328,6 +328,44 @@ describe('KubectlFilter', () => {
     expect(result).toContain('pod-9')
   })
 
+  // CAPTURE: run against the shipped 2.9.27 binary on 2026-09-23 with a stubbed `kubectl` emitting a real 40-pod list, `kubectl get pods -o json` returned 1445 lines and came back as ten, cut in the middle of an object, under `[token-goat: 1435 more rows; use --selector or -l to narrow]` -- a remedy that does not make JSON parseable. `-o yaml` returned 121 lines and came back as thirteen, cut mid-document. The table branch was being applied to a document because nothing looked at the requested output format.
+  it('releases a structured -o document whole, in every spelling of the flag, because truncating one leaves nothing the caller can parse', () => {
+    const doc = ['{', '  "kind": "List",', '  "items": ['].concat(
+      Array.from({ length: 40 }, (_, i) => `    { "name": "web-${i}", "restartCount": ${i} },`),
+      ['  ]', '}'],
+    )
+    const text = doc.join('\n')
+    for (const argv of [
+      ['kubectl', 'get', 'pods', '-o', 'json'],
+      ['kubectl', 'get', 'pods', '-o', 'yaml'],
+      ['kubectl', 'get', 'pods', '-ojson'], // glued to the short flag
+      ['kubectl', 'get', 'pods', '-o=json'],
+      ['kubectl', 'get', 'pods', '--output=json'],
+      ['kubectl', 'get', 'pods', '-o', "jsonpath={.items[*].metadata.name}"],
+      ['kubectl', 'get', 'pods', '-o', 'go-template={{.items}}'],
+    ]) {
+      const result = apply(f, text, '', 0, argv)
+      expect(result, argv.join(' ')).toBe(text)
+      expect(result, argv.join(' ')).not.toContain('more rows')
+      // The distinguishing detail: the closing structure survives, so the document is still parseable.
+      expect(result, argv.join(' ')).toContain('"name": "web-39"')
+    }
+  })
+
+  // A guard on the fix above rather than on the bug. These three stay line-oriented, so a truncated one is still valid and the marker still discloses the loss -- they are the default table's case, not the document one, and releasing them whole would drop real compression.
+  it('still truncates the line-oriented output formats', () => {
+    const rows = ['NAME READY STATUS RESTARTS AGE']
+    for (let i = 0; i < 50; i++) rows.push(`pod-${i} 1/1 Running 0 5m`)
+    const text = rows.join('\n')
+    for (const argv of [
+      ['kubectl', 'get', 'pods', '-o', 'wide'],
+      ['kubectl', 'get', 'pods', '-o', 'name'],
+      ['kubectl', 'get', 'pods', '-o', 'custom-columns=NAME:.metadata.name'],
+    ]) {
+      expect(apply(f, text, '', 0, argv), argv.join(' ')).toContain('more rows')
+    }
+  })
+
   it('get keeps short table unchanged', () => {
     // Ported from Python test_get_keeps_short_table
     const rows = ['NAME READY STATUS RESTARTS AGE']
