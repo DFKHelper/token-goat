@@ -9,6 +9,7 @@ Upgrading reparses the index. The line-number arithmetic described below is shar
 ### Fixed
 
 - **The Salesforce front-end and single-file-component adapters read a template once, not once per match.** Both worked out a match's line number by slicing the document from character 0 and counting newlines, and its text by splitting the whole document, so each cost the entire file once for every symbol and reference found in it. On a file a human wrote that is invisible; on a generated LWC template, where every tag lands on line 1, it is quadratic. A 1.2 MB template took 1,323 ms to index and a 290 KB one took 84 ms: four times the work for twice the input. They take 28 ms and 7 ms now, twice the work for twice the input. Both adapters had grown their own copy of the same two helpers, so the arithmetic now lives once in the shared line-index helpers every other adapter already uses.
+- **The edit-failure hook places every match without re-reading the file for each one.** When an edit fails because its `old_string` matched more than once, the hook reports how many times and where. It found each match's line by the same slice-and-count, so the work grew with the square of the match count: a one-character `old_string` occurring 100,000 times in a 2 MB file took 1.7 seconds, and the hook accepts files up to 10 MB. The harness waits on that before it can tell you the edit failed.
 
 ## [2.9.21] - 2026-09-23
 

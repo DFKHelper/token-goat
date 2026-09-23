@@ -171,6 +171,47 @@ describe('diagnoseEditFailure', () => {
     expect(diagnoseEditFailure(event, 'EACCES: permission denied')).toBeNull()
   })
 
+  it('places every match without re-reading the file for each one', () => {
+    // PROVENANCE: CAPTURE. Measured against the loop this replaced: a one-character `old_string`
+    // occurring 100,000 times in a 2 MB file took 1,682 ms, because each match's line number was
+    // computed by slicing the file from character 0 and counting newlines. `MAX_EDIT_DIAGNOSE_BYTES`
+    // admits 10 MB, five times that, and the cost grows with the square. This runs inside a hook, so
+    // the harness waits on it before it can report a failed edit at all.
+    //
+    // The ceiling is an order-of-magnitude assertion, not a stopwatch: the linear implementation
+    // does this in tens of milliseconds.
+    const tmpFile = join(tmpdir(), `tg-edit-diag-big-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
+    // 40,000 commas spread over 40,000 lines, so the answer is not trivially "all on line 1" either.
+    writeFileSync(tmpFile, Array.from({ length: 40_000 }, (_, i) => `field${i}, value${i}${'p'.repeat(20)}`).join('\n'), 'utf8')
+
+    try {
+      const event: HookEvent = {
+        eventName: 'post_tool_use_failure',
+        toolName: 'Edit',
+        toolInput: { file_path: tmpFile, old_string: ',' },
+        sessionId: 'sess-diag-big',
+        agentId: undefined,
+        raw: { session_id: 'sess-diag-big', tool_name: 'Edit', error: 'Multiple matches found' },
+      }
+
+      const started = Date.now()
+      const diag = diagnoseEditFailure(event, 'Multiple matches found')
+      const elapsed = Date.now() - started
+
+      expect(elapsed, 'the hook reads the whole file once per match again').toBeLessThan(2_000)
+      // The other half: returning nothing would also be fast, and the line numbers have to be the
+      // real ones -- the fifth match is on the fifth line, and the count covers every match.
+      expect(diag).toContain('matched 40000 times')
+      expect(diag).toContain('lines 1, 2, 3, 4, 5')
+    } finally {
+      try {
+        unlinkSync(tmpFile)
+      } catch {
+        // cleanup best-effort
+      }
+    }
+  })
+
   it('detects multiple matches and reports exact count and line numbers', () => {
     const tmpFile = join(tmpdir(), `tg-edit-diag-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
     const content = ['line 1', 'target phrase', 'line 3', 'target phrase', 'line 5'].join('\n')

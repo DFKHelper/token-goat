@@ -26,6 +26,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, relative } from 'node:path'
 
 import { registerHook, type HookEvent } from './hook_registry.js'
+import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { contextOutput, getFilePath, getToolName, passOutput } from './hooks_common.js'
 import { displaySafeText, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
@@ -175,12 +176,13 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
 
     if (isMultiple) {
       const matchLines: number[] = []
+      // One index over the file, reused by every match. Placing a match by slicing from character 0 and counting newlines costs the whole file per match, which is quadratic in the number of matches: a one-character `old_string` occurring 100,000 times in a 2 MB file took 1.7 s, and the cap above admits 10 MB. This runs inside a hook, so that time is paid by the harness before it can report a failed edit.
+      const lineIndex = buildLineIndex(fileContent)
       let pos = 0
       while (pos < fileContent.length) {
         const idx = fileContent.indexOf(oldString, pos)
         if (idx === -1) break
-        const line = fileContent.slice(0, idx).split('\n').length
-        matchLines.push(line)
+        matchLines.push(offsetToLine(lineIndex, idx))
         pos = idx + Math.max(1, oldString.length)
       }
 
