@@ -1473,7 +1473,7 @@ describe('preBashHandler — PowerShell read commands', () => {
   it('Get-Content foo.ts -Tail 5 (N <= 10) → passes through', () => {
     const event = makeBashEvent('Get-Content foo.ts -Tail 5')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
+    expect(result.hookType).toBe('pass')
   })
 
   it('Get-Content -Path src/auth.ts -Tail 50 (explicit -Path flag) → suggests surgical read on the real path, not "-Path src/auth.ts" (regression: extractGetContentTail split on the raw text after the command name without stripping a leading -Path flag, so the flag itself became part of the extracted filePath)', () => {
