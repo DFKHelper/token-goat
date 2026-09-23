@@ -295,7 +295,9 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
 
   // 2. Explicit --copilot mode without explicit --transcript
   if (opts.copilot === true) {
-    const eventsPath = findLatestCopilotSession(projectRoot)
+    const eventsPath = (opts.project !== undefined
+      ? findLatestCopilotSession({ projectRoot })
+      : (findLatestCopilotSession({ projectRoot }) ?? findLatestCopilotSession()))
     if (eventsPath === null || !fs.existsSync(eventsPath)) {
       const detail = eventsPath === null
         ? 'no Copilot CLI session found under <copilot-home>/session-state'

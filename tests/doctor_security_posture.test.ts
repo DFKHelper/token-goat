@@ -289,6 +289,8 @@ describe('an environment variable that reopens a project-locked security setting
     ['webfetch.max_bytes', 'TOKEN_GOAT_WEB_CACHE_MAX_BYTES', '999999999', 'replaced'],
     ['webfetch.max_file_count', 'TOKEN_GOAT_WEB_CACHE_MAX_FILES', '99999', 'replaced'],
     ['image_shrink.max_image_pixels', 'TOKEN_GOAT_MAX_IMAGE_PIXELS', '999999999', 'replaced'],
+    ['indexing.max_db_size_mb', 'TOKEN_GOAT_INDEXING_MAX_DB_SIZE_MB', '2000', 'replaced'],
+    ['indexing.auto_reclaim_embeddings', 'TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS', 'true', 'replaced'],
   ]
 
   const saved = new Map<string, string | undefined>()
