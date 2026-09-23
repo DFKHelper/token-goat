@@ -353,12 +353,36 @@ function isWindowInsideMuchLargerSymbol(filePath: string, start: number, end: nu
   }
 }
 
+/** How many of a file's symbols one hint query reads at a time. */
+const SYMBOL_HINT_PAGE = 500
+
+/** Every symbol indexed for `filePath` whose span meets `range`, paged rather than filtered out of one capped window. `firstPage` is the window the caller already holds, so the common small file costs no extra query. Rows arrive ordered by starting line, which is what lets paging stop: once a page ends past the range, no later symbol can begin before it and reach back. Filtering a single `limit: 500` window looked equivalent and was not -- 76 of the 13,900 files in this machine's index hold more than 500 symbols, and in those the window only ever held the top of the file, so a range further down matched nothing and the caller named its very first symbol for a read thousands of lines away. */
+function symbolsMeetingRange(
+  filePath: string,
+  range: { start: number; end: number },
+  firstPage: { name: string; lineStart: number; lineEnd: number }[],
+): { name: string; lineStart: number; lineEnd: number }[] {
+  const meets = (s: { lineStart: number; lineEnd: number }): boolean => s.lineStart <= range.end && s.lineEnd >= range.start
+  const found = firstPage.filter(meets)
+  let page = firstPage
+  let offset = 0
+  for (;;) {
+    const last = page.length === SYMBOL_HINT_PAGE ? page[page.length - 1] : undefined
+    if (last === undefined || last.lineStart > range.end) break
+    offset += SYMBOL_HINT_PAGE
+    page = querySymbols({ filePath, limit: SYMBOL_HINT_PAGE, offset })
+      .map((s) => ({ name: escapeHintName(s.name), lineStart: s.lineStart, lineEnd: s.lineEnd }))
+    for (const symbol of page) if (meets(symbol)) found.push(symbol)
+  }
+  return found
+}
+
 /** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when the file has no indexed symbols at all, since a bare `::Symbol` read would just fail. When the top pick is a large symbol (see {@link isLargeSymbolSpan}), the hint points at a `grep -C --symbol` slice (or `scope` to confirm the enclosing symbol) instead of naming it for a whole-body read. */
 export function realSymbolReadHint(filePath: string, shown: string, range?: { start: number; end: number }): string {
   let candidates: { name: string; lineStart: number; lineEnd: number }[]
   try {
-    const all = querySymbols({ filePath, limit: 500 }).map((s) => ({ name: escapeHintName(s.name), lineStart: s.lineStart, lineEnd: s.lineEnd }))
-    const overlapping = range !== undefined ? all.filter((s) => s.lineStart <= range.end && s.lineEnd >= range.start) : []
+    const all = querySymbols({ filePath, limit: SYMBOL_HINT_PAGE }).map((s) => ({ name: escapeHintName(s.name), lineStart: s.lineStart, lineEnd: s.lineEnd }))
+    const overlapping = range !== undefined ? symbolsMeetingRange(filePath, range, all) : []
     candidates = (overlapping.length > 0 ? overlapping : all).filter((s) => s.name !== '')
   } catch {
     candidates = []

@@ -70,4 +70,18 @@ describe('realSymbolReadHint', () => {
     expect(hint).toContain('token-goat grep "<pattern>" big.js -C 15 --symbol')
     expect(hint).toContain('token-goat scope big.js:')
   })
+
+  // Regression (cap-before-predicate): the overlap test above held only while the file fit inside the single `limit: 500` window the candidates were drawn from. Symbols come back ordered by starting line, so past the five-hundredth one the window held nothing but the top of the file, no candidate overlapped a range down there, and the fallback named the file's very first symbol for a read a few thousand lines away -- pointing somewhere else entirely, which is worse than the generic placeholder it replaced. 76 of the 13,900 files in this machine's index hold more than 500 symbols. HAND-DERIVED: 600 functions is one page past the retired window, computed from that window's own value rather than from this fix's output.
+  it('names the symbol covering a range that sits past the first page of a large file', () => {
+    const total = 600
+    const target = 550
+    const lines = Array.from({ length: total }, (_, i) => `function fn${i + 1}() {}`)
+    const file = write('wide.js', lines.join('\n') + '\n')
+    indexFileSync(file)
+
+    const hint = realSymbolReadHint(file, 'wide.js', { start: target, end: target })
+
+    expect(hint).toContain(`fn${target}`)
+    expect(hint).not.toContain('::fn1"')
+  })
 })
