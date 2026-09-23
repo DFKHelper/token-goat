@@ -179,6 +179,16 @@ const COPILOT_TO_TG_EVENT = {
 // and the real tool names behind memory were never confirmed. Each would put
 // a handler that rewrites model-visible output in front of a payload shape
 // nobody has seen, which is worse than leaving the compression on the table.
+// Own properties only, for every map in this shim -- see the event map in main() for why a
+// bare lookup on a plain object literal is not a gate. A tool named 'constructor' resolved to
+// a Function, which JSON.stringify drops, so the forwarded payload carried no tool_name and
+// every hook keyed on one no-opped; '__proto__' forwarded a whole prototype instead. The key
+// is third-party text: Copilot namespaces MCP tools as server:tool and the stripped half is
+// whatever that server called its tool.
+function ownGet(map, key) {
+  return typeof key === 'string' && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined
+}
+
 const TOOL_TO_TG = {
   bash: 'Bash',
   powershell: 'Bash',
@@ -210,14 +220,14 @@ for (const v of Object.values(TOOL_TO_TG)) {
 
 function resolveCanonicalToolName(name) {
   if (!name || typeof name !== 'string') return name
-  const direct = TOOL_TO_TG[name]
+  const direct = ownGet(TOOL_TO_TG, name)
   if (direct !== undefined) return direct
   const stripped = name.indexOf(':') !== -1 ? name.split(':').pop() : name
-  const strippedDirect = TOOL_TO_TG[stripped]
+  const strippedDirect = ownGet(TOOL_TO_TG, stripped)
   if (strippedDirect !== undefined) return strippedDirect
   const folded = foldToolName(name)
   const foldedStripped = foldToolName(stripped)
-  return FOLDED_TOOL_TO_TG[folded] || FOLDED_TOOL_TO_TG[foldedStripped] || name
+  return ownGet(FOLDED_TOOL_TO_TG, folded) || ownGet(FOLDED_TOOL_TO_TG, foldedStripped) || name
 }
 
 // Confirmed via github/copilot-cli#3349 (open, unresolved as of writing): some
@@ -294,11 +304,11 @@ function remapToolInput(copilotToolName, input) {
     ? copilotToolName.split(':').pop()
     : copilotToolName
   const folded = foldToolName(stripped)
-  const pathKey = FILE_PATH_ARG_KEY[copilotToolName] || FILE_PATH_ARG_KEY[stripped] || (folded === 'view' || folded === 'edit' || folded === 'create' ? 'path' : undefined)
+  const pathKey = ownGet(FILE_PATH_ARG_KEY, copilotToolName) || ownGet(FILE_PATH_ARG_KEY, stripped) || (folded === 'view' || folded === 'edit' || folded === 'create' ? 'path' : undefined)
   if (pathKey !== undefined && pathKey in out) {
     out = Object.assign({}, out, { file_path: out[pathKey] })
   }
-  const idKey = POLL_ID_ARG_KEY[copilotToolName] || POLL_ID_ARG_KEY[stripped] || (folded === 'readbash' || folded === 'readpowershell' ? 'shellId' : undefined)
+  const idKey = ownGet(POLL_ID_ARG_KEY, copilotToolName) || ownGet(POLL_ID_ARG_KEY, stripped) || (folded === 'readbash' || folded === 'readpowershell' ? 'shellId' : undefined)
   if (idKey !== undefined && idKey in out) {
     out = Object.assign({}, out, { bash_id: out[idKey] })
   }
@@ -392,18 +402,8 @@ async function relayVscode(entryPath, tgEvent, payload) {
 async function main() {
   const copilotEvent = process.argv[2] || ''
 
-  // hasOwnProperty, not a bare lookup: the map is a plain object literal, so eight keys it never
-  // declares ('constructor', 'toString', '__proto__' and the rest of Object.prototype) come back
-  // truthy and sail past the check below. tgEvent is then a Function, and 'token-goat hook ' +
-  // tgEvent is concatenated into a shell command string by the fallback at the bottom of this
-  // shim. No member of Object.prototype stringifies with a shell metacharacter, so this was a
-  // failed spawn rather than a second command -- but argv reaching a shell string through a gate
-  // that reads like it stops it is the shape worth closing, not the payload that happened to be
-  // harmless. The four shims built on shim_common.ts validate against a closed Set, which has no
-  // equivalent hole.
-  const tgEvent = Object.prototype.hasOwnProperty.call(COPILOT_TO_TG_EVENT, copilotEvent)
-    ? COPILOT_TO_TG_EVENT[copilotEvent]
-    : undefined
+  // ownGet, not a bare lookup: the map is a plain object literal, so eight keys it never declares ('constructor', 'toString', '__proto__' and the rest of Object.prototype) come back truthy and sail past the check below. tgEvent is then a Function, and 'token-goat hook ' + tgEvent is concatenated into a shell command string by the fallback at the bottom of this shim. No member of Object.prototype stringifies with a shell metacharacter, so this was a failed spawn rather than a second command -- but argv reaching a shell string through a gate that reads like it stops it is the shape worth closing, not the payload that happened to be harmless. The four shims built on shim_common.ts validate against a closed Set, which has no equivalent hole.
+  const tgEvent = ownGet(COPILOT_TO_TG_EVENT, copilotEvent)
   if (!tgEvent) {
     process.stdout.write('{}')
     return
@@ -766,8 +766,9 @@ export function translateCopilotPayload(raw: { event?: string; tool_name?: strin
     }
   }
   if (folded === 'readbash' || folded === 'readpowershell') {
-    if ('shellId' in input && !('id' in input)) {
-      input['id'] = input['shellId']
+    // `bash_id`, the key `getBashId` in hooks_bashoutput.ts reads and the key the shim's own `normalizeToolInput` writes. This wrote `id`, so the helper that exists to verify the shim's translation certified a key nothing consumes.
+    if ('shellId' in input && !('bash_id' in input)) {
+      input['bash_id'] = input['shellId']
     }
   }
   return { tool_name: toolName, tool_input: input }

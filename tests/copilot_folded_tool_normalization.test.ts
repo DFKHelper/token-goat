@@ -56,7 +56,8 @@ describe('Copilot CLI tool name folded normalization', () => {
     expect(editTrans.tool_input.new_str).toBe('b')
   })
 
-  it('translates read_powershell remapping shellId to id', () => {
+  // The key is `bash_id`, not `id`. This asserted `id` and passed, which is the whole risk of a helper that exists to verify another producer: it agreed with itself. The shipping shim writes `bash_id` (`normalizeToolInput` in the hook script) and the only consumer, `getBashId` in `src/hooks_bashoutput.ts`, reads `bash_id` -- so a payload translated the old way named a key nobody reads, and the poll-output dedup that `BashOutput` exists to drive was dead for every Copilot CLI session while this test stayed green.
+  it('translates read_powershell remapping shellId to the bash_id the handler reads', () => {
     const pollRaw = {
       event: 'pre_tool_use',
       tool_name: 'read_powershell',
@@ -64,6 +65,8 @@ describe('Copilot CLI tool name folded normalization', () => {
     }
     const pollTrans = translateCopilotPayload(pollRaw)
     expect(pollTrans.tool_name).toBe('BashOutput')
-    expect(pollTrans.tool_input.id).toBe('123')
+    expect(pollTrans.tool_input.bash_id).toBe('123')
+    // The original key stays put, matching the shim's own comment about not renaming out from under a future reader.
+    expect(pollTrans.tool_input.shellId).toBe('123')
   })
 })

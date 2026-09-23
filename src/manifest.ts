@@ -11,7 +11,7 @@
 import { spawnSync } from 'node:child_process'
 
 import { WEB_FETCH_KEY_SEP, getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns } from './session.js'
-import type { FileEntry } from './session.js'
+import type { FileEntry, SerializedSession } from './session.js'
 import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB, runGit } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
@@ -102,9 +102,9 @@ export function renderWebFetchRow(key: string, cacheId: string): string {
 /*
  * Paths and symbol names below go through displaySafePath/displaySafeText rather than being interpolated raw. They are file-derived and a repository names its own files, while this manifest is emitted under a preamble instructing the summarizing model to reproduce these rows exactly as written -- the most persistent place in the tool where an unescaped `[tg]` marker could sit, since it survives compaction into the next context.
  */
-function selectManifestFiles(sessionId?: string): { files: FileEntry[]; readFiles: FileEntry[]; editedFiles: FileEntry[]; symbolOnlyFiles: FileEntry[] } {
+function selectManifestFiles(siblings: readonly SerializedSession[]): { files: FileEntry[]; readFiles: FileEntry[]; editedFiles: FileEntry[]; symbolOnlyFiles: FileEntry[] } {
   const ownFiles = [...getSessionFiles().values()]
-  const siblingFiles = sessionId !== undefined ? listSiblingSessionStates(sessionId).flatMap((s) => s.files) : []
+  const siblingFiles = siblings.flatMap((s) => s.files)
   const files = siblingFiles.length > 0 ? mergeManifestFiles(ownFiles, siblingFiles) : ownFiles
   const editedFiles = files.filter((f) => f.wasEdited)
   // Noise is dropped before the cap, never after. A session whose most-read paths are all lockfiles and `node_modules` entries would otherwise spend the whole row cap on rows it then discards and render `### Read files` as a heading with nothing under it -- a heading that asserts the list below is what was read. Edited files are exempt: a lockfile someone actually edited is a fact about the session, not incidental traffic.
@@ -112,6 +112,20 @@ function selectManifestFiles(sessionId?: string): { files: FileEntry[]; readFile
   // A file reached only through `token-goat read "file::symbol"` gets a readCount: 0, wasEdited: false entry carrying symbols_read (see recordSymbolRead in session.ts), so it falls through BOTH filters above and used to vanish from the manifest entirely -- while computeAdaptiveBudget was still granting it a symbolsBonus for content that was never emitted, and postCompactHandler's survival canary was sampling a path the manifest never printed. Give it its own bucket.
   const symbolOnlyFiles = files.filter((f) => f.readCount === 0 && !f.wasEdited && (f.symbols_read?.length ?? 0) > 0)
   return { files, readFiles, editedFiles, symbolOnlyFiles }
+}
+
+/**
+ * Every web fetch this session reached, the parent thread's and its subagents'.
+ *
+ * Merged for the same reason {@link selectManifestFiles} merges sibling files: a URL a subagent fetched lives only in that subagent's agent-salted blob, and `getSessionWebFetches` holds the parent's in-memory state alone. This section used to read that map directly, so a research subagent's fetches were absent from the one artifact whose job is to carry them across a compaction -- and a lost URL row costs more than a lost file row, because it takes the cache id that would have recalled the body for free with it.
+ *
+ * Parent entries are written last so a URL both fetched keeps the parent's cache id. The key already carries the prompt (see `WEB_FETCH_KEY_SEP`), so two fetches of one URL under different prompts stay two rows rather than collapsing into whichever was seen last.
+ */
+function selectManifestWebFetches(siblings: readonly SerializedSession[]): [string, string][] {
+  const merged = new Map<string, string>()
+  for (const sibling of siblings) for (const [key, cacheId] of sibling.webFetches) merged.set(key, cacheId)
+  for (const [key, cacheId] of getSessionWebFetches()) merged.set(key, cacheId)
+  return [...merged.entries()]
 }
 
 /**
@@ -139,8 +153,10 @@ function buildManifestParts(
   cwd?: string,
   transcriptPath?: string,
 ): { text: string; printed: string[] } {
-  const { files, readFiles, editedFiles, symbolOnlyFiles } = selectManifestFiles(sessionId)
-  const webFetches = [...getSessionWebFetches().entries()]
+  // Read once and shared by both selections below. Each sibling scan is a directory listing plus a JSON parse per blob, and the two sections have no reason to disagree about which subagents ran.
+  const siblings = sessionId !== undefined ? listSiblingSessionStates(sessionId) : []
+  const { files, readFiles, editedFiles, symbolOnlyFiles } = selectManifestFiles(siblings)
+  const webFetches = selectManifestWebFetches(siblings)
 
   const lines: string[] = []
   lines.push('## Session context')
