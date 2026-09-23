@@ -1421,6 +1421,7 @@ async function cmdCompress(
     maxTokens?: string
     quietSuccess?: boolean
     native?: boolean
+    shell?: string
   } = {},
 ): Promise<void> {
   try {
@@ -1439,7 +1440,12 @@ async function cmdCompress(
     const bashRunner = await import('./bash_runner.js')
     if (opts.compress === false) {
       // Commander maps `--no-compress` to `opts.compress === false`.
-      process.exitCode = bashRunner.runRaw(command, parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS))
+      process.exitCode = bashRunner.runRaw(
+        command,
+        parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
+        opts.native,
+        opts.shell,
+      )
       return
     }
     const maxTokens = opts.maxTokens !== undefined ? requireNonNegativeInt('--max-tokens', opts.maxTokens) : 0
@@ -1450,6 +1456,7 @@ async function cmdCompress(
       ...(opts.profile !== undefined ? { compressionProfile: opts.profile } : {}),
       ...(opts.quietSuccess === true ? { quietSuccess: true } : {}),
       ...(opts.native === true ? { nativeShell: true } : {}),
+      ...(opts.shell !== undefined ? { shellType: opts.shell } : {}),
     })
   } catch (e) {
     err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
@@ -2017,6 +2024,7 @@ export function buildProgram(): Command {
     .allowUnknownOption(true)
     .option('-c, --cmd <command>', 'the shell command to run, as one string (use / for paths across platforms)')
     .option('--cmd-b64 <payload>', 'the shell command as a base64-encoded string (preserves quotes, backslashes, and symbols across platforms)')
+    .option('--shell <type>', 'shell interpreter to run under: bash | pwsh | powershell | native')
     .option('-f, --filter <name>', 'filter name (auto-detected from the command when omitted)')
     .option('--timeout <seconds>', 'wall-clock timeout in seconds (0 = built-in default)')
     .option('--no-compress', 'stream output raw without compression (debug the wrapper)')

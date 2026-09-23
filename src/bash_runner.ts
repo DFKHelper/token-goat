@@ -10,7 +10,7 @@ import * as os from 'node:os'
 import { storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
-import { wrappedShell } from './shell.js'
+import { wrappedShell, resolvePowerShell } from './shell.js'
 import { recordStat } from './stats.js'
 import {
   type CompressedOutput,
@@ -59,6 +59,7 @@ export interface RunOptions {
   writeStderr?: (s: string) => void
   quietSuccess?: boolean | undefined
   nativeShell?: boolean | undefined
+  shellType?: 'bash' | 'pwsh' | 'powershell' | 'native' | string | undefined
   heartbeatIntervalMs?: number
 }
 
@@ -158,8 +159,23 @@ function baseSpawnOptions(timeout: number, cwd: string | undefined) {
 function spawnTarget(
   command: string,
   nativeShell: boolean | undefined,
+  shellType?: string | undefined,
 ): { file: string; args: string[]; shell: boolean; cmdEnv?: NodeJS.ProcessEnv } {
-  const shell = nativeShell ? true : wrappedShell()
+  if (shellType === 'pwsh' || shellType === 'powershell') {
+    const ps = resolvePowerShell()
+    return {
+      file: ps,
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[scriptblock]::Create($env:TG_CMD).Invoke(); if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+      ],
+      shell: false,
+      cmdEnv: { TG_CMD: command },
+    }
+  }
+  const shell = nativeShell || shellType === 'native' ? true : wrappedShell()
   if (typeof shell === 'string') return { file: shell, args: ['-c', 'eval "$TG_CMD"'], shell: false, cmdEnv: { TG_CMD: command } }
   return { file: command, args: [], shell }
 }
@@ -219,7 +235,7 @@ export async function run(command: string, opts: RunOptions = {}): Promise<numbe
     if ((opts.maxTokens ?? 0) > 0 || opts.quietSuccess) {
       return wrapAndCompress(command, argv, new IdentityFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
     }
-    return passthrough(command, timeout, opts.cwd, opts.env, opts.nativeShell)
+    return passthrough(command, timeout, opts.cwd, opts.env, opts.nativeShell, opts.shellType)
   }
   return wrapAndCompress(command, argv, filter, timeout, resolveProfile(opts.compressionProfile), opts)
 }
@@ -229,8 +245,13 @@ export async function run(command: string, opts: RunOptions = {}): Promise<numbe
  * returning its exit code. Used by `compress --no-compress` to debug the
  * wrapper by streaming output straight through.
  */
-export function runRaw(command: string, timeout: number = DEFAULT_TIMEOUT_SECONDS): number {
-  return passthrough(command, timeout, undefined, undefined)
+export function runRaw(
+  command: string,
+  timeout: number = DEFAULT_TIMEOUT_SECONDS,
+  nativeShell?: boolean,
+  shellType?: string,
+): number {
+  return passthrough(command, timeout, undefined, undefined, nativeShell, shellType)
 }
 
 /** Run *command* with no compression, inheriting the parent's stdio. */
@@ -240,8 +261,9 @@ function passthrough(
   cwd: string | undefined,
   env: NodeJS.ProcessEnv | undefined,
   nativeShell?: boolean,
+  shellType?: string,
 ): number {
-  const { file, args, shell, cmdEnv } = spawnTarget(command, nativeShell)
+  const { file, args, shell, cmdEnv } = spawnTarget(command, nativeShell, shellType)
   const result = spawnSync(file, args, {
     ...baseSpawnOptions(timeout, cwd),
     shell,
@@ -277,7 +299,7 @@ async function wrapAndCompress(
   const writeStdout = opts.writeStdout ?? ((s: string) => process.stdout.write(s))
   const writeStderr = opts.writeStderr ?? ((s: string) => process.stderr.write(s))
   const startTime = Date.now()
-  const { file, args, shell, cmdEnv } = spawnTarget(command, opts.nativeShell)
+  const { file, args, shell, cmdEnv } = spawnTarget(command, opts.nativeShell, opts.shellType)
   const stdoutSink = new CaptureSink(MAX_CAPTURE_BYTES)
   const stderrSink = new CaptureSink(MAX_CAPTURE_BYTES)
   let timedOut = false

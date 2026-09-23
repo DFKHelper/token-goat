@@ -259,6 +259,31 @@ describe('rewrite ↔ recall interaction', () => {
     expect(unwrapCompressCommand(`token-goat compress -f generic --cmd-b64 ${payload}`)).toBe(original)
   })
 
+  it('unwraps a base64-encoded compress command with --shell pwsh', () => {
+    const original = 'Invoke-Pester -Path tests\\CapMvrisPipeline.Tests.ps1'
+    const payload = Buffer.from(original, 'utf8').toString('base64')
+
+    expect(unwrapCompressCommand(`token-goat compress -f powershell --timeout 600 --shell pwsh --cmd-b64 ${payload}`)).toBe(original)
+  })
+
+  it.skipIf(process.platform !== 'win32')('wraps a PowerShell harness command on Windows with --shell pwsh and base64 payload', () => {
+    const original = 'Invoke-Pester -Path .\\tests\\CapMvris.Tests.ps1'
+    const payload = Buffer.from(original, 'utf8').toString('base64')
+
+    const event = makeHookEvent({
+      toolName: 'Bash',
+      toolInput: { command: original },
+      sessionId: 's',
+      raw: { tool_name: 'powershell', tool_input: { command: original }, _tg_harness: 'copilot_cli' },
+    })
+
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType === 'rewriteInput') {
+      expect(result.updatedInput['command']).toBe(`token-goat compress -f powershell --timeout 600 --shell pwsh --cmd-b64 ${payload}`)
+    }
+  })
+
   it('post-hook unwraps the compress wrapper so recall keys on the original command', async () => {
     const original = 'cargo build'
     const wrapped = "token-goat compress -f generic -c 'cargo build'"

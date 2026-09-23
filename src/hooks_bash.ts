@@ -28,7 +28,7 @@ import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow,
 import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes, splitOwnTrailingNotices } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
-import { canRunWrappedShell } from './shell.js'
+import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
 import { runnableTargetFor } from './bash_surgical_target.js'
@@ -139,8 +139,20 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
   // VS Code's run_in_terminal runs the command in whatever shell the user's terminal uses, and its payload does not say which one, so no quoting of the wrapped command is safe in every one of them: the command is never rewritten there.
   if (event.raw['_tg_harness'] === 'vscode') return null
-  // Codex CLI on Windows executes shell-tool commands through PowerShell (same reason codexHookCommandFor prefixes the hook's own invocation with `&` -- see codex_install.ts), not the Git-Bash the harness's payload might suggest, so the POSIX single-quote escaping shellQuoteSingle produces below is invalid there: a literal `--start` (or any argument PowerShell would otherwise treat as a flag) then reaches token-goat compress's own arg parser unquoted, past PowerShell's `'...''...'` escape convention, and fails with "unknown option". Copilot CLI's shell tool defaults to the same PowerShell executor on Windows (see the shellToolName comment in bridges/copilot_cli.ts), so it hits the identical quoting hazard. Skip the rewrite rather than emit PowerShell-flavored quoting for either harness.
-  if ((event.raw['_tg_harness'] === 'codex' || event.raw['_tg_harness'] === 'copilot_cli') && process.platform === 'win32') return null
+
+  const isPwshHarness =
+    process.platform === 'win32' &&
+    (event.raw['_tg_harness'] === 'codex' ||
+      event.raw['_tg_harness'] === 'copilot_cli' ||
+      event.raw['tool_name'] === 'powershell')
+
+  if (isPwshHarness) {
+    if (!canRunPowerShell()) return null
+  } else {
+    // No usable shell to run the wrapper under (Windows with no Git-Bash): leave the command to run normally in the harness bash, uncompressed, rather than wrapping it into a cmd.exe execution.
+    if (!canRunWrappedShell()) return null
+  }
+
   let cfg: { enabled: boolean; disabled_filters: string[]; timeout_seconds: number }
   try {
     cfg = loadConfig().bash_compress
@@ -148,8 +160,6 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
     return null
   }
   if (!cfg.enabled) return null
-  // No usable shell to run the wrapper under (Windows with no Git-Bash): leave the command to run normally in the harness bash, uncompressed, rather than wrapping it into a cmd.exe execution.
-  if (!canRunWrappedShell()) return null
 
   // A specific filter (once the framework recognizes the command) wins over the generic catch-all. Either way the command must be a single pipe/redirect-free invocation: detectFromCommand enforces that for specific filters; the generic path requires it explicitly.
   const gateCmd = stripTrailingStderrRedirect(cmd)
@@ -163,6 +173,16 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
     return null
   }
   if (cfg.disabled_filters.includes(filterName)) return null
+
+  if (isPwshHarness) {
+    // For PowerShell harnesses on Windows (Codex, Copilot CLI), avoid shell quoting pitfalls (backslashes, quotes, operators) by using base64.
+    // Skip wrapping if the base64 representation does not round-trip exactly.
+    const b64 = Buffer.from(rawCmd, 'utf8').toString('base64')
+    if (Buffer.from(b64, 'base64').toString('utf8') !== rawCmd) return null
+
+    const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds} --shell pwsh --cmd-b64 ${b64}`
+    return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }
+  }
 
   const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds} -c ${shellQuoteSingle(rawCmd)}`
   return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }

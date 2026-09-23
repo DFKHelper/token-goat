@@ -1289,7 +1289,7 @@ const PS_CNF_ERROR_RE =
 
 export class PowerShellErrorFilter extends ToolFilter {
   readonly name = 'powershell'
-  override readonly binaries = new Set(['pwsh', 'powershell', 'powershell.exe'])
+  override readonly binaries = new Set(['pwsh', 'powershell', 'powershell.exe', 'invoke-pester', 'pester'])
 
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const merged = this.combineOutput(stdout, stderr)

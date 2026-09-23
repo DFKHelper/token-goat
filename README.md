@@ -184,6 +184,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Broad recursive Glob sweep (`*`, `**/*`) on root directory | Pre-Glob hook warns against tree-dumping and points at `token-goat map --compact` for fast, lightweight structure inspection |
 | Guessing database column names in `session_store_sql` / `sql` and falling back to `SELECT *` | `token-goat session-schema [table]` and `describe <target>` provide instant schema discovery; `post_tool_use_failure` hook intercepts unknown columns and guides the query — ~85–95% smaller than trial-and-error `SELECT *` dumps |
 | Compound test/build pipeline (`npm run build && npm run typecheck && npm test`) | Post-Bash hook routes chained build/test/lint commands to `generic-ci` compression, dropping verbose passing steps and compiler noise |
+| Windows PowerShell execution in Codex CLI and Copilot CLI fails on escaped paths or operators | Pre-bash hooks rewrite Windows PowerShell commands via base64 payloads (`--cmd-b64`) and dispatch directly to PowerShell (`--shell pwsh`), preserving backslashes and special syntax while enabling output compression |
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
 

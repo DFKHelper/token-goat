@@ -82,3 +82,50 @@ export function wrappedShell(): string | boolean {
 export function canRunWrappedShell(): boolean {
   return process.platform !== 'win32' || resolveWindowsBash() !== null
 }
+
+// Resolve the PowerShell executable to run wrapped PowerShell commands under.
+// Windows: checks TOKEN_GOAT_POWERSHELL/PWSH override, then PATH for pwsh.exe, then System32 WindowsPowerShell, falling back to powershell.exe.
+// POSIX: checks TOKEN_GOAT_POWERSHELL/PWSH override, then PATH for pwsh, then standard install locations.
+export function resolvePowerShell(
+  env: NodeJS.ProcessEnv = process.env,
+  isExe: (p: string) => boolean = isExecutable,
+): string {
+  const override = env['TOKEN_GOAT_POWERSHELL'] || env['TOKEN_GOAT_PWSH']
+  if (override && isExe(override)) return override
+
+  if (process.platform === 'win32') {
+    for (const dir of (env['PATH'] ?? '').split(path.delimiter)) {
+      if (!dir) continue
+      const cand = path.join(dir, 'pwsh.exe')
+      if (isExe(cand)) return cand
+    }
+    const systemRoot = env['SystemRoot'] ?? env['windir'] ?? 'C:\\Windows'
+    const defaultPs = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    if (isExe(defaultPs)) return defaultPs
+    return 'powershell.exe'
+  }
+
+  for (const dir of (env['PATH'] ?? '').split(path.delimiter)) {
+    if (!dir) continue
+    const cand = path.join(dir, 'pwsh')
+    if (isExe(cand)) return cand
+  }
+  for (const cand of ['/usr/bin/pwsh', '/usr/local/bin/pwsh', '/opt/microsoft/powershell/7/pwsh']) {
+    if (isExe(cand)) return cand
+  }
+  return 'pwsh'
+}
+
+export function canRunPowerShell(
+  env: NodeJS.ProcessEnv = process.env,
+  isExe: (p: string) => boolean = isExecutable,
+): boolean {
+  if (process.platform === 'win32') return true
+  try {
+    const ps = resolvePowerShell(env, isExe)
+    return isExe(ps)
+  } catch {
+    return false
+  }
+}
+
