@@ -2992,7 +2992,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     const isIdentifier = /^[A-Za-z0-9_.:-]+$/.test(trimmedQuery)
     if (!indexEmpty && isIdentifier) {
       try {
-        const symMatches = querySymbols({ name: trimmedQuery, rootDir })
+        const symMatches = querySymbols({ name: trimmedQuery, rootDir, limit: 1 })
         if (symMatches.length > 0) {
           symFound = true
         }
@@ -3056,7 +3056,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   if (!indexEmpty && isIdentifier) {
     let symFound = false
     try {
-      const symMatches = querySymbols({ name: trimmedQuery, rootDir })
+      const symMatches = querySymbols({ name: trimmedQuery, rootDir, limit: 1 })
       if (symMatches.length > 0) {
         symFound = true
       }
