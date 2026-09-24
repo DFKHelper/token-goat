@@ -1,14 +1,4 @@
-/**
- * Security regression: the data root was created by a plain recursive mkdir with no mode, so it
- * took the process umask -- mode 755 on a stock Linux box. Everything token-goat caches lives
- * under it (bash output, fetched pages, MCP results, session state, and the SQLite index of the
- * project's source), so on a shared host every other local user could list and read another
- * user's cached work. Confirmed live on Linux before the fix: `~/.local/share/token-goat` was 755.
- *
- * The root is now created 0700 and an existing permissive root is chmodded down, so traversal is
- * refused for everyone but the owner and a child's own mode stops mattering. POSIX-only: Windows
- * ignores these modes and inherits the parent ACL instead.
- */
+/** Security regression: the data root was created by a plain recursive mkdir with no mode, so it took the process umask -- mode 755 on a stock Linux box. Everything token-goat caches lives under it (bash output, fetched pages, MCP results, session state, and the SQLite index of the project's source), so on a shared host every other local user could list and read another user's cached work. Confirmed live on Linux before the fix: `~/.local/share/token-goat` was 755. The root is now created 0700 and an existing permissive root is chmodded down, so traversal is refused for everyone but the owner and a child's own mode stops mattering. POSIX-only: Windows ignores these modes and inherits the parent ACL instead. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -64,22 +54,28 @@ describe('data directory permissions', () => {
     expect(mode(dataDir())).toBe(0o700)
   })
 
-  // The point of hardening the root rather than each child: a child created with a permissive
-  // mode is still unreachable, because traversal stops at the parent.
+  // HAND-DERIVED: 0o555 with its group/other bits cleared is 0o500. Hardening to a fixed 0o700 gave the owner back the write permission a read-only data directory had taken away, so a writer then created global.db-wal and -shm at the database file's own 0444 mode, and every later writer failed on them ("attempt to write a readonly database") after the directory was made writable again.
+  it.runIf(POSIX)('never gives the owner back a write permission taken away', () => {
+    fs.mkdirSync(dataDir(), { recursive: true })
+    fs.chmodSync(dataDir(), 0o555)
+    _resetDataDirCacheForTesting()
+
+    ensureDataDirPrivate()
+
+    expect(mode(dataDir())).toBe(0o500)
+    fs.chmodSync(dataDir(), 0o700)
+  })
+
+  // The point of hardening the root rather than each child: a child created with a permissive mode is still unreachable, because traversal stops at the parent.
   it.runIf(POSIX)('creates the root privately even when a child is made first', () => {
     ensureDirSync(path.join(dataDir(), 'cache', 'web'))
 
     expect(mode(dataDir())).toBe(0o700)
   })
 
-  // `mkdirSync(recursive, { mode })` applies the mode to every level it creates, so a single
-  // recursive call tightened the shared XDG parents (~/.local, ~/.local/share) as collateral.
-  // Those belong to the user and to every other application, not to token-goat.
+  // `mkdirSync(recursive, { mode })` applies the mode to every level it creates, so a single recursive call tightened the shared XDG parents (~/.local, ~/.local/share) as collateral. Those belong to the user and to every other application, not to token-goat.
   it.runIf(POSIX)('leaves the shared parent directories at the umask default', () => {
-    // The reference directory is made by a plain mkdir in this same process, so it carries
-    // whatever umask the runner has. Comparing against it, rather than against a hardcoded 0755,
-    // keeps the assertion honest under any umask -- an earlier version asserted the group/other
-    // bits were set and failed on CI, where the enclosing mkdtemp root is 0700 by definition.
+    // The reference directory is made by a plain mkdir in this same process, so it carries whatever umask the runner has. Comparing against it, rather than against a hardcoded 0755, keeps the assertion honest under any umask -- an earlier version asserted the group/other bits were set and failed on CI, where the enclosing mkdtemp root is 0700 by definition.
     const reference = path.join(root, 'reference')
     fs.mkdirSync(reference)
     const rootModeBefore = mode(root)
@@ -99,12 +95,9 @@ describe('data directory permissions', () => {
     expect(fs.existsSync(dataDir())).toBe(true)
   })
 
-  // An unwritable home must not take down every command: the caller's own mkdir runs next and
-  // reports the real failure with its own context.
+  // An unwritable home must not take down every command: the caller's own mkdir runs next and reports the real failure with its own context.
   it('hardens the data root only for a path that is actually under it', () => {
-    // The dispatch half. Hardening a root nothing is being written under would create it as a side
-    // effect of an unrelated mkdir; the point of dispatching on the requested path is that each
-    // root is created when, and only when, something is about to land in it.
+    // The dispatch half. Hardening a root nothing is being written under would create it as a side effect of an unrelated mkdir; the point of dispatching on the requested path is that each root is created when, and only when, something is about to land in it.
     const elsewhere = path.join(root, 'not-storage', 'x')
 
     ensureDirSync(elsewhere)
@@ -123,17 +116,7 @@ describe('data directory permissions', () => {
   })
 })
 
-/**
- * The OTHER storage root. `ensureDirSync` hardened `dataDir()` and nothing else, while
- * `dataDir() !== tokenGoatHome()` at runtime -- so `~/.token-goat` took the umask default (0755 on
- * a stock Debian/Ubuntu $HOME) even though the guard that swept this class lists `tokenGoatHome`
- * among its roots and names a home-root site in its own mustInclude. What sits there is the more
- * sensitive half: `session_snapshots/` holds verbatim copies of every file the model read,
- * `sessions/` the session state and its pending-context sidecars, `ocr-cache/` text lifted out of
- * viewed images. Local read disclosure only -- no write access and no escalation -- and Windows is
- * unaffected, which is why these mode assertions are honestly `runIf(POSIX)` rather than reworked
- * into something that can pass here.
- */
+/** The OTHER storage root. `ensureDirSync` hardened `dataDir()` and nothing else, while `dataDir() !== tokenGoatHome()` at runtime -- so `~/.token-goat` took the umask default (0755 on a stock Debian/Ubuntu $HOME) even though the guard that swept this class lists `tokenGoatHome` among its roots and names a home-root site in its own mustInclude. What sits there is the more sensitive half: `session_snapshots/` holds verbatim copies of every file the model read, `sessions/` the session state and its pending-context sidecars, `ocr-cache/` text lifted out of viewed images. Local read disclosure only -- no write access and no escalation -- and Windows is unaffected, which is why these mode assertions are honestly `runIf(POSIX)` rather than reworked into something that can pass here. */
 describe('token-goat home permissions', () => {
   let home: string
 
@@ -143,8 +126,7 @@ describe('token-goat home permissions', () => {
     _resetDataDirCacheForTesting()
   })
 
-  // The premise the static guard assumed and never checked. If these two ever became the same
-  // directory, every assertion below would be about the data root wearing another name.
+  // The premise the static guard assumed and never checked. If these two ever became the same directory, every assertion below would be about the data root wearing another name.
   it('is a different directory from the data root', () => {
     expect(path.resolve(tokenGoatHome())).not.toBe(path.resolve(dataDir()))
   })
@@ -165,8 +147,19 @@ describe('token-goat home permissions', () => {
     expect(mode(home)).toBe(0o700)
   })
 
-  // The whole point: every real home-root writer reaches the filesystem through ensureDirSync, so
-  // that is where the hardening has to happen. `session_snapshots` is the worst-case child.
+  // HAND-DERIVED, as for the data root: 0o555 without its group/other bits is 0o500.
+  it.runIf(POSIX)('never gives the owner back a write permission taken away', () => {
+    fs.mkdirSync(home, { recursive: true })
+    fs.chmodSync(home, 0o555)
+    _resetDataDirCacheForTesting()
+
+    ensureHomeDirPrivate()
+
+    expect(mode(home)).toBe(0o500)
+    fs.chmodSync(home, 0o700)
+  })
+
+  // The whole point: every real home-root writer reaches the filesystem through ensureDirSync, so that is where the hardening has to happen. `session_snapshots` is the worst-case child.
   it.runIf(POSIX)('hardens the home root when ensureDirSync creates a child under it', () => {
     ensureDirSync(path.join(tokenGoatHome(), 'session_snapshots', 'sess-1'))
 
@@ -185,9 +178,7 @@ describe('token-goat home permissions', () => {
   })
 
   it('re-hardens after TOKEN_GOAT_HOME moves, rather than memoizing one boolean', () => {
-    // TOKEN_GOAT_HOME is read live on every call, so a single "already done" flag would leave every
-    // root after the first at the umask default -- and the e2e children and the test suite itself
-    // move it constantly.
+    // TOKEN_GOAT_HOME is read live on every call, so a single "already done" flag would leave every root after the first at the umask default -- and the e2e children and the test suite itself move it constantly.
     ensureHomeDirPrivate()
     const second = path.join(root, 'home2', '.token-goat')
     process.env['TOKEN_GOAT_HOME'] = second

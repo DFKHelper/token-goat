@@ -4,7 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+Upgrading reparses the index. The data directory fix below is in a file the parser fingerprint covers, so the parser stamp moves for every language and each file is read once more, although nothing a parse extracts has changed. Embeddings are untouched and keep serving throughout.
+
 ### Fixed
+
+- **A data directory made read-only stays read-only.** On Linux and macOS, the permission hardening token-goat runs on its data directory and on `TOKEN_GOAT_HOME` reset a directory it found at 0555 to 0700, giving the owner back the write permission that had been removed. The next writer then created the index's `-wal` and `-shm` files with the database's read-only mode, and every writer after that failed with `attempt to write a readonly database`, even once the directory was writable again. Hardening now clears only the group and other bits.
 
 - **A hook call that never finishes no longer stalls every later hook call in the pi, opencode and OpenClaw hosts.** Those bridges run hook calls one at a time inside the host's own process, so one call that never settled held every call behind it; on the built bundle, the call queued after a stalled one was still waiting 130 s later. A call now waits at most 120 s for the one before it and then runs. The longest of 66,625 recorded hook calls took 31 s (p99 494 ms), and a slow call still gets its own answer when it finishes.
 - **In the pi, opencode and OpenClaw hosts, a hook event that names no session no longer sees the previous session's reads.** Such an event kept whatever the last session had loaded, so a file that session had read was refused as already read. It now starts from an empty session.
