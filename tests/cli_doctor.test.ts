@@ -5,6 +5,7 @@ import * as os from 'os'
 import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkHookShim, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
 import { processListOutput } from '../src/cli_doctor_process.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
+import { recordCreatedConfig, takeCreatedConfig } from '../src/bridges/created_configs.js'
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
 import { classifyTreeSitterLoadError } from '../src/cli_doctor.js'
@@ -1367,6 +1368,67 @@ describe('cli_doctor', () => {
       const { configPath, scriptPath } = writeStubbedInstall(COPILOT_CLI_HOOK_SCRIPT.replace(/\n/g, '\r\n'))
 
       expect(checkCopilotCli(configPath, scriptPath)?.status).toBe('ok')
+    })
+
+    // CAPTURE: `token-goat doctor` run with its cwd in a scratch repository whose `.github/hooks/token-goat.json` named `echo PWNED > pwned.txt && echo {}` as its preToolUse command, next to any file called token-goat-shim.cjs, reported that hook as invoking cleanly and left pwned.txt in the repository. The project scope is whatever directory doctor runs in, so a cloned repository chose the command.
+    function writeProjectHooks(): { configPath: string; scriptPath: string; marker: string } {
+      const hooksDir = path.join(tempDir, 'repo', '.github', 'hooks')
+      fs.mkdirSync(hooksDir, { recursive: true })
+      const marker = path.join(tempDir, 'repo', 'ran.txt')
+      const hook = path.join(hooksDir, 'hook.js')
+      fs.writeFileSync(hook, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran'); process.stdout.write('{}')`)
+      const scriptPath = path.join(hooksDir, 'token-goat-shim.cjs')
+      fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+      const configPath = path.join(hooksDir, 'token-goat.json')
+      writeConfig(configPath, { preToolUse: [{ type: 'command', command: `"${process.execPath}" "${hook}"`, timeoutSec: 60 }] })
+      return { configPath, scriptPath, marker }
+    }
+
+    it('does not run a project-scope hook command that no install on this machine wrote', () => {
+      const { configPath, scriptPath, marker } = writeProjectHooks()
+
+      const result = checkCopilotCli(configPath, scriptPath, 'project')
+      expect(fs.existsSync(marker)).toBe(false)
+      expect(result?.name).toBe('Copilot CLI (project)')
+      expect(result?.status).toBe('warn')
+      expect(result?.message).toContain('not written by token-goat on this machine')
+      expect(result?.message).toContain('token-goat install --copilot --local')
+    })
+
+    it('runs a project-scope hook command once the ledger records that this machine wrote the config', () => {
+      const { configPath, scriptPath, marker } = writeProjectHooks()
+      recordCreatedConfig(configPath)
+      try {
+        const result = checkCopilotCli(configPath, scriptPath, 'project')
+        expect(fs.existsSync(marker)).toBe(true)
+        expect(result).toEqual({ name: 'Copilot CLI (project)', status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' })
+      } finally {
+        takeCreatedConfig(configPath)
+      }
+    })
+
+    it('names the VS Code install, not the Copilot CLI one, for a hooks directory only install --vscode owns', () => {
+      const { configPath, scriptPath } = writeProjectHooks()
+      fs.writeFileSync(path.join(path.dirname(configPath), 'token-goat.owners'), 'vscode\n')
+
+      const result = checkCopilotCli(configPath, scriptPath, 'project')
+      expect(result?.message).toContain('"token-goat install --vscode"')
+      expect(result?.message).not.toContain('--copilot')
+    })
+
+    // HAND-DERIVED: before the shim became token-goat-shim.cjs, install wrote token-goat-shim.js and a config whose commands run it. Upgrading token-goat rewrites neither, so that pair is what every existing install holds until install runs again.
+    it('warns about an install that still runs the .js shim instead of saying nothing', () => {
+      const hooksDir = path.join(tempDir, 'hooks')
+      fs.mkdirSync(hooksDir, { recursive: true })
+      const legacy = path.join(hooksDir, 'token-goat-shim.js')
+      fs.writeFileSync(legacy, "process.stdout.write('{}')")
+      const configPath = path.join(hooksDir, 'token-goat.json')
+      writeConfig(configPath, { preToolUse: [{ type: 'command', command: `"${process.execPath}" "${legacy}" preToolUse`, timeoutSec: 60 }] })
+
+      const result = checkCopilotCli(configPath, path.join(hooksDir, 'token-goat-shim.cjs'))
+      expect(result?.status).toBe('warn')
+      expect(result?.message).toContain('token-goat-shim.js from an older token-goat build')
+      expect(result?.message).toContain('"token-goat install --copilot"')
     })
   })
 

@@ -1,29 +1,4 @@
-/**
- * Copilot CLI install/uninstall wiring.
- *
- * Copilot's hook config is a standalone JSON file, one file per hook
- * registration (not a shared/merge-heavy config like Codex's config.toml),
- * confirmed against
- * https://docs.github.com/en/copilot/reference/hooks-reference and
- * https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks:
- *
- *   { "version": 1, "hooks": { "<eventName>": [{ "type": "command", "command": "..." }] } }
- *
- * written to `.github/hooks/token-goat.json` (project scope, confirmed) or
- * `~/.copilot/hooks/token-goat.json` (user scope, confirmed). Because the
- * file is entirely token-goat's own (no other tool writes to a file named
- * exactly `token-goat.json` in that directory), this follows pi_install.ts's
- * simpler whole-file overwrite-on-diff pattern rather than Codex's
- * parse/merge pattern -- there is nothing to merge into. It does, however,
- * still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw),
- * because Copilot's hooks schema supports per-entry fields token-goat writes
- * only some of (`timeoutSec` and `allowedEnvVars` -- see HOOK_TIMEOUT_SEC and
- * ALLOWED_ENV_VARS below) and never touches others of (`cwd`, `env`, `matcher`
- * -- https://docs.github.com/en/copilot/reference/hooks-reference) that a user
- * could plausibly hand-tune; since install always regenerates the whole file
- * from scratch, a hand-edit would otherwise be silently destroyed with no
- * recovery path.
- */
+/** Copilot CLI install/uninstall wiring. Copilot's hook config is a standalone JSON file, one file per hook registration (not a shared/merge-heavy config like Codex's config.toml), confirmed against https://docs.github.com/en/copilot/reference/hooks-reference and https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks: { "version": 1, "hooks": { "<eventName>": [{ "type": "command", "command": "..." }] } } written to `.github/hooks/token-goat.json` (project scope, confirmed) or `~/.copilot/hooks/token-goat.json` (user scope, confirmed). Because the file is entirely token-goat's own (no other tool writes to a file named exactly `token-goat.json` in that directory), this follows pi_install.ts's simpler whole-file overwrite-on-diff pattern rather than Codex's parse/merge pattern -- there is nothing to merge into. It does, however, still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw), because Copilot's hooks schema supports per-entry fields token-goat writes only some of (`timeoutSec` and `allowedEnvVars` -- see HOOK_TIMEOUT_SEC and ALLOWED_ENV_VARS below) and never touches others of (`cwd`, `env`, `matcher` -- https://docs.github.com/en/copilot/reference/hooks-reference) that a user could plausibly hand-tune; since install always regenerates the whole file from scratch, a hand-edit would otherwise be silently destroyed with no recovery path. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -69,16 +44,7 @@ interface CopilotCliConfig {
   hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>>
 }
 
-/**
- * The user-scope Copilot directory. Copilot CLI documents `COPILOT_HOME` as replacing
- * `~/.copilot` wholesale for both hooks and instructions ("If `COPILOT_HOME` is set,
- * create the file in `$COPILOT_HOME/hooks/`" --
- * https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks).
- * Ignoring it is a silent total failure rather than a degraded one: install reports
- * success, writes a valid config to `~/.copilot`, and Copilot never reads that path, so
- * every hook simply never fires and nothing surfaces the mismatch. Blank/whitespace is
- * treated as unset, matching how an exported-but-empty variable behaves everywhere else.
- */
+/** The user-scope Copilot directory. Copilot CLI documents `COPILOT_HOME` as replacing `~/.copilot` wholesale for both hooks and instructions ("If `COPILOT_HOME` is set, create the file in `$COPILOT_HOME/hooks/`" -- https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks). Ignoring it is a silent total failure rather than a degraded one: install reports success, writes a valid config to `~/.copilot`, and Copilot never reads that path, so every hook simply never fires and nothing surfaces the mismatch. Blank/whitespace is treated as unset, matching how an exported-but-empty variable behaves everywhere else. */
 export function copilotCliUserRoot(): string {
   const override = process.env['COPILOT_HOME']
   if (override !== undefined && override.trim() !== '') return path.resolve(override)
@@ -93,25 +59,7 @@ export function copilotCliProjectHooksDir(): string {
   return path.join(process.cwd(), '.github', 'hooks')
 }
 
-/**
- * Copilot's *cache* root, which is a different directory from its user root.
- *
- * copilotCliUserRoot() above resolves COPILOT_HOME / ~/.copilot, where config
- * and session state live. The MCP tool-definition cache is not there: it sits
- * under a separate cache root, and conflating the two would silently read an
- * empty directory and report that no MCP servers are configured.
- *
- * The rule below was read directly out of the shipped Copilot 1.0.80 bundle
- * rather than taken from documentation. The native entry point is
- * `copilotCacheHome(platform, homedir, COPILOT_CACHE_HOME, LOCALAPPDATA,
- * XDG_CACHE_HOME)`, and the bundle also carries a plain-JS twin of the same
- * rule which is what this mirrors. Two details are easy to get wrong and are
- * both taken from that twin: COPILOT_CACHE_HOME is the cache root *itself*
- * and gets no `copilot` segment appended (the bundle joins it straight to
- * `pkg`), whereas every platform default does append one. On win32 the
- * fallback when LOCALAPPDATA is unset is ~/.cache, not ~/Library or an XDG
- * path.
- */
+/** Copilot's *cache* root, which is a different directory from its user root. copilotCliUserRoot() above resolves COPILOT_HOME / ~/.copilot, where config and session state live. The MCP tool-definition cache is not there: it sits under a separate cache root, and conflating the two would silently read an empty directory and report that no MCP servers are configured. The rule below was read directly out of the shipped Copilot 1.0.80 bundle rather than taken from documentation. The native entry point is `copilotCacheHome(platform, homedir, COPILOT_CACHE_HOME, LOCALAPPDATA, XDG_CACHE_HOME)`, and the bundle also carries a plain-JS twin of the same rule which is what this mirrors. Two details are easy to get wrong and are both taken from that twin: COPILOT_CACHE_HOME is the cache root *itself* and gets no `copilot` segment appended (the bundle joins it straight to `pkg`), whereas every platform default does append one. On win32 the fallback when LOCALAPPDATA is unset is ~/.cache, not ~/Library or an XDG path. */
 export function copilotCliCacheRoot(): string {
   const override = process.env['COPILOT_CACHE_HOME']
   if (override !== undefined && override.trim() !== '') return path.resolve(override)
@@ -144,30 +92,18 @@ export function copilotCliScriptPath(opts: CopilotCliScopeOptions = {}): string 
   return path.join(copilotCliHooksDir(opts), HOOKS_SCRIPT_FILE)
 }
 
-// Copilot CLI reads custom instructions from `~/.copilot/copilot-instructions.md`
-// (user scope) and `<repo>/.github/copilot-instructions.md` (project scope) --
-// the same repository-custom-instructions filename GitHub Copilot uses across
-// its surfaces. The instructions file therefore lives one directory up from the
-// scope's hooks dir: `~/.copilot/hooks` -> `~/.copilot/copilot-instructions.md`,
-// and `<cwd>/.github/hooks` -> `<cwd>/.github/copilot-instructions.md`, so the
-// existing `local` scope selector applies to it unchanged.
+// Copilot CLI reads custom instructions from `~/.copilot/copilot-instructions.md` (user scope) and `<repo>/.github/copilot-instructions.md` (project scope) -- the same repository-custom-instructions filename GitHub Copilot uses across its surfaces. The instructions file therefore lives one directory up from the scope's hooks dir: `~/.copilot/hooks` -> `~/.copilot/copilot-instructions.md`, and `<cwd>/.github/hooks` -> `<cwd>/.github/copilot-instructions.md`, so the existing `local` scope selector applies to it unchanged.
 export function copilotCliInstructionsPath(opts: CopilotCliScopeOptions = {}): string {
   return path.join(path.dirname(copilotCliHooksDir(opts)), 'copilot-instructions.md')
 }
 
-// Same generic markers the base Claude Code install writes into ~/.claude/CLAUDE.md,
-// deliberately NOT a Copilot-specific pair: a real user's hand-written
-// copilot-instructions.md already carries a token-goat block delimited by exactly
-// these markers (copied from the CLAUDE.md convention), and the installer must
-// upgrade that block in place, not append a second one beside it. The file is a
-// separate path from CLAUDE.md, so there is no marker collision.
+// Same generic markers the base Claude Code install writes into ~/.claude/CLAUDE.md, deliberately NOT a Copilot-specific pair: a real user's hand-written copilot-instructions.md already carries a token-goat block delimited by exactly these markers (copied from the CLAUDE.md convention), and the installer must upgrade that block in place, not append a second one beside it. The file is a separate path from CLAUDE.md, so there is no marker collision.
 export const COPILOT_INSTRUCTIONS_BEGIN = '<!-- token-goat-begin -->'
 export const COPILOT_INSTRUCTIONS_END = '<!-- token-goat-end -->'
 
 /** The token-goat routing block for Copilot CLI, naming Copilot's own read tools in the conflict clause. */
 function buildCopilotInstructionsBlock(): string {
-  // Copilot's fallback parser can infer tool names from backtick-quoted prose when no
-  // `allowed-tools` frontmatter exists, so keep this surface free of inline code spans.
+  // Copilot's fallback parser can infer tool names from backtick-quoted prose when no `allowed-tools` frontmatter exists, so keep this surface free of inline code spans.
   return stripInlineCodeSpans(
     buildGuidanceBlock({
       beginMarker: COPILOT_INSTRUCTIONS_BEGIN,
@@ -183,11 +119,7 @@ function stripInlineCodeSpans(text: string): string {
   return text.replace(/`([^`]+)`/g, '$1')
 }
 
-/**
- * Idempotent merge-or-append of the token-goat block into the Copilot
- * instructions file, preserving every byte outside the markers (the file is
- * user-owned and hand-edited). Mirrors codex_install.ts's writeAgentsBlock.
- */
+/** Idempotent merge-or-append of the token-goat block into the Copilot instructions file, preserving every byte outside the markers (the file is user-owned and hand-edited). Mirrors codex_install.ts's writeAgentsBlock. */
 function writeCopilotInstructionsBlock(p: string): boolean {
   const changed = upsertDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END, buildCopilotInstructionsBlock())
   // A project file shared with install --visualstudio -p: its block shrinks to an addendum now that this gate is present. That rewrite is a change to the file in its own right, so it has to reach the caller: dropping it reported "already installed" on a run that had just rewritten the Visual Studio block.
@@ -202,73 +134,19 @@ function stripCopilotInstructionsBlock(p: string): boolean {
   return removed
 }
 
-// Cross-platform 'command' field (vs the also-supported bash/powershell-specific
-// fields) -- confirmed as a valid entry shape in the hooks reference doc. The
-// event name is passed as an explicit CLI arg (argv[2] on the shim's side),
-// exactly like Codex's hookCommandFor(scriptPath, eventArg) -- the same shim
-// script is registered under every event key, and nothing in Copilot's
-// documented preToolUse/postToolUse input schema (sessionId/timestamp/cwd/
-// toolName/toolArgs) identifies which event fired, so the command line is the
-// only place this bridge can encode it. Caught by dogfooding a real install +
-// invocation before this was tested any other way.
+// Cross-platform 'command' field (vs the also-supported bash/powershell-specific fields) -- confirmed as a valid entry shape in the hooks reference doc. The event name is passed as an explicit CLI arg (argv[2] on the shim's side), exactly like Codex's hookCommandFor(scriptPath, eventArg) -- the same shim script is registered under every event key, and nothing in Copilot's documented preToolUse/postToolUse input schema (sessionId/timestamp/cwd/ toolName/toolArgs) identifies which event fired, so the command line is the only place this bridge can encode it. Caught by dogfooding a real install + invocation before this was tested any other way.
 //
-// The interpreter is invoked via the absolute path to the Node binary that
-// ran this installer (`process.execPath`, baked in at install time), not a
-// bare `node` relying on PATH resolution -- confirmed live-production root
-// cause of every tool call being denied with "(hook errored)" on Copilot CLI
-// 1.0.68 (github/copilot-cli#4001): Copilot's `command`-type hooks fail
-// closed, so if the environment it spawns them in doesn't resolve `node` on
-// PATH, the hook process never launches, Copilot sees a failed process, and
-// denies unconditionally. Quoted the same way as scriptPath below since the
-// Node install path can also contain spaces (e.g. `C:\Program Files\nodejs\node.exe`).
-// hookCommandFor is shared with codex_install.ts -- see util.ts.
+// The interpreter is invoked via the absolute path to the Node binary that ran this installer (`process.execPath`, baked in at install time), not a bare `node` relying on PATH resolution -- confirmed live-production root cause of every tool call being denied with "(hook errored)" on Copilot CLI 1.0.68 (github/copilot-cli#4001): Copilot's `command`-type hooks fail closed, so if the environment it spawns them in doesn't resolve `node` on PATH, the hook process never launches, Copilot sees a failed process, and denies unconditionally. Quoted the same way as scriptPath below since the Node install path can also contain spaces (e.g. `C:\Program Files\nodejs\node.exe`). hookCommandFor is shared with codex_install.ts -- see util.ts.
 
-// The hooks reference doc (https://docs.github.com/en/copilot/reference/hooks-reference)
-// confirms 'command' is only a cross-platform *fallback*: it's copied verbatim to 'bash' and
-// 'powershell' when those fields are absent, and Copilot CLI runs 'powershell' by feeding the
-// string directly to PowerShell as a script -- not via cmd.exe. hookCommandFor()'s output
-// (a bare quoted-exe-then-quoted-args string, e.g. `"C:\...\node.exe" "...\shim.js" preToolUse
-// ...`) is valid cmd.exe command-line syntax but is NOT valid PowerShell: two adjacent quoted
-// string literals with no call operator is a parse error in PowerShell ("Unexpected token
-// '"...\token-goat-shim.js"' in expression or statement"), confirmed live via Copilot CLI's own
-// logged ParserError. Relying on 'command' alone meant every Windows install was silently
-// broken -- the hook process never even started, Copilot's preToolUse fails *closed*, and every
-// tool call got denied with "(hook errored)" regardless of PATH/absolute-path correctness (a
-// distinct bug from the PATH-resolution class github/copilot-cli#4001 already fixed). Emitting
-// an explicit 'powershell' entry prefixed with '&' (PowerShell's call operator, required to
-// invoke a quoted path as a command rather than evaluate it as a string expression) fixes this;
-// 'bash' gets the same command text since POSIX shells don't need a call operator for a quoted
-// path. 'command' is kept for older Copilot CLI builds that might not read 'bash'/'powershell'.
-// Single-quoted via hookPowershellCommand rather than reusing hookCommandFor's double-quoted text: PowerShell expands `$name` and `$(...)` inside double quotes, and a dollar sign is legal in a Windows directory name, so an install run from such a directory would have that text evaluated on every hook invocation.
+// The hooks reference doc (https://docs.github.com/en/copilot/reference/hooks-reference) confirms 'command' is only a cross-platform *fallback*: it's copied verbatim to 'bash' and 'powershell' when those fields are absent, and Copilot CLI runs 'powershell' by feeding the string directly to PowerShell as a script -- not via cmd.exe. hookCommandFor()'s output (a bare quoted-exe-then-quoted-args string, e.g. `"C:\...\node.exe" "...\shim.js" preToolUse ...`) is valid cmd.exe command-line syntax but is NOT valid PowerShell: two adjacent quoted string literals with no call operator is a parse error in PowerShell ("Unexpected token '"...\token-goat-shim.js"' in expression or statement"), confirmed live via Copilot CLI's own logged ParserError. Relying on 'command' alone meant every Windows install was silently broken -- the hook process never even started, Copilot's preToolUse fails *closed*, and every tool call got denied with "(hook errored)" regardless of PATH/absolute-path correctness (a distinct bug from the PATH-resolution class github/copilot-cli#4001 already fixed). Emitting an explicit 'powershell' entry prefixed with '&' (PowerShell's call operator, required to invoke a quoted path as a command rather than evaluate it as a string expression) fixes this; 'bash' gets the same command text since POSIX shells don't need a call operator for a quoted path. 'command' is kept for older Copilot CLI builds that might not read 'bash'/'powershell'. Single-quoted via hookPowershellCommand rather than reusing hookCommandFor's double-quoted text: PowerShell expands `$name` and `$(...)` inside double quotes, and a dollar sign is legal in a Windows directory name, so an install run from such a directory would have that text evaluated on every hook invocation.
 function hookPowershellCommandFor(scriptPath: string, event: CopilotCliHookEvent): string {
   return `& ${hookPowershellCommand(scriptPath, event)}`
 }
 
-// Copilot's own default (per its hooks reference doc) is 30s, and a killed-on-timeout
-// preToolUse hook fails *open* (proceeds to normal permission flow), not closed -- so
-// this is not itself a fix for the "(hook errored)" deny-all class (that's exclusively
-// hookCommandFor's PATH hardening above). It exists for a narrower reason: a cold first
-// invocation (bundle load + DB open, or a symlinked dev-clone mid `npm install`/`npm run
-// build`) can plausibly exceed a 30s default, and every non-preToolUse event here (unlike
-// preToolUse) has no documented fail-open timeout carve-out -- so a slow cold start on
-// those still risks a "Killed after timeoutSec" error being logged for no real reason.
-// Double Copilot's own default as cheap, harmless headroom.
+// Copilot's own default (per its hooks reference doc) is 30s, and a killed-on-timeout preToolUse hook fails *open* (proceeds to normal permission flow), not closed -- so this is not itself a fix for the "(hook errored)" deny-all class (that's exclusively hookCommandFor's PATH hardening above). It exists for a narrower reason: a cold first invocation (bundle load + DB open, or a symlinked dev-clone mid `npm install`/`npm run build`) can plausibly exceed a 30s default, and every non-preToolUse event here (unlike preToolUse) has no documented fail-open timeout carve-out -- so a slow cold start on those still risks a "Killed after timeoutSec" error being logged for no real reason. Double Copilot's own default as cheap, harmless headroom.
 const HOOK_TIMEOUT_SEC = 60
 
-/**
- * Environment variables forwarded to hook processes by Copilot CLI.
- *
- * **VS Code ignores this field entirely** -- measured, not inferred. A probe hook run by VS Code
- * 1.137.0 (2026-09-12) dumped its own `process.env` with the field set to exactly this list and
- * again with the field absent: 122 keys both times, zero difference, and variables not on this list
- * were present in both runs. So nothing in the VS Code path may assume the child environment is
- * confined to these names; anything a VS Code hook needs from the environment has to be set by the
- * shim itself (see `TOKEN_GOAT_VSCODE_HOOKS_DIR` in copilot_cli.ts, which is set that way for
- * exactly this reason).
- *
- * Scope limit: this was measured for VS Code only. The field was written for the standalone Copilot
- * CLI, which is untested here -- do not read the VS Code result as evidence about Copilot CLI.
- */
+/** Environment variables forwarded to hook processes by Copilot CLI. **VS Code ignores this field entirely** -- measured, not inferred. A probe hook run by VS Code 1.137.0 (2026-09-12) dumped its own `process.env` with the field set to exactly this list and again with the field absent: 122 keys both times, zero difference, and variables not on this list were present in both runs. So nothing in the VS Code path may assume the child environment is confined to these names; anything a VS Code hook needs from the environment has to be set by the shim itself (see `TOKEN_GOAT_VSCODE_HOOKS_DIR` in copilot_cli.ts, which is set that way for exactly this reason). Scope limit: this was measured for VS Code only. The field was written for the standalone Copilot CLI, which is untested here -- do not read the VS Code result as evidence about Copilot CLI. */
 const ALLOWED_ENV_VARS = [
   'TRACEPARENT',
   'TRACESTATE',
@@ -303,15 +181,7 @@ export interface CopilotCliInstallResult {
   readonly alreadyInstalled: boolean
 }
 
-/**
- * Which token-goat installs rely on the hooks file in one hooks directory.
- *
- * VS Code's agent reads the same `~/.copilot/hooks` and `.github/hooks` directories Copilot CLI
- * does, so `install --copilot` and `install --vscode` share one `token-goat.json` and one shim
- * there. Removing the file for one of them must not take it away from the other, so each install
- * records itself in a sidecar and the files go only when the last owner leaves. The sidecar's name
- * must not end in `.json`: VS Code treats every `.json` file in a hooks directory as a hooks file.
- */
+/** Which token-goat installs rely on the hooks file in one hooks directory. VS Code's agent reads the same `~/.copilot/hooks` and `.github/hooks` directories Copilot CLI does, so `install --copilot` and `install --vscode` share one `token-goat.json` and one shim there. Removing the file for one of them must not take it away from the other, so each install records itself in a sidecar and the files go only when the last owner leaves. The sidecar's name must not end in `.json`: VS Code treats every `.json` file in a hooks directory as a hooks file. */
 export type CopilotHooksOwner = 'copilot' | 'vscode'
 
 const HOOKS_CONFIG_FILE = 'token-goat.json'
@@ -319,23 +189,20 @@ export const HOOKS_SCRIPT_FILE = 'token-goat-shim.cjs'
 export const LEGACY_HOOKS_SCRIPT_FILE = 'token-goat-shim.js'
 const HOOKS_OWNERS_FILE = 'token-goat.owners'
 
-/** Forwarder written to token-goat-shim.js for compatibility with running Copilot CLI sessions that cached the .js path at startup. Dynamic import is valid in both ESM and CJS across Node 12+. */
+/** Forwarder written to token-goat-shim.js for compatibility with running Copilot CLI sessions that cached the .js path at startup. Dynamic import is valid in both ESM and CJS across Node 12+. The shim answers `{}` and exits 0 on any failure of its own, because preToolUse fails closed; the catch keeps that promise when the shim cannot even be loaded. */
 export const HOOKS_SCRIPT_FORWARDER = `#!/usr/bin/env node
 // Forwarder for compatibility with cached hook definitions in running Copilot CLI sessions.
-import('./token-goat-shim.cjs');
+import('./token-goat-shim.cjs').catch(() => {
+  try { process.stdout.write('{}') } catch {}
+  process.exitCode = 0
+});
 `
 
 export function copilotHooksOwnersPath(hooksDir: string): string {
   return path.join(hooksDir, HOOKS_OWNERS_FILE)
 }
 
-/**
- * Every file this module reads or writes inside `hooksDir`.
- *
- * Exported so a project-scope caller can run all three past `assertProjectScopeTarget` before any
- * of them is opened, rather than re-deriving the names and drifting from the three `path.join`
- * call sites below.
- */
+/** Every file this module reads or writes inside `hooksDir`. Exported so a project-scope caller can run all three past `assertProjectScopeTarget` before any of them is opened, rather than re-deriving the names and drifting from the three `path.join` call sites below. */
 export function copilotHooksFilePaths(hooksDir: string): readonly string[] {
   return [
     path.join(hooksDir, HOOKS_CONFIG_FILE),
@@ -377,17 +244,12 @@ export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   // Read before the config is written, so a legacy file with no sidecar is still credited to Copilot.
   const owners = readCopilotHooksOwners(hooksDir)
 
-  // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the hook config itself needs any change (mirrors installCodex()).
-  // Both the primary .cjs shim (immune to "type": "module" in package.json) and the .js forwarder (for running sessions with cached .js hook commands) are written.
+  // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the hook config itself needs any change (mirrors installCodex()). Both the primary .cjs shim (immune to "type": "module" in package.json) and the .js forwarder (for running sessions with cached .js hook commands) are written.
   const scriptChanged = writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
   const legacyScriptChanged = writeIfDifferent(legacyScriptPath, HOOKS_SCRIPT_FORWARDER)
   const desiredText = JSON.stringify(buildConfig(scriptPath), null, 2) + '\n'
   const configChanged = writeIfDifferent(configPath, desiredText, true)
-  // Recorded on every install, not only on creation: the question this answers later is "did an
-  // install on THIS machine put that hooks file there", and vscode_duplicate.ts asks it before a
-  // user-scope hook copy is allowed to stand down for a project-scope one. A repository can commit
-  // `.github/hooks/token-goat.json` itself; nothing on disk in the clone can tell the two apart,
-  // so the discriminator has to live outside the clone.
+  // Recorded on every install, not only on creation: the question this answers later is "did an install on THIS machine put that hooks file there", and vscode_duplicate.ts asks it before a user-scope hook copy is allowed to stand down for a project-scope one. A repository can commit `.github/hooks/token-goat.json` itself; nothing on disk in the clone can tell the two apart, so the discriminator has to live outside the clone.
   recordCreatedConfig(configPath)
 
   owners.add(owner)
@@ -395,12 +257,7 @@ export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   return { configPath, scriptPath, changed: scriptChanged || legacyScriptChanged || configChanged || ownersChanged }
 }
 
-/**
- * Drop `owner` from `hooksDir`, deleting the config and shim once no owner is left.
- *
- * Returns true when anything changed. A Copilot uninstall with no sidecar and no owner on record
- * still removes a stray config or shim, which is what uninstall did before owners were tracked.
- */
+/** Drop `owner` from `hooksDir`, deleting the config and shim once no owner is left. Returns true when anything changed. A Copilot uninstall with no sidecar and no owner on record still removes a stray config or shim, which is what uninstall did before owners were tracked. */
 export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner, keepBackups = false): boolean {
   const ownersPath = copilotHooksOwnersPath(hooksDir)
   const hadSidecar = fs.existsSync(ownersPath)
@@ -412,12 +269,9 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
     return true
   }
   const configRemoved = removeFileInScope(path.join(hooksDir, HOOKS_CONFIG_FILE))
-  // The timestamped backups of this config are token-goat's own litter, so they leave with it --
-  // unless the caller is a migration, which is an install and must leave every recovery copy it
-  // just made in place. See stripDelimitedBlock's own keepBackups for the same distinction.
+  // The timestamped backups of this config are token-goat's own litter, so they leave with it -- unless the caller is a migration, which is an install and must leave every recovery copy it just made in place. See stripDelimitedBlock's own keepBackups for the same distinction.
   if (!keepBackups) removeCreatedBackups(path.join(hooksDir, HOOKS_CONFIG_FILE))
-  // And the ledger entry recorded at install: the file is gone, so "this machine put it there" must
-  // stop being true, or a repository could later drop its own file at that path and inherit the answer.
+  // And the ledger entry recorded at install: the file is gone, so "this machine put it there" must stop being true, or a repository could later drop its own file at that path and inherit the answer.
   takeCreatedConfig(path.join(hooksDir, HOOKS_CONFIG_FILE))
   const scriptRemoved = removeFileInScope(path.join(hooksDir, HOOKS_SCRIPT_FILE))
   const legacyScriptRemoved = removeFileInScope(path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE))
@@ -442,8 +296,7 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
   }
 }
 
-// Scoped here rather than on the exported `uninstallCopilotCli` below, because the plain form
-// deliberately sweeps BOTH scopes in one call: each sweep has to declare its own confinement.
+// Scoped here rather than on the exported `uninstallCopilotCli` below, because the plain form deliberately sweeps BOTH scopes in one call: each sweep has to declare its own confinement.
 function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
   return withInstallScope(projectScopeRoot(opts), () => uninstallCopilotCliScopeInner(opts))
 }
@@ -451,20 +304,14 @@ function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
 function uninstallCopilotCliScopeInner(opts: CopilotCliScopeOptions): boolean {
   // The hooks file stays while `install --vscode` still relies on it; see CopilotHooksOwner.
   let removedAny = releaseCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
-  // The instructions file is user-owned: strip only the delimited block and
-  // preserve everything else, never unlink the whole file (mirrors codex uninstall).
+  // The instructions file is user-owned: strip only the delimited block and preserve everything else, never unlink the whole file (mirrors codex uninstall).
   if (stripCopilotInstructionsBlock(copilotCliInstructionsPath(opts))) {
     removedAny = true
   }
   return removedAny
 }
 
-// Uninstall is a cleanup operation, not a mirror of install's scope targeting: a plain
-// `token-goat uninstall --copilot` (opts.local left unset) must remove the hook config
-// wherever it actually is, not just the user scope, or a --local (project-scoped)
-// install silently survives. Only when the caller explicitly asks for the local scope
-// (opts.local === true) do we narrow to that one scope and leave a coexisting
-// user-scoped install untouched (mirrors uninstallPi in ./pi_install.js).
+// Uninstall is a cleanup operation, not a mirror of install's scope targeting: a plain `token-goat uninstall --copilot` (opts.local left unset) must remove the hook config wherever it actually is, not just the user scope, or a --local (project-scoped) install silently survives. Only when the caller explicitly asks for the local scope (opts.local === true) do we narrow to that one scope and leave a coexisting user-scoped install untouched (mirrors uninstallPi in ./pi_install.js).
 export function uninstallCopilotCli(opts: CopilotCliScopeOptions = {}): boolean {
   if (opts.local === true) {
     return uninstallCopilotCliScope({ local: true })
@@ -475,7 +322,9 @@ export function uninstallCopilotCli(opts: CopilotCliScopeOptions = {}): boolean 
 }
 
 export function isCopilotCliInstalled(opts: CopilotCliScopeOptions = {}): boolean {
-  if (!fs.existsSync(copilotCliConfigPath(opts)) || !fs.existsSync(copilotCliScriptPath(opts))) {
+  // An install from before the shim was renamed has only the .js one, and its hooks still fire.
+  const scriptPresent = fs.existsSync(copilotCliScriptPath(opts)) || fs.existsSync(path.join(copilotCliHooksDir(opts), LEGACY_HOOKS_SCRIPT_FILE))
+  if (!fs.existsSync(copilotCliConfigPath(opts)) || !scriptPresent) {
     return false
   }
   // A hooks file only `install --vscode` put there is not a Copilot CLI install.

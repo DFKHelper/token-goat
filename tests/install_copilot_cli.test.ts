@@ -7,10 +7,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.copilot/` (mirrors the pattern in install_codex.test.ts /
-// install_pi.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.copilot/` (mirrors the pattern in install_codex.test.ts / install_pi.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -45,17 +42,12 @@ beforeEach(() => {
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(path.join(TMP, 'home'))
 
-  // COPILOT_HOME now outranks os.homedir() for the user scope, so a developer or CI
-  // machine that happens to export it would silently redirect every user-scope
-  // assertion below away from the mocked home. Pin it off; the tests that exercise
-  // the override set it themselves.
+  // COPILOT_HOME now outranks os.homedir() for the user scope, so a developer or CI machine that happens to export it would silently redirect every user-scope assertion below away from the mocked home. Pin it off; the tests that exercise the override set it themselves.
   origCopilotHome = process.env['COPILOT_HOME']
   delete process.env['COPILOT_HOME']
 
   origCwd = process.cwd()
-  // Project-scope install resolves against process.cwd() (mirrors install_pi.test.ts's
-  // handling of --local); chdir into an isolated project dir so `{ local: true }`
-  // writes under {TMP}/project/.github/hooks, never this repo's own .github/.
+  // Project-scope install resolves against process.cwd() (mirrors install_pi.test.ts's handling of --local); chdir into an isolated project dir so `{ local: true }` writes under {TMP}/project/.github/hooks, never this repo's own .github/.
   fs.mkdirSync(path.join(TMP, 'project'), { recursive: true })
   process.chdir(path.join(TMP, 'project'))
 })
@@ -82,8 +74,7 @@ describe('installCopilotCli (user scope)', () => {
       hooks: Record<string, Array<{ type: string; command: string }>>
     }
     expect(config.version).toBe(1)
-    // Locked to the exact set, not a subset: a silently dropped event (sessionStart was
-    // missing entirely for months) has to fail here rather than pass a per-event loop.
+    // Locked to the exact set, not a subset: a silently dropped event (sessionStart was missing entirely for months) has to fail here rather than pass a per-event loop.
     expect(Object.keys(config.hooks).sort()).toEqual(
       [
         'sessionStart',
@@ -135,8 +126,7 @@ describe('installCopilotCli (user scope)', () => {
     expect(command).toBeDefined()
     expect(process.argv[1]).toBeDefined()
     expect(command).toContain(`"${process.argv[1]}"`)
-    // Ordering: execPath, then scriptPath, then event, then entryPath -- the shim reads the
-    // entry path from argv[3], so it must be the fourth quoted/bare token on the line.
+    // Ordering: execPath, then scriptPath, then event, then entryPath -- the shim reads the entry path from argv[3], so it must be the fourth quoted/bare token on the line.
     expect(command).toBe(`"${process.execPath}" "${result.scriptPath}" preToolUse "${process.argv[1]}"`)
   })
 
@@ -147,14 +137,7 @@ describe('installCopilotCli (user scope)', () => {
     }
     const entry = config.hooks['preToolUse']?.[0]
     expect(entry).toBeDefined()
-    // A bare quoted-exe-then-quoted-args string (valid cmd.exe syntax) is a PowerShell parse
-    // error without a leading call operator -- two adjacent quoted string literals are not a
-    // valid expression/statement in PowerShell. Confirmed live via Copilot CLI's own logged
-    // ParserError: "Unexpected token '"...\token-goat-shim.js"' in expression or statement."
-    // Single-quoted, not double. PowerShell expands `$` inside double quotes, so a profile path
-    // holding one was rewritten before the hook ran, and a path holding a single quote closed the
-    // argument early. The `command` field keeps cmd.exe's double quotes, so the two now differ on
-    // purpose and this no longer asserts that powershell is command with a prefix.
+    // A bare quoted-exe-then-quoted-args string (valid cmd.exe syntax) is a PowerShell parse error without a leading call operator -- two adjacent quoted string literals are not a valid expression/statement in PowerShell. Confirmed live via Copilot CLI's own logged ParserError: "Unexpected token '"...\token-goat-shim.js"' in expression or statement." Single-quoted, not double. PowerShell expands `$` inside double quotes, so a profile path holding one was rewritten before the hook ran, and a path holding a single quote closed the argument early. The `command` field keeps cmd.exe's double quotes, so the two now differ on purpose and this no longer asserts that powershell is command with a prefix.
     expect(entry?.powershell.startsWith("& '")).toBe(true)
     expect(entry?.powershell).not.toContain('"')
     // Named independently of the builder: the same two paths the command field runs.
@@ -179,8 +162,7 @@ describe('installCopilotCli (user scope)', () => {
       'postToolUseFailure',
     ]) {
       const timeoutSec = config.hooks[event]?.[0]?.timeoutSec
-      // Copilot's own documented default is 30s; this must be strictly more generous, not
-      // just present, or a slow cold start gains nothing from the override.
+      // Copilot's own documented default is 30s; this must be strictly more generous, not just present, or a slow cold start gains nothing from the override.
       expect(typeof timeoutSec).toBe('number')
       expect(timeoutSec).toBeGreaterThan(30)
     }
@@ -230,10 +212,7 @@ describe('installCopilotCli (user scope)', () => {
     }
   })
 
-  // The instructions file is shared with `install --visualstudio -p`, and the Copilot install also
-  // refreshes the Visual Studio block in it. That rewrite reached the file but not the return value,
-  // so a run that had just rewritten the block still reported "already installed" and the user was
-  // told nothing had changed. Provenance: HAND-DERIVED, the stale block is written here by hand.
+  // The instructions file is shared with `install --visualstudio -p`, and the Copilot install also refreshes the Visual Studio block in it. That rewrite reached the file but not the return value, so a run that had just rewritten the block still reported "already installed" and the user was told nothing had changed. Provenance: HAND-DERIVED, the stale block is written here by hand.
   it('reports a change when it refreshed the Visual Studio guidance block, not just its own', () => {
     installCopilotCli()
     const settled = installCopilotCli()
@@ -296,10 +275,7 @@ describe('installCopilotCli (user scope)', () => {
 })
 
 describe('COPILOT_HOME override (user scope)', () => {
-  // Copilot CLI documents COPILOT_HOME as replacing ~/.copilot for hooks and instructions.
-  // Ignoring it fails silently in the worst way: install reports success, writes a valid
-  // config under ~/.copilot, and Copilot reads a different directory entirely, so every
-  // hook never fires and nothing surfaces the mismatch.
+  // Copilot CLI documents COPILOT_HOME as replacing ~/.copilot for hooks and instructions. Ignoring it fails silently in the worst way: install reports success, writes a valid config under ~/.copilot, and Copilot reads a different directory entirely, so every hook never fires and nothing surfaces the mismatch.
   it('redirects the hooks dir, config, shim, and instructions file to $COPILOT_HOME', () => {
     const custom = path.join(TMP, 'custom-copilot')
     process.env['COPILOT_HOME'] = custom
@@ -368,6 +344,14 @@ describe('isCopilotCliInstalled / uninstallCopilotCli', () => {
     expect(isCopilotCliInstalled()).toBe(true)
   })
 
+  // HAND-DERIVED: an install from before the shim became token-goat-shim.cjs holds only token-goat-shim.js, and upgrading token-goat rewrites neither file.
+  it('isCopilotCliInstalled still counts an install whose only shim is the pre-rename .js one', () => {
+    const result = installCopilotCli()
+    fs.rmSync(result.scriptPath)
+    expect(fs.existsSync(path.join(path.dirname(result.scriptPath), 'token-goat-shim.js'))).toBe(true)
+    expect(isCopilotCliInstalled()).toBe(true)
+  })
+
   it('isCopilotCliInstalled is false before install, true after (project scope)', () => {
     expect(isCopilotCliInstalled({ local: true })).toBe(false)
     installCopilotCli({ local: true })
@@ -399,13 +383,7 @@ describe('isCopilotCliInstalled / uninstallCopilotCli', () => {
     expect(fs.readFileSync(unrelatedPath, 'utf8')).toBe('{"version":1,"hooks":{}}\n')
   })
 
-  // Regression: uninstallCopilotCli used to require the caller to pass the exact
-  // scope opts it was installed with -- since the CLI's --copilot uninstall always
-  // forced { local: opts.local === true } (never left undefined), a plain
-  // `token-goat uninstall --copilot` (no --local) could never clean up a --local
-  // install; the user had to remember to also pass --local, or it silently
-  // survived. uninstallCopilotCli() with no explicit local now cleans up wherever
-  // the hook config actually is, both scopes at once.
+  // Regression: uninstallCopilotCli used to require the caller to pass the exact scope opts it was installed with -- since the CLI's --copilot uninstall always forced { local: opts.local === true } (never left undefined), a plain `token-goat uninstall --copilot` (no --local) could never clean up a --local install; the user had to remember to also pass --local, or it silently survived. uninstallCopilotCli() with no explicit local now cleans up wherever the hook config actually is, both scopes at once.
   it('uninstallCopilotCli() with no explicit scope removes both a user-scope and a project-scope install', () => {
     const userResult = installCopilotCli()
     const localResult = installCopilotCli({ local: true })
@@ -439,8 +417,7 @@ describe('copilot-instructions.md routing block', () => {
     expect(text).toContain('violation, not an oversight')
     expect(text).toContain('per file')
     expect(text).toContain('~200 lines')
-    // The Copilot instructions surface is sanitized so the body contains no backtick-quoted
-    // command names for the fallback parser to misclassify.
+    // The Copilot instructions surface is sanitized so the body contains no backtick-quoted command names for the fallback parser to misclassify.
     expect(text).not.toContain('`')
     expect(text).toContain('Fallback clauses may name')
     expect(text).toContain("Copilot CLI's native view, grep, and glob tools")
@@ -474,8 +451,7 @@ describe('copilot-instructions.md routing block', () => {
   it('preserves every byte outside the markers when upserting into a large hand-written file', () => {
     const p = copilotCliInstructionsPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    // A large, user-authored file with NO existing token-goat block: the writer
-    // must append its block and leave all prior content byte-for-byte intact.
+    // A large, user-authored file with NO existing token-goat block: the writer must append its block and leave all prior content byte-for-byte intact.
     const preamble = '# My personal instructions\n\n' + 'Some paragraph about my workflow. '.repeat(400) + '\n'
     fs.writeFileSync(p, preamble)
 
@@ -539,10 +515,7 @@ describe('copilot-instructions.md routing block', () => {
   })
 })
 
-// --- shim script (COPILOT_CLI_HOOK_SCRIPT) behavior ---
-// Mirrors tests/bridges/shims.test.ts's approach: run the embedded script as a
-// standalone Node process exactly as Copilot CLI would (argv[2] = event name,
-// stdin = the hook payload JSON), and inspect what it writes to stdout.
+// --- shim script (COPILOT_CLI_HOOK_SCRIPT) behavior --- Mirrors tests/bridges/shims.test.ts's approach: run the embedded script as a standalone Node process exactly as Copilot CLI would (argv[2] = event name, stdin = the hook payload JSON), and inspect what it writes to stdout.
 
 const tempDirs: string[] = []
 
@@ -572,20 +545,8 @@ function runShim(eventName: string, stdin: string, cwd: string, env?: NodeJS.Pro
   return res.stdout ?? ''
 }
 
-/**
- * Writes a fake `token-goat` executable into `cwd` and returns a PATH-prepended env pointing
- * at it, so the shim's internal `spawnSync('token-goat', ['hook', event], { shell: true })`
- * resolves to `jsonStdout` instead of the real installed binary (mirrors
- * tests/bridges/shims.test.ts's withFakeTokenGoat).
- */
-/**
- * Like `withFakeTokenGoat`, but the fake records that it ran instead of answering with content.
- *
- * The shim translates whatever token-goat returns into a Copilot hook response and writes `{}` for
- * anything it does not recognise, so a fake that only echoes JSON is invisible from stdout: an
- * assertion on the envelope passes whether the inner command ran or not. Whether the spawn happened
- * at all is the one difference that shows, so the fake touches a file and the test reads that.
- */
+/** Writes a fake `token-goat` executable into `cwd` and returns a PATH-prepended env pointing at it, so the shim's internal `spawnSync('token-goat', ['hook', event], { shell: true })` resolves to `jsonStdout` instead of the real installed binary (mirrors tests/bridges/shims.test.ts's withFakeTokenGoat). */
+/** Like `withFakeTokenGoat`, but the fake records that it ran instead of answering with content. The shim translates whatever token-goat returns into a Copilot hook response and writes `{}` for anything it does not recognise, so a fake that only echoes JSON is invisible from stdout: an assertion on the envelope passes whether the inner command ran or not. Whether the spawn happened at all is the one difference that shows, so the fake touches a file and the test reads that. */
 function withRecordingTokenGoat(cwd: string): { env: NodeJS.ProcessEnv; spawned: () => boolean } {
   const marker = path.join(cwd, 'token-goat-was-spawned')
   if (process.platform === 'win32') {
@@ -619,13 +580,7 @@ function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
   return { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
 }
 
-/**
- * Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary --
- * that records the argv it was invoked with to `captured-argv.json` in `cwd` and exits 0
- * with an empty JSON response. Used to prove the shim's inner call, when given a third argv
- * (the baked entry path), invokes that path directly via process.execPath rather than
- * shelling out to a PATH-resolved `token-goat` at all.
- */
+/** Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary -- that records the argv it was invoked with to `captured-argv.json` in `cwd` and exits 0 with an empty JSON response. Used to prove the shim's inner call, when given a third argv (the baked entry path), invokes that path directly via process.execPath rather than shelling out to a PATH-resolved `token-goat` at all. */
 function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string } {
   const entryPath = path.join(cwd, 'fake-entry.js')
   const capturePath = path.join(cwd, 'captured-argv.json')
@@ -642,9 +597,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   it("invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one", () => {
     const cwd = mkIsolated()
     const { entryPath, capturePath } = writeFakeEntry(cwd)
-    // Deliberately no PATH-resolvable `token-goat` anywhere -- if the shim fell back to the
-    // old shell:true PATH lookup instead of using entryPath, this would fail to launch and
-    // captured-argv.json would never be written.
+    // Deliberately no PATH-resolvable `token-goat` anywhere -- if the shim fell back to the old shell:true PATH lookup instead of using entryPath, this would fail to launch and captured-argv.json would never be written.
     const scriptPath = path.join(cwd, 'shim.js')
     fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
     const res = spawnSync(
@@ -668,22 +621,14 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const mapMatch = /COPILOT_TO_TG_EVENT = \{([\s\S]*?)\}/.exec(COPILOT_CLI_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()
     const mapped = [...(mapMatch?.[1] ?? '').matchAll(/:\s*'([^']+)'/g)].map((m) => m[1])
-    // 8 entries: sessionStart, preToolUse, postToolUse, preCompact, agentStop, subagentStop,
-    // userPromptSubmitted, postToolUseFailure.
+    // 8 entries: sessionStart, preToolUse, postToolUse, preCompact, agentStop, subagentStop, userPromptSubmitted, postToolUseFailure.
     expect(mapped.length).toBe(8)
     for (const eventName of mapped) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }
   })
 
-  // sessionStart is the only channel that reaches the model before it chooses its first read
-  // tool, so it is where token-goat's command-routing reminder has to land. It used to be a
-  // hard-coded early return, justified in a comment by the claim that token-goat had no
-  // session_start handler -- untrue, and the reason Copilot CLI sessions alone were never told
-  // token-goat exists. Verified live against Copilot CLI 1.0.77 before wiring: with the hook
-  // registered, a session asked for a canary that appears only in the reminder answered
-  // "131072, boundSymbolBody"; with sessionStart removed and nothing else changed, the same
-  // question in the same directory answered "ABSENT".
+  // sessionStart is the only channel that reaches the model before it chooses its first read tool, so it is where token-goat's command-routing reminder has to land. It used to be a hard-coded early return, justified in a comment by the claim that token-goat had no session_start handler -- untrue, and the reason Copilot CLI sessions alone were never told token-goat exists. Verified live against Copilot CLI 1.0.77 before wiring: with the hook registered, a session asked for a canary that appears only in the reminder answered "131072, boundSymbolBody"; with sessionStart removed and nothing else changed, the same question in the same directory answered "ABSENT".
   it('forwards sessionStart to the real session_start handler instead of short-circuiting it', () => {
     const cwd = mkIsolated()
     const { entryPath, capturePath } = writeFakeEntry(cwd)
@@ -697,9 +642,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       env: process.env,
     })
     expect(res.status).toBe(0)
-    // The proof the early return is gone: token-goat was actually invoked, with the mapped
-    // internal event name. A behavioural '{}' assertion could not distinguish "no-op" from
-    // "invoked and had nothing to say".
+    // The proof the early return is gone: token-goat was actually invoked, with the mapped internal event name. A behavioural '{}' assertion could not distinguish "no-op" from "invoked and had nothing to say".
     expect(fs.existsSync(capturePath)).toBe(true)
     expect(JSON.parse(fs.readFileSync(capturePath, 'utf8')) as string[]).toEqual([
       'hook',
@@ -732,10 +675,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(stdout.trim()).toBe('{}')
   })
 
-  // The event map is a plain object literal and its value is concatenated into a shell command
-  // string further down the shim, so every name Object.prototype supplies has to be rejected the
-  // same way an unknown name is. Fixtures are HAND-DERIVED: the list is Object.prototype's own
-  // enumerable-by-lookup members, taken from the language, not from the map or the check.
+  // The event map is a plain object literal and its value is concatenated into a shell command string further down the shim, so every name Object.prototype supplies has to be rejected the same way an unknown name is. Fixtures are HAND-DERIVED: the list is Object.prototype's own enumerable-by-lookup members, taken from the language, not from the map or the check.
   it.each([
     'constructor',
     'toString',
@@ -758,11 +698,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     ).toBe(false)
   })
 
-  // Calibration for the eight cases above. A "did not spawn" assertion is worth nothing until the
-  // same harness is shown to report a spawn when one really happens, and to report none for a name
-  // that is merely unknown: without both poles this file would stay green against a shim that never
-  // spawned at all. Measured 2026-09-04 against this shim: preToolUse spawns, nosuchevent does not,
-  // and with the own-property check reverted all eight inherited names spawn.
+  // Calibration for the eight cases above. A "did not spawn" assertion is worth nothing until the same harness is shown to report a spawn when one really happens, and to report none for a name that is merely unknown: without both poles this file would stay green against a shim that never spawned at all. Measured 2026-09-04 against this shim: preToolUse spawns, nosuchevent does not, and with the own-property check reverted all eight inherited names spawn.
   it('the spawn recorder above distinguishes a real event from an unknown one', () => {
     const real = mkIsolated()
     const realFake = withRecordingTokenGoat(real)
@@ -866,8 +802,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBe('output will be compressed')
   })
 
-  // The image-shrink payload rides the same field every other pre-tool hint does, and it is a base64 data URL. Forwarding it as text would hand the model more bytes than the image it replaced, so it must reach the model only as a rewritten path.
-  // PROVENANCE: HAND-DERIVED. The payload shape ("<summary>\n data URL") is the one formatShrinkSummary builds in src/image_shrink.ts; the body is a base64 literal chosen here so the materialized file can be read back and compared.
+  // The image-shrink payload rides the same field every other pre-tool hint does, and it is a base64 data URL. Forwarding it as text would hand the model more bytes than the image it replaced, so it must reach the model only as a rewritten path. PROVENANCE: HAND-DERIVED. The payload shape ("<summary>\n data URL") is the one formatShrinkSummary builds in src/image_shrink.ts; the body is a base64 literal chosen here so the materialized file can be read back and compared.
   it('never forwards an image-shrink payload as additionalContext', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
@@ -967,11 +902,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBeUndefined()
   })
 
-  // CAPTURE: the fold target and the dropped field are both read off Copilot CLI's shipping app.js 1.0.80 --
-  // postToolExecution (offset 2043150) applies modifiedResult in place and never forwards additionalContext, and
-  // that event's native return payload (offset 1793926) has no additional_contexts key. So textResultForLlm is the
-  // only assertion here that proves delivery; asserting additionalContext alone proves our shim emits a field the
-  // harness throws away, which is what the previous version of this test did while the hint was being lost.
+  // CAPTURE: the fold target and the dropped field are both read off Copilot CLI's shipping app.js 1.0.80 -- postToolExecution (offset 2043150) applies modifiedResult in place and never forwards additionalContext, and that event's native return payload (offset 1793926) has no additional_contexts key. So textResultForLlm is the only assertion here that proves delivery; asserting additionalContext alone proves our shim emits a field the harness throws away, which is what the previous version of this test did while the hint was being lost.
   it('folds the hint into the rewritten body when a postToolUse response carries both, because additionalContext is dropped on this path', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
@@ -1131,9 +1062,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       env,
     )
 
-    // Asserted as a whole object, not just the presence of additionalContext: modifiedPrompt is
-    // the field Copilot's docs actually describe for this event, and forwarding it would rewrite
-    // the user's prompt. An extra-key assertion is the only thing that catches that regression.
+    // Asserted as a whole object, not just the presence of additionalContext: modifiedPrompt is the field Copilot's docs actually describe for this event, and forwarding it would rewrite the user's prompt. An extra-key assertion is the only thing that catches that regression.
     expect(JSON.parse(stdout)).toEqual({ additionalContext: 'branch: main' })
     expect(fs.readFileSync(argvPath, 'utf8')).toContain('user_prompt_submit')
     const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
@@ -1149,8 +1078,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       cwd,
       env,
     )
-    // An empty additionalContext would still cost a <system_reminder> wrapper in the prompt for
-    // zero content, so the absence of the key matters and is not merely cosmetic.
+    // An empty additionalContext would still cost a <system_reminder> wrapper in the prompt for zero content, so the absence of the key matters and is not merely cosmetic.
     expect(JSON.parse(stdout)).toEqual({})
   })
 
@@ -1263,18 +1191,13 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     return JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
   }
 
-  // Copilot's background-shell pollers. Names and argument key both come from the
-  // shipping 1.0.80 bundle: runtime.node's builtin tool-name table lists
-  // read_bash/read_powershell, and app.js's input schema for the poller is
-  // {shellId, delay}. Nothing here is inferred from the internal read_shell /
-  // list_shells identifiers, which are Rust-side names that never reach the wire.
+  // Copilot's background-shell pollers. Names and argument key both come from the shipping 1.0.80 bundle: runtime.node's builtin tool-name table lists read_bash/read_powershell, and app.js's input schema for the poller is {shellId, delay}. Nothing here is inferred from the internal read_shell / list_shells identifiers, which are Rust-side names that never reach the wire.
   it('maps read_bash/read_powershell to BashOutput, and mirrors their shellId onto bash_id so the poll handler can key on it', () => {
     for (const copilotTool of ['read_bash', 'read_powershell']) {
       const captured = canonicalFor(copilotTool, { shellId: 'shell-7', delay: 2 })
       expect(captured['tool_name']).toBe('BashOutput')
       const toolInput = captured['tool_input'] as Record<string, unknown>
-      // bash_id is what postBashOutputHandler (src/hooks_bashoutput.ts) reads; without
-      // it the name mapping above is inert and every poll costs the full buffer again.
+      // bash_id is what postBashOutputHandler (src/hooks_bashoutput.ts) reads; without it the name mapping above is inert and every poll costs the full buffer again.
       expect(toolInput['bash_id']).toBe('shell-7')
       // Added alongside, never renamed -- the original key still has to survive.
       expect(toolInput['shellId']).toBe('shell-7')
@@ -1282,14 +1205,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     }
   })
 
-  // These are deliberate omissions, not oversights, so they get pinned like any other
-  // behavior. write_bash/write_powershell are real Copilot tools but they are NOT the
-  // shell executor -- their schema is {shellId, input, delay} under the bundle's
-  // "write_shell" subtype, i.e. sending stdin to a shell that is already running -- so
-  // calling them Bash would label a stdin write as a command execution. stop_bash and
-  // list_bash have no token-goat handler to reach at all. read_agent and the memory
-  // tools would put an output-rewriting handler in front of a result shape nobody has
-  // seen. read_shell is not a wire name in the first place.
+  // These are deliberate omissions, not oversights, so they get pinned like any other behavior. write_bash/write_powershell are real Copilot tools but they are NOT the shell executor -- their schema is {shellId, input, delay} under the bundle's "write_shell" subtype, i.e. sending stdin to a shell that is already running -- so calling them Bash would label a stdin write as a command execution. stop_bash and list_bash have no token-goat handler to reach at all. read_agent and the memory tools would put an output-rewriting handler in front of a result shape nobody has seen. read_shell is not a wire name in the first place.
   it('leaves the shell tools token-goat has no correct handler for unmapped, rather than guessing at their result shape', () => {
     for (const copilotTool of [
       'write_bash',
@@ -1306,13 +1222,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     }
   })
 
-  // Copilot's PostToolUseFailureHookInput (copilot-sdk/types.d.ts:1042) is
-  // {toolName, toolArgs, error} -- there is no toolResult, so the failure text only
-  // ever arrives in `error`, a plain string. src/hooks_tool_failure.ts keys the
-  // repeat-failure brake on that text and returns pass when it finds none, so a shim
-  // that drops the field leaves the whole feature wired, green and doing nothing on
-  // every single call. The handler's own tests hand it a payload that already has
-  // `error`, which is exactly why they could not catch this.
+  // Copilot's PostToolUseFailureHookInput (copilot-sdk/types.d.ts:1042) is {toolName, toolArgs, error} -- there is no toolResult, so the failure text only ever arrives in `error`, a plain string. src/hooks_tool_failure.ts keys the repeat-failure brake on that text and returns pass when it finds none, so a shim that drops the field leaves the whole feature wired, green and doing nothing on every single call. The handler's own tests hand it a payload that already has `error`, which is exactly why they could not catch this.
   it('forwards postToolUseFailure error text into the canonical payload, which is the only place the failure text exists', () => {
     const captured = canonicalFor('bash', { command: 'nope' }, 'postToolUseFailure', {
       error: 'command not found: nope',
@@ -1364,8 +1274,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
     const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
 
-    // toolArgs sent as a JSON-encoded string, not a parsed object -- the documented-vs-real
-    // schema mismatch confirmed in the still-open github/copilot-cli#3349.
+    // toolArgs sent as a JSON-encoded string, not a parsed object -- the documented-vs-real schema mismatch confirmed in the still-open github/copilot-cli#3349.
     runShim(
       'preToolUse',
       JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'shell', toolArgs: JSON.stringify({ command: 'ls -la' }) }),
@@ -1402,13 +1311,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   })
 
   it('derives a stable fallback session_id from cwd (not process.pid) when Copilot omits sessionId, so two separate hook-invocation processes for the same session agree', () => {
-    // Copilot spawns a brand-new process for every single hook call (no long-lived plugin
-    // process), so process.pid necessarily differs between these two runShim invocations even
-    // though they represent the same logical session. Before the fix, falling back to
-    // 'copilot-' + process.pid meant every call minted a different session_id, so token-goat's
-    // session-based dedup/state ledger never accumulated across calls. cwd is the one thing
-    // that's actually constant across calls for the same session, so the fallback must be
-    // derived from it instead.
+    // Copilot spawns a brand-new process for every single hook call (no long-lived plugin process), so process.pid necessarily differs between these two runShim invocations even though they represent the same logical session. Before the fix, falling back to 'copilot-' + process.pid meant every call minted a different session_id, so token-goat's session-based dedup/state ledger never accumulated across calls. cwd is the one thing that's actually constant across calls for the same session, so the fallback must be derived from it instead.
     const cwd = mkIsolated()
     const capturePath1 = path.join(cwd, 'captured1.json')
     const capturePath2 = path.join(cwd, 'captured2.json')
@@ -1508,5 +1411,21 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(outJs.status).toBe(0)
     expect(outJs.stderr).toBe('')
     expect(() => JSON.parse(outJs.stdout.trim())).not.toThrow()
+  })
+
+  // HAND-DERIVED: the shim's own contract (the main().catch().finally() tail of COPILOT_CLI_HOOK_SCRIPT) is valid JSON and exit 0 on any failure, because preToolUse fails closed. A session that cached the .js command reaches the shim only through the forwarder, so a shim that cannot load has to answer the same way there.
+  it('the .js forwarder answers {} and exits 0 when the .cjs shim cannot be loaded', () => {
+    const cwd = mkIsolated()
+    const hooksDir = path.join(cwd, '.github', 'hooks')
+    fs.mkdirSync(hooksDir, { recursive: true })
+    const res = installCopilotHooksFile(hooksDir, 'copilot')
+    const legacyPath = path.join(hooksDir, 'token-goat-shim.js')
+
+    for (const broken of ['missing', 'throws on load'] as const) {
+      if (broken === 'missing') fs.rmSync(res.scriptPath)
+      else fs.writeFileSync(res.scriptPath, "throw new Error('shim failed to load')\n")
+      const out = spawnSync(process.execPath, [legacyPath, 'preToolUse'], { cwd, input: '{}', encoding: 'utf8', timeout: 10000 })
+      expect({ broken, status: out.status, stdout: out.stdout }).toEqual({ broken, status: 0, stdout: '{}' })
+    }
   })
 })

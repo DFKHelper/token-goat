@@ -19,7 +19,8 @@ import type { Config } from './config.js'
 import { ensureModelFiles, modelFilesPresent } from './embed_model.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
-import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
+import { copilotCliConfigPath, copilotCliScriptPath, LEGACY_HOOKS_SCRIPT_FILE, readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
+import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
 import { claudeHookScriptPath, isInstalled, missingHookEvents } from './install.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
@@ -707,11 +708,29 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
   return { name: 'Disk Space', status: 'warn', message: 'disk space check unavailable on this platform' }
 }
 
-/** Checks the installed Copilot CLI hook end-to-end: config is valid JSON with a preToolUse entry, the node binary baked into that entry's command still exists on disk (it goes stale after an nvm/fnm/volta node upgrade removes the old version -- a silent deny-all trigger, since Copilot's command hooks fail closed on a process that never launches), and running the exact command Copilot itself would run -- through a shell, the same win32 cmd.exe path Copilot uses -- against a synthetic preToolUse payload returns exit 0 and parseable JSON. Returns null (not a result) when Copilot CLI integration isn't installed: this is an opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is correct for users who have never touched `--copilot`. */
+/** Checks the installed Copilot CLI hook end-to-end: config is valid JSON with a preToolUse entry, the node binary baked into that entry's command still exists on disk (it goes stale after an nvm/fnm/volta node upgrade removes the old version -- a silent deny-all trigger, since Copilot's command hooks fail closed on a process that never launches), and running the exact command Copilot itself would run -- through a shell, the same win32 cmd.exe path Copilot uses -- against a synthetic preToolUse payload returns exit 0 and parseable JSON. Returns null (not a result) when Copilot CLI integration isn't installed: this is an opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is correct for users who have never touched `--copilot`. The project scope is `<cwd>/.github/hooks`, which a cloned repository controls, so its command runs only when the created-configs ledger, kept outside the clone, records that an install on this machine wrote that config. */
 
-export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
-  if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
+export function checkCopilotCli(configPath: string, scriptPath: string, scope: 'user' | 'project' = 'user'): DoctorResult | null {
+  if (!fs.existsSync(configPath)) {
     return null
+  }
+  const name = scope === 'project' ? 'Copilot CLI (project)' : 'Copilot CLI'
+  const { install, harness } = copilotHooksRecovery(path.dirname(configPath), scope)
+  if (scope === 'project' && !hasCreatedConfig(configPath)) {
+    return {
+      name,
+      status: 'warn',
+      message: `hook config at ${configPath} was not written by token-goat on this machine, so doctor does not run the command it names. If these hooks are yours, run "${install}" to rewrite them here.`,
+    }
+  }
+  if (!fs.existsSync(scriptPath)) {
+    // An install from before the shim was renamed has only the .js one, and its config still runs it.
+    if (!fs.existsSync(path.join(path.dirname(scriptPath), LEGACY_HOOKS_SCRIPT_FILE))) return null
+    return {
+      name,
+      status: 'warn',
+      message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_HOOKS_SCRIPT_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run "${install}", then fully restart ${harness}.`,
+    }
   }
 
   let config: { hooks?: Partial<Record<string, Array<{ command?: string }>>> }
@@ -719,7 +738,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
     config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
   } catch (err) {
     return {
-      name: 'Copilot CLI',
+      name,
       status: 'fail',
       message: `hook config at ${configPath} is not valid JSON: ${extractErrorMessage(err, 'unknown error')}`,
     }
@@ -728,9 +747,9 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
   const preToolUseCommand = config.hooks?.['preToolUse']?.[0]?.command
   if (typeof preToolUseCommand !== 'string' || preToolUseCommand === '') {
     return {
-      name: 'Copilot CLI',
+      name,
       status: 'fail',
-      message: `hook config at ${configPath} has no preToolUse entry; run: token-goat install --copilot`,
+      message: `hook config at ${configPath} has no preToolUse entry; run: ${install}`,
     }
   }
 
@@ -738,9 +757,9 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
   const bakedExecPath = /^"([^"]+)"/.exec(preToolUseCommand)?.[1]
   if (bakedExecPath !== undefined && !fs.existsSync(bakedExecPath)) {
     return {
-      name: 'Copilot CLI',
+      name,
       status: 'fail',
-      message: `hook points at a node binary that no longer exists (${bakedExecPath}) -- likely stale after an nvm/fnm/volta node upgrade. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI (renaming/reinstalling the hook has no effect on an already-running session -- Copilot caches hook configs at startup).`,
+      message: `hook points at a node binary that no longer exists (${bakedExecPath}) -- likely stale after an nvm/fnm/volta node upgrade. Recovery: run "${install}", then fully restart ${harness} (renaming/reinstalling the hook has no effect on an already-running session -- hook configs are cached at startup).`,
     }
   }
 
@@ -750,7 +769,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
     toolName: 'view',
     toolArgs: { path: 'doctor-check.txt' },
   })
-  // preToolUseCommand is config.hooks.preToolUse[0].command: the exact string Copilot CLI runs itself on every tool call. Spawning it here reproduces that, to check it still launches. Anyone able to write that file already has execution through Copilot, so shell: true adds no reach; parsing the string instead would break a hook command a user customised by hand. nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+  // preToolUseCommand is config.hooks.preToolUse[0].command: the exact string Copilot CLI runs itself on every tool call. Spawning it here reproduces that, to check it still launches. Anyone able to write that file already has execution through Copilot (for the project scope, only once the ledger check above has passed), so shell: true adds no reach; parsing the string instead would break a hook command a user customised by hand. nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
   const res = spawnSync(preToolUseCommand, {
     input: synthetic,
     encoding: 'utf-8',
@@ -760,36 +779,45 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
   })
   if (res.error) {
     return {
-      name: 'Copilot CLI',
+      name,
       status: 'fail',
-      message: `hook failed to launch: ${extractErrorMessage(res.error, 'unknown error')}. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI.`,
+      message: `hook failed to launch: ${extractErrorMessage(res.error, 'unknown error')}. Recovery: run "${install}", then fully restart ${harness}.`,
     }
   }
   if (res.status !== 0) {
     return {
-      name: 'Copilot CLI',
+      name,
       status: 'fail',
-      message: `hook exited with status ${res.status} -- Copilot's preToolUse fails closed on a non-zero exit and denies every tool call for the rest of the session. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI (a live session won't pick up the fix).`,
+      message: `hook exited with status ${res.status} -- Copilot's preToolUse fails closed on a non-zero exit and denies every tool call for the rest of the session. Recovery: run "${install}", then fully restart ${harness} (a live session won't pick up the fix).`,
     }
   }
   try {
     JSON.parse(res.stdout ?? '')
   } catch {
     return {
-      name: 'Copilot CLI',
+      name,
       status: 'fail',
-      message: 'hook did not return valid JSON -- Copilot treats this as a hook error and denies every tool call. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI.',
+      message: `hook did not return valid JSON -- Copilot treats this as a hook error and denies every tool call. Recovery: run "${install}", then fully restart ${harness}.`,
     }
   }
 
   if (!shimIsCurrent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)) {
-    return { name: 'Copilot CLI', status: 'warn', message: staleShimMessage(scriptPath, 'Copilot', 'token-goat install --copilot') + ', then fully restart Copilot CLI.' }
+    return { name, status: 'warn', message: staleShimMessage(scriptPath, 'Copilot', install) + `, then fully restart ${harness}.` }
   }
 
-  return { name: 'Copilot CLI', status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' }
+  return { name, status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' }
 }
 
 /** Does the shim installed at `scriptPath` match the one this build writes? A shim that launches and answers is not necessarily current: install writes it and only the next install rewrites it, so a token-goat upgrade without a reinstall leaves the old one running, and every fix to the shim itself stays off that machine. On the machine this was found on, the Copilot shim was 153 lines behind and dropped every pre-tool note, the Claude Code one 92 lines, and doctor reported both as fine. Line endings are normalized so an editor's CRLF conversion is not reported as drift. */
+/** The install command that rewrites a Copilot hooks directory, and the harness to restart after it. `install --vscode` writes the same files, so a directory only it owns is repaired by it and not by `--copilot`, which would also register a Copilot CLI integration nobody asked for. */
+function copilotHooksRecovery(hooksDir: string, scope: 'user' | 'project'): { install: string; harness: string } {
+  const owners = readCopilotHooksOwners(hooksDir)
+  if (!owners.has('copilot') && owners.has('vscode')) {
+    return { install: scope === 'project' ? 'token-goat install --vscode' : 'token-goat install --vscode --user', harness: 'VS Code' }
+  }
+  return { install: scope === 'project' ? 'token-goat install --copilot --local' : 'token-goat install --copilot', harness: 'Copilot CLI' }
+}
+
 function shimIsCurrent(scriptPath: string, expected: string): boolean {
   return fs.readFileSync(scriptPath, 'utf-8').replace(/\r\n/g, '\n') === expected.replace(/\r\n/g, '\n')
 }
@@ -1017,8 +1045,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
   if (copilotResult) results.push(copilotResult)
-  const copilotProjectResult = checkCopilotCli(copilotCliConfigPath({ local: true }), copilotCliScriptPath({ local: true }))
-  if (copilotProjectResult) results.push({ ...copilotProjectResult, name: 'Copilot CLI (project)' })
+  const copilotProjectResult = checkCopilotCli(copilotCliConfigPath({ local: true }), copilotCliScriptPath({ local: true }), 'project')
+  if (copilotProjectResult) results.push(copilotProjectResult)
   const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, isInstalled('user') || !isInstalled('project') ? 'token-goat install' : 'token-goat install --project')
   if (claudeShimResult) results.push(claudeShimResult)
   const claudeEventsResult = checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })
