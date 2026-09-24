@@ -6,7 +6,8 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
-import { claudeHookScriptPath, installHooks, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
+import { checkClaudeHookEvents } from '../src/cli_doctor_platforms.js'
+import { claudeHookScriptPath, installHooks, isInstalled, missingHookEvents, settingsPath, uninstallHooks } from '../src/install.js'
 import { normalizeDarwinSystemAlias } from '../src/paths.js'
 import { hookCommandFor } from '../src/util.js'
 
@@ -96,6 +97,52 @@ describe('installHooks', () => {
       hooks: Record<string, unknown[]>
     }
     expect(settings.hooks['PreToolUse']).toHaveLength(1)
+  })
+
+  it('wires PostToolUseFailure beside a foreign entry under the same key without clobbering it, and a re-install leaves both untouched', () => {
+    // CAPTURE: the PostToolUseFailure group another tool (Orca) wrote into a real ~/.claude/settings.json on this machine, 2026-09-24.
+    const foreign = [{ matcher: '*', hooks: [{ type: 'command', command: "if [ -f 'C:/Users/zelys/.orca/agent-hooks/claude-hook.cmd' ]; then 'C:/Users/zelys/.orca/agent-hooks/claude-hook.cmd'; else cat >/dev/null 2>&1 || :; fi", timeout: 10 }] }]
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({ hooks: { PostToolUseFailure: foreign } }))
+
+    expect(installHooks('project').alreadyInstalled).toBe(false)
+    const readGroups = (): Array<{ matcher?: string; hooks: Array<{ command: string }> }> =>
+      (JSON.parse(fs.readFileSync(p, 'utf8')) as { hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>> }).hooks['PostToolUseFailure'] ?? []
+    const afterFirst = readGroups()
+    expect(afterFirst).toHaveLength(2)
+    expect(afterFirst[0]).toEqual(foreign[0])
+    expect(afterFirst[1]?.hooks.map((h) => h.command)).toEqual([expectedCommand('post_tool_use_failure')])
+
+    expect(installHooks('project').alreadyInstalled).toBe(true)
+    expect(readGroups()).toEqual(afterFirst)
+  })
+
+  it('reports PostToolUseFailure as missing on an install that predates it, and a re-install adds it (the path `token-goat upgrade` takes)', () => {
+    installHooks('project')
+    const p = settingsPath('project')
+    const settings = JSON.parse(fs.readFileSync(p, 'utf8')) as { hooks: Record<string, unknown> }
+    delete settings.hooks['PostToolUseFailure']
+    fs.writeFileSync(p, JSON.stringify(settings))
+
+    expect(missingHookEvents('project')).toEqual(['PostToolUseFailure'])
+    expect(isInstalled('project')).toBe(false)
+    const warn = checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })
+    expect(warn?.status).toBe('warn')
+    expect(warn?.message).toContain('project scope lacks PostToolUseFailure; run: token-goat install --project')
+    expect(installHooks('project').alreadyInstalled).toBe(false)
+    expect(missingHookEvents('project')).toEqual([])
+    expect(isInstalled('project')).toBe(true)
+    expect(checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })?.status).toBe('ok')
+  })
+
+  it('missingHookEvents answers null when token-goat is not installed in that scope at all, and doctor then stays silent', () => {
+    expect(missingHookEvents('project')).toBeNull()
+    expect(checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })).toBeNull()
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'my-own-hook' }] }] } }))
+    expect(missingHookEvents('project')).toBeNull()
   })
 
   it('replaces legacy-branded and legacy Python-era hook commands with the current install instead of treating them as already installed', () => {
@@ -197,10 +244,7 @@ describe('installHooks', () => {
 
     expect(() => installHooks('project')).toThrow(/invalid JSON/)
 
-    // installHooks must never reach atomicWriteText when the settings file
-    // existed but failed to parse -- the corrupt-but-recoverable file must be
-    // left exactly as the user left it, not silently clobbered with just the
-    // newly-added hook groups.
+    // installHooks must never reach atomicWriteText when the settings file existed but failed to parse -- the corrupt-but-recoverable file must be left exactly as the user left it, not silently clobbered with just the newly-added hook groups.
     expect(fs.readFileSync(p, 'utf8')).toBe(corrupt)
   })
 
@@ -238,8 +282,7 @@ describe('isInstalled / uninstallHooks', () => {
       }),
     )
 
-    // Every mapped event key carries a legacy-only command here -- none of
-    // them are a real, working install, so this must read as not installed.
+    // Every mapped event key carries a legacy-only command here -- none of them are a real, working install, so this must read as not installed.
     expect(isInstalled('project')).toBe(false)
 
     installHooks('project')
@@ -288,8 +331,7 @@ describe('isInstalled / uninstallHooks', () => {
 
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
-    // backupFile no-ops when the target doesn't exist yet, so exactly one call above actually
-    // produces a backup file.
+    // backupFile no-ops when the target doesn't exist yet, so exactly one call above actually produces a backup file.
     expect(backups.length).toBe(1)
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(JSON.parse(backupContent)).toEqual({ theme: 'dark' })
@@ -298,8 +340,7 @@ describe('isInstalled / uninstallHooks', () => {
   it('backs settings.json up before a rewrite, then removes only the backups it made itself', () => {
     installHooks('project')
     const p = settingsPath('project')
-    // Hand-edited back to an empty object, so the second install has something to write and
-    // therefore something to back up first.
+    // Hand-edited back to an empty object, so the second install has something to write and therefore something to back up first.
     fs.writeFileSync(p, '{}\n')
     installHooks('project')
 
@@ -310,10 +351,7 @@ describe('isInstalled / uninstallHooks', () => {
     expect(backups()).toHaveLength(1)
     expect(fs.readFileSync(path.join(dir, backups()[0] as string), 'utf8')).toBe('{}\n')
 
-    // The negative control, and half the evidence. This is a copy the user made by hand: the same
-    // name shape token-goat's own backups have, but token-goat never recorded creating it. An
-    // uninstall that deleted every `settings.json.bak.*` would satisfy the assertion below it
-    // while destroying a file nobody can get back.
+    // The negative control, and half the evidence. This is a copy the user made by hand: the same name shape token-goat's own backups have, but token-goat never recorded creating it. An uninstall that deleted every `settings.json.bak.*` would satisfy the assertion below it while destroying a file nobody can get back.
     const decoy = `${p}.bak.keep-this`
     fs.writeFileSync(decoy, 'user copy')
 
@@ -452,24 +490,16 @@ describe('generated hook shim (the shipping wiring, not a standalone script test
   })
 
   it('installs AND removes the home-scoped shim under a project scope whose root does not contain the home directory', () => {
-    // EVERY other case in this file has `HOME` at `{TMP}/home` and the project root at `{TMP}`, so
-    // the shim is INSIDE the project root and no containment check can ever refuse it. That layout
-    // is not the real one, and it made the whole suite blind: routing the uninstall's shim removal
-    // through the scope-checked `removeFileInScope` without re-declaring user scope broke
-    // `uninstall --project` outright, and only the built-bundle matrix noticed. This case puts home
-    // where it actually is -- a sibling of the project, not a child -- so both the write and the
-    // delete have to declare user scope explicitly to pass.
+    // EVERY other case in this file has `HOME` at `{TMP}/home` and the project root at `{TMP}`, so the shim is INSIDE the project root and no containment check can ever refuse it. That layout is not the real one, and it made the whole suite blind: routing the uninstall's shim removal through the scope-checked `removeFileInScope` without re-declaring user scope broke `uninstall --project` outright, and only the built-bundle matrix noticed. This case puts home where it actually is -- a sibling of the project, not a child -- so both the write and the delete have to declare user scope explicitly to pass.
     //
-    // PROVENANCE: CAPTURE. The paths are real directories and the assertions read real `existsSync`
-    // results from the real installer, not a restatement of its rules.
+    // PROVENANCE: CAPTURE. The paths are real directories and the assertions read real `existsSync` results from the real installer, not a restatement of its rules.
     const outsideHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-install-home-'))
     const prevHome = process.env['HOME']
     const prevUserProfile = process.env['USERPROFILE']
     process.env['HOME'] = outsideHome
     process.env['USERPROFILE'] = outsideHome
     try {
-      // The premise of the case, asserted rather than assumed: if a future refactor moved the shim
-      // under the project root, the two assertions below would go on passing while testing nothing.
+      // The premise of the case, asserted rather than assumed: if a future refactor moved the shim under the project root, the two assertions below would go on passing while testing nothing.
       expect(path.relative(process.cwd(), claudeHookScriptPath()).startsWith('..')).toBe(true)
 
       expect(installHooks('project').alreadyInstalled).toBe(false)
@@ -505,11 +535,7 @@ describe('generated hook shim (the shipping wiring, not a standalone script test
   })
 })
 
-// The README's "what gets installed" table is what an evaluator reads before deciding, and it
-// claimed install added a `Bash(token-goat:*)` permission entry to settings.json. It never did.
-// The claim was alarming in the wrong direction -- it reads as the installer granting an agent
-// unprompted shell execution of every subcommand, `write-file` and `fetch-image` included -- and
-// nothing checked the written file against the document. These tests check both halves.
+// The README's "what gets installed" table is what an evaluator reads before deciding, and it claimed install added a `Bash(token-goat:*)` permission entry to settings.json. It never did. The claim was alarming in the wrong direction -- it reads as the installer granting an agent unprompted shell execution of every subcommand, `write-file` and `fetch-image` included -- and nothing checked the written file against the document. These tests check both halves.
 describe('installed settings.json grants no permissions', () => {
   it('writes hooks and nothing else, so no permission entry appears', () => {
     installHooks('user')

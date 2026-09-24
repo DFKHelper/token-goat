@@ -1,21 +1,4 @@
-/**
- * Hook handler registry.
- *
- * Layers 5+ register handler functions for the hook events token-goat reacts
- * to (pre_tool_use, post_tool_use, notification, stop, pre_compact). When a
- * hook fires, {@link runHook} runs the registered handlers in registration
- * order and short-circuits on the first non-`pass` result.
- *
- * This is distinct from the Python `hook_registry.py`, which is a static
- * lookup table of wire-format metadata (event name → module/attr/matcher).
- * That metadata role is filled here by `types.ts` (HookEventName) and the
- * bridges; this module owns the *runtime dispatch* side that Python spreads
- * across `hooks_cli.py`'s dispatcher.
- *
- * Output serialization lives here too: {@link serializeOutput} converts a
- * {@link HookOutput} into the exact Claude Code wire JSON that the harness
- * reads from the hook process's stdout.
- */
+/** Hook handler registry. Layers 5+ register handler functions for the hook events token-goat reacts to (pre_tool_use, post_tool_use, notification, stop, pre_compact). When a hook fires, {@link runHook} runs the registered handlers in registration order and short-circuits on the first non-`pass` result. This is distinct from the Python `hook_registry.py`, which is a static lookup table of wire-format metadata (event name → module/attr/matcher). That metadata role is filled here by `types.ts` (HookEventName) and the bridges; this module owns the *runtime dispatch* side that Python spreads across `hooks_cli.py`'s dispatcher. Output serialization lives here too: {@link serializeOutput} converts a {@link HookOutput} into the exact Claude Code wire JSON that the harness reads from the hook process's stdout. */
 
 import type { HarnessName } from './bridges/types.js'
 import { registerReset } from './reset.js'
@@ -25,14 +8,7 @@ import type { HookEventName, HookOutput } from './types.js'
 import { replaceToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { serializeVscodeOutput } from './bridges/vscode_hooks.js'
 
-/**
- * The event object passed to every {@link HookHandler}.
- *
- * `toolInput` and `raw` are kept as `Record<string, unknown>` rather than a
- * narrower TypedDict-style shape so handlers can read harness-specific keys
- * the registry doesn't model. `toolName` is `undefined` for non-tool events
- * (notification, stop, pre_compact).
- */
+/** The event object passed to every {@link HookHandler}. `toolInput` and `raw` are kept as `Record<string, unknown>` rather than a narrower TypedDict-style shape so handlers can read harness-specific keys the registry doesn't model. `toolName` is `undefined` for non-tool events (notification, stop, pre_compact). */
 export interface HookEvent {
   readonly eventName: HookEventName
   readonly toolName: string | undefined
@@ -47,23 +23,7 @@ export interface HookEvent {
   readonly raw: Record<string, unknown>
 }
 
-/**
- * The key used to persist and look up per-(sub)agent state -- both the session-state
- * blob ({@link file://./session_store.ts}) and the read snapshots keyed on it
- * ({@link file://./snapshots.ts}). All subagents spawned by one parent share the
- * parent's `session_id` on the wire, so keying on `sessionId` alone conflates every
- * subagent's reads (and their content snapshots) with its siblings' and the parent's --
- * a subagent's genuinely-first read of a file gets denied as "already read" because a
- * *different* subagent read it earlier, or a subagent overwrites the parent's snapshot
- * of a file with content the parent never saw, so the parent's next re-read gets a
- * diff (or "unchanged" verdict) computed against the wrong baseline. Salting the key
- * with `agentId` (present only inside a subagent call) gives each (sub)agent its own
- * independent ledger and snapshot store, leaving the main thread (no agentId) keyed on
- * `sessionId` alone, unchanged from before this existed. Every caller that persists or
- * loads per-agent state -- session state in relay.ts, and every `snapshots.ts`
- * store/load call site in hooks_read.ts -- must derive its key through this one
- * function rather than hand-rolling the same concatenation, so the two stay in sync.
- */
+/** The key used to persist and look up per-(sub)agent state -- both the session-state blob ({@link file://./session_store.ts}) and the read snapshots keyed on it ({@link file://./snapshots.ts}). All subagents spawned by one parent share the parent's `session_id` on the wire, so keying on `sessionId` alone conflates every subagent's reads (and their content snapshots) with its siblings' and the parent's -- a subagent's genuinely-first read of a file gets denied as "already read" because a *different* subagent read it earlier, or a subagent overwrites the parent's snapshot of a file with content the parent never saw, so the parent's next re-read gets a diff (or "unchanged" verdict) computed against the wrong baseline. Salting the key with `agentId` (present only inside a subagent call) gives each (sub)agent its own independent ledger and snapshot store, leaving the main thread (no agentId) keyed on `sessionId` alone, unchanged from before this existed. Every caller that persists or loads per-agent state -- session state in relay.ts, and every `snapshots.ts` store/load call site in hooks_read.ts -- must derive its key through this one function rather than hand-rolling the same concatenation, so the two stay in sync. */
 export function sessionStateKey(event: HookEvent): string {
   return event.agentId !== undefined ? `${event.sessionId}:agent:${event.agentId}` : event.sessionId
 }
@@ -82,28 +42,10 @@ interface Registration {
   readonly advisory: boolean
 }
 
-/**
- * Registered handlers keyed by event name.
- *
- * A `Map` of arrays preserves registration order (the order handlers run in)
- * and keeps per-event lookup O(1). Module-global mutable state, so it is reset
- * via {@link registerReset} below.
- */
+/** Registered handlers keyed by event name. A `Map` of arrays preserves registration order (the order handlers run in) and keeps per-event lookup O(1). Module-global mutable state, so it is reset via {@link registerReset} below. */
 const _handlers = new Map<HookEventName, Registration[]>()
 
-/**
- * Register `handler` for `eventName`.
- *
- * When `opts.toolName` is set, the handler only fires for hook events whose
- * `toolName` matches exactly (case-sensitive — names are normalized to
- * canonical PascalCase upstream by the bridge layer). Handlers without a
- * `toolName` filter fire for every event of that name.
- *
- * A handler that does its own tool filtering (a regex over dynamic `mcp__*`
- * names, say) should declare `opts.toolPattern` so {@link toolMatcherFor} can
- * still narrow the installed matcher. `toolPattern` does not affect dispatch —
- * the handler's own check remains authoritative.
- */
+/** Register `handler` for `eventName`. When `opts.toolName` is set, the handler only fires for hook events whose `toolName` matches exactly (case-sensitive — names are normalized to canonical PascalCase upstream by the bridge layer). Handlers without a `toolName` filter fire for every event of that name. A handler that does its own tool filtering (a regex over dynamic `mcp__*` names, say) should declare `opts.toolPattern` so {@link toolMatcherFor} can still narrow the installed matcher. `toolPattern` does not affect dispatch — the handler's own check remains authoritative. */
 export function registerHook(
   eventName: HookEventName,
   handler: HookHandler,
@@ -128,29 +70,7 @@ export function handlersFor(eventName: HookEventName, toolName: string): HookHan
   return (_handlers.get(eventName) ?? []).filter((r) => r.toolName === undefined || r.toolName === toolName).map((r) => r.handler)
 }
 
-/**
- * Build the Claude Code `matcher` string listing every tool `eventName` can fire for,
- * or `null` when the event cannot safely be narrowed.
- *
- * Claude Code spawns a fresh process per matcher hit, and ~90% of that cost is Node
- * startup plus bundle evaluation rather than the hook's own work — so a catch-all
- * matcher pays full price for every tool token-goat has no handler for. Deriving the
- * list from the live registry (instead of hardcoding it at the install site) is what
- * keeps it from going stale as handlers are added.
- *
- * Returns `null` — meaning "use the catch-all" — in the two cases where narrowing
- * would be wrong or unsafe:
- *  - the event has no registrations, or none carry a tool filter (non-tool events
- *    like pre_compact, which never receive a tool name at all);
- *  - some registration declares neither `toolName` nor `toolPattern`, i.e. it really
- *    does want every tool. Narrowing then would silently stop firing it. A handler
- *    that has weighed that and accepted it opts out with `followsMatcher: true`.
- *
- * The result is a `|`-joined alternation. Claude Code treats a matcher containing
- * only `[a-zA-Z0-9_-]`, spaces, commas and pipes as a list of exact names, and
- * anything else as an unanchored regex — so a `^mcp__`-style pattern makes the whole
- * matcher regex-evaluated, which is exactly what prefix matching needs.
- */
+/** Build the Claude Code `matcher` string listing every tool `eventName` can fire for, or `null` when the event cannot safely be narrowed. Claude Code spawns a fresh process per matcher hit, and ~90% of that cost is Node startup plus bundle evaluation rather than the hook's own work — so a catch-all matcher pays full price for every tool token-goat has no handler for. Deriving the list from the live registry (instead of hardcoding it at the install site) is what keeps it from going stale as handlers are added. Returns `null` — meaning "use the catch-all" — in the two cases where narrowing would be wrong or unsafe: - the event has no registrations, or none carry a tool filter (non-tool events like pre_compact, which never receive a tool name at all); - some registration declares neither `toolName` nor `toolPattern`, i.e. it really does want every tool. Narrowing then would silently stop firing it. A handler that has weighed that and accepted it opts out with `followsMatcher: true`. The result is a `|`-joined alternation. Claude Code treats a matcher containing only `[a-zA-Z0-9_-]`, spaces, commas and pipes as a list of exact names, and anything else as an unanchored regex — so a `^mcp__`-style pattern makes the whole matcher regex-evaluated, which is exactly what prefix matching needs. */
 export function toolMatcherFor(eventName: HookEventName): string | null {
   const list = _handlers.get(eventName)
   if (list === undefined || list.length === 0) return null
@@ -241,27 +161,11 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
   session_start: 'SessionStart',
-  // Claude Code has no separate failure event -- a failed tool arrives on PostToolUse there, and only Copilot splits it out. This entry exists because the map is exhaustive over HookEventName, and it is a spelling for the response envelope rather than a claim that Claude Code will ever send this event. Nothing iterates this map to build install config, so naming an event Claude Code does not have cannot register one.
+  // Claude Code sends a failed tool call here rather than to PostToolUse, and its PostToolUseFailure output schema accepts hookSpecificOutput.additionalContext (captured and read from claude.exe 2.1.281); install.ts HOOK_EVENT_MAP registers it.
   post_tool_use_failure: 'PostToolUseFailure',
 }
 
-/**
- * Events whose `hookSpecificOutput` does NOT accept `additionalContext`, per
- * https://code.claude.com/docs/en/hooks (verified 2026-07-02). Every other
- * {@link HookEventName} does accept it there. Events listed here must instead
- * inject context via the top-level `systemMessage` field — see {@link serializeOutput}.
- *
- * Kept as an explicit table rather than a single hardcoded event check so a
- * new handler on one of these events cannot silently reproduce the pre_compact
- * wire-format bug (2026-07-02) by inheriting the wrong default.
- *
- * `post_compact` is deliberately absent from this set AND from
- * {@link EVENTS_WITH_RAW_STDOUT_CONTEXT}, because listing it in either would assert something
- * false. Reading `claude.exe` 2.1.240, the PostCompact runner builds its return value from
- * `userDisplayMessage` alone -- a line echoed to the user's terminal -- and reads neither
- * `additionalContext` nor `systemMessage` nor the raw `output`. There is no context channel on
- * that event at all, which is why {@link postCompactHandler} measures and returns `pass`.
- */
+/** Events whose `hookSpecificOutput` does NOT accept `additionalContext`, per https://code.claude.com/docs/en/hooks (verified 2026-07-02). Every other {@link HookEventName} does accept it there. Events listed here must instead inject context via the top-level `systemMessage` field — see {@link serializeOutput}. Kept as an explicit table rather than a single hardcoded event check so a new handler on one of these events cannot silently reproduce the pre_compact wire-format bug (2026-07-02) by inheriting the wrong default. `post_compact` is deliberately absent from this set AND from {@link EVENTS_WITH_RAW_STDOUT_CONTEXT}, because listing it in either would assert something false. Reading `claude.exe` 2.1.240, the PostCompact runner builds its return value from `userDisplayMessage` alone -- a line echoed to the user's terminal -- and reads neither `additionalContext` nor `systemMessage` nor the raw `output`. There is no context channel on that event at all, which is why {@link postCompactHandler} measures and returns `pass`. */
 const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
   'notification',
   'pre_compact',
@@ -270,60 +174,8 @@ const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
 /** Events whose `context` must be written to stdout as plain text rather than wrapped in wire JSON, because the harness forwards that stdout somewhere an envelope is only noise. `pre_compact` on Claude Code is the whole set, and the reason is a piece of the harness that its hook documentation does not describe. Reading `claude.exe` 2.1.240: a command hook that exits 0 has its result's `output` field set to `R.stdout` verbatim -- the JSON is parsed alongside it into a separate value, and `systemMessage` is lifted onto its own separate field, but `output` itself is the raw text either way. The PreCompact runner then joins every succeeded hook's `output` into `newCustomInstructions`, and the four compaction call sites pass that straight to the summarising model as `customInstructions`. Nothing in that chain ever reads `systemMessage`. So on this event the bytes we print are not an envelope the harness unpacks; they are a message to a model. Emitting `{"systemMessage":"..."}` sent it the serialized object -- braces, escaped newlines and all -- while the field we meant it to read was dropped. Verified live as well as by reading the binary: a PreCompact hook printing an instruction had that instruction obeyed in the resulting compact summary. Scoped to Claude Code deliberately. This behaviour is undocumented and may not survive an update, and no other harness wants raw text here: Copilot CLI's reference marks `preCompact` output "notification only" and its shim discards the response, while the Codex shim `JSON.parse`s our stdout and degrades to `{}` on anything else. Both are unharmed by the JSON form, so they keep it. */
 const EVENTS_WITH_RAW_STDOUT_CONTEXT: ReadonlySet<HookEventName> = new Set(['pre_compact'])
 
-/**
- * Serialize a {@link HookOutput} to the Claude Code hook wire JSON.
- *
- * `harness` is a required argument rather than a call to `detectHarness()` here, because by the time
- * this runs the relay has already seeded `CLAUDE_CODE_SESSION_ID` from the event payload for *every*
- * harness -- a detection at this point would answer "claudecode" on Codex and Copilot alike. The
- * relay reads the harness before that seeding and passes it down. Required and not optional so a
- * future caller has to make the same decision consciously.
- *
- * The harness reads this object from the hook process's stdout and acts on it:
- * - `deny`    → `{"decision":"block","reason":"<message>"}`
- * - `context` → `{"hookSpecificOutput":{"hookEventName":"<event>",
- *   "additionalContext":"<content>"}}` — the documented non-blocking hint
- *   shape (see https://code.claude.com/docs/en/hooks); `hookEventName` must
- *   match the event currently running, not be hardcoded. Events in
- *   {@link EVENTS_WITHOUT_ADDITIONAL_CONTEXT} (currently `notification` and
- *   `pre_compact`) instead emit the top-level `{"systemMessage":"<content>"}`
- *   field, since the harness rejects `additionalContext` there outright.
- * - `update`  → `{"updatedInput":{"content":"<content>"}}`
- * - `rewriteInput` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
- *   "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse`
- *   shape that replaces the whole tool input and lets the call proceed.
- * - `rewriteOutput` → `{"hookSpecificOutput":{"hookEventName":"PostToolUse",
- *   "updatedToolOutput":<tool_response with one field replaced>}}` — the
- *   `PostToolUse` shape that replaces the tool result the model receives; the
- *   tool has already run, so this cannot undo the call, only change what the
- *   model sees of it. `updatedToolOutput` must MATCH THE TOOL'S OWN OUTPUT
- *   SHAPE. A bare string is accepted only for tools whose result is itself a
- *   string (MCP); for every built-in tool the harness rejects it with
- *   "PostToolUse hook returned updatedToolOutput that does not match <Tool>'s
- *   output shape; using original output" and uses the original. Measured on the
- *   recorded session corpus: 337 Bash, 52 WebFetch, 32 WebSearch and 10 Grep
- *   rejections, and 412 of 412 built-in-tool emissions rejected against 0
- *   accepted, on every Claude Code version present. So an object response is
- *   cloned and only its text-bearing field is replaced — never rebuilt from a
- *   key whitelist, which would drop Bash's optional `persistedOutputPath` and
- *   friends. When no field resolves, the bare string is emitted as before: a
- *   rejected rewrite beats one injected into the wrong field. Those figures are
- *   about BUILT-IN tools and say nothing about what else an MCP tool accepts:
- *   an array of MCP content blocks is taken verbatim there (see
- *   `tests/fixtures/mcp_bare_array_payloads.ts`), which is what
- *   `updatedBlocks` emits so a rewritten mixed result keeps its image.
- * - `pass`    → `{}` (no-op; the call proceeds unchanged)
- *
- * The `switch` is exhaustive over the `hookType` union; adding a variant to
- * {@link HookOutput} without handling it here is a compile error.
- */
-/**
- * Tools whose post handler reads its body with {@link BODY_FIRST_TOOL_RESPONSE_KEYS} rather than
- * {@link OUTPUT_FIRST_TOOL_RESPONSE_KEYS}. Taken from the handlers themselves: hooks_fetch.ts and
- * hooks_skill.ts pass BODY_FIRST, every other post handler passes OUTPUT_FIRST. The rewrite must
- * resolve the same field the handler read the body from, so this list has to track those call
- * sites; if a handler changes its key list, change it here in the same edit.
- */
+/** Serialize a {@link HookOutput} to the Claude Code hook wire JSON. `harness` is a required argument rather than a call to `detectHarness()` here, because by the time this runs the relay has already seeded `CLAUDE_CODE_SESSION_ID` from the event payload for *every* harness -- a detection at this point would answer "claudecode" on Codex and Copilot alike. The relay reads the harness before that seeding and passes it down. Required and not optional so a future caller has to make the same decision consciously. The harness reads this object from the hook process's stdout and acts on it: - `deny`    → `{"decision":"block","reason":"<message>"}` - `context` → `{"hookSpecificOutput":{"hookEventName":"<event>", "additionalContext":"<content>"}}` — the documented non-blocking hint shape (see https://code.claude.com/docs/en/hooks); `hookEventName` must match the event currently running, not be hardcoded. Events in {@link EVENTS_WITHOUT_ADDITIONAL_CONTEXT} (currently `notification` and `pre_compact`) instead emit the top-level `{"systemMessage":"<content>"}` field, since the harness rejects `additionalContext` there outright. - `update`  → `{"updatedInput":{"content":"<content>"}}` - `rewriteInput` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse", "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse` shape that replaces the whole tool input and lets the call proceed. - `rewriteOutput` → `{"hookSpecificOutput":{"hookEventName":"PostToolUse", "updatedToolOutput":<tool_response with one field replaced>}}` — the `PostToolUse` shape that replaces the tool result the model receives; the tool has already run, so this cannot undo the call, only change what the model sees of it. `updatedToolOutput` must MATCH THE TOOL'S OWN OUTPUT SHAPE. A bare string is accepted only for tools whose result is itself a string (MCP); for every built-in tool the harness rejects it with "PostToolUse hook returned updatedToolOutput that does not match <Tool>'s output shape; using original output" and uses the original. Measured on the recorded session corpus: 337 Bash, 52 WebFetch, 32 WebSearch and 10 Grep rejections, and 412 of 412 built-in-tool emissions rejected against 0 accepted, on every Claude Code version present. So an object response is cloned and only its text-bearing field is replaced — never rebuilt from a key whitelist, which would drop Bash's optional `persistedOutputPath` and friends. When no field resolves, the bare string is emitted as before: a rejected rewrite beats one injected into the wrong field. Those figures are about BUILT-IN tools and say nothing about what else an MCP tool accepts: an array of MCP content blocks is taken verbatim there (see `tests/fixtures/mcp_bare_array_payloads.ts`), which is what `updatedBlocks` emits so a rewritten mixed result keeps its image. - `pass`    → `{}` (no-op; the call proceeds unchanged) The `switch` is exhaustive over the `hookType` union; adding a variant to {@link HookOutput} without handling it here is a compile error. */
+/** Tools whose post handler reads its body with {@link BODY_FIRST_TOOL_RESPONSE_KEYS} rather than {@link OUTPUT_FIRST_TOOL_RESPONSE_KEYS}. Taken from the handlers themselves: hooks_fetch.ts and hooks_skill.ts pass BODY_FIRST, every other post handler passes OUTPUT_FIRST. The rewrite must resolve the same field the handler read the body from, so this list has to track those call sites; if a handler changes its key list, change it here in the same edit. */
 const BODY_FIRST_REWRITE_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'Skill'])
 
 /** Shape `updatedOutput` to whatever the tool's own result shape was. A string `tool_response` (MCP) stays a bare string -- that path is accepted by the harness today and must not regress. An object response is cloned with its one text-bearing field replaced. If nothing resolves, the bare string is emitted: the harness will reject it and use the original, which is strictly better than injecting the body into a field that never held it. */

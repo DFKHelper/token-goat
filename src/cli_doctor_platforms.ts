@@ -1,9 +1,4 @@
-/**
- * Platform and harness integration diagnostics for token-goat doctor.
- *
- * Checks configuration and health across VS Code, Visual Studio, Zed, Cursor,
- * global MCP configuration, and stray CLAUDE.md blocks.
- */
+/** Platform and harness integration diagnostics for token-goat doctor. Checks configuration and health across VS Code, Visual Studio, Zed, Cursor, global MCP configuration, and stray CLAUDE.md blocks. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -94,9 +89,7 @@ export const VSCODE_PROJECT_SCOPE_COVERAGE_NOTE =
 export const VSCODE_USER_SCOPE_MULTIROOT_NOTE =
   'NOTE: a user-scope install works in every project, but VS Code runs it with the first folder of a multi-root workspace as its working directory, so it does nothing for the other folders. Use "token-goat install --vscode" (project scope, the default) in each folder that needs it.'
 
-/**
- * Report a VS Code hooks install still sitting in user scope, where it cannot see past folders[0].
- */
+/** Report a VS Code hooks install still sitting in user scope, where it cannot see past folders[0]. */
 export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: boolean): DoctorResult | null {
   if (!userScope) return null
   return {
@@ -112,9 +105,7 @@ export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: bool
 export const VSCODE_DOUBLE_FIRE_NOTE =
   'NOTE: VS Code has chat.useClaudeHooks turned on, so it also runs the token-goat hooks in ~/.claude/settings.json and each one fires twice. Turn chat.useClaudeHooks off in VS Code settings to keep only the --vscode hooks.'
 
-/**
- * Warn when VS Code will run token-goat's Claude Code hooks as well as its own.
- */
+/** Warn when VS Code will run token-goat's Claude Code hooks as well as its own. */
 export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInstalled: boolean, vscodeHooksInstalled: boolean): DoctorResult | null {
   if (!useClaudeHooks || !claudeHooksInstalled) return null
   return {
@@ -126,9 +117,18 @@ export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInsta
   }
 }
 
-/**
- * `paths` with duplicates removed, comparing on the resolved path.
- */
+/** Name the Claude Code hook events a scope's install lacks, from `missingHookEvents` (install.ts) per scope. Null when neither scope has a token-goat install, so a machine without Claude Code gets no row. An event added by a later release is the usual cause: the existing settings.json keeps the old set until `token-goat install` runs again. */
+export function checkClaudeHookEvents(missing: { readonly user: readonly string[] | null; readonly project: readonly string[] | null }): DoctorResult | null {
+  const name = 'Claude Code hook events'
+  if (missing.user === null && missing.project === null) return null
+  const gaps: string[] = []
+  if (missing.user !== null && missing.user.length > 0) gaps.push(`user scope lacks ${missing.user.join(', ')}; run: token-goat install`)
+  if (missing.project !== null && missing.project.length > 0) gaps.push(`project scope lacks ${missing.project.join(', ')}; run: token-goat install --project`)
+  if (gaps.length === 0) return { name, status: 'ok', message: 'every event this build handles is wired' }
+  return { name, status: 'warn', message: `${gaps.join('. ')}. Those events never reach token-goat until then; restart any running session afterwards.` }
+}
+
+/** `paths` with duplicates removed, comparing on the resolved path. */
 export function dedupeByResolvedPath(paths: readonly string[]): string[] {
   const seen = new Set<string>()
   return paths.filter((p) => {
@@ -222,11 +222,7 @@ export function checkStrayClaudeMdBlocks(searchRoot?: string): DoctorResult {
   }
 }
 
-/**
- * Warn about deprecated or empty `.vscode/mcp.json`.
- * Copilot CLI v1.0.84+ removed incomplete support for `.vscode/mcp.json` and prints a migration
- * banner on every CLI startup if this file exists in the workspace.
- */
+/** Warn about deprecated or empty `.vscode/mcp.json`. Copilot CLI v1.0.84+ removed incomplete support for `.vscode/mcp.json` and prints a migration banner on every CLI startup if this file exists in the workspace. */
 export function checkVscodeProjectMcp(projectRoot: string = process.cwd()): DoctorResult | null {
   const mcpPath = path.join(path.resolve(projectRoot), '.vscode', 'mcp.json')
   if (!fs.existsSync(mcpPath)) return null

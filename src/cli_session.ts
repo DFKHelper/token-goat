@@ -1,10 +1,4 @@
-/**
- * Session, corpus audit, memory, and output recall command handlers.
- *
- * Implements token-goat session-audit, session-outline, session-slice,
- * context-stats, bootstrap-audit, memory, waste, mcp-audit, recall,
- * statusline, and hint-stats.
- */
+/** Session, corpus audit, memory, and output recall command handlers. Implements token-goat session-audit, session-outline, session-slice, context-stats, bootstrap-audit, memory, waste, mcp-audit, recall, statusline, and hint-stats. */
 
 import * as fs from 'node:fs'
 
@@ -89,12 +83,17 @@ export async function cmdAudit(opts: { project?: string; transcript?: string; js
   })
 }
 
-export async function cmdSessionAudit(opts: { dir?: string; json?: boolean } = {}): Promise<void> {
+export async function cmdSessionAudit(opts: { dir?: string; json?: boolean; windowDays?: number; toolErrors?: boolean } = {}): Promise<void> {
   let summary
   try {
-    summary = await auditSessionCorpus({ ...(opts.dir !== undefined ? { dir: opts.dir } : {}) })
+    summary = await auditSessionCorpus({ ...(opts.dir !== undefined ? { dir: opts.dir } : {}), ...(opts.windowDays !== undefined ? { windowDays: opts.windowDays } : {}) })
   } catch (err) {
     throw new CliError(err instanceof Error ? err.message : String(err))
+  }
+  if (opts.toolErrors === true) {
+    const { formatToolErrorCensus } = await import('./tool_error_census.js')
+    out(opts.json === true ? displaySafeJson({ filesScanned: summary.filesScanned, windowDays: summary.windowDays, ...summary.toolErrors }, 0) : formatToolErrorCensus(summary.toolErrors, summary))
+    return
   }
   out(opts.json === true ? displaySafeJson(summary, 0) : formatSessionAudit(summary))
 }

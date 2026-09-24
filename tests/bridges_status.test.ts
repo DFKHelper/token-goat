@@ -6,10 +6,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so the installCodex/installGrok cross-check tests below can point
-// `~` at an isolated temp dir instead of touching the real `~/.codex/` /
-// `~/.grok/` (mirrors the pattern in install_codex.test.ts / install_grok.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so the installCodex/installGrok cross-check tests below can point `~` at an isolated temp dir instead of touching the real `~/.codex/` / `~/.grok/` (mirrors the pattern in install_codex.test.ts / install_grok.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -24,6 +21,7 @@ import { parse } from 'smol-toml'
 
 import { installCodex, codexConfigPath } from '../src/bridges/codex_install.js'
 import { installGrok, grokConfigPath } from '../src/bridges/grok_install.js'
+import { installHooks, settingsPath } from '../src/install.js'
 import { HOOK_EVENTS, type HookEventName } from '../src/types.js'
 import {
   BRIDGE_CAPABILITY_MATRIX,
@@ -75,10 +73,10 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
     }
   })
 
-  it('claudecode and codex wire the identical event set aside from session_start and post_compact (regression: codex used to be missing pre_compact/user_prompt_submit/subagent_stop -- feature-queue #307 Part B fix; session_start is claudecode-only since Codex CLI has no session-start-equivalent hook, and post_compact is claudecode-only because no other harness has been shown to have a PostCompact-equivalent event)', () => {
+  it('claudecode and codex wire the identical event set aside from session_start, post_compact and post_tool_use_failure (regression: codex used to be missing pre_compact/user_prompt_submit/subagent_stop -- feature-queue #307 Part B fix; session_start is claudecode-only since Codex CLI has no session-start-equivalent hook, post_compact is claudecode-only because no other harness has been shown to have a PostCompact-equivalent event, and post_tool_use_failure is wired for Claude Code because its PostToolUseFailure event was captured on 2.1.281)', () => {
     const claudecode = rowFor('claudecode')
     const codex = rowFor('codex')
-    const codexPlusClaudecodeOnly = new Set([...codex.implemented, 'session_start' as const, 'post_compact' as const])
+    const codexPlusClaudecodeOnly = new Set([...codex.implemented, 'session_start' as const, 'post_compact' as const, 'post_tool_use_failure' as const])
     expect([...codexPlusClaudecodeOnly].sort()).toEqual([...claudecode.implemented].sort())
     expect(codex.implemented.has('pre_compact')).toBe(true)
     expect(codex.implemented.has('user_prompt_submit')).toBe(true)
@@ -87,15 +85,15 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
     expect(codex.implemented.has('post_compact')).toBe(false)
     expect(claudecode.implemented.has('session_start')).toBe(true)
     expect(claudecode.implemented.has('post_compact')).toBe(true)
+    expect(claudecode.implemented.has('post_tool_use_failure')).toBe(true)
+    expect(codex.implemented.has('post_tool_use_failure')).toBe(false)
   })
 
   it("notification is implemented by zero rows, matching the codebase-wide absence of any registerHook('notification', ...) call site", () => {
     for (const row of BRIDGE_CAPABILITY_MATRIX) {
       expect(row.implemented.has('notification')).toBe(false)
     }
-    // Exclude bridges_status.ts itself -- its own docstring describes this
-    // absence using the same `registerHook('notification'|'stop', ...)` text,
-    // which would otherwise false-positive as a real call site.
+    // Exclude bridges_status.ts itself -- its own docstring describes this absence using the same `registerHook('notification'|'stop', ...)` text, which would otherwise false-positive as a real call site.
     const src = fs.readdirSync(path.join(REPO_ROOT, 'src')).filter((f) => f.endsWith('.ts') && f !== 'bridges_status.ts')
     let hits = 0
     for (const file of src) {
@@ -106,9 +104,7 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
   })
 
   it("stop has no registered server-side handler either, but copilot_cli still wires it client-side (via its agentStop mapping) -- documented in this row's own reasons text for every other bridge", () => {
-    // Exclude bridges_status.ts itself -- its own docstring describes this
-    // absence using the same `registerHook('notification'|'stop', ...)` text,
-    // which would otherwise false-positive as a real call site.
+    // Exclude bridges_status.ts itself -- its own docstring describes this absence using the same `registerHook('notification'|'stop', ...)` text, which would otherwise false-positive as a real call site.
     const src = fs.readdirSync(path.join(REPO_ROOT, 'src')).filter((f) => f.endsWith('.ts') && f !== 'bridges_status.ts')
     let hits = 0
     for (const file of src) {
@@ -175,14 +171,11 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows an 8/10 score for copilot_cli, 7/10 for claudecode, 6/10 for kimi, 5/10 for codex/grok/qwen, 3/10 for opencode/gemini/openclaw/pi', () => {
+  it('shows an 8/10 score for copilot_cli and claudecode, 6/10 for kimi, 5/10 for codex/grok/qwen, 3/10 for opencode/gemini/openclaw/pi', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    // copilot_cli pulls ahead of claudecode on post_tool_use_failure, which is its own event there
-    // and folded into post_tool_use everywhere else. It already drew level by wiring stop via its
-    // agentStop mapping, which claudecode's settings.json wiring does not; claudecode's one
-    // remaining edge is post_compact, which no other harness has a confirmed equivalent event for.
+    // copilot_cli and claudecode both wire post_tool_use_failure, their own event on both harnesses. copilot_cli also wires stop via its agentStop mapping, which claudecode's settings.json wiring does not; claudecode's edge is post_compact, which no other harness has a confirmed equivalent event for.
     expect(text).toMatch(/copilot_cli\s+.*\s8\/10/)
-    expect(text).toMatch(/claudecode\s+.*\s7\/10/)
+    expect(text).toMatch(/claudecode\s+.*\s8\/10/)
     expect(text).toMatch(/kimi\s+.*\s6\/10/)
     for (const harness of ['codex', 'grok', 'qwen']) {
       expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/10`))
@@ -235,7 +228,7 @@ describe('drift guard: matrix reasons stay grounded in the real bridge source', 
   })
 })
 
-describe('drift guard: real installer output matches the matrix (codex, grok)', () => {
+describe('drift guard: real installer output matches the matrix (codex, grok, claudecode)', () => {
   let TMP: string
 
   beforeEach(() => {
@@ -253,8 +246,7 @@ describe('drift guard: real installer output matches the matrix (codex, grok)', 
     const config = parse(fs.readFileSync(codexConfigPath(), 'utf8')) as { hooks?: Record<string, unknown[]> }
     const wiredEvents = new Set(Object.keys(config.hooks ?? {}).filter((k) => (config.hooks?.[k]?.length ?? 0) > 0))
 
-    // Codex's config.toml uses PascalCase event keys; translate to the internal
-    // snake_case names the matrix keys on (mirrors CODEX_EVENT_ARG/CODEX_GLOBAL_EVENT_ARG).
+    // Codex's config.toml uses PascalCase event keys; translate to the internal snake_case names the matrix keys on (mirrors CODEX_EVENT_ARG/CODEX_GLOBAL_EVENT_ARG).
     const PASCAL_TO_SNAKE: Record<string, HookEventName> = {
       PreToolUse: 'pre_tool_use',
       PostToolUse: 'post_tool_use',
@@ -280,5 +272,26 @@ describe('drift guard: real installer output matches the matrix (codex, grok)', 
     }
     const actual = new Set([...wiredEvents].map((k) => PASCAL_TO_SNAKE[k]).filter((v): v is HookEventName => v !== undefined))
     expect(actual).toEqual(rowFor('grok').implemented)
+  })
+
+  it('installHooks wires exactly the events the claudecode matrix row claims', () => {
+    installHooks('user')
+    const settings = JSON.parse(fs.readFileSync(settingsPath('user'), 'utf8')) as { hooks?: Record<string, unknown[]> }
+    const wiredEvents = new Set(Object.keys(settings.hooks ?? {}).filter((k) => (settings.hooks?.[k]?.length ?? 0) > 0))
+
+    // PascalCase settings.json keys to the internal names, as Claude Code spells them on the hook wire.
+    const PASCAL_TO_SNAKE: Record<string, HookEventName> = {
+      PreToolUse: 'pre_tool_use',
+      PostToolUse: 'post_tool_use',
+      PostToolUseFailure: 'post_tool_use_failure',
+      PreCompact: 'pre_compact',
+      PostCompact: 'post_compact',
+      UserPromptSubmit: 'user_prompt_submit',
+      SubagentStop: 'subagent_stop',
+      SessionStart: 'session_start',
+    }
+    expect([...wiredEvents].filter((k) => PASCAL_TO_SNAKE[k] === undefined)).toEqual([])
+    const actual = new Set([...wiredEvents].map((k) => PASCAL_TO_SNAKE[k]).filter((v): v is HookEventName => v !== undefined))
+    expect(actual).toEqual(rowFor('claudecode').implemented)
   })
 })

@@ -1,38 +1,4 @@
-/**
- * Bridge hook-event parity matrix.
- *
- * `token-goat bridges-status` is read-only introspection: it never invokes a
- * real external harness binary. The matrix below is a hand-maintained,
- * hardcoded snapshot of what each bridge module in `src/bridges/` actually
- * wires, verified by reading each bridge's install writer and hook shim
- * directly (not guessed) -- see each row's `sourceFile` and, for a gap, its
- * `reasons` entry, which quotes or paraphrases the bridge module's own
- * documented explanation where one exists.
- *
- * Columns are `HOOK_EVENTS` (`src/types.ts`) -- the closed set of internal
- * hook event names every bridge shim validates against and every bridge
- * install writer maps its harness-native event names onto. This is the one
- * concrete, verifiable "shared interface" surface `types.ts`'s thin
- * `BridgeConfig` (harness / hookScriptPath / hookSpecificOutput) doesn't
- * itself enumerate.
- *
- * `hermes` and `generic` are deliberately excluded: `hermes` has no
- * install-writer at all (see `bridges/types.ts`'s `HarnessName` docstring --
- * it's a real detectable identity, but not a bridge module with anything to
- * introspect), and `generic` is the no-signal-matched fallback, not a harness.
- *
- * This file must be kept in sync by hand when a bridge's wiring changes --
- * there is deliberately no dynamic source-parsing here (that would be fragile
- * against comment drift and wouldn't work against the built bundle, where
- * bridge source comments don't exist). `tests/bridges_status.test.ts` guards
- * against silent drift two ways: for `codex` and `grok` (the two bridges with
- * a self-contained, easily isolated install writer) it actually runs the real
- * installer against a temp `$HOME` and diffs the resulting config's wired
- * events against this file's `implemented` set; for the rest it greps each
- * bridge's own source file for the exact phrase this file's `reasons` entry
- * is paraphrasing, so a docstring rewrite that changes the documented
- * capability set fails the test instead of leaving this file stale.
- */
+/** Bridge hook-event parity matrix. `token-goat bridges-status` is read-only introspection: it never invokes a real external harness binary. The matrix below is a hand-maintained, hardcoded snapshot of what each bridge module in `src/bridges/` actually wires, verified by reading each bridge's install writer and hook shim directly (not guessed) -- see each row's `sourceFile` and, for a gap, its `reasons` entry, which quotes or paraphrases the bridge module's own documented explanation where one exists. Columns are `HOOK_EVENTS` (`src/types.ts`) -- the closed set of internal hook event names every bridge shim validates against and every bridge install writer maps its harness-native event names onto. This is the one concrete, verifiable "shared interface" surface `types.ts`'s thin `BridgeConfig` (harness / hookScriptPath / hookSpecificOutput) doesn't itself enumerate. `hermes` and `generic` are deliberately excluded: `hermes` has no install-writer at all (see `bridges/types.ts`'s `HarnessName` docstring -- it's a real detectable identity, but not a bridge module with anything to introspect), and `generic` is the no-signal-matched fallback, not a harness. This file must be kept in sync by hand when a bridge's wiring changes -- there is deliberately no dynamic source-parsing here (that would be fragile against comment drift and wouldn't work against the built bundle, where bridge source comments don't exist). `tests/bridges_status.test.ts` guards against silent drift two ways: for `codex` and `grok` (the two bridges with a self-contained, easily isolated install writer) it actually runs the real installer against a temp `$HOME` and diffs the resulting config's wired events against this file's `implemented` set; for the rest it greps each bridge's own source file for the exact phrase this file's `reasons` entry is paraphrasing, so a docstring rewrite that changes the documented capability set fails the test instead of leaving this file stale. */
 
 import { HOOK_EVENTS, type HookEventName } from './types.js'
 import type { HarnessName } from './bridges/types.js'
@@ -56,72 +22,24 @@ export interface BridgeCapabilityRow {
   readonly reasons: ReadonlyArray<{ readonly events: readonly HookEventName[]; readonly reason: string }>
 }
 
-/**
- * `notification` and `stop` have zero `registerHook('notification', ...)` /
- * `registerHook('stop', ...)` call sites anywhere in `src/` (confirmed via a
- * full-repo grep of `registerHook(` -- every real handler registers against
- * `pre_tool_use`, `post_tool_use`, `pre_compact`, `user_prompt_submit`, or
- * `subagent_stop`). No bridge wiring either event would currently do
- * anything: token-goat's own relay has no server-side handler to dispatch to.
- * Shared reason text for the several rows below that cite it.
- */
+/** `notification` and `stop` have zero `registerHook('notification', ...)` / `registerHook('stop', ...)` call sites anywhere in `src/` (confirmed via a full-repo grep of `registerHook(` -- every real handler registers against `pre_tool_use`, `post_tool_use`, `pre_compact`, `user_prompt_submit`, or `subagent_stop`). No bridge wiring either event would currently do anything: token-goat's own relay has no server-side handler to dispatch to. Shared reason text for the several rows below that cite it. */
 const NO_SERVER_HANDLER_REASON =
   "token-goat has no registered server-side handler for this event (zero registerHook('notification'|'stop', ...) call sites in src/) -- wiring it client-side would currently be a no-op"
 
-/**
- * `post_compact` is Claude Code's own event, confirmed by reading the installed binary: its hook
- * input schema declares `hook_event_name: "PostCompact"` with a `compact_summary` string, and the
- * runner hands a hook the finished summary verbatim. No other harness here has been shown to have
- * an equivalent. Several have something adjacent -- pi emits `session_compact` and opencode
- * `experimental.session.compacting` -- but neither bridge forwards a summary, and the Claude Code
- * forks (grok, qwen, kimi) have not been re-checked against their own hooks docs. Left unwired
- * rather than guessed at, the same standard every other row's gaps are held to.
- */
+/** `post_compact` is Claude Code's own event, confirmed by reading the installed binary: its hook input schema declares `hook_event_name: "PostCompact"` with a `compact_summary` string, and the runner hands a hook the finished summary verbatim. No other harness here has been shown to have an equivalent. Several have something adjacent -- pi emits `session_compact` and opencode `experimental.session.compacting` -- but neither bridge forwards a summary, and the Claude Code forks (grok, qwen, kimi) have not been re-checked against their own hooks docs. Left unwired rather than guessed at, the same standard every other row's gaps are held to. */
 const NO_POST_COMPACT_EVENT_REASON =
   "post_compact is a Claude Code event (hook_event_name PostCompact, carrying compact_summary); no equivalent has been confirmed for this harness, so it is left unwired rather than guessed at"
 
-/**
- * Only Copilot CLI is known to route a failed tool result to its own event. Every other harness
- * here either delivers failures on its ordinary post-tool event or is not known to distinguish
- * them at all, and this deliberately asserts the second thing about token-goat rather than the
- * first thing about the harness: what is being stated is that no separate failure event is wired,
- * not that the harness lacks one. Establishing the latter would need the same bundle-level read
- * that was done for Copilot, and it has not been done for these.
- */
+/** Only Copilot CLI and Claude Code are known to route a failed tool result to its own event (Claude Code's PostToolUseFailure was captured on 2.1.281, and that row wires it). Every other harness here either delivers failures on its ordinary post-tool event or is not known to distinguish them at all, and this deliberately asserts the second thing about token-goat rather than the first thing about the harness: what is being stated is that no separate failure event is wired, not that the harness lacks one. Establishing the latter would need the same bundle-level read that was done for Copilot, and it has not been done for these. */
 const NO_SEPARATE_FAILURE_EVENT_REASON =
-  'post_tool_use_failure exists because Copilot CLI routes a failed tool result to a separate postToolUseFailure event instead of postToolUse. No separate failure event is wired for this harness, so a failed tool call either arrives on post_tool_use like any other result or is not seen; which of the two has not been checked here'
+  'post_tool_use_failure exists because Copilot CLI (postToolUseFailure) and Claude Code (PostToolUseFailure) route a failed tool result to a separate event instead of their post-tool one. No separate failure event is wired for this harness, so a failed tool call either arrives on post_tool_use like any other result or is not seen; which of the two has not been checked here'
 
 
-/**
- * Copilot CLI is the one harness where this has actually been checked rather than left open, so it
- * gets its own reason. Read from the installed Copilot CLI 1.0.79 (`app.js` and
- * `schemas/api.schema.json`): the `HookType` enum lists `preCompact` and has no `postCompact`
- * member at all, and both `preCompact` call sites are a bare
- * `await this.nativeHookProcessor?.event("preCompact", ...)` whose return value is never assigned
- * -- so unlike `notification`, which reads `.additionalContext` off the same runner, nothing there
- * consumes a pre-compaction hook's output either. That is also why copilot keeps the JSON wrapper
- * on `pre_compact` (see EVENTS_WITH_RAW_STDOUT_CONTEXT in src/hook_registry.ts): there is nothing
- * on the other end to read bare text.
- */
+/** Copilot CLI is the one harness where this has actually been checked rather than left open, so it gets its own reason. Read from the installed Copilot CLI 1.0.79 (`app.js` and `schemas/api.schema.json`): the `HookType` enum lists `preCompact` and has no `postCompact` member at all, and both `preCompact` call sites are a bare `await this.nativeHookProcessor?.event("preCompact", ...)` whose return value is never assigned -- so unlike `notification`, which reads `.additionalContext` off the same runner, nothing there consumes a pre-compaction hook's output either. That is also why copilot keeps the JSON wrapper on `pre_compact` (see EVENTS_WITH_RAW_STDOUT_CONTEXT in src/hook_registry.ts): there is nothing on the other end to read bare text. */
 const COPILOT_NO_POST_COMPACT_REASON =
   "Copilot CLI has no post-compaction hook: its HookType enum (schemas/api.schema.json, 1.0.79 and 1.0.80) declares preCompact and no postCompact, and both preCompact call sites in app.js await the hook and never assign its result. Whether the summary is reachable another way is open. app.js does emit session.compaction_complete carrying summaryContent, and the session event writer subscribes to '*' -- but emit() vs emitEphemeral() does NOT gate that writer: dispatchEventHandlers runs outside the ephemeral branch in emitInternal, on('*') early-returns past every filter, and the writer's callback applies no filter of its own before handing the JSON to native recordEventJson. The durable-vs-ephemeral decision is in Rust (api_session_event_writer.rs) and was not readable. Nor is the event uniformly summary-bearing: two of the four emit sites are the branches taken when no summary exists, summaryContent is optional in the schema, and the relay session class emits the same event via emitEphemeral. No compaction has ever been observed on the machines checked, so nothing empirical anchors any of it. Context can be written back on the next turn through userPromptSubmitted additionalContext"
 
-/**
- * How a bridge row's claims were established -- strictly by evidence recorded *in this repository*,
- * never by recollection that someone once tried it.
- *
- * The distinction is load-bearing rather than decorative. Four features have shipped from here
- * wired, tested, green and inert, and every one was caught by running the real thing -- never by a
- * check written from the same understanding that produced the bug. A row saying `documented` is not
- * an apology: it is the honest statement that its guarantee comes from reading, so the failure mode
- * that reading cannot catch is still open on it.
- *
- * - `dogfooded`: some part of the wired path has been driven against the real harness binary, and
- *   the repo records which version and when.
- * - `sourced`: the wire format was read out of the harness's own source or published declarations
- *   -- stronger than prose, still not a run.
- * - `documented`: wired from the harness's documentation, with no source read and no run.
- */
+/** How a bridge row's claims were established -- strictly by evidence recorded *in this repository*, never by recollection that someone once tried it. The distinction is load-bearing rather than decorative. Four features have shipped from here wired, tested, green and inert, and every one was caught by running the real thing -- never by a check written from the same understanding that produced the bug. A row saying `documented` is not an apology: it is the honest statement that its guarantee comes from reading, so the failure mode that reading cannot catch is still open on it. - `dogfooded`: some part of the wired path has been driven against the real harness binary, and the repo records which version and when. - `sourced`: the wire format was read out of the harness's own source or published declarations -- stronger than prose, still not a run. - `documented`: wired from the harness's documentation, with no source read and no run. */
 export type BridgeVerification = 'dogfooded' | 'sourced' | 'documented'
 
 /** Ordered strongest-first, for rendering and for the install-time notice. */
@@ -146,9 +64,8 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     verification: 'dogfooded',
     verificationNote:
       "The harness this repo is developed and released under; CLAUDE.md requires every CLI/hook change be run against the built binary here before it ships.",
-    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
+    implemented: new Set(['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [
-      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
     ],
   },
@@ -189,55 +106,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       },
     ],
   },
-  /**
-   * What Copilot CLI's wired events can actually carry, read from the shipping 1.0.80 bundle
-   * rather than from its hooks reference page. A row's `implemented` set says an event is wired;
-   * it deliberately says nothing about how much of that event's response the harness honors, and
-   * for Copilot the difference matters:
-   *
-   * - `pre_tool_use` deny is real, and the reason text reaches the model. The native string table
-   *   (runtime.node offset 98057208) carries `permissionDecision`, `permissionDecisionReason`, the
-   *   default "No reason provided." and the formatter "Denied by preToolUse hook: " as distinct
-   *   literals, and app.js sets `{textResultForLlm: reason, resultType: "denied"}` per denial and
-   *   filters that call out of execution. This was previously only an inference drawn from an
-   *   incident comment; it is now confirmed. The fail-closed "(hook errored)" deny-all strings sit
-   *   beside these, so that incident was behavior layered on top of a working deny handler, not a
-   *   substitute for one.
-   * - `post_tool_use` honors `modifiedResult`, so compression, injection fencing and image shrink
-   *   do reach the model: `postToolExecution` (app.js offset 2043150) assigns the returned
-   *   `toolResultJson` onto the tool result in place.
-   * - `post_tool_use` drops `additionalContext` on the JS path -- no supplier for the
-   *   `onAdditionalContext` callback anywhere in the bundle, and no `additional_contexts` key in
-   *   that event's native return payload, unlike its pre-tool sibling. Whether native folds it
-   *   into the returned result instead was not verified.
-   * - Failed tool calls never reach `post_tool_use` at all. Copilot routes them to a separate
-   *   `postToolUseFailure` event, which is handed only a stringified error and honors only
-   *   `additionalContext`; `modifiedResult` is documented as not honored there. So on Copilot the
-   *   output of a failed tool call reaches the model unfenced, uncompressed and unshrunk, and no
-   *   response shape token-goat's shim can emit changes that. Known gap, deliberately recorded.
-   *   What `additionalContext` does on that event is no longer doc-derived: app.js offset 2043380
-   *   reads the native processor's return and, when it carries `additionalContext`, either folds
-   *   it into `textResultForLlm` (if `appendFailureContextToToolResult` is set) or formats it and
-   *   pushes `{content, source: "system"}` onto `toolResult.newMessages`. So the channel is real
-   *   and model-visible -- it just carries advice alongside the failure, never a replacement for
-   *   it. It is wired now, as its own `post_tool_use_failure` event rather than a reuse of
-   *   `post_tool_use`: routing failures through the success event would let success-path handlers
-   *   mark a file as successfully read when the read failed. Because the channel spends tokens
-   *   instead of saving them, its handler (`src/hooks_tool_failure.ts`) stays silent on a first
-   *   failure and speaks only on an exact repeat.
-   * - `pre_compact` is wired and fires, but nothing it returns can reach the model. Both dispatch
-   *   sites call it in statement position and drop the result: app.js offset 2467452 (the manual
-   *   `/compact` path) and offset 2571216 (`case "execute_pre_compact_hook"`). The contrast is
-   *   what makes this conclusive rather than an absence of evidence -- the same `event()` runner's
-   *   return IS read for other events, e.g. `notification` at offset 2296123 assigns it and
-   *   forwards `additionalContext` as a prepended system prompt. The compaction prompt is then
-   *   built from session history and the user's own focus text, with no hook channel into it.
-   *   So token-goat's `pre_compact` registration here is observe-only by construction, not merely
-   *   unused: a future attempt to inject a session manifest through it would silently do nothing.
-   *   Not verified: whether the native declarative runner applies `additionalContext` itself. The
-   *   trail ends in stripped Rust. That it would make the explicit JS handling for `notification`
-   *   and `userPromptSubmitted` redundant is an argument, not a proof.
-   */
+  /** What Copilot CLI's wired events can actually carry, read from the shipping 1.0.80 bundle rather than from its hooks reference page. A row's `implemented` set says an event is wired; it deliberately says nothing about how much of that event's response the harness honors, and for Copilot the difference matters: - `pre_tool_use` deny is real, and the reason text reaches the model. The native string table (runtime.node offset 98057208) carries `permissionDecision`, `permissionDecisionReason`, the default "No reason provided." and the formatter "Denied by preToolUse hook: " as distinct literals, and app.js sets `{textResultForLlm: reason, resultType: "denied"}` per denial and filters that call out of execution. This was previously only an inference drawn from an incident comment; it is now confirmed. The fail-closed "(hook errored)" deny-all strings sit beside these, so that incident was behavior layered on top of a working deny handler, not a substitute for one. - `post_tool_use` honors `modifiedResult`, so compression, injection fencing and image shrink do reach the model: `postToolExecution` (app.js offset 2043150) assigns the returned `toolResultJson` onto the tool result in place. - `post_tool_use` drops `additionalContext` on the JS path -- no supplier for the `onAdditionalContext` callback anywhere in the bundle, and no `additional_contexts` key in that event's native return payload, unlike its pre-tool sibling. Whether native folds it into the returned result instead was not verified. - Failed tool calls never reach `post_tool_use` at all. Copilot routes them to a separate `postToolUseFailure` event, which is handed only a stringified error and honors only `additionalContext`; `modifiedResult` is documented as not honored there. So on Copilot the output of a failed tool call reaches the model unfenced, uncompressed and unshrunk, and no response shape token-goat's shim can emit changes that. Known gap, deliberately recorded. What `additionalContext` does on that event is no longer doc-derived: app.js offset 2043380 reads the native processor's return and, when it carries `additionalContext`, either folds it into `textResultForLlm` (if `appendFailureContextToToolResult` is set) or formats it and pushes `{content, source: "system"}` onto `toolResult.newMessages`. So the channel is real and model-visible -- it just carries advice alongside the failure, never a replacement for it. It is wired now, as its own `post_tool_use_failure` event rather than a reuse of `post_tool_use`: routing failures through the success event would let success-path handlers mark a file as successfully read when the read failed. Because the channel spends tokens instead of saving them, its handler (`src/hooks_tool_failure.ts`) stays silent on a first failure and speaks only on an exact repeat. - `pre_compact` is wired and fires, but nothing it returns can reach the model. Both dispatch sites call it in statement position and drop the result: app.js offset 2467452 (the manual `/compact` path) and offset 2571216 (`case "execute_pre_compact_hook"`). The contrast is what makes this conclusive rather than an absence of evidence -- the same `event()` runner's return IS read for other events, e.g. `notification` at offset 2296123 assigns it and forwards `additionalContext` as a prepended system prompt. The compaction prompt is then built from session history and the user's own focus text, with no hook channel into it. So token-goat's `pre_compact` registration here is observe-only by construction, not merely unused: a future attempt to inject a session manifest through it would silently do nothing. Not verified: whether the native declarative runner applies `additionalContext` itself. The trail ends in stripped Rust. That it would make the explicit JS handling for `notification` and `userPromptSubmitted` redundant is an argument, not a proof. */
   {
     harness: 'copilot_cli',
     label: 'Copilot CLI',
@@ -465,10 +334,7 @@ export function formatBridgesStatus(matrix: readonly BridgeCapabilityRow[] = BRI
     lines.push([row.harness.padEnd(harnessWidth), ...cells, score, row.verification.padEnd(verifyWidth)].join('  '))
   }
 
-  // A score column on its own invites reading every row as equally established. It is not: the
-  // score says which events are *wired*, and wiring is exactly what has shipped inert before. This
-  // section says how each row's claim was actually established, so a reader can tell a bridge that
-  // has been run from one that has only been read about.
+  // A score column on its own invites reading every row as equally established. It is not: the score says which events are *wired*, and wiring is exactly what has shipped inert before. This section says how each row's claim was actually established, so a reader can tell a bridge that has been run from one that has only been read about.
   lines.push('')
   lines.push('## How each row was established')
   for (const level of Object.keys(VERIFICATION_RANK) as BridgeVerification[]) {
@@ -493,16 +359,7 @@ export function formatBridgesStatus(matrix: readonly BridgeCapabilityRow[] = BRI
   return lines.join('\n')
 }
 
-/**
- * The one-line caveat to print when a bridge is installed, or `null` for a bridge that has been
- * driven against its real harness.
- *
- * Installing a bridge currently prints a path and nothing else, which reads as a guarantee the
- * project cannot make for most of them: nine of the ten bridges have never been run against the
- * harness they target, and the failure that produces is silent by construction -- hooks fire,
- * exit clean, and change nothing. Saying so at the moment of install is the only point where the
- * person who could notice is actually looking.
- */
+/** The one-line caveat to print when a bridge is installed, or `null` for a bridge that has been driven against its real harness. Installing a bridge currently prints a path and nothing else, which reads as a guarantee the project cannot make for most of them: nine of the ten bridges have never been run against the harness they target, and the failure that produces is silent by construction -- hooks fire, exit clean, and change nothing. Saying so at the moment of install is the only point where the person who could notice is actually looking. */
 export function installVerificationNotice(harness: HarnessName): string | null {
   const row = BRIDGE_CAPABILITY_MATRIX.find((r) => r.harness === harness)
   if (row === undefined || row.verification === 'dogfooded') return null

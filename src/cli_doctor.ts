@@ -19,7 +19,7 @@ import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
-import { claudeHookScriptPath, isInstalled } from './install.js'
+import { claudeHookScriptPath, isInstalled, missingHookEvents } from './install.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
 import { codexHookScriptPath } from './bridges/codex_install.js'
@@ -60,6 +60,7 @@ import {
   checkVscodeUserScopeHooks,
   VSCODE_DOUBLE_FIRE_NOTE,
   checkVscodeClaudeHooks,
+  checkClaudeHookEvents,
   dedupeByResolvedPath,
   checkVisualStudio,
   checkZed,
@@ -90,6 +91,7 @@ export {
   checkVscodeUserScopeHooks,
   VSCODE_DOUBLE_FIRE_NOTE,
   checkVscodeClaudeHooks,
+  checkClaudeHookEvents,
   dedupeByResolvedPath,
   checkVisualStudio,
   checkZed,
@@ -978,6 +980,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (copilotResult) results.push(copilotResult)
   const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, isInstalled('user') || !isInstalled('project') ? 'token-goat install' : 'token-goat install --project')
   if (claudeShimResult) results.push(claudeShimResult)
+  const claudeEventsResult = checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })
+  if (claudeEventsResult) results.push(claudeEventsResult)
   const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
   if (codexShimResult) results.push(codexShimResult)
   const vscodeHooksResult = checkVscodeClaudeHooks(

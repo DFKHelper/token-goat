@@ -1,6 +1,4 @@
-/**
- * CLI command registration for session, caching, audit, skill, and note commands.
- */
+/** CLI command registration for session, caching, audit, skill, and note commands. */
 
 import type { Command } from 'commander'
 import { VERSION } from './version.js'
@@ -177,8 +175,17 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
     .alias('audit-session')
     .description('corpus-wide token attribution across every local Claude Code session transcript: measured billed usage, estimated content size by source and by tool, and billed cost by session position (aggregate counts only, never transcript content)')
     .option('--dir <path>', 'transcript corpus root to scan (default: ~/.claude/projects)')
+    .option('--window-days <days>', 'only transcripts whose file was modified in the last N days (0 = all time)', '0')
+    .option('--tool-errors', 'print only the failed-tool-call report: calls, errors, expected failures by reason and unknown ones, per tool and per model, with the top unknown error prefixes')
     .option('--json', 'output JSON')
-    .action(guard(cmdSessionAudit))
+    .action(guard((opts: { dir?: string; json?: boolean; windowDays: string; toolErrors?: boolean }) =>
+      cmdSessionAudit({
+        ...(opts.dir !== undefined ? { dir: opts.dir } : {}),
+        ...(opts.json === true ? { json: true } : {}),
+        ...(opts.toolErrors === true ? { toolErrors: true } : {}),
+        windowDays: requireNonNegativeInt('--window-days', opts.windowDays),
+      }),
+    ))
 
   program
     .command('mcp-audit')

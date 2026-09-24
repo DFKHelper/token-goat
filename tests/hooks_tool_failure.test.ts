@@ -1,7 +1,13 @@
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('../src/stats.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  const real = original['recordStat'] as (...args: unknown[]) => void
+  return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) }
+})
 
 import type { HookEvent } from '../src/hook_registry.js'
 import {
@@ -11,8 +17,12 @@ import {
   MAX_TRACKED_FAILURES,
   postToolUseFailureHandler,
   repeatFailureNotice,
+  REPEAT_NOTICE_EXEMPT,
 } from '../src/hooks_tool_failure.js'
 import { sessionSidecarPath } from '../src/session_store.js'
+import { recordStat } from '../src/stats.js'
+import { EXPECTED_REASONS } from '../src/tool_error_class.js'
+import type { HookOutput } from '../src/types.js'
 
 function failureEvent(sessionId: string, toolName: string, error: string): HookEvent {
   return {
@@ -172,14 +182,9 @@ describe('diagnoseEditFailure', () => {
   })
 
   it('places every match without re-reading the file for each one', () => {
-    // PROVENANCE: CAPTURE. Measured against the loop this replaced: a one-character `old_string`
-    // occurring 100,000 times in a 2 MB file took 1,682 ms, because each match's line number was
-    // computed by slicing the file from character 0 and counting newlines. `MAX_EDIT_DIAGNOSE_BYTES`
-    // admits 10 MB, five times that, and the cost grows with the square. This runs inside a hook, so
-    // the harness waits on it before it can report a failed edit at all.
+    // PROVENANCE: CAPTURE. Measured against the loop this replaced: a one-character `old_string` occurring 100,000 times in a 2 MB file took 1,682 ms, because each match's line number was computed by slicing the file from character 0 and counting newlines. `MAX_EDIT_DIAGNOSE_BYTES` admits 10 MB, five times that, and the cost grows with the square. This runs inside a hook, so the harness waits on it before it can report a failed edit at all.
     //
-    // The ceiling is an order-of-magnitude assertion, not a stopwatch: the linear implementation
-    // does this in tens of milliseconds.
+    // The ceiling is an order-of-magnitude assertion, not a stopwatch: the linear implementation does this in tens of milliseconds.
     const tmpFile = join(tmpdir(), `tg-edit-diag-big-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
     // 40,000 commas spread over 40,000 lines, so the answer is not trivially "all on line 1" either.
     writeFileSync(tmpFile, Array.from({ length: 40_000 }, (_, i) => `field${i}, value${i}${'p'.repeat(20)}`).join('\n'), 'utf8')
@@ -199,8 +204,7 @@ describe('diagnoseEditFailure', () => {
       const elapsed = Date.now() - started
 
       expect(elapsed, 'the hook reads the whole file once per match again').toBeLessThan(2_000)
-      // The other half: returning nothing would also be fast, and the line numbers have to be the
-      // real ones -- the fifth match is on the fifth line, and the count covers every match.
+      // The other half: returning nothing would also be fast, and the line numbers have to be the real ones -- the fifth match is on the fifth line, and the count covers every match.
       expect(diag).toContain('matched 40000 times')
       expect(diag).toContain('lines 1, 2, 3, 4, 5')
     } finally {
@@ -303,5 +307,61 @@ describe('diagnoseEditFailure', () => {
         // cleanup best-effort
       }
     }
+  })
+})
+
+// CAPTURE: the two PostToolUseFailure payloads Claude Code 2.1.281 sent on 2026-09-24 (Haiku 4.5, a missing-file Read and `ls nonexistent_dir`), verbatim except the session id, which each test replaces so ledgers stay independent.
+const CAPTURED_READ_FAILURE: Record<string, unknown> = { session_id: 'b0d08203-e7fb-4b9c-b06c-63ee7efc746a', transcript_path: 'C:\\Users\\zelys\\.claude\\projects\\C--Users-zelys-AppData-Local-Temp-tg-capture-proj\\b0d08203-e7fb-4b9c-b06c-63ee7efc746a.jsonl', cwd: 'C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_capture\\proj', prompt_id: 'a5d4b644-942c-4453-ad2e-8cb4ea1ca6cd', permission_mode: 'bypassPermissions', hook_event_name: 'PostToolUseFailure', tool_name: 'Read', tool_input: { file_path: 'C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_capture\\proj\\src\\missing.ts' }, tool_use_id: 'toolu_01T1Ji8eYdfFtedbaFmdqcCV', error: 'File does not exist. Note: your current working directory is C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_capture\\proj.', is_interrupt: false, duration_ms: 2 }
+const CAPTURED_BASH_FAILURE: Record<string, unknown> = { session_id: 'b0d08203-e7fb-4b9c-b06c-63ee7efc746a', transcript_path: 'C:\\Users\\zelys\\.claude\\projects\\C--Users-zelys-AppData-Local-Temp-tg-capture-proj\\b0d08203-e7fb-4b9c-b06c-63ee7efc746a.jsonl', cwd: 'C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_capture\\proj', prompt_id: 'a5d4b644-942c-4453-ad2e-8cb4ea1ca6cd', permission_mode: 'bypassPermissions', hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'ls nonexistent_dir', description: 'List contents of nonexistent directory' }, tool_use_id: 'toolu_01GHfnYcArveWGa5mdHps8M2', error: "Exit code 2\nls: cannot access 'nonexistent_dir': No such file or directory", is_interrupt: false, duration_ms: 3872 }
+
+/** A HookEvent built from a raw payload the way the dispatcher reads it: tool name and input off the payload, the payload itself as `raw`. */
+function payloadEvent(sessionId: string, payload: Record<string, unknown>): HookEvent {
+  return {
+    eventName: 'post_tool_use_failure',
+    toolName: payload['tool_name'] as string,
+    toolInput: payload['tool_input'] as Record<string, unknown>,
+    sessionId,
+    agentId: undefined,
+    raw: { ...payload, session_id: sessionId },
+  }
+}
+
+function repeatTwice(payload: Record<string, unknown>): Array<HookOutput['hookType']> {
+  const session = uniqueSession()
+  return [1, 2].map(() => postToolUseFailureHandler(payloadEvent(session, payload)).hookType)
+}
+
+describe('postToolUseFailureHandler on captured Claude Code payloads', () => {
+  it('advises on the repeat of a captured Read failure and a captured Bash failure', () => {
+    expect(repeatTwice(CAPTURED_READ_FAILURE)).toEqual(['pass', 'context'])
+    expect(repeatTwice(CAPTURED_BASH_FAILURE)).toEqual(['pass', 'context'])
+  })
+
+  it('records one tool_failure stat per failure, carrying the classification in its detail', () => {
+    const mock = recordStat as unknown as { mock: { calls: unknown[][] }; mockClear: () => void }
+    mock.mockClear()
+    postToolUseFailureHandler(payloadEvent(uniqueSession(), CAPTURED_READ_FAILURE))
+    postToolUseFailureHandler(payloadEvent(uniqueSession(), { ...CAPTURED_BASH_FAILURE, error: 'Exit code 1\nTraceback (most recent call last):' }))
+    postToolUseFailureHandler(payloadEvent(uniqueSession(), { ...CAPTURED_BASH_FAILURE, error: 'Exit code 1' }))
+    expect(mock.mock.calls.filter((c) => c[0] === 'tool_failure').map((c) => c[4])).toEqual([
+      'tool=Read class=expected reason=path_not_found',
+      'tool=Bash class=expected reason=script_exception',
+      'tool=Bash class=unknown reason=unclassified',
+    ])
+  })
+
+  it('withholds the repeat notice from an empty search, where a repeated signature was a different call every time in the census', () => {
+    // CAPTURE: an empty `rg` run from the 2026-09-24 transcript census, delivered in the captured Bash payload's shape.
+    expect(repeatTwice({ ...CAPTURED_BASH_FAILURE, tool_input: { command: 'rg "COPILOT_AGENTS_HOME"' }, error: 'Exit code 1' })).toEqual(['pass', 'pass'])
+  })
+
+  it('withholds the repeat notice from an interrupted call and from a hook deny', () => {
+    expect(repeatTwice({ ...CAPTURED_BASH_FAILURE, is_interrupt: true })).toEqual(['pass', 'pass'])
+    // CAPTURE: the tool_result text Claude Code 2.1.281 wrote for a PreToolUse deny, 2026-09-24; Claude Code itself never sends it to this event, other harnesses may.
+    expect(repeatTwice({ ...CAPTURED_BASH_FAILURE, error: 'PreToolUse:Glob hook error: [tg] test deny' })).toEqual(['pass', 'pass'])
+  })
+
+  it('exempts only reasons the classifier can return as expected', () => {
+    expect([...REPEAT_NOTICE_EXEMPT].filter((r) => !EXPECTED_REASONS.includes(r))).toEqual([])
   })
 })

@@ -1,26 +1,4 @@
-/**
- * Install / uninstall token-goat's hooks in Claude Code settings.
- *
- * Ports the `patch_settings_json` / `unpatch_settings_json` slice of
- * `install.py` to TypeScript. Claude Code reads hook wiring from
- * `~/.claude/settings.json` (user scope) or `<project>/.claude/settings.json`
- * (project scope). Each token-goat hook is a `{ type: "command", command: ... }`
- * entry under the matching event key, where the command invokes the generated
- * shim at {@link claudeHookScriptPath} via {@link hookCommandFor} —
- * `"<node>" "<shim>" <event> "<entry>"`.
- *
- * Going through the shim rather than the bare `token-goat hook <event>` PATH
- * lookup buys two things: the shim's in-process fast path imports
- * `dist/token-goat-hook.mjs` and calls `relayInProcess` directly instead of
- * spawning a second process, and naming the node binary explicitly skips the
- * npm bin wrapper (on Windows, a `cmd.exe` layer) that a PATH lookup would pay
- * for on every single hook. Measured at ~480ms → ~324ms per invocation.
- *
- * Writes go through {@link atomicWriteText}; an absent settings file is created
- * with only the hooks section. Installation is idempotent — re-running never
- * duplicates an entry — and uninstall removes only token-goat's own entries
- * plus the generated shim, leaving any user-authored hooks intact.
- */
+/** Install / uninstall token-goat's hooks in Claude Code settings. Ports the `patch_settings_json` / `unpatch_settings_json` slice of `install.py` to TypeScript. Claude Code reads hook wiring from `~/.claude/settings.json` (user scope) or `<project>/.claude/settings.json` (project scope). Each token-goat hook is a `{ type: "command", command: ... }` entry under the matching event key, where the command invokes the generated shim at {@link claudeHookScriptPath} via {@link hookCommandFor} — `"<node>" "<shim>" <event> "<entry>"`. Going through the shim rather than the bare `token-goat hook <event>` PATH lookup buys two things: the shim's in-process fast path imports `dist/token-goat-hook.mjs` and calls `relayInProcess` directly instead of spawning a second process, and naming the node binary explicitly skips the npm bin wrapper (on Windows, a `cmd.exe` layer) that a PATH lookup would pay for on every single hook. Measured at ~480ms → ~324ms per invocation. Writes go through {@link atomicWriteText}; an absent settings file is created with only the hooks section. Installation is idempotent — re-running never duplicates an entry — and uninstall removes only token-goat's own entries plus the generated shim, leaving any user-authored hooks intact. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -53,16 +31,12 @@ export interface InstallResult {
   readonly alreadyInstalled: boolean
 }
 
-/**
- * Claude Code event names token-goat wires, mapped to their internal event arg.
- *
- * The settings key is Claude Code's PascalCase event name; the value is the arg
- * passed to `token-goat hook <event>`, matching the internal HookEventName
- * spellings the relay dispatches on.
- */
+/** Claude Code event names token-goat wires, mapped to their internal event arg. The settings key is Claude Code's PascalCase event name; the value is the arg passed to `token-goat hook <event>`, matching the internal HookEventName spellings the relay dispatches on. */
 const HOOK_EVENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['PreToolUse', 'pre_tool_use'],
   ['PostToolUse', 'post_tool_use'],
+  // A failed call never reaches PostToolUse: Claude Code 2.1.281 sends a missing-file Read and a non-zero Bash exit here instead, carrying `error`, `is_interrupt` and `duration_ms` (captured, 2026-09-24).
+  ['PostToolUseFailure', 'post_tool_use_failure'],
   ['PreCompact', 'pre_compact'],
   ['PostCompact', 'post_compact'],
   ['UserPromptSubmit', 'user_prompt_submit'],
@@ -70,39 +44,16 @@ const HOOK_EVENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['SessionStart', 'session_start'],
 ]
 
-/**
- * Marker substring identifying the CURRENT, shim-based hook command.
- *
- * Deliberately `token-goat-shim` and not `token-goat-hook`: the latter is reserved
- * in {@link LEGACY_COMMAND_MARKERS} for the dead Python-era exe wrapper, so a shim
- * path carrying it would be classified as stale cruft and stripped on every single
- * reinstall -- silently reverting the wiring it had just applied. `bridges/codex_install.ts`
- * hit and solved this exact collision first (`CODEX_COMMAND_MARKER`); this is the same
- * solution ported to the base Claude Code path.
- */
+/** Marker substring identifying the CURRENT, shim-based hook command. Deliberately `token-goat-shim` and not `token-goat-hook`: the latter is reserved in {@link LEGACY_COMMAND_MARKERS} for the dead Python-era exe wrapper, so a shim path carrying it would be classified as stale cruft and stripped on every single reinstall -- silently reverting the wiring it had just applied. `bridges/codex_install.ts` hit and solved this exact collision first (`CODEX_COMMAND_MARKER`); this is the same solution ported to the base Claude Code path. */
 const SHIM_COMMAND_MARKER = 'token-goat-shim'
 
 /** Marker substring identifying the pre-shim `token-goat hook <event>` command. */
 const COMMAND_MARKER = 'token-goat hook'
 
-/**
- * Command substrings from earlier product eras that must still be recognized
- * as token-goat's own, so an upgrade doesn't leave a dead duplicate behind:
- * - `tokenwise` — the pre-rename product name (2026-05-13 rename to token-goat).
- * - `token_goat` — the pre-TS-port Python invocation (`pythonw -m token_goat.cli hook ...`).
- * - `tg-hook` — the Python-era persistent wrapper script (`tg-hook.cmd` / `tg-hook.sh`).
- * - `token-goat-hook` — the Python-era GUI-subsystem exe wrapper (`token-goat-hook.exe`).
- * None of these resolve on a machine running the current build, so a settings.json
- * entry carrying one is always a stale leftover to detect and strip, never a
- * legitimately different install to leave alone.
- */
+/** Command substrings from earlier product eras that must still be recognized as token-goat's own, so an upgrade doesn't leave a dead duplicate behind: - `tokenwise` — the pre-rename product name (2026-05-13 rename to token-goat). - `token_goat` — the pre-TS-port Python invocation (`pythonw -m token_goat.cli hook ...`). - `tg-hook` — the Python-era persistent wrapper script (`tg-hook.cmd` / `tg-hook.sh`). - `token-goat-hook` — the Python-era GUI-subsystem exe wrapper (`token-goat-hook.exe`). None of these resolve on a machine running the current build, so a settings.json entry carrying one is always a stale leftover to detect and strip, never a legitimately different install to leave alone. */
 const LEGACY_COMMAND_MARKERS = ['tokenwise', 'token_goat', 'tg-hook', 'token-goat-hook']
 
-/**
- * Builds a regex that matches `marker` only at a word/path boundary, so a plain
- * substring check can't false-positive on a marker embedded inside a longer
- * identifier (e.g. a user hook literally named `my-token-goat-hook-config`).
- */
+/** Builds a regex that matches `marker` only at a word/path boundary, so a plain substring check can't false-positive on a marker embedded inside a longer identifier (e.g. a user hook literally named `my-token-goat-hook-config`). */
 export function anchoredMarkerPattern(marker: string): RegExp {
   const escaped = escapeRegExp(marker)
   return new RegExp(`(?<![a-zA-Z0-9_-])${escaped}(?![a-zA-Z0-9_-])`)
@@ -168,29 +119,12 @@ function hookEntryMatches(command: string, args: readonly string[] | undefined, 
   return a.length === b.length && a.every((v, i) => v === b[i])
 }
 
-/**
- * Absolute path to the generated Claude Code hook shim.
- *
- * Always under the user's home `~/.claude/hooks`, never the project's, even for a
- * project-scope install: the shim is a generated file whose invocation bakes in
- * absolute machine-specific paths (this node binary, this token-goat entry), so a
- * copy inside a repo would be both useless to a teammate and an unexpected
- * generated artifact in their working tree. A project-scope `settings.json` simply
- * points at the home-scoped shim by absolute path.
- */
+/** Absolute path to the generated Claude Code hook shim. Always under the user's home `~/.claude/hooks`, never the project's, even for a project-scope install: the shim is a generated file whose invocation bakes in absolute machine-specific paths (this node binary, this token-goat entry), so a copy inside a repo would be both useless to a teammate and an unexpected generated artifact in their working tree. A project-scope `settings.json` simply points at the home-scoped shim by absolute path. */
 export function claudeHookScriptPath(): string {
   return path.join(claudeConfigDir(), 'hooks', 'token-goat-shim.js')
 }
 
-/**
- * Does any installed scope still wire a hook command pointing at `scriptPath`?
- *
- * Both scopes share the single home-scoped shim, so uninstalling one must not delete
- * the file the other still depends on. `alreadyStripped` is the in-memory hooks map of
- * the scope currently being uninstalled, passed in because its entries have already been
- * removed there but not yet written to disk -- re-reading that file would see the stale
- * pre-strip content and always report the shim as still needed.
- */
+/** Does any installed scope still wire a hook command pointing at `scriptPath`? Both scopes share the single home-scoped shim, so uninstalling one must not delete the file the other still depends on. `alreadyStripped` is the in-memory hooks map of the scope currently being uninstalled, passed in because its entries have already been removed there but not yet written to disk -- re-reading that file would see the stale pre-strip content and always report the shim as still needed. */
 function anyScopeReferencesShim(
   scriptPath: string,
   currentScope: HookScope,
@@ -244,26 +178,10 @@ interface Settings {
   [key: string]: unknown
 }
 
-/**
- * Thrown by {@link readSettings} in strict mode when the settings file exists
- * but isn't parseable JSON, or parses to something other than a JSON object.
- * A caller about to overwrite the file (installHooks) must let this propagate
- * rather than silently proceeding as if the file were empty -- otherwise a
- * single JSON typo in the user's settings.json gets clobbered on write.
- */
+/** Thrown by {@link readSettings} in strict mode when the settings file exists but isn't parseable JSON, or parses to something other than a JSON object. A caller about to overwrite the file (installHooks) must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single JSON typo in the user's settings.json gets clobbered on write. */
 export class SettingsParseError extends Error {}
 
-/**
- * Parse the settings file at `p`.
- *
- * A missing file always yields `{}` -- that's the legitimate "nothing
- * installed yet" case. When `opts.strict` is true, a file that *exists* but
- * fails to parse (or parses to something other than a JSON object) throws
- * {@link SettingsParseError} instead of returning `{}`, so a caller about to
- * overwrite the file can tell "genuinely empty" apart from "corrupt, do not
- * touch." Non-strict callers (read-only, or a no-op on corrupt) keep the old
- * lenient `{}` fallback.
- */
+/** Parse the settings file at `p`. A missing file always yields `{}` -- that's the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but fails to parse (or parses to something other than a JSON object) throws {@link SettingsParseError} instead of returning `{}`, so a caller about to overwrite the file can tell "genuinely empty" apart from "corrupt, do not touch." Non-strict callers (read-only, or a no-op on corrupt) keep the old lenient `{}` fallback. */
 function readSettings(p: string, opts: { strict?: boolean } = {}): Settings {
   let raw: string
   try {
@@ -308,27 +226,12 @@ function groupHasTokenGoat(
   return false
 }
 
-/**
- * Install token-goat hooks into the `scope` settings file.
- *
- * Reads the existing settings (creating an empty doc when absent), adds any
- * missing current-format token-goat hook entries under each mapped event key,
- * and writes the result atomically. A legacy-only entry for an event key
- * (see {@link LEGACY_COMMAND_MARKERS}) does not count as already installed --
- * it is stripped and replaced with the current command, so an upgrade from a
- * tokenwise/token_goat-era install ends up with exactly one, working, entry
- * per event key rather than a dead leftover sitting next to a new one.
- * `alreadyInstalled` is true when nothing had to change.
- */
+/** Install token-goat hooks into the `scope` settings file. Reads the existing settings (creating an empty doc when absent), adds any missing current-format token-goat hook entries under each mapped event key, and writes the result atomically. A legacy-only entry for an event key (see {@link LEGACY_COMMAND_MARKERS}) does not count as already installed -- it is stripped and replaced with the current command, so an upgrade from a tokenwise/token_goat-era install ends up with exactly one, working, entry per event key rather than a dead leftover sitting next to a new one. `alreadyInstalled` is true when nothing had to change. */
 export function installHooks(scope: HookScope = 'user'): InstallResult {
   return withInstallScope(hookScopeRoot(scope), () => installHooksScoped(scope))
 }
 
-/**
- * The confinement root for a hook scope. `'project'` writes `<cwd>/.claude/settings.json`, so the
- * cwd is the root; `'user'` writes under the home directory and is deliberately unconfined, for
- * the dotfiles-symlink reason bridges/project_scope_guard.ts spells out.
- */
+/** The confinement root for a hook scope. `'project'` writes `<cwd>/.claude/settings.json`, so the cwd is the root; `'user'` writes under the home directory and is deliberately unconfined, for the dotfiles-symlink reason bridges/project_scope_guard.ts spells out. */
 function hookScopeRoot(scope: HookScope): string | undefined {
   return scope === 'project' ? normalizeDarwinSystemAlias(process.cwd()) : undefined
 }
@@ -341,12 +244,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
 
   // The shim is a generated, never-user-edited file: refresh it on every install call so it tracks the running token-goat version, independent of whether the settings.json wiring itself needs any change. Mirrors bridges/codex_install.ts. writeIfDifferent rather than an unconditional atomicWriteText so a genuine no-op install touches nothing on disk, and so a repaired shim (user deleted ~/.claude/hooks, or an older build left stale content) counts as a real change via `scriptChanged` -- reporting "already installed" while having just rewritten the file the hooks depend on would be a lie to anyone running install precisely to repair it.
   const scriptPath = claudeHookScriptPath()
-  // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at
-  // `~/.claude/hooks/token-goat-shim.js` (see uninstallHooks' anyScopeReferencesShim) -- so this
-  // write is declared user scope explicitly rather than inheriting the project confinement, which
-  // would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the
-  // user's own directory, and a dotfiles symlink pointing it elsewhere is the setup
-  // bridges/project_scope_guard.ts deliberately allows.
+  // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at `~/.claude/hooks/token-goat-shim.js` (see uninstallHooks' anyScopeReferencesShim) -- so this write is declared user scope explicitly rather than inheriting the project confinement, which would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the user's own directory, and a dotfiles symlink pointing it elsewhere is the setup bridges/project_scope_guard.ts deliberately allows.
   const scriptChanged = withInstallScope(undefined, () => {
     ensureDirSync(path.dirname(scriptPath))
     return writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
@@ -376,11 +274,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
 
     const isOurs = (command: string, args?: readonly string[]): boolean => hookEntryMatches(command, args, expected)
     if (groupHasTokenGoat(groups, isOurs)) {
-      // Re-narrow an already-installed entry. Without this the matcher improvement
-      // below would only ever reach brand-new installs: every existing user would
-      // keep the catch-all they were installed with and see no benefit. Only groups
-      // whose hooks are all token-goat's own are touched -- a group the user has
-      // added their own commands to is left exactly as-is.
+      // Re-narrow an already-installed entry. Without this the matcher improvement below would only ever reach brand-new installs: every existing user would keep the catch-all they were installed with and see no benefit. Only groups whose hooks are all token-goat's own are touched -- a group the user has added their own commands to is left exactly as-is.
       const narrowed = toolMatcherFor(eventArg as HookEventName)
       let renarrowed = false
       if (narrowed !== null) {
@@ -402,12 +296,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
       continue
     }
 
-    // Narrow the matcher to the tools this event actually has handlers for. Claude
-    // Code spawns a process per matcher hit and ~90% of that cost is Node startup plus
-    // bundle evaluation, so a catch-all makes every unhandled tool pay full price twice
-    // (pre + post). toolMatcherFor returns null when narrowing would be unsafe -- a
-    // non-tool event, or a handler that really does want everything -- and the
-    // catch-all is the correct answer then.
+    // Narrow the matcher to the tools this event actually has handlers for. Claude Code spawns a process per matcher hit and ~90% of that cost is Node startup plus bundle evaluation, so a catch-all makes every unhandled tool pay full price twice (pre + post). toolMatcherFor returns null when narrowing would be unsafe -- a non-tool event, or a handler that really does want everything -- and the catch-all is the correct answer then.
     const matcher = toolMatcherFor(eventArg as HookEventName) ?? ''
     groups.push({ matcher, hooks: [{ type: 'command', command: expected.command, ...(expected.args !== undefined ? { args: expected.args } : {}) }] })
     hooks[eventKey] = groups
@@ -426,14 +315,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
   return { scope, settingsPath: p, alreadyInstalled: false }
 }
 
-/**
- * Remove token-goat hooks from the `scope` settings file.
- *
- * Strips every hook entry whose command targets `token-goat hook ...`, prunes
- * now-empty matcher groups and event keys, and drops the `hooks` section if it
- * becomes empty. Returns true when at least one entry was removed; false when
- * none were present (no write occurs in that case).
- */
+/** Remove token-goat hooks from the `scope` settings file. Strips every hook entry whose command targets `token-goat hook ...`, prunes now-empty matcher groups and event keys, and drops the `hooks` section if it becomes empty. Returns true when at least one entry was removed; false when none were present (no write occurs in that case). */
 export function uninstallHooks(scope: HookScope = 'user'): boolean {
   return withInstallScope(hookScopeRoot(scope), () => uninstallHooksScoped(scope))
 }
@@ -450,13 +332,7 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   const scriptPath = claudeHookScriptPath()
   let removedScript = false
   if (!anyScopeReferencesShim(scriptPath, scope, hooks)) {
-    // Declared USER scope explicitly, exactly as the matching write in installHooksScoped is: the
-    // shim lives at `~/.claude/hooks/token-goat-shim.js` and is shared by both scopes, so under a
-    // project-scope uninstall the ambient confinement would refuse to remove it. Removal has to be
-    // symmetric with the write or `uninstall --project` leaves the file it installed behind --
-    // which is what the built-bundle matrix caught the first time this was routed through the
-    // scope-checked helper without the wrapper.
-    // Already-absent is not an error, which is exactly removeFileInScope's contract.
+    // Declared USER scope explicitly, exactly as the matching write in installHooksScoped is: the shim lives at `~/.claude/hooks/token-goat-shim.js` and is shared by both scopes, so under a project-scope uninstall the ambient confinement would refuse to remove it. Removal has to be symmetric with the write or `uninstall --project` leaves the file it installed behind -- which is what the built-bundle matrix caught the first time this was routed through the scope-checked helper without the wrapper. Already-absent is not an error, which is exactly removeFileInScope's contract.
     removedScript = withInstallScope(undefined, () => removeFileInScope(scriptPath))
   }
 
@@ -474,31 +350,27 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   return true
 }
 
-/**
- * Are token-goat hooks installed in `scope`?
- *
- * True only when every mapped event key carries a *current-format*
- * token-goat hook command — a legacy-only entry does not count, since it is
- * dead on this build, and a partial install (some events wired, some not)
- * reads as not installed so {@link installHooks} will top up the missing
- * entries.
- */
+/** Are token-goat hooks installed in `scope`? True only when every mapped event key carries a *current-format* token-goat hook command — a legacy-only entry does not count, since it is dead on this build, and a partial install (some events wired, some not) reads as not installed so {@link installHooks} will top up the missing entries. */
 export function isInstalled(scope: HookScope = 'user'): boolean {
-  const settings = readSettings(settingsPath(scope))
-  const hooks = settings.hooks
-  if (hooks === undefined) return false
-  const scriptPath = claudeHookScriptPath()
   // A wired command whose baked shim path no longer exists on disk cannot fire, so it must read as not-installed and let installHooks regenerate it -- otherwise a user who deleted ~/.claude/hooks would be told they are installed while every hook silently no-ops.
-  if (!fs.existsSync(scriptPath)) return false
-  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
-    const expected = expectedHookEntryFor(scriptPath, eventArg)
-    if (!groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected))) return false
-  }
-  return true
+  if (!fs.existsSync(claudeHookScriptPath())) return false
+  const missing = missingHookEvents(scope)
+  return missing !== null && missing.length === 0
 }
 
-// --- CLAUDE.md delimited-block writer ---
-// README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
+/** Claude Code event keys in `scope` that lack this build's exact hook entry, or null when the scope wires no token-goat hook at all, so there is no install there to be partial. A release that adds an event reaches an existing user only when `token-goat install` (or `upgrade`, which re-runs it) tops the key up; this is how `doctor` says so in the meantime. */
+export function missingHookEvents(scope: HookScope = 'user'): string[] | null {
+  const hooks = readSettings(settingsPath(scope)).hooks
+  if (hooks === undefined) return null
+  if (!HOOK_EVENT_MAP.some(([eventKey]) => groupHasTokenGoat(hooks[eventKey], isTokenGoatHookCommand))) return null
+  const scriptPath = claudeHookScriptPath()
+  return HOOK_EVENT_MAP.filter(([eventKey, eventArg]) => {
+    const expected = expectedHookEntryFor(scriptPath, eventArg)
+    return !groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected))
+  }).map(([eventKey]) => eventKey)
+}
+
+// --- CLAUDE.md delimited-block writer --- README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
 
 const CLAUDE_MD_BEGIN = '<!-- token-goat-begin -->'
 const CLAUDE_MD_END = '<!-- token-goat-end -->'
@@ -544,28 +416,7 @@ export function uninstallClaudeMd(): boolean {
   return stripClaudeMdBlock(claudeMdPath())
 }
 
-/**
- * Find token-goat marker blocks sitting in some markdown file *other* than
- * `~/.claude/CLAUDE.md`.
- *
- * The block is plain markdown in a file the user is explicitly told they own and edit, so
- * relocating it into a tidier "reference" file is a natural thing to do -- and it silently
- * breaks: {@link installClaudeMd} and {@link uninstallClaudeMd} both resolve the single
- * hardcoded {@link claudeMdPath}, so a relocated copy is never refreshed (it freezes at
- * whatever version was current when it moved) and never removed on uninstall. Worse, the next
- * install sees CLAUDE.md missing its block and appends a fresh one, leaving the guidance
- * duplicated across two files with only one of them live.
- *
- * Detection only -- callers report; nothing here edits or deletes a user's file.
- *
- * Matches a real block, not a mention of one: both markers must appear on their own lines.
- * Prose that references `<!-- token-goat-begin -->` inline -- a pointer explaining where the
- * managed block actually lives, which is exactly what a user is told to leave behind after
- * relocating one -- would otherwise be flagged forever as the very thing it documents.
- *
- * Bounded walk: skips `node_modules`/`.git`, caps depth, and ignores symlinked directories
- * (`Dirent.isDirectory()` is false for a symlink), so it cannot loop.
- */
+/** Find token-goat marker blocks sitting in some markdown file *other* than `~/.claude/CLAUDE.md`. The block is plain markdown in a file the user is explicitly told they own and edit, so relocating it into a tidier "reference" file is a natural thing to do -- and it silently breaks: {@link installClaudeMd} and {@link uninstallClaudeMd} both resolve the single hardcoded {@link claudeMdPath}, so a relocated copy is never refreshed (it freezes at whatever version was current when it moved) and never removed on uninstall. Worse, the next install sees CLAUDE.md missing its block and appends a fresh one, leaving the guidance duplicated across two files with only one of them live. Detection only -- callers report; nothing here edits or deletes a user's file. Matches a real block, not a mention of one: both markers must appear on their own lines. Prose that references `<!-- token-goat-begin -->` inline -- a pointer explaining where the managed block actually lives, which is exactly what a user is told to leave behind after relocating one -- would otherwise be flagged forever as the very thing it documents. Bounded walk: skips `node_modules`/`.git`, caps depth, and ignores symlinked directories (`Dirent.isDirectory()` is false for a symlink), so it cannot loop. */
 export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
   const root = searchRoot ?? claudeConfigDir()
   const canonical = path.resolve(claudeMdPath())
@@ -615,19 +466,9 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
   return found.sort()
 }
 
-// --- token-goat skill writer ---
-// README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form", run under the same wantsClaudeCodeBase gate as the CLAUDE.md block above, never by a scoped harness flag. Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
+// --- token-goat skill writer --- README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form", run under the same wantsClaudeCodeBase gate as the CLAUDE.md block above, never by a scoped harness flag. Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
 
-// The frontmatter `description` comes from the shared skillDescriptionLine()
-// (bridges/guidance_block.ts), so the Claude Code and Kimi Code skills cannot
-// drift apart; see that function for why its wording is exempt from the gate
-// phrasing. Only the body (rendered from the shared builder) is the gate.
-// The allowed-tools frontmatter keeps Copilot-style loaders from body-scanning the
-// skill prose and mistaking quoted command names for implicit tool identifiers. It
-// MUST list real harness tool identifiers, not token-goat subcommands: loaders
-// validate every entry against their tool registry and warn on each miss, so a
-// subcommand list here produces one "Unknown tool name in the tool allowlist"
-// warning per entry. token-goat itself runs through the shell tool.
+// The frontmatter `description` comes from the shared skillDescriptionLine() (bridges/guidance_block.ts), so the Claude Code and Kimi Code skills cannot drift apart; see that function for why its wording is exempt from the gate phrasing. Only the body (rendered from the shared builder) is the gate. The allowed-tools frontmatter keeps Copilot-style loaders from body-scanning the skill prose and mistaking quoted command names for implicit tool identifiers. It MUST list real harness tool identifiers, not token-goat subcommands: loaders validate every entry against their tool registry and warn on each miss, so a subcommand list here produces one "Unknown tool name in the tool allowlist" warning per entry. token-goat itself runs through the shell tool.
 function skillMdContent(): string {
   return CANONICAL_SKILL_MD
 }
@@ -670,14 +511,9 @@ export function installSkill(): SkillInstallResult {
 export function uninstallSkill(): boolean {
   const dir = skillDir()
   if (!fs.existsSync(dir)) return false
-  // The directory removal below takes SKILL.md's own timestamped backups with it; this only
-  // drops the now-dangling ledger entries for them, mirroring uninstallHooks's cleanup.
+  // The directory removal below takes SKILL.md's own timestamped backups with it; this only drops the now-dangling ledger entries for them, mirroring uninstallHooks's cleanup.
   removeCreatedBackups(skillPath())
-  // Written out rather than routed through a helper because no helper fits: this is a RECURSIVE
-  // DIRECTORY removal and `removeFileInScope` is deliberately file-only. The check is the same one
-  // the write helpers make. It is a no-op in the user scope this path actually runs in, and that is
-  // the point -- it stops a future project-scoped skill directory being deleted through a
-  // checked-in directory symlink without anyone having to notice this line again.
+  // Written out rather than routed through a helper because no helper fits: this is a RECURSIVE DIRECTORY removal and `removeFileInScope` is deliberately file-only. The check is the same one the write helpers make. It is a no-op in the user scope this path actually runs in, and that is the point -- it stops a future project-scoped skill directory being deleted through a checked-in directory symlink without anyone having to notice this line again.
   assertWriteInScope(dir)
   fs.rmSync(dir, { recursive: true, force: true })
   return true

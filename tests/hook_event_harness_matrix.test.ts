@@ -1,47 +1,4 @@
-/**
- * Hook-event x harness bundle matrix (mirrors tests/command_matrix_e2e.*.test.ts's
- * built-bundle philosophy, applied to hook EVENTS instead of CLI commands).
- *
- * Every harness (Claude Code, Codex, Gemini, grok, Copilot CLI, pi, opencode,
- * OpenClaw, Hermes, and the generic fallback) invokes `token-goat hook <event>`
- * with its own wire-format payload for a subset of the seven HOOK_EVENTS -- not
- * every harness wires up every event; see each bridge's install file. Historical
- * wire-format bugs (Copilot CLI denying every call, a wrong tool-name mapping,
- * Grok's camelCase payload, Codex's additionalProperties:false schema) were
- * only ever found by manual dogfooding, one harness at a time, after shipping,
- * because nothing spawned the REAL built bundle with a REAL per-harness payload
- * across the full event surface. This file closes that gap.
- *
- * The harness x supported-event cross product is derived from source (each
- * bridge's install-time event-list constant, or its embedded callHook(...)
- * script for pi/opencode/openclaw), then cross-checked against a hand-authored
- * EXPECTED_SUPPORTED_EVENTS spec below -- so either a real wiring change in a
- * bridge's source, or an edit to the hand-authored spec that no longer matches
- * source, fails loudly. This is the same "two lists, assert sync" shape
- * tests/guards/cli_registration.test.ts already establishes for CLI commands,
- * plus a compile-time backstop: EXPECTED_SUPPORTED_EVENTS's type
- * (Record<HarnessName, ...>) forces every HarnessName union member to have an
- * entry, so a new harness added to that union without a matching spec entry is
- * a `tsc` error, not a silent runtime gap.
- *
- * Two dispatch mechanisms exist and this file exercises both:
- *  - claudecode/grok/hermes/gemini/generic wire `token-goat hook <event>`
- *    directly into their own settings file with no wrapper script, so the raw
- *    JSON serializeOutput() (src/hook_registry.ts) emits IS their wire
- *    contract -- verified by spawning dist/token-goat.mjs directly.
- *  - codex/copilot_cli reshape that raw JSON through a standalone Node shim
- *    script (CODEX_HOOK_SCRIPT / COPILOT_CLI_HOOK_SCRIPT) before the harness
- *    ever sees it -- verified by spawning the REAL shim script (pointed at the
- *    real bundle via its own entryPath argv), mirroring the runShim() pattern
- *    tests/bridges/shims.test.ts already establishes.
- *  - pi/opencode/openclaw wire hooks as plugin-API modules (callHook(...)
- *    invoked from inside a framework-specific extension export, not a
- *    standalone CLI script with a process.argv/stdin entry point), so they
- *    cannot be spawned and driven end-to-end without also faking each host
- *    framework's own plugin API -- out of scope here. Their deny-reshaping
- *    logic is instead verified statically against their documented native
- *    wire contract (see the last describe block).
- */
+/** Hook-event x harness bundle matrix (mirrors tests/command_matrix_e2e.*.test.ts's built-bundle philosophy, applied to hook EVENTS instead of CLI commands). Every harness (Claude Code, Codex, Gemini, grok, Copilot CLI, pi, opencode, OpenClaw, Hermes, and the generic fallback) invokes `token-goat hook <event>` with its own wire-format payload for a subset of the seven HOOK_EVENTS -- not every harness wires up every event; see each bridge's install file. Historical wire-format bugs (Copilot CLI denying every call, a wrong tool-name mapping, Grok's camelCase payload, Codex's additionalProperties:false schema) were only ever found by manual dogfooding, one harness at a time, after shipping, because nothing spawned the REAL built bundle with a REAL per-harness payload across the full event surface. This file closes that gap. The harness x supported-event cross product is derived from source (each bridge's install-time event-list constant, or its embedded callHook(...) script for pi/opencode/openclaw), then cross-checked against a hand-authored EXPECTED_SUPPORTED_EVENTS spec below -- so either a real wiring change in a bridge's source, or an edit to the hand-authored spec that no longer matches source, fails loudly. This is the same "two lists, assert sync" shape tests/guards/cli_registration.test.ts already establishes for CLI commands, plus a compile-time backstop: EXPECTED_SUPPORTED_EVENTS's type (Record<HarnessName, ...>) forces every HarnessName union member to have an entry, so a new harness added to that union without a matching spec entry is a `tsc` error, not a silent runtime gap. Two dispatch mechanisms exist and this file exercises both: - claudecode/grok/hermes/gemini/generic wire `token-goat hook <event>` directly into their own settings file with no wrapper script, so the raw JSON serializeOutput() (src/hook_registry.ts) emits IS their wire contract -- verified by spawning dist/token-goat.mjs directly. - codex/copilot_cli reshape that raw JSON through a standalone Node shim script (CODEX_HOOK_SCRIPT / COPILOT_CLI_HOOK_SCRIPT) before the harness ever sees it -- verified by spawning the REAL shim script (pointed at the real bundle via its own entryPath argv), mirroring the runShim() pattern tests/bridges/shims.test.ts already establishes. - pi/opencode/openclaw wire hooks as plugin-API modules (callHook(...) invoked from inside a framework-specific extension export, not a standalone CLI script with a process.argv/stdin entry point), so they cannot be spawned and driven end-to-end without also faking each host framework's own plugin API -- out of scope here. Their deny-reshaping logic is instead verified statically against their documented native wire contract (see the last describe block). */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -89,19 +46,7 @@ function extractKnownEvents(block: string, sourceLabel: string): HookEventName[]
   return values as HookEventName[]
 }
 
-/**
- * claudecode's HOOK_EVENT_MAP (src/install.ts): [PascalCaseSettingsKey, internal
- * snake_case event] pairs written into ~/.claude/settings.json. grok and hermes
- * both ride these same entries by default: absent an explicit `install --grok`
- * (src/bridges/grok_install.ts, added after this comment was first written --
- * an OPT-IN, additive bridge that writes its own `~/.grok/hooks/token-goat.json`
- * + shim, never touching this shared settings.json), grok just runs Claude
- * Code's settings.json hooks directly with a camelCase payload; hermes's own
- * `install --hermes` only verifies these entries exist rather than writing its
- * own (see src/bridges/registry.ts's module docstring and
- * harnessForNormalization() in src/relay.ts). This matrix only exercises the
- * default (no `--grok`) path for grok, below.
- */
+/** claudecode's HOOK_EVENT_MAP (src/install.ts): [PascalCaseSettingsKey, internal snake_case event] pairs written into ~/.claude/settings.json. grok and hermes both ride these same entries by default: absent an explicit `install --grok` (src/bridges/grok_install.ts, added after this comment was first written -- an OPT-IN, additive bridge that writes its own `~/.grok/hooks/token-goat.json` + shim, never touching this shared settings.json), grok just runs Claude Code's settings.json hooks directly with a camelCase payload; hermes's own `install --hermes` only verifies these entries exist rather than writing its own (see src/bridges/registry.ts's module docstring and harnessForNormalization() in src/relay.ts). This matrix only exercises the default (no `--grok`) path for grok, below. */
 function claudecodeFamilyEvents(): HookEventName[] {
   const src = readSrc('install.ts')
   const m = src.match(/const HOOK_EVENT_MAP:[^\r\n]*\r?\n([\s\S]*?)\r?\n\]/)
@@ -175,12 +120,7 @@ function vscodeEvents(): HookEventName[] {
   return extractKnownEvents(kept.join('\n'), 'src/bridges/copilot_cli.ts COPILOT_TO_TG_EVENT filtered by VSCODE_HOOK_FILE_EVENT_KEYS')
 }
 
-/**
- * pi / opencode / openclaw wire their hooks by calling `callHook("<event>", ...)`
- * directly inside a hand-authored, auto-discovered extension/plugin script,
- * rather than through an install-time event-list constant -- scan the embedded
- * script source for every literal `callHook("...")` call instead.
- */
+/** pi / opencode / openclaw wire their hooks by calling `callHook("<event>", ...)` directly inside a hand-authored, auto-discovered extension/plugin script, rather than through an install-time event-list constant -- scan the embedded script source for every literal `callHook("...")` call instead. */
 function callHookEvents(script: string, sourceLabel: string): HookEventName[] {
   const calls = [...script.matchAll(/callHook\(\s*"([a-z_]+)"/g)].map((m) => {
     const v = m[1]
@@ -195,15 +135,7 @@ function callHookEvents(script: string, sourceLabel: string): HookEventName[] {
   return unique as HookEventName[]
 }
 
-/**
- * The harness x supported-event cross product, derived from source. `generic`
- * is the one exception: it is detectHarness()'s fallback identity when nothing
- * else matches (src/bridges/registry.ts), not something `install` ever writes
- * hook entries for, so there is no install-file source to scan -- it is tested
- * against the full HOOK_EVENTS set instead, since relay.ts must stay safe for
- * literally any event under an unrecognized harness by design, not because any
- * real generic-harness install wires up all seven.
- */
+/** The harness x supported-event cross product, derived from source. `generic` is the one exception: it is detectHarness()'s fallback identity when nothing else matches (src/bridges/registry.ts), not something `install` ever writes hook entries for, so there is no install-file source to scan -- it is tested against the full HOOK_EVENTS set instead, since relay.ts must stay safe for literally any event under an unrecognized harness by design, not because any real generic-harness install wires up all seven. */
 const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   claudecode: claudecodeFamilyEvents(),
   grok: claudecodeFamilyEvents(),
@@ -222,17 +154,11 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   generic: [...HOOK_EVENTS],
 }
 
-/**
- * Hand-authored spec of the same cross product, read directly off each
- * bridge's source at the time this file was written. Cross-checked against
- * DERIVED_SUPPORTED_EVENTS below so a genuine wiring change in source -- not
- * just a bug in the regex scanners above -- also fails loudly with a clear
- * per-harness diff.
- */
+/** Hand-authored spec of the same cross product, read directly off each bridge's source at the time this file was written. Cross-checked against DERIVED_SUPPORTED_EVENTS below so a genuine wiring change in source -- not just a bug in the regex scanners above -- also fails loudly with a clear per-harness diff. */
 const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
-  claudecode: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
-  grok: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
-  hermes: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+  claudecode: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+  grok: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+  hermes: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
   codex: ['pre_tool_use', 'post_tool_use'],
   gemini: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   qwen: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
@@ -259,11 +185,7 @@ const HARNESS_NAMES = Object.keys(EXPECTED_SUPPORTED_EVENTS) as HarnessName[]
 
 describe('hook-event x harness coverage derivation', () => {
   it('every HarnessName is present in the hand-authored spec (compile-time exhaustiveness backstop)', () => {
-    // EXPECTED_SUPPORTED_EVENTS's type (Record<HarnessName, ...>) already forces
-    // every HarnessName key to be present at compile time -- a HarnessName union
-    // member added without a matching object property is a `tsc` error, not a
-    // silent runtime gap. This just documents that invariant for a reader who
-    // only sees the vitest output, not a type error.
+    // EXPECTED_SUPPORTED_EVENTS's type (Record<HarnessName, ...>) already forces every HarnessName key to be present at compile time -- a HarnessName union member added without a matching object property is a `tsc` error, not a silent runtime gap. This just documents that invariant for a reader who only sees the vitest output, not a type error.
     expect(HARNESS_NAMES.length).toBeGreaterThanOrEqual(10)
   })
 
@@ -357,12 +279,7 @@ beforeAll(() => {
   dataBase = mkIsolated('tg-hookmatrix-data-')
   homeBase = mkIsolated('tg-hookmatrix-home-')
 
-  // This file exercises the deny/context wire-shape reshaping across harnesses,
-  // not hints.protect_recent_reads (that field has its own dedicated coverage in
-  // tests/hooks_read.test.ts). Its default (4) would otherwise exempt each of
-  // this file's single-immediate-re-read fixtures from the re-read deny they're
-  // asserting on, so pin it to 0 in the isolated config this bundle process
-  // reads (dataDir() resolution mirrors src/constants.ts's defaultDataDir()).
+  // This file exercises the deny/context wire-shape reshaping across harnesses, not hints.protect_recent_reads (that field has its own dedicated coverage in tests/hooks_read.test.ts). Its default (4) would otherwise exempt each of this file's single-immediate-re-read fixtures from the re-read deny they're asserting on, so pin it to 0 in the isolated config this bundle process reads (dataDir() resolution mirrors src/constants.ts's defaultDataDir()).
   const configDir = process.platform === 'win32'
     ? path.join(dataBase, 'dfk-helper', 'token-goat')
     : path.join(dataBase, 'token-goat')
@@ -380,19 +297,7 @@ afterAll(() => {
   }
 })
 
-/**
- * A realistic wire payload for `harness` at a tool-scoped event, reusing real
- * fixture shapes already established for each harness's payload format in
- * tests/hooks_cli.test.ts (Codex/Gemini/grok tool-name remapping), not
- * invented from scratch. Every harness other than codex/gemini/grok
- * normalizes as a plain claudecode-shaped canonical payload: see
- * harnessForNormalization() in src/relay.ts, which only special-cases those
- * three -- copilot_cli/pi/opencode/openclaw/hermes/generic all fall through to
- * the 'claude' branch (passthrough), because by the time `token-goat hook
- * <event>` itself is invoked, each of those harnesses' own bridge/shim has
- * already remapped its native payload into this canonical shape (confirmed for
- * copilot_cli directly against COPILOT_CLI_HOOK_SCRIPT's own remapToolInput()).
- */
+/** A realistic wire payload for `harness` at a tool-scoped event, reusing real fixture shapes already established for each harness's payload format in tests/hooks_cli.test.ts (Codex/Gemini/grok tool-name remapping), not invented from scratch. Every harness other than codex/gemini/grok normalizes as a plain claudecode-shaped canonical payload: see harnessForNormalization() in src/relay.ts, which only special-cases those three -- copilot_cli/pi/opencode/openclaw/hermes/generic all fall through to the 'claude' branch (passthrough), because by the time `token-goat hook <event>` itself is invoked, each of those harnesses' own bridge/shim has already remapped its native payload into this canonical shape (confirmed for copilot_cli directly against COPILOT_CLI_HOOK_SCRIPT's own remapToolInput()). */
 function toolPayload(harness: HarnessName, sessionId: string, filePath: string): Record<string, unknown> {
   if (harness === 'codex') {
     // Real fixture from tests/hooks_cli.test.ts ("remaps Codex snake_case tool names to PascalCase").
@@ -445,30 +350,14 @@ describe('hook-event x harness bundle matrix (real bundle, non-crash coverage)',
 })
 
 describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', () => {
-  // claudecode/grok/hermes/gemini/generic have no bridge/shim that reshapes
-  // serializeOutput's own {decision:'block', reason} wire JSON on their
-  // DEFAULT install path: claudecode/hermes always, and grok absent an
-  // explicit `install --grok` (see the note above claudecodeFamilyEvents()),
-  // read ~/.claude/settings.json's `token-goat hook <event>` command directly
-  // with no wrapper script; gemini_install.ts wires the same command directly
-  // into ~/.gemini/settings.json with no shim file either (confirmed against
-  // gemini-cli's own BeforeTool contract in tests/relay.test.ts's "relay
-  // Gemini deny wire format" suite, which -- unlike grok -- documents 'block'
-  // as an accepted alias for 'deny'); generic is the raw-CLI fallback with no
-  // bridge at all. For these five on their default path, the raw bundle
-  // response IS the harness's expected wire shape. `install --grok`'s own
-  // shim (GROK_HOOK_SCRIPT, src/bridges/grok.ts) instead translates this
-  // 'block' shape into Grok's documented '{"decision":"deny",...}' -- verified
-  // separately in tests/install_grok.test.ts, not exercised here.
+  // claudecode/grok/hermes/gemini/generic have no bridge/shim that reshapes serializeOutput's own {decision:'block', reason} wire JSON on their DEFAULT install path: claudecode/hermes always, and grok absent an explicit `install --grok` (see the note above claudecodeFamilyEvents()), read ~/.claude/settings.json's `token-goat hook <event>` command directly with no wrapper script; gemini_install.ts wires the same command directly into ~/.gemini/settings.json with no shim file either (confirmed against gemini-cli's own BeforeTool contract in tests/relay.test.ts's "relay Gemini deny wire format" suite, which -- unlike grok -- documents 'block' as an accepted alias for 'deny'); generic is the raw-CLI fallback with no bridge at all. For these five on their default path, the raw bundle response IS the harness's expected wire shape. `install --grok`'s own shim (GROK_HOOK_SCRIPT, src/bridges/grok.ts) instead translates this 'block' shape into Grok's documented '{"decision":"deny",...}' -- verified separately in tests/install_grok.test.ts, not exercised here.
   const RAW_PASSTHROUGH_HARNESSES: HarnessName[] = ['claudecode', 'grok', 'hermes', 'gemini', 'qwen', 'generic']
 
   for (const harness of RAW_PASSTHROUGH_HARNESSES) {
     it(`${harness}: denies a re-read of an already-read large file via raw {decision:'block'} JSON`, () => {
       const sessionId = `matrix-deny-${harness}`
       const filePath = path.join(dataBase, `${sessionId}-large.bin`)
-      // >50KB non-source file denies unconditionally on the 2nd read (see the
-      // real unit test this mirrors: "denies re-read of a large file (>50KB)
-      // that was already read this session" in tests/hooks_read.test.ts).
+      // >50KB non-source file denies unconditionally on the 2nd read (see the real unit test this mirrors: "denies re-read of a large file (>50KB) that was already read this session" in tests/hooks_read.test.ts).
       fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
       const env = tgEnv(harness)
       const payload = toolPayload(harness, sessionId, filePath)
@@ -484,12 +373,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
   }
 
   it('codex: the real CODEX_HOOK_SCRIPT shim forwards a bundle deny unchanged (a plain decision/reason deny has no hookSpecificOutput field to reshape)', () => {
-    // CODEX_TOOL_NAME_MAP (src/hooks_cli.ts) has no 'Read' entry, so a
-    // tool_name of 'Read' passes through normalizePayload's codex branch
-    // unmapped -- i.e. unchanged -- reaching the canonical Read handler
-    // exactly as claudecode's own payload would. This lets the shim test
-    // exercise a confirmed-real code path without guessing at Codex's actual
-    // native read-tool name (not established in any existing fixture).
+    // CODEX_TOOL_NAME_MAP (src/hooks_cli.ts) has no 'Read' entry, so a tool_name of 'Read' passes through normalizePayload's codex branch unmapped -- i.e. unchanged -- reaching the canonical Read handler exactly as claudecode's own payload would. This lets the shim test exercise a confirmed-real code path without guessing at Codex's actual native read-tool name (not established in any existing fixture).
     const cwd = mkIsolated('tg-hookmatrix-codexshim-')
     const sessionId = 'matrix-deny-codex-shim'
     const filePath = path.join(cwd, 'large.bin')
@@ -506,22 +390,13 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
   })
 
   it('copilot_cli: the real COPILOT_CLI_HOOK_SCRIPT shim reshapes a bundle deny into {permissionDecision:"deny"}', () => {
-    // Native Copilot CLI wire shape confirmed directly against
-    // COPILOT_CLI_HOOK_SCRIPT's own main()/TOOL_TO_TG/FILE_PATH_ARG_KEY: the
-    // 'view' tool (Copilot's read-file tool, TOOL_TO_TG.view === 'Read') sends
-    // its target path under toolArgs.path (FILE_PATH_ARG_KEY.view === 'path'),
-    // and the top-level event arg is Copilot's own camelCase 'preToolUse', not
-    // token-goat's internal 'pre_tool_use' -- COPILOT_TO_TG_EVENT translates it
-    // internally before the shim's own inner call.
+    // Native Copilot CLI wire shape confirmed directly against COPILOT_CLI_HOOK_SCRIPT's own main()/TOOL_TO_TG/FILE_PATH_ARG_KEY: the 'view' tool (Copilot's read-file tool, TOOL_TO_TG.view === 'Read') sends its target path under toolArgs.path (FILE_PATH_ARG_KEY.view === 'path'), and the top-level event arg is Copilot's own camelCase 'preToolUse', not token-goat's internal 'pre_tool_use' -- COPILOT_TO_TG_EVENT translates it internally before the shim's own inner call.
     const cwd = mkIsolated('tg-hookmatrix-copilotshim-')
     const sessionId = 'matrix-deny-copilot-shim'
     const filePath = path.join(cwd, 'large.bin')
     fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
     const payload = { sessionId, cwd, toolName: 'view', toolArgs: { path: filePath } }
-    // The shim's own inner spawnSync call always sets
-    // TOKEN_GOAT_HARNESS_OVERRIDE:'copilot_cli' itself (Object.assign({},
-    // process.env, {...})), so this env only needs to supply the isolated
-    // data/home dirs the shim process inherits into that inner call.
+    // The shim's own inner spawnSync call always sets TOKEN_GOAT_HARNESS_OVERRIDE:'copilot_cli' itself (Object.assign({}, process.env, {...})), so this env only needs to supply the isolated data/home dirs the shim process inherits into that inner call.
     const env = tgEnv('copilot_cli')
     const first = runShim(COPILOT_CLI_HOOK_SCRIPT, cwd, 'preToolUse', [BUNDLE], payload, env)
     expect(first.status, `first read, stderr: ${first.stderr}`).toBe(0)
@@ -589,13 +464,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     expect(parsed['hookSpecificOutput']).toBeUndefined()
   })
 
-  // The whole point of mapping read_bash -> BashOutput is that Copilot's shell is
-  // async: one long-running command gets re-read over and over inside a turn, and
-  // every read costs the full accumulated output again. Nothing short of driving the
-  // real shim against the real bundle proves that arrives compressed: the tool-name
-  // map alone is inert without the shellId -> bash_id remap, and the remap alone is
-  // inert without the name map, so a unit test on either half in isolation would stay
-  // green with the feature dead. Two polls, second one strictly appending.
+  // The whole point of mapping read_bash -> BashOutput is that Copilot's shell is async: one long-running command gets re-read over and over inside a turn, and every read costs the full accumulated output again. Nothing short of driving the real shim against the real bundle proves that arrives compressed: the tool-name map alone is inert without the shellId -> bash_id remap, and the remap alone is inert without the name map, so a unit test on either half in isolation would stay green with the feature dead. Two polls, second one strictly appending.
   it('copilot_cli: a second read_bash poll comes back as a delta through modifiedResult, not the whole accumulated buffer', () => {
     const cwd = mkIsolated('tg-hookmatrix-copilotpoll-')
     const sessionId = 'matrix-poll-copilot-shim'
@@ -636,22 +505,13 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     expect(parsed.modifiedResult?.resultType).toBe('success')
     expect(rewritten ?? '').toContain('shell-7')
     expect(rewritten ?? '').toContain(appended)
-    // The load-bearing assertion: the 3000 bytes the model already paid for once are
-    // gone. A pass-through would still contain them.
+    // The load-bearing assertion: the 3000 bytes the model already paid for once are gone. A pass-through would still contain them.
     expect(rewritten ?? '').not.toContain(firstOutput)
   })
 })
 
 describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape -- static verification for plugin-host-only harnesses)', () => {
-  // pi/opencode/openclaw wire their hooks as plugin-API modules (callHook(...)
-  // invoked from inside a framework-specific extension/plugin export, not a
-  // standalone CLI script with a process.argv/stdin entry point like
-  // CODEX_HOOK_SCRIPT/COPILOT_CLI_HOOK_SCRIPT above), so they cannot be spawned
-  // and driven end-to-end without also faking each host framework's own plugin
-  // API (pi's extension API, opencode's tool.execute.before, OpenClaw's plugin
-  // hooks) -- a substantially larger undertaking than this matrix's scope.
-  // Each script's own deny-reshaping logic is verified statically here
-  // instead, against the exact source confirmed in each file directly.
+  // pi/opencode/openclaw wire their hooks as plugin-API modules (callHook(...) invoked from inside a framework-specific extension/plugin export, not a standalone CLI script with a process.argv/stdin entry point like CODEX_HOOK_SCRIPT/COPILOT_CLI_HOOK_SCRIPT above), so they cannot be spawned and driven end-to-end without also faking each host framework's own plugin API (pi's extension API, opencode's tool.execute.before, OpenClaw's plugin hooks) -- a substantially larger undertaking than this matrix's scope. Each script's own deny-reshaping logic is verified statically here instead, against the exact source confirmed in each file directly.
   it('pi: reshapes a bundle deny into {block:true, reason} (PI_EXTENSION_SCRIPT)', () => {
     expect(PI_EXTENSION_SCRIPT).toMatch(/resp\["decision"\]\s*===\s*"block"/)
     expect(PI_EXTENSION_SCRIPT).toMatch(/block:\s*true/)

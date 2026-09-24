@@ -1,20 +1,4 @@
-/**
- * Token-savings telemetry: aggregate and render stats from the stats table.
- *
- * Stats are stored as rows in the ``stats`` table of each per-project SQLite DB
- * by hooks_common.record_stat(). This module reads those rows back, aggregates
- * them by event kind, and formats them for display.
- *
- * Public API:
- * - summarize(windowDays?) — load all stat rows from the global DB and return a
- *   StatsSummary with aggregations by kind, day, source, and command. `by_project`
- *   is always `[]`: the `stats` table (see GLOBAL_SCHEMA_SQL below) has no
- *   project-identifying column to aggregate by, so this dimension was never wired
- *   up. The field is kept on StatsSummary/the `--json` output for compatibility
- *   with callers that may depend on its presence, not because it carries data.
- * - renderShortStats(opts?) — print just the totals block + a hint to run --full.
- * - renderStats(opts?) — compute and print the full formatted breakdown to stdout.
- */
+/** Token-savings telemetry: aggregate and render stats from the stats table. Stats are stored as rows in the ``stats`` table of each per-project SQLite DB by hooks_common.record_stat(). This module reads those rows back, aggregates them by event kind, and formats them for display. Public API: - summarize(windowDays?) — load all stat rows from the global DB and return a StatsSummary with aggregations by kind, day, source, and command. `by_project` is always `[]`: the `stats` table (see GLOBAL_SCHEMA_SQL below) has no project-identifying column to aggregate by, so this dimension was never wired up. The field is kept on StatsSummary/the `--json` output for compatibility with callers that may depend on its presence, not because it carries data. - renderShortStats(opts?) — print just the totals block + a hint to run --full. - renderStats(opts?) — compute and print the full formatted breakdown to stdout. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -61,30 +45,11 @@ export interface StatsSummary {
   by_project: ProjectRow[]
   by_source: Record<string, StatsBucket>
   by_command: CommandRow[]
-  /**
-   * Savings split by the AI harness the hook fired under, so "token-goat saved 1.1 Gt" can be
-   * asked per harness instead of only in aggregate. Rows written before this column existed
-   * carry no harness and are bucketed under {@link HARNESS_UNRECORDED} rather than being
-   * attributed to whichever harness happens to be running now -- an unmeasured row is not a
-   * measured zero, and folding it into a real harness would overstate that harness's share.
-   */
+  /** Savings split by the AI harness the hook fired under, so "token-goat saved 1.1 Gt" can be asked per harness instead of only in aggregate. Rows written before this column existed carry no harness and are bucketed under {@link HARNESS_UNRECORDED} rather than being attributed to whichever harness happens to be running now -- an unmeasured row is not a measured zero, and folding it into a real harness would overstate that harness's share. */
   by_harness: Record<string, StatsBucket>
-  /**
-   * Totals for kinds whose recorded number is a count rather than a token quantity, keyed by kind.
-   * Reported here instead of in the token columns so a count is never summed into a token total;
-   * see {@link COUNT_ONLY_KINDS}. Absent kinds simply had no rows in the window.
-   */
+  /** Totals for kinds whose recorded number is a count rather than a token quantity, keyed by kind. Reported here instead of in the token columns so a count is never summed into a token total; see {@link COUNT_ONLY_KINDS}. Absent kinds simply had no rows in the window. */
   counts: Record<string, number>
-  /**
-   * Totals split by the `tg_version` that wrote each row, so a headline `total_tokens_saved`
-   * spanning rows priced under different pricing-formula eras (a divisor change, a new kind, a
-   * fixed baseline) is never presented as a single commensurable number without disclosure. Rows
-   * written before the `tg_version` column existed, or by a build where it failed to record,
-   * are bucketed under {@link PRICING_VERSION_UNRECORDED} rather than attributed to the version
-   * running now -- exactly the same reasoning `HARNESS_UNRECORDED` already applies to `by_harness`.
-   * `hasMixedPricingEras` reduces this to the one boolean callers actually need: whether the sum
-   * above is safe to show unqualified.
-   */
+  /** Totals split by the `tg_version` that wrote each row, so a headline `total_tokens_saved` spanning rows priced under different pricing-formula eras (a divisor change, a new kind, a fixed baseline) is never presented as a single commensurable number without disclosure. Rows written before the `tg_version` column existed, or by a build where it failed to record, are bucketed under {@link PRICING_VERSION_UNRECORDED} rather than attributed to the version running now -- exactly the same reasoning `HARNESS_UNRECORDED` already applies to `by_harness`. `hasMixedPricingEras` reduces this to the one boolean callers actually need: whether the sum above is safe to show unqualified. */
   by_pricing_version: Record<string, StatsBucket>
   window_days: number
 }
@@ -112,23 +77,7 @@ export const SOURCE_OTHER = 'other'
 
 const _BYTES_MODE_ONLY_KINDS = new Set(['webfetch_image', 'gdrive_image'])
 
-/**
- * Kinds whose third `recordStat` argument is a COUNT, not a number of tokens.
- *
- * There is one, and it is the reason this set exists rather than a comment: `secret_redacted`
- * passes the number of redaction placeholders it emitted, because the row has no other numeric slot
- * to put it in. That is fine as a per-kind figure and wrong the moment it is added to anything: a
- * count of placeholders summed into `total_tokens_saved` puts a unit-less quantity inside the one
- * headline number this project asks to be believed, which is the same defect class as pricing an
- * image in bytes -- a credit in a unit that does not bill.
- *
- * The codebase had already reached half of this conclusion: `secret_redacted` is deliberately left
- * out of the renderer's kind groups because "a redaction removes secret bytes, it does not save a
- * read". That reasoning stopped at grouping and never reached aggregation, so the display hid the
- * figure while the total kept adding it. {@link summarize} now routes these kinds into
- * {@link StatsSummary.counts} and contributes zero tokens to every aggregate, so no bucket, day,
- * source, command or harness carries it either.
- */
+/** Kinds whose third `recordStat` argument is a COUNT, not a number of tokens. There is one, and it is the reason this set exists rather than a comment: `secret_redacted` passes the number of redaction placeholders it emitted, because the row has no other numeric slot to put it in. That is fine as a per-kind figure and wrong the moment it is added to anything: a count of placeholders summed into `total_tokens_saved` puts a unit-less quantity inside the one headline number this project asks to be believed, which is the same defect class as pricing an image in bytes -- a credit in a unit that does not bill. The codebase had already reached half of this conclusion: `secret_redacted` is deliberately left out of the renderer's kind groups because "a redaction removes secret bytes, it does not save a read". That reasoning stopped at grouping and never reached aggregation, so the display hid the figure while the total kept adding it. {@link summarize} now routes these kinds into {@link StatsSummary.counts} and contributes zero tokens to every aggregate, so no bucket, day, source, command or harness carries it either. */
 export const COUNT_ONLY_KINDS: ReadonlySet<string> = new Set(['secret_redacted'])
 
 /** Tokens to credit for `bytes` of text removed from what reaches the model. One function because the divisor is an assumption, and an assumption spelled out at each of forty callsites drifts without anyone noticing. It drifted here: `bash_compress:generic` credited itself through `estimateTokensFromLength`, which divides by three rather than four, so one kind was booked roughly a third richer than every sibling inside a column that sums them all. On real data that was 469,422 tokens over 520 events. Four, not three, and deliberately the more conservative of the two. `estimateTokensFromLength` is an overflow guard's estimator, where over-estimating is the safe direction because the cost of guessing low is blowing a budget. A saving is the mirror: over-estimating credits work that was never done, so the safe direction reverses and the larger number is the wrong one to reach for. Neither figure is a real tokenizer, and this is text only -- an image is billed in 28x28 pixel patches and must go through `visionTokens` instead. */
@@ -240,6 +189,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   reconcile_note_failed: SOURCE_OTHER,
   // Measurement of what a compaction produced (hooks_compact.ts postCompactHandler): summary size and how many manifest paths survived into it. SOURCE_OTHER and always recorded at (0, 0) -- the summary was written whether or not token-goat was watching, so there is no counterfactual in which those bytes were saved. Filing it anywhere with a savings total would credit token-goat for the whole summary, which is the accounting mistake this registry exists to prevent.
   compact_summary: SOURCE_OTHER,
+  // One row per failed tool call the post_tool_use_failure hook sees (hooks_tool_failure.ts), with its tool_error_class.ts verdict in `detail` so failure rates by reason accumulate going forward. A measurement at (0, 0): a failure saves nothing.
+  tool_failure: SOURCE_OTHER,
   // Envelope compaction of an oversized subagent report (hooks_agent_spawn.ts). SOURCE_CONTENT, not SOURCE_HINT: the handler's sibling session_hint entry is advisory (it only appends a recall pointer and genuinely saves nothing), whereas this kind records a real rewrite with real bytes removed, so filing it under the advisory bucket would understate the compaction and repeat the zero-savings desync this registry keeps getting bitten by.
   agent_report_compact: SOURCE_CONTENT,
   // Decline counterpart to agent_report_compact: the fence-collapse net-benefit gate ran and found at least one over-long fence, but declined to rewrite because net savings did not clear the notice cost. Always recorded at (0, 0) -- see the recordStat call site -- so it never contributes to any savings total; it exists purely to make gate hit-rate and near-misses visible instead of the decline being invisible.
@@ -456,22 +407,7 @@ CREATE TABLE IF NOT EXISTS unmapped_tools (
 const _globalSchemaApplied = new Set<string>()
 registerReset(() => _globalSchemaApplied.clear())
 
-/**
- * Bring an already-created `global.db` up to the shape {@link GLOBAL_SCHEMA_SQL} describes.
- *
- * `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already exists, so adding a column
- * to the DDL above reaches brand-new databases only. Every database created by an earlier release
- * keeps the old shape, and an INSERT naming the new column then fails on it -- which {@link
- * recordStat} swallows by design, so the visible symptom would be every existing user's telemetry
- * silently stopping. Hence an explicit column add here, and the independent capability check in
- * {@link statsHasHarnessColumn} so a database this function never touched (a caller's injected
- * `_testDb`) degrades to "harness not recorded" instead of "nothing recorded".
- *
- * Unlike the per-project database there is no schema-version stamp on `global.db` to key
- * migrations off, so each step must be individually idempotent: swallow exactly a duplicate-column
- * failure -- the column already being present from the CREATE TABLE on a fresh database -- and
- * rethrow anything else, so a genuine failure is never lost.
- */
+/** Bring an already-created `global.db` up to the shape {@link GLOBAL_SCHEMA_SQL} describes. `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already exists, so adding a column to the DDL above reaches brand-new databases only. Every database created by an earlier release keeps the old shape, and an INSERT naming the new column then fails on it -- which {@link recordStat} swallows by design, so the visible symptom would be every existing user's telemetry silently stopping. Hence an explicit column add here, and the independent capability check in {@link statsHasHarnessColumn} so a database this function never touched (a caller's injected `_testDb`) degrades to "harness not recorded" instead of "nothing recorded". Unlike the per-project database there is no schema-version stamp on `global.db` to key migrations off, so each step must be individually idempotent: swallow exactly a duplicate-column failure -- the column already being present from the CREATE TABLE on a fresh database -- and rethrow anything else, so a genuine failure is never lost. */
 function migrateGlobalSchema(db: SqliteDatabase): void {
   try {
     db.exec('ALTER TABLE stats ADD COLUMN harness TEXT')
@@ -523,14 +459,7 @@ function dropRetiredPythonTables(db: SqliteDatabase): void {
   }
 }
 
-/**
- * Does this database's `stats` table carry the `harness` column?
- *
- * Cached per database handle: on the normal path {@link migrateGlobalSchema} has already run, so
- * this answers `true` once and never queries again. It exists for the path that bypasses
- * `getGlobalDb` entirely -- a caller-supplied `_testDb` -- where guessing wrong turns every write
- * into a swallowed exception.
- */
+/** Does this database's `stats` table carry the `harness` column? Cached per database handle: on the normal path {@link migrateGlobalSchema} has already run, so this answers `true` once and never queries again. It exists for the path that bypasses `getGlobalDb` entirely -- a caller-supplied `_testDb` -- where guessing wrong turns every write into a swallowed exception. */
 const _harnessColumnByDb = new WeakMap<object, boolean>()
 export function statsHasHarnessColumn(db: SqliteDatabase): boolean {
   const cached = _harnessColumnByDb.get(db as unknown as object)
@@ -660,15 +589,7 @@ export function pruneHintEmissions(db: SqliteDatabase, retentionDays: number = S
   }
 }
 
-/**
- * `hook:*` rows (relay.ts's per-invocation duration_ms) fire on every hook call the running
- * install makes -- an order of magnitude more often than any other kind in this table -- and
- * {@link rollupAndPruneStats}'s day/kind/harness/tg_version rollup keeps only a summed count for
- * whatever it aggregates, throwing away the individual durations hook_latency.ts's
- * hookLatencyBreakdown() needs for a median/p95. A percentile over month-old latencies answers a question nobody asks
- * ("was token-goat slow last quarter"), so raw rows are deleted outright at a much shorter window
- * than {@link STATS_RETENTION_DAYS} rather than carried into the rollup at all.
- */
+/** `hook:*` rows (relay.ts's per-invocation duration_ms) fire on every hook call the running install makes -- an order of magnitude more often than any other kind in this table -- and {@link rollupAndPruneStats}'s day/kind/harness/tg_version rollup keeps only a summed count for whatever it aggregates, throwing away the individual durations hook_latency.ts's hookLatencyBreakdown() needs for a median/p95. A percentile over month-old latencies answers a question nobody asks ("was token-goat slow last quarter"), so raw rows are deleted outright at a much shorter window than {@link STATS_RETENTION_DAYS} rather than carried into the rollup at all. */
 export const HOOK_STATS_RETENTION_DAYS = 7
 
 /** Delete `hook:*` rows older than `retentionDays` -- see {@link HOOK_STATS_RETENTION_DAYS}'s doc comment for why this runs ahead of the general rollup instead of feeding it. */
@@ -864,16 +785,7 @@ export function readUnmappedTools(dbPath?: string, homeDir?: string): UnmappedTo
   }
 }
 
-/**
- * Deletes `unmapped_tools` rows whose tool_name matches a pattern in `patterns` -- rows recorded
- * before {@link noteUnrecognizedTool} (hook_registry.ts) learned to check a handler's
- * `toolPattern`, not just its exact `toolName`. Such a row was never actually unmapped: the
- * pattern-filtered handler (e.g. preMcpHandler/postMcpHandler's `^mcp__`) always ran for it, only
- * this table's own bookkeeping missed that. Called only from checkUnmappedTools (cli_doctor.ts),
- * itself only reached by an explicit `token-goat doctor` run -- not on every process the way
- * `stats`/`hint_emissions` pruning had to be moved onto the shared throttle after running per
- * schema-open (see pruneTestIsolationLeakRows), so this needs no throttle of its own.
- */
+/** Deletes `unmapped_tools` rows whose tool_name matches a pattern in `patterns` -- rows recorded before {@link noteUnrecognizedTool} (hook_registry.ts) learned to check a handler's `toolPattern`, not just its exact `toolName`. Such a row was never actually unmapped: the pattern-filtered handler (e.g. preMcpHandler/postMcpHandler's `^mcp__`) always ran for it, only this table's own bookkeeping missed that. Called only from checkUnmappedTools (cli_doctor.ts), itself only reached by an explicit `token-goat doctor` run -- not on every process the way `stats`/`hint_emissions` pruning had to be moved onto the shared throttle after running per schema-open (see pruneTestIsolationLeakRows), so this needs no throttle of its own. */
 export function pruneStalePatternCoveredUnmappedTools(db: SqliteDatabase, patterns: readonly string[]): void {
   if (patterns.length === 0) return
   const regexes = patterns.map((p) => new RegExp(p))

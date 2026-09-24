@@ -1,31 +1,4 @@
-/**
- * Corpus-wide session audit: streams every Claude Code transcript (JSONL)
- * under a corpus root (default `~/.claude/projects`) and reports where the
- * tokens actually went. Backs `token-goat session-audit`.
- *
- * Two strictly separated ledgers, never mixed in one column:
- *
- * 1. MEASURED billed tokens, read from assistant lines' `message.usage`
- *    (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
- *    `output_tokens`). Claude Code writes one JSONL line per streamed content
- *    block, and every line of one API response repeats the same `message.id`
- *    and the same usage object (confirmed empirically: 24,610 assistant lines,
- *    13,263 unique ids, 0 id collisions with differing usage). Summing per
- *    line would inflate billed totals ~1.9x, so usage is counted once per
- *    unique `message.id` per file.
- *
- * 2. ESTIMATED content attribution (which text occupies the context), using
- *    the repo's canonical `estimateTokensFromLength` (chars/3) heuristic.
- *    These are estimates of content size, not billed units: billed input
- *    counts the whole re-sent context per call, so the two ledgers are not
- *    comparable and are labelled separately everywhere.
- *
- * Privacy: this module reads transcripts for structure and size only. Its
- * output contains aggregate counts, token totals, tool names, line-type
- * names, agent-type names, and bare command heads (the binary name only) --
- * never message bodies, full command lines, file paths from inside sessions,
- * or project names.
- */
+/** Corpus-wide session audit: streams every Claude Code transcript (JSONL) under a corpus root (default `~/.claude/projects`) and reports where the tokens actually went. Backs `token-goat session-audit`. Two strictly separated ledgers, never mixed in one column: 1. MEASURED billed tokens, read from assistant lines' `message.usage` (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`). Claude Code writes one JSONL line per streamed content block, and every line of one API response repeats the same `message.id` and the same usage object (confirmed empirically: 24,610 assistant lines, 13,263 unique ids, 0 id collisions with differing usage). Summing per line would inflate billed totals ~1.9x, so usage is counted once per unique `message.id` per file. 2. ESTIMATED content attribution (which text occupies the context), using the repo's canonical `estimateTokensFromLength` (chars/3) heuristic. These are estimates of content size, not billed units: billed input counts the whole re-sent context per call, so the two ledgers are not comparable and are labelled separately everywhere. Privacy: this module reads transcripts for structure and size only. Its output contains aggregate counts, token totals, tool names, line-type names, agent-type names, model names, bare command heads (the binary name only), and the first line of the most frequent unclassified tool errors with paths, quoted text and digits masked (tool_error_census.ts) -- never message bodies, full command lines, file paths from inside sessions, or project names. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -35,6 +8,7 @@ import { displaySafeText } from './paths.js'
 import * as readline from 'node:readline'
 
 import { estimateTokensFromLength } from './overflow_guard.js'
+import type { ToolErrorAccumulator, ToolErrorCensus } from './tool_error_census.js'
 
 // ---- result shapes -----------------------------------------------------------
 
@@ -78,11 +52,7 @@ export interface EstimatedAttribution {
 /** The estimated categories that were actually sent to the model. `otherLocal` is local bookkeeping and never enters a prompt, so it is excluded from every share and from the calibration below. */
 const MODEL_VISIBLE_CATEGORIES: ReadonlyArray<keyof EstimatedAttribution> = ['toolResults', 'assistantText', 'assistantThinking', 'toolUseInputs', 'attachments', 'userTurns', 'harnessMeta', 'system']
 
-/**
- * The estimate measured against the billed ledger sitting beside it.
- *
- * Both numbers are already in this report; until they were subtracted no claim about estimator accuracy in this repository was evidence-backed. The measured side is `input_tokens + cache_creation_input_tokens`, never `input_tokens` alone: in a cached session almost every first write is billed as a cache write, so reading the uncached field as "what was sent" under-counts by an order of magnitude.
- */
+/** The estimate measured against the billed ledger sitting beside it. Both numbers are already in this report; until they were subtracted no claim about estimator accuracy in this repository was evidence-backed. The measured side is `input_tokens + cache_creation_input_tokens`, never `input_tokens` alone: in a cached session almost every first write is billed as a cache write, so reading the uncached field as "what was sent" under-counts by an order of magnitude. */
 export interface EstimatorCalibration {
   /** Bytes across {@link MODEL_VISIBLE_CATEGORIES}. */
   modelVisibleBytes: number
@@ -202,6 +172,10 @@ export interface SessionAuditSummary {
   lineTypes: Record<string, { lines: number; bytes: number }>
   /** Mid-trim marker census: `--- N lines omitted ---` fires inside tool results. */
   omissionMarkers: { fires: number; linesOmitted: number }
+  /** The `windowDays` the scan ran with: 0 is the whole corpus, N keeps transcripts whose file was modified in the last N days. */
+  windowDays: number
+  /** Failed tool calls by tool and by model, classified by tool_error_class.ts. */
+  toolErrors: ToolErrorCensus
 }
 
 /** One deny's measured real-world outcome, tested in this fixed order so the six buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried'; a shell command (sed/grep/cat/...) that reads the denied file's basename is 'shell_read' -- a real substitute the agent found on its own, not an escape from the census -- and is tested after 'substituted' so a `node <path>/token-goat.mjs` invocation (also a shell command) is never miscounted as a plain shell read; and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
@@ -337,6 +311,8 @@ export interface LaneTypeRollup {
 export interface SessionAuditOptions {
   /** Corpus root holding per-project transcript dirs. Default `~/.claude/projects`. */
   dir?: string
+  /** Keep only transcripts whose file was modified in the last N days; 0 or absent scans everything. A transcript's mtime is its last write, so a session that began earlier but ran into the window counts in full. */
+  windowDays?: number
 }
 
 // ---- internals ---------------------------------------------------------------
@@ -402,42 +378,8 @@ const READ_DIVERT_MAX_BYTES = 2500
 /** Non-diverted Read results at or above this size are counted as the full-serve pool surgical reads exist to shrink. */
 const READ_FULL_SERVE_MIN_BYTES = 10240
 
-/**
- * Per-kind classifiers for every Read-deny message template hooks_read.ts's `denyOutput(` call
- * sites can produce, derived by reading (never editing) hooks_read.ts and hints/file_type_handler.ts.
- * Tested in array order, first match wins -- entries are ordered specific-literal-first so a
- * message that could satisfy two templates (e.g. the .improve-state and generic session-artifact
- * re-read denials both end in the same `sessionArtifactRecall` sentence) resolves to its own
- * narrower kind rather than the generic one further down.
- *
- * This table exists because READ_DIVERT_MARKER_RE above is deliberately narrow (by its own doc
- * comment) and was never meant to distinguish kinds -- it only flags "this looks like one of
- * ours". A live corpus query saw divertedByMarker at 422 against a deny population believed to
- * be roughly 1512: most denies never had a kind at all before this table existed.
- *
- * When adding a kind, do not take a branch's own recorded `*_deny` stat name as evidence that it is
- * already classified. Several branches share a stat name with a sibling while emitting wording no
- * template for that name matches, and the census then drops them silently -- it gets shorter, never
- * empty, so there is no error to notice. Both `range_reread_deny` and `sequential_paging_deny`
- * below were found that way, each having ridden an existing stat name (`read_served_deny`,
- * `read_count_deny`) and matched nothing here since the branch was written. A wording is covered
- * only when a regex in this table matches the string the branch actually prints.
- */
-/**
- * `tool` is the tool whose result can legitimately carry this wording, and matching is refused for
- * any other. Without it the table matches a *document about* a deny as a deny: a Read of this repo's
- * own fixture file, or of a measurement script quoting the text, classified as a real event. Measured
- * over the user's session corpus, that accounted for 16 of 693 skill_ matches -- and for three of the
- * five skill_ kinds it was every single match, so their true count was zero while the census reported
- * activity. It also produced a non-zero `retried` rate on a Skill kind, which is structurally
- * impossible: only a Read result carries the path that outcome matches on.
- *
- * The gate cannot separate a Read deny from a Read of a file quoting one -- both are Read results --
- * so that residual stays. Measured the same way over the same corpus, 19 of 1,595 Read-kind matches
- * (1.2%) have the wording more than 400 bytes into the body, which is the signal that it is embedded
- * text rather than the whole result. Result size is NOT a usable second signal here, because
- * markdown_heading_tree_deny inlines a heading tree and is legitimately large.
- */
+/** Per-kind classifiers for every Read-deny message template hooks_read.ts's `denyOutput(` call sites can produce, derived by reading (never editing) hooks_read.ts and hints/file_type_handler.ts. Tested in array order, first match wins -- entries are ordered specific-literal-first so a message that could satisfy two templates (e.g. the .improve-state and generic session-artifact re-read denials both end in the same `sessionArtifactRecall` sentence) resolves to its own narrower kind rather than the generic one further down. This table exists because READ_DIVERT_MARKER_RE above is deliberately narrow (by its own doc comment) and was never meant to distinguish kinds -- it only flags "this looks like one of ours". A live corpus query saw divertedByMarker at 422 against a deny population believed to be roughly 1512: most denies never had a kind at all before this table existed. When adding a kind, do not take a branch's own recorded `*_deny` stat name as evidence that it is already classified. Several branches share a stat name with a sibling while emitting wording no template for that name matches, and the census then drops them silently -- it gets shorter, never empty, so there is no error to notice. Both `range_reread_deny` and `sequential_paging_deny` below were found that way, each having ridden an existing stat name (`read_served_deny`, `read_count_deny`) and matched nothing here since the branch was written. A wording is covered only when a regex in this table matches the string the branch actually prints. */
+/** `tool` is the tool whose result can legitimately carry this wording, and matching is refused for any other. Without it the table matches a *document about* a deny as a deny: a Read of this repo's own fixture file, or of a measurement script quoting the text, classified as a real event. Measured over the user's session corpus, that accounted for 16 of 693 skill_ matches -- and for three of the five skill_ kinds it was every single match, so their true count was zero while the census reported activity. It also produced a non-zero `retried` rate on a Skill kind, which is structurally impossible: only a Read result carries the path that outcome matches on. The gate cannot separate a Read deny from a Read of a file quoting one -- both are Read results -- so that residual stays. Measured the same way over the same corpus, 19 of 1,595 Read-kind matches (1.2%) have the wording more than 400 bytes into the body, which is the signal that it is embedded text rather than the whole result. Result size is NOT a usable second signal here, because markdown_heading_tree_deny inlines a heading tree and is legitimately large. */
 const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }> = [
   { kind: 'node_modules_deny', re: /node_modules is typically noise/, tool: 'Read' },
   { kind: 'lock_file_deny', re: /Lock files are rarely useful to read in full/, tool: 'Read' },
@@ -448,13 +390,7 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   // Must stay ABOVE markdown_heading_tree_deny: this deny's message embeds the same "Large markdown file (N headings)" guidance block, so the generic alternative would swallow it and the new intervention would be uncountable. DENY_TEMPLATES is scanned with `.find`, so the more specific wording has to come first.
   { kind: 'subagent_markdown_first_read_deny', re: /Subagent first read of a large markdown file/, tool: 'Read' },
   { kind: 'markdown_heading_tree_deny', re: /Large markdown file \(\d+ headings\)/, tool: 'Read' },
-  // The first alternative is a wording hooks_read.ts no longer emits (it claimed a compact-manifest
-  // section that never existed, reworded in 3d044feb). It stays because this table classifies a
-  // historical corpus, not just today's output: transcripts written before the rewording still
-  // carry the old text, and dropping the alternative silently shrank this kind from 51 events to
-  // 30 -- 41% of its history -- with a green suite. A superseded alternative is only removable
-  // once no transcript contains it, which source code cannot tell you. See the superseded-wording
-  // test in tests/deny_outcomes.test.ts.
+  // The first alternative is a wording hooks_read.ts no longer emits (it claimed a compact-manifest section that never existed, reworded in 3d044feb). It stays because this table classifies a historical corpus, not just today's output: transcripts written before the rewording still carry the old text, and dropping the alternative silently shrank this kind from 51 events to 30 -- 41% of its history -- with a green suite. A superseded alternative is only removable once no transcript contains it, which source code cannot tell you. See the superseded-wording test in tests/deny_outcomes.test.ts.
   { kind: 'memory_md_reread_deny', re: /MEMORY\.md was read this session\. Its content is in the compact manifest|already read this session\. Memory files rarely change mid-session/, tool: 'Read' },
   { kind: 'improve_state_reread_deny', re: /Orchestrator state already read this session/, tool: 'Read' },
   { kind: 'env_reread_deny', re: /Environment files rarely change mid-session/, tool: 'Read' },
@@ -516,15 +452,7 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/**
- * Whether a Bash command reads the denied file by basename via a shell reader binary.
- * 'none': no reader binary present, or the basename never appears in the command at all.
- * 'ambiguous': a reader binary is present and the basename appears as a raw substring, but not
- *   adjacent to a path separator, quote, or word boundary -- e.g. `index.ts` inside `myindex.tsx`.
- *   A bare substring test on a short basename would over-credit this; report it separately
- *   instead of silently guessing either way.
- * 'match': the basename appears adjacent to a boundary that makes it a real argument.
- */
+/** Whether a Bash command reads the denied file by basename via a shell reader binary. 'none': no reader binary present, or the basename never appears in the command at all. 'ambiguous': a reader binary is present and the basename appears as a raw substring, but not adjacent to a path separator, quote, or word boundary -- e.g. `index.ts` inside `myindex.tsx`. A bare substring test on a short basename would over-credit this; report it separately instead of silently guessing either way. 'match': the basename appears adjacent to a boundary that makes it a real argument. */
 function shellReadMatch(command: string, basename: string): 'none' | 'ambiguous' | 'match' {
   if (basename === '' || !SHELL_READER_TOKEN_RE.test(command)) return 'none'
   if (!command.includes(basename)) return 'none'
@@ -639,6 +567,19 @@ export function listCorpusTranscripts(corpusDir: string): string[] {
   return found.sort()
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+/** The transcripts whose file was last written at or after `sinceMs`; one that cannot be stat'ed is dropped, as the walker drops an unreadable directory. */
+function modifiedSince(files: readonly string[], sinceMs: number): string[] {
+  return files.filter((file) => {
+    try {
+      return fs.statSync(file).mtimeMs >= sinceMs
+    } catch {
+      return false
+    }
+  })
+}
+
 export function defaultCorpusDir(): string {
   const claudeDir = path.join(claudeConfigDir(), 'projects')
   if (fs.existsSync(claudeDir) && listCorpusTranscripts(claudeDir).length > 0) {
@@ -677,11 +618,14 @@ interface LaneObservation {
   agentType: string
 }
 
-async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>, laneObservations: LaneObservation[], bashHeadMap: Map<string, BashHeadRollup>, denyRows: DenyRawRow[]): Promise<void> {
+async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>, laneObservations: LaneObservation[], bashHeadMap: Map<string, BashHeadRollup>, denyRows: DenyRawRow[], toolErrorAcc: ToolErrorAccumulator): Promise<void> {
   const isLane = filePath.split(/[\\/]/).includes('subagents')
   let laneFirstPrefix: number | null = null
   let laneBriefBytes = -1
   const toolNameById = new Map<string, string>()
+  // Tool-error census: tool_use id -> the issuing line's model, and for Bash the full command, which classifyToolError needs to tell an empty grep from any other exit 1.
+  const modelById = new Map<string, string>()
+  const bashCommandById = new Map<string, string>()
   // Bash census bookkeeping: tool_use id -> command head, plus the residency pending list for untouched results (same compact-boundary model as attachments).
   const bashHeadById = new Map<string, string>()
   let pendingBashReread: Array<{ tokens: number; atCall: number; lane: number }> = []
@@ -696,9 +640,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   // Normalized path -> compact-boundary count at its last Read tool_use, so a repeat can tell whether a compaction intervened (the boundary count is file-wide, not per lane; reads are overwhelmingly main-chain).
   const readPathEpoch = new Map<string, number>()
   let compactEpoch = 0
-  // Deny-outcome census: one entry per Read deny still watching its post-deny call window. Finalized
-  // (outcome/retriedWithin10 computed, R/nextCall filled from perCall) once the stream ends, so R and
-  // "the next API call" can see the whole file rather than only what came before this point in it.
+  // Deny-outcome census: one entry per Read deny still watching its post-deny call window. Finalized (outcome/retriedWithin10 computed, R/nextCall filled from perCall) once the stream ends, so R and "the next API call" can see the whole file rather than only what came before this point in it.
   interface OpenDenyState {
     kind: string
     withheldBytes: number | null
@@ -774,7 +716,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
         addCategory(s.estimated.otherLocal, lineBytes)
         continue
       }
-      const message = obj['message'] as { id?: unknown; usage?: Record<string, unknown>; content?: unknown } | undefined
+      const message = obj['message'] as { id?: unknown; model?: unknown; usage?: Record<string, unknown>; content?: unknown } | undefined
       if (type === 'assistant' && message !== undefined) {
         const usage = message.usage
         if (usage !== undefined && typeof message.id === 'string' && !usageSeenIds.has(message.id)) {
@@ -813,11 +755,15 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             if (!toolNameById.has(block['id'])) {
               toolNameById.set(block['id'], name)
               toolRollup(toolMap, name).calls += 1
+              const model = typeof message.model === 'string' && message.model !== '' ? message.model : undefined
+              if (model !== undefined) modelById.set(block['id'], model)
+              toolErrorAcc.countCall(name, model)
               const input = (block['input'] !== null && typeof block['input'] === 'object' ? block['input'] : {}) as Record<string, unknown>
               let readNorm: string | undefined
               let editNorm: string | undefined
               if (name === 'Bash' && typeof input['command'] === 'string') {
                 bashHeadById.set(block['id'], commandHead(input['command']))
+                bashCommandById.set(block['id'], input['command'])
               } else if (name === 'Read' && typeof input['file_path'] === 'string') {
                 readNorm = normalizeReadPath(input['file_path'])
                 const priorEpoch = readPathEpoch.get(readNorm)
@@ -829,15 +775,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 editPathById.set(block['id'], editNorm)
                 s.editErrorBaseline.totalEdits += 1
               }
-              // Deny-outcome census: this tool_use is "one tool call" (TASK 2's definition) for every
-              // open deny still watching its 3-/10-call window. A Bash command matching
-              // SURGICAL_COMMAND_RE against the denied path's basename is 'substituted'; a Bash command
-              // reading the denied path via a shell reader binary (sed/grep/cat/...) is 'shell_read';
-              // a Read of the exact same normalized path is 'retried'; an Edit of the exact same
-              // normalized path records its tool_use id so the finalization pass can look up whether
-              // it errored, once every Edit in this file has resolved. All checks run regardless of
-              // which open deny they belong to -- a call can resolve several open denies from earlier
-              // in the file.
+              // Deny-outcome census: this tool_use is "one tool call" (TASK 2's definition) for every open deny still watching its 3-/10-call window. A Bash command matching SURGICAL_COMMAND_RE against the denied path's basename is 'substituted'; a Bash command reading the denied path via a shell reader binary (sed/grep/cat/...) is 'shell_read'; a Read of the exact same normalized path is 'retried'; an Edit of the exact same normalized path records its tool_use id so the finalization pass can look up whether it errored, once every Edit in this file has resolved. All checks run regardless of which open deny they belong to -- a call can resolve several open denies from earlier in the file.
               if (openDenies.length > 0) {
                 // Folded, because the only thing this is compared against is o.basename, which comes from readPathById and so has already been through normalizeReadPath's toLowerCase. Matching a lower-cased basename against a raw command line booked every capitalised filename as abandoned -- CLAUDE.md, README.md, MEMORY.md -- which is most of the corpus for the markdown deny kinds. SURGICAL_COMMAND_RE and SHELL_READER_TOKEN_RE hold only lower-case literals, so folding cannot weaken either. Used for matching only; nothing downstream displays it.
                 const bashCommand = name === 'Bash' && typeof input['command'] === 'string' ? input['command'].toLowerCase() : undefined
@@ -881,9 +819,17 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           const name = toolNameById.get(id) ?? '(unknown)'
           addCategory(s.estimated.toolResults, bytes)
           const roll = toolRollup(toolMap, name)
-          if (!toolNameById.has(id)) roll.calls += 1
+          if (!toolNameById.has(id)) {
+            roll.calls += 1
+            toolErrorAcc.countCall(name, undefined)
+          }
           roll.resultBytes += bytes
           roll.resultEstTokens += estimateTokensFromLength(bytes)
+          if (block['is_error'] === true) {
+            const denialKind = obj['toolDenialKind']
+            const command = bashCommandById.get(id)
+            toolErrorAcc.countError(name, modelById.get(id), text, { ...(typeof denialKind === 'string' ? { denialKind } : {}), ...(command !== undefined ? { command } : {}) })
+          }
           if (name === 'Edit' && block['is_error'] === true) {
             s.editErrorBaseline.totalErrors += 1
             editErrorById.set(id, true)
@@ -1043,10 +989,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   }
   flushLane(0)
   flushLane(1)
-  // Finalize every deny opened in this file: R and nextCall need the file's final perCall count
-  // (which is why this waits for end of stream instead of resolving eagerly), editErrorById needs
-  // every Edit tool_result in the file to have resolved, and the outcome is computed in the fixed
-  // order this module documents (DenyOutcome) so the six buckets partition every deny.
+  // Finalize every deny opened in this file: R and nextCall need the file's final perCall count (which is why this waits for end of stream instead of resolving eagerly), editErrorById needs every Edit tool_result in the file to have resolved, and the outcome is computed in the fixed order this module documents (DenyOutcome) so the six buckets partition every deny.
   for (const o of openDenies) {
     if (o.compactEpochAtWindow === null) o.compactEpochAtWindow = compactEpoch
     const windowCalls = o.toolCalls.slice(0, 3)
@@ -1184,20 +1127,20 @@ function aggregateDenyOutcomes(rows: DenyRawRow[]): DenyOutcomeKindRollup[] {
 
 // ---- entry point -------------------------------------------------------------
 
-/**
- * Stream every transcript under the corpus root and aggregate the audit.
- * Throws (message suitable for CliError wrapping) when the corpus root does
- * not exist or contains no transcripts, so an empty corpus can never render
- * as a populated-but-zero report.
- */
+/** Stream every transcript under the corpus root and aggregate the audit. Throws (message suitable for CliError wrapping) when the corpus root does not exist or contains no transcripts, so an empty corpus can never render as a populated-but-zero report. */
 export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promise<SessionAuditSummary> {
   const corpusDir = path.resolve(opts.dir ?? defaultCorpusDir())
   if (!fs.existsSync(corpusDir)) {
     throw new Error(`session corpus directory not found: ${corpusDir}`)
   }
-  const files = listCorpusTranscripts(corpusDir)
-  if (files.length === 0) {
+  const windowDays = opts.windowDays ?? 0
+  const allFiles = listCorpusTranscripts(corpusDir)
+  if (allFiles.length === 0) {
     throw new Error(`no .jsonl session transcripts found under ${corpusDir}`)
+  }
+  const files = windowDays === 0 ? allFiles : modifiedSince(allFiles, Date.now() - windowDays * MS_PER_DAY)
+  if (files.length === 0) {
+    throw new Error(`no .jsonl session transcripts under ${corpusDir} were modified in the last ${windowDays} days`)
   }
   const started = Date.now()
   const summary: SessionAuditSummary = {
@@ -1234,7 +1177,11 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     editErrorBaseline: { totalEdits: 0, totalErrors: 0, rate: 0 },
     lineTypes: {},
     omissionMarkers: { fires: 0, linesOmitted: 0 },
+    windowDays,
+    toolErrors: { byTool: [], byModel: [], unknownPrefixes: [] },
   }
+  // Loaded here rather than at the top: the classifier behind it pulls in the Bash command parser, which the CLI's eager startup set otherwise never needs.
+  const toolErrorAcc = (await import('./tool_error_census.js')).newToolErrorAccumulator()
   const toolMap = new Map<string, ToolRollup>()
   const attachmentMap = new Map<string, AttachmentKindRollup>()
   const hookMap = new Map<string, HookOutputRollup>()
@@ -1243,7 +1190,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   const denyRows: DenyRawRow[] = []
   for (const file of files) {
     try {
-      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations, bashHeadMap, denyRows)
+      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations, bashHeadMap, denyRows, toolErrorAcc)
       summary.filesScanned += 1
     } catch {
       summary.filesFailed += 1
@@ -1283,6 +1230,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   summary.denyOutcomes = aggregateDenyOutcomes(denyRows)
   summary.editErrorBaseline.rate = summary.editErrorBaseline.totalEdits === 0 ? 0 : summary.editErrorBaseline.totalErrors / summary.editErrorBaseline.totalEdits
   summary.calibration = computeCalibration(summary.estimated, summary.measured)
+  summary.toolErrors = toolErrorAcc.finish()
   summary.runtimeMs = Date.now() - started
   return summary
 }
