@@ -134,6 +134,7 @@ const METHODOLOGY = {
   billing: 'They are not GitHub Copilot usage, provider-reported token consumption, or billing data.',
   byte_derived_formula: 'Most read, hook, and command entries go through savedTokensFromBytes in src/stats.ts, which is Math.round(bytes_saved / 4). Image entries are the exception: they are priced in visual tokens, not bytes.',
   filter_estimates: 'Output compressors record their filter-calculated delta, measured against what the harness would actually have delivered rather than the full command output. Image entries are priced in visual tokens (28x28-pixel patches, capped at the configured vision tier), because an image is not billed by its byte size; where the pixel dimensions are unavailable the tier ceiling is used.',
+  read_command_baselines: 'A read command is credited the bytes of what it replaced, less what it printed. Naming a file (read, section, outline and the rest) replaces reading that file whole, capped at 100,000 bytes per file, about what one Read returns before it truncates. A search over files the caller did not name (symbol NAME, semantic) replaces a search plus a read of the one file wanted, so it is credited the largest matched file under the same cap, not every match. refs is credited the one line per reference a plain text search prints, and changed the diff it stands in for; both are shell output, so both are first cut to what the harness would have delivered of it.',
   advisory_events: 'Zero-byte, zero-token advisory events show that guidance fired, not that an agent followed it.',
   audit: 'Use stats --full or stats --json for source and command breakdowns; reconcile billing with provider-exported usage data.',
 } as const
@@ -150,6 +151,7 @@ function renderMethodology(json = false): void {
     `\`tokens saved\` is a ${METHODOLOGY.estimate_scope.toLowerCase()} ${METHODOLOGY.billing}`,
     '',
     `- ${METHODOLOGY.byte_derived_formula}`,
+    `- ${METHODOLOGY.read_command_baselines}`,
     `- ${METHODOLOGY.filter_estimates}`,
     `- ${METHODOLOGY.advisory_events}`,
     `- ${METHODOLOGY.audit}`,

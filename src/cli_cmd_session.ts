@@ -204,8 +204,9 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
 
   program
     .command('hint-stats')
-    .description('per-category efficacy report for token-goat\'s discretionary hint hooks (emitted/acted-on/suppression)')
+    .description('per-category efficacy report for token-goat\'s discretionary hint hooks (emitted/acted-on/suppression); all-time unless --session-id narrows it')
     .option('--json', 'output JSON')
+    .option('--session-id <id>', 'scope emission counts, efficacy and spend to one session id (or `latest`); suppression and manual marks stay all-time, and saved-bytes has no per-session figure')
     .option('--reset', 'clear all tracked emissions and manual marks')
     .option('--mark-effective <category>', 'record a manual "effective" vote for a hint category')
     .option('--mark-ineffective <category>', 'record a manual "ineffective" vote for a hint category')

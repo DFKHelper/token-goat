@@ -1,17 +1,4 @@
-/**
- * Regression for recordStat holding the hook path for the full 15s db.ts busy_timeout instead of
- * failing fast. `initConnection`'s 15000ms budget is right for indexing and the worker, which share
- * one cached connection to global.db and must wait out contention -- see db.ts's busy_timeout
- * comment. recordStat's own contract, stated in its catch, is the opposite: it must never block or
- * slow the hook path. Before this fix recordStat wrote through that same cached, patient connection,
- * so a real held lock cost the hook path the full ~15s wait (see "The defect" in this batch's brief).
- *
- * CAPTURE: fixture methodology (a real second connection holding `BEGIN EXCLUSIVE` on a real scratch
- * global.db, with no busy_timeout override on the connection under test) is lifted from
- * tests/stats_write_failure_out_of_band.test.ts, which this file's provenance line also credits.
- * Unlike that file, this one does NOT shorten the timeout on the shared connection first -- the whole
- * point is to observe the real, shipped budget rather than a test-only override.
- */
+/** Regression for recordStat holding the hook path for the full 15s db.ts busy_timeout instead of failing fast. `initConnection`'s 15000ms budget is right for indexing and the worker, which share one cached connection to global.db and must wait out contention -- see db.ts's busy_timeout comment. recordStat's own contract, stated in its catch, is the opposite: it must never block or slow the hook path. Before this fix recordStat wrote through that same cached, patient connection, so a real held lock cost the hook path the full ~15s wait (see "The defect" in this batch's brief). CAPTURE: fixture methodology (a real second connection holding `BEGIN EXCLUSIVE` on a real scratch global.db, with no busy_timeout override on the connection under test) is lifted from tests/stats_write_failure_out_of_band.test.ts, which this file's provenance line also credits. Unlike that file, this one does NOT shorten the timeout on the shared connection first -- the whole point is to observe the real, shipped budget rather than a test-only override. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -56,7 +43,7 @@ afterEach(() => {
 })
 
 describe('recordStat under a real held lock, with the real busy_timeout (no override)', () => {
-  it('returns in well under a second instead of sitting through db.ts\'s 15s indexing budget', () => {
+  it('returns within a few hundred milliseconds instead of sitting through db.ts\'s 15s indexing budget', () => {
     const dbPath = path.join(_testDataDir, 'global.db')
     // Applies the stats schema and creates the file before the lock lands, same as stats_write_failure_out_of_band.test.ts -- the lock below is the only thing standing between recordStat and a table that already exists, and getDb's own busy_timeout is left at its shipped 15000ms so this exercises the real budget, not a test-shortened one.
     getGlobalDb()
@@ -78,10 +65,11 @@ describe('recordStat under a real held lock, with the real busy_timeout (no over
       const elapsedMs = Date.now() - t0
 
       expect(threw, 'recordStat must never let the write failure reach its caller').toBeUndefined()
+      // The ceiling is 3000ms, not 1000ms, because SQLite's default busy handler sums the sleeps it asked for rather than the time that passed, and a sleep oversleeps by a different amount on each platform. Measured on the CI runners with node 22.23.2 (a one-off probe workflow, five samples each): a 200ms budget took 201ms on Linux, 248-301ms on Windows, and 416-700ms on macOS, whose 1ms sleeps took about 5ms each; a loaded macOS shard then reached 1002ms and failed the old 1000ms bound. The regressions this test exists for still fail it: the sqlite_driver default of 5000ms and the shared connection's 15000ms both wait at least that long on every platform.
       expect(
         elapsedMs,
         `recordStat took ${elapsedMs}ms under a real held lock -- it must fail fast, not sit through db.ts's 15000ms indexing budget`,
-      ).toBeLessThan(1000)
+      ).toBeLessThan(3000)
 
       // Still lost: the out-of-band log exists to make this visible, not to fix it.
       expect((getDb(dbPath).prepare('SELECT COUNT(*) AS n FROM stats').get() as { n: number }).n).toBe(before)

@@ -3289,6 +3289,31 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     return p
   }
 
+  // FORMAT-DERIVED: Claude Code persists a Bash result past 20,000 bytes and hands the model `<persisted-output>\nOutput too large (32.4KB). Full output saved to: <session>\tool-results\<id>.txt\n\nPreview (first 2KB):` (wrapper text captured from a real transcript), so the file it points at is always past the 20KB floor. Denying every Read of it, windowed or not, left no way to reach lines past the preview: the recall offered pages by head, tail or pattern only. The line bodies are HAND-DERIVED: 600 lines of 60 bytes, a 36KB file.
+  it('lets a bounded Read window of a large tool-results file through, and still denies one spanning past the floor', () => {
+    const p = makeToolResultsFile(Array.from({ length: 600 }, (_, i) => `row ${String(i).padStart(4, '0')} ${'x'.repeat(50)}`).join('\n') + '\n')
+    const windowed = (offset: number, limit: number): HookEvent => readEventWithRange(p, offset, limit)
+
+    expect(preReadHandler(windowed(300, 80)).hookType).not.toBe('deny')
+    const wide = preReadHandler(windowed(1, 500))
+    expect(wide.hookType).toBe('deny')
+    if (wide.hookType === 'deny') {
+      expect(wide.message).toContain('A Read with `offset` and `limit` spanning under 20KB goes through.')
+      // 500 rows of 60 bytes each (a 4-digit counter, 50 x's, two spaces, the word and a newline) come to 30,000 bytes. The size is what separates this refusal from the whole-file one, whose repeat would otherwise be cut to "Repeat refusal of this exact call" without the limit the retry has to fit under.
+      expect(wide.message).toContain('Lines 1-500 span 29KB.')
+    }
+    expect(preReadHandler(readEvent(p)).hookType).toBe('deny')
+  })
+
+  // HAND-DERIVED sequence, the order a model follows: the persisted-output wrapper says to Read the file, so the first call is a whole-file Read, and the refusal then tells it a bounded Read goes through. Regression: the refused whole Read was recorded as a full read before the refusal, so the bounded retry hit "was already read this session" for a file the model never saw. Dogfooded on the built bundle 2026-09-24.
+  it('does not count a refused whole-file Read of a tool-results file as read, so the bounded retry goes through', () => {
+    const p = makeToolResultsFile(Array.from({ length: 600 }, (_, i) => `row ${String(i).padStart(4, '0')} ${'x'.repeat(50)}`).join('\n') + '\n')
+
+    expect(preReadHandler(readEvent(p)).hookType).toBe('deny')
+    const retry = preReadHandler(readEventWithRange(p, 300, 80))
+    if (retry.hookType === 'deny') expect.fail(`the bounded retry was refused: ${retry.message}`)
+  })
+
   it('denies (does not pass) a large first read of tool-results/*.txt instead of falling through to the lenient generic threshold with no advisory (regression: a 33,261-byte first read of tool-results/*.txt produced zero hint or redirect, unlike the equivalent-sized tasks/*.output case just above)', () => {
     const p = makeToolResultsFile('x'.repeat(25 * 1024)) // above TASK_OUTPUT_DENY_BYTES (20KB), well under the 100KB generic threshold
     const result = preReadHandler(readEvent(p))

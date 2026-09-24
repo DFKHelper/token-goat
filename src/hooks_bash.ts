@@ -113,8 +113,10 @@ import {
   commandOptsOutOfCompression,
   buildRecallHint,
   shellQuoteSingle,
-  isCompressibleSingleCommand
+  isCompressibleSingleCommand,
+  classifyCatPath,
 } from './bash_extractors.js'
+import { countTextLines, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
 
 export {
   extractCatFile,
@@ -580,6 +582,30 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   return emitRewrite(notice + fenced, 'curl HTML body cleaned', { kind: 'bash_compress:curl-html', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
+/** The single range of a `sed`/`awk` line-range read when it runs from line 1 to the file's last line, on a file `cat` would be refused for, with the reason to give. Null for any other range, and for a file past SLICE_ESTIMATE_SCAN_CAP_BYTES or unreadable, since counting its lines means reading it. */
+function wholeFileRange(
+  filePath: string,
+  hintPath: string,
+  cwd: string,
+  ranges: ReadonlyArray<readonly [number, number]>,
+  tool: 'sed' | 'awk',
+): { start: number; end: number; cat: NonNullable<ReturnType<typeof classifyCatPath>>; reason: string } | null {
+  const [range] = ranges
+  if (ranges.length !== 1 || range === undefined || range[0] > 1) return null
+  const cat = classifyCatPath(filePath, tool)
+  if (cat === null) return null
+  try {
+    const resolved = resolveIndexPath(hintPath, cwd)
+    const st = statSync(resolved)
+    if (!st.isFile() || st.size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
+    const total = countTextLines(readFileSync(resolved, 'utf8'))
+    if (total === 0 || range[1] < total) return null
+    return { start: range[0], end: range[1], cat, reason: '`' + tool + '` over lines ' + range[0] + '-' + range[1] + ' is the whole file (' + total + ' lines), and loads all of it into context.' }
+  } catch {
+    return null
+  }
+}
+
 /** pre_tool_use handler for the Bash tool. Emits a recall hint when the command is a known build tool and its output was already captured this session. Passes through for all other commands. */
 function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
@@ -722,6 +748,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
       hintPaths.push(hintPath)
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
+      // A range from line 1 to the last line is `cat` spelled another way, and gets `cat`'s answer: pricing it against a surgical read of the same lines finds no saving, since that read is the whole file too, so `awk 'NR>=1 && NR<=324'` over a 324-line, 54KB skill passed with no word while `cat` of it was refused. Checked before the range is recorded, so a refusal does not count the lines as served.
+      const whole = singleLineRangeRead === null ? null : wholeFileRange(filePath, hintPath, hintCwd, ranges, tool)
+      if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null) {
+        recordStat('session_hint', 0, 0)
+        if (whole.cat.isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), whole.reason))
+        const hint = surgicalHintFor(hintPath, whole.cat.isEnv, whole.cat.isConfig, whole.cat.isDoc, whole.cat.isXml, targetFor(hintPath, whole.cat.isEnv ? 'key' : undefined), whole.reason)
+        return cdStripped ? pathHint(hintPath, hint) : denyOutput(hint)
+      }
       const overlapHints: string[] = []
       const freshRanges: Array<readonly [number, number]> = []
       for (const [start, end] of ranges) {

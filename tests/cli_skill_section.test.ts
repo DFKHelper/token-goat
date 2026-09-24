@@ -1,10 +1,4 @@
-// Regression guard: `skill-section <name>::<heading>` (single positional arg form) used
-// `nameHeading.split('::')` and rejected any spec where the split didn't produce exactly 2
-// parts. A heading whose own text contains an embedded "::" pushes the split past 2 parts, so
-// a perfectly valid spec naming a real skill and a real heading was rejected with the format
-// error. This drives the real run() entry against a skill-outputs cache meta so it exercises
-// the same separator-finding logic (findSpecSeparator / lastIndexOf) used by the file::symbol
-// and file::Heading specs parsed elsewhere in the CLI.
+// Regression guard: `skill-section <name>::<heading>` (single positional arg form) used `nameHeading.split('::')` and rejected any spec where the split didn't produce exactly 2 parts. A heading whose own text contains an embedded "::" pushes the split past 2 parts, so a perfectly valid spec naming a real skill and a real heading was rejected with the format error. This drives the real run() entry against a skill-outputs cache meta so it exercises the same separator-finding logic (findSpecSeparator / lastIndexOf) used by the file::symbol and file::Heading specs parsed elsewhere in the CLI.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -60,12 +54,7 @@ describe('skill-section spec parsing', () => {
   })
 })
 
-// Regression guard: cmdSkillSection deliberately sets process.exitCode = 1 (without throwing)
-// when the requested heading isn't found in the skill file. The buildProgram() `guard()`
-// wrapper that registers every guard-wrapped command (skill-section among them) used to run
-// `process.exitCode = 0` unconditionally after the handler resolved, clobbering that 1 back to
-// 0 and reporting a real "section not found" failure as success. Drive the real run() entry so
-// this exercises the actual guard() + handler wiring, not the handler in isolation.
+// Regression guard: cmdSkillSection deliberately sets process.exitCode = 1 (without throwing) when the requested heading isn't found in the skill file. The buildProgram() `guard()` wrapper that registers every guard-wrapped command (skill-section among them) used to run `process.exitCode = 0` unconditionally after the handler resolved, clobbering that 1 back to 0 and reporting a real "section not found" failure as success. Drive the real run() entry so this exercises the actual guard() + handler wiring, not the handler in isolation.
 describe('skill-section exit code on a missing heading', () => {
   it('exits 1 instead of the guard() wrapper clobbering the handler-set exit code back to 0', async () => {
     await storeOutput('sess-1', 'myskill-notfound', 'cached body', { sourcePath: skillFile })
@@ -81,8 +70,7 @@ describe('skill-section exit code on a missing heading', () => {
     const errSpy = spyOnWrite(process.stderr, stderr)
     let code: number | string | undefined
     try {
-      // "Usague" is one transposition from the real "Usage" heading, so the did-you-mean pass
-      // must surface it rather than leaving the caller with a bare non-zero exit.
+      // "Usague" is one transposition from the real "Usage" heading, so the did-you-mean pass must surface it rather than leaving the caller with a bare non-zero exit.
       code = await runSkillSection('myskill-msg::Usague')
     } finally {
       errSpy.mockRestore()
@@ -92,17 +80,13 @@ describe('skill-section exit code on a missing heading', () => {
     expect(msg, 'must name the missing heading').toContain("Section 'Usague' not found")
     expect(msg, 'must name the skill it looked in').toContain("skill 'myskill-msg'")
     expect(msg, 'must suggest the nearest real heading').toContain('Usage')
+    // CAPTURE: the built bundle printed `Did you mean:\n  - Headline Rule\n  - ...` for `skill-section image-to-code "Ne"`, the break before each candidate as a literal backslash and n, because the suggestion reached the error printer as one line and the printer escapes a newline inside a line.
+    expect(msg, 'each suggestion must be on a line of its own').toContain("\nDid you mean:\n  - Usage")
+    expect(msg).not.toContain('\\n')
   })
 })
 
-// Regression guard: extractNamedSection ends on `return text || null`, so a heading that is
-// present but has nothing under it is indistinguishable from a heading that does not exist.
-// cmdSkillSection reported both as "not found", then ran the did-you-mean pass over the real
-// heading list -- which of course contained the requested heading -- and emitted output that
-// contradicted itself: "Section 'X' not found" followed by "Did you mean: - X". Found live on
-// a real skill whose last line is a body-less "### 1.0 (initial)" heading. The fixture below is
-// HAND-DERIVED: a trailing heading with no body is the minimal input shape that reaches the
-// `text || null` branch, written from the markdown structure rather than from the extractor.
+// Regression guard: extractNamedSection ends on `return text || null`, so a heading that is present but has nothing under it is indistinguishable from a heading that does not exist. cmdSkillSection reported both as "not found", then ran the did-you-mean pass over the real heading list -- which of course contained the requested heading -- and emitted output that contradicted itself: "Section 'X' not found" followed by "Did you mean: - X". Found live on a real skill whose last line is a body-less "### 1.0 (initial)" heading. The fixture below is HAND-DERIVED: a trailing heading with no body is the minimal input shape that reaches the `text || null` branch, written from the markdown structure rather than from the extractor.
 describe('skill-section on a heading that exists but has an empty body', () => {
   it('reports the section as empty and never suggests the heading the caller just asked for', async () => {
     writeFileSync(skillFile, ['# Doc', '', '## Usage', 'usage body text', '', '## Changelog', ''].join('\n'), 'utf-8')

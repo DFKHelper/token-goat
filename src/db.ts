@@ -452,7 +452,7 @@ export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetM
       lastError = new Error(`got: ${String(mode)}`)
     } catch (e) {
       lastError = e
-      if (stopOn?.(e) === true) throw walSwitchError(e)
+      if (isDamagedDatabaseError(e) || stopOn?.(e) === true) throw walSwitchError(e)
     }
     // Another process may already have finished the conversion while this one was being refused, in which case there is nothing left to do and no reason to keep waiting.
     try {
@@ -463,6 +463,12 @@ export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetM
     if (Date.now() >= deadline) throw walSwitchError(lastError)
     sleepSync(25)
   }
+}
+
+/** Does `e` say the file is not a usable database at all? No other process finishes anything that clears that, so waiting out the deadline for it only delays the report: fifteen seconds for every open of a damaged global.db. */
+function isDamagedDatabaseError(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code
+  return typeof code === 'string' && /^SQLITE_(?:NOTADB|CORRUPT)/.test(code)
 }
 
 /** The error {@link enableWalWithRetry} gives up with. Carries the last refusal as `cause`, so {@link isWriteAccessError} can read its SQLite code through the wrapper. */

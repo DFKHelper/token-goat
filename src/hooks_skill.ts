@@ -19,6 +19,7 @@ import { extractMarkdownHeadings, formatHeadingTreeParts } from './hints/markdow
 import { OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO } from './fold_structure.js';
 import { fenceUntrustedFileContent } from './injection_scan.js';
 import { hintTarget } from './hint_target.js';
+import { displaySafeText } from './paths.js';
 
 const OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES = 6000;
 
@@ -69,17 +70,18 @@ function resolveSkillContext(event: HookEvent): { skillName: string } | null {
 }
 
 /** Heading-tree stand-in for an oversized skill body, or null when the body is not worth mapping. Two callers, one floor pair. Both floors come verbatim from fold_structure.ts's large-markdown outline, which measured them against real session transcripts: a skill needs at least OUTLINE_MIN_HEADINGS of structure to be worth a map at all, and the map has to be genuinely small next to the body (OUTLINE_MAX_REPLACEMENT_RATIO) or the round trip costs more than it saves. */
-function planHeadingTree(body: string, bodyBytes: number, skillName: string): { sectionsList: string; treeBytes: number; phrase: string } | null {
+function planHeadingTree(body: string, bodyBytes: number, skillName: string, sourcePath: string): { sectionsList: string; treeBytes: number; phrase: string } | null {
   const headings = extractMarkdownHeadings(body);
   if (headings.length < OUTLINE_MIN_HEADINGS) return null;
   const { sectionsList } = formatHeadingTreeParts(headings, skillName);
   const treeBytes = Buffer.byteLength(sectionsList, 'utf-8');
   if (treeBytes > bodyBytes * OUTLINE_MAX_REPLACEMENT_RATIO) return null;
-  // The displayed tree caps at MAX_HEADINGS (40); when the file has more H1-H3 headings than that, the message must say so or the model reads a truncated tree as a complete map and never learns the remaining sections exist.
+  // The displayed tree caps at MAX_HEADINGS (40); when the file has more H1-H3 headings than that, the message must say so or the model reads a truncated tree as a complete map and never learns the remaining sections exist. It must also say how to reach them: skill-section resolves any heading in the file, shown or not, so the only thing the model lacks is the names, and `outline` lists every one. An earlier wording sent it to `skill-body` for them, which loads the whole body this deny exists to withhold.
   const totalHeadings = extractMarkdownHeadings(body, Number.MAX_SAFE_INTEGER).length;
   const phrase = totalHeadings > headings.length
     ? 'its heading tree shows ' + headings.length + ' of ' + totalHeadings +
-      ' headings below instead of the full body; the remaining sections are reachable only through `token-goat skill-body ' + skillName + '`.'
+      ' headings below instead of the full body; the other ' + (totalHeadings - headings.length) +
+      ' load by name just the same, and `token-goat outline "' + displaySafeText(sourcePath) + '"` lists all ' + totalHeadings + '.'
     : 'its heading tree (' + headings.length + ' headings) is inlined below instead of the full body.';
   return { sectionsList, treeBytes, phrase };
 }
@@ -133,7 +135,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             }
           }
           // The heading tree serves both arms, and the arm that had been missing it is the larger one. A marker sitting near the end of a file produces a slice too big to inline, and that used to fall to a bare pointer naming `skill-section \'<heading>\'` without ever saying what the headings were -- so recovering cost a listing call the deny had all the information to answer. A skill with a badly-placed marker was strictly worse off than one with no marker at all, which got the map. Same replacement, same floors, whichever arm arrives here.
-          const tree = planHeadingTree(body, bodyBytes, skillName);
+          const tree = planHeadingTree(body, bodyBytes, skillName, sourcePath);
           if (tree !== null) {
             // Two arms, two counterfactuals, and using the no-marker one for both would over-credit. With no marker the handler falls through to a real load, so the body is genuinely what the tree replaces. With a marker the body was never going to be delivered -- the pointer deny already stopped it -- and the bytes the agent would actually have pulled are the slice that pointer named. Credit that instead. On the skills this fires for the two numbers are within a few percent (a marker sitting near the end makes the slice nearly the whole body), which is exactly why the wrong one would have looked right.
             const replaced = compact !== null ? Buffer.byteLength(compact, 'utf-8') : bodyBytes;

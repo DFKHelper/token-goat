@@ -8,10 +8,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { BUNDLE, runCli, type RunResult } from './helpers/bundle.js'
 import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
 
-// Batched against one long-lived bundle process (see tests/text_commands.test.ts for the same
-// pattern and tests/batch_serve_equivalence.test.ts for the byte-for-byte equivalence guard).
-// Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a
-// stdin stream.
+// Batched against one long-lived bundle process (see tests/text_commands.test.ts for the same pattern and tests/batch_serve_equivalence.test.ts for the byte-for-byte equivalence guard). Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a stdin stream.
 async function run(args: string[], input?: string): Promise<RunResult> {
   if (input !== undefined) {
     return runCli(args, input)
@@ -72,31 +69,14 @@ describe('token-goat CLI', () => {
     expect(r.stdout.trim()).toBe('{}')
   }, 30000)
 
-  // Qwen Code's bridge (src/bridges/qwen_install.ts) writes a bare command string into
-  // ~/.qwen/settings.json with no ambient env var of its own for detectHarness() to key off,
-  // unlike pi.ts/copilot_cli.ts which set process.env.TOKEN_GOAT_HARNESS_OVERRIDE directly
-  // in-process. It self-identifies via this --harness flag instead. This confirms the flag
-  // doesn't break the hook relay path (exit 0, valid JSON) exactly as the flag-less form above
-  // does.
+  // Qwen Code's bridge (src/bridges/qwen_install.ts) writes a bare command string into ~/.qwen/settings.json with no ambient env var of its own for detectHarness() to key off, unlike pi.ts/copilot_cli.ts which set process.env.TOKEN_GOAT_HARNESS_OVERRIDE directly in-process. It self-identifies via this --harness flag instead. This confirms the flag doesn't break the hook relay path (exit 0, valid JSON) exactly as the flag-less form above does.
   it('hook pre_tool_use --harness qwen with empty stdin exits 0 and writes {} to stdout', async () => {
     const r = await run(['hook', 'pre_tool_use', '--harness', 'qwen'], '')
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe('{}')
   }, 30000)
 
-  // The `hook` command's --harness flag has no CLI-visible output of its own (relay() emits
-  // the same {} regardless of resolved harness for empty stdin, and 'qwen' has no per-harness
-  // wire-format reshaping or auto-trigger-multiplier entry to diff against -- see
-  // src/hooks_cli.ts's normalizePayload/harnessForNormalization and
-  // src/compact.ts's HARNESS_MULTIPLIER_DEFAULTS). So this pins down the two halves of the
-  // fix directly instead of relying on an indirect CLI side effect:
-  //  1. cmdHook actually forwards --harness into process.env.TOKEN_GOAT_HARNESS_OVERRIDE before
-  //     calling relay() (asserted against the real source, the same pattern
-  //     tests/bridges_status.test.ts already uses to pin a specific line of bridge source).
-  //  2. detectHarness() (src/bridges/registry.ts), which relay() depends on, actually resolves
-  //     that override to 'qwen' -- and takes priority over every ambient env-var signal, which
-  //     is exactly why this override mechanism is a valid substitute for an ambient signal Qwen
-  //     Code itself never sets.
+  // The `hook` command's --harness flag has no CLI-visible output of its own (relay() emits the same {} regardless of resolved harness for empty stdin, and 'qwen' has no per-harness wire-format reshaping or auto-trigger-multiplier entry to diff against -- see src/hooks_cli.ts's normalizePayload/harnessForNormalization and src/compact.ts's HARNESS_MULTIPLIER_DEFAULTS). So this pins down the two halves of the fix directly instead of relying on an indirect CLI side effect: 1. cmdHook actually forwards --harness into process.env.TOKEN_GOAT_HARNESS_OVERRIDE before calling relay() (asserted against the real source, the same pattern tests/bridges_status.test.ts already uses to pin a specific line of bridge source). 2. detectHarness() (src/bridges/registry.ts), which relay() depends on, actually resolves that override to 'qwen' -- and takes priority over every ambient env-var signal, which is exactly why this override mechanism is a valid substitute for an ambient signal Qwen Code itself never sets.
   it('the --harness flag is wired: cmdHook sets TOKEN_GOAT_HARNESS_OVERRIDE from it, and detectHarness() resolves that override to \'qwen\' ahead of any ambient signal', async () => {
     const cliSrc = fs.readFileSync(path.join(BUNDLE, '..', '..', 'src', 'cli.ts'), 'utf8')
     expect(cliSrc).toMatch(/process\.env\[ENV_KEYS\.HARNESS_OVERRIDE\]\s*=\s*opts\.harness/)
@@ -233,8 +213,7 @@ describe('token-goat CLI', () => {
   }, 30000)
 
   it('bash-output --file --grep --max-matches 0 shows zero matching lines instead of unlimited', async () => {
-    // Regression: --max-matches was bare-parsed and only applied `cap > 0`, so an explicit
-    // 0 silently fell through to "no cap" and printed every matching line.
+    // Regression: --max-matches was bare-parsed and only applied `cap > 0`, so an explicit 0 silently fell through to "no cap" and printed every matching line.
     const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-zero-${Date.now()}.txt`)
     const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
@@ -562,9 +541,7 @@ describe('token-goat CLI', () => {
     })
 
     it('replace on a missing target file says "target file not found", never doubling the word "file"', async () => {
-      // The label "target file" already ends in "file"; the ENOENT formatter used to append
-      // " file" unconditionally, producing "target file file not found". A label that ends in
-      // "file" must be used verbatim.
+      // The label "target file" already ends in "file"; the ENOENT formatter used to append " file" unconditionally, producing "target file file not found". A label that ends in "file" must be used verbatim.
       const missingTarget = path.join(os.tmpdir(), `tg-rpl-missing-target-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-missing-target-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-missing-target-new-${Date.now()}.txt`)
@@ -654,10 +631,7 @@ describe('token-goat CLI', () => {
     })
 
     it('replace auto-heals a CRLF-file/LF-old-text near-match instead of erroring (the reported case)', async () => {
-      // Regression: replace used to diagnose "a near-match exists that differs only by line
-      // endings" and then still error out, forcing the caller to manually re-encode. It should
-      // instead perform the replacement, writing the new text back in CRLF (the file's EOL at
-      // that location) and leaving the rest of the file's CRLF endings untouched.
+      // Regression: replace used to diagnose "a near-match exists that differs only by line endings" and then still error out, forcing the caller to manually re-encode. It should instead perform the replacement, writing the new text back in CRLF (the file's EOL at that location) and leaving the rest of the file's CRLF endings untouched.
       const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-new-${Date.now()}.txt`)
@@ -691,8 +665,7 @@ describe('token-goat CLI', () => {
         expect(r.status, r.stderr).toBe(0)
         expect(r.stdout).toContain('replaced 1 occurrence')
         expect(r.stdout).toContain('line-ending normalized')
-        // Raw-byte assertion — the healed text must land as LF (the file's convention at that
-        // location), not the CRLF it was supplied in, and no stray \r must be introduced.
+        // Raw-byte assertion — the healed text must land as LF (the file's convention at that location), not the CRLF it was supplied in, and no stray \r must be introduced.
         const result = fs.readFileSync(tmp)
         expect(result.equals(Buffer.from('alpha\nBETA\nGAMMA\n', 'utf8'))).toBe(true)
         expect(result.includes(0x0d)).toBe(false)
@@ -722,10 +695,7 @@ describe('token-goat CLI', () => {
     })
 
     it('replace EOL auto-heal preserves a literal $, $$ and $& in the new text', async () => {
-      // Regression guard: String.replace/replaceAll treat $, $$ and $& as special replacement-
-      // pattern sequences even for a plain-string search. The auto-heal path must build the
-      // healed buffer via Buffer.concat, never String.replace, so a literal dollar sign in the
-      // caller-supplied new text survives untouched.
+      // Regression guard: String.replace/replaceAll treat $, $$ and $& as special replacement- pattern sequences even for a plain-string search. The auto-heal path must build the healed buffer via Buffer.concat, never String.replace, so a literal dollar sign in the caller-supplied new text survives untouched.
       const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-dollar-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-dollar-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-dollar-new-${Date.now()}.txt`)
@@ -772,10 +742,7 @@ describe('token-goat CLI', () => {
     })
 
     it('replace does not corrupt non-UTF-8 bytes elsewhere in the file', async () => {
-      // Regression test: the target file used to be read via fs.readFileSync(path, 'utf8') — a
-      // lossy decode that silently rewrites ANY invalid UTF-8 byte in the whole file to U+FFFD,
-      // then re-encodes on write, permanently corrupting it to ef bf bd — even though the edit
-      // itself only targets a small, unrelated span elsewhere in the file.
+      // Regression test: the target file used to be read via fs.readFileSync(path, 'utf8') — a lossy decode that silently rewrites ANY invalid UTF-8 byte in the whole file to U+FFFD, then re-encodes on write, permanently corrupting it to ef bf bd — even though the edit itself only targets a small, unrelated span elsewhere in the file.
       const tmp = path.join(os.tmpdir(), `tg-rpl-nonutf8-${Date.now()}.txt`)
       const strayByte = 0xe9 // a lone byte that is not valid UTF-8 on its own when followed by ASCII
       const content = Buffer.concat([
@@ -808,12 +775,7 @@ describe('token-goat CLI', () => {
     })
 
     it('replace preserves non-UTF-8 bytes supplied via --new-b64 in the replacement text', async () => {
-      // Regression test: --old-b64/--new-b64 used to be decoded via decodeBase64Text, which base64-
-      // decodes the payload then calls .toString('utf8') on it; the byte-exact match/replace logic
-      // then re-encoded that string back to bytes via Buffer.from(text, 'utf8'). Any invalid-UTF-8
-      // byte in the b64 payload itself (as opposed to elsewhere in the target file, covered above)
-      // got silently rewritten by that round-trip to the 3-byte U+FFFD sequence (ef bf bd) — so the
-      // replacement text the caller explicitly supplied byte-for-byte came out corrupted on disk.
+      // Regression test: --old-b64/--new-b64 used to be decoded via decodeBase64Text, which base64- decodes the payload then calls .toString('utf8') on it; the byte-exact match/replace logic then re-encoded that string back to bytes via Buffer.from(text, 'utf8'). Any invalid-UTF-8 byte in the b64 payload itself (as opposed to elsewhere in the target file, covered above) got silently rewritten by that round-trip to the 3-byte U+FFFD sequence (ef bf bd) — so the replacement text the caller explicitly supplied byte-for-byte came out corrupted on disk.
       const tmp = path.join(os.tmpdir(), `tg-rpl-newb64-nonutf8-${Date.now()}.txt`)
       const strayByte = 0xe9 // valid Windows-1252/Latin-1 but invalid as a standalone UTF-8 byte
       const newRaw = Buffer.concat([Buffer.from('BE', 'utf8'), Buffer.from([strayByte]), Buffer.from('TA', 'utf8')])
@@ -845,15 +807,7 @@ describe('token-goat CLI', () => {
       expect(r.stderr).toContain('not found')
     })
 
-    // regression: cmdReplace read the whole file, computed the snippet replacement in memory,
-    // then rewrote the WHOLE file via atomicWriteBuffer. The snippet match only protects the
-    // matched region -- a concurrent write to any OTHER part of the file between the initial
-    // read and the final rename was silently lost (last-writer-wins over the entire file), even
-    // though the snippet match itself succeeded and reported no error. This forces that window
-    // open with the TOKEN_GOAT_TEST_REPLACE_DELAY_MS test-only seam (same pattern as
-    // config_commands.ts's TOKEN_GOAT_TEST_RMW_DELAY_MS), races a real concurrent write into it
-    // from this test process, and asserts replace aborts instead of clobbering the concurrent
-    // change.
+    // regression: cmdReplace read the whole file, computed the snippet replacement in memory, then rewrote the WHOLE file via atomicWriteBuffer. The snippet match only protects the matched region -- a concurrent write to any OTHER part of the file between the initial read and the final rename was silently lost (last-writer-wins over the entire file), even though the snippet match itself succeeded and reported no error. This forces that window open with the TOKEN_GOAT_TEST_REPLACE_DELAY_MS test-only seam (same pattern as config_commands.ts's TOKEN_GOAT_TEST_RMW_DELAY_MS), races a real concurrent write into it from this test process, and asserts replace aborts instead of clobbering the concurrent change.
     it('replace aborts with a clear error instead of silently clobbering a concurrent modification', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-race-${Date.now()}.txt`)
       fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
@@ -884,15 +838,10 @@ describe('token-goat CLI', () => {
         })
         child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
 
-        // Wait for the child's deterministic readiness signal (emitted right as its delay window
-        // opens), then land a concurrent write to an UNRELATED part of the file. The child holds the
-        // window open until the sentinel below appears, so the write is guaranteed to land after its
-        // initial read/stat and before its re-stat+rename no matter how loaded the machine is.
+        // Wait for the child's deterministic readiness signal (emitted right as its delay window opens), then land a concurrent write to an UNRELATED part of the file. The child holds the window open until the sentinel below appears, so the write is guaranteed to land after its initial read/stat and before its re-stat+rename no matter how loaded the machine is.
         await readyPromise
         fs.writeFileSync(tmp, 'alpha beta gamma -- concurrent edit', 'utf8')
-        // Close the child's window on this event rather than on the clock: a fixed sleep let a
-        // contended worker's write land after the window had shut, so replace saw an unchanged file
-        // and exited 0 against an assertion expecting 1.
+        // Close the child's window on this event rather than on the clock: a fixed sleep let a contended worker's write land after the window had shut, so replace saw an unchanged file and exited 0 against an assertion expecting 1.
         fs.writeFileSync(sentinel, '', 'utf8')
 
         const exitCode: number | null = await new Promise((resolve, reject) => {
@@ -912,9 +861,7 @@ describe('token-goat CLI', () => {
       }
     }, 60_000)
 
-    // regression: atomicWriteBuffer always created its temp file at 0o600 and renamed it
-    // over dest, so a `replace` against a committed executable (chmod +x hook script, binary)
-    // silently dropped the exec bit -- git would then record a 100755->100644 mode change.
+    // regression: atomicWriteBuffer always created its temp file at 0o600 and renamed it over dest, so a `replace` against a committed executable (chmod +x hook script, binary) silently dropped the exec bit -- git would then record a 100755->100644 mode change.
     it.skipIf(process.platform === 'win32')('replace preserves the exec bit on a chmod +x target file', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-exec-${Date.now()}.txt`)
       fs.writeFileSync(tmp, '#!/bin/sh\necho old\n', 'utf8')
@@ -951,11 +898,7 @@ describe('token-goat CLI', () => {
     })
 
     it('replace auto-heals a CRLF old/new snippet against an LF target without requiring --normalize-newlines', async () => {
-      // Superseded expectation: this used to assert that omitting --normalize-newlines left the
-      // near-match unresolved (the flag was required to opt in). The unique-normalized-match
-      // auto-heal now handles this by default, so the flag is no longer required for this case
-      // — --normalize-newlines still exists for the (rarer) case of forcing normalization
-      // proactively even when a byte-exact match would otherwise have been found.
+      // Superseded expectation: this used to assert that omitting --normalize-newlines left the near-match unresolved (the flag was required to opt in). The unique-normalized-match auto-heal now handles this by default, so the flag is no longer required for this case — --normalize-newlines still exists for the (rarer) case of forcing normalization proactively even when a byte-exact match would otherwise have been found.
       const tmp = path.join(os.tmpdir(), `tg-rpl-normeol-off-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-normeol-off-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-normeol-off-new-${Date.now()}.txt`)
@@ -1041,6 +984,8 @@ describe('token-goat CLI', () => {
         expect(r.stderr).toContain('not found')
         expect(r.stderr).not.toContain('Did you mean')
         expect(r.stderr).toContain('outline')
+        // Two lines, not one line holding an escaped `\n`: the error printer escapes control characters, and it used to escape the break token-goat itself put between the two.
+        expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: Section 'Nonexistent Heading' not found in '${tmp}'`, `Try: token-goat outline ${tmp}`])
         expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
       } finally {
         fs.rmSync(tmp, { force: true })
@@ -1055,19 +1000,17 @@ describe('token-goat CLI', () => {
       try {
         const r = await run(['insert-section', tmp, '--after', 'Leson 2', '--content-b64', contentB64])
         expect(r.status).toBe(1)
-        expect(r.stderr).toContain('Did you mean')
-        expect(r.stderr).toContain('Lesson 2')
+        // One line per candidate: the suggestion once reached stderr as one line with a literal backslash-n before each heading.
+        expect(r.stderr).toContain('\nDid you mean:\n')
+        expect(r.stderr).toMatch(/^ {2}- Lesson 2$/m)
+        expect(r.stderr).not.toContain('\\n')
         expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
       } finally {
         fs.rmSync(tmp, { force: true })
       }
     })
 
-    // Regression: `section` refuses an ambiguous heading, but this write path silently inserted
-    // after the FIRST of two identical headings and reported success naming only the heading --
-    // so a caller could not tell which one the text landed under, and a write to the wrong section
-    // is worse than a read from it. It must refuse, list the qualified retry forms, and leave the
-    // file byte-for-byte unchanged.
+    // Regression: `section` refuses an ambiguous heading, but this write path silently inserted after the FIRST of two identical headings and reported success naming only the heading -- so a caller could not tell which one the text landed under, and a write to the wrong section is worse than a read from it. It must refuse, list the qualified retry forms, and leave the file byte-for-byte unchanged.
     it('insert-section refuses an ambiguous heading, lists qualified retries, and does not touch the file', async () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-ambig-${Date.now()}.md`)
       const original = '# Doc\n\n## Notes\nalpha\n\n## Other\nmid\n\n## Notes\nbeta\n'
@@ -1127,8 +1070,7 @@ describe('token-goat CLI', () => {
     })
   })
 
-  // regression: same atomicWriteBuffer/atomicWriteCore mode-drop bug, exercised via
-  // write-file --from (the other caller that rewrites an existing destination file).
+  // regression: same atomicWriteBuffer/atomicWriteCore mode-drop bug, exercised via write-file --from (the other caller that rewrites an existing destination file).
   it.skipIf(process.platform === 'win32')('write-file --from preserves the exec bit on a chmod +x destination file', async () => {
     const dst = path.join(os.tmpdir(), `tg-wf-exec-${Date.now()}.txt`)
     const src = path.join(os.tmpdir(), `tg-wf-exec-src-${Date.now()}.txt`)
@@ -1318,11 +1260,7 @@ describe('token-goat CLI', () => {
     const holderScript = path.join(os.tmpdir(), `tg-wf-lock-holder-${Date.now()}.mjs`)
     fs.writeFileSync(dest, 'original')
     fs.writeFileSync(src, 'new content')
-    // A second real process holding an open handle on `dest` reliably makes a concurrent rename
-    // onto it fail with EPERM on Windows -- exactly the transient AV-scanner/search-indexer lock
-    // atomicWriteCore already retries around. It has to be a genuinely separate process (not just
-    // another thread in this test process) because the CLI command below runs in its own spawned
-    // process; the holder's own setTimeout keeps running independently of this test's event loop.
+    // A second real process holding an open handle on `dest` reliably makes a concurrent rename onto it fail with EPERM on Windows -- exactly the transient AV-scanner/search-indexer lock atomicWriteCore already retries around. It has to be a genuinely separate process (not just another thread in this test process) because the CLI command below runs in its own spawned process; the holder's own setTimeout keeps running independently of this test's event loop.
     fs.writeFileSync(
       holderScript,
       "import { openSync } from 'node:fs'\n" +
@@ -1336,8 +1274,7 @@ describe('token-goat CLI', () => {
     const holder = spawn(process.execPath, [holderScript, dest, String(holdMs)], { stdio: ['ignore', 'pipe', 'ignore'] })
 
     try {
-      // Deterministic handshake: don't start the real command until the holder has genuinely
-      // opened the handle, instead of guessing a fixed pre-delay.
+      // Deterministic handshake: don't start the real command until the holder has genuinely opened the handle, instead of guessing a fixed pre-delay.
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('lock holder never signaled ready')), 5000)
         holder.stdout?.on('data', (chunk: Buffer) => {
@@ -1425,11 +1362,7 @@ describe('token-goat CLI', () => {
 
 
 describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
-  // These drive the REAL built bundle. dataDir() is computed once at module load
-  // from LOCALAPPDATA (win32) / XDG_DATA_HOME (linux), so pointing both at a fresh
-  // temp dir isolates the skill cache from the user's real one - the exact pollution
-  // that masked the original bug. `skill-compact --path` bypasses name resolution,
-  // so no ~/.claude/skills override is needed.
+  // These drive the REAL built bundle. dataDir() is computed once at module load from LOCALAPPDATA (win32) / XDG_DATA_HOME (linux), so pointing both at a fresh temp dir isolates the skill cache from the user's real one - the exact pollution that masked the original bug. `skill-compact --path` bypasses name resolution, so no ~/.claude/skills override is needed.
   function runIsolated(args: string[], dataDir: string, extraEnv?: Record<string, string>): RunResult {
     const res = spawnSync(process.execPath, [BUNDLE, ...args], {
       encoding: 'utf8',
@@ -1445,9 +1378,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
   }
 
-  // Data dir layout under LOCALAPPDATA/XDG_DATA_HOME nests platform-specific
-  // subdirectories (e.g. dfk-helper/token-goat on Windows), so walk recursively
-  // for a cache filename instead of assuming a fixed depth.
+  // Data dir layout under LOCALAPPDATA/XDG_DATA_HOME nests platform-specific subdirectories (e.g. dfk-helper/token-goat on Windows), so walk recursively for a cache filename instead of assuming a fixed depth.
   function findFileNamesRecursive(dir: string): string[] {
     if (!fs.existsSync(dir)) return []
     const names: string[] = []
@@ -1484,10 +1415,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
-  // An empty cache used to render as a bare column header with zero rows, which is
-  // indistinguishable from a rendering failure or a lookup against the wrong cache root --
-  // exactly the "empty backing store looks like a populated one" class this repo has fixed
-  // three times elsewhere. Say it plainly instead, matching `stats`'s own empty-store line.
+  // An empty cache used to render as a bare column header with zero rows, which is indistinguishable from a rendering failure or a lookup against the wrong cache root -- exactly the "empty backing store looks like a populated one" class this repo has fixed three times elsewhere. Say it plainly instead, matching `stats`'s own empty-store line.
   it('skill-list reports an empty cache instead of printing a bare header', () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skilllist-empty-'))
     try {
@@ -1500,9 +1428,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   })
 
-  // Regression for the acceptance test: after `skill-compact`, `skill-list` must show
-  // the skill. Pre-fix skill-compact wrote only a -compact file (no meta), and listSkills
-  // iterates metas, so the entry was invisible. skill-compact now also writes the body meta.
+  // Regression for the acceptance test: after `skill-compact`, `skill-list` must show the skill. Pre-fix skill-compact wrote only a -compact file (no meta), and listSkills iterates metas, so the entry was invisible. skill-compact now also writes the body meta.
   it('skill-list --json surfaces the compacted skill with a skill_name field', () => {
     const { dataDir, skillFile, cleanup } = makeSkill()
     try {
@@ -1564,12 +1490,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
-  // Regression: `--path` passed `fs.existsSync` (true for directories too) then read the file
-  // separately with no try/catch -- a TOCTOU gap where a race (or, deterministically here, a
-  // path that exists-but-isn't-a-readable-file) throws a raw unwrapped Node error instead of a
-  // friendly CliError, defeating the whole point of the existsSync pre-check. A directory path
-  // exercises this deterministically: existsSync(dir) is true, but readFileSync(dir) throws
-  // EISDIR, which pre-fix propagated as the raw Node message instead of our own wording.
+  // Regression: `--path` passed `fs.existsSync` (true for directories too) then read the file separately with no try/catch -- a TOCTOU gap where a race (or, deterministically here, a path that exists-but-isn't-a-readable-file) throws a raw unwrapped Node error instead of a friendly CliError, defeating the whole point of the existsSync pre-check. A directory path exercises this deterministically: existsSync(dir) is true, but readFileSync(dir) throws EISDIR, which pre-fix propagated as the raw Node message instead of our own wording.
   it('skill-compact --path pointed at a directory reports a friendly read error, not a raw Node exception', () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
     const dataDir = path.join(base, 'data')
@@ -1585,11 +1506,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
-  // Regression: `opts.path !== ''` alone let a whitespace-only --path (e.g. '   ') slip past
-  // the "was --path given" check and reach fs.existsSync, producing a confusing
-  // "skill file not found:    " message with literal embedded whitespace instead of the clean
-  // "--path cannot be empty" wording the codebase already uses for validateWritablePath /
-  // readFileBoundedRaw.
+  // Regression: `opts.path !== ''` alone let a whitespace-only --path (e.g. '   ') slip past the "was --path given" check and reach fs.existsSync, producing a confusing "skill file not found:    " message with literal embedded whitespace instead of the clean "--path cannot be empty" wording the codebase already uses for validateWritablePath / readFileBoundedRaw.
   it('skill-compact --path "   " reports "--path cannot be empty", not a raw not-found message', () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
     try {
@@ -1601,8 +1518,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
-  // Regression: `name === ''` alone let a whitespace-only <name> slip past the
-  // "was a name given" check in the else branch, same class of bug as the --path case above.
+  // Regression: `name === ''` alone let a whitespace-only <name> slip past the "was a name given" check in the else branch, same class of bug as the --path case above.
   it('skill-compact "   " (whitespace-only name) reports "requires a <name> or --path"', () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
     try {
@@ -1614,8 +1530,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
-  // Regression: cmdSkillDiff's `if (!name)` guard didn't trim, so a whitespace-only name slipped
-  // past into skill-cache lookups instead of producing the clean "requires a <name>" error.
+  // Regression: cmdSkillDiff's `if (!name)` guard didn't trim, so a whitespace-only name slipped past into skill-cache lookups instead of producing the clean "requires a <name>" error.
   it('skill-diff "   " (whitespace-only name) reports "requires a <name>"', () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
     try {
@@ -1627,13 +1542,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
-  // Regression for SKILLCOMPACT-SESSIONID: cmdSkillCompact used to derive its
-  // cache-scoping session id from `Array.from(getSessionFiles().keys())[0]`, which
-  // is the first *file path* read this process (or 'default' when none were read -
-  // always true for a plain CLI invocation, since only the `hook` relay path loads
-  // persisted session state into that map). That silently ignored CLAUDE_CODE_SESSION_ID
-  // and always wrote the compact to a hardcoded 'default' bucket, so two different
-  // sessions compacting the same skill collided into one cache entry.
+  // Regression for SKILLCOMPACT-SESSIONID: cmdSkillCompact used to derive its cache-scoping session id from `Array.from(getSessionFiles().keys())[0]`, which is the first *file path* read this process (or 'default' when none were read - always true for a plain CLI invocation, since only the `hook` relay path loads persisted session state into that map). That silently ignored CLAUDE_CODE_SESSION_ID and always wrote the compact to a hardcoded 'default' bucket, so two different sessions compacting the same skill collided into one cache entry.
   it('skill-compact scopes the compact cache file to CLAUDE_CODE_SESSION_ID, not an arbitrary session', () => {
     const { dataDir, skillFile, cleanup } = makeSkill()
     try {
@@ -1675,11 +1584,7 @@ describe('a corrupt config.toml warns on stderr instead of silently falling back
   }
 
   function configTomlPath(dataDir: string): string {
-    // Mirrors constants.ts's defaultDataDir(): on Windows, LOCALAPPDATA (set directly to
-    // dataDir by runWithDataDir) takes priority over the home-relative fallback. On
-    // macOS/Linux, XDG_DATA_HOME (also set to dataDir by runWithDataDir) takes priority over
-    // the home-relative fallback -- darwin now honors this override too, matching
-    // defaultDataDir()'s darwin branch fix (was previously HOME-only, always ignoring it).
+    // Mirrors constants.ts's defaultDataDir(): on Windows, LOCALAPPDATA (set directly to dataDir by runWithDataDir) takes priority over the home-relative fallback. On macOS/Linux, XDG_DATA_HOME (also set to dataDir by runWithDataDir) takes priority over the home-relative fallback -- darwin now honors this override too, matching defaultDataDir()'s darwin branch fix (was previously HOME-only, always ignoring it).
     if (process.platform === 'win32') {
       return path.join(dataDir, 'dfk-helper', 'token-goat', 'config.toml')
     }
@@ -1696,8 +1601,7 @@ describe('a corrupt config.toml warns on stderr instead of silently falling back
       const r = runWithDataDir(['config', 'get', 'compact_assist.enabled'], dataDir)
       expect(r.stderr).toMatch(/config\.toml.*(failed to parse|parse)/i)
       expect(r.stderr).toMatch(/config validate/)
-      // The command itself still succeeds using defaults -- a corrupt config warns, it doesn't
-      // block every other command from working.
+      // The command itself still succeeds using defaults -- a corrupt config warns, it doesn't block every other command from working.
       expect(r.stdout.trim()).toBe('true')
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true })
@@ -1729,9 +1633,7 @@ describe('a corrupt config.toml warns on stderr instead of silently falling back
     }
   })
 
-  // Regression: cmdPack/cmdTokens/cmdBudget/cmdFailures registered their .action() directly
-  // instead of through the shared `guard()` wrapper, so they silently skipped this same
-  // config.toml-parse-error diagnostic that every other command already surfaces.
+  // Regression: cmdPack/cmdTokens/cmdBudget/cmdFailures registered their .action() directly instead of through the shared `guard()` wrapper, so they silently skipped this same config.toml-parse-error diagnostic that every other command already surfaces.
   it('also warns for commands that used to bypass guard() (pack/tokens/budget/failures)', () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfgwarn-bypass-'))
     try {

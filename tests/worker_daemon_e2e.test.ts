@@ -1,27 +1,4 @@
-/**
- * End-to-end proof that `token-goat worker start` actually keeps a background
- * daemon running and draining the dirty queue, against the BUILT bundle
- * (dist/token-goat.mjs).
- *
- * Regression for: {@link import('../src/worker.js').startDetachedWorker} spawns
- * `node <bundle> --worker-daemon`, but the bundle's real entrypoint
- * (main.ts -> cli.ts::run()) used to call commander's `parseAsync()`
- * unconditionally, with no pre-check for `--worker-daemon` -- commander has no
- * such registered option or command, so it rejected the flag as unknown and
- * the freshly-spawned daemon child exited (code 1) before ever reaching the
- * daemon loop. `token-goat worker start` reported a pid (the spawn call
- * itself succeeds and returns a pid even for a child that is about to crash),
- * but `token-goat worker status` moments later reported "not running" -- the
- * entire detached background-indexing feature was silently non-functional.
- *
- * A unit test that mocks the daemon dispatch (as worker_daemon.test.ts and
- * most of worker.test.ts do) cannot catch this: the bug is in argv wiring at
- * the real process entrypoint, which only spawning the actual built bundle
- * exercises. This test drives `worker start` for real, confirms the daemon
- * process is still alive well past the point the old bug already killed it,
- * then proves it does real work by seeding a real dirty-queue entry and
- * confirming the running daemon (not a manual `index` call) drains it.
- */
+/** End-to-end proof that `token-goat worker start` actually keeps a background daemon running and draining the dirty queue, against the BUILT bundle (dist/token-goat.mjs). Regression for: {@link import('../src/worker.js').startDetachedWorker} spawns `node <bundle> --worker-daemon`, but the bundle's real entrypoint (main.ts -> cli.ts::run()) used to call commander's `parseAsync()` unconditionally, with no pre-check for `--worker-daemon` -- commander has no such registered option or command, so it rejected the flag as unknown and the freshly-spawned daemon child exited (code 1) before ever reaching the daemon loop. `token-goat worker start` reported a pid (the spawn call itself succeeds and returns a pid even for a child that is about to crash), but `token-goat worker status` moments later reported "not running" -- the entire detached background-indexing feature was silently non-functional. A unit test that mocks the daemon dispatch (as worker_daemon.test.ts and most of worker.test.ts do) cannot catch this: the bug is in argv wiring at the real process entrypoint, which only spawning the actual built bundle exercises. This test drives `worker start` for real, confirms the daemon process is still alive well past the point the old bug already killed it, then proves it does real work by seeding a real dirty-queue entry and confirming the running daemon (not a manual `index` call) drains it. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -40,16 +17,7 @@ function tgEnv(base: string, pollMs?: number): NodeJS.ProcessEnv {
   return tgIsolatedEnv(base, pollMs === undefined ? undefined : { TG_WORKER_POLL_MS: String(pollMs) })
 }
 
-/**
- * Mirrors src/constants.ts's private defaultDataDir() platform join, so this test can locate
- * the same queue/dirty.txt and global.db the daemon uses without importing constants.ts --
- * that module caches its DATA_DIR once at first import from whatever LOCALAPPDATA/XDG_DATA_HOME
- * the test worker process happened to start with, not the per-test temp base this file passes
- * to the spawned bundle. darwin now also honors an XDG_DATA_HOME override (same env this
- * helper's caller already sets) before falling back to the Library/Application Support path --
- * matching defaultDataDir()'s darwin branch fix (was previously HOME-only, always ignoring the
- * override this file already passed).
- */
+/** Mirrors src/constants.ts's private defaultDataDir() platform join, so this test can locate the same queue/dirty.txt and global.db the daemon uses without importing constants.ts -- that module caches its DATA_DIR once at first import from whatever LOCALAPPDATA/XDG_DATA_HOME the test worker process happened to start with, not the per-test temp base this file passes to the spawned bundle. darwin now also honors an XDG_DATA_HOME override (same env this helper's caller already sets) before falling back to the Library/Application Support path -- matching defaultDataDir()'s darwin branch fix (was previously HOME-only, always ignoring the override this file already passed). */
 function effectiveDataDir(base: string): string {
   if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat')
   if (process.platform === 'darwin') return path.join(base, 'token-goat')
@@ -70,18 +38,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/**
- * Poll `check` every 50ms until it returns true, then return how long that took. Throws with
- * `label` once `timeoutMs` elapses.
- *
- * Every wait in this file used to be a fixed sleep sized to the worst case with a generous
- * margin on top -- 2000ms to see the daemon survive, 5000ms to see it drain, 300ms to see it
- * die. That is 7.3s of wall clock spent waiting for things that are typically done in a fraction
- * of it, and the margins existed precisely because a fixed sleep is also the flakiest possible
- * way to wait: too short and it fails on a slow machine, too long and it still tells you nothing
- * about when the condition actually became true. Polling is both faster and stricter, since the
- * elapsed time it returns can itself be asserted on.
- */
+/** Poll `check` every 50ms until it returns true, then return how long that took. Throws with `label` once `timeoutMs` elapses. Every wait in this file used to be a fixed sleep sized to the worst case with a generous margin on top -- 2000ms to see the daemon survive, 5000ms to see it drain, 300ms to see it die. That is 7.3s of wall clock spent waiting for things that are typically done in a fraction of it, and the margins existed precisely because a fixed sleep is also the flakiest possible way to wait: too short and it fails on a slow machine, too long and it still tells you nothing about when the condition actually became true. Polling is both faster and stricter, since the elapsed time it returns can itself be asserted on. */
 async function waitFor(label: string, timeoutMs: number, check: () => boolean): Promise<number> {
   const start = Date.now()
   for (;;) {
@@ -116,8 +73,7 @@ afterEach(() => {
 describe('detached worker daemon (built bundle)', () => {
   it('bundle contains the real daemon dispatch, not a tree-shaken/unwired stub', () => {
     const bundle = readCoreBundleText()
-    // Would be absent from the shipped artifact if runDetachedWorkerDaemon were ever removed
-    // or if esbuild tree-shook it out for being unreachable from the entrypoint again.
+    // Would be absent from the shipped artifact if runDetachedWorkerDaemon were ever removed or if esbuild tree-shook it out for being unreachable from the entrypoint again.
     expect(bundle).toContain('runDetachedWorkerDaemon')
   })
 
@@ -137,12 +93,7 @@ describe('detached worker daemon (built bundle)', () => {
         expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
         pid = parseInt((m as RegExpMatchArray)[1], 10)
 
-        // 2. Wait for positive proof the child reached the daemon loop rather than for a fixed
-        // interval: runDetachedWorkerDaemon writes its own pid to queue/drain-heartbeat as its
-        // first act, so that file naming this pid can only happen on the far side of the argv
-        // dispatch the pre-fix bug died at (commander rejected --worker-daemon and the process
-        // exited before ever reaching the loop). A dead child never writes it, so that failure
-        // still fails here -- as a timeout rather than a liveness assertion.
+        // 2. Wait for positive proof the child reached the daemon loop rather than for a fixed interval: runDetachedWorkerDaemon writes its own pid to queue/drain-heartbeat as its first act, so that file naming this pid can only happen on the far side of the argv dispatch the pre-fix bug died at (commander rejected --worker-daemon and the process exited before ever reaching the loop). A dead child never writes it, so that failure still fails here -- as a timeout rather than a liveness assertion.
         const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
         const daemonPid = pid
         await waitFor('the daemon to write its drain heartbeat', 15000, () => {
@@ -161,14 +112,10 @@ describe('detached worker daemon (built bundle)', () => {
         const status = runBundle(['worker', 'status'], env, repo)
         expect(status.stdout).toContain('Worker is running.')
 
-        // 3. Prove it does real work, not just "a process that stays alive": seed a real
-        // dirty-queue entry for a fixture file directly on disk (bypassing any manual `index`
-        // call) and confirm the ALREADY-RUNNING daemon drains it on its own poll cycle.
+        // 3. Prove it does real work, not just "a process that stays alive": seed a real dirty-queue entry for a fixture file directly on disk (bypassing any manual `index` call) and confirm the ALREADY-RUNNING daemon drains it on its own poll cycle.
         const srcFile = path.join(repo, 'daemon_e2e_sample.ts')
         fs.writeFileSync(srcFile, 'export function daemonDrainedSymbol(): number {\n  return 1\n}\n')
-        // A regex-adapter language too: those adapters load through parser.ts's dynamic import (loadRegexExtractors), which
-        // the drain loop awaits before its first cycle. Miss that await and the daemon indexes this file to nothing, while
-        // the tree-sitter file beside it still resolves -- so only a second language proves the lazy load reached the daemon.
+        // A regex-adapter language too: those adapters load through parser.ts's dynamic import (loadRegexExtractors), which the drain loop awaits before its first cycle. Miss that await and the daemon indexes this file to nothing, while the tree-sitter file beside it still resolves -- so only a second language proves the lazy load reached the daemon.
         const fortranFile = path.join(repo, 'daemon_e2e_sample.f90')
         fs.writeFileSync(fortranFile, 'subroutine daemon_drained_fortran(x)\n  integer :: x\n  x = 1\nend subroutine daemon_drained_fortran\n')
 
@@ -190,11 +137,7 @@ describe('detached worker daemon (built bundle)', () => {
         })
         expect(fortranSym?.stdout).toContain('daemon_drained_fortran')
 
-        // The drain landing this fast is itself the assertion that TG_WORKER_POLL_MS reached the
-        // daemon. `worker start` used to hardcode the 2000ms default into the child's env
-        // regardless of what it inherited, so the variable the daemon reads was a no-op on the
-        // only path that actually starts one. With that bug back, the first poll cycle alone puts
-        // this past the bound; DAEMON_POLL_MS is an order of magnitude under it.
+        // The drain landing this fast is itself the assertion that TG_WORKER_POLL_MS reached the daemon. `worker start` used to hardcode the 2000ms default into the child's env regardless of what it inherited, so the variable the daemon reads was a no-op on the only path that actually starts one. With that bug back, the first poll cycle alone puts this past the bound; DAEMON_POLL_MS is an order of magnitude under it.
         expect(
           drainMs,
           `drain took ${drainMs}ms, past the 2000ms default floor -- TG_WORKER_POLL_MS is being ignored again`,
@@ -205,8 +148,7 @@ describe('detached worker daemon (built bundle)', () => {
         expect(stop.stdout).toMatch(/Worker stopped\.|No running worker\./)
         const stopped = pid
         if (stopped !== undefined) {
-          // Give SIGTERM a moment to land, but stop waiting the instant it has: the SIGKILL below
-          // is the backstop for a daemon that ignores it, not the expected path.
+          // Give SIGTERM a moment to land, but stop waiting the instant it has: the SIGKILL below is the backstop for a daemon that ignores it, not the expected path.
           await waitFor('the stopped daemon to exit', 5000, () => !pidAlive(stopped)).catch(() => 0)
         }
         if (pid !== undefined && pidAlive(pid)) {
@@ -220,4 +162,24 @@ describe('detached worker daemon (built bundle)', () => {
     },
     45000,
   )
+})
+
+// POSIX only: a mode bit is how this platform refuses a directory write, and root ignores it. Windows refuses through an ACL, which tests/worker_unwritable_data_dir.test.ts covers through the same probe.
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('`worker start` on a data directory mode 0555 (built bundle)', () => {
+  // Regression: the daemon was spawned before the first write into the directory, so the pid-file claim threw EACCES with the child still referenced, and `worker start` hung on it until the timeout.
+  it('exits promptly with the directory named, and writes no pid file', () => {
+    const dataBase = mkIsolated('tg-daemon-ro-')
+    const repo = mkIsolated('tg-daemon-ro-repo-')
+    const dir = effectiveDataDir(dataBase)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.chmodSync(dir, 0o555)
+    try {
+      const res = runBundle(['worker', 'start'], tgEnv(dataBase), repo)
+      expect(res.status).toBe(1)
+      expect(res.stderr).toContain(`${dir} cannot be written`)
+      expect(fs.existsSync(path.join(dir, 'worker.pid'))).toBe(false)
+    } finally {
+      fs.chmodSync(dir, 0o755)
+    }
+  })
 })

@@ -187,6 +187,9 @@ describe('cli_stats', () => {
       expect(output).toContain('# token-goat savings methodology')
       expect(output.toLowerCase()).toContain('not github copilot usage')
       expect(output).toContain('Math.round(bytes_saved / 4)')
+      // The basis a read command's saving is measured against, which the text used to leave unsaid while those commands made up most of the total.
+      expect(output).toContain('credited the largest matched file under the same cap, not every match')
+      expect(output).toContain('capped at 100,000 bytes per file')
     })
 
     it('emits structured methodology when json is requested', () => {
@@ -201,9 +204,10 @@ describe('cli_stats', () => {
         ;(process.stdout as any).write = orig
       }
 
-      const parsed = JSON.parse(output) as { methodology: { billing: string; byte_derived_formula: string } }
+      const parsed = JSON.parse(output) as { methodology: { billing: string; byte_derived_formula: string; read_command_baselines: string } }
       expect(parsed.methodology.billing).toContain('billing data')
       expect(parsed.methodology.byte_derived_formula).toContain('Math.round(bytes_saved / 4)')
+      expect(parsed.methodology.read_command_baselines).toContain('what the harness would have delivered')
     })
 
     it('routes --hooks to the hook latency breakdown instead of the savings summary', () => {
@@ -330,9 +334,7 @@ describe('cli_stats', () => {
       expect(output).not.toContain('MOCK_FULL_STATS')
     })
 
-    // Regression: the JSON envelope built by runStats included by_kind, by_day, by_project,
-    // and by_command, but omitted by_source even though summarize() already computes it and
-    // the human-readable output renders a "By Source" section from it.
+    // Regression: the JSON envelope built by runStats included by_kind, by_day, by_project, and by_command, but omitted by_source even though summarize() already computes it and the human-readable output renders a "By Source" section from it.
     it('includes by_source in the JSON envelope, matching the human-readable "By Source" data', () => {
       let output = ''
       const orig = process.stdout.write.bind(process.stdout)

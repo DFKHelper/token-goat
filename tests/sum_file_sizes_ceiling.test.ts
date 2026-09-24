@@ -1,11 +1,4 @@
-/**
- * Regression: sumFileSizes (src/read_commands.ts) summed real on-disk file sizes with no
- * ceiling, feeding recordReadStat's "the agent would have otherwise read this whole file"
- * counterfactual. For a huge file that is false and unbounded -- measured on a real index,
- * five sqlite-query invocations against a 940MB global.db claimed 1.6GB/410.5Mt of savings,
- * 16.7% of the entire all-time ledger from five events. Fix: clamp each file's contribution
- * to SUM_FILE_SIZES_PER_FILE_CEILING (100_000 bytes) before summing.
- */
+/** Regression: sumFileSizes (src/read_commands.ts) summed real on-disk file sizes with no ceiling, feeding recordReadStat's "the agent would have otherwise read this whole file" counterfactual. For a huge file that is false and unbounded -- measured on a real index, five sqlite-query invocations against a 940MB global.db claimed 1.6GB/410.5Mt of savings, 16.7% of the entire all-time ledger from five events. Fix: clamp each file's contribution to SUM_FILE_SIZES_PER_FILE_CEILING (100_000 bytes) before summing. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -14,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol } from '../src/read_commands.js'
+import { runSymbol, sumFileSizes } from '../src/read_commands.js'
 import { summarize } from '../src/stats.js'
 
 const CEILING = 100_000
@@ -38,8 +31,7 @@ describe('sumFileSizes per-file ceiling', () => {
       const after = summarize(30).by_kind['symbol_lookup']
       const delta = (after?.bytes_saved ?? 0) - beforeBytes
 
-      // bytesSaved = fullSourceBytes - emittedBytes, so delta must be well under the real
-      // file size (~200KB) and bounded near the ceiling (allow small emitted-text slack).
+      // bytesSaved = fullSourceBytes - emittedBytes, so delta must be well under the real file size (~200KB) and bounded near the ceiling (allow small emitted-text slack).
       expect(delta).toBeLessThanOrEqual(CEILING)
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -71,7 +63,7 @@ describe('sumFileSizes per-file ceiling', () => {
     }
   })
 
-  it('still sums across multiple files, each independently capped', () => {
+  it('still sums across multiple files, each independently capped, while a symbol search credits only one', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-sumfilesizes-multi-'))
     try {
       const fileA = join(root, 'multiA.ts')
@@ -92,11 +84,11 @@ describe('sumFileSizes per-file ceiling', () => {
       const after = summarize(30).by_kind['symbol_lookup']
       const delta = (after?.bytes_saved ?? 0) - beforeBytes
 
-      // Both files match and are each capped at CEILING, so the sum should exceed a single
-      // file's cap (proving accumulation across files still works) while staying well under
-      // the real combined size of the two ~150KB files.
-      expect(delta).toBeGreaterThan(CEILING)
-      expect(delta).toBeLessThanOrEqual(2 * CEILING)
+      // sumFileSizes, which callers naming several files use, still accumulates: each ~150KB file is capped at CEILING and the two are added.
+      expect(sumFileSizes([fileA, fileB])).toBe(2 * CEILING)
+      // A symbol search is credited the largest matched file under the same cap, not the sum: the lookup stands in for a search and one read, not a read of every match.
+      expect(delta).toBeGreaterThan(0)
+      expect(delta).toBeLessThanOrEqual(CEILING)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

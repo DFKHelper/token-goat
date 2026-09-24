@@ -1,10 +1,4 @@
-/**
- * CLI coverage for the architecture-notes feature: `note-add` / `note-get` / `note-list`.
- * Mirrors the `insert-section` describe block in tests/cli.test.ts -- spawns the real built
- * bundle (runCli, dist/token-goat.mjs) against real scratch files, so this exercises the actual
- * shipping command wiring (arg parsing, option flags, exit codes), not just the pure notes.ts
- * layer already covered by tests/notes.test.ts.
- */
+/** CLI coverage for the architecture-notes feature: `note-add` / `note-get` / `note-list`. Mirrors the `insert-section` describe block in tests/cli.test.ts -- spawns the real built bundle (runCli, dist/token-goat.mjs) against real scratch files, so this exercises the actual shipping command wiring (arg parsing, option flags, exit codes), not just the pure notes.ts layer already covered by tests/notes.test.ts. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -19,8 +13,7 @@ function b64(s: string): string {
   return Buffer.from(s, 'utf8').toString('base64')
 }
 
-// Batched against one long-lived bundle process (see tests/cli.test.ts for the same pattern).
-// None of these calls pass stdin, so all of them route through runBatched.
+// Batched against one long-lived bundle process (see tests/cli.test.ts for the same pattern). None of these calls pass stdin, so all of them route through runBatched.
 async function runCli(args: string[]): Promise<RunResult> {
   return runBatched(args)
 }
@@ -96,6 +89,7 @@ describe('note-add / note-get / note-list', () => {
       expect(r.stderr).toContain("No symbol named 'doesNotExistFn9k'")
       expect(r.stderr).not.toContain('Did you mean')
       expect(r.stderr).toContain('outline')
+      expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: No symbol named 'doesNotExistFn9k' is indexed in '${tmp}'`, `Try: token-goat outline ${tmp}`])
     } finally {
       fs.rmSync(tmp, { force: true })
     }
@@ -108,8 +102,9 @@ describe('note-add / note-get / note-list', () => {
     try {
       const r = await runCli(['note-add', tmp, '--symbol', 'realNoteFn9', '--content-b64', b64('x')])
       expect(r.status).toBe(1)
-      expect(r.stderr).toContain('Did you mean')
-      expect(r.stderr).toContain('realNoteFn9k')
+      // One line per candidate: the suggestion once reached stderr as one line with a literal backslash-n before each name.
+      expect(r.stderr).toContain('\nDid you mean:\n  - realNoteFn9k')
+      expect(r.stderr).not.toContain('\\n')
     } finally {
       fs.rmSync(tmp, { force: true })
     }
@@ -197,9 +192,7 @@ describe('note-add / note-get / note-list', () => {
       expect(staleOnly.status, staleOnly.stderr).toBe(0)
       expect(staleOnly.stdout).not.toContain(normalizePath(tmp1))
       expect(staleOnly.stdout).not.toContain(normalizePath(tmp2))
-      // Regression: "No stale notes." alone is indistinguishable from "no notes recorded at
-      // all" -- notes exist here (this suite shares one notes store across tests, so the exact
-      // count is not pinned), just none stale, so the count must say so.
+      // Regression: "No stale notes." alone is indistinguishable from "no notes recorded at all" -- notes exist here (this suite shares one notes store across tests, so the exact count is not pinned), just none stale, so the count must say so.
       expect(staleOnly.stdout).toContain('notes recorded, none stale')
       expect(staleOnly.stdout).not.toBe('No stale notes.\n')
 
@@ -232,11 +225,7 @@ describe('note-add / note-get / note-list', () => {
     }
   })
 
-  // Task requirement: staleness must be discoverable end to end -- add a note attached to a
-  // symbol, edit that symbol's signature/body, reindex, and confirm `note-list --stale-only`
-  // (and `note-get --json`'s `stale` flag) now report it. Drives the real CLI surface at every
-  // step (note-add, index, note-get, note-list) against the real built bundle -- no injected
-  // callback standing in for the worker's own reindex path.
+  // Task requirement: staleness must be discoverable end to end -- add a note attached to a symbol, edit that symbol's signature/body, reindex, and confirm `note-list --stale-only` (and `note-get --json`'s `stale` flag) now report it. Drives the real CLI surface at every step (note-add, index, note-get, note-list) against the real built bundle -- no injected callback standing in for the worker's own reindex path.
   it('editing an indexed symbol and reindexing makes its note discoverable via note-list --stale-only', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-note-stale-'))
     const file = path.join(dir, 'target.ts')
@@ -253,8 +242,7 @@ describe('note-add / note-get / note-list', () => {
       const beforeList = await runCli(['note-list', '--stale-only'])
       expect(beforeList.stdout).not.toContain(normalizePath(file))
 
-      // Genuine out-of-band edit to the symbol's body, then a real reindex (the same entry
-      // point the worker's dirty-queue drain uses) -- not a synthetic fingerprint mismatch.
+      // Genuine out-of-band edit to the symbol's body, then a real reindex (the same entry point the worker's dirty-queue drain uses) -- not a synthetic fingerprint mismatch.
       fs.writeFileSync(file, 'export function staleTargetFn9k(): number {\n  return 999\n}\n')
       const idx = await runCli(['index', dir, '--walk'])
       expect(idx.status, idx.stderr).toBe(0)

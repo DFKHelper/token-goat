@@ -119,8 +119,20 @@ export { expandGlobs }
 import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
 
-/** Thrown by command handlers for a clean exit-1 with a stderr message. */
-export class CliError extends Error {}
+/** Thrown by command handlers for a clean exit-1 with a stderr message. Pass an array for a message of several lines: the stderr printer escapes each line on its own, so the breaks token-goat put between them survive while a newline inside a file-derived part stays escaped. */
+export class CliError extends Error {
+  readonly lines: readonly string[] | undefined
+  constructor(message: string | readonly string[]) {
+    super(typeof message === 'string' ? message : message.join('\n'))
+    this.lines = typeof message === 'string' ? undefined : message
+  }
+}
+
+/** The stderr rendering of a command failure: one `token-goat:` line, then any further lines a CliError was built from. */
+export function formatCommandError(e: unknown): string {
+  if (e instanceof CliError && e.lines !== undefined) return 'token-goat: ' + e.lines.map(displaySafeText).join('\n')
+  return 'token-goat: ' + displaySafeText(extractErrorMessage(e))
+}
 
 export function out(text: string): void {
   const payload = colorStdout() ? text : stripAnsiEscapes(text)
@@ -1430,7 +1442,7 @@ async function cmdCompress(
       ...(opts.shell !== undefined ? { shellType: opts.shell } : {}),
     })
   } catch (e) {
-    err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
+    err(formatCommandError(e))
     process.exitCode = 1
   }
 }
@@ -1545,8 +1557,7 @@ export function buildProgram(): Command {
           process.exitCode = 0
         }
       } catch (e) {
-        const msg = extractErrorMessage(e)
-        err(`token-goat: ${displaySafeText(msg)}`)
+        err(formatCommandError(e))
         process.exitCode = 1
       }
     }
@@ -2118,8 +2129,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
       process.exitCode = 1
       return
     }
-    const msg = extractErrorMessage(e)
-    err(`token-goat: ${displaySafeText(msg)}`)
+    err(formatCommandError(e))
     process.exitCode = 1
   }
 }

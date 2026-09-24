@@ -92,8 +92,13 @@ export function filterSimilarHeadings(available: string[], query: string): strin
 }
 
 export function didYouMean(candidates: string[]): string {
+  return didYouMeanLines(candidates).join('\n')
+}
+
+/** {@link didYouMean} as separate lines, for a CliError built from lines: its printer escapes a newline inside a line, so a suggestion passed as one joined string reaches stderr with a literal backslash-n before every candidate. */
+export function didYouMeanLines(candidates: string[]): string[] {
   const unique = [...new Set(candidates)]
-  if (unique.length === 0) return ''
+  if (unique.length === 0) return []
   const lines = ['Did you mean:']
   for (const c of unique.slice(0, DIDYOUMEAN_LIMIT)) {
     lines.push(`  - ${c}`)
@@ -101,7 +106,7 @@ export function didYouMean(candidates: string[]): string {
   if (unique.length > DIDYOUMEAN_LIMIT) {
     lines.push(`  (${unique.length - DIDYOUMEAN_LIMIT} more not shown)`)
   }
-  return lines.join('\n')
+  return lines
 }
 
 export function unknownSymbolSuggestion(name: string, rootDir: string): string {

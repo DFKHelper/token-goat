@@ -29,6 +29,7 @@ import {
   runGit,
 } from './util.js'
 import { walkProject } from './baseline.js'
+import { deliveredOutputBytes } from './delivery_cap.js'
 
 export interface ConflictsCliOptions {
   path?: string
@@ -156,11 +157,12 @@ function emitUnsafeRef(ref: string): void {
   emitErr(`Refusing a git ref that starts with '-': ${ref}`)
 }
 
+// The diff `changed` replaces is one shell command, so it is priced like every shell saving: by what the harness would have delivered of it, not by its full size.
 function changedDiffBaselineBytes(cwd: string, ref: string, files: readonly string[]): number {
   if (files.length === 0) return 0
   try {
     const result = runGit(['diff', ref, '--unified=0', '--', ...files], { cwd })
-    if (result.exitCode === 0) return Buffer.byteLength(result.stdout, 'utf8')
+    if (result.exitCode === 0) return deliveredOutputBytes(Buffer.byteLength(result.stdout, 'utf8'))
   } catch {
     // Fall through to the 0 baseline below.
   }
@@ -250,7 +252,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
       const diffResult = runGit(['diff', ref, '--unified=0', '--', ...changedFiles], { cwd })
       if (diffResult.exitCode === 0) {
         hunksByFile = parseDiffHunks(diffResult.stdout)
-        symbolDiffBaselineBytes = Buffer.byteLength(diffResult.stdout, 'utf8')
+        symbolDiffBaselineBytes = deliveredOutputBytes(Buffer.byteLength(diffResult.stdout, 'utf8'))
       }
     } catch {
       // Hunk-level diff unavailable — fall back to file-level scoping below.

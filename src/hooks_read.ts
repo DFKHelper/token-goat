@@ -138,6 +138,16 @@ function isSessionArtifactFile(filePath: string): boolean {
   return false
 }
 
+/** Bytes in `limit` lines of `filePath` starting at 1-based line `offset`, or Infinity when the file cannot be read. Measured rather than estimated from the line count because a tool result can be one minified line of a megabyte. */
+function lineWindowBytes(filePath: string, offset: number, limit: number): number {
+  try {
+    const lines = fs.readFileSync(filePath, 'utf-8').split('\n').slice(offset - 1, offset - 1 + limit)
+    return lines.reduce((sum, line) => sum + Buffer.byteLength(line, 'utf-8') + 1, 0)
+  } catch {
+    return Infinity
+  }
+}
+
 /** Recall hint for a session artifact file. Names a `bash-output --file` command that actually works: the artifact is on disk but not in the bash-output cache, so a bare `bash-output --tail N` (no id/path) or `bash-output <id>` (id is not a cache key) both error. `--file <path>` reads the file and applies the slice. */
 function sessionArtifactRecall(rawPath: string): string {
   const filePath = displaySafePath(rawPath)
@@ -881,14 +891,21 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const isTaskOutput = /[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)
       const label = isTaskOutput ? 'Session transcript' : 'Tool-result file'
       const outputSize = statSize(normalized)
-      recordActualRead(event, normalized)
-      if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES) {
+      // The gate is on the read, not the file. Claude Code persists every Bash result past 20,000 bytes to tool-results/ and tells the model to Read the file, so every persisted result is past this floor, and denying a bounded window of it left the model no way to see lines the preview cut off: the recall named here pages by head, tail or pattern, never by line range.
+      const window = readRequestedSliceWindow(event)
+      const windowBytes = window.limit === undefined ? undefined : lineWindowBytes(normalized, window.offset ?? 1, window.limit)
+      if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES && (windowBytes === undefined || windowBytes >= TASK_OUTPUT_DENY_BYTES)) {
+        // Not recorded as a read: the model never saw the file, and recording it made the bounded retry the refusal invites hit "was already read this session" instead, the same rule the file-type gate below keeps.
         const artifactDenyCredit = counterfactualCredit(outputSize)
         recordStat('session_hint', artifactDenyCredit, savedTokensFromBytes(artifactDenyCredit), undefined, 'artifact-large-deny')
+        // A window too wide is named with its own size: the refusal otherwise reads exactly like the whole-file one, and a repeat of that text is cut to "Repeat refusal of this exact call" without the limit the retry has to fit under.
+        const windowNote = windowBytes === undefined || window.limit === undefined || !Number.isFinite(windowBytes) ? '' : ' Lines ' + (window.offset ?? 1) + '-' + ((window.offset ?? 1) + window.limit - 1) + ' span ' + toKB(windowBytes) + 'KB.'
         return denyOutput(
-          label + ' is large (' + toKB(outputSize) + 'KB). ' + sessionArtifactRecall(normalized),
+          label + ' is large (' + toKB(outputSize) + 'KB).' + windowNote + ' ' + sessionArtifactRecall(normalized) +
+            ' A Read with `offset` and `limit` spanning under ' + toKB(TASK_OUTPUT_DENY_BYTES) + 'KB goes through.',
         )
       }
+      recordActualRead(event, normalized)
       return quietContextOutput(label + ': ' + sessionArtifactRecall(normalized))
     }
   }

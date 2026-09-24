@@ -31,6 +31,7 @@ import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
 import { runStatuslineCommand } from './cli_statusline.js'
 import { runHintStatsCommand } from './cli_hint_stats.js'
 import { HINT_CATEGORIES, isHintCategory } from './hint_stats.js'
+import { findLatestSessionId } from './compact.js'
 
 export function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
   return runContextStats(opts)
@@ -171,7 +172,15 @@ export function cmdStatusline(opts: { json?: boolean } = {}): Promise<void> {
   return runStatuslineCommand({ ...(opts.json === true ? { json: true } : {}) })
 }
 
-export function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: string; markIneffective?: string } = {}): void {
+export function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: string; markIneffective?: string; sessionId?: string } = {}): void {
+  // Checked before anything else, so a rejected combination never reaches a write.
+  if (opts.sessionId !== undefined) {
+    const mutating = [opts.reset === true ? '--reset' : null, opts.markEffective !== undefined ? '--mark-effective' : null, opts.markIneffective !== undefined ? '--mark-ineffective' : null].filter((f) => f !== null)
+    if (mutating.length > 0) {
+      throw new CliError(`--session-id cannot be combined with ${mutating.join(', ')}: those change cross-session state (every session's emissions and marks), not one session's view`)
+    }
+  }
+  const session = opts.sessionId === undefined ? undefined : resolveHintStatsSession(opts.sessionId)
   if (opts.markEffective !== undefined && !isHintCategory(opts.markEffective)) {
     throw new CliError(`--mark-effective must be one of: ${HINT_CATEGORIES.join(', ')} (got: ${opts.markEffective})`)
   }
@@ -183,5 +192,16 @@ export function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffect
     ...(opts.reset === true ? { reset: true } : {}),
     ...(opts.markEffective !== undefined && isHintCategory(opts.markEffective) ? { markEffective: opts.markEffective } : {}),
     ...(opts.markIneffective !== undefined && isHintCategory(opts.markIneffective) ? { markIneffective: opts.markIneffective } : {}),
+    ...(session !== undefined ? { sessionId: session } : {}),
   })
+}
+
+// `latest` goes through the same resolver `compact-hint` uses when given no --session-id (the newest parent session state on disk); anything else is taken as a literal session id.
+function resolveHintStatsSession(arg: string): string {
+  const trimmed = arg.trim()
+  if (trimmed === '') throw new CliError('--session-id needs a session id, or `latest` for the most recent session')
+  if (trimmed !== 'latest') return trimmed
+  const latest = findLatestSessionId()
+  if (latest === null) throw new CliError('--session-id latest: no session state found on disk; pass a session id explicitly')
+  return latest
 }

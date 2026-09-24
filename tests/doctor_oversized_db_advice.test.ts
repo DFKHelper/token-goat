@@ -1,8 +1,4 @@
-/**
- * The oversized-index warning names what is actually recoverable instead of always recommending a VACUUM.
- *
- * Provenance: the freelist cases are CAPTURE, a database SQLite itself just wrote, checked against SQLite's own `freelist_count` and `page_size` pragmas. The message cases are HAND-DERIVED from a real `token-goat doctor` run on a 2,250 MB index whose VACUUM freed 1.3 MB and which held 3,186 scratch files indexed under the OS temp dir.
- */
+/** The oversized-index warning names what is actually recoverable instead of always recommending a VACUUM. Provenance: the freelist cases are CAPTURE, a database SQLite itself just wrote, checked against SQLite's own `freelist_count` and `page_size` pragmas. The message cases are HAND-DERIVED from a real `token-goat doctor` run on a 2,250 MB index whose VACUUM freed 1.3 MB and which held 3,186 scratch files indexed under the OS temp dir. */
 import Database from 'better-sqlite3'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -69,6 +65,22 @@ describe('oversizeDbMessage', () => {
     expect(msg).toContain('Top index consumers:')
     expect(msg).toContain('large-frontend (8400 files)')
     expect(msg).toContain('backend-service (3120 files)')
+  })
+
+  // Regression: the warning named the largest projects and stopped, so the one command that shrinks symbols and refs (most of any large index) went unsaid, and the only remedies offered were a reclaim that re-derives the same rows and a prune of scratch files there were none of. HAND-DERIVED: roots, counts and sizes are constructed by this test.
+  it('names the command that takes the largest project out of the index, by its full path, and the threshold as the alternative', () => {
+    const msg = oversizeDbMessage('/data/global.db', 4899 * MB, 1.2 * MB, 0, [], [
+      { root: '/repos/huge-monorepo', fileCount: 27051 },
+      { root: '/repos/website', fileCount: 8306 },
+    ])
+    expect(msg).toContain(`'token-goat project exclude "/repos/huge-monorepo"' removes its rows, then 'token-goat reclaim-index' returns the space.`)
+    expect(msg).toContain('If this size is expected, raise indexing.max_db_size_mb above 4899.')
+  })
+
+  it('still offers the threshold when no project can be named', () => {
+    const msg = oversizeDbMessage('/data/global.db', 2250 * MB, 1.3 * MB, 0)
+    expect(msg).not.toContain('project exclude')
+    expect(msg).toContain('raise indexing.max_db_size_mb above 2250.')
   })
 
   // Both halves answer different questions -- which table holds the bytes, and which project put them there -- so the merged message must carry both rather than one displacing the other.

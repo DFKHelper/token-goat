@@ -57,6 +57,7 @@ import { canShrinkFormat, isImagePath, probeImageMeta, shrinkImage, ImageDecodeE
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
+import { deliveredOutputBytes } from './delivery_cap.js'
 import { forEachSymbol } from './symbol_scan.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
 import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
@@ -450,11 +451,24 @@ export function sumFileSizes(filePaths: Iterable<string>): number {
   return total
 }
 
-/** Counterfactual byte cost of the search `refs` replaces: one `path:line: label` hit line per reference, the shape `grep -n <symbol>` prints. This is deliberately NOT sumFileSizes over the files those references live in: nobody reads forty files end to end to find call sites, they run a search, so crediting `refs` with those files' whole contents overstated a multi-file result by orders of magnitude (a real ledger showed ~466KB claimed per `refs` event, because the 100KB-per-file ceiling in sumFileSizes bounds each file and never the sum). Deliberately a LOWER bound on what the equivalent search would emit, and only a lower bound: `ref.context` is the short enclosing-symbol label refs renders, where a grep hit line carries the whole matched source line, and a textual grep also returns comments, strings and unrelated same-named symbols that are not references at all. Neither of those is knowable without re-reading every hit file, so the ledger claims only what it can prove from rows already in hand. Requested `--context` lines are excluded for the same reason they cannot earn credit: they are extra output the caller asked for on top of what the plain search prints. */
+/** The "full source" side for a search-shaped result: the largest one of the matched files, each capped like sumFileSizes, rather than their sum. A `symbol NAME` or `semantic` result lists matches across files the caller never named, and the alternative it replaces is a search followed by a read of the file wanted, not a read of every file that matched: summing them credited one `symbol main` lookup 1.92M tokens on a real ledger, the same overstatement `refs` was corrected for. One file is the lower bound the result can prove; a caller who names several files (`read a::x,b::y`) still gets sumFileSizes, since each named file is a read the call replaced. */
+export function largestFileSize(filePaths: Iterable<string>): number {
+  let largest = 0
+  for (const fp of new Set(filePaths)) {
+    try {
+      largest = Math.max(largest, Math.min(fs.statSync(fp).size, PER_FILE_COUNTERFACTUAL_CEILING))
+    } catch {
+      // Stale index entry pointing at a deleted/moved file — contributes nothing.
+    }
+  }
+  return largest
+}
+
+/** Counterfactual byte cost of the search `refs` replaces: one `path:line: label` hit line per reference, the shape `grep -n <symbol>` prints. This is deliberately NOT sumFileSizes over the files those references live in: nobody reads forty files end to end to find call sites, they run a search, so crediting `refs` with those files' whole contents overstated a multi-file result by orders of magnitude (a real ledger showed ~466KB claimed per `refs` event, because the 100KB-per-file ceiling in sumFileSizes bounds each file and never the sum). Deliberately a LOWER bound on what the equivalent search would emit, and only a lower bound: `ref.context` is the short enclosing-symbol label refs renders, where a grep hit line carries the whole matched source line, and a textual grep also returns comments, strings and unrelated same-named symbols that are not references at all. Neither of those is knowable without re-reading every hit file, so the ledger claims only what it can prove from rows already in hand. Requested `--context` lines are excluded for the same reason they cannot earn credit: they are extra output the caller asked for on top of what the plain search prints. That search is one shell command, so its output is priced the way every shell saving is, by what the harness would have delivered of it (deliveredOutputBytes): a 10MB hit list reaches the model as a 2KB preview, not 10MB, and a real ledger credited one `refs` call 2.5M tokens by skipping that step. */
 function refsSearchBaselineBytes(rows: Iterable<RefEntry>): number {
   let total = 0
   for (const ref of rows) total += Buffer.byteLength(`${refsDisplayPath(ref.filePath)}:${ref.line}: ${ref.context}\n`, 'utf8')
-  return total
+  return deliveredOutputBytes(total)
 }
 
 /** Records a surgical-read stat event: bytes saved is the full on-disk source size minus the emitted slice, floored at 1 (mirrors image_shrink.ts's recordStat call and the retired Python read_commands.py's `max(1, saved // 3 + 1)` -- this repo drops the //3 constant-token fudge factor in favor of the same bytes/4 approximation image_shrink already uses, for consistency across every recordStat call site). Fail-soft via recordStat itself: never blocks or fails a read on a stats-recording error. */
@@ -677,7 +691,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     return { text, code: 1 }
   }
 
-  const fullSourceBytes = sumFileSizes(results.map((s) => s.filePath))
+  const fullSourceBytes = largestFileSize(results.map((s) => s.filePath))
 
   // Shared by both the --json payload and the human blocks below, so a caller-supplied projectRoot (or none) resolves the same way for either output mode.
   const symbolDisplayRoot = getDisplayRoot(opts.projectRoot)
@@ -2298,7 +2312,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
               }
             : {}),
       })
-      recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
+      recordReadStat('semantic_search', largestFileSize(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
     }
     // A dense-sourced row (distance !== null) renders the distance-annotated block the embeddings branch always used, including the "— inside NAME (KIND)" containment suffix when resolved; an FTS-only row (distance === null, always symbol-backed) renders the plain "name (kind) — path" header the FTS fallback always used, with no "distance" or "inside" wording, since it IS the symbol, not a chunk found to be inside one.
@@ -2323,7 +2337,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
           `For a known name try token-goat symbol --grep <pattern> or rg, or rephrase the query.`,
       )
     }
-    recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
+    recordReadStat('semantic_search', largestFileSize(hits.map((h) => h.filePath)), text, query)
     return { text, code: 0 }
   }
 
@@ -2350,7 +2364,8 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     const evidenceHits = await searchEvidenceSemantically(rootDir, query, n)
     if (evidenceHits.length > 0) {
       // What this hit avoids is re-reading the cached entries in full, so the saving is measured against their whole text: the preview below is what gets emitted, and recordReadStat subtracts it.
-      const evidenceFullBytes = evidenceHits.reduce((sum, entry) => sum + Buffer.byteLength(entry.text, 'utf8'), 0)
+      // Each entry is recalled by its own shell command, so each is priced at what the harness would have delivered of it.
+      const evidenceFullBytes = evidenceHits.reduce((sum, entry) => sum + deliveredOutputBytes(Buffer.byteLength(entry.text, 'utf8')), 0)
       if (opts.json === true) {
         const items = evidenceHits.map((entry) => ({
           source: toDisplayPath(rootDir, entry.source),

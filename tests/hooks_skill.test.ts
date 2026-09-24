@@ -25,7 +25,9 @@ import {
   getAllCachedSkills,
   hasSessionOutput,
   storeOutput,
+  extractNamedSection,
 } from '../src/skill_cache.js';
+import { listSections } from '../src/section_reader.js';
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 import { makeHookEvent } from './helpers/hook-event.js';
 import { summarize } from '../src/stats.js';
@@ -592,9 +594,33 @@ describe('preSkillHandler — heading-tree message states the true total when th
     expect(overCapOut.message).toContain('its heading tree shows 40 of 51 headings');
     expect(overCapOut.message).toContain('token-goat skill-body ' + overCapName);
     expect(overCapOut.message).not.toContain('40 headings) is inlined below');
+    // The 11 headings past the cap are reached the way the shown ones are: skill-section resolves any heading in the file, and outline names them. The sentence reporting the cap once sent the model to skill-body for them instead, which loads the whole body this deny withholds.
+    expect(overCapSentence).toContain('the other 11 load by name just the same');
+    expect(overCapSentence).toContain('`token-goat outline "' + path.join(overCapDir, 'SKILL.md') + '"` lists all 51.');
+    expect(overCapSentence).not.toContain('skill-body');
 
     expect(underCapOut.message).toContain('its heading tree (8 headings) is inlined below');
-    expect(underCapOut.message).not.toContain('reachable only through');
+    expect(underCapOut.message).not.toContain('lists all');
+  });
+
+  it('the outline command the over-cap deny names really lists the headings past the cap, and skill-section loads one of them', async () => {
+    const name = 'heading-tree-over-cap-reachable';
+    const dir = path.join(sourceDir, name);
+    await fs.mkdir(dir, { recursive: true });
+    const body = Array.from({ length: 51 }, (_, i) => `## Section ${i}\nbody of section ${i} ${'p'.repeat(1200)}`).join('\n\n');
+    await fs.writeFile(path.join(dir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent(name, 'sess-heading-tree-over-cap-reachable'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType !== 'deny' || !out.message) return;
+    const shownTree = out.message.slice(out.message.indexOf('\n\n'));
+    // Section 50 is past the 40-heading display cap, so the tree itself never names it.
+    expect(shownTree).not.toContain('Section 50');
+
+    const named = /`token-goat outline "([^"]+)"`/.exec(out.message)?.[1];
+    expect(named).toBe(path.join(dir, 'SKILL.md'));
+    expect(listSections(named!)).toContain('Section 50');
+    expect(extractNamedSection(await fs.readFile(named!, 'utf-8'), 'Section 50')).toContain('body of section 50');
   });
 });
 

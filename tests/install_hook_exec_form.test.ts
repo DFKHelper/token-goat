@@ -1,10 +1,4 @@
-/**
- * Claude Code's hook schema accepts an `args` array alongside `command` (>= 2.1.139): the harness then spawns `command` directly with that argv instead of handing a single string to a shell, removing a shell process from the critical path of every hook call.
- *
- * `TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS` ('1'/'0') forces the choice deterministically in every test below, independent of whether the machine running the suite actually has a `claude` binary on PATH new enough to trigger it -- the real probe (`claudeExecFormHooksSupported` with no override) is exercised only by the dogfood run against the built bundle, not by this suite.
- *
- * The predicate that recognizes "is this entry ours" moved from a bare command-string compare to a (command, args) pair compare: under exec form, `command` is just the node binary and is identical across every event and across a stale entry pointing at a deleted shim, so a string-only compare would call a stale exec-form entry "already installed."
- */
+/** Claude Code's hook schema accepts an `args` array alongside `command` (>= 2.1.139): the harness then spawns `command` directly with that argv instead of handing a single string to a shell, removing a shell process from the critical path of every hook call. `TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS` ('1'/'0') forces the choice deterministically in every test below, independent of whether the machine running the suite actually has a `claude` binary on PATH new enough to trigger it -- the real probe (`claudeExecFormHooksSupported` with no override) is exercised only by the dogfood run against the built bundle, not by this suite. The predicate that recognizes "is this entry ours" moved from a bare command-string compare to a (command, args) pair compare: under exec form, `command` is just the node binary and is identical across every event and across a stale entry pointing at a deleted shim, so a string-only compare would call a stale exec-form entry "already installed." */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -12,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { claudeHookScriptPath, expectedHookEntryFor, installHooks, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
+import { claudeHookScriptPath, expectedHookEntryFor, installHooks, isInstalled, missingHookEvents, settingsPath, uninstallHooks } from '../src/install.js'
 import { hookCommandFor, hookExecPartsFor } from '../src/util.js'
 
 let TMP: string
@@ -167,5 +161,57 @@ describe('exec-form hook registration', () => {
 
     uninstallHooks('project')
     expect(fs.readFileSync(p, 'utf8')).toBe(before)
+  })
+})
+
+// CAPTURE: on the maintainer's machine the global npm install is a directory link to the checkout, ~/.claude/settings.json held the exec-form entry `node.exe [shim, "pre_tool_use", "C:\Projects\token-goat\dist\token-goat.mjs"]`, and `token-goat doctor` launched through the npm shim (process.argv[1] = `...\npm\node_modules\token-goat\dist\token-goat.mjs`) reported all eight wired events as missing, while the same doctor launched by the checkout path reported none of them. The junction below reproduces that pair of spellings for one file.
+describe('a bundle reached through a directory link is the same hook', () => {
+  let origArgv1: string | undefined
+
+  beforeEach(() => {
+    origArgv1 = process.argv[1]
+  })
+
+  afterEach(() => {
+    process.argv[1] = origArgv1!
+  })
+
+  function twoSpellingsOfOneBundle(): { real: string; linked: string } {
+    const realDir = path.join(TMP, 'checkout')
+    fs.mkdirSync(path.join(realDir, 'dist'), { recursive: true })
+    fs.writeFileSync(path.join(realDir, 'dist', 'token-goat.mjs'), '// bundle\n')
+    const linkDir = path.join(TMP, 'npm-global-token-goat')
+    fs.symlinkSync(realDir, linkDir, 'junction')
+    return { real: path.join(realDir, 'dist', 'token-goat.mjs'), linked: path.join(linkDir, 'dist', 'token-goat.mjs') }
+  }
+
+  for (const form of ['1', '0'] as const) {
+    it(`${form === '1' ? 'exec' : 'string'} form: installed by one spelling, checked by the other, every event is wired and nothing is rewritten`, () => {
+      process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = form
+      const { real, linked } = twoSpellingsOfOneBundle()
+      process.argv[1] = real
+      installHooks('project')
+      const p = settingsPath('project')
+      const installed = fs.readFileSync(p, 'utf8')
+
+      process.argv[1] = linked
+      expect(missingHookEvents('project')).toEqual([])
+      expect(isInstalled('project')).toBe(true)
+      expect(installHooks('project').alreadyInstalled).toBe(true)
+      expect(fs.readFileSync(p, 'utf8')).toBe(installed)
+    })
+  }
+
+  it('a bundle path naming a different existing file is still a stale entry', () => {
+    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
+    const { real } = twoSpellingsOfOneBundle()
+    const other = path.join(TMP, 'other-token-goat.mjs')
+    fs.writeFileSync(other, '// another bundle\n')
+    process.argv[1] = other
+    installHooks('project')
+
+    process.argv[1] = real
+    expect(missingHookEvents('project')).toContain('PreToolUse')
+    expect(isInstalled('project')).toBe(false)
   })
 })

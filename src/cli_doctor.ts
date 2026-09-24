@@ -7,9 +7,11 @@ import { parse } from 'smol-toml'
 import { countNoun, extractErrorMessage, toKB, resolveOnPath } from './util.js'
 import { findSystemTempFiles, findTopIndexedProjects, type ProjectIndexConsumer } from './index_prune.js'
 import { displaySafeText } from './paths.js'
+import { isUnderSystemTemp } from './project.js'
+import { projectScopeClause } from './sql_path.js'
 import { PACKAGE_NAME } from './version.js'
 import { compareSemver } from './cli_upgrade.js'
-import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
+import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS, dataDirWriteRefusal } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { loadConfig, readConfigSource, saveConfig, invalidateConfigCache } from './config.js'
@@ -29,7 +31,7 @@ import { cursorMcpPath } from './bridges/cursor_install.js'
 import { zedSettingsPath } from './bridges/zed_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
-import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
+import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages, isEmbedFresh, oversizeEmbedSha } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
@@ -123,41 +125,36 @@ export interface CategoryByteShare {
   command: string
 }
 
-// Columns actually worth summing: everything else in these tables is fixed-width integers that cannot explain a multi-GB file. `LENGTH()` on a whole table is a full scan, but measured at 0.3-0.5s each against a live 2.4 GB / 1.87M-row global.db (well under doctor's own gating, which only runs this when the size warning has already fired), so no sampling is needed.
-const CATEGORY_COLUMNS: Array<{ name: string; table: string; column: string; command: string }> = [
-  { name: 'symbol bodies', table: 'symbols', column: 'body', command: "'token-goat reclaim-index --rebuild' drops and re-derives them under the current parser's size cap" },
-  { name: 'refs', table: 'refs', column: 'context', command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
-  { name: 'chunk text', table: 'chunks', column: 'text', command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
-  { name: 'stats detail', table: 'stats', column: 'detail', command: 'ages out on its own (180-day retention) -- no manual command needed' },
+/** Storage groups an oversized global.db is reported by. Each owns the tables whose names match, with their indexes counted in, and says what actually shrinks it. */
+const STORAGE_GROUPS: ReadonlyArray<{ name: string; owns: RegExp; command: string }> = [
+  { name: 'refs', owns: /^refs$/, command: 'grows with the files indexed, so it shrinks only when files leave the index' },
+  { name: 'symbols and their search index', owns: /^symbols(_fts\w*)?$/, command: 'grows with the files indexed, so it shrinks only when files leave the index' },
+  {
+    name: 'embeddings',
+    owns: /^(chunks|chunk_vectors\w*)$/,
+    command: "these back 'semantic'; to drop them, set indexing.embeddings_enabled = false and indexing.auto_reclaim_embeddings = true, then run 'token-goat doctor --repair'",
+  },
+  { name: 'usage stats', owns: /^(stats\w*|hint_\w+|unmapped_tools)$/, command: 'ages out on its own (180-day retention)' },
+  { name: 'recall cache', owns: /^cache_recall\w*$/, command: 'ages out on its own' },
 ]
-// float[384], the fixed dimension chunk_vectors is created with in db.ts -- a per-row byte cost with no variable-length column for LENGTH() to sum.
-const VECTOR_BYTES_PER_ROW = 384 * 4
 
-/** Measures where an oversized global.db's bytes actually are, one row per non-empty category, so the warning below can name which table dominates instead of just the total. Fails soft per category (a missing table, or sqlite-vec not loaded for `chunk_vectors`, drops just that entry) since this only runs after the size warning has already fired. */
+/** Bytes on disk per table, each table's indexes counted with it, read from SQLite's `dbstat` table. Measured in pages rather than by summing column lengths: the length sum saw 89 MB of refs in a 4.9 GB file whose refs table and four indexes held 2.7 GB of it, and called the rest overhead nothing could measure. */
+const OWNER_BYTES_SQL = `SELECT COALESCE(m.tbl_name, s.name) AS owner, SUM(s.pgsize) AS bytes FROM dbstat AS s LEFT JOIN sqlite_master AS m ON m.name = s.name WHERE s.aggregate = 1 GROUP BY owner`
+
+/** Measures where an oversized global.db's bytes are, one row per non-empty storage group, largest first, so the warning can name what holds the file instead of just its size. Returns nothing when this SQLite build has no `dbstat`; the warning then goes without a breakdown rather than with a guessed one. Only runs once the size warning has fired: a full page walk, about 5 s on a 4.9 GB file. */
 export function dbCategoryBreakdown(dbPath: string): CategoryByteShare[] {
-  const db = getDb(dbPath)
-  const shares: CategoryByteShare[] = []
-  for (const cat of CATEGORY_COLUMNS) {
-    try {
-      const row = db.prepare(`SELECT COALESCE(SUM(LENGTH(${cat.column})), 0) as bytes FROM ${cat.table}`).get() as { bytes: number }
-      if (row.bytes > 0) shares.push({ name: cat.name, bytes: row.bytes, command: cat.command })
-    } catch {
-      // table missing on an older/partial schema -- skip just this category
-    }
-  }
+  let rows: Array<{ owner: string; bytes: number }>
   try {
-    const row = db.prepare('SELECT COUNT(*) as n FROM chunk_vectors').get() as { n: number }
-    if (row.n > 0) {
-      shares.push({
-        name: 'embedding vectors',
-        bytes: row.n * VECTOR_BYTES_PER_ROW,
-        command: "'token-goat reclaim-index --rebuild' drops them (set indexing.embeddings_enabled = false first so they don't regrow)",
-      })
-    }
+    rows = getDb(dbPath).prepare(OWNER_BYTES_SQL).all() as Array<{ owner: string; bytes: number }>
   } catch {
-    // sqlite-vec not loaded -- no vector table to measure
+    return []
   }
-  return shares.sort((a, b) => b.bytes - a.bytes)
+  const shares = STORAGE_GROUPS.map((group) => ({
+    name: group.name,
+    bytes: rows.filter((r) => group.owns.test(r.owner)).reduce((sum, r) => sum + r.bytes, 0),
+    command: group.command,
+  }))
+  return shares.filter((share) => share.bytes > 0).sort((a, b) => b.bytes - a.bytes)
 }
 
 /** The oversized-index warning, naming only what is measurably there to recover: sending someone to VACUUM a file with no free pages has them wait on a rewrite of gigabytes that frees nothing. */
@@ -179,26 +176,29 @@ export function oversizeDbMessage(
     advice.push(`'token-goat doctor --repair' will automatically reclaim embedding vectors and compact global.db`)
   }
   const head = `global.db is ${mb(sizeBytes)} MB at ${displaySafeText(dbPath)} (larger than threshold of ${thresholdMb} MB). `
-  const totalCategoryBytes = categories.reduce((sum, c) => sum + c.bytes, 0)
-  // Each share is of the whole file, because "where it went" is a claim about the file the sentence just sized. Taking it against the categories' own subtotal instead reports a share of whatever happened to be measured: the categories cover variable-length content only, so on a database whose bytes are mostly indexes and fixed-width rows they can be a small slice of it, and the ledger this was found against held 220 MB across the four columns out of 1633 MB, where a subtotal-relative share called the largest 76% of a file it was 10% of. That is the number a reader prices a reclaim against, so the unmeasured remainder is named too rather than left to be inferred from shares that no longer sum to 100.
+  const listed = categories.slice(0, 3)
+  const totalCategoryBytes = listed.reduce((sum, c) => sum + c.bytes, 0)
+  // Each share is of the whole file, because "where it went" is a claim about the file the sentence just sized. The groups are measured in pages, indexes included, so together they come to the file less its free pages; whatever the listed groups leave over is named rather than left to be inferred from shares that do not sum to 100.
   const unmeasuredBytes = sizeBytes - totalCategoryBytes
   const breakdown =
     totalCategoryBytes > 0 && sizeBytes > 0
-      ? ` Where it went: ${categories
-          .slice(0, 3)
+      ? ` Where it went: ${listed
           .map((c) => `${c.name} ${mb(c.bytes)} MB (${Math.round((c.bytes / sizeBytes) * 100)}%) -- ${c.command}`)
           .join('; ')}.${
           unmeasuredBytes >= sizeBytes / 20
-            ? ` The other ${mb(unmeasuredBytes)} MB is row overhead and indexes, which these commands do not measure.`
+            ? ` The other ${mb(unmeasuredBytes)} MB is smaller tables and free pages.`
             : ''
         }`
       : ''
   let base = advice.length > 0 ? `${head}${advice.join('; ')}.${breakdown}` : `${head}Only ${mb(freeBytes)} MB of it is free pages and none of it is temp-dir scratch, so it is live index data that neither 'reclaim-index' nor 'project prune' will shrink.${breakdown}`
-  if (topConsumers.length > 0) {
+  const [top] = topConsumers
+  if (top !== undefined) {
     const list = topConsumers.map((c) => `${path.basename(c.root) || c.root} (${countNoun(c.fileCount, 'file')})`).join(', ')
     base += ` Top index consumers: ${list}.`
+    // Symbols and refs are most of any large index and grow with the files indexed, so the one command that shrinks them is taking a project out of the index; its rows are deleted at once and the pages come back on the next reclaim.
+    base += ` To shrink it, take out a project you do not need surgical reads in: 'token-goat project exclude "${displaySafeText(top.root)}"' removes its rows, then 'token-goat reclaim-index' returns the space.`
   }
-  return base
+  return `${base} If this size is expected, raise indexing.max_db_size_mb above ${Math.ceil(sizeBytes / (1024 * 1024))}.`
 }
 
 /** Check if the data directory and database files exist. */
@@ -317,6 +317,36 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
 const EMBED_COVERAGE_WARN_FRACTION = 0.25
 
 /** Check that `semantic` can actually see the corpus, not just that the corpus was parsed. The symbol side has had `checkSymbolCount` for exactly this reason; the embedding side had nothing, and the two fail independently. Every terminal skip in indexFileEmbeddings (parser.ts) stamps a real embed_sha so the worker stops re-reading the file -- correct individually, and it also means a skipped file is indistinguishable from an embedded one at the freshness gate and will never be retried. Nothing summed those skips, so an index where almost nothing embedded looked identical to a healthy one, and `semantic` answered from the remainder using the same "no matches" wording it uses after searching everything. That is the failure this reports. A low number here is not automatically a defect -- it is usually a threshold doing its job -- so the message names `indexing.large_file_symbol_only_kb` and its current value rather than asserting a cause, because that setting is the dominant reason files land in the skip branches and is the one the reader can act on. */
+/** Why indexed files have no embeddings, counted with the indexer's own freshness gate under the current configuration. `owed` is the files whose stamp that gate rejects, which the worker puts back on its queue while idle (see requeueStaleEmbeddings in worker.ts): a NULL stamp left by a worker stopped with embeds still queued, or a stamp the configuration has since overtaken. `overSizeCap` is the files over indexing.large_file_symbol_only_kb, indexed for symbols only on purpose. Temp-dir files are counted in neither, because nothing ever embeds them. On the live index these differed by two orders of magnitude, 25,840 owed against 202 over the cap in one project, which is why the warning names each separately instead of calling the cap the usual reason. */
+export function unembeddedReasons(dbPath: string, rootDir: string | undefined, symbolOnlyKb: number, maxChunks: number): { owed: number; overSizeCap: number } {
+  const db = getDb(dbPath)
+  const scope = rootDir === undefined ? null : projectScopeClause('path')
+  const rows = db
+    .prepare(`SELECT path, sha, embed_sha FROM files${scope === null ? '' : ` WHERE ${scope.clause}`}`)
+    .all(...(scope === null || rootDir === undefined ? [] : scope.params(rootDir))) as Array<{ path: string; sha: string; embed_sha: string | null }>
+  let owed = 0
+  let overSizeCap = 0
+  for (const row of rows) {
+    if (isUnderSystemTemp(row.path)) continue
+    if (row.embed_sha === oversizeEmbedSha(row.sha, symbolOnlyKb)) overSizeCap += 1
+    else if (!isEmbedFresh(row.embed_sha ?? undefined, row.sha, true, true, symbolOnlyKb, maxChunks)) owed += 1
+  }
+  return { owed, overSizeCap }
+}
+
+function unembeddedReasonText(reasons: { owed: number; overSizeCap: number }, sizeKb: number): string {
+  let text = ''
+  if (reasons.owed > 0) {
+    text += ` ${countNoun(reasons.owed, 'file')} ${reasons.owed === 1 ? 'is' : 'are'} still owed an embed: the worker embeds them while it is idle, or run 'token-goat index' in the project to embed them now.`
+  }
+  if (reasons.overSizeCap > 0) {
+    text +=
+      ` ${countNoun(reasons.overSizeCap, 'file')} ${reasons.overSizeCap === 1 ? 'is' : 'are'} over indexing.large_file_symbol_only_kb (currently ${sizeKb} KB) and indexed for symbols only; ` +
+      `raise it with 'token-goat config set indexing.large_file_symbol_only_kb <KB>' and the next 'token-goat index' embeds them.`
+  }
+  return text
+}
+
 export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): DoctorResult {
   if (!fs.existsSync(dbPath)) {
     return { name: 'Embedding coverage', status: 'ok', message: 'no database yet' }
@@ -339,11 +369,10 @@ export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): Doctor
         name: 'Embedding coverage',
         status: 'warn',
         message:
-          `only ${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings — 'semantic' searches ` +
-          `those files only, and reports finding nothing in the same words it uses after searching everything. ` +
-          `Files over indexing.large_file_symbol_only_kb (currently ${sizeKb} KB) are indexed for symbols only and ` +
-          `are the usual reason; raise it with 'token-goat config set indexing.large_file_symbol_only_kb <KB>' and ` +
-          `re-embed with 'token-goat index --force' to widen coverage. Exact symbol lookups are unaffected`,
+          `only ${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings, so 'semantic' searches ` +
+          `those files only, and reports finding nothing in the same words it uses after searching everything.` +
+          unembeddedReasonText(unembeddedReasons(dbPath, rootDir, sizeKb, cfg.indexing.max_chunks_per_file), sizeKb) +
+          ` Exact symbol lookups are unaffected`,
       }
     }
     return {
@@ -943,6 +972,16 @@ export function checkUnmappedTools(dbPath: string, options?: { maxAgeDays?: numb
   }
 }
 
+/** The Worker line. A worker stopped because its data directory refuses writes does not come back on its own, since every hook's auto-restart is refused the same way, so that case says why instead of the bare "not running" a stopped worker gets. A directory that does not exist yet is not probed: `worker start` creates it. */
+export function checkWorker(dir: string): DoctorResult {
+  if (checkWorkerRunning(dir)) return { name: 'Worker', status: 'ok', message: 'running' }
+  const refusal = fs.existsSync(dir) ? dataDirWriteRefusal(dir) : undefined
+  if (refusal !== undefined) {
+    return { name: 'Worker', status: 'fail', message: `not running, and cannot start: ${displaySafeText(dir)} cannot be written (${displaySafeText(extractErrorMessage(refusal))}); make it writable, then run 'token-goat worker start'` }
+  }
+  return { name: 'Worker', status: 'warn', message: 'not running' }
+}
+
 export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
@@ -952,7 +991,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkTsCompiler())
   results.push(checkTreeSitter())
   results.push(checkStrayClaudeMdBlocks())
-  results.push(checkWorkerRunning(actualDataDir) ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
+  results.push(checkWorker(actualDataDir))
 
   // File checks
   const cfg = loadConfig(rootDir)

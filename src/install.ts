@@ -111,12 +111,40 @@ export function expectedHookEntryFor(scriptPath: string, event: string): { comma
   return claudeExecFormHooksSupported() ? hookExecPartsFor(scriptPath, event) : { command: hookCommandFor(scriptPath, event) }
 }
 
-/** True when `command`/`args` is exactly the hook `expected` describes -- same `command` AND the same `args` (order and length), never `command` alone: an exec-form entry's `command` is just `"node"`, shared by every event and by a stale entry whose `args` point at a deleted shim. */
+/** The real location of an absolute path that exists, else null. Relative words (an event name) and missing paths compare by spelling alone. */
+function realPathOrNull(p: string): string | null {
+  if (!path.isAbsolute(p)) return null
+  try {
+    return fs.realpathSync.native(p)
+  } catch {
+    return null
+  }
+}
+
+/** Two argv words name the same thing: the same spelling, or two spellings of one file that exists. The bundle path in a hook comes from `process.argv[1]` of whichever process ran `install`, so a global npm install reached through a symlink or `npm link` writes one spelling and a `doctor` launched the other way expects the other, while both run the same file. */
+function sameHookWord(a: string, b: string): boolean {
+  if (a === b) return true
+  const realA = realPathOrNull(a)
+  return realA !== null && realA === realPathOrNull(b)
+}
+
+/** The words of a string-form hook command, in the quoting {@link hookCommandFor} writes: each path in double quotes (backslash-escaped off Windows), the event bare. */
+function stringFormHookWords(command: string): string[] {
+  const words: string[] = []
+  for (const m of command.matchAll(/"((?:\\.|[^"\\])*)"|(\S+)/g)) {
+    const quoted = m[1]
+    words.push(quoted === undefined ? m[2]! : process.platform === 'win32' ? quoted : quoted.replace(/\\(.)/g, '$1'))
+  }
+  return words
+}
+
+/** True when `command`/`args` is the hook `expected` describes -- the same words in the same order, never `command` alone: an exec-form entry's `command` is just `"node"`, shared by every event and by a stale entry whose `args` point at a deleted shim. A path word matches another spelling of the same existing file (see {@link sameHookWord}); a string-form entry never matches an exec-form expectation or the reverse, so `install` still upgrades one to the other. */
 function hookEntryMatches(command: string, args: readonly string[] | undefined, expected: { command: string; args?: string[] }): boolean {
-  if (command !== expected.command) return false
-  const a = args ?? []
-  const b = expected.args ?? []
-  return a.length === b.length && a.every((v, i) => v === b[i])
+  const execForm = expected.args !== undefined
+  if (!execForm && args !== undefined && args.length > 0) return false
+  const a = execForm ? [command, ...(args ?? [])] : stringFormHookWords(command)
+  const b = execForm ? [expected.command, ...expected.args!] : stringFormHookWords(expected.command)
+  return a.length === b.length && a.every((v, i) => sameHookWord(v, b[i]!))
 }
 
 /** Absolute path to the generated Claude Code hook shim. Always under the user's home `~/.claude/hooks`, never the project's, even for a project-scope install: the shim is a generated file whose invocation bakes in absolute machine-specific paths (this node binary, this token-goat entry), so a copy inside a repo would be both useless to a teammate and an unexpected generated artifact in their working tree. A project-scope `settings.json` simply points at the home-scoped shim by absolute path. */

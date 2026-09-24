@@ -1,21 +1,24 @@
-/**
- * CLI handler for `token-goat hint-stats`.
- *
- * Presentation only — efficacy tracking, suppression, and the manual-mark ledger all live in
- * hint_stats.ts; see that module's doc comment for what is measured automatically vs.
- * approximated per category, and why "harness" stands in for "model" here.
- */
+/** CLI handler for `token-goat hint-stats`. Presentation only — efficacy tracking, suppression, and the manual-mark ledger all live in hint_stats.ts; see that module's doc comment for what is measured automatically vs. approximated per category, and why "harness" stands in for "model" here. */
 
-import { getHintStatsSummary, getHintStatsTotals, resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
+import { getHintStatsSummary, getHintStatsTotals, getHintSpendTotals, resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
 import { pad } from './util.js'
-import { displaySafeJson } from './paths.js'
+import { displaySafeJson, displaySafeText } from './paths.js'
 
 export interface HintStatsCommandOptions {
   json?: boolean
   reset?: boolean
   markEffective?: HintCategory
   markIneffective?: HintCategory
+  /** Already-resolved session id to scope the report to; the caller rejects it alongside `reset`/`markEffective`/`markIneffective`, which all mutate cross-session state. */
+  sessionId?: string
 }
+
+/** Which `--session-id --json` fields cover that session, which stay all-time, and which have no per-session figure at all. Carried in the payload so a consumer never has to know that suppression is cross-session or that the `stats` ledger has no session column. */
+const SESSION_JSON_SCOPE = {
+  session: ['emitted', 'actedOn', 'efficacyPct', 'unobservable', 'detected', 'bytesEmitted', 'legacyEmissions', 'totals.spentBytes', 'totals.legacyEmissions'],
+  allTime: ['suppressed', 'suppressionPermanent', 'manualEffective', 'manualIneffective'],
+  unavailable: ['totals.savedBytes'],
+} as const
 
 
 
@@ -26,43 +29,24 @@ function formatSpentCell(row: CategoryEfficacy): string {
   return row.legacyEmissions > 0 ? `${row.bytesEmitted} (${row.legacyEmissions} legacy)` : String(row.bytesEmitted)
 }
 
-/**
- * Renders the suppressed cell so the two opposite meanings of "suppressed" are distinguishable.
- * With probe occasions configured, a suppressed category still emits on those occasions and can
- * earn its way back, so it is throttled. With `hints.backoff_thresholds = []` it never emits
- * again until someone runs `hint-stats --reset`, so it is off. Both used to print a bare 'yes',
- * which is how a reader of this table concluded the suppression path was broken when it was in
- * fact a supported setting doing exactly what it says.
- */
+/** Renders the suppressed cell so the two opposite meanings of "suppressed" are distinguishable. With probe occasions configured, a suppressed category still emits on those occasions and can earn its way back, so it is throttled. With `hints.backoff_thresholds = []` it never emits again until someone runs `hint-stats --reset`, so it is off. Both used to print a bare 'yes', which is how a reader of this table concluded the suppression path was broken when it was in fact a supported setting doing exactly what it says. */
 function suppressedCell(row: CategoryEfficacy): string {
   if (!row.suppressed) return 'no'
   return row.suppressionPermanent ? 'yes (permanent)' : 'yes'
 }
 
-/**
- * Renders a category's efficacy cell, marked when the number behind it is scored on an absence.
- *
- * A suppression category asks the agent NOT to do something, so its window expiring counts as compliance and books `acted_on = 1`; a redirect category asks the agent to run a specific command, and only that command counts. The two percentages therefore sit on incomparable scales, and printing them in one column with nothing to tell them apart invites the reading that a 99% suppression row is sixty times better than a 2% redirect row. That reading has been made off this table, and went into a brief before anyone caught it, so the marker is not decorative.
- */
+/** Renders a category's efficacy cell, marked when the number behind it is scored on an absence. A suppression category asks the agent NOT to do something, so its window expiring counts as compliance and books `acted_on = 1`; a redirect category asks the agent to run a specific command, and only that command counts. The two percentages therefore sit on incomparable scales, and printing them in one column with nothing to tell them apart invites the reading that a 99% suppression row is sixty times better than a 2% redirect row. That reading has been made off this table, and went into a brief before anyone caught it, so the marker is not decorative. */
 function efficacyCell(row: CategoryEfficacy): string {
   const pct = row.efficacyPct === null ? 'n/a' : `${row.efficacyPct}%`
   return isSuppressionCategory(row.category) ? `${pct} *` : pct
 }
 
-/**
- * Renders a category's emitted cell, marked when some of what it emitted is not in that count.
- *
- * `emitted` counts the rows efficacy was actually scored on. A hint that carried no correlator names nothing a later command could match, so it is excluded from both sides of the percentage rather than given an invented verdict -- but it was still emitted, and it still spent its bytes. Without a marker the two populations are indistinguishable: `bash_redirect` reads as 524 emissions when 698 were really pushed at the agent, and a reader sizing the category off this column undercounts it by a quarter.
- */
+/** Renders a category's emitted cell, marked when some of what it emitted is not in that count. `emitted` counts the rows efficacy was actually scored on. A hint that carried no correlator names nothing a later command could match, so it is excluded from both sides of the percentage rather than given an invented verdict -- but it was still emitted, and it still spent its bytes. Without a marker the two populations are indistinguishable: `bash_redirect` reads as 524 emissions when 698 were really pushed at the agent, and a reader sizing the category off this column undercounts it by a quarter. */
 function emittedCell(row: CategoryEfficacy): string {
   return row.unobservable > 0 ? `${row.emitted} ~${row.unobservable}` : String(row.emitted)
 }
 
-/**
- * Renders how often a category's trigger fired, against how often the agent was actually told.
- *
- * A suppressed category emits nothing, so every other column on its row freezes and stays frozen. That leaves the two questions a reader has -- has the trigger stopped firing, or is it firing constantly into a mute -- answered identically, and they call for opposite actions. This column counts the zero-byte rows written for detections that never reached the agent: a large figure says the trigger is alive and the mute is doing the work, a 0 says it has gone quiet on its own. Rendered as `-` rather than `0` when there are none, so a column of zeros does not read as a measured absence on the categories that have no gate to decline at.
- */
+/** Renders how often a category's trigger fired, against how often the agent was actually told. A suppressed category emits nothing, so every other column on its row freezes and stays frozen. That leaves the two questions a reader has -- has the trigger stopped firing, or is it firing constantly into a mute -- answered identically, and they call for opposite actions. This column counts the zero-byte rows written for detections that never reached the agent: a large figure says the trigger is alive and the mute is doing the work, a 0 says it has gone quiet on its own. Rendered as `-` rather than `0` when there are none, so a column of zeros does not read as a measured absence on the categories that have no gate to decline at. */
 function detectedCell(row: CategoryEfficacy): string {
   return row.detected === 0 ? '-' : String(row.detected)
 }
@@ -88,24 +72,23 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
   }
 }
 
-/**
- * Prints the all-time saved/spent summary line. Both figures are byte counts, and the column names say so: the schema calls the underlying field `bytes_emitted` and the docs have always described it as bytes, but the printed line said only `spent=5490`, which a reader sitting next to token figures elsewhere in the same tool reads as tokens. A number whose unit is only recoverable from the schema is a number that will be misread.
- *
- * `saved` reuses the pre-existing `stats` ledger
- * (unaffected by this feature) and spans every hint kind; `spent` sums only the much smaller
- * hint_emissions ledger and renders 'n/a', never a fake 0, when nothing has been tracked yet or
- * the store is entirely pre-migration legacy rows. The two figures cover disjoint populations and
- * are deliberately never netted against each other -- see hint_stats.ts's getHintStatsTotals doc
- * comment for the regression this guards against.
- */
+/** Prints the all-time saved/spent summary line. Both figures are byte counts, and the column names say so: the schema calls the underlying field `bytes_emitted` and the docs have always described it as bytes, but the printed line said only `spent=5490`, which a reader sitting next to token figures elsewhere in the same tool reads as tokens. A number whose unit is only recoverable from the schema is a number that will be misread. `saved` reuses the pre-existing `stats` ledger (unaffected by this feature) and spans every hint kind; `spent` sums only the much smaller hint_emissions ledger and renders 'n/a', never a fake 0, when nothing has been tracked yet or the store is entirely pre-migration legacy rows. The two figures cover disjoint populations and are deliberately never netted against each other -- see hint_stats.ts's getHintStatsTotals doc comment for the regression this guards against. */
 function printTotals(totals: HintStatsTotals): void {
   const spent = totals.spentBytes === null ? 'n/a' : String(totals.spentBytes)
   const legacyNote = totals.legacyEmissions > 0 ? ` (excludes ${totals.legacyEmissions} legacy emission(s) recorded before spend tracking)` : ''
-  // saved and spent are deliberately NOT netted against each other: saved is an all-time total
-  // across every hint kind stats.ts maps to SOURCE_HINT, while spent sums only the much smaller
-  // hint_emissions ledger. They are disjoint populations -- see getHintStatsTotals's doc comment.
+  // saved and spent are deliberately NOT netted against each other: saved is an all-time total across every hint kind stats.ts maps to SOURCE_HINT, while spent sums only the much smaller hint_emissions ledger. They are disjoint populations -- see getHintStatsTotals's doc comment.
   process.stdout.write(
     `\nTOTAL   saved-bytes=${totals.savedBytes} (all-time, every hint kind)   spent-bytes=${spent} (hint_emissions ledger only)${legacyNote}\n`,
+  )
+}
+
+// The session form of printTotals. saved-bytes is left out rather than printed all-time beside a per-session spend, where it would read as this session's saving: the stats ledger it comes from records no session id, so no per-session figure exists.
+function printSessionTotals(totals: Omit<HintStatsTotals, 'savedBytes'>): void {
+  const spent = totals.spentBytes === null ? 'n/a' : String(totals.spentBytes)
+  const legacyNote = totals.legacyEmissions > 0 ? ` (excludes ${totals.legacyEmissions} legacy emission(s) recorded before spend tracking)` : ''
+  process.stdout.write(
+    `\nTOTAL (this session)   spent-bytes=${spent} (hint_emissions ledger only)${legacyNote}\n` +
+      'saved-bytes: not available per session, because the stats ledger it comes from records no session id. Run `token-goat hint-stats` without --session-id for the all-time figure.\n',
   )
 }
 
@@ -127,20 +110,24 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
     return
   }
 
-  const rows = getHintStatsSummary()
+  const session = opts.sessionId
+  const rows = getHintStatsSummary(session)
   if (opts.json === true) {
-    process.stdout.write(`${displaySafeJson(rows, 0)}\n`)
+    // The unscoped payload stays a bare row array, the shape existing consumers read.
+    const payload = session === undefined ? rows : { session, scope: SESSION_JSON_SCOPE, rows, totals: { savedBytes: null, ...getHintSpendTotals(session) } }
+    process.stdout.write(`${displaySafeJson(payload, 0)}\n`)
     return
   }
-  // Categories are registered statically, so an untouched store still renders a full table of
-  // zeros -- which reads as "these hints fire and never work" rather than "nothing recorded yet".
-  // Those two conclusions call for opposite actions (retire the hints vs. go collect data), so
-  // say which one it is. The table still prints underneath: the registered category list is
-  // useful on its own, and dropping it would narrow existing output.
-  // `unobservable` belongs in this test: a store holding only correlator-less rows has recorded
-  // plenty, it just scored none of it, and calling that "absence of data" would send a reader to
-  // collect more of exactly the data that is already there and still unscoreable.
-  if (rows.every((r) => r.emitted === 0 && r.actedOn === 0 && r.unobservable === 0 && r.detected === 0)) {
+  const noEmissions = rows.every((r) => r.emitted === 0 && r.actedOn === 0 && r.unobservable === 0 && r.detected === 0)
+  if (session !== undefined) {
+    process.stdout.write(
+      `Session: ${displaySafeText(session)}\n` +
+        'emitted, undisplayed, acted-on, efficacy and spent-bytes count this session only. suppressed, manual+ and manual- are all-time, across every session: suppression is decided on the whole history, and manual marks carry no session.\n',
+    )
+    if (noEmissions) process.stdout.write('No hint emissions were recorded for this session, so every per-session figure below is 0.\n')
+  }
+  // Categories are registered statically, so an untouched store still renders a full table of zeros -- which reads as "these hints fire and never work" rather than "nothing recorded yet". Those two conclusions call for opposite actions (retire the hints vs. go collect data), so say which one it is. The table still prints underneath: the registered category list is useful on its own, and dropping it would narrow existing output. `unobservable` belongs in this test: a store holding only correlator-less rows has recorded plenty, it just scored none of it, and calling that "absence of data" would send a reader to collect more of exactly the data that is already there and still unscoreable.
+  if (session === undefined && noEmissions) {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
   printSummary(rows)
@@ -153,10 +140,7 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
       'starred figure means "the warned-against read was not seen", not "this hint persuaded anyone".\n',
     )
   }
-  // Without this, the emitted column silently shrinks: 174 of bash_redirect's 698 rows leave the
-  // count and nothing says where they went, which looks like data loss rather than a scoping rule.
-  // Same both-halves rule as the markers above: a note that prints whether or not the column has
-  // anything in it is boilerplate, and stops being read.
+  // Without this, the emitted column silently shrinks: 174 of bash_redirect's 698 rows leave the count and nothing says where they went, which looks like data loss rather than a scoping rule. Same both-halves rule as the markers above: a note that prints whether or not the column has anything in it is boilerplate, and stops being read.
   if (rows.some((r) => r.detected > 0)) {
     process.stdout.write(
       '\nundisplayed: detections that never reached the agent -- auto-suppressed, or declined by ' +
@@ -175,14 +159,12 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
       'costs the agent its bytes all the same.\n',
     )
   }
-  // A permanently-suppressed category emits nothing at all, so its efficacy can never rise and
-  // the table above will look identical forever. Name the one action that changes it, rather than
-  // leaving a reader to trace four source files and two databases to find out -- which is what
-  // happened once, and produced a wrong diagnosis on the way.
+  // A permanently-suppressed category emits nothing at all, so its efficacy can never rise and the table above will look identical forever. Name the one action that changes it, rather than leaving a reader to trace four source files and two databases to find out -- which is what happened once, and produced a wrong diagnosis on the way.
   const permanent = rows.filter((r) => r.suppressionPermanent)
   if (permanent.length > 0) {
     const names = permanent.map((r) => r.category).join(', ')
     process.stdout.write(`\nhints.backoff_thresholds is empty, so suppression here is permanent rather than a self-healing throttle: ${names} will not emit again on any occasion. Set backoff_thresholds to re-enable probe emissions, or run \`token-goat hint-stats --reset\` to clear the ledger.\n`)
   }
-  printTotals(getHintStatsTotals())
+  if (session === undefined) printTotals(getHintStatsTotals())
+  else printSessionTotals(getHintSpendTotals(session))
 }

@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { CliError, out } from './cli.js'
 import { buildLineDiff } from './hooks_read.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
-import { didYouMean, filterSimilarHeadings, findSpecSeparator, listSections } from './read_commands.js'
+import { didYouMeanLines, filterSimilarHeadings, findSpecSeparator, listSections } from './read_commands.js'
 import { getSessionId } from './session.js'
 import {
   contentHash,
@@ -304,10 +304,10 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     }
     const messages = [`Section '${heading}' not found in skill '${skillName}'`]
     const available = filterSimilarHeadings(allHeadings, heading)
-    if (available.length > 0) messages.push(didYouMean(available))
+    if (available.length > 0) messages.push(...didYouMeanLines(available))
     else if (allHeadings.length === 0) messages.push(`skill '${skillName}' has no headings`)
     else messages.push(`Try: token-goat outline ${filePath}`)
-    throw new CliError(messages.join('\n'))
+    throw new CliError(messages)
   }
   out(extracted)
 }

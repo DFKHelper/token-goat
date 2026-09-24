@@ -1,74 +1,42 @@
-/**
- * The oversized-index warning's category shares are shares of the database file.
- *
- * `oversizeDbMessage` states the file's size, then introduces the breakdown with "Where it went".
- * Until 2026-09-23 each share was computed against the sum of the measured categories instead, so
- * it reported a fraction of whatever happened to be measurable. The categories cover variable-length
- * content columns only -- `symbols.body`, `refs.context`, `chunks.text`, `stats.detail`, and the
- * fixed-width embedding vectors -- so on a database whose bytes are mostly indexes and fixed-width
- * row storage they account for a small slice of the file, and the shares silently rescaled to fill
- * it.
- *
- * The harm is that this number is what a reader prices a reclaim against. Seeing "symbol bodies
- * 167 MB (76%)" beside a stated 1633 MB total, the arithmetic says roughly 1.2 GB is recoverable by
- * the `reclaim-index --rebuild` the same clause recommends; the true figure is the 167 MB printed
- * next to it, and the rebuild reparses every indexed file to get there.
- *
- * PROVENANCE: CAPTURE. Every byte figure below was measured on 2026-09-23 against the live global.db
- * at %LOCALAPPDATA%/dfk-helper/token-goat, read-only:
- *   file size           1712799744  (stat)
- *   symbols.body         174675521  (SELECT SUM(LENGTH(body)) FROM symbols)
- *   refs.context          29596923  (SELECT SUM(LENGTH(context)) FROM refs)
- *   stats.detail          10229079  (SELECT SUM(LENGTH(detail)) FROM stats)
- *   chunks.text            5282310  (SELECT SUM(LENGTH(text)) FROM chunks)
- *   embedding vectors      9315840  (6065 chunk rows x VECTOR_BYTES_PER_ROW, the row count read
- *                                    from `SELECT count(*) FROM chunks`; chunk_vectors itself needs
- *                                    sqlite-vec loaded and cannot be counted from the sqlite3 CLI)
- * `token-goat doctor` against that database printed "symbol bodies 167 MB (76%)", which those
- * figures reproduce exactly under the old denominator, so the inputs are confirmed to be the ones
- * the shipping path actually saw rather than a reconstruction that merely resembles it. The
- * expected percentages below are computed from the file size independently of the formatter.
- */
+/** The oversized-index warning's category shares are shares of the database file, and they are measured in pages. `oversizeDbMessage` states the file's size, then introduces the breakdown with "Where it went". Until 2026-09-23 each share was computed against the sum of the measured categories, so it reported a fraction of whatever happened to be measurable. After that it was a share of the file, but the categories were still `SUM(LENGTH(column))` over four content columns, which cannot see an index or a fixed-width row: against a 4.9 GB ledger it printed "refs 89 MB (2%)" and "The other 3914 MB is row overhead and indexes, which these commands do not measure", while the refs table and its four indexes held 2.7 GB of that file. The largest consumer was reported as the smallest, and the advice pointed at `reclaim-index --rebuild`, which re-derives the same rows. PROVENANCE: CAPTURE. Every byte figure below was measured on 2026-09-24 against the live global.db at %LOCALAPPDATA%/dfk-helper/token-goat, opened read-only with node:sqlite: file size           5136805888  (stat; also PRAGMA page_count 1254103 x page_size 4096) refs                2807992320  (dbstat aggregate pgsize for `refs` and the four indexes whose sqlite_master tbl_name is `refs`) symbols             1761927168  (`symbols`, its indexes, and the `symbols_fts_*` shadow tables) embeddings           415449088  (`chunks`, its indexes, and the `chunk_vectors_*` shadow tables) usage stats           63328256  (`stats*`, `hint_*`, `unmapped_tools`) recall cache          63119360  (`cache_recall*`) The groups and the page walk are the ones `dbCategoryBreakdown` runs. The expected percentages below are computed from the file size independently of the formatter. */
 import { describe, expect, it } from 'vitest'
 
 import { oversizeDbMessage } from '../src/cli_doctor.js'
 
-const FILE_BYTES = 1_712_799_744
+const FILE_BYTES = 5_136_805_888
+const GROWS = 'grows with the files indexed, so it shrinks only when files leave the index'
 
-/** Sorted by bytes descending, as `dbCategoryBreakdown` returns them and as the live run printed them. */
+/** Sorted by bytes descending, as `dbCategoryBreakdown` returns them. */
 const LIVE_CATEGORIES = [
-  { name: 'symbol bodies', bytes: 174_675_521, command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
-  { name: 'refs', bytes: 29_596_923, command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
-  { name: 'stats detail', bytes: 10_229_079, command: 'ages out on its own (180-day retention)' },
-  { name: 'embedding vectors', bytes: 9_315_840, command: "'token-goat reclaim-index --rebuild' drops them" },
-  { name: 'chunk text', bytes: 5_282_310, command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
+  { name: 'refs', bytes: 2_807_992_320, command: GROWS },
+  { name: 'symbols and their search index', bytes: 1_761_927_168, command: GROWS },
+  { name: 'embeddings', bytes: 415_449_088, command: "these back 'semantic'" },
+  { name: 'usage stats', bytes: 63_328_256, command: 'ages out on its own (180-day retention)' },
+  { name: 'recall cache', bytes: 63_119_360, command: 'ages out on its own' },
 ]
 
 describe('the oversized-index breakdown reports shares of the file', () => {
-  it('prices the dominant category against the file rather than against the measured subtotal', () => {
+  it('names the table that holds the file, with its indexes counted in', () => {
     const msg = oversizeDbMessage('/data/global.db', FILE_BYTES, 0, 0, LIVE_CATEGORIES)
 
-    // 174675521 / 1712799744 = 10.2%. The old denominator was the categories' own sum, 229095673,
-    // which made the same 167 MB read as 76% of a 1633 MB file.
-    expect(msg).toContain('symbol bodies 167 MB (10%)')
-    expect(msg, 'a share of the measured subtotal must not be presented as a share of the file').not.toContain('(76%)')
+    // 2807992320 / 5136805888 = 54.7%; 1761927168 / 5136805888 = 34.3%.
+    expect(msg).toContain('refs 2678 MB (55%)')
+    expect(msg).toContain('symbols and their search index 1680 MB (34%)')
+    expect(msg.indexOf('refs 2678 MB')).toBeLessThan(msg.indexOf('symbols and their search index'))
   })
 
-  it('names the bytes the categories do not measure, so the shares are not read as exhaustive', () => {
+  it('does not call bytes it measured unmeasurable', () => {
     const msg = oversizeDbMessage('/data/global.db', FILE_BYTES, 0, 0, LIVE_CATEGORIES)
 
-    // 1712799744 - 229095673 = 1483704071 bytes, 1415 MB: 87% of the file, and the single most
-    // consequential fact for someone deciding whether a reclaim is worth running.
-    expect(msg).toContain('The other 1415 MB is row overhead and indexes')
+    // The three listed groups hold 4985368576 bytes, 97% of the file; the other 3% is below the one-twentieth floor for naming a remainder.
+    expect(msg).not.toContain('do not measure')
+    expect(msg).not.toContain('The other')
   })
 
-  it('stays silent about a remainder too small to change the reading', () => {
-    // One category covering all but 4% of the file. Naming a remainder here would add noise to a
-    // breakdown that already accounts for the file, so the clause is suppressed below one twentieth.
-    const msg = oversizeDbMessage('/data/global.db', 100 * 1024 * 1024, 0, 0, [
-      { name: 'symbol bodies', bytes: 96 * 1024 * 1024, command: "'token-goat reclaim-index --rebuild' drops and re-derives them" },
-    ])
-    expect(msg).toContain('symbol bodies 96 MB (96%)')
-    expect(msg).not.toContain('row overhead and indexes')
+  it('names a remainder the listed groups leave over', () => {
+    // One group covering 80% of the file leaves 20 MB, which is worth saying so the one share is not read as the whole file.
+    const msg = oversizeDbMessage('/data/global.db', 100 * 1024 * 1024, 0, 0, [{ name: 'refs', bytes: 80 * 1024 * 1024, command: GROWS }])
+    expect(msg).toContain('refs 80 MB (80%)')
+    expect(msg).toContain('The other 20 MB is smaller tables and free pages.')
   })
 })

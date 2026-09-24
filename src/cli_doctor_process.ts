@@ -1,15 +1,11 @@
-/**
- * Process table and MCP process health diagnostics for token-goat doctor.
- *
- * Checks running Windows processes, orphan Node processes, duplicate MCP launchers,
- * and the worker daemon state.
- */
+/** Process table and MCP process health diagnostics for token-goat doctor. Checks running Windows processes, orphan Node processes, duplicate MCP launchers, and the worker daemon state. */
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import type { DoctorResult } from './doctor_result.js'
+import { displaySafeText } from './paths.js'
 import { isWorkerRunning } from './worker.js'
 
 export interface ProcessInfo {
@@ -18,6 +14,14 @@ export interface ProcessInfo {
   name: string
   commandLine: string
 }
+
+/** Why the process list could not be read, in words doctor prints as they are. */
+export interface ProcessListFailure {
+  readonly reason: string
+}
+
+/** How long the process-list query may run. A loaded machine can push Get-CimInstance past it, which is the usual reason the list is missing. */
+const PROCESS_LIST_TIMEOUT_MS = 20_000
 
 // Interpreter/shell basenames to skip when picking the token that names the actual script -- a real Windows command line quotes the interpreter's own path first (`"C:\Program Files\nodejs\node.exe" orphan_probe.js`), which itself ends in .exe and would otherwise win as the first match.
 const INTERPRETER_BASENAMES = new Set(['node.exe', 'python.exe', 'python3.exe', 'pwsh.exe', 'powershell.exe', 'cmd.exe'])
@@ -32,12 +36,12 @@ function describeProcess(commandLine: string): string {
   return trimmed.length > 0 ? (trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed) : '(no command line)'
 }
 
-export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null): DoctorResult {
-  if (processes === null) {
+export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | ProcessListFailure): DoctorResult {
+  if (!Array.isArray(processes)) {
     return {
       name: 'MCP process health',
       status: 'warn',
-      message: 'could not read the process list (PowerShell did not answer), so duplicate MCP launchers and orphaned Node processes were not checked',
+      message: `could not read the process list (${displaySafeText((processes as ProcessListFailure).reason)}), so duplicate MCP launchers and orphaned Node processes were not checked. Run doctor again once the machine is less busy, or list them yourself with: Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Select-Object ProcessId,ParentProcessId,CommandLine`,
     }
   }
   const byPid = new Set(processes.map((process) => process.processId))
@@ -73,24 +77,41 @@ function runProcessListCommand(): string {
   const shell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   const result = spawnSync(fs.existsSync(shell) ? shell : 'powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
     encoding: 'utf8',
-    timeout: 20000,
+    timeout: PROCESS_LIST_TIMEOUT_MS,
     maxBuffer: 10 * 1024 * 1024,
     windowsHide: true,
   })
-  if (result.error !== undefined) throw result.error
-  return result.stdout ?? ''
+  return processListOutput(result)
 }
 
-/**
- * `null` when the process list could not be read at all, so a caller can tell that apart from an
- * empty machine.
- */
-export function readWindowsProcesses(runCommand: () => string = runProcessListCommand): ProcessInfo[] | null {
+/** The process list PowerShell printed, or an error saying why there is none. A non-zero exit with nothing on stdout used to come back as an empty list, which doctor reported as a clean bill of health; a non-zero exit that still printed a list keeps it, because the rows it printed are real. */
+export function processListOutput(result: Pick<SpawnSyncReturns<string>, 'error' | 'status' | 'stdout' | 'stderr'>): string {
+  if (result.error !== undefined) {
+    const code = (result.error as NodeJS.ErrnoException).code
+    if (code === 'ETIMEDOUT') throw new Error(`PowerShell did not finish within ${PROCESS_LIST_TIMEOUT_MS / 1000}s`)
+    if (code === 'ENOENT') throw new Error('powershell.exe was not found')
+    throw result.error
+  }
+  const stdout = result.stdout ?? ''
+  if (result.status !== 0 && stdout.trim() === '') {
+    const firstLine = (result.stderr ?? '').split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '')
+    throw new Error(`PowerShell exited with code ${String(result.status)}${firstLine !== undefined ? `: ${firstLine}` : ''}`)
+  }
+  return stdout
+}
+
+/** `null` when the process list could not be read at all, so a caller can tell that apart from an empty machine. */
+export function readWindowsProcesses(runCommand: () => string = runProcessListCommand): ProcessInfo[] | ProcessListFailure {
   if (process.platform !== 'win32') return []
   try {
     const output = runCommand().trim()
     if (output === '') return []
-    const parsed: unknown = JSON.parse(output)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(output)
+    } catch {
+      return { reason: 'PowerShell printed something other than the JSON process list' }
+    }
     const rows = Array.isArray(parsed) ? parsed : [parsed]
     return rows.flatMap((row): ProcessInfo[] => {
       if (typeof row !== 'object' || row === null) return []
@@ -103,14 +124,12 @@ export function readWindowsProcesses(runCommand: () => string = runProcessListCo
         commandLine: typeof value['CommandLine'] === 'string' ? value['CommandLine'] : '',
       }]
     })
-  } catch {
-    return null
+  } catch (e) {
+    return { reason: e instanceof Error ? e.message : String(e) }
   }
 }
 
-/**
- * Check if the token-goat worker process is running for `dataDir`.
- */
+/** Check if the token-goat worker process is running for `dataDir`. */
 export function checkWorkerRunning(dataDir?: string): boolean {
   return dataDir !== undefined ? isWorkerRunning(dataDir) : isWorkerRunning()
 }

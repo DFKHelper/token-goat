@@ -3,11 +3,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkHookShim, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
+import { processListOutput } from '../src/cli_doctor_process.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
 import { classifyTreeSitterLoadError } from '../src/cli_doctor.js'
-import { missingTreeSitterGrammarPackages, setTreeSitterCoreForTesting } from '../src/parser.js'
+import { missingTreeSitterGrammarPackages, oversizeEmbedSha, setTreeSitterCoreForTesting } from '../src/parser.js'
 import { createRequire } from 'node:module'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
@@ -347,19 +348,54 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('8 of 10')
     })
 
-    it('warns when almost none of the indexed files have embeddings', () => {
+    const stampFile = (db: ReturnType<typeof getDb>, p: string, embedSha: string) =>
+      db
+        .prepare('INSERT INTO files (path, sha, mtime, language, indexed_at, embed_sha) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(p, 'sha', 1, 'typescript', 1, embedSha)
+
+    // Provenance: HAND-DERIVED shapes of the two causes the live index held on 2026-09-24 (CAPTURE counts): in aws-cdk, 25,840 files with a NULL embed_sha, left by a worker stopped with its embeds still queued, against 202 over the 500 KB symbol-only cap. The warning called the cap "the usual reason" and prescribed 'index --force' for all of them.
+    it('names files still owed an embed, and the command that embeds them now', () => {
       const dbPath = path.join(tempDir, 'global.db')
       const db = getDb(dbPath)
-      for (let i = 0; i < 10; i++) insertFile(db, `src/f${i}.ts`)
+      stampFile(db, 'src/f0.ts', 'sha')
       insertChunk(db, 'src/f0.ts')
+      for (let i = 1; i < 10; i++) insertFile(db, `src/f${i}.ts`)
       const result = checkEmbeddingCoverage(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('1 of 10')
       expect(result.message).toContain('10%')
-      // Must name the setting that actually causes it, or the reader has a number and no action.
-      expect(result.message).toContain('indexing.large_file_symbol_only_kb')
+      expect(result.message).toContain("9 files are still owed an embed: the worker embeds them while it is idle, or run 'token-goat index' in the project to embed them now.")
+      // No file here is over the cap, so naming it would send the reader to a setting that changes nothing.
+      expect(result.message).not.toContain('large_file_symbol_only_kb')
+      expect(result.message).not.toContain('--force')
       // ...and must say the symbol side still works, so this does not read as a broken index.
       expect(result.message).toContain('Exact symbol lookups are unaffected')
+    })
+
+    it('names the size cap only for the files it kept out', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      const kb = loadConfig().indexing.large_file_symbol_only_kb
+      stampFile(db, 'src/f0.ts', 'sha')
+      insertChunk(db, 'src/f0.ts')
+      for (let i = 1; i < 3; i++) stampFile(db, `src/big${i}.ts`, oversizeEmbedSha('sha', kb))
+      // Embedded and produced no chunks: a file with nothing to embed, owed nothing and not over the cap.
+      for (let i = 3; i < 10; i++) stampFile(db, `src/empty${i}.ts`, 'sha')
+      const result = checkEmbeddingCoverage(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain(`2 files are over indexing.large_file_symbol_only_kb (currently ${kb} KB) and indexed for symbols only`)
+      expect(result.message).toContain("the next 'token-goat index' embeds them.")
+      expect(result.message).not.toContain('owed')
+    })
+
+    it('counts a size-cap stamp taken under an older cap as owed, not as over the cap', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      const kb = loadConfig().indexing.large_file_symbol_only_kb
+      for (let i = 0; i < 4; i++) stampFile(db, `src/big${i}.ts`, oversizeEmbedSha('sha', kb - 1))
+      const result = checkEmbeddingCoverage(dbPath)
+      expect(result.message).toContain('4 files are still owed an embed')
+      expect(result.message).not.toContain('over indexing.large_file_symbol_only_kb')
     })
 
     // The discriminating case. One heavily-chunked file produces many chunk ROWS while covering one file; counting rows instead of distinct paths would read 50 chunks against 10 files as healthy coverage and hide exactly the condition this check exists to find. Replacing COUNT(DISTINCT file_path) with COUNT(*) in getEmbeddingCoverage turns this test red and leaves the two tests above green.
@@ -748,30 +784,44 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('warn')
     })
 
-    // Regression: the oversized-DB warning named a total size with no way to act on it -- it never said which table held the bytes, so 'reclaim-index' vs 'project prune' vs leaving it alone was a guess. HAND-DERIVED: rows are inserted directly by this test, and the expected byte counts are the same LENGTH() sum the fixture itself can be recomputed from.
+    // Regression: the breakdown summed four content columns, so it could not see an index or a fixed-width row, and a live 4.9 GB ledger read "refs 89 MB (2%)" while refs and its four indexes held 2.7 GB. HAND-DERIVED: the expected refs bytes are read off PRAGMA page_count before and after the inserts, which counts pages without going through dbstat or the grouping this checks.
     describe('dbCategoryBreakdown', () => {
-      it('names the dominant category first, ahead of smaller ones', () => {
+      /** The bytes a group gains across `write`, against the pages the file gains, both read after a checkpoint so the WAL holds nothing back. */
+      function growth(group: string, write: (db: ReturnType<typeof getDb>) => void): { groupBytes: number; fileBytes: number; command: string | undefined } {
         const dbPath = path.join(tempDir, 'global.db')
         const db = getDb(dbPath)
-        const bigBody = 'x'.repeat(500_000)
-        db.prepare(
-          'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        ).run('src/big.ts', 'big', 'function', 1, 2, bigBody, '')
-        db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)').run('src/small.ts', 'small', 1, 1, 'tiny context')
-        db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)').run('src/small.ts', 1, 2, 'tiny chunk', 'code')
+        const pages = (): number => {
+          db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+          return (db.prepare('PRAGMA page_count').get() as { page_count: number }).page_count
+        }
+        const pageSize = (db.prepare('PRAGMA page_size').get() as { page_size: number }).page_size
+        const pagesBefore = pages()
+        const before = dbCategoryBreakdown(dbPath).find((s) => s.name === group)?.bytes ?? 0
+        db.transaction(() => write(db))()
+        const pagesAfter = pages()
+        const after = dbCategoryBreakdown(dbPath).find((s) => s.name === group)
+        return { groupBytes: (after?.bytes ?? 0) - before, fileBytes: (pagesAfter - pagesBefore) * pageSize, command: after?.command }
+      }
 
-        const shares = dbCategoryBreakdown(dbPath)
-        expect(shares[0].name).toBe('symbol bodies')
-        expect(shares[0].bytes).toBe(bigBody.length)
-        expect(shares[0].command).toContain('reclaim-index --rebuild')
-        expect(shares.map((s) => s.name)).toContain('refs')
-        expect(shares.map((s) => s.name)).toContain('chunk text')
+      it('counts a table together with its indexes, page for page', () => {
+        const { groupBytes, fileBytes, command } = growth('refs', (db) => {
+          const insert = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
+          for (let i = 0; i < 5000; i++) insert.run(`src/file${i % 50}.ts`, `name${i}`, i, 1, 'x')
+        })
+        expect(fileBytes, 'the inserts added no pages, so equality would prove nothing').toBeGreaterThan(40_000)
+        // Every page the inserts added belongs to refs or one of its indexes. The one-byte context each row carries is 5 KB of it, which is what the column sum used to report.
+        expect(groupBytes).toBe(fileBytes)
+        expect(command).toContain('leave the index')
       })
 
-      it('omits a category with no bytes stored', () => {
-        const dbPath = path.join(tempDir, 'global.db')
-        getDb(dbPath) // creates the schema with every table empty
-        expect(dbCategoryBreakdown(dbPath)).toEqual([])
+      it('counts the symbol search index with the symbols it indexes', () => {
+        const { groupBytes, fileBytes } = growth('symbols and their search index', (db) => {
+          const insert = db.prepare('INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          for (let i = 0; i < 3000; i++) insert.run(`src/file${i % 50}.ts`, `symbolName${i}`, 'function', i, i + 1, `function symbolName${i}() {}`, '')
+        })
+        expect(fileBytes, 'the inserts added no pages, so equality would prove nothing').toBeGreaterThan(40_000)
+        // The FTS triggers write the search index in the same transaction, into shadow tables sqlite_master lists as tables of their own; a grouping that missed them would come up short of the file's growth.
+        expect(groupBytes).toBe(fileBytes)
       })
     })
 
@@ -1084,17 +1134,18 @@ describe('cli_doctor', () => {
       //
       // A null gather is a different outcome from an empty one and is NOT a product defect: it means the PowerShell Get-CimInstance call hit its 20s timeout, which the full suite can provoke under parallel load, and returning null there is the behaviour the next case in this file asserts on purpose. Observed failing exactly once in a full run and passing isolated, whole-file, and in a clean full run. Skipping the null case keeps the real invariant -- a gather that SUCCEEDS must contain this process -- while no longer reporting an environment timeout as a defect. It is not a skip-to-green: a successful gather missing our own pid still fails, which is the bug this case was written for.
       const processes = readWindowsProcesses()
-      if (processes !== null) {
+      if (Array.isArray(processes)) {
         expect(processes.some((p) => p.processId === process.pid)).toBe(true)
       }
     })
 
     it('says the process list could not be read rather than reporting a clean bill of health', () => {
       // A failed gather used to come back as an empty array, indistinguishable from a machine with no processes, so doctor printed "no duplicate MCP launchers detected" backed by no data.
-      const health = checkMcpProcessHealth(null)
+      const health = checkMcpProcessHealth({ reason: 'PowerShell did not finish within 20s' })
 
       expect(health.status).toBe('warn')
-      expect(health.message).toContain('could not read the process list')
+      expect(health.message).toContain('could not read the process list (PowerShell did not finish within 20s)')
+      expect(health.message).toContain('Get-CimInstance Win32_Process')
       expect(health.message).not.toContain('no duplicate MCP launchers')
     })
 
@@ -1106,12 +1157,46 @@ describe('cli_doctor', () => {
     })
 
     // Windows-only: off Windows the function returns [] before it ever runs a command, which the sibling test below pins.
-    it.runIf(process.platform === 'win32')('returns null when the process-list command fails, not an empty list', () => {
+    it.runIf(process.platform === 'win32')('returns the reason when the process-list command fails, not an empty list', () => {
       const failed = readWindowsProcesses(() => {
         throw new Error('powershell timed out')
       })
 
-      expect(failed).toBeNull()
+      expect(failed).toEqual({ reason: 'powershell timed out' })
+    })
+
+    it.runIf(process.platform === 'win32')('names output that is not the JSON list as the reason', () => {
+      expect(readWindowsProcesses(() => 'Get-CimInstance : Access denied')).toEqual({ reason: 'PowerShell printed something other than the JSON process list' })
+    })
+
+    // HAND-DERIVED spawn results; the fields are the ones Node documents on spawnSync's return value (status, stdout, stderr, error), and the stderr text is arbitrary: any failing exit with nothing on stdout must read as a failure.
+    describe('processListOutput', () => {
+      // Regression: a non-zero exit with an empty stdout came back as '', which readWindowsProcesses reads as a machine with no processes, and doctor printed "no duplicate MCP launchers or orphaned Node processes detected" with nothing behind it.
+      it.runIf(process.platform === 'win32')('treats a failing exit with nothing on stdout as a failure, and doctor warns instead of passing', () => {
+        const run = (): string => processListOutput({ error: undefined, status: 1, stdout: '', stderr: '\r\nGet-CimInstance : Access denied\r\nAt line:1 char:1\r\n' })
+        expect(run).toThrow('PowerShell exited with code 1: Get-CimInstance : Access denied')
+        const health = checkMcpProcessHealth(readWindowsProcesses(run))
+        expect(health.status).toBe('warn')
+        expect(health.message).toContain('PowerShell exited with code 1: Get-CimInstance : Access denied')
+      })
+
+      it('keeps the rows a failing exit still printed', () => {
+        expect(processListOutput({ error: undefined, status: 1, stdout: '[{"ProcessId":4}]', stderr: 'one process could not be read' })).toBe('[{"ProcessId":4}]')
+      })
+
+      it('says a timeout is a timeout', () => {
+        const error = Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), { code: 'ETIMEDOUT' })
+        expect(() => processListOutput({ error, status: null, stdout: '', stderr: '' })).toThrow('PowerShell did not finish within 20s')
+      })
+
+      it('says a missing PowerShell is missing', () => {
+        const error = Object.assign(new Error('spawnSync powershell.exe ENOENT'), { code: 'ENOENT' })
+        expect(() => processListOutput({ error, status: null, stdout: '', stderr: '' })).toThrow('powershell.exe was not found')
+      })
+
+      it('passes a clean exit through untouched', () => {
+        expect(processListOutput({ error: undefined, status: 0, stdout: '[]', stderr: '' })).toBe('[]')
+      })
     })
 
     it.runIf(process.platform === 'win32')('returns an empty list when the command answers with nothing, which is not a failure', () => {

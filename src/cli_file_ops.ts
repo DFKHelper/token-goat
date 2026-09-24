@@ -16,7 +16,7 @@ import {
 import { resolveIndexPath } from './paths.js'
 import {
   AMBIGUOUS_HEADING_LIMIT,
-  didYouMean,
+  didYouMeanLines,
   filterSimilarHeadings,
   healStaleIndex,
   listSections,
@@ -242,9 +242,9 @@ export function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: 
       const messages = [`No symbol named '${opts.symbol}' is indexed in '${file}'`]
       const allNames = symbolNamesInFile(resolvedPath)
       const available = rankSimilarNames(allNames, opts.symbol)
-      if (available.length > 0) messages.push(didYouMean(available))
+      if (available.length > 0) messages.push(...didYouMeanLines(available))
       else if (allNames.length > 0) messages.push(`Try: token-goat outline ${file}`)
-      throw new CliError(messages.join('\n'))
+      throw new CliError(messages)
     }
     symbol = opts.symbol
     fingerprint = fingerprintContent(match.body)
@@ -601,9 +601,9 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
     const allHeadings = listSections(file)
     const messages = [`Section '${opts.after}' not found in '${file}'`]
     const available = filterSimilarHeadings(allHeadings, opts.after)
-    if (available.length > 0) messages.push(didYouMean(available))
+    if (available.length > 0) messages.push(...didYouMeanLines(available))
     else if (allHeadings.length > 0) messages.push(`Try: token-goat outline ${file}`)
-    throw new CliError(messages.join('\n'))
+    throw new CliError(messages)
   }
 
   if (result.occurrences !== undefined) {
@@ -617,7 +617,7 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
     if (result.occurrences.length > AMBIGUOUS_HEADING_LIMIT) {
       lines.push(`  (${result.occurrences.length - AMBIGUOUS_HEADING_LIMIT} more not shown)`)
     }
-    throw new CliError(lines.join('\n'))
+    throw new CliError(lines)
   }
 
   let rawBytes: Buffer

@@ -321,6 +321,16 @@ describe('postBashHandler', () => {
     expect((await postBashHandler(makePostBashEvent(command, dup))).hookType).toBe('pass')
   })
 
+  // CAPTURE: the two commands verbatim from a real session's transcript (Bash calls whose results came back fenced and capped at ~2,000 tokens despite the prefix, before the opt-out learned to read past the first pipeline stage). The output is shaped like theirs, numbered lines of distinct prose, which nothing dedupes: only the size cap could have touched it, so the control row proves the cap is live for exactly this output.
+  it.each([
+    `cd C:/Users/zelys/.claude/skills/humanizer && TOKEN_GOAT_BASH_COMPRESS=0 awk 'NR>=246 && NR<=313 {print "L"NR"| "$0}' SKILL.md | cut -c1-900`,
+    `cd C:/Users/zelys/.claude/skills/humanizer && TOKEN_GOAT_BASH_COMPRESS=0 awk 'NR>=9 && NR<=108 {print "H"NR"| "$0}' humanizer.md | cut -c1-600`,
+  ])('passes the captured piped awk read through whole: %s', async (command) => {
+    const numbered = Array.from({ length: 1200 }, (_, i) => `L${i + 1}| sentence ${i} of a skill body, with its own words: ${'w'.repeat(i % 17)} and a clause ${i * 7}`).join('\n') + '\n'
+    expect((await postBashHandler(makePostBashEvent(command.replace('TOKEN_GOAT_BASH_COMPRESS=0 ', ''), numbered))).hookType).toBe('rewriteOutput')
+    expect((await postBashHandler(makePostBashEvent(command, numbered))).hookType).toBe('pass')
+  })
+
   it('still compresses a command whose heredoc body has a line starting with the opt-out', async () => {
     // The body is text written to a file, not a command: a README line documenting the prefix asks for nothing.
     const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
@@ -2431,6 +2441,55 @@ describe('preBashHandler — awk line-range interception', () => {
   it('rejects a backwards or zero-based range rather than describing it wrongly', () => {
     expect(preBashHandler(makeBashEvent("awk 'NR>=50 && NR<=10' src/cli.ts")).hookType).toBe('pass')
     expect(preBashHandler(makeBashEvent("awk 'NR>=0 && NR<=10' src/cli.ts")).hookType).toBe('pass')
+  })
+})
+
+/** A line range from line 1 to the last line is `cat` spelled another way. Regression: pricing compared the range against a surgical read of the same lines, which is also the whole file, found no saving and declined, so `awk 'NR>=1 && NR<=324' SKILL.md` over the humanizer skill (324 lines, 53,931 bytes, the ~15.8k-token read named on a feedback card, measured 2026-09-24) passed with no word while `cat SKILL.md` was refused. Provenance: HAND-DERIVED. The fixture is a 40-line markdown file written here; the skill's line and byte counts are read off the file on disk. */
+describe('preBashHandler — a line range spanning the whole file', () => {
+  let doc: string
+  const LINES = 40
+
+  beforeEach(() => {
+    clearModuleCaches()
+    const dir = indexableDir()
+    mkdirSync(dir, { recursive: true })
+    doc = join(dir, 'whole_range_skill.md').replace(/\\/g, '/')
+    const body: string[] = []
+    for (let i = 0; body.length < LINES; i++) body.push(i % 10 === 0 ? `## Part ${i / 10 + 1}` : `Line ${i} of the fixture.`)
+    writeFileSync(doc, body.join('\n') + '\n')
+  })
+
+  it('refuses an awk range over every line the way cat is refused, naming the range and the line count', () => {
+    const cat = preBashHandler(makeBashEvent(`cat ${doc}`))
+    const awk = preBashHandler(makeBashEvent(`awk 'NR>=1 && NR<=${LINES}' ${doc}`))
+    expect(cat.hookType).toBe('deny')
+    expect(awk.hookType).toBe('deny')
+    if (awk.hookType === 'deny') {
+      expect(awk.message).toContain(`token-goat outline "${doc}"`)
+      expect(awk.message).toContain(`\`awk\` over lines 1-${LINES} is the whole file (${LINES} lines), and loads all of it into context.`)
+    }
+  })
+
+  it('treats a range ending past the last line as the whole file too', () => {
+    expect(preBashHandler(makeBashEvent(`sed -n '1,9999p' ${doc}`)).hookType).toBe('deny')
+  })
+
+  it('leaves a range that stops short of the last line to the priced path', () => {
+    expect(preBashHandler(makeBashEvent(`awk 'NR>=1 && NR<=${LINES - 1}' ${doc}`)).hookType).not.toBe('deny')
+    clearModuleCaches()
+    expect(preBashHandler(makeBashEvent(`sed -n '2,${LINES}p' ${doc}`)).hookType).not.toBe('deny')
+  })
+
+  it('does not count a refused range as served, so it is not reported as already read', () => {
+    expect(preBashHandler(makeBashEvent(`awk 'NR>=1 && NR<=${LINES}' ${doc}`)).hookType).toBe('deny')
+    expect(getFileLineRanges(resolveIndexPath(doc, process.cwd()))).toEqual([])
+  })
+
+  it('answers lines a real earlier read already served with the recall line instead of a refusal', () => {
+    expect(preBashHandler(makeBashEvent(`sed -n '1,${LINES - 1}p' ${doc}`)).hookType).not.toBe('deny')
+    const again = preBashHandler(makeBashEvent(`awk 'NR>=1 && NR<=${LINES}' ${doc}`))
+    expect(again.hookType).toBe('context')
+    if (again.hookType === 'context') expect(again.context).toContain(`already read lines 1-${LINES - 1}`)
   })
 })
 

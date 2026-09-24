@@ -375,8 +375,10 @@ interface EmissionRow {
   legacyEmissions: number | null
 }
 
-function categoryStats(category: HintCategory): EmissionRow {
+// With `sessionId`, the harness filter gives way to the session one: a session id already names one harness's session, and the harness this CLI process detects need not be the one that ran it, so keeping both would report a real session as all zeros.
+function categoryStats(category: HintCategory, sessionId?: string): EmissionRow {
   const db = getDb(globalDbPath())
+  const scope = sessionId === undefined ? 'harness = ?' : 'session_id = ?'
   const row = db
     .prepare(
       // Three populations, deliberately not pooled. `emitted` is what was shown AND could be scored, so it is the only honest denominator for efficacy: including a row nothing could ever have satisfied would divide a real numerator by partly-imaginary rows. `unobservable` was shown but carried no pointer -- it spent bytes and earned no verdict. `detected` was never shown at all (suppressed, or declined by a net-benefit gate) and spent nothing. bytesEmitted and legacyEmissions span every row, which is correct in each case: the unobservable rows really did cost the agent, and the never-displayed ones are zero-byte, so neither distorts the spend figure. COALESCE on the counts that stay `number`: SUM over no rows is NULL where the COUNT(*) this replaced was 0, and an aggregate query always returns its row, so the `?? default` below would not have caught it.
@@ -386,9 +388,9 @@ function categoryStats(category: HintCategory): EmissionRow {
               COALESCE(SUM(CASE WHEN displayed = 0 THEN 1 ELSE 0 END), 0) AS detected,
               SUM(bytes_emitted) AS bytesEmitted,
               SUM(CASE WHEN bytes_emitted IS NULL THEN 1 ELSE 0 END) AS legacyEmissions
-       FROM hint_emissions WHERE category = ? AND harness = ?`,
+       FROM hint_emissions WHERE category = ? AND ${scope}`,
     )
-    .get(category, getHarnessName()) as EmissionRow | undefined
+    .get(category, sessionId ?? getHarnessName()) as EmissionRow | undefined
   return row ?? { emitted: 0, actedOn: 0, unobservable: 0, detected: 0, bytesEmitted: null, legacyEmissions: 0 }
 }
 
@@ -423,11 +425,11 @@ function manualMarks(category: HintCategory): { effective: number; ineffective: 
   }
 }
 
-/** Full per-category summary for `token-goat hint-stats`, one row per known category (even categories never emitted this harness get a zeroed row, so the report is a stable, complete shape). */
-export function getHintStatsSummary(): CategoryEfficacy[] {
+/** Full per-category summary for `token-goat hint-stats`, one row per known category (even categories never emitted this harness get a zeroed row, so the report is a stable, complete shape). With `sessionId`, the emission counts, efficacy and spend cover that session only; `suppressed`, `suppressionPermanent` and the manual marks stay all-time, because suppression is decided on the whole cross-session history and the marks carry no session at all. */
+export function getHintStatsSummary(sessionId?: string): CategoryEfficacy[] {
   const probeThresholds = loadConfig().hints.backoff_thresholds.filter((t) => t > 0)
   return HINT_CATEGORIES.map((category) => {
-    const { emitted, actedOn, unobservable, detected, bytesEmitted, legacyEmissions } = categoryStats(category)
+    const { emitted, actedOn, unobservable, detected, bytesEmitted, legacyEmissions } = categoryStats(category, sessionId)
     const marks = manualMarks(category)
     const suppressed = shouldSuppress(category, '')
     return {
@@ -458,21 +460,23 @@ export interface HintStatsTotals {
 
 /** All-time saved/spent totals for `token-goat hint-stats`'s summary line — see {@link getHintStatsSummary} for the per-category breakdown this rolls up. Deliberately NOT harness-scoped, unlike the per-category rows above it: `savedBytes` comes from the `stats` ledger, which has no `harness` column at all (see stats.ts's GLOBAL_SCHEMA_SQL) and therefore spans every harness. Regression note: this used to also return a `netBytes = savedBytes - spentBytes` figure. `savedBytes` is an all-time aggregate over every kind stats.ts maps to `SOURCE_HINT` (session_hint, diff_hint, evidence_cache_hit, etc. -- tens of thousands of events), while `spentBytes` sums only the much smaller `hint_emissions` ledger (a handful of tracked rows, since that table only started recording spend post-migration). Those are disjoint populations: subtracting one from the other produced a "net" figure in the billions that implied a few dozen tracked emissions netted gigabytes, which they never did. Report the two figures separately, each labelled with its own population, and never combine them into a difference. */
 export function getHintStatsTotals(): HintStatsTotals {
-  const db = getDb(globalDbPath())
-  const row = db
-    .prepare(
-      `SELECT SUM(bytes_emitted) AS spentBytes, SUM(CASE WHEN bytes_emitted IS NULL THEN 1 ELSE 0 END) AS legacyEmissions
-       FROM hint_emissions`,
-    )
-    .get() as { spentBytes: number | null; legacyEmissions: number | null } | undefined
-  const spentBytes = row?.spentBytes ?? null
-  const legacyEmissions = row?.legacyEmissions ?? 0
+  const { spentBytes, legacyEmissions } = getHintSpendTotals()
   const savedBytes = summarize(0).by_source[SOURCE_HINT]?.bytes_saved ?? 0
   return {
     savedBytes,
     spentBytes,
     legacyEmissions,
   }
+}
+
+/** The hint_emissions half of {@link getHintStatsTotals}: all-time across every session and harness, or one session's figures when `sessionId` is given. There is no session-scoped `savedBytes` to pair it with, because the `stats` ledger records no session id (see stats.ts's GLOBAL_SCHEMA_SQL). */
+export function getHintSpendTotals(sessionId?: string): Omit<HintStatsTotals, 'savedBytes'> {
+  const db = getDb(globalDbPath())
+  const sql = `SELECT SUM(bytes_emitted) AS spentBytes, SUM(CASE WHEN bytes_emitted IS NULL THEN 1 ELSE 0 END) AS legacyEmissions
+       FROM hint_emissions`
+  const stmt = db.prepare(sessionId === undefined ? sql : `${sql} WHERE session_id = ?`)
+  const row = (sessionId === undefined ? stmt.get() : stmt.get(sessionId)) as { spentBytes: number | null; legacyEmissions: number | null } | undefined
+  return { spentBytes: row?.spentBytes ?? null, legacyEmissions: row?.legacyEmissions ?? 0 }
 }
 
 /** Clear every tracked emission, manual mark, and probe-recovery streak — `token-goat hint-stats --reset`. */
