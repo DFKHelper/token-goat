@@ -1,12 +1,4 @@
-/**
- * D3 commands: config, project, compact-doc, fetch-image, history.
- *
- * config  <list|get|set|validate> [key] [value] [--json]
- * project <list|exclude|prune>   [path]         [--json]
- * compact-doc <path> [--heading H] [--json]
- * fetch-image <url>  [--out path]  [--json]
- * history [--limit N] [--json]
- */
+/** D3 commands: config, project, compact-doc, fetch-image, history. config  <list|get|set|validate> [key] [value] [--json] project <list|exclude|prune>   [path]         [--json] compact-doc <path> [--heading H] [--json] fetch-image <url>  [--out path]  [--json] history [--limit N] [--json] */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -29,6 +21,7 @@ import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { emit, emitErr } from './emit.js'
+import { levenshteinDistance } from './util_suggest.js'
 
 /** Ensure the config parent directory exists then call saveConfig. */
 function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0]): void {
@@ -36,25 +29,9 @@ function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0]): void {
   saveConfig(cfg)
 }
 
-// ── Levenshtein distance (capped at threshold to save time) ─────────────────
-
-function levenshtein(a: string, b: string, cap = 3): number {
-  if (Math.abs(a.length - b.length) > cap) return cap + 1
-  const prev = Array.from({ length: b.length + 1 }, (_, i) => i)
-  for (let i = 1; i <= a.length; i++) {
-    const curr: number[] = [i]
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      curr.push(Math.min((curr[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + cost))
-    }
-    prev.splice(0, prev.length, ...curr)
-  }
-  return prev[b.length] ?? cap + 1
-}
-
 function closestKeys(unknown: string, known: string[]): string[] {
   return known
-    .map((k) => ({ k, d: levenshtein(unknown, k) }))
+    .map((k) => ({ k, d: levenshteinDistance(unknown, k) }))
     .filter((x) => x.d <= 3)
     .sort((a, b) => a.d - b.d)
     .slice(0, 3)
@@ -102,21 +79,14 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
     throw new Error(`expected a boolean ('true', 'false', '1', or '0'), got: ${raw}`)
   }
   if (typeof existing === 'number') {
-    // Number('') === 0, which is finite, so a blank value would otherwise silently coerce to
-    // 0 instead of surfacing the typo -- reject it explicitly before the finite check, same
-    // guard already applied to the analogous case in csv_query.ts::parseWhereSpecs.
+    // Number('') === 0, which is finite, so a blank value would otherwise silently coerce to 0 instead of surfacing the typo -- reject it explicitly before the finite check, same guard already applied to the analogous case in csv_query.ts::parseWhereSpecs.
     if (raw.trim() === '') throw new Error(`expected a number, got: ${raw}`)
     const n = Number(raw)
     if (!Number.isFinite(n)) throw new Error(`expected a number, got: ${raw}`)
     return n
   }
   if (Array.isArray(existing)) {
-    // A non-empty existing array of numbers means this field is a number list (e.g.
-    // hints.backoff_thresholds) — parse each comma-separated segment as a number instead of
-    // leaving it as a string, or a later load-time validator silently filters the whole list
-    // down to an empty array. An empty existing array carries no element-type information of
-    // its own (e.g. the field was previously cleared to []), so fall back to the default
-    // config's array at this key to recover the declared type.
+    // A non-empty existing array of numbers means this field is a number list (e.g. hints.backoff_thresholds) — parse each comma-separated segment as a number instead of leaving it as a string, or a later load-time validator silently filters the whole list down to an empty array. An empty existing array carries no element-type information of its own (e.g. the field was previously cleared to []), so fall back to the default config's array at this key to recover the declared type.
     const typeSample = existing.length > 0 ? existing : (Array.isArray(defaultValue) ? defaultValue : existing)
     const isNumberList = typeSample.length > 0 && typeSample.every((x) => typeof x === 'number')
     if (raw.trimStart().startsWith('[')) {
@@ -126,10 +96,7 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
       } catch {
         throw new Error(`expected a JSON array, got: ${raw}`)
       }
-      // Validate element types against the same type sample the comma-separated branch below
-      // uses, instead of accepting any JSON array unchecked — otherwise a number-list key set
-      // to a JSON array of non-numeric strings reports success here but the load-time
-      // validator (validatedIntList) silently filters it down to an empty array later.
+      // Validate element types against the same type sample the comma-separated branch below uses, instead of accepting any JSON array unchecked — otherwise a number-list key set to a JSON array of non-numeric strings reports success here but the load-time validator (validatedIntList) silently filters it down to an empty array later.
       if (isNumberList && !parsed.every((x) => typeof x === 'number' && Number.isFinite(x))) {
         throw new Error(`expected a JSON array of numbers, got: ${raw}`)
       }
@@ -173,13 +140,7 @@ function renderValue(v: unknown): string {
   return displaySafeText(JSON.stringify(v))
 }
 
-/**
- * The trailing `# ...` comment naming a non-default resolving layer, or `''` for `global`.
- *
- * Single source of every user-facing attribution string: `get` and `list` both call this, so
- * they cannot drift into describing the same key differently. The empty string for `global`
- * is load-bearing — that is the dominant path and its output must stay byte-identical.
- */
+/** The trailing `# ...` comment naming a non-default resolving layer, or `''` for `global`. Single source of every user-facing attribution string: `get` and `list` both call this, so they cannot drift into describing the same key differently. The empty string for `global` is load-bearing — that is the dominant path and its output must stay byte-identical. */
 function layerAnnotation(state: ConfigKeyLayer): string {
   switch (state.layer) {
     case 'global':
@@ -229,9 +190,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
 
   if (action === 'list') {
     const cfg = loadConfig() as unknown as Record<string, unknown>
-    // "What's actually in effect and why": a per-project .token-goat.toml overrides the
-    // global config.toml for the keys it sets, so surface which keys (if any) came from it
-    // alongside the effective values loadConfig() already merged in.
+    // "What's actually in effect and why": a per-project .token-goat.toml overrides the global config.toml for the keys it sets, so surface which keys (if any) came from it alongside the effective values loadConfig() already merged in.
     const projectInfo = getProjectConfigInfo()
     const pairs = flattenConfig(cfg)
     if (opts.json === true) {
@@ -301,34 +260,20 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     const key = opts.key
     const value = opts.value
     const parts = key.split('.')
-    // The load->mutate->save below is a genuine read-modify-write: two concurrent `config
-    // set` calls (even on different keys) can each load the pre-update file, mutate their
-    // own in-memory copy, and save -- whichever save lands last silently clobbers the
-    // other's change, with no error. A short-lived lockfile around just this section
-    // serializes concurrent setters, same pattern as session_store.ts's saveSessionState.
-    // Losing the race to acquire the lock in time falls back to the old unprotected
-    // read-modify-write instead of dropping the update outright.
+    // The load->mutate->save below is a genuine read-modify-write: two concurrent `config set` calls (even on different keys) can each load the pre-update file, mutate their own in-memory copy, and save -- whichever save lands last silently clobbers the other's change, with no error. A short-lived lockfile around just this section serializes concurrent setters, same pattern as session_store.ts's saveSessionState. Losing the race to acquire the lock in time falls back to the old unprotected read-modify-write instead of dropping the update outright.
     const applySet = (): unknown => {
       const cfg = loadPersistedConfig() as unknown as Record<string, unknown>
-      // loadPersistedConfig() falls back to defaults on a parse failure exactly like it does
-      // for a missing file, so without this check the save below would silently clobber a
-      // corrupt-but-possibly-hand-edited config.toml with defaults + this one key, destroying
-      // whatever was recoverable in it. Back up the original bytes first so nothing is lost.
+      // loadPersistedConfig() falls back to defaults on a parse failure exactly like it does for a missing file, so without this check the save below would silently clobber a corrupt-but-possibly-hand-edited config.toml with defaults + this one key, destroying whatever was recoverable in it. Back up the original bytes first so nothing is lost.
       const parseErrAtLoad = getLastConfigParseError()
       if (parseErrAtLoad !== null) {
         try {
           fs.copyFileSync(configPath(), `${configPath()}.bak`)
           emitErr(`config set: warning: config.toml failed to parse (${parseErrAtLoad}); backed up the original to config.toml.bak and rewriting it from defaults`)
         } catch {
-          // best-effort — e.g. the file vanished between load and copy; proceed with the set
-          // regardless, since refusing outright would leave the user unable to fix a corrupt
-          // config via `config set` at all.
+          // best-effort — e.g. the file vanished between load and copy; proceed with the set regardless, since refusing outright would leave the user unable to fix a corrupt config via `config set` at all.
         }
       }
-      // Test-only seam: widens the load->save window so a regression test can deterministically
-      // force a second concurrent `config set` to land its own load+save inside it, instead of
-      // relying on OS process-start jitter to (unreliably) produce a collision. No-op unless a
-      // test explicitly sets this env var; never set in normal operation.
+      // Test-only seam: widens the load->save window so a regression test can deterministically force a second concurrent `config set` to land its own load+save inside it, instead of relying on OS process-start jitter to (unreliably) produce a collision. No-op unless a test explicitly sets this env var; never set in normal operation.
       const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_RMW_DELAY_MS'] ?? '')
       if (Number.isFinite(testDelayMs) && testDelayMs > 0) sleepSync(testDelayMs)
       const ref = walkParent(cfg, parts)
@@ -346,20 +291,14 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       const coercedValue = coerce(value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
       ref.parent[ref.leaf] = coercedValue
       if (typeof coercedValue === 'number') {
-        // Validate using targeted field validator rather than rebuilding entire config tree.
-        // This checks the field's documented bounds and any cross-field constraints (e.g., per-output
-        // max must not exceed total max).
+        // Validate using targeted field validator rather than rebuilding entire config tree. This checks the field's documented bounds and any cross-field constraints (e.g., per-output max must not exceed total max).
         const clamped = validateNumericField(key, coercedValue, cfg as unknown as Record<string, unknown>)
         if (clamped !== undefined && clamped !== coercedValue) {
           throw new Error(`config set: ${key} = ${coercedValue} is outside the allowed range (would be clamped to ${String(clamped)}); rejected`)
         }
       }
       if (typeof coercedValue === 'string') {
-        // Symmetric with the numeric-bounds revalidation above, for the handful of string
-        // fields whose value must come from a fixed set (e.g. compression.profile). Without
-        // this, a typo like `agressive` is accepted and persisted with no error, then silently
-        // falls back to a default at runtime (dispatch.ts's PROFILE_CAPS lookup) with no signal
-        // to the user that their setting did nothing.
+        // Symmetric with the numeric-bounds revalidation above, for the handful of string fields whose value must come from a fixed set (e.g. compression.profile). Without this, a typo like `agressive` is accepted and persisted with no error, then silently falls back to a default at runtime (dispatch.ts's PROFILE_CAPS lookup) with no signal to the user that their setting did nothing.
         const allowed = validateEnumField(key, coercedValue)
         if (allowed !== undefined) {
           throw new Error(`config set: ${key} = '${coercedValue}' is not valid; must be one of: ${allowed.join(', ')}`)
@@ -368,33 +307,16 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
       return coercedValue
     }
-    // Must exist before the lock file itself can be created (writeFileSync 'wx' throws ENOENT,
-    // not EEXIST, against a missing directory -- withFileLock treats that as "can't lock at
-    // all" and silently falls back to running unprotected, defeating the lock entirely on a
-    // machine that has never run `config set` before).
+    // Must exist before the lock file itself can be created (writeFileSync 'wx' throws ENOENT, not EEXIST, against a missing directory -- withFileLock treats that as "can't lock at all" and silently falls back to running unprotected, defeating the lock entirely on a machine that has never run `config set` before).
     ensureDirSync(path.dirname(configPath()))
     const lockPath = path.join(path.dirname(configPath()), '.config.lock')
-    // Same reasoning and value as session_store.ts's saveSessionState (see LOCK_WAIT_MS_HARDENED's
-    // docstring in util.ts): the default withFileLock budget can plausibly be missed under real
-    // machine load with no lock holder actually stuck, and falling back to an unprotected write on
-    // that miss would reintroduce the exact clobber this lock exists to prevent.
+    // Same reasoning and value as session_store.ts's saveSessionState (see LOCK_WAIT_MS_HARDENED's docstring in util.ts): the default withFileLock budget can plausibly be missed under real machine load with no lock holder actually stuck, and falling back to an unprotected write on that miss would reintroduce the exact clobber this lock exists to prevent.
     const lockResult = withFileLock(lockPath, applySet, { waitMs: LOCK_WAIT_MS_HARDENED })
     const coerced = lockResult === undefined ? applySet() : lockResult
     invalidateConfigCache()
-    // The write above only ever touches the env-free persisted config, so if any higher layer
-    // overrides this same key, loadConfig() (env- and project-layered, same as `get`/`list`)
-    // keeps returning that layer's value instead of what was just saved — surface the shadowing
-    // here or the user is told the change succeeded when it has no runtime effect.
+    // The write above only ever touches the env-free persisted config, so if any higher layer overrides this same key, loadConfig() (env- and project-layered, same as `get`/`list`) keeps returning that layer's value instead of what was just saved — surface the shadowing here or the user is told the change succeeded when it has no runtime effect.
     //
-    // All four warnings below resolve through the one helper `get`/`list`/`validate` use, so no
-    // command re-decides attribution on its own. That is what keeps two properties true at once:
-    // a variable is named only when it is actually present in the environment (an unset one used
-    // to get named via a `?? envOverrides[0]` fallback, sending the reader after something that
-    // did not exist), and a layer whose value was clamped or rejected still reports as shadowing,
-    // because it is -- `_buildConfig` merges project over global and validates the merged result,
-    // so the save is every bit as much a no-op as in the clean case, just with a different value
-    // winning. Those states name both values, so the reader is never told to look for a 4321 that
-    // `config get` reports as 1000.
+    // All four warnings below resolve through the one helper `get`/`list`/`validate` use, so no command re-decides attribution on its own. That is what keeps two properties true at once: a variable is named only when it is actually present in the environment (an unset one used to get named via a `?? envOverrides[0]` fallback, sending the reader after something that did not exist), and a layer whose value was clamped or rejected still reports as shadowing, because it is -- `_buildConfig` merges project over global and validates the merged result, so the save is every bit as much a no-op as in the clean case, just with a different value winning. Those states name both values, so the reader is never told to look for a 4321 that `config get` reports as 1000.
     const effectiveCfg = loadConfig() as unknown as Record<string, unknown>
     const setEffective = walkGet(effectiveCfg, parts)
     const setState = resolveConfigKeyLayer(key, setEffective.found ? setEffective.value : undefined, effectiveCfg, getProjectConfigInfo())
@@ -487,9 +409,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       }
     }
 
-    // A non-empty findings list (including a parse_error) means the config is not clean --
-    // exit non-zero so `config validate` is usable as a CI/script gate, not just a human-read
-    // report that always looks "successful" regardless of what it found.
+    // A non-empty findings list (including a parse_error) means the config is not clean -- exit non-zero so `config validate` is usable as a CI/script gate, not just a human-read report that always looks "successful" regardless of what it found.
     if (findings.length > 0) process.exitCode = 1
 
     if (opts.json === true) {
@@ -548,11 +468,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     }
     const target = path.resolve(opts.pathArg)
     const cfg = loadPersistedConfig()
-    // Fold both sides through the same normalizePath+foldPath pipeline isUnderBlockedRoot uses,
-    // or a differently-cased re-exclude of the same physical directory on a case-insensitive
-    // filesystem (Windows/macOS) silently adds a duplicate blocked_roots entry instead of
-    // hitting the "Already excluded" short-circuit -- blocking itself still worked (isUnderBlockedRoot
-    // already folds), but the persisted list was meant to be deduplicated and wasn't.
+    // Fold both sides through the same normalizePath+foldPath pipeline isUnderBlockedRoot uses, or a differently-cased re-exclude of the same physical directory on a case-insensitive filesystem (Windows/macOS) silently adds a duplicate blocked_roots entry instead of hitting the "Already excluded" short-circuit -- blocking itself still worked (isUnderBlockedRoot already folds), but the persisted list was meant to be deduplicated and wasn't.
     const targetFolded = foldPath(normalizePath(target))
     if (cfg.worker.blocked_roots.some((r) => foldPath(normalizePath(r)) === targetFolded)) {
       emit(`Already excluded: ${target}`)
@@ -561,9 +477,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     cfg.worker.blocked_roots = [...cfg.worker.blocked_roots, target]
     saveConfigSafe(cfg)
     invalidateConfigCache()
-    // Excluding a path has to mean it is not readable, not merely that it will not be indexed
-    // again. Anything already indexed under it stays queryable through `symbol` forever otherwise,
-    // which is the opposite of what someone excluding a directory of credentials is asking for.
+    // Excluding a path has to mean it is not readable, not merely that it will not be indexed again. Anything already indexed under it stays queryable through `symbol` forever otherwise, which is the opposite of what someone excluding a directory of credentials is asking for.
     const purged = pruneBlockedRoot(target)
     if (opts.json === true) {
       emit(displaySafeJson({ excluded: target, purgedFromIndex: purged.length, blocked_roots: cfg.worker.blocked_roots }))
@@ -584,10 +498,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     })
     const removed = before.length - after.length
     const stale = before.filter((r) => !after.includes(r))
-    // System-temp-dir indexed files (scratch checkouts, ad hoc debugging copies -- see
-    // isUnderSystemTemp's docstring) are a second, independent kind of staleness from the
-    // blocked_roots existence check above: pruned by content of the `files` table itself, not by
-    // whether a config-listed root still exists on disk.
+    // System-temp-dir indexed files (scratch checkouts, ad hoc debugging copies -- see isUnderSystemTemp's docstring) are a second, independent kind of staleness from the blocked_roots existence check above: pruned by content of the `files` table itself, not by whether a config-listed root still exists on disk.
     const staleTempFiles = findSystemTempFiles()
     // A third and fourth kind of staleness, both owned by sweepKnownRoots: file rows whose file was deleted under a root that is still very much alive, and embedding chunks whose `files` row is already gone. Neither of the checks above can see either -- one reads the config's blocked_roots list and the other enumerates the system temp dir -- so before this call the only thing that ever reclaimed them was the worker daemon's own sweep, on a 24-hour cadence, and `project prune` answered "Nothing to do" against an index that had plenty to do. Calling the sweep rather than restating its rules here is what keeps the one-off command and the daemon from drifting apart.
     const sweep = sweepKnownRoots(undefined, { dryRun: opts.dryRun === true })
@@ -676,10 +587,7 @@ export function cmdCompactDoc(opts: {
 }): void {
   const resolved = path.resolve(opts.filePath)
 
-  // Legacy mode: extract a named section, or the content after a
-  // `<!-- COMPACT_END -->` marker, straight from the source file. This
-  // predates and is independent of the extractive-sidecar pipeline below —
-  // --force/--sentences/--show don't apply here.
+  // Legacy mode: extract a named section, or the content after a `<!-- COMPACT_END -->` marker, straight from the source file. This predates and is independent of the extractive-sidecar pipeline below — --force/--sentences/--show don't apply here.
   if (opts.heading !== undefined) {
     const result = compactDoc(resolved, opts.heading)
     if (result === null) {
@@ -713,10 +621,7 @@ export function cmdCompactDoc(opts: {
   let rebuilt = false
   let body: string
 
-  // opts.sentences must also force a rebuild: isCompactFresh only tracks source-content
-  // staleness (a sha in the cache header), never the sentence count the cache was built with,
-  // so a fresh cache from an earlier call with a different --sentences would otherwise be
-  // returned unchanged, silently ignoring the caller's explicit request.
+  // opts.sentences must also force a rebuild: isCompactFresh only tracks source-content staleness (a sha in the cache header), never the sentence count the cache was built with, so a fresh cache from an earlier call with a different --sentences would otherwise be returned unchanged, silently ignoring the caller's explicit request.
   if (opts.force === true || opts.sentences !== undefined || !fresh) {
     let sourceText: string
     try {
@@ -764,17 +669,7 @@ const MAX_FETCH_REDIRECTS = 5
 const FETCH_IMAGE_TIMEOUT_SEC = 30
 const FETCH_IMAGE_MAX_SIZE_BYTES = 50 * 1024 * 1024
 
-/**
- * Fetch a URL's raw bytes for `fetch-image`.
- *
- * Reuses webfetch.ts's hardened fetch primitive instead of duplicating its
- * SSRF/size/timeout handling: performHttpFetch resolves and pins DNS through
- * ssrfPinnedLookup (blocking private/loopback/link-local targets, including
- * on every redirect hop, not just the initial request), caps the response
- * body at FETCH_IMAGE_MAX_SIZE_BYTES while it's still streaming in rather
- * than after buffering it whole, and bounds the whole request — redirects
- * included — by FETCH_IMAGE_TIMEOUT_SEC.
- */
+/** Fetch a URL's raw bytes for `fetch-image`. Reuses webfetch.ts's hardened fetch primitive instead of duplicating its SSRF/size/timeout handling: performHttpFetch resolves and pins DNS through ssrfPinnedLookup (blocking private/loopback/link-local targets, including on every redirect hop, not just the initial request), caps the response body at FETCH_IMAGE_MAX_SIZE_BYTES while it's still streaming in rather than after buffering it whole, and bounds the whole request — redirects included — by FETCH_IMAGE_TIMEOUT_SEC. */
 interface FetchedImage {
   body: Buffer
   contentType: string | undefined
@@ -795,9 +690,7 @@ async function fetchBuffer(url: string): Promise<FetchedImage> {
   return { body: result.body, contentType }
 }
 
-/** Maps a response `content-type` to a default file extension for `fetch-image` when the
- * caller didn't pass `--out`, so a fetched JPEG/WebP/GIF doesn't land under a hardcoded
- * `.bin` name that misrepresents its actual format. */
+/** Maps a response `content-type` to a default file extension for `fetch-image` when the caller didn't pass `--out`, so a fetched JPEG/WebP/GIF doesn't land under a hardcoded `.bin` name that misrepresents its actual format. */
 const CONTENT_TYPE_EXT: Record<string, string> = {
   'image/jpeg': '.jpg',
   'image/jpg': '.jpg',
@@ -824,8 +717,7 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
     throw new Error(`fetch failed: ${opts.url}`, { cause: e })
   }
   const buf = fetched.body
-  // Default extension (when --out wasn't given) comes from the response content-type rather
-  // than a hardcoded `.bin`, so e.g. a JPEG response lands under `.jpg` even before any shrink.
+  // Default extension (when --out wasn't given) comes from the response content-type rather than a hardcoded `.bin`, so e.g. a JPEG response lands under `.jpg` even before any shrink.
   const outPath = opts.out ?? path.join(os.tmpdir(), `tg-fetch-${Date.now()}${extensionForContentType(fetched.contentType)}`)
   const originalBytes = buf.length
   let shrunkBytes: number
@@ -839,9 +731,7 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
       outData = result.data
       shrunkBytes = result.shrunkBytes
       wasShrunk = true
-      // shrinkImage may re-encode to a different container format (JPEG/WebP); correct the
-      // destination extension to match the actual bytes being written, rather than silently
-      // writing e.g. JPEG bytes under a `.png`/`.bin` name.
+      // shrinkImage may re-encode to a different container format (JPEG/WebP); correct the destination extension to match the actual bytes being written, rather than silently writing e.g. JPEG bytes under a `.png`/`.bin` name.
       finalPath = withExtension(outPath, result.format)
     } else {
       outData = buf
@@ -851,12 +741,7 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
     outData = buf
     shrunkBytes = originalBytes
   }
-  // Atomic (temp file + rename) rather than a direct fs.writeFileSync: a bare writeFileSync
-  // truncates finalPath in place, so a concurrent reader of the same --out path (two
-  // overlapping fetch-image invocations, or a hook reading the file mid-write) could observe
-  // a partial/truncated file. Matches the atomic write already used for this same shrink
-  // pipeline's other disk-cache paths (webfetch.ts's cachePath/shrunkPath, screenshot.ts's
-  // takeScreenshot).
+  // Atomic (temp file + rename) rather than a direct fs.writeFileSync: a bare writeFileSync truncates finalPath in place, so a concurrent reader of the same --out path (two overlapping fetch-image invocations, or a hook reading the file mid-write) could observe a partial/truncated file. Matches the atomic write already used for this same shrink pipeline's other disk-cache paths (webfetch.ts's cachePath/shrunkPath, screenshot.ts's takeScreenshot).
   atomicWriteBytes(finalPath, outData)
   if (opts.json === true) {
     emit(displaySafeJson({ url: opts.url, out: finalPath, originalBytes, shrunkBytes, wasShrunk }))
@@ -877,11 +762,7 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
       emitErr(`history: --limit must be a non-negative number, got: "${opts.limit}"`)
       throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    // --limit 0 would slice the merged bash/web list down to zero entries and print "No
-    // history entries found" -- an absolute claim about the cache's contents -- even when
-    // entries genuinely exist. Reject explicitly instead of silently rendering that false-clean
-    // result, matching runFind's own --limit validation (read_commands.ts) and
-    // graph_commands.ts's --top validation for the same failure mode.
+    // --limit 0 would slice the merged bash/web list down to zero entries and print "No history entries found" -- an absolute claim about the cache's contents -- even when entries genuinely exist. Reject explicitly instead of silently rendering that false-clean result, matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
     if (limit === 0) {
       emitErr(`history: --limit must be a positive number, got: "${opts.limit}"`)
       throw new Error(`invalid --limit: ${opts.limit}`)
@@ -916,9 +797,7 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
 
   const allItems = [...bashItems, ...webItems].sort((a, b) => b.storedAt - a.storedAt)
   const items = allItems.slice(0, limit)
-  // The --json payload is a bare array, so there is no in-band field to carry a truncation flag
-  // without breaking consumers; stderr is the only channel available. Emitted before the --json
-  // branch below so both output modes disclose, not just the human-readable one.
+  // The --json payload is a bare array, so there is no in-band field to carry a truncation flag without breaking consumers; stderr is the only channel available. Emitted before the --json branch below so both output modes disclose, not just the human-readable one.
   if (items.length < allItems.length) {
     process.stderr.write(`Showing ${items.length} of ${allItems.length} entries (raise --limit to see the rest).\n`)
   }

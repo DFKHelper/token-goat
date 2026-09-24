@@ -1,12 +1,7 @@
-/**
- * Levenshtein distance and string suggestion helpers.
- */
+/** Levenshtein distance and string suggestion helpers. */
 
-/**
- * Capped Levenshtein distance, mirroring config_commands.ts's didYouMeanKeySuffix helper
- * for consistency across this CLI's "did you mean" suggestions.
- */
-export function packageNameDistance(a: string, b: string, cap = 3): number {
+/** Capped Levenshtein distance for "did you mean" suggestions. */
+export function levenshteinDistance(a: string, b: string, cap = 3): number {
   if (Math.abs(a.length - b.length) > cap) return cap + 1
   const prev = Array.from({ length: b.length + 1 }, (_, i) => i)
   for (let i = 1; i <= a.length; i++) {
@@ -20,9 +15,11 @@ export function packageNameDistance(a: string, b: string, cap = 3): number {
   return prev[b.length] ?? cap + 1
 }
 
+export const packageNameDistance = levenshteinDistance
+
 export function suggestPackageNames(query: string, names: string[]): string[] {
   return [...new Set(names)]
-    .map((n) => ({ n, d: packageNameDistance(query.toLowerCase(), n.toLowerCase()) }))
+    .map((n) => ({ n, d: levenshteinDistance(query.toLowerCase(), n.toLowerCase()) }))
     .filter((x) => x.d <= 3)
     .sort((a, b) => a.d - b.d)
     .slice(0, 5)
