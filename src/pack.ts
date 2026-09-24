@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as minimatch from 'minimatch'
 import { redactIfDotenv } from './dotenv_redact.js'
+import { statThroughHandle } from './handle_stat.js'
 import { decodeSource } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { detectLanguage } from './parser_types.js'
@@ -60,47 +61,13 @@ function matches(rel: string, patterns: string[]): boolean {
   return patterns.some((pat) => mm.minimatch(norm, pat) || mm.minimatch(base, pat))
 }
 
-/**
- * True when `resolvedPath` (an already symlink-resolved absolute path)
- * lives inside `rootReal` (itself already symlink-resolved). Uses
- * `path.relative` plus a `..`/absolute-path guard so a sibling that merely
- * shares a string prefix (e.g. `root-evil`) is never mistaken for a path
- * inside `root`.
- */
+/** True when `resolvedPath` (an already symlink-resolved absolute path) lives inside `rootReal` (itself already symlink-resolved). Uses `path.relative` plus a `..`/absolute-path guard so a sibling that merely shares a string prefix (e.g. `root-evil`) is never mistaken for a path inside `root`. */
 function isPathWithinRoot(rootReal: string, resolvedPath: string): boolean {
   const rel = path.relative(rootReal, resolvedPath)
   return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)
 }
 
-/**
- * Opens `p` exactly once and returns a descriptor already bound to a file
- * that has been validated as living inside `rootReal`. This closes the
- * TOCTOU gap between "check" and "use": `collectFiles`/`estimateBudget`
- * used to resolve `p` via `fs.realpathSync` to check containment, then
- * separately `fs.statSync(p)` and `fs.readFileSync(p)` the same path again
- * to get the size and content — three independent path lookups, each free
- * to land on a different filesystem entry if whatever `p` points to (a
- * symlink at `p` itself, or at any ancestor directory) is swapped out by a
- * concurrent process between calls. Opening the fd first binds it to one
- * specific inode; everything the caller does afterward via that same fd
- * (`fstatSync`, `readFileSync`) is guaranteed to operate on that exact
- * inode no matter what happens to the path afterward.
- *
- * Node has no cross-platform fd -> realpath call, so the containment check
- * still has to resolve `p` by path — racy relative to the open by itself —
- * but the result is cross-checked against the already-open fd's own
- * `fstatSync` device/inode via `fs.statSync` on the resolved path. A
- * mismatch means the path resolved to something other than what the fd is
- * bound to (i.e. it was repointed between the open and the check), so the
- * candidate is rejected rather than trusted.
- *
- * Returns `null` when `p` can't be opened or isn't a regular file (silent
- * skip, matching the previous pre-check), `'outside-root'` when the
- * validated target doesn't resolve inside `rootReal` (or the identity
- * cross-check fails), or `{ fd, stat }` on success — `stat` is the fd's own
- * `fstatSync`, safe to use for the size check. The caller owns the returned
- * fd and must close it.
- */
+/** Opens `p` exactly once and returns a descriptor already bound to a file that has been validated as living inside `rootReal`. This closes the TOCTOU gap between "check" and "use": `collectFiles`/`estimateBudget` used to resolve `p` via `fs.realpathSync` to check containment, then separately `fs.statSync(p)` and `fs.readFileSync(p)` the same path again to get the size and content — three independent path lookups, each free to land on a different filesystem entry if whatever `p` points to (a symlink at `p` itself, or at any ancestor directory) is swapped out by a concurrent process between calls. Opening the fd first binds it to one specific inode; everything the caller does afterward via that same fd (`fstatSync`, `readFileSync`) is guaranteed to operate on that exact inode no matter what happens to the path afterward. Node has no cross-platform fd -> realpath call, so the containment check still has to resolve `p` by path — racy relative to the open by itself — but the result is cross-checked against the already-open fd's own `fstatSync` device/inode via an fstat of a second handle opened on the resolved path. A mismatch means the path resolved to something other than what the fd is bound to (i.e. it was repointed between the open and the check), so the candidate is rejected rather than trusted. Returns `null` when `p` can't be opened or isn't a regular file (silent skip, matching the previous pre-check), `'outside-root'` when the validated target doesn't resolve inside `rootReal` (or the identity cross-check fails), or `{ fd, stat }` on success — `stat` is the fd's own `fstatSync`, safe to use for the size check. The caller owns the returned fd and must close it. */
 function openWithinRoot(rootReal: string, p: string): { fd: number; stat: fs.Stats } | 'outside-root' | null {
   let fd: number
   try {
@@ -123,13 +90,15 @@ function openWithinRoot(rootReal: string, p: string): { fd: number; stat: fs.Sta
 
     if (!isPathWithinRoot(rootReal, realPath)) return 'outside-root'
 
-    let realStat: fs.Stats
+    // Both sides through a handle: on Windows a path stat can report dev 0 for a file whose fstat reports the volume serial, which failed this comparison for every file. See statThroughHandle.
+    let realStat: fs.BigIntStats
     try {
-      realStat = fs.statSync(realPath)
+      realStat = statThroughHandle(realPath)
     } catch {
       return 'outside-root'
     }
-    if (realStat.dev !== stat.dev || realStat.ino !== stat.ino) return 'outside-root'
+    const fdStat = fs.fstatSync(fd, { bigint: true })
+    if (realStat.dev !== fdStat.dev || realStat.ino !== fdStat.ino) return 'outside-root'
 
     ownershipTransferred = true
     return { fd, stat }
@@ -151,16 +120,7 @@ interface OpenCandidate {
   readonly stat: fs.Stats
 }
 
-/**
- * Shared by {@link collectFiles} and {@link estimateBudget}: resolve each pattern to its
- * candidate path under `projectRoot`, skip already-`seen` or ignore-matched paths, and
- * validate the survivor doesn't escape the project root via a symlink ({@link openWithinRoot}).
- * Yields an open fd + stat for each valid candidate -- the caller owns the size-limit check
- * (thresholds and skip-message wording differ between the two callers), reading the body, and
- * closing the fd (including via the ignore-match path here, which closes before continuing).
- * `seen` is read-only here; callers add to it themselves once a candidate is fully processed,
- * matching each caller's own "only mark seen on success" contract.
- */
+/** Shared by {@link collectFiles} and {@link estimateBudget}: resolve each pattern to its candidate path under `projectRoot`, skip already-`seen` or ignore-matched paths, and validate the survivor doesn't escape the project root via a symlink ({@link openWithinRoot}). Yields an open fd + stat for each valid candidate -- the caller owns the size-limit check (thresholds and skip-message wording differ between the two callers), reading the body, and closing the fd (including via the ignore-match path here, which closes before continuing). `seen` is read-only here; callers add to it themselves once a candidate is fully processed, matching each caller's own "only mark seen on success" contract. */
 function* resolveOpenCandidates(
   projectRoot: string,
   patterns: string[],
@@ -211,25 +171,12 @@ const CSTYLE_EXTS = new Set([
 ])
 const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua', '.pm', '.nix'])
 
-/**
- * Which quote character (if any) is currently open, tracked as a single mutually-exclusive state
- * rather than independent per-quote-kind toggles -- a line of code is inside at most one kind of
- * string at a time, since a `'`/`` ` `` can't open while a `"`-delimited string is already open
- * (and vice versa). Independent toggles misread e.g. an apostrophe inside a double-quoted string
- * (`"don't panic"`) as opening a single-quoted string that the double-quote's own closer never
- * closes, permanently corrupting every subsequent line's quote state (see languages/common.ts's
- * isInsideStringLiteral, which uses this same single-state approach for the same reason).
- */
+/** Which quote character (if any) is currently open, tracked as a single mutually-exclusive state rather than independent per-quote-kind toggles -- a line of code is inside at most one kind of string at a time, since a `'`/`` ` `` can't open while a `"`-delimited string is already open (and vice versa). Independent toggles misread e.g. an apostrophe inside a double-quoted string (`"don't panic"`) as opening a single-quoted string that the double-quote's own closer never closes, permanently corrupting every subsequent line's quote state (see languages/common.ts's isInsideStringLiteral, which uses this same single-state approach for the same reason). */
 interface QuoteState {
   open: '"' | "'" | '`' | null
 }
 
-/**
- * Advances `state` across `text[from, to)`, opening/closing `state.open` on each unescaped quote
- * character. A backslash is only treated as an escape while immediately followed by another
- * character (mirroring `countUnescapedQuotes`'s consecutive-backslash-parity rule), and is
- * otherwise passed through untouched.
- */
+/** Advances `state` across `text[from, to)`, opening/closing `state.open` on each unescaped quote character. A backslash is only treated as an escape while immediately followed by another character (mirroring `countUnescapedQuotes`'s consecutive-backslash-parity rule), and is otherwise passed through untouched. */
 function advanceQuoteState(text: string, from: number, to: number, state: QuoteState): QuoteState {
   let backslashes = 0
   for (let i = from; i < to; i++) {
@@ -247,14 +194,7 @@ function advanceQuoteState(text: string, from: number, to: number, state: QuoteS
   return state
 }
 
-/**
- * Precomputes which quote kind(s) are open at the START of every line in `content`, by running
- * `advanceQuoteState` once over the whole file. Needed so `isInsideStringLiteral` below can tell
- * a comment-like sequence sitting inside a multi-line string (one whose opening quote is on an
- * earlier line) from a real comment - without this, per-line quote counting from a fixed
- * "start of line" always looks "not inside a string" for every line after the one the string
- * actually opened on, since none of that line's own characters include the opening quote.
- */
+/** Precomputes which quote kind(s) are open at the START of every line in `content`, by running `advanceQuoteState` once over the whole file. Needed so `isInsideStringLiteral` below can tell a comment-like sequence sitting inside a multi-line string (one whose opening quote is on an earlier line) from a real comment - without this, per-line quote counting from a fixed "start of line" always looks "not inside a string" for every line after the one the string actually opened on, since none of that line's own characters include the opening quote. */
 function computeLineStartQuoteStates(content: string): QuoteState[] {
   const states: QuoteState[] = [{ open: null }]
   let state: QuoteState = { open: null }
@@ -269,15 +209,7 @@ function computeLineStartQuoteStates(content: string): QuoteState[] {
   return states
 }
 
-/**
- * True when `index` (an offset into `text`) falls inside an opening quoted string, tracking
- * state across line boundaries via `lineStates` (see `computeLineStartQuoteStates`) rather than
- * always assuming "not inside a string" at the start of each line - a multi-line string (e.g. a
- * JS template literal or a Python triple-quoted string) that opened on an earlier line is still
- * open on this one. A comment-like sequence (`//`, `#`, `--`) that only appears inside a string's
- * actual content — a URL such as `https://example.com` or a CSS hex color like `#fff` — is left
- * untouched instead of being misread as a real comment opener.
- */
+/** True when `index` (an offset into `text`) falls inside an opening quoted string, tracking state across line boundaries via `lineStates` (see `computeLineStartQuoteStates`) rather than always assuming "not inside a string" at the start of each line - a multi-line string (e.g. a JS template literal or a Python triple-quoted string) that opened on an earlier line is still open on this one. A comment-like sequence (`//`, `#`, `--`) that only appears inside a string's actual content — a URL such as `https://example.com` or a CSS hex color like `#fff` — is left untouched instead of being misread as a real comment opener. */
 function isInsideStringLiteral(text: string, index: number, lineStates: QuoteState[]): boolean {
   const lineStart = text.lastIndexOf('\n', index - 1) + 1
   const lineNum = text.slice(0, lineStart).split('\n').length - 1
@@ -298,13 +230,7 @@ type Spans = ReadonlyArray<readonly [number, number]>
 
 const GROOVY_EXTS: ReadonlySet<string> = new Set(['.groovy', '.gvy', '.gradle'])
 
-/**
- * Ranges covered by Groovy slashy (`/.../`) and dollar-slashy (`$/.../$`) strings. The quote-state
- * guard above knows only `"`, `'` and `` ` ``, so a `//` or `/*` inside one of these read as a
- * comment opener and `--strip-comments` truncated the line or ate the middle of the pair --
- * destroying code rather than comments. Shares {@link matchGroovySlashy} with the indexer's masker
- * so the two layers cannot drift on what counts as a slashy string.
- */
+/** Ranges covered by Groovy slashy (`/.../`) and dollar-slashy (`$/.../$`) strings. The quote-state guard above knows only `"`, `'` and `` ` ``, so a `//` or `/*` inside one of these read as a comment opener and `--strip-comments` truncated the line or ate the middle of the pair -- destroying code rather than comments. Shares {@link matchGroovySlashy} with the indexer's masker so the two layers cannot drift on what counts as a slashy string. */
 function groovySlashySpans(content: string, lineStates: QuoteState[]): Array<[number, number]> {
   const spans: Array<[number, number]> = []
   for (let i = 0; i < content.length; i++) {
@@ -333,13 +259,7 @@ function inSpans(spans: Spans, offset: number): boolean {
   return false
 }
 
-/**
- * Applies a block-comment regex, skipping any match whose opener starts inside a string
- * literal. A block comment can span multiple lines, but isInsideStringLiteral only needs
- * to check the match's start offset: none of the CSTYLE_EXTS/CSS languages allow an unescaped
- * string literal to span multiple lines, so if the block-comment opener is inside a string,
- * the whole match is part of that string's content.
- */
+/** Applies a block-comment regex, skipping any match whose opener starts inside a string literal. A block comment can span multiple lines, but isInsideStringLiteral only needs to check the match's start offset: none of the CSTYLE_EXTS/CSS languages allow an unescaped string literal to span multiple lines, so if the block-comment opener is inside a string, the whole match is part of that string's content. */
 function stripBlockComments(content: string, pattern: RegExp, lineStates: QuoteState[], skip: Spans = []): string {
   return content.replace(pattern, (match, offset: number) =>
     isInsideStringLiteral(content, offset, lineStates) || inSpans(skip, offset) ? match : '\n'.repeat(match.split('\n').length - 1),
@@ -361,8 +281,7 @@ export function stripComments(content: string, filePath: string): string {
   if (CSTYLE_EXTS.has(ext)) {
     const groovy = GROOVY_EXTS.has(ext)
     content = stripBlockComments(content, CSTYLE_BLOCK_RE, lineStates, groovy ? groovySlashySpans(content, lineStates) : [])
-    // Block stripping shifts every offset after the first comment it removes, so the line pass
-    // re-reads both the quote states and the slashy spans from the content it will actually walk.
+    // Block stripping shifts every offset after the first comment it removes, so the line pass re-reads both the quote states and the slashy spans from the content it will actually walk.
     const afterStates = computeLineStartQuoteStates(content)
     return stripLineComments(content, CSTYLE_LINE_RE, afterStates, groovy ? groovySlashySpans(content, afterStates) : [])
   }
@@ -450,8 +369,7 @@ export function collectFiles(
 
       let content: string
       try {
-        // A pack glob sweeps whole directories, so a tracked .env lands in the bundle without
-        // anyone naming it. Redact its values, keeping the keys. See dotenv_redact.ts.
+        // A pack glob sweeps whole directories, so a tracked .env lands in the bundle without anyone naming it. Redact its values, keeping the keys. See dotenv_redact.ts.
         content = redactIfDotenv(p, decodeSource(fs.readFileSync(fd)))
       } catch {
         result.skipped.push(`${rel} (unreadable)`)
@@ -677,10 +595,7 @@ export function estimateBudget(
         const tokenSampleSize = Math.min(100000, data.length)
         const text = data.toString('utf8', 0, tokenSampleSize)
         const sampleTokens = estimateTokens(text)
-        // Extrapolate the same way `lines` does above -- estimateTokens only saw the first
-        // tokenSampleSize bytes, so for a file bigger than that sample this must be scaled up
-        // by the truncation ratio or large files silently report a tiny fraction of their real
-        // token count (e.g. a 1MB file capped at ~25000 tokens instead of ~255000).
+        // Extrapolate the same way `lines` does above -- estimateTokens only saw the first tokenSampleSize bytes, so for a file bigger than that sample this must be scaled up by the truncation ratio or large files silently report a tiny fraction of their real token count (e.g. a 1MB file capped at ~25000 tokens instead of ~255000).
         tokens = data.length > tokenSampleSize ? Math.ceil(sampleTokens * (data.length / tokenSampleSize)) : sampleTokens
       } catch {
         result.skipped.push(`${rel} (unreadable)`)
@@ -706,10 +621,7 @@ export function formatBudgetText(result: BudgetResult, contextK?: number): strin
     return 'No files matched.'
   }
 
-  // Reduce instead of Math.max(...array): spreading a large project's file list as call
-  // arguments blows the engine's call-stack limit (RangeError: Maximum call stack size
-  // exceeded) well within realistic file counts -- see transcript_extract.ts's durationSeconds
-  // for the same fix applied to a different large-array Math.max spread.
+  // Reduce instead of Math.max(...array): spreading a large project's file list as call arguments blows the engine's call-stack limit (RangeError: Maximum call stack size exceeded) well within realistic file counts -- see transcript_extract.ts's durationSeconds for the same fix applied to a different large-array Math.max spread.
   const colW = result.entries.reduce((max, e) => Math.max(max, e.rel_path.length), 4)
   const lines: string[] = [
     `  ${'File'.padEnd(colW, ' ')}  ${'Lines'.padStart(6, ' ')}  ${'~Tokens'.padStart(8, ' ')}`,

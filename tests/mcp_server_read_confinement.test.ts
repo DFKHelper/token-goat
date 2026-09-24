@@ -8,51 +8,23 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { normalizePath } from '../src/paths.js'
 
-// A `vi.spyOn(fs, 'openSync')` cannot work here -- Node's ESM namespace bindings for a builtin
-// module are not configurable, so redefining the `openSync` property throws. `vi.mock` replaces
-// the module at resolution time instead (before src/read_commands.ts's own `import * as fs from
-// 'node:fs'` is loaded), which sidesteps that restriction. State lives in `vi.hoisted` so the
-// mock factory (itself hoisted above this file's imports) and the tests below share one object;
-// `triggerPath` is null for every test except the one that opts in below, so this is a no-op
-// pass-through for the rest of the file.
+// A `vi.spyOn(fs, 'openSync')` cannot work here -- Node's ESM namespace bindings for a builtin module are not configurable, so redefining the `openSync` property throws. `vi.mock` replaces the module at resolution time instead (before src/read_commands.ts's own `import * as fs from 'node:fs'` is loaded), which sidesteps that restriction. State lives in `vi.hoisted` so the mock factory (itself hoisted above this file's imports) and the tests below share one object; `triggerPath` is null for every test except the one that opts in below, so this is a no-op pass-through for the rest of the file.
 const openSyncFailureState = vi.hoisted(() => ({ triggerPath: null as string | null, fired: false }))
-// Same hoisting requirement as openSyncFailureState above, for a swap driven off runGrep's own
-// plain `fs.realpathSync(searchPath)` call (src/read_commands.ts) rather than the confinement
-// gate's `fs.realpathSync.native` call (src/mcp_server.ts) that the existing `.native`-spy tests
-// below intercept -- those two calls happen at different points, and this state targets the
-// later one specifically so the swap lands strictly between runGrep's first (fd-based)
-// verifyPinnedIdentity check and its derivation of the search boundary, not before it.
+// Same hoisting requirement as openSyncFailureState above, for a swap driven off runGrep's own plain `fs.realpathSync(searchPath)` call (src/read_commands.ts) rather than the confinement gate's `fs.realpathSync.native` call (src/mcp_server.ts) that the existing `.native`-spy tests below intercept -- those two calls happen at different points, and this state targets the later one specifically so the swap lands strictly between runGrep's first (fd-based) verifyPinnedIdentity check and its derivation of the search boundary, not before it.
 const realpathSyncSwapState = vi.hoisted(() => ({
   triggerPath: null as string | null,
   fired: false,
   onTrigger: null as (() => void) | null,
-  // When true the swap runs AFTER the real resolution returns instead of before it, so it lands
-  // strictly in the check-then-use window a caller that re-uses the link pathname would still be
-  // exposed to -- a before-swap only ever exercises the boundary check itself.
+  // When true the swap runs AFTER the real resolution returns instead of before it, so it lands strictly in the check-then-use window a caller that re-uses the link pathname would still be exposed to -- a before-swap only ever exercises the boundary check itself.
   after: false,
 }))
-// Drives the negative-pin (validated-absent) race: an in-root target that does not exist at gate
-// time has no dev:ino to pin, so the FIRST filesystem call that touches it after validation is the
-// earliest point a between-check-and-use swap can land -- for `read`/`section` that is
-// readFileText's unpinned `fs.readFileSync` fallback, for `grep` it is `fileExists`'s
-// `fs.statSync`. `statSyncSkipRemaining` exists because `checkWithinProjectRoot` (the gate itself)
-// ALWAYS stats this exact path once, for every confinement-gated call regardless of which tool is
-// being exercised -- that touch must be ignored, or the swap lands INSIDE gate validation itself
-// (caught there, for the wrong reason: "outside the project root" rather than the read-side
-// negative-pin refusal this test targets) instead of strictly after it. `fs.readFileSync` is never
-// touched by the gate, so it needs no such skip.
+// Drives the negative-pin (validated-absent) race: an in-root target that does not exist at gate time has no dev:ino to pin, so the FIRST filesystem call that touches it after validation is the earliest point a between-check-and-use swap can land -- for `read`/`section` that is readFileText's unpinned `fs.readFileSync` fallback, for `grep` it is `fileExists`'s `fs.statSync`. The gate itself takes the target's identity through `fs.openSync` (see `statThroughHandle`), which fails ENOENT for an absent path without falling back to a path stat, so neither hook below can fire inside gate validation.
 const absentPathSwapState = vi.hoisted(() => ({
   triggerPath: null as string | null,
   fired: false,
   onTrigger: null as (() => void) | null,
-  statSyncSkipRemaining: 1,
 }))
-// Normalize+case-fold via the app's own normalizePath (mirrors read_commands.ts's `pinKey`,
-// which is `normalizePath` plus a win32 lowercase): the argument reaching fs.openSync here is
-// read_commands.ts's already-normalized `resolvedPath`, not an OS-native `path.resolve()` form --
-// a literal-string comparison against the latter would never match, and a hand-rolled
-// backslash-flip diverges from normalizePath on a runner whose %TEMP% is pinned to its 8.3
-// short form (see tests/guards/windows_path_fixture_normalization.test.ts).
+// Normalize+case-fold via the app's own normalizePath (mirrors read_commands.ts's `pinKey`, which is `normalizePath` plus a win32 lowercase): the argument reaching fs.openSync here is read_commands.ts's already-normalized `resolvedPath`, not an OS-native `path.resolve()` form -- a literal-string comparison against the latter would never match, and a hand-rolled backslash-flip diverges from normalizePath on a runner whose %TEMP% is pinned to its 8.3 short form (see tests/guards/windows_path_fixture_normalization.test.ts).
 function foldPathForCompare(p: string): string {
   const normalized = normalizePath(p)
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized
@@ -77,10 +49,7 @@ vi.mock('node:fs', async (importOriginal) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (actual.realpathSync as any)(...args)
   }
-  // `fs.realpathSync.native` is used independently (the confinement gate's own resolution, and
-  // the `.native`-spy tests elsewhere in this file) -- carry it over onto the mock so replacing
-  // the top-level function doesn't silently drop that sub-property for every other test in this
-  // file that relies on it.
+  // `fs.realpathSync.native` is used independently (the confinement gate's own resolution, and the `.native`-spy tests elsewhere in this file) -- carry it over onto the mock so replacing the top-level function doesn't silently drop that sub-property for every other test in this file that relies on it.
   realpathSyncMock.native = actual.realpathSync.native
   return {
     ...actual,
@@ -109,12 +78,8 @@ vi.mock('node:fs', async (importOriginal) => {
         typeof p === 'string' &&
         foldPathForCompare(p) === absentPathSwapState.triggerPath
       ) {
-        if (absentPathSwapState.statSyncSkipRemaining > 0) {
-          absentPathSwapState.statSyncSkipRemaining -= 1
-        } else {
-          absentPathSwapState.fired = true
-          absentPathSwapState.onTrigger?.()
-        }
+        absentPathSwapState.fired = true
+        absentPathSwapState.onTrigger?.()
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (actual.statSync as any)(...args)
@@ -140,9 +105,7 @@ import { createMcpServer } from '../src/mcp_server.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { ConfinementIdentityError, healStaleIndex, pinKey, runRead, withPinnedReads } from '../src/read_commands.js'
 
-/** Directory-symlink counterpart to `canCreateSymlinks`: a `dir`-type symlink needs the same
- * elevated privilege on Windows without Developer Mode, but is a separate capability check from
- * a file symlink (the two link types are created and permission-checked independently). */
+/** Directory-symlink counterpart to `canCreateSymlinks`: a `dir`-type symlink needs the same elevated privilege on Windows without Developer Mode, but is a separate capability check from a file symlink (the two link types are created and permission-checked independently). */
 function canCreateDirSymlinks(): boolean {
   const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-dirsymlink-probe-'))
   try {
@@ -186,23 +149,7 @@ function canCreateSymlinks(): boolean {
   }
 }
 
-/**
- * Compares a live `fs.realpathSync.native` argument (`p`) against a PRE-NORMALIZED key produced
- * by `normalizeKeyFor` below. `p` is always the string production's `checkWithinProjectRoot` just
- * passed to `fs.realpathSync.native` -- i.e. `path.resolve(resolvedRoot, normalizePath(target))`
- * (see src/mcp_server.ts) -- which is already the OUTPUT of `normalizePath`, so it is already
- * short-path-expanded on Windows and `/var`->`/private/var`-aliased on macOS by the time it
- * reaches here.
- *
- * A plain `path.resolve` + case-fold (this function's prior implementation) does not know about
- * either transform, so a literal test-constructed path built straight from `fs.mkdtempSync`
- * (still in its short/aliased form) silently never matched production's already-normalized
- * argument on a Windows runner whose `%TEMP%` is pinned to an 8.3 short name, or on macOS where
- * `os.tmpdir()` returns the `/var` alias -- `swapped` stayed false and these tests passed
- * vacuously without ever exercising the swap on those platforms. Deliberately syscall-free: it
- * must NOT call `normalizePath` itself here, since that would recurse into this very
- * `fs.realpathSync.native` spy through `expandShortPath`'s own native call.
- */
+/** Compares a live `fs.realpathSync.native` argument (`p`) against a PRE-NORMALIZED key produced by `normalizeKeyFor` below. `p` is always the string production's `checkWithinProjectRoot` just passed to `fs.realpathSync.native` -- i.e. `path.resolve(resolvedRoot, normalizePath(target))` (see src/mcp_server.ts) -- which is already the OUTPUT of `normalizePath`, so it is already short-path-expanded on Windows and `/var`->`/private/var`-aliased on macOS by the time it reaches here. A plain `path.resolve` + case-fold (this function's prior implementation) does not know about either transform, so a literal test-constructed path built straight from `fs.mkdtempSync` (still in its short/aliased form) silently never matched production's already-normalized argument on a Windows runner whose `%TEMP%` is pinned to an 8.3 short name, or on macOS where `os.tmpdir()` returns the `/var` alias -- `swapped` stayed false and these tests passed vacuously without ever exercising the swap on those platforms. Deliberately syscall-free: it must NOT call `normalizePath` itself here, since that would recurse into this very `fs.realpathSync.native` spy through `expandShortPath`'s own native call. */
 function samePath(p: string, normalizedKey: string): boolean {
   const folded = p.replace(/\\/g, '/')
   return process.platform === 'win32' ? folded.toLowerCase() === normalizedKey.toLowerCase() : folded === normalizedKey
@@ -342,9 +289,7 @@ describe('mcp read confinement', () => {
   })
 
   it('refuses a grep path containing a literal comma that resolves outside the root', async () => {
-    // The comma-stripped form of this directory's own name equals `root`'s basename exactly, so a
-    // validator that strips commas before checking (but greps the un-stripped path) would wrongly
-    // treat this outside directory as in-root -- the validate-one-string/use-another bug under test.
+    // The comma-stripped form of this directory's own name equals `root`'s basename exactly, so a validator that strips commas before checking (but greps the un-stripped path) would wrongly treat this outside directory as in-root -- the validate-one-string/use-another bug under test.
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const commaName = root.replace(/tg-mcp-root-/, 'tg-mcp-r,oot-')
     fs.mkdirSync(commaName)
@@ -397,13 +342,7 @@ describe('mcp read confinement', () => {
     expect(textOf(result)).toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
-  // Regression for the trimmed-vs-untrimmed confinement bypass: the gate used to validate
-  // `specFilePart(part).trim()` but the handler forwarded the untrimmed `part` (or the untrimmed
-  // `spec`/`file` argument entirely) to its `run*` call, so a spec whose trailing whitespace made
-  // an out-of-root symlink/junction *look* like a harmless nonexistent in-root path at validation
-  // time still resolved through that symlink at read time. Platform-gated the same way and for the
-  // same reason (symlink creation needs elevated privilege on Windows CI) as the existing
-  // "normalises inside the root but symlinks out of it" test above.
+  // Regression for the trimmed-vs-untrimmed confinement bypass: the gate used to validate `specFilePart(part).trim()` but the handler forwarded the untrimmed `part` (or the untrimmed `spec`/`file` argument entirely) to its `run*` call, so a spec whose trailing whitespace made an out-of-root symlink/junction *look* like a harmless nonexistent in-root path at validation time still resolved through that symlink at read time. Platform-gated the same way and for the same reason (symlink creation needs elevated privilege on Windows CI) as the existing "normalises inside the root but symlinks out of it" test above.
   it.runIf(process.platform !== 'win32')(
     'refuses a file whose trailing-whitespace name resolves through a symlink to outside the root',
     async () => {
@@ -411,9 +350,7 @@ describe('mcp read confinement', () => {
       outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
       const secret = path.join(outside, 'secret.txt')
       fs.writeFileSync(secret, 'SECRET-MARKER-DO-NOT-LEAK\n')
-      // The trailing space is part of the *link's own name*, not appended to the spec string, so
-      // this is the exact scenario the ticket describes: a workspace containing both a clean name
-      // and a distinct, whitespace-suffixed name that happens to symlink outside the root.
+      // The trailing space is part of the *link's own name*, not appended to the spec string, so this is the exact scenario the ticket describes: a workspace containing both a clean name and a distinct, whitespace-suffixed name that happens to symlink outside the root.
       const link = path.join(root, 'inside.txt ')
       fs.symlinkSync(secret, link, 'file')
 
@@ -427,13 +364,7 @@ describe('mcp read confinement', () => {
     },
   )
 
-  // Deterministic, platform-independent companion to the symlink test above: proves the checked
-  // value and the forwarded value are byte-identical without needing a real filesystem escape.
-  // A spec with trailing whitespace appended is still outside the root whether or not it is
-  // trimmed, so this can't tell apart "refused" from "refused" -- what it tells apart is WHICH
-  // string got refused. Pre-fix, the gate trimmed before both validating and reporting, so the
-  // refusal named the trimmed path; post-fix it reports (and, in the handlers, forwards) the exact
-  // untrimmed spec, matching what `specFilePart`/`parseReadSpec` in the execution layer see.
+  // Deterministic, platform-independent companion to the symlink test above: proves the checked value and the forwarded value are byte-identical without needing a real filesystem escape. A spec with trailing whitespace appended is still outside the root whether or not it is trimmed, so this can't tell apart "refused" from "refused" -- what it tells apart is WHICH string got refused. Pre-fix, the gate trimmed before both validating and reporting, so the refusal named the trimmed path; post-fix it reports (and, in the handlers, forwards) the exact untrimmed spec, matching what `specFilePart`/`parseReadSpec` in the execution layer see.
   it('confinement refusal names the exact untrimmed spec forwarded to the read, not a trimmed variant', async () => {
     const { outsideFile } = makeDirs()
     const spec = `${outsideFile} `
@@ -492,12 +423,7 @@ describe('mcp read confinement', () => {
 
   // TEST A -- the check-vs-use boundary itself, deterministic and platform-independent.
   //
-  // Every confinement test above proves a path was VALIDATED correctly. None of them proves the
-  // read opened the object that was validated, because they never separate the two moments: the
-  // gate resolves a path and the handler opens that path some time later, and pre-fix nothing at
-  // all connected the two. Here the identity captured at check time deliberately disagrees with
-  // what is on disk, which is exactly what a between-check-and-open swap looks like from the read
-  // side, and the read must refuse rather than serve the replacement.
+  // Every confinement test above proves a path was VALIDATED correctly. None of them proves the read opened the object that was validated, because they never separate the two moments: the gate resolves a path and the handler opens that path some time later, and pre-fix nothing at all connected the two. Here the identity captured at check time deliberately disagrees with what is on disk, which is exactly what a between-check-and-open swap looks like from the read side, and the read must refuse rather than serve the replacement.
   it('refuses a read whose file identity does not match what confinement validated', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const file = path.join(root, 'swapped.txt')
@@ -510,8 +436,7 @@ describe('mcp read confinement', () => {
     expect(() => withPinnedReads(pins, () => runRead({ spec: file, projectRoot: root }))).toThrow(/changed identity between validation and read/)
   })
 
-  // Companion to Test A: the refusal must reach the MCP client as a confinement decision, not
-  // escape as an unhandled protocol error, and must not carry the file's contents with it.
+  // Companion to Test A: the refusal must reach the MCP client as a confinement decision, not escape as an unhandled protocol error, and must not carry the file's contents with it.
   it('an identity mismatch surfaces as a confinement refusal, not an unhandled error', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const file = path.join(root, 'swapped.txt')
@@ -529,8 +454,7 @@ describe('mcp read confinement', () => {
     expect((thrown as Error).message).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
-  // A pinned read that DOES match must still return the file verbatim -- the non-firing guard for
-  // the identity check, over a non-empty pin map, so a rule that refused everything would fail here.
+  // A pinned read that DOES match must still return the file verbatim -- the non-firing guard for the identity check, over a non-empty pin map, so a rule that refused everything would fail here.
   it('non-firing: a matching identity pin serves the in-root read unchanged', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const file = path.join(root, 'ok.txt')
@@ -547,11 +471,7 @@ describe('mcp read confinement', () => {
     expect(result.text).toContain('legitimate in-root content')
   })
 
-  // A pinned read must still serve an ordinary in-root symlink. This is the guard against
-  // "hardening" the pinned open with O_NOFOLLOW: that flag makes this exact read fail ELOOP on
-  // Linux and macOS, which readFileText reports as a plain "could not read" -- a silent denial of
-  // a legitimate file, invisible on Windows where the flag does not exist. The identity check is
-  // what closes the window; the open flags are not, and must not start refusing valid targets.
+  // A pinned read must still serve an ordinary in-root symlink. This is the guard against "hardening" the pinned open with O_NOFOLLOW: that flag makes this exact read fail ELOOP on Linux and macOS, which readFileText reports as a plain "could not read" -- a silent denial of a legitimate file, invisible on Windows where the flag does not exist. The identity check is what closes the window; the open flags are not, and must not start refusing valid targets.
   it.runIf(canCreateSymlinks())('non-firing: a pinned read still follows a legitimate in-root symlink', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const target = path.join(root, 'target.txt')
@@ -567,15 +487,9 @@ describe('mcp read confinement', () => {
     expect(textOf(result)).toContain('legitimate in-root content')
   })
 
-  // TEST B -- the real escape, end to end: an in-root path repointed at an out-of-root file after
-  // the gate has resolved it. Gated on the ability to CREATE a symlink rather than on the platform
-  // name, because that is the actual requirement (unprivileged Windows refuses with EPERM, but a
-  // Windows host with Developer Mode on runs it fine) -- a platform gate would skip a test this
-  // machine can prove, and a skipped test proves nothing.
+  // TEST B -- the real escape, end to end: an in-root path repointed at an out-of-root file after the gate has resolved it. Gated on the ability to CREATE a symlink rather than on the platform name, because that is the actual requirement (unprivileged Windows refuses with EPERM, but a Windows host with Developer Mode on runs it fine) -- a platform gate would skip a test this machine can prove, and a skipped test proves nothing.
   //
-  // The swap is driven from a vitest spy on the gate's own path resolution, NOT a racing loop:
-  // that places the replacement in precisely the window between check and open, deterministically,
-  // with no flake surface. Pre-fix this exact seam returned the out-of-root file's contents.
+  // The swap is driven from a vitest spy on the gate's own path resolution, NOT a racing loop: that places the replacement in precisely the window between check and open, deterministically, with no flake surface. Pre-fix this exact seam returned the out-of-root file's contents.
   it.runIf(canCreateSymlinks())('refuses a read whose in-root path is repointed outside the root after validation', async () => {
     const { inRoot, outsideFile } = makeDirs()
     const inRootKey = normalizeKeyFor(inRoot)
@@ -604,13 +518,7 @@ describe('mcp read confinement', () => {
     expect(result.isError).toBe(true)
   })
 
-  // Section-read counterpart to TEST B above: `section`'s handler goes through the same
-  // confinement gate as `read`, but src/section_reader.ts's `readTextForSections` used to call
-  // `readFileSync` directly, never consulting `activePins` at all -- so this exact swap-timing
-  // technique returned the out-of-root file's contents through `section` even though the
-  // identical technique against `read` (TEST B above) was already refused. Fixed by threading the
-  // pin-aware `readFileText` through `readSection`/`findContainingSection`/`listSections` (see
-  // src/section_reader.ts and src/read_commands.ts's `runSection`).
+  // Section-read counterpart to TEST B above: `section`'s handler goes through the same confinement gate as `read`, but src/section_reader.ts's `readTextForSections` used to call `readFileSync` directly, never consulting `activePins` at all -- so this exact swap-timing technique returned the out-of-root file's contents through `section` even though the identical technique against `read` (TEST B above) was already refused. Fixed by threading the pin-aware `readFileText` through `readSection`/`findContainingSection`/`listSections` (see src/section_reader.ts and src/read_commands.ts's `runSection`).
   it.runIf(canCreateSymlinks())(
     'refuses a section read whose in-root path is repointed outside the root after validation',
     async () => {
@@ -673,11 +581,7 @@ describe('mcp numeric param bounds', () => {
       const result = await client.callTool(call)
       expect(result.isError).toBe(true)
       const text = textOf(result)
-      // Assert the *behaviour* (an over-limit value is rejected, naming the offending param),
-      // not the validation library's internal issue code. Older stacks render this as a flattened
-      // issue object carrying the literal code `too_big`; newer ones humanize it to
-      // `Too big: expected number to be <=1000 at limit`. Pinning the code string alone made this
-      // test fail on a routine dependency bump even though the bound still rejected correctly.
+      // Assert the *behaviour* (an over-limit value is rejected, naming the offending param), not the validation library's internal issue code. Older stacks render this as a flattened issue object carrying the literal code `too_big`; newer ones humanize it to `Too big: expected number to be <=1000 at limit`. Pinning the code string alone made this test fail on a routine dependency bump even though the bound still rejected correctly.
       expect(text).toMatch(/too[_ ]?big/i)
       const param = Object.keys(call.arguments).find((k) => typeof (call.arguments as Record<string, unknown>)[k] === 'number')
       expect(param).toBeDefined()
@@ -686,14 +590,7 @@ describe('mcp numeric param bounds', () => {
   })
 })
 
-// Regression for the mid-request-reindex bypass: `read`/`skeleton`/`outline`'s `--force-refresh`
-// path (and the same-shaped self-heal path healStaleIndex takes on a stale index) used to call
-// `indexFileSync` directly on the resolved path -- a second, independent `fs.readFileSync` that
-// never consulted the confinement gate's identity pin. A path swapped between gate validation and
-// that reindex was never caught, unlike every other read surface in this file. `indexFileSyncPinned`
-// (src/read_commands.ts) closes this by verifying the pin BEFORE any bytes are read and handing
-// the already-verified bytes straight into `indexFileSync`, so the reindex can no longer reopen a
-// swapped path on its own.
+// Regression for the mid-request-reindex bypass: `read`/`skeleton`/`outline`'s `--force-refresh` path (and the same-shaped self-heal path healStaleIndex takes on a stale index) used to call `indexFileSync` directly on the resolved path -- a second, independent `fs.readFileSync` that never consulted the confinement gate's identity pin. A path swapped between gate validation and that reindex was never caught, unlike every other read surface in this file. `indexFileSyncPinned` (src/read_commands.ts) closes this by verifying the pin BEFORE any bytes are read and handing the already-verified bytes straight into `indexFileSync`, so the reindex can no longer reopen a swapped path on its own.
 describe('mcp read confinement -- force-refresh / self-heal reindex path', () => {
   let root: string
   let outside: string
@@ -707,9 +604,7 @@ describe('mcp read confinement -- force-refresh / self-heal reindex path', () =>
     }
   })
 
-  // Deterministic companion, same shape as "Test A" above: a pin no real file can satisfy,
-  // routed through the force-refresh reindex path instead of the plain read path. Pre-fix, this
-  // never throws at all -- indexFileSync reopens the path directly and the pin is never consulted.
+  // Deterministic companion, same shape as "Test A" above: a pin no real file can satisfy, routed through the force-refresh reindex path instead of the plain read path. Pre-fix, this never throws at all -- indexFileSync reopens the path directly and the pin is never consulted.
   it('a mismatched identity pin refuses a force-refresh reindex, not just a plain read', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const file = path.join(root, 'lib.ts')
@@ -724,9 +619,7 @@ describe('mcp read confinement -- force-refresh / self-heal reindex path', () =>
     ).toThrow(/changed identity between validation and read/)
   })
 
-  // Real end-to-end escape: an in-root path repointed at an out-of-root file, timed via a spy on
-  // the gate's own realpath resolution (same technique as "Test B" above), but this time the read
-  // it drives is `read --force-refresh`, which reaches indexFileSyncPinned instead of readFileText.
+  // Real end-to-end escape: an in-root path repointed at an out-of-root file, timed via a spy on the gate's own realpath resolution (same technique as "Test B" above), but this time the read it drives is `read --force-refresh`, which reaches indexFileSyncPinned instead of readFileText.
   it.runIf(canCreateSymlinks())(
     'refuses a force-refresh reindex whose in-root path is repointed outside the root after validation',
     async () => {
@@ -767,14 +660,7 @@ describe('mcp read confinement -- force-refresh / self-heal reindex path', () =>
   )
 })
 
-// Regression for grep's two independent confinement gaps: (1) `runGrep` read explicitly-requested
-// files with a raw `fs.readFileSync` that never consulted the confinement gate's identity pin, and
-// (2) its recursive directory walk used `fs.statSync` (which follows symlinks) with no boundary
-// check at all, so an in-root directory symlink pointing outside the root was silently descended
-// into and searched. These are fixed independently in src/read_commands.ts's runGrep: searchFile
-// now goes through the pin-aware readFileText, and searchDir now lstat's every entry and only
-// follows a symlink (file or directory) once its realpath is proven to still resolve inside the
-// search root.
+// Regression for grep's two independent confinement gaps: (1) `runGrep` read explicitly-requested files with a raw `fs.readFileSync` that never consulted the confinement gate's identity pin, and (2) its recursive directory walk used `fs.statSync` (which follows symlinks) with no boundary check at all, so an in-root directory symlink pointing outside the root was silently descended into and searched. These are fixed independently in src/read_commands.ts's runGrep: searchFile now goes through the pin-aware readFileText, and searchDir now lstat's every entry and only follows a symlink (file or directory) once its realpath is proven to still resolve inside the search root.
 describe('mcp read confinement -- grep pin and symlink-directory checks', () => {
   let root: string
   let outside: string
@@ -788,8 +674,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     }
   })
 
-  // Gap (1): an explicitly-requested grep target repointed outside the root after the gate
-  // validated it. Same swap-timing technique as "Test B" above.
+  // Gap (1): an explicitly-requested grep target repointed outside the root after the gate validated it. Same swap-timing technique as "Test B" above.
   it.runIf(canCreateSymlinks())(
     'refuses a grep of an explicit path repointed outside the root after validation',
     async () => {
@@ -829,9 +714,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     },
   )
 
-  // Gap (2): a real in-root directory symlink pointing at an out-of-root directory. A recursive
-  // grep of the root must not descend into it, even though the top-level root itself validated
-  // fine (the gate only checks the top-level target; nothing re-validated this nested entry).
+  // Gap (2): a real in-root directory symlink pointing at an out-of-root directory. A recursive grep of the root must not descend into it, even though the top-level root itself validated fine (the gate only checks the top-level target; nothing re-validated this nested entry).
   it.runIf(canCreateDirSymlinks())('a recursive grep does not follow an in-root directory symlink out of the root', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
@@ -848,19 +731,9 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
-  // Restored capability, previously asserted the other way round: this test used to require the
-  // confined walk to skip EVERY symlink entry (isError, "No matches"), which closed the nested-
-  // symlink TOCTOU window by making an in-root file reachable only via a legitimate in-root
-  // symlink invisible to MCP grep. searchDir now resolves each entry once with fs.realpathSync,
-  // boundary-checks that realpath, and traverses the realpath only -- which closes the same window
-  // (the link pathname is never referenced again, so repointing it afterwards has no effect; see
-  // the TOCTOU test directly below) without losing the capability. Expectation inverted
-  // deliberately rather than the test being dropped.
+  // Restored capability, previously asserted the other way round: this test used to require the confined walk to skip EVERY symlink entry (isError, "No matches"), which closed the nested- symlink TOCTOU window by making an in-root file reachable only via a legitimate in-root symlink invisible to MCP grep. searchDir now resolves each entry once with fs.realpathSync, boundary-checks that realpath, and traverses the realpath only -- which closes the same window (the link pathname is never referenced again, so repointing it afterwards has no effect; see the TOCTOU test directly below) without losing the capability. Expectation inverted deliberately rather than the test being dropped.
   //
-  // The real target is dot-prefixed (`.hidden-target`) so it is also excluded from direct
-  // recursion by searchDir's own leading-dot filter, isolating "was the symlink itself followed"
-  // from "would the target have been found anyway by ordinary recursion" -- a plainly-named
-  // real-subdir sibling of the symlink would be walked directly regardless of the fix, masking it.
+  // The real target is dot-prefixed (`.hidden-target`) so it is also excluded from direct recursion by searchDir's own leading-dot filter, isolating "was the symlink itself followed" from "would the target have been found anyway by ordinary recursion" -- a plainly-named real-subdir sibling of the symlink would be walked directly regardless of the fix, masking it.
   it.runIf(canCreateDirSymlinks())('a recursive confined grep follows a legitimate in-root directory symlink', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const real = path.join(root, '.hidden-target')
@@ -876,12 +749,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     expect(textOf(result)).toContain('reachable only via in-root symlink')
   })
 
-  // The original TOCTOU attack the blanket skip existed to stop, now covered directly: the nested
-  // symlink is repointed at an out-of-root directory during searchDir's own fs.realpathSync call
-  // on it -- i.e. strictly between the boundary check and the traversal that follows. Because the
-  // walk continues on the REALPATH captured by that same call and never touches the link pathname
-  // again, the swap cannot redirect it and no out-of-root content is reachable. The pre-fix
-  // check-then-reuse-`full` shape is exactly what this would defeat.
+  // The original TOCTOU attack the blanket skip existed to stop, now covered directly: the nested symlink is repointed at an out-of-root directory during searchDir's own fs.realpathSync call on it -- i.e. strictly between the boundary check and the traversal that follows. Because the walk continues on the REALPATH captured by that same call and never touches the link pathname again, the swap cannot redirect it and no out-of-root content is reachable. The pre-fix check-then-reuse-`full` shape is exactly what this would defeat.
   it.runIf(canCreateDirSymlinks())('a confined grep does not leak out-of-root content when a nested symlink is repointed after its check', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
@@ -915,13 +783,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     expect(textOf(result)).toContain('legitimate in-root content')
   })
 
-  // The RESOLVED-TARGET counterpart to the swap above, and a genuinely distinct hole: that test
-  // repoints the LINK, which the walk never dereferences again, so it is defeated by construction.
-  // This one repoints what the link already resolved TO, at the moment searchDir's recursive entry
-  // re-resolves it -- and the walk does re-reference that string, in the readdirSync below. With
-  // the boundary re-checked only at the caller, the recursion trusted its `dir` argument and
-  // enumerated the swapped-in out-of-root directory; the leading-dot filter keeps `.hidden-target`
-  // unreachable by any route except the symlink, so a leak here can only have come through it.
+  // The RESOLVED-TARGET counterpart to the swap above, and a genuinely distinct hole: that test repoints the LINK, which the walk never dereferences again, so it is defeated by construction. This one repoints what the link already resolved TO, at the moment searchDir's recursive entry re-resolves it -- and the walk does re-reference that string, in the readdirSync below. With the boundary re-checked only at the caller, the recursion trusted its `dir` argument and enumerated the swapped-in out-of-root directory; the leading-dot filter keeps `.hidden-target` unreachable by any route except the symlink, so a leak here can only have come through it.
   it.runIf(canCreateDirSymlinks())('a confined grep does not leak out-of-root content when a symlink target is repointed at the recursive re-resolution', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
@@ -931,8 +793,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     fs.writeFileSync(path.join(outside, 'secret.txt'), 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
     fs.symlinkSync(real, path.join(root, 'alias'), 'dir')
 
-    // Fires BEFORE the real resolution (after: false), so the recursive call's own fs.realpathSync
-    // observes the swapped entry -- the window the caller's one-time check cannot cover.
+    // Fires BEFORE the real resolution (after: false), so the recursive call's own fs.realpathSync observes the swapped entry -- the window the caller's one-time check cannot cover.
     realpathSyncSwapState.triggerPath = foldPathForCompare(real)
     realpathSyncSwapState.fired = false
     realpathSyncSwapState.after = false
@@ -954,15 +815,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
-  // Gap (3): the TOP-LEVEL search directory itself repointed outside the root after the gate
-  // validated it (as opposed to a nested entry discovered by searchDir's own recursion, which
-  // gap (2) above already covers). confineTargets pins the directory it just validated, but
-  // runGrep's top-level loop used to ignore that pin entirely and derive `boundaryReal` from a
-  // fresh, unverified fs.realpathSync of the (now swapped) path -- so a directory replaced in the
-  // window between validation and this call had its search boundary silently become the
-  // attacker-controlled directory, and the recursive walk returned its contents. Same swap-timing
-  // technique as "Test B" above, but targeting the explicit grep `path` directory rather than a
-  // file.
+  // Gap (3): the TOP-LEVEL search directory itself repointed outside the root after the gate validated it (as opposed to a nested entry discovered by searchDir's own recursion, which gap (2) above already covers). confineTargets pins the directory it just validated, but runGrep's top-level loop used to ignore that pin entirely and derive `boundaryReal` from a fresh, unverified fs.realpathSync of the (now swapped) path -- so a directory replaced in the window between validation and this call had its search boundary silently become the attacker-controlled directory, and the recursive walk returned its contents. Same swap-timing technique as "Test B" above, but targeting the explicit grep `path` directory rather than a file.
   it.runIf(canCreateDirSymlinks())(
     'refuses a grep whose top-level search directory is repointed outside the root after validation',
     async () => {
@@ -1002,17 +855,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     },
   )
 
-  // Gap (4), narrower than gap (3) above: gap (3) swaps during the confinement gate's OWN
-  // `fs.realpathSync.native` resolution, which lands before `verifyPinnedIdentity`'s fd-based
-  // check ever runs -- that check alone already catches it, so gap (3) never actually exercised
-  // the second window runGrep has. This test swaps during runGrep's own plain
-  // `fs.realpathSync(searchPath)` call instead (the one that derives `boundaryReal`), which runs
-  // strictly AFTER the first `verifyPinnedIdentity` check has already passed. Pre-fix, that first
-  // check was the only one: `boundaryReal` was then derived from the now-swapped path with no
-  // re-verification, so the walk used the attacker's directory as its own boundary and every
-  // entry beneath it passed `withinRealpathBoundary` trivially. Post-fix, the second
-  // `verifyPinnedIdentity` call added immediately after `boundaryReal` is derived (see
-  // src/read_commands.ts's runGrep) catches the swap in this narrower window and refuses instead.
+  // Gap (4), narrower than gap (3) above: gap (3) swaps during the confinement gate's OWN `fs.realpathSync.native` resolution, which lands before `verifyPinnedIdentity`'s fd-based check ever runs -- that check alone already catches it, so gap (3) never actually exercised the second window runGrep has. This test swaps during runGrep's own plain `fs.realpathSync(searchPath)` call instead (the one that derives `boundaryReal`), which runs strictly AFTER the first `verifyPinnedIdentity` check has already passed. Pre-fix, that first check was the only one: `boundaryReal` was then derived from the now-swapped path with no re-verification, so the walk used the attacker's directory as its own boundary and every entry beneath it passed `withinRealpathBoundary` trivially. Post-fix, the second `verifyPinnedIdentity` call added immediately after `boundaryReal` is derived (see src/read_commands.ts's runGrep) catches the swap in this narrower window and refuses instead.
   it.runIf(canCreateDirSymlinks())(
     'refuses a grep whose top-level search directory is repointed after the pin check but during boundary resolution',
     async () => {
@@ -1049,13 +892,7 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
   )
 })
 
-// Regression for two follow-on defects found in the pinned-reindex/self-heal machinery above:
-// (B) indexFileSyncPinned fell back to an unpinned indexFileSync read when the initial pinned
-// open failed for any reason other than ConfinementIdentityError, including a non-ENOENT open
-// failure -- letting a caller who can make the first open fail (then swap the path) get an
-// unverified raw read served anyway. (C) healStaleIndex's best-effort catch blocks swallowed
-// ConfinementIdentityError along with ordinary parse/I/O errors, converting a detected
-// between-check-and-use swap into silent best-effort behavior instead of a refusal.
+// Regression for two follow-on defects found in the pinned-reindex/self-heal machinery above: (B) indexFileSyncPinned fell back to an unpinned indexFileSync read when the initial pinned open failed for any reason other than ConfinementIdentityError, including a non-ENOENT open failure -- letting a caller who can make the first open fail (then swap the path) get an unverified raw read served anyway. (C) healStaleIndex's best-effort catch blocks swallowed ConfinementIdentityError along with ordinary parse/I/O errors, converting a detected between-check-and-use swap into silent best-effort behavior instead of a refusal.
 describe('mcp read confinement -- pinned reindex failure handling', () => {
   let root: string
   let cleanup: (() => Promise<void>) | undefined
@@ -1066,12 +903,7 @@ describe('mcp read confinement -- pinned reindex failure handling', () => {
     if (root !== undefined) fs.rmSync(root, { recursive: true, force: true })
   })
 
-  // Finding B: a genuinely matching pin, but the pinned open itself fails with a non-ENOENT
-  // error (e.g. a transient permission failure). Pre-fix, indexFileSyncPinned treated this the
-  // same as "file deleted since validation" and fell through to a raw, unpinned indexFileSync --
-  // which reads whatever is at the path NOW, with no identity verification at all -- instead of
-  // refusing. Post-fix, only ENOENT gets that clean fallback; any other open failure is a
-  // confinement refusal.
+  // Finding B: a genuinely matching pin, but the pinned open itself fails with a non-ENOENT error (e.g. a transient permission failure). Pre-fix, indexFileSyncPinned treated this the same as "file deleted since validation" and fell through to a raw, unpinned indexFileSync -- which reads whatever is at the path NOW, with no identity verification at all -- instead of refusing. Post-fix, only ENOENT gets that clean fallback; any other open failure is a confinement refusal.
   it('a non-ENOENT pinned-open failure during force-refresh refuses instead of falling back to an unpinned read', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const file = path.join(root, 'lib.ts')
@@ -1092,8 +924,7 @@ describe('mcp read confinement -- pinned reindex failure handling', () => {
     }
   })
 
-  // Non-firing companion: a file genuinely deleted since validation (ENOENT) must still heal
-  // cleanly rather than start refusing every legitimate "file disappeared" case.
+  // Non-firing companion: a file genuinely deleted since validation (ENOENT) must still heal cleanly rather than start refusing every legitimate "file disappeared" case.
   it('non-firing: an ENOENT pinned-open failure during force-refresh still returns cleanly', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const file = path.join(root, 'gone.ts')
@@ -1107,22 +938,16 @@ describe('mcp read confinement -- pinned reindex failure handling', () => {
     ).not.toThrow(ConfinementIdentityError)
   })
 
-  // Finding C: a genuine identity mismatch (not a fallback -- readPinnedBytes itself throws
-  // ConfinementIdentityError from its fstat check) surfacing through healStaleIndex's self-heal
-  // path, on a file made stale relative to its indexed sha. Pre-fix, healStaleIndex's `catch {}`
-  // swallowed this along with ordinary parse/I/O errors and returned normally; the pinning
-  // contract requires a detected replacement to be refused, so this must propagate instead.
+  // Finding C: a genuine identity mismatch (not a fallback -- readPinnedBytes itself throws ConfinementIdentityError from its fstat check) surfacing through healStaleIndex's self-heal path, on a file made stale relative to its indexed sha. Pre-fix, healStaleIndex's `catch {}` swallowed this along with ordinary parse/I/O errors and returned normally; the pinning contract requires a detected replacement to be refused, so this must propagate instead.
   it('healStaleIndex rethrows a confinement identity mismatch instead of swallowing it', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const file = path.join(root, 'lib.ts')
     fs.writeFileSync(file, 'export function greet(): string {\n  return "hi"\n}\n')
     // Index it once for real (unpinned), so a `files` row with a sha exists to go stale against.
     withPinnedReads(null, () => runRead({ spec: file, projectRoot: root }))
-    // Change the on-disk content without updating the indexed sha, so healStaleIndex sees it as
-    // stale and attempts a pinned reindex.
+    // Change the on-disk content without updating the indexed sha, so healStaleIndex sees it as stale and attempts a pinned reindex.
     fs.writeFileSync(file, 'export function greet(): string {\n  return "changed"\n}\n')
-    // A pin no real file can satisfy: dev/ino are unsigned, so a negative device number cannot be
-    // the identity of anything actually openable.
+    // A pin no real file can satisfy: dev/ino are unsigned, so a negative device number cannot be the identity of anything actually openable.
     const pins = new Map<string, string>([[pinKey(file), '-1:-1']])
 
     expect(() => withPinnedReads(pins, () => healStaleIndex(file))).toThrow(ConfinementIdentityError)
@@ -1130,22 +955,7 @@ describe('mcp read confinement -- pinned reindex failure handling', () => {
   })
 })
 
-// Regression for the missing NEGATIVE pin: an in-root target that does not exist YET at gate-
-// validation time has no dev:ino for checkWithinProjectRoot to stat, so pre-fix `confineTargets`
-// (src/mcp_server.ts) simply skipped recording anything for it -- "no pin for this path" then meant
-// BOTH "confinement is off" and "confined but genuinely unpinnable", and every pin-aware read helper
-// (readFileText, readFileBytes, indexFileSyncPinned, runGrep's own fileExists/directory checks)
-// read a missing map entry as "not confined" and fell through to a raw, unverified read. An attacker
-// who names an in-root path that does not exist yet, waits for the gate to validate it as
-// absent-but-in-root, then creates an out-of-root symlink there before the actual read runs, got the
-// swapped file's contents served straight through. Fixed by recording ABSENT_PIN (read_commands.ts)
-// for every validated-absent target, so the read helpers can tell "unconfined" and "confined but
-// unpinnable" apart and refuse a create-after-validate swap (verifyStillAbsent) instead of silently
-// serving it. The swap is driven off `absentPathSwapState`, which fires on whichever syscall first
-// touches the not-yet-existing path after the gate has validated it -- readFileText's own
-// `fs.readFileSync` fallback for `read`/`section`, or `fileExists`'s `fs.statSync` for `grep` -- the
-// same deterministic swap-timing technique the "Test B" cases above use, just landing on a target
-// that was absent (not merely present-and-different) at validation time.
+// Regression for the missing NEGATIVE pin: an in-root target that does not exist YET at gate- validation time has no dev:ino for checkWithinProjectRoot to stat, so pre-fix `confineTargets` (src/mcp_server.ts) simply skipped recording anything for it -- "no pin for this path" then meant BOTH "confinement is off" and "confined but genuinely unpinnable", and every pin-aware read helper (readFileText, readFileBytes, indexFileSyncPinned, runGrep's own fileExists/directory checks) read a missing map entry as "not confined" and fell through to a raw, unverified read. An attacker who names an in-root path that does not exist yet, waits for the gate to validate it as absent-but-in-root, then creates an out-of-root symlink there before the actual read runs, got the swapped file's contents served straight through. Fixed by recording ABSENT_PIN (read_commands.ts) for every validated-absent target, so the read helpers can tell "unconfined" and "confined but unpinnable" apart and refuse a create-after-validate swap (verifyStillAbsent) instead of silently serving it. The swap is driven off `absentPathSwapState`, which fires on whichever syscall first touches the not-yet-existing path after the gate has validated it -- readFileText's own `fs.readFileSync` fallback for `read`/`section`, or `fileExists`'s `fs.statSync` for `grep` -- the same deterministic swap-timing technique the "Test B" cases above use, just landing on a target that was absent (not merely present-and-different) at validation time.
 describe('mcp read confinement -- negative pin (validated-absent race)', () => {
   let root: string
   let outside: string
@@ -1157,7 +967,6 @@ describe('mcp read confinement -- negative pin (validated-absent race)', () => {
     absentPathSwapState.triggerPath = null
     absentPathSwapState.fired = false
     absentPathSwapState.onTrigger = null
-    absentPathSwapState.statSyncSkipRemaining = 1
     for (const dir of [root, outside]) {
       if (dir !== undefined) fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -1175,7 +984,6 @@ describe('mcp read confinement -- negative pin (validated-absent race)', () => {
 
       absentPathSwapState.triggerPath = foldPathForCompare(notYet)
       absentPathSwapState.fired = false
-      absentPathSwapState.statSyncSkipRemaining = 1
       absentPathSwapState.onTrigger = () => {
         fs.symlinkSync(outsideFile, notYet, 'file')
       }
@@ -1202,7 +1010,6 @@ describe('mcp read confinement -- negative pin (validated-absent race)', () => {
 
       absentPathSwapState.triggerPath = foldPathForCompare(notYet)
       absentPathSwapState.fired = false
-      absentPathSwapState.statSyncSkipRemaining = 1
       absentPathSwapState.onTrigger = () => {
         fs.symlinkSync(outsideFile, notYet, 'file')
       }
@@ -1229,7 +1036,6 @@ describe('mcp read confinement -- negative pin (validated-absent race)', () => {
 
       absentPathSwapState.triggerPath = foldPathForCompare(notYet)
       absentPathSwapState.fired = false
-      absentPathSwapState.statSyncSkipRemaining = 1
       absentPathSwapState.onTrigger = () => {
         fs.symlinkSync(outsideFile, notYet, 'file')
       }
@@ -1244,9 +1050,7 @@ describe('mcp read confinement -- negative pin (validated-absent race)', () => {
     },
   )
 
-  // Non-firing companion, read + grep: a genuinely missing in-root path (nothing is ever created at
-  // it) must still report the ordinary missing-file result, not a confinement refusal -- proves the
-  // fix cannot pass by turning every absent file into a refusal, only a create-after-validate swap.
+  // Non-firing companion, read + grep: a genuinely missing in-root path (nothing is ever created at it) must still report the ordinary missing-file result, not a confinement refusal -- proves the fix cannot pass by turning every absent file into a refusal, only a create-after-validate swap.
   it('non-firing: a genuinely missing in-root read still reports the ordinary missing-file result, not a refusal', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const notYet = path.join(root, 'still-missing.txt')

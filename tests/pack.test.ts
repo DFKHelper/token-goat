@@ -5,29 +5,26 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { stripComments, scanSecrets, formatMarkdown, formatXml, formatPlain, collectFiles, estimateBudget, formatBudgetText } from '../src/pack.js'
 import { estimateTokens as sharedEstimateTokens } from '../src/overflow_guard.js'
 
-// Mutable flag consumed by the 'node:fs' mock below, letting a single test simulate a
-// TOCTOU dev/ino mismatch for one specific realpath while every other fs.statSync call
-// (in this file's setup/teardown and in every other test) passes through unmodified.
-const toctouMismatchPath: { value: string | null } = vi.hoisted(() => ({ value: null }))
+// Mutable state consumed by the 'node:fs' mock below, letting a single test simulate a TOCTOU swap for one specific file (under either of its spellings) while every other fs.openSync call (in this file's setup/teardown and in every other test) passes through unmodified. openWithinRoot opens that path twice: once for the content descriptor, then once more to take the resolved path's identity through a handle. From the second open on, the mock hands back a descriptor on `decoy` instead, which is what the path resolving to a different object between the open and the check looks like.
+const toctouMismatchPath: { value: readonly string[] | null; decoy: string | null; opens: number } = vi.hoisted(() => ({ value: null, decoy: null, opens: 0 }))
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   return {
     ...actual,
-    statSync: ((p: fs.PathLike, opts?: unknown) => {
-      const real = actual.statSync(p, opts as never)
-      if (toctouMismatchPath.value !== null && p === toctouMismatchPath.value) {
-        return { ...real, dev: real.dev + 1, ino: real.ino + 1 } as fs.Stats
+    openSync: ((p: fs.PathLike, ...rest: unknown[]) => {
+      if (toctouMismatchPath.value !== null && toctouMismatchPath.decoy !== null && typeof p === 'string' && toctouMismatchPath.value.includes(p)) {
+        toctouMismatchPath.opens += 1
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (toctouMismatchPath.opens >= 2) return (actual.openSync as any)(toctouMismatchPath.decoy, ...rest)
       }
-      return real
-    }) as typeof fs.statSync,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (actual.openSync as any)(p, ...rest)
+    }) as typeof fs.openSync,
   }
 })
 
-// Capability probe: creating a real symlink on Windows requires either an
-// elevated shell or Developer Mode. Run it once at module load so the suite
-// below can skip cleanly (with a reason) on a locked-down runner instead of
-// failing every test with EPERM.
+// Capability probe: creating a real symlink on Windows requires either an elevated shell or Developer Mode. Run it once at module load so the suite below can skip cleanly (with a reason) on a locked-down runner instead of failing every test with EPERM.
 const CAN_SYMLINK = (() => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-symlink-probe-'))
   try {
@@ -112,11 +109,7 @@ describe('stripComments', () => {
     expect(result).toBe(code)
   })
 
-  // HAND-DERIVED from https://groovy-lang.org/syntax.html, section "Dollar slashy string": a
-  // `$/.../$` string needs no escaping of a forward slash, so `//` and `/*` are ordinary content
-  // in one. Packing must hand the model the code the file actually holds; the quote-state guard
-  // that protects a `"`-quoted URL knew nothing about Groovy's slash-delimited strings, so
-  // `--strip-comments` truncated the line at the `//` and ate the middle of the `/* */` pair.
+  // HAND-DERIVED from https://groovy-lang.org/syntax.html, section "Dollar slashy string": a `$/.../$` string needs no escaping of a forward slash, so `//` and `/*` are ordinary content in one. Packing must hand the model the code the file actually holds; the quote-state guard that protects a `"`-quoted URL knew nothing about Groovy's slash-delimited strings, so `--strip-comments` truncated the line at the `//` and ate the middle of the `/* */` pair.
   it('leaves // and /* inside a Groovy dollar-slashy string untouched', () => {
     const code = 'def u = $/https://ex.com/$\ndef c = $/ a /* b /$\n'
     expect(stripComments(code, 'build.gradle')).toBe(code)
@@ -156,10 +149,7 @@ describe('stripComments', () => {
   })
 
   it('leaves a `#`-looking sequence inside a multi-line Python triple-quoted string untouched', () => {
-    // Regression: isInsideStringLiteral only counted quote characters from the start of the
-    // CURRENT line, so a triple-quoted string opened on an earlier line looked "not open" on
-    // every subsequent line, and a `#` inside its content on one of those lines was misread as
-    // a real comment and stripped, corrupting the string's content.
+    // Regression: isInsideStringLiteral only counted quote characters from the start of the CURRENT line, so a triple-quoted string opened on an earlier line looked "not open" on every subsequent line, and a `#` inside its content on one of those lines was misread as a real comment and stripped, corrupting the string's content.
     const code = 'x = """\n# not a comment, just text inside the string\nstill text\n"""\ny = 1\n'
     const result = stripComments(code, 'file.py')
     expect(result).toContain('# not a comment, just text inside the string')
@@ -168,13 +158,7 @@ describe('stripComments', () => {
   })
 
   it('still strips a real comment on a later line after an apostrophe inside a double-quoted string (.ts)', () => {
-    // Regression: advanceQuoteState tracked dq/sq/bt as independent toggles instead of a single
-    // mutually-exclusive "which quote is open" state (unlike languages/common.ts's
-    // isInsideStringLiteral, which explicitly guards against this). An apostrophe inside a
-    // double-quoted string (e.g. "don't") flipped the independent `sq` flag to open and it never
-    // closed, since the string's own closing `"` only resets `dq`. That stray open `sq` state then
-    // carried into computeLineStartQuoteStates for every subsequent line, permanently misclassifying
-    // a real trailing `//` comment as "inside a string" and leaving it unstripped.
+    // Regression: advanceQuoteState tracked dq/sq/bt as independent toggles instead of a single mutually-exclusive "which quote is open" state (unlike languages/common.ts's isInsideStringLiteral, which explicitly guards against this). An apostrophe inside a double-quoted string (e.g. "don't") flipped the independent `sq` flag to open and it never closed, since the string's own closing `"` only resets `dq`. That stray open `sq` state then carried into computeLineStartQuoteStates for every subsequent line, permanently misclassifying a real trailing `//` comment as "inside a string" and leaving it unstripped.
     const code = 'const s = "don\'t panic";\n// real comment\nconst y = 1;\n'
     const result = stripComments(code, 'file.ts')
     expect(result).not.toContain('real comment')
@@ -182,8 +166,7 @@ describe('stripComments', () => {
   })
 
   it('leaves a `//`-looking sequence inside a multi-line template literal untouched (.ts)', () => {
-    // Same regression as the Python triple-quoted-string case above, for a JS/TS template
-    // literal that spans multiple lines.
+    // Same regression as the Python triple-quoted-string case above, for a JS/TS template literal that spans multiple lines.
     const code = 'const x = `hello\n// not a comment, just text\nworld`;\nconst y = 1;\n'
     const result = stripComments(code, 'file.ts')
     expect(result).toContain('// not a comment, just text')
@@ -244,11 +227,7 @@ describe('scanSecrets', () => {
     expect(hits.every((h) => h.kind === 'Generic API key')).toBe(true)
   })
 
-  // Regression (mutation-testing gap): once a line matches one secret pattern, scanning stops
-  // for that line (`break`) -- one hit per line, not one per matching pattern -- so a line that
-  // happens to match two patterns at once (e.g. an AWS key sitting next to a GitHub token) still
-  // only reports the first. A mutation dropping the `break` still passed the full suite, since no
-  // fixture line matches more than one pattern.
+  // Regression (mutation-testing gap): once a line matches one secret pattern, scanning stops for that line (`break`) -- one hit per line, not one per matching pattern -- so a line that happens to match two patterns at once (e.g. an AWS key sitting next to a GitHub token) still only reports the first. A mutation dropping the `break` still passed the full suite, since no fixture line matches more than one pattern.
   it('reports only the first matching pattern per line, not every pattern that matches', () => {
     const files = [
       {
@@ -261,10 +240,7 @@ describe('scanSecrets', () => {
     ]
     const hits = scanSecrets(files)
     expect(hits.length).toBe(1)
-    // Not just "one hit" -- specifically the first pattern in SECRET_PATTERNS order (AWS access
-    // key), proving the `break` stopped scanning after the first match rather than, say,
-    // scanning stopped for an unrelated reason (e.g. a dedup step) while still checking every
-    // pattern and keeping the last one.
+    // Not just "one hit" -- specifically the first pattern in SECRET_PATTERNS order (AWS access key), proving the `break` stopped scanning after the first match rather than, say, scanning stopped for an unrelated reason (e.g. a dedup step) while still checking every pattern and keeping the last one.
     expect(hits[0]!.kind).toBe('AWS access key')
   })
 })
@@ -284,10 +260,7 @@ describe('formatMarkdown', () => {
     expect(md).toContain('tokens')
   })
 
-  // Regression (mutation-testing gap): the file-count noun is singular ('file') only for exactly
-  // one file, plural ('files') otherwise -- a mutation that hardcoded 'files' unconditionally
-  // still passed the full suite, since the existing "1 file" assertion is also a substring of
-  // "1 files" and can't tell the two apart. Pin the exact boundary with a word-boundary match.
+  // Regression (mutation-testing gap): the file-count noun is singular ('file') only for exactly one file, plural ('files') otherwise -- a mutation that hardcoded 'files' unconditionally still passed the full suite, since the existing "1 file" assertion is also a substring of "1 files" and can't tell the two apart. Pin the exact boundary with a word-boundary match.
   it('uses the singular noun for exactly 1 file and the plural noun otherwise', () => {
     const one = formatMarkdown({
       files: [{ path: 'f.ts', rel_path: 'f.ts', content: 'x', lines: 1, tokens: 1 }],
@@ -315,11 +288,7 @@ describe('formatMarkdown', () => {
     expect(md).toContain('```javascript')
   })
 
-  // Regression (mutation-testing gap): getLang falls back to '' (a bare fence, no language tag)
-  // for an extension not in LANG_MAP, so a code renderer never sees a bogus/guessed language
-  // for a file type it doesn't recognize. A mutation falling back to a non-empty placeholder
-  // like 'text' still passed the full suite, since no fixture packs a file with an unknown
-  // extension.
+  // Regression (mutation-testing gap): getLang falls back to '' (a bare fence, no language tag) for an extension not in LANG_MAP, so a code renderer never sees a bogus/guessed language for a file type it doesn't recognize. A mutation falling back to a non-empty placeholder like 'text' still passed the full suite, since no fixture packs a file with an unknown extension.
   it('uses a bare code fence (no language tag) for an unrecognized file extension', () => {
     const result = {
       files: [
@@ -333,10 +302,7 @@ describe('formatMarkdown', () => {
     expect(md).toContain('## `notes.xyz`\n\n```\n')
   })
 
-  // Regression (mutation-testing gap): the skipped-files note only appends '...' when more than
-  // 3 files were skipped (only the first 3 are listed by name), so a skip count of exactly 3
-  // must render every name with no trailing ellipsis. A mutation appending '...' unconditionally
-  // still passed the full suite, since no fixture exercises the skipped-file note at all.
+  // Regression (mutation-testing gap): the skipped-files note only appends '...' when more than 3 files were skipped (only the first 3 are listed by name), so a skip count of exactly 3 must render every name with no trailing ellipsis. A mutation appending '...' unconditionally still passed the full suite, since no fixture exercises the skipped-file note at all.
   it('omits the ellipsis on the skipped-files note when exactly 3 files were skipped', () => {
     const result = {
       files: [],
@@ -345,8 +311,7 @@ describe('formatMarkdown', () => {
       total_tokens: 0,
     }
     const md = formatMarkdown(result)
-    // The closing '*' immediately after the last name already pins that nothing (an ellipsis or
-    // otherwise) was inserted between the last name and the end of the note.
+    // The closing '*' immediately after the last name already pins that nothing (an ellipsis or otherwise) was inserted between the last name and the end of the note.
     expect(md).toContain('Skipped 3 file(s): a.ts (too large), b.ts (too large), c.ts (too large)*')
   })
 
@@ -379,10 +344,7 @@ describe('formatXml', () => {
     expect(xml).toContain('</documents>')
   })
 
-  // Regression (mutation-testing gap): escapeXml must escape '&' (in addition to '<' and '>'),
-  // so file content containing a literal ampersand doesn't produce malformed XML (an unescaped
-  // '&' followed by other content isn't a valid XML entity reference). A mutation dropping the
-  // '&' replacement still passed the full suite, since no fixture's content/path contains '&'.
+  // Regression (mutation-testing gap): escapeXml must escape '&' (in addition to '<' and '>'), so file content containing a literal ampersand doesn't produce malformed XML (an unescaped '&' followed by other content isn't a valid XML entity reference). A mutation dropping the '&' replacement still passed the full suite, since no fixture's content/path contains '&'.
   it('escapes a literal ampersand in file content, not just < and >', () => {
     const result = {
       files: [
@@ -414,9 +376,7 @@ describe('formatPlain', () => {
 })
 
 describe('symlink escape guard', () => {
-  // On Windows, fs.symlinkSync can throw EPERM without elevation or
-  // Developer Mode enabled. Skip (not fail) the whole suite when this
-  // environment can't create symlinks — see CAN_SYMLINK probe above.
+  // On Windows, fs.symlinkSync can throw EPERM without elevation or Developer Mode enabled. Skip (not fail) the whole suite when this environment can't create symlinks — see CAN_SYMLINK probe above.
   it.skipIf(!CAN_SYMLINK)('collectFiles does not embed content from a symlink pointing outside the project root', () => {
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pack-outside-'))
     try {
@@ -466,12 +426,7 @@ describe('symlink escape guard', () => {
     }
   })
 
-  // Regression (mutation-testing gap): isPathWithinRoot uses path.relative rather than a naive
-  // string-prefix check, specifically so a sibling directory that merely shares root's path as a
-  // literal string prefix (e.g. root's own path with '-evil' appended) is never mistaken for a
-  // path inside root. A mutation to `resolvedPath.startsWith(rootReal)` still passed the full
-  // suite, since the existing outside-root fixtures use an unrelated mkdtempSync directory whose
-  // path never happens to share root's exact string prefix.
+  // Regression (mutation-testing gap): isPathWithinRoot uses path.relative rather than a naive string-prefix check, specifically so a sibling directory that merely shares root's path as a literal string prefix (e.g. root's own path with '-evil' appended) is never mistaken for a path inside root. A mutation to `resolvedPath.startsWith(rootReal)` still passed the full suite, since the existing outside-root fixtures use an unrelated mkdtempSync directory whose path never happens to share root's exact string prefix.
   it.skipIf(!CAN_SYMLINK)('collectFiles does not embed content from a sibling dir sharing a string prefix with root', () => {
     const siblingDir = `${TMP}-evil`
     fs.mkdirSync(siblingDir)
@@ -492,38 +447,35 @@ describe('symlink escape guard', () => {
     }
   })
 
-  // Regression (mutation-testing gap): openWithinRoot opens the fd first, then separately
-  // resolves the realpath and re-stats it, and cross-checks that realStat's dev/ino match the
-  // already-open fd's own fstatSync result -- specifically to detect a TOCTOU race where the
-  // path was repointed between the open and the identity verification. A mutation that dropped
-  // this dev/ino comparison (`void realStat; void stat` in place of the check) still passed the
-  // full suite, since no existing fixture forces fs.statSync(realPath) to disagree with the
-  // already-open fd's fstatSync result. A real filesystem race can't be triggered deterministically
-  // in a synchronous test, so this simulates it by mocking fs.statSync to return a mismatched
-  // dev/ino for the target file's realpath only, leaving every other fs.statSync call untouched.
+  // Regression (mutation-testing gap): openWithinRoot opens the fd first, then separately resolves the realpath and re-stats it, and cross-checks that realStat's dev/ino match the already-open fd's own fstatSync result -- specifically to detect a TOCTOU race where the path was repointed between the open and the identity verification. A mutation that dropped this dev/ino comparison (`void realStat; void stat` in place of the check) still passed the full suite, since no existing fixture forces the realpath's identity to disagree with the already-open fd's fstatSync result. A real filesystem race can't be triggered deterministically in a synchronous test, so this simulates it by handing back a descriptor on a different file when the target's realpath is opened a second time, leaving every other fs.openSync call untouched.
   it('collectFiles treats a post-open dev/ino identity mismatch as an escape, not a benign in-root file', () => {
     const targetPath = path.join(TMP, 'toctou-target.txt')
     fs.writeFileSync(targetPath, 'TOCTOU_SHOULD_NOT_LEAK')
     const realTargetPath = fs.realpathSync(targetPath)
 
-    toctouMismatchPath.value = realTargetPath
+    const decoyPath = path.join(TMP, 'toctou-decoy.txt')
+    fs.writeFileSync(decoyPath, 'decoy')
+    toctouMismatchPath.value = [targetPath, realTargetPath]
+    toctouMismatchPath.decoy = decoyPath
+    toctouMismatchPath.opens = 0
     try {
       const result = collectFiles(TMP, ['toctou-target.txt'])
 
       const leaked = result.files.some((f) => f.content.includes('TOCTOU_SHOULD_NOT_LEAK'))
       expect(leaked).toBe(false)
       expect(result.skipped.some((s) => s.includes('toctou-target.txt'))).toBe(true)
+      // Calibration: the swap has to have been reached, or the refusal above came from somewhere else.
+      expect(toctouMismatchPath.opens).toBe(2)
     } finally {
       toctouMismatchPath.value = null
+      toctouMismatchPath.decoy = null
     }
   })
 })
 
 describe('collectFiles token estimation matches the shared ratio', () => {
   it('uses the same chars-per-token ratio as overflow_guard.estimateTokens instead of its own drifted one', () => {
-    // A 25%-lighter local ratio (chars/4 instead of chars/3) would silently let
-    // `token-goat pack --budget N` admit content the rest of the codebase considers
-    // over-budget, since cmdPack's budget gate compares against this same field.
+    // A 25%-lighter local ratio (chars/4 instead of chars/3) would silently let `token-goat pack --budget N` admit content the rest of the codebase considers over-budget, since cmdPack's budget gate compares against this same field.
     const content = 'x'.repeat(300)
     fs.writeFileSync(path.join(TMP, 'sample.ts'), content)
     const result = collectFiles(TMP, ['sample.ts'])
@@ -543,8 +495,7 @@ describe('estimateBudget token estimation', () => {
 
     const entry = result.entries[0]
     expect(entry).toBeDefined()
-    // A capped, un-extrapolated estimate would report ~25000 (100000 / 4); the true
-    // size-proportional estimate is ~255000 (1020000 / 4).
+    // A capped, un-extrapolated estimate would report ~25000 (100000 / 4); the true size-proportional estimate is ~255000 (1020000 / 4).
     expect(entry!.tokens).toBeGreaterThan(200000)
   })
 })
@@ -588,11 +539,7 @@ describe('formatBudgetText', () => {
   })
 
   it('does not crash with RangeError on a very large entry count (Math.max spread over the call-stack limit)', () => {
-    // Regression for a Math.max(...array) column-width computation that blew the engine's
-    // call-stack limit once the entries array crossed ~100k-130k items -- exactly the file
-    // count a `token-goat budget`/`token-goat tokens` glob can realistically match on a large
-    // monorepo. Below that threshold Math.max(...array) works fine, so a small fixture would
-    // not have caught this; the array must actually be large enough to overflow the spread.
+    // Regression for a Math.max(...array) column-width computation that blew the engine's call-stack limit once the entries array crossed ~100k-130k items -- exactly the file count a `token-goat budget`/`token-goat tokens` glob can realistically match on a large monorepo. Below that threshold Math.max(...array) works fine, so a small fixture would not have caught this; the array must actually be large enough to overflow the spread.
     const entries = Array.from({ length: 150_000 }, (_, i) => ({
       rel_path: `file${i}.ts`,
       lines: 10,
@@ -603,10 +550,7 @@ describe('formatBudgetText', () => {
     expect(() => formatBudgetText(result)).not.toThrow()
   })
 
-  // Regression (mutation-testing gap): the skipped-files note only appends '...' when more than
-  // 5 files were skipped (only the first 5 are listed by name), so a skip count of exactly 5
-  // must list every name with no trailing ellipsis. A mutation appending '...' unconditionally
-  // still passed the full suite, since no fixture exercises the skipped-file note at all.
+  // Regression (mutation-testing gap): the skipped-files note only appends '...' when more than 5 files were skipped (only the first 5 are listed by name), so a skip count of exactly 5 must list every name with no trailing ellipsis. A mutation appending '...' unconditionally still passed the full suite, since no fixture exercises the skipped-file note at all.
   it('omits the ellipsis on the skipped note when exactly 5 files were skipped', () => {
     const result = {
       entries: [],
@@ -615,9 +559,7 @@ describe('formatBudgetText', () => {
       total_tokens: 0,
     }
     const output = formatBudgetText(result)
-    // Anchored to end-of-string (the skip note is always the last line) rather than a blanket
-    // not.toContain('...') over the whole output, which could false-fail on unrelated ellipsis
-    // text elsewhere in the report.
+    // Anchored to end-of-string (the skip note is always the last line) rather than a blanket not.toContain('...') over the whole output, which could false-fail on unrelated ellipsis text elsewhere in the report.
     expect(output).toMatch(/\n {2}Skipped: a\.ts, b\.ts, c\.ts, d\.ts, e\.ts$/)
   })
 

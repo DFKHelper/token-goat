@@ -49,6 +49,7 @@ import { getDb } from './db.js'
 import { embeddingsDepsAvailable, checkEmbeddingPreflight } from './embeddings.js'
 import { loadConfig } from './config.js'
 import { extractErrorMessage, foldCaseForContainment } from './util.js'
+import { statThroughHandle } from './handle_stat.js'
 import { normalizePath, displaySafeJson } from './paths.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal `token-goat <cmd> "..."` retry commands and `--flag`-style CLI switches. An MCP client has no shell and no CLI flags -- only this tool's own JSON params -- so a model driving an MCP client would either try to shell out (which fails) or get stuck. Rewrite those CLI-only affordances into MCP-appropriate guidance (re-call this tool with an adjusted parameter) before wrapping the text into a CallToolResult, without touching read_commands.ts/ overflow_guard.ts's CLI-facing text at all -- the CLI's own output stays unchanged.
@@ -212,8 +213,14 @@ type ContainmentCheck = { readonly inside: boolean; readonly reason: Containment
 /** No pins to install: every refusal path returns this, since nothing was admitted to pin. */
 const NO_CHECK_PINS: readonly (readonly [string, string])[] = []
 
-/** The `dev:ino` identity of `p`, or null when it cannot be stat'd -- absent, or on an unreadable parent. */
+/** The `dev:ino` identity of `p` as an open handle reports it, or null when it cannot be determined -- absent, or on an unreadable parent. Through a handle and not a path `stat`, because the read side compares this against an `fstat` and on Windows a path `stat` can disagree with `fstat` about the same file (see {@link statThroughHandle}); a pin taken by path then refused every confined read as "changed identity". A target that exists but cannot be opened (a sharing lock, a file without read permission) falls back to the path `stat`: the read will fail to open it as well, so what matters there is only that the pin records something present rather than `ABSENT_PIN`. */
 function identityOf(p: string): string | null {
+  try {
+    return fileIdentity(statThroughHandle(p))
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null
+  }
   try {
     return fileIdentity(fs.statSync(p, { bigint: true }))
   } catch {
@@ -238,7 +245,7 @@ export function checkWithinProjectRoot(target: string, resolvedRoot: string): Co
   const abs = path.resolve(resolvedRoot, normalizePath(target))
   // The caller's spelling, resolved without normalisation. This is what the handler forwards and therefore what the read layer opens, so it is BOTH the second containment check below and the path whose identity is worth recording.
   const absRaw = path.resolve(resolvedRoot, target)
-  // Exactly ONE stat, and it is of the raw spelling. One, because the count is load-bearing: every additional stat between this point and the read is another window an attacker can swap the target in, and the ordering argument above only holds for a stat that precedes the realpath calls. A second stat added here for the normalized spelling reopened precisely that window, and the negative-pin race tests caught it. Of the raw spelling, because that is the object the read will open. Where normalisation changed the string the two spellings can in principle name different files -- both inside the root, since both are checked -- and then the normalized key carries the raw file's identity. A read that somehow resolved to the normalized spelling would fail its identity comparison and refuse: wrong-but-closed, which is the direction a confinement gate is allowed to be wrong in. A target that does not exist (or cannot be stat'd) yields no identity: a spec may legitimately name a missing file, and that read must fail as an ordinary "could not read" rather than be refused as a swap. `pinsFor` still records it, as ABSENT.
+  // Exactly ONE stat, and it is of the raw spelling. The stat is an open plus fstat, not a path stat, so that it answers the same question as the fstat the read compares it against (see identityOf). One, because the count is load-bearing: every additional stat between this point and the read is another window an attacker can swap the target in, and the ordering argument above only holds for a stat that precedes the realpath calls. A second stat added here for the normalized spelling reopened precisely that window, and the negative-pin race tests caught it. Of the raw spelling, because that is the object the read will open. Where normalisation changed the string the two spellings can in principle name different files -- both inside the root, since both are checked -- and then the normalized key carries the raw file's identity. A read that somehow resolved to the normalized spelling would fail its identity comparison and refuse: wrong-but-closed, which is the direction a confinement gate is allowed to be wrong in. A target that does not exist (or cannot be stat'd) yields no identity: a spec may legitimately name a missing file, and that read must fail as an ordinary "could not read" rather than be refused as a swap. `pinsFor` still records it, as ABSENT.
   const identity = identityOf(absRaw)
   // The realpath is computed ONCE here and handed back, so the caller can key a pin on it without a second realpathSync -- this gate's syscall cost stays at one stat plus one realpath per target.
   const realNative = realPathForContainment(abs)

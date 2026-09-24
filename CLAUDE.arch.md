@@ -410,6 +410,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/graph_commands.ts`](src/graph_commands.ts) | CLI command handlers for code-graph commands. |
 | [`src/graph_inspection.ts`](src/graph_inspection.ts) | Code graph inspection commands: dead, deps, types, and scope. |
 | [`src/graph_traversal.ts`](src/graph_traversal.ts) | Core graph traversal, scope analysis, and cycle detection primitives. |
+| [`src/handle_stat.ts`](src/handle_stat.ts) | File identity taken through an open handle, so it can be compared against a descriptor's fstat. |
 | [`src/harness_channels.ts`](src/harness_channels.ts) | Which harnesses discard which hook event's response. |
 | [`src/hint_stats.ts`](src/hint_stats.ts) | Efficacy tracking + auto-suppression for token-goat's discretionary hint hooks (`token-goat hint-stats`). |
 | [`src/hint_suggestion_guard.ts`](src/hint_suggestion_guard.ts) | Strip shell commands that a path broke out of, from hint and deny text on its way to the model. |
