@@ -10,13 +10,7 @@ export function plural(n: number, suffix = 's'): string {
   return n === 1 ? '' : suffix
 }
 
-/**
- * Configuration for a Node test-runner filter (see {@link makeNodeTestRunnerFilter}).
- *
- * The five regexes classify each output line; the two nouns label the collapse
- * notes. `failuresSection` opts into Jest's `--verbose` duplicate-`Failures:`
- * block handling (Vitest has no such section).
- */
+/** Configuration for a Node test-runner filter (see {@link makeNodeTestRunnerFilter}). The five regexes classify each output line; the two nouns label the collapse notes. `failuresSection` opts into Jest's `--verbose` duplicate-`Failures:` block handling (Vitest has no such section). */
 export interface NodeTestRunnerConfig {
   /** Filter name (marker + stats key), e.g. `'jest'`. */
   readonly name: string
@@ -40,27 +34,17 @@ export interface NodeTestRunnerConfig {
   readonly failuresSection?: boolean
 }
 
-// ---------------------------------------------------------------------------
-// Package-manager "line-drop" family
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Package-manager "line-drop" family ---------------------------------------------------------------------------
 
-/**
- * One noise-drop rule for {@link makePackageManagerFilter}.
- */
+/** One noise-drop rule for {@link makePackageManagerFilter}. */
 export interface DropRule {
   /** Lines matching this regex are dropped instead of kept. */
   readonly re: RegExp
-  /**
-   * A function that returns the note text given the final drop count. Called
-   * only when count > 0 (via {@link maybeNote}).
-   */
+  /** A function that returns the note text given the final drop count. Called only when count > 0 (via {@link maybeNote}). */
   readonly note: (count: number) => string
 }
 
-/**
- * Configuration for a simple line-drop package-manager filter (see
- * {@link makePackageManagerFilter}).
- */
+/** Configuration for a simple line-drop package-manager filter (see {@link makePackageManagerFilter}). */
 export interface PackageManagerFilterConfig {
   /** Filter name, e.g. `'bundler'`. */
   readonly name: string
@@ -68,26 +52,13 @@ export interface PackageManagerFilterConfig {
   readonly binaries: readonly string[]
   /** Optional subcommand allowlist (same semantics as {@link ToolFilter.subcommands}). */
   readonly subcommands?: readonly string[]
-  /**
-   * When present, lines matching this regex are always kept (before drop rules
-   * are evaluated). Useful for "always keep summary lines" patterns.
-   */
+  /** When present, lines matching this regex are always kept (before drop rules are evaluated). Useful for "always keep summary lines" patterns. */
   readonly keepRe?: RegExp
-  /**
-   * Ordered drop rules. Each line is tested against these in order; the first
-   * match drops the line and increments that rule's counter.
-   */
+  /** Ordered drop rules. Each line is tested against these in order; the first match drops the line and increments that rule's counter. */
   readonly dropRules: readonly DropRule[]
 }
 
-/**
- * Build a {@link ToolFilter} for a package-manager whose noise pattern is:
- * "drop lines matching these regexes, emit a count note for each, keep
- * everything else". The returned filter's `compress` method combines stdout
- * and stderr, walks lines, and emits structured notes.
- *
- * Currently used by: BundlerFilter, PubFilter.
- */
+/** Build a {@link ToolFilter} for a package-manager whose noise pattern is: "drop lines matching these regexes, emit a count note for each, keep everything else". The returned filter's `compress` method combines stdout and stderr, walks lines, and emits structured notes. Currently used by: BundlerFilter, PubFilter. */
 export function makePackageManagerFilter(cfg: PackageManagerFilterConfig): ToolFilter {
   return new (class extends ToolFilter {
     readonly name = cfg.name
@@ -128,38 +99,19 @@ export function makePackageManagerFilter(cfg: PackageManagerFilterConfig): ToolF
   })()
 }
 
-// ---------------------------------------------------------------------------
-// Node test-runner family
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Node test-runner family ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Linter filter family
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Linter filter family ---------------------------------------------------------------------------
 
-/**
- * Configuration for a single-binary linter filter produced by
- * {@link makeLinterFilter}. Covers linters whose output is a stream of
- * per-file violation lines, optional progress/noise to drop, and an optional
- * summary line(s) to hold until the end. Each violation is parsed by
- * `parseDiagnostic` to extract its severity and a stable rule identifier;
- * lines that do not match are passed through verbatim.
- *
- * Currently used by: SwiftLintFilter.
- */
+/** Configuration for a single-binary linter filter produced by {@link makeLinterFilter}. Covers linters whose output is a stream of per-file violation lines, optional progress/noise to drop, and an optional summary line(s) to hold until the end. Each violation is parsed by `parseDiagnostic` to extract its severity and a stable rule identifier; lines that do not match are passed through verbatim. Currently used by: SwiftLintFilter. */
 export interface LinterFilterConfig {
   /** Filter name, e.g. `'swiftlint'`. */
   readonly name: string
   /** Command basenames this filter handles. */
   readonly binaries: readonly string[]
-  /**
-   * Called for each output line. Returns `{ severity, ruleId }` when the line
-   * is a violation, or `null` to pass the line through unchanged.
-   */
+  /** Called for each output line. Returns `{ severity, ruleId }` when the line is a violation, or `null` to pass the line through unchanged. */
   readonly parseDiagnostic: (line: string) => { severity: string; ruleId: string } | null
-  /**
-   * Lines matching this regex are set aside and emitted after the per-rule
-   * collapse notes (e.g. the "Done linting!" summary).
-   */
+  /** Lines matching this regex are set aside and emitted after the per-rule collapse notes (e.g. the "Done linting!" summary). */
   readonly summaryLast?: RegExp
   /** Lines matching this regex are counted and dropped (progress noise). */
   readonly dropRe?: RegExp
@@ -167,29 +119,13 @@ export interface LinterFilterConfig {
   readonly dropLabel?: (count: number) => string
   /** Number of violations to keep per rule before collapsing. Default 3. */
   readonly keepPerRule?: number
-  /**
-   * Severity values that are always kept regardless of the per-rule cap
-   * (e.g. `['error', 'serious']`).
-   */
+  /** Severity values that are always kept regardless of the per-rule cap (e.g. `['error', 'serious']`). */
   readonly alwaysKeepSeverities?: readonly string[]
-  /**
-   * Produces the per-rule collapse note injected after the last kept violation
-   * for that rule. Called with the rule ID and the number of elided violations.
-   */
+  /** Produces the per-rule collapse note injected after the last kept violation for that rule. Called with the rule ID and the number of elided violations. */
   readonly collapseNote?: (ruleId: string, extra: number) => string
 }
 
-/**
- * Build a {@link ToolFilter} for a linter that emits per-violation lines with
- * an extractable rule ID and severity. The factory loop: (1) drop progress noise
- * counted via `dropRe`; (2) hold summary lines via `summaryLast`; (3) parse each
- * remaining line via `parseDiagnostic`; (4) always keep lines whose severity is
- * in `alwaysKeepSeverities`; (5) keep the first `keepPerRule` violations per rule,
- * then emit a `collapseNote` for the remainder; (6) append held summary lines and
- * notes last.
- *
- * Currently used by: SwiftLintFilter.
- */
+/** Build a {@link ToolFilter} for a linter that emits per-violation lines with an extractable rule ID and severity. The factory loop: (1) drop progress noise counted via `dropRe`; (2) hold summary lines via `summaryLast`; (3) parse each remaining line via `parseDiagnostic`; (4) always keep lines whose severity is in `alwaysKeepSeverities`; (5) keep the first `keepPerRule` violations per rule, then emit a `collapseNote` for the remainder; (6) append held summary lines and notes last. Currently used by: SwiftLintFilter. */
 export function makeLinterFilter(cfg: LinterFilterConfig): ToolFilter {
   const keepPerRule = cfg.keepPerRule ?? 3
   const alwaysKeep = new Set(cfg.alwaysKeepSeverities ?? [])
@@ -262,18 +198,7 @@ export function makeLinterFilter(cfg: LinterFilterConfig): ToolFilter {
   })()
 }
 
-/**
- * Build a {@link ToolFilter} for a Node test runner from `cfg`. The returned
- * filter overrides `compress` directly (test runners exit non-zero on failures,
- * so the base error-passthrough must stay off — FAIL blocks are preserved by the
- * loop, not dumped raw).
- *
- * The loop is a faithful port of the Python `JestFilter` / `VitestFilter`
- * `compress` methods, unified: file PASS headers and per-test ticks collapse to
- * counts, FAIL blocks pass through verbatim until a blank line, summary lines
- * are always kept, and console/stdout blocks collapse to a single count line.
- * All state is per-call (locals), so a single shared instance is concurrency-safe.
- */
+/** Build a {@link ToolFilter} for a Node test runner from `cfg`. The returned filter overrides `compress` directly (test runners exit non-zero on failures, so the base error-passthrough must stay off — FAIL blocks are preserved by the loop, not dumped raw). The loop is a faithful port of the Python `JestFilter` / `VitestFilter` `compress` methods, unified: file PASS headers and per-test ticks collapse to counts, FAIL blocks pass through verbatim until a blank line, summary lines are always kept, and console/stdout blocks collapse to a single count line. All state is per-call (locals), so a single shared instance is concurrency-safe. */
 export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter {
   return new (class extends ToolFilter {
     readonly name = cfg.name
@@ -391,29 +316,14 @@ export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter 
   })()
 }
 
-// ---------------------------------------------------------------------------
-// AI-CLI streaming assistant filter family
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AI-CLI streaming assistant filter family ---------------------------------------------------------------------------
 
 /** A single rule for counting and collapsing a class of lines. */
 export interface AiCliCountedRule {
-  /**
-   * Regex to match against each line. Exactly one of `re` or `res` must be set.
-   * When `res` is set, any regex in the array matching the line increments the
-   * shared counter (OpenCode tool-call + tool-result share one counter this way).
-   */
+  /** Regex to match against each line. Exactly one of `re` or `res` must be set. When `res` is set, any regex in the array matching the line increments the shared counter (OpenCode tool-call + tool-result share one counter this way). */
   re?: RegExp
   res?: RegExp[]
-  /**
-   * Where the count summary goes:
-   *   'prepend' — emit a full `[token-goat: …]` line BEFORE the kept body.
-   *   'append'  — emit a full `[token-goat: …]` line AFTER the kept body.
-   *   'note'    — add inner text to the trailing `[token-goat: A; B; C]` note.
-   *
-   * For 'prepend'/'append' the `note` fn must return the complete
-   * `[token-goat: …]` string.  For 'note' it returns only the inner text
-   * (emitNotes wraps it).
-   */
+  /** Where the count summary goes: 'prepend' — emit a full `[token-goat: …]` line BEFORE the kept body. 'append'  — emit a full `[token-goat: …]` line AFTER the kept body. 'note'    — add inner text to the trailing `[token-goat: A; B; C]` note. For 'prepend'/'append' the `note` fn must return the complete `[token-goat: …]` string.  For 'note' it returns only the inner text (emitNotes wraps it). */
   position: 'prepend' | 'append' | 'note'
   /** Produce the note/line text. `lastLine` supplied only when `keepLast` is true. */
   note: (count: number, lastLine?: string) => string
@@ -432,10 +342,7 @@ export interface AiCliKeepLastRule {
 export interface AiCliFilterConfig {
   name: string
   binaries: string[]
-  /**
-   * When set, keep matching lines unconditionally BEFORE any drop rules.
-   * Used for Cline's "wants to execute" confirmation lines.
-   */
+  /** When set, keep matching lines unconditionally BEFORE any drop rules. Used for Cline's "wants to execute" confirmation lines. */
   alwaysKeepRe?: RegExp
   /** Lines matching any entry are silently dropped; count accumulates in dropped_noise. */
   dropRules: RegExp[]
@@ -445,23 +352,60 @@ export interface AiCliFilterConfig {
   keepLastRules?: AiCliKeepLastRule[]
   /** Produce the trailing note text for the dropped_noise tally. Omit to suppress. */
   droppedNoiseNote?: (n: number) => string
-  /**
-   * When provided, completely replaces the default `matches()` implementation
-   * (binary-stem check + optional subcommand check). The function receives the
-   * full prefix-stripped argv.
-   */
+  /** When provided, completely replaces the default `matches()` implementation (binary-stem check + optional subcommand check). The function receives the full prefix-stripped argv. */
   customMatches?: (argv: string[]) => boolean
 }
 
-/**
- * Factory for AI-CLI streaming assistant filters. All 10+ AI-CLI tools share
- * the same compression skeleton: drop spinner/banner/boilerplate noise, count
- * and collapse progress lines, keep the last value seen for token-usage / cost
- * / context metrics, and emit everything as a compact trailing note.
- *
- * The bespoke CodexExecFilter (different structural algorithm) is not built
- * with this factory.
- */
+/** Factory for AI-CLI streaming assistant filters. All 10+ AI-CLI tools share the same compression skeleton: drop spinner/banner/boilerplate noise, count and collapse progress lines, keep the last value seen for token-usage / cost / context metrics, and emit everything as a compact trailing note. The bespoke CodexExecFilter (different structural algorithm) is not built with this factory. */
+/** Running tallies for one compressBody pass over a counted-rule list. */
+type CountedRuleTally = { count: number; lastLine: string | undefined }[]
+
+function initCountedRules(rules: AiCliCountedRule[]): CountedRuleTally {
+  return rules.map(() => ({ count: 0, lastLine: undefined as string | undefined }))
+}
+
+/** True when the line matches the rule: any regex in `res`, else `re` (exactly one of the two is set). */
+function countedRuleMatches(rule: AiCliCountedRule, line: string): boolean {
+  return rule.res ? rule.res.some((r) => r.test(line)) : (rule.re?.test(line) ?? false)
+}
+
+/** Count `line` against the first matching rule (applying `keepLast`) and return its index, or -1 when none match. */
+function applyCountedRules(rules: AiCliCountedRule[], counts: CountedRuleTally, line: string): number {
+  for (let i = 0; i < rules.length; i++) {
+    if (countedRuleMatches(rules[i]!, line)) {
+      counts[i]!.count++
+      if (rules[i]!.keepLast) counts[i]!.lastLine = line.trim()
+      return i
+    }
+  }
+  return -1
+}
+
+/** Prepend-position notes, then the kept body, then append-position notes. */
+function assembleCountedOutput(rules: AiCliCountedRule[], counts: CountedRuleTally, kept: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < rules.length; i++) {
+    if (rules[i]!.position === 'prepend' && counts[i]!.count > 0)
+      out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+  }
+  out.push(...kept)
+  for (let i = 0; i < rules.length; i++) {
+    if (rules[i]!.position === 'append' && counts[i]!.count > 0)
+      out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+  }
+  return out
+}
+
+/** Inner-text trailing notes for note-position rules with a non-zero count. */
+function countedRuleNotes(rules: AiCliCountedRule[], counts: CountedRuleTally): string[] {
+  const notes: string[] = []
+  for (let i = 0; i < rules.length; i++) {
+    if (rules[i]!.position === 'note' && counts[i]!.count > 0)
+      notes.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+  }
+  return notes
+}
+
 export function makeAiCliFilter(cfg: AiCliFilterConfig): ToolFilter {
   return new (class extends ToolFilter {
     readonly name = cfg.name
@@ -480,7 +424,7 @@ export function makeAiCliFilter(cfg: AiCliFilterConfig): ToolFilter {
       let droppedNoise = 0
 
       const rules = cfg.countedRules ?? []
-      const counts = rules.map(() => ({ count: 0, lastLine: undefined as string | undefined }))
+      const counts = initCountedRules(rules)
       const klRules = cfg.keepLastRules ?? []
       const klValues: (string | undefined)[] = klRules.map(() => undefined)
 
@@ -494,18 +438,7 @@ export function makeAiCliFilter(cfg: AiCliFilterConfig): ToolFilter {
         }
         if (dropped) continue
 
-        let counted = false
-        for (let i = 0; i < rules.length; i++) {
-          const rule = rules[i]!
-          const matched = rule.res ? rule.res.some((r) => r.test(line)) : rule.re!.test(line)
-          if (matched) {
-            counts[i]!.count++
-            if (rule.keepLast) counts[i]!.lastLine = line.trim()
-            counted = true
-            break
-          }
-        }
-        if (counted) continue
+        if (applyCountedRules(rules, counts, line) >= 0) continue
 
         let kl = false
         for (let i = 0; i < klRules.length; i++) {
@@ -516,25 +449,9 @@ export function makeAiCliFilter(cfg: AiCliFilterConfig): ToolFilter {
         kept.push(line)
       }
 
-      const out: string[] = []
-      for (let i = 0; i < rules.length; i++) {
-        if (rules[i]!.position === 'prepend' && counts[i]!.count > 0) {
-          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
-        }
-      }
-      out.push(...kept)
-      for (let i = 0; i < rules.length; i++) {
-        if (rules[i]!.position === 'append' && counts[i]!.count > 0) {
-          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
-        }
-      }
+      const out = assembleCountedOutput(rules, counts, kept)
 
-      const notes: string[] = []
-      for (let i = 0; i < rules.length; i++) {
-        if (rules[i]!.position === 'note' && counts[i]!.count > 0) {
-          notes.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
-        }
-      }
+      const notes = countedRuleNotes(rules, counts)
       for (let i = 0; i < klRules.length; i++) {
         const v = klValues[i]
         if (v !== undefined) notes.push(klRules[i]!.note(v))
@@ -548,18 +465,9 @@ export function makeAiCliFilter(cfg: AiCliFilterConfig): ToolFilter {
   })()
 }
 
-// ---------------------------------------------------------------------------
-// Language-runtime filter family (Batch K1)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Language-runtime filter family (Batch K1) ---------------------------------------------------------------------------
 
-/**
- * A single deduplication rule for {@link makeLanguageFilter}.
- *
- * Lines matching `re` are deduplicated: up to `maxPerKey` (default 3)
- * occurrences of each distinct `line.slice(0, keyLen)` key are kept verbatim;
- * additional occurrences are silently elided and counted. The total elided
- * count is emitted as a trailing `[token-goat: …]` inner note via `note`.
- */
+/** A single deduplication rule for {@link makeLanguageFilter}. Lines matching `re` are deduplicated: up to `maxPerKey` (default 3) occurrences of each distinct `line.slice(0, keyLen)` key are kept verbatim; additional occurrences are silently elided and counted. The total elided count is emitted as a trailing `[token-goat: …]` inner note via `note`. */
 export interface LangDedupeRule {
   /** Matches lines subject to deduplication (e.g. WARNING: lines). */
   re: RegExp
@@ -571,16 +479,7 @@ export interface LangDedupeRule {
   note: (count: number) => string
 }
 
-/**
- * Configuration for {@link makeLanguageFilter}.
- *
- * Filters configured here share the same loop skeleton: merge stdout+stderr,
- * walk lines applying always-keep → count-rules → dedup-rules → drop-rules,
- * then assemble prepend-notes + kept body + append/trailing notes.
- *
- * Reuses {@link AiCliCountedRule} for count-and-drop rules so the same
- * `position: 'prepend' | 'append' | 'note'` convention applies.
- */
+/** Configuration for {@link makeLanguageFilter}. Filters configured here share the same loop skeleton: merge stdout+stderr, walk lines applying always-keep → count-rules → dedup-rules → drop-rules, then assemble prepend-notes + kept body + append/trailing notes. Reuses {@link AiCliCountedRule} for count-and-drop rules so the same `position: 'prepend' | 'append' | 'note'` convention applies. */
 export interface LanguageFilterConfig {
   name: string
   binaries: string[]
@@ -601,15 +500,7 @@ export interface LanguageFilterConfig {
   droppedNoiseNote?: (n: number) => string
 }
 
-/**
- * Factory for compiler/interpreter language filters. All members in the
- * "shared loop" group share the same skeleton: merge output, walk lines with
- * always-keep / count-drop / dedup / drop rules, then assemble
- * prepend-notes + body + trailing-notes. Members with genuinely unique
- * multi-mode routing (BunFilter, DenoFilter, etc.) are implemented as
- * bespoke classes; this factory covers ErlangFilter, CrystalFilter,
- * HaskellFilter, ElmFilter, JuliaFilter, and PowerShellFilter.
- */
+/** Factory for compiler/interpreter language filters. All members in the "shared loop" group share the same skeleton: merge output, walk lines with always-keep / count-drop / dedup / drop rules, then assemble prepend-notes + body + trailing-notes. Members with genuinely unique multi-mode routing (BunFilter, DenoFilter, etc.) are implemented as bespoke classes; this factory covers ErlangFilter, CrystalFilter, HaskellFilter, ElmFilter, JuliaFilter, and PowerShellFilter. */
 export function makeLanguageFilter(cfg: LanguageFilterConfig): ToolFilter {
   return new (class extends ToolFilter {
     readonly name = cfg.name
@@ -629,7 +520,7 @@ export function makeLanguageFilter(cfg: LanguageFilterConfig): ToolFilter {
       let droppedNoise = 0
 
       const rules = cfg.countedRules ?? []
-      const counts = rules.map(() => ({ count: 0, lastLine: undefined as string | undefined }))
+      const counts = initCountedRules(rules)
       const dRules = cfg.dedupeRules ?? []
       const dState = dRules.map(() => ({ elided: 0, seen: new Map<string, number>() }))
 
@@ -638,18 +529,7 @@ export function makeLanguageFilter(cfg: LanguageFilterConfig): ToolFilter {
         if (cfg.alwaysKeepRe?.test(line)) { kept.push(line); continue }
 
         // 2. Count-and-drop rules (prepend / append / note positions).
-        let counted = false
-        for (let i = 0; i < rules.length; i++) {
-          const rule = rules[i]!
-          const hit = rule.res ? rule.res.some((r) => r.test(line)) : (rule.re?.test(line) ?? false)
-          if (hit) {
-            counts[i]!.count++
-            if (rule.keepLast) counts[i]!.lastLine = line.trim()
-            counted = true
-            break
-          }
-        }
-        if (counted) continue
+        if (applyCountedRules(rules, counts, line) >= 0) continue
 
         // 3. Dedup rules.
         let deduped = false
@@ -676,23 +556,10 @@ export function makeLanguageFilter(cfg: LanguageFilterConfig): ToolFilter {
       }
 
       // Assemble: prepend notes → kept body → append notes.
-      const out: string[] = []
-      for (let i = 0; i < rules.length; i++) {
-        if (rules[i]!.position === 'prepend' && counts[i]!.count > 0)
-          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
-      }
-      out.push(...kept)
-      for (let i = 0; i < rules.length; i++) {
-        if (rules[i]!.position === 'append' && counts[i]!.count > 0)
-          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
-      }
+      const out = assembleCountedOutput(rules, counts, kept)
 
       // Trailing notes.
-      const notes: string[] = []
-      for (let i = 0; i < rules.length; i++) {
-        if (rules[i]!.position === 'note' && counts[i]!.count > 0)
-          notes.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
-      }
+      const notes = countedRuleNotes(rules, counts)
       for (let i = 0; i < dRules.length; i++) {
         if (dState[i]!.elided > 0) notes.push(dRules[i]!.note(dState[i]!.elided))
       }
