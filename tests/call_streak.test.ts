@@ -363,6 +363,25 @@ describe('call streak through the real relay (clock pinned to captured timings)'
     expect(emissions(ignored, 'search_brake')).toEqual([{ acted_on: 0, resolved: 1, observable: 1 }])
   })
 
+  // A new user prompt is a different task, so its first calls are no verdict on a hint shown under the last prompt. The row is closed as unobservable: left unresolved it still counted as ignored in hint-stats, and the agent's next verdict of that category swept it up too.
+  it('closes a batch hint as unobservable when the next calls come under a new user prompt', async () => {
+    const ctx = newSession()
+    let t = T0
+    for (const p of ['a', 'b', 'c']) t = (await serialGrep(ctx, t, p)).next
+    const nextPrompt = { ...ctx, prompt_id: 'second-prompt' }
+    for (const p of ['d', 'e']) t = (await serialGrep(nextPrompt, t, p)).next
+    expect(emissions(ctx, 'read_batch')).toEqual([{ acted_on: 0, resolved: 1, observable: 0 }])
+  })
+
+  it('closes a search brake as unobservable when the next search comes under a new user prompt', async () => {
+    const ctx = newSession()
+    let t = T0
+    for (const p of ['m1', 'm2', 'm3']) t = (await serialGrep(ctx, t, p, 0)).next
+    const nextPrompt = { ...ctx, prompt_id: 'second-prompt' }
+    await serialGrep(nextPrompt, t, 'n1')
+    expect(emissions(ctx, 'search_brake')).toEqual([{ acted_on: 0, resolved: 1, observable: 0 }])
+  })
+
   it('logs the Grep dedup note as an unobservable grep_dedup_hint emission', async () => {
     const ctx = newSession()
     // FORMAT-DERIVED: content-mode Grep `toolUseResult` shape as above; the dedup handler counts the lines of `content`, and six clears the default grep_dedup_min_matches of 5.

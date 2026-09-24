@@ -1872,7 +1872,11 @@ const CAPTURED_TRANSCRIPT_HEAD = '{"parentUuid":null,"isSidechain":true,"promptI
 const CAPTURED_PLAIN_JSON_HEADS = [
   '{"transcripts":514,"toolMessages":96948,"toolUses":100368,"batchedMessages":2362,"searchOnlyMessages":22}\n',
   '{\n  "summary": "Read-only parallel investigation of four independent open defects in token-goat",\n  "agentCount": 4,\n  "logs": []\n}\n',
+  // CAPTURE (this machine, 2026-09-24): the first line `codex exec --json` printed to stdout, an event stream whose first key is `type` like a transcript's can be.
+  '{"type":"thread.started","thread_id":"01a0d313-cf5e-7542-965c-20c88a6ac82a"}\n',
 ]
+// CAPTURE (this machine, 2026-09-24): the first line of the one subagent transcript of 2,736 that does not start with `parentUuid`, ~/.claude/projects/C--Projects-yeswehack/54615dbe-.../subagents/agent-ac9b4f97099fcfede.jsonl, verbatim.
+const CAPTURED_FORK_CONTEXT_REF_HEAD = '{"type":"fork-context-ref","agentId":"ac9b4f97099fcfede","parentSessionId":"54615dbe-e546-4428-b29c-0dee60752f33","parentLastUuid":"df8f3493-0213-48f0-8781-782b7b70a583","contextLength":106}\n'
 
 describe('preBashHandler — orchestrator state file exemption', () => {
   beforeEach(() => {
@@ -2077,6 +2081,21 @@ describe('preBashHandler — task output file interception', () => {
         expect(result.message).toContain('JSONL agent transcript')
         expect(result.message).toContain('--transcript')
       }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('denies cat on a transcript whose first key is type, when it is a fork-context-ref', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const jsonlFile = join(tasksDir, 'ac9b4f97099fcfede.output')
+    writeFileSync(jsonlFile, CAPTURED_FORK_CONTEXT_REF_HEAD)
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${jsonlFile}"`))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') expect(result.message).toContain('JSONL agent transcript')
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }

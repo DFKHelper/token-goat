@@ -231,6 +231,11 @@ function withStreakState(event: HookEvent, update: (state: StreakState) => strin
   const promptId = event.raw['prompt_id']
   if (typeof promptId === 'string' && promptId !== state.promptId) {
     breakStreaks(event, state)
+    // A new prompt is a different task, so its first calls say nothing about a hint shown in the last one: close any verdict still open as unobservable, which hint-stats leaves out of efficacy instead of scoring it as ignored.
+    if (state.batchVerdict !== 'none') settleSelfScoredHints('read_batch', event, null)
+    if (state.brakeVerdict) settleSelfScoredHints('search_brake', event, null)
+    state.batchVerdict = 'none'
+    state.brakeVerdict = false
     state.promptId = promptId
   }
   const line = update(state)

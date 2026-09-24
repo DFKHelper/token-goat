@@ -108,12 +108,12 @@ export function uncorrelatedHint(category: HintCategory): (text: string) => Clas
 /** Categories whose acted-on verdict comes from the module that emitted them ({@link settleSelfScoredHints}) rather than from a later Bash command naming a correlator: what they ask for is a pattern of calls, which no single command can show. Their rows are observable whatever their correlator, which holds the emitting agent's {@link sessionStateKey} rather than a pointer, and {@link resolvePendingHintsForEvent} leaves them alone. */
 const SELF_SCORED_HINT_CATEGORIES: ReadonlySet<HintCategory> = new Set<HintCategory>(['read_batch', 'search_brake'])
 
-/** Settle every pending emission of a self-scored category this agent logged with the verdict its emitter observed. Claude Code subagents share their parent's session_id, so the rows are matched on the agent key their emitter logged as the correlator too: one agent's verdict never resolves another's row. */
-export function settleSelfScoredHints(category: HintCategory, event: HookEvent, actedOn: boolean): void {
+/** Settle every pending emission of a self-scored category this agent logged with the verdict its emitter observed. Claude Code subagents share their parent's session_id, so the rows are matched on the agent key their emitter logged as the correlator too: one agent's verdict never resolves another's row. `null` closes the rows as unobservable: no verdict was seen, so hint-stats leaves them out of efficacy. */
+export function settleSelfScoredHints(category: HintCategory, event: HookEvent, actedOn: boolean | null): void {
   try {
     getDb(globalDbPath())
-      .prepare(`UPDATE hint_emissions SET acted_on = ?, resolved = 1 WHERE category = ? AND session_id = ? AND correlator IS ? AND resolved = 0`)
-      .run(actedOn ? 1 : 0, category, event.sessionId, sessionStateKey(event))
+      .prepare(`UPDATE hint_emissions SET acted_on = ?, observable = ?, resolved = 1 WHERE category = ? AND session_id = ? AND correlator IS ? AND resolved = 0`)
+      .run(actedOn === true ? 1 : 0, actedOn === null ? 0 : 1, category, event.sessionId, sessionStateKey(event))
   } catch {
     // Fail-soft, same contract as logHintEmission.
   }

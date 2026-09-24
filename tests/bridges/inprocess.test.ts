@@ -1,7 +1,7 @@
 /** Regression coverage for the in-process hook call refactor (fixes the "double node process spawn per hook event" issue): every bridge used to spawnSync a whole second `token-goat hook <event>` node process for each hook call. They now try an in-process `import()` of the sibling `dist/token-goat-hook.mjs` hook library first (src/hook_lib.ts -> relayInProcess), falling back to the old spawnSync path only when that's unavailable. Each test here proves BOTH halves at once, against the real built bundle: 1. zero-spawn: the spawnSync fallback target is "poisoned" (writes a marker file if ever invoked) and the test asserts that marker is never created. 2. correct output: the response returned is a real hook decision -- a deny produced by the actual session-state-backed "already read this manifest file" dedup logic in hooks_read.ts, not a stub -- proving the in-process call really reached the real hook registry and that session state persists correctly across two calls. */
 import { spawnSync } from 'node:child_process'
 import { unfence } from '../helpers/unfence.js'
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -19,6 +19,7 @@ import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
 import { dataDir } from '../../src/constants.js'
 import { getDb } from '../../src/db.js'
 import { expandShortPath } from '../../src/paths.js'
+import { readSessionStateFile } from '../../src/session_store.js'
 import { summarize } from '../../src/stats.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
 
@@ -239,6 +240,42 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     await read(first)
     await expect(read(second)).resolves.toBeUndefined()
     await expect(read(first)).rejects.toThrow(/already read/)
+  })
+
+  // opencode can run tool calls concurrently in its one process, and each relay loads session state into module-level maps, awaits the handlers, then saves: a second call's load used to land while the first was suspended, so its reads were saved under the other session's key or dropped.
+  describe('concurrent relays served by one process', () => {
+    const setup = async (): Promise<{ read: (sessionID: string, filePath: string) => Promise<void>; envA: string; envB: string }> => {
+      const cwd = mkIsolated()
+      const { entryPath } = setupPoisonedEntryWithRealHookLib(cwd)
+      writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+      const pluginPath = join(cwd, 'plugin.mjs')
+      writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+      mkdirSync(join(cwd, 'a'))
+      mkdirSync(join(cwd, 'b'))
+      const mod = (await import(pathToFileURL(pluginPath).href)) as {
+        TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+      }
+      const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+      const read = (sessionID: string, filePath: string): Promise<void> => hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, { args: { filePath }, output: '' })
+      return { read, envA: makeEnvFixture(join(cwd, 'a')), envB: makeEnvFixture(join(cwd, 'b')) }
+    }
+    const savedReads = (sessionID: string): string[] => (readSessionStateFile(sessionID)?.files ?? []).map((f) => `${basename(dirname(f.path))} x${f.readCount}`).sort()
+
+    it('saves each of two sessions with exactly its own read', async () => {
+      const { read, envA, envB } = await setup()
+      const first = 'inprocess-concurrent-a-' + Math.random().toString(36).slice(2)
+      const second = 'inprocess-concurrent-b-' + Math.random().toString(36).slice(2)
+      await Promise.all([read(first, envA), read(second, envB)])
+      expect(savedReads(first)).toEqual(['a x1'])
+      expect(savedReads(second)).toEqual(['b x1'])
+    })
+
+    it('saves both reads of one session, each counted once', async () => {
+      const { read, envA, envB } = await setup()
+      const session = 'inprocess-concurrent-same-' + Math.random().toString(36).slice(2)
+      await Promise.all([read(session, envA), read(session, envB)])
+      expect(savedReads(session)).toEqual(['a x1', 'b x1'])
+    })
   })
 
   it('applies a rewriteOutput to the tool result: a fetched body carrying a secret is replaced with the redacted text, not passed through raw', async () => {

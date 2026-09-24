@@ -116,13 +116,23 @@ function safeSuggestions(output: HookOutput): HookOutput {
   return output
 }
 
-/** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. */
-export async function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number): Promise<string> {
+/** Settles when the most recent {@link relayInProcess} call has; never rejects, so one failed call never blocks the next. */
+let relayQueue: Promise<unknown> = Promise.resolve()
+
+/** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. Calls within one process run one at a time, in arrival order: each loads its session's state into module-level maps, awaits the handlers, then saves, so a concurrent call's load (opencode, OpenClaw and pi can run tool calls concurrently in one host process) used to replace the maps mid-call and save one session's reads under another's key. */
+export function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number): Promise<string> {
+  // When this event reached token-goat, before any handler time or wait behind an earlier call: call_streak.ts tells a batched call from a serial one by the gap between events.
+  const receivedAt = Date.now()
+  const run = relayQueue.then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt))
+  relayQueue = run.catch(() => undefined)
+  return run
+}
+
+/** One {@link relayInProcess} call, run once every earlier call has settled. */
+async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'
   }
-  // When this event reached token-goat, before any handler time: call_streak.ts tells a batched call from a serial one by the gap between events.
-  const receivedAt = Date.now()
   // Wall-clock from process start, not from this line: what a harness actually waits on is everything since `node` began -- module load and import resolution included -- not just dispatch, which used to be all this recorded (~28ms of an ~89ms real wait, confirmed against an external stopwatch on the production shim). `performance.now()` reads elapsed time since `performance.timeOrigin` (process start), so reading it once in the finally block below, rather than diffing two timestamps taken inside this function, is what makes the total include everything before this function ever ran -- true for every synchronous call, and for an async-detached one whose caller did not pass `harnessWaitMs`.
   try {
     // Read before the CLAUDE_CODE_SESSION_ID seeding below, which sets that variable for every harness and would make a later detection answer 'claudecode' everywhere. serializeOutput needs the true harness to decide the pre_compact wire form, so capture it while the environment still says who we are.
