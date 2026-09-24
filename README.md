@@ -191,9 +191,10 @@ cd ~/notes                  # or any plain folder of .md files, no .git required
 token-goat index . --walk   # non-git folders need --walk (git repos: plain `token-goat index .`)
 token-goat semantic --preflight   # verify runtime, model weights & project coverage
 token-goat semantic "how long to steep cold brew"
+token-goat semantic "how long to steep cold brew" "best grind for a pour-over"   # several queries in one call
 ```
 
-Returns relevance-ranked, distance-scored hits straight from the notes, the same surgical-read path used for code.
+Returns relevance-ranked, distance-scored hits straight from the notes, the same surgical-read path used for code. When the closest hit is a weak match (too far from the query to trust), a notice names the distance, so a weak hit is not mistaken for an answer.
 
 ## Token savings, measured
 
