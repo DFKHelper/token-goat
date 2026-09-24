@@ -7,20 +7,13 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.spyOn cannot patch node:child_process either (same non-configurable-namespace-export
-// issue as node:fs below), so verifying the timeoutMs -> spawnSync `timeout` pass-through
-// needs the same hoisted-mock pattern: every call passes straight through to the real
-// spawnSync, and the mock only exists so its call args are inspectable via vi.mocked(...).
+// vi.spyOn cannot patch node:child_process either (same non-configurable-namespace-export issue as node:fs below), so verifying the timeoutMs -> spawnSync `timeout` pass-through needs the same hoisted-mock pattern: every call passes straight through to the real spawnSync, and the mock only exists so its call args are inspectable via vi.mocked(...).
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof cp>()
   return { ...actual, spawnSync: vi.fn((...args: Parameters<typeof actual.spawnSync>) => actual.spawnSync(...args)) }
 })
 
-// vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine
-// property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same
-// pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real
-// module untouched; only writeSync is ever intercepted, and only for the one call after the flag
-// is set.
+// vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real module untouched; only writeSync is ever intercepted, and only for the one call after the flag is set.
 const mockState = vi.hoisted(() => ({ failNextWrite: false, failNextMkdir: '' }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
@@ -46,7 +39,7 @@ import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
 import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
-import { packageNameDistance } from '../src/util_suggest.js'
+import { levenshteinDistance } from '../src/util_suggest.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -63,9 +56,7 @@ describe('sleepSync', () => {
   })
 
   it('returns immediately for non-positive durations', () => {
-    // Assert the underlying behavior (never blocks via Atomics.wait) instead of a wall-clock
-    // bound: a machine-speed reading can't distinguish "returned fast" from "returned instantly
-    // without blocking at all", which is what this guards.
+    // Assert the underlying behavior (never blocks via Atomics.wait) instead of a wall-clock bound: a machine-speed reading can't distinguish "returned fast" from "returned instantly without blocking at all", which is what this guards.
     const waitSpy = vi.spyOn(Atomics, 'wait')
     sleepSync(0)
     sleepSync(-50)
@@ -233,13 +224,7 @@ describe('withFileLock', () => {
     async () => {
       const lockPath = path.join(dir, 'e.lock')
 
-      // A real child process holds the lock and busy-spins *synchronously* for holdMs (well past
-      // staleMs) inside fn() -- this is the one scenario a heartbeat living in the holder's own
-      // process cannot detect, because a setInterval there can never fire while fn() has that
-      // process's single thread pinned in a non-yielding synchronous loop (verified empirically:
-      // a busy-spin starves the holder's own timers completely). Only a heartbeat running in a
-      // separate OS process -- which withFileLock now spawns internally -- keeps ticking
-      // regardless of what the holder's thread is doing.
+      // A real child process holds the lock and busy-spins *synchronously* for holdMs (well past staleMs) inside fn() -- this is the one scenario a heartbeat living in the holder's own process cannot detect, because a setInterval there can never fire while fn() has that process's single thread pinned in a non-yielding synchronous loop (verified empirically: a busy-spin starves the holder's own timers completely). Only a heartbeat running in a separate OS process -- which withFileLock now spawns internally -- keeps ticking regardless of what the holder's thread is doing.
       const holdMs = 8000
       const staleMs = 4000
       let signalAcquired: () => void = () => {}
@@ -269,14 +254,7 @@ describe('withFileLock', () => {
         })
       })
 
-      // Wait for the holder to say it has the lock, rather than polling for the lock file within
-      // a window chosen in advance. The holder writes that line on stderr as its first act inside
-      // fn(). A four-second poll here used to stand in for the signal, and under a loaded parallel
-      // full-suite run tsx's own transpile-and-start cost exceeded it, failing this test at its
-      // setup for a reason that has nothing to do with the heartbeat it exists to check. There is
-      // no window to pick correctly: what is being waited for is another process starting up, and
-      // only that process knows when it is ready. Racing the exit promise so a holder that dies
-      // before acquiring reports its own error instead of hanging until the test times out.
+      // Wait for the holder to say it has the lock, rather than polling for the lock file within a window chosen in advance. The holder writes that line on stderr as its first act inside fn(). A four-second poll here used to stand in for the signal, and under a loaded parallel full-suite run tsx's own transpile-and-start cost exceeded it, failing this test at its setup for a reason that has nothing to do with the heartbeat it exists to check. There is no window to pick correctly: what is being waited for is another process starting up, and only that process knows when it is ready. Racing the exit promise so a holder that dies before acquiring reports its own error instead of hanging until the test times out.
       await Promise.race([
         holderAcquired,
         holderExit.then(() => {
@@ -284,37 +262,25 @@ describe('withFileLock', () => {
         }),
       ])
       expect(existsSync(lockPath)).toBe(true)
-      // Let the heartbeat tick several times before trying to steal. staleMs is generous here
-      // (2000ms, well above production's 5000ms default only in that it's smaller -- the ratio
-      // to the heartbeat interval, staleMs/3, is unchanged) specifically so this assertion isn't
-      // flaky under real OS scheduling jitter from spawning several node processes in the same
-      // test run: a single heartbeat tick landing 100-200ms late must not read as "stale".
+      // Let the heartbeat tick several times before trying to steal. staleMs is generous here (2000ms, well above production's 5000ms default only in that it's smaller -- the ratio to the heartbeat interval, staleMs/3, is unchanged) specifically so this assertion isn't flaky under real OS scheduling jitter from spawning several node processes in the same test run: a single heartbeat tick landing 100-200ms late must not read as "stale".
       await new Promise((r) => setTimeout(r, 1500))
 
       const start = Date.now()
       const stolen = withFileLock(lockPath, () => 'stealer-ran', { staleMs, waitMs: 4000 })
       const elapsed = Date.now() - start
 
-      // The holder is still busy-spinning here (holdMs=8000, comfortably longer than the wait
-      // above plus waitMs), so this caller must give up -- never steal. Pre-fix (no heartbeat),
-      // this same setup steals the lock from the still-running holder well before waitMs
-      // elapses (confirmed via git stash: pre-fix code returns 'stealer-ran' here, well under
-      // waitMs). staleMs/waitMs are generous here (matching production's real margins) so a
-      // single heartbeat tick landing late under a heavily loaded parallel full-suite run still
-      // can't false-trigger staleness.
+      // The holder is still busy-spinning here (holdMs=8000, comfortably longer than the wait above plus waitMs), so this caller must give up -- never steal. Pre-fix (no heartbeat), this same setup steals the lock from the still-running holder well before waitMs elapses (confirmed via git stash: pre-fix code returns 'stealer-ran' here, well under waitMs). staleMs/waitMs are generous here (matching production's real margins) so a single heartbeat tick landing late under a heavily loaded parallel full-suite run still can't false-trigger staleness.
       expect(stolen).toBeUndefined()
       expect(elapsed).toBeGreaterThanOrEqual(3500) // it genuinely waited out waitMs, not an instant steal
 
       const holderStdout = await holderExit
       expect(JSON.parse(holderStdout)).toEqual({ result: 'holder-done' }) // holder ran fn() to completion, unmolested
 
-      // Once the holder has actually released the lock, a fresh acquire must still succeed
-      // normally -- the heartbeat must not leave the lock wedged forever either.
+      // Once the holder has actually released the lock, a fresh acquire must still succeed normally -- the heartbeat must not leave the lock wedged forever either.
       const after = withFileLock(lockPath, () => 'post-release', { staleMs, waitMs: 1000 })
       expect(after).toBe('post-release')
     },
-    // Generous because the holder's startup is now waited for rather than assumed: a slow start
-    // must delay this test, never fail it.
+    // Generous because the holder's startup is now waited for rather than assumed: a slow start must delay this test, never fail it.
     45_000,
   )
 })
@@ -354,21 +320,14 @@ describe('runGit', () => {
   })
 
   it('includes core.quotepath=false in git args for non-ASCII filename handling', () => {
-    // This test verifies that runGit now includes core.quotepath=false in git args.
-    // Without this, git will quote/escape non-ASCII filenames (e.g., "café.ts"),
-    // causing changed --symbol to miss those files.
+    // This test verifies that runGit now includes core.quotepath=false in git args. Without this, git will quote/escape non-ASCII filenames (e.g., "café.ts"), causing changed --symbol to miss those files.
     const result = runGit(['--version'])
-    // If runGit is working correctly with the quotepath flag, this should succeed
-    // The actual test is that the source code includes the flag (verified by code inspection)
+    // If runGit is working correctly with the quotepath flag, this should succeed The actual test is that the source code includes the flag (verified by code inspection)
     expect(result.exitCode).toBe(0)
     expect(result.stdout.toLowerCase()).toContain('git version')
   })
 
-  // hints.git_hint_max_ms wiring: hooks_session.ts's advisory-only git calls (branch-name
-  // hint, uncommitted-changes check) pass this through as timeoutMs so a slow git invocation
-  // can never stall a hook. Verified here as a spawnSync option pass-through rather than a
-  // genuinely slow subprocess, since forcing git itself to run past a timeout portably isn't
-  // practical -- the timeout enforcement itself is Node's spawnSync, not code in this repo.
+  // hints.git_hint_max_ms wiring: hooks_session.ts's advisory-only git calls (branch-name hint, uncommitted-changes check) pass this through as timeoutMs so a slow git invocation can never stall a hook. Verified here as a spawnSync option pass-through rather than a genuinely slow subprocess, since forcing git itself to run past a timeout portably isn't practical -- the timeout enforcement itself is Node's spawnSync, not code in this repo.
   it('forwards timeoutMs to spawnSync as its `timeout` option', () => {
     vi.mocked(childProcess.spawnSync).mockClear()
     runGit(['--version'], { timeoutMs: 1234 })
@@ -384,10 +343,7 @@ describe('runGit', () => {
   })
 
   it('inserts --no-ext-diff --no-textconv right after a diff subcommand, to block a repo-local .gitattributes diff driver/textconv filter from running', () => {
-    // Defense-in-depth: a repo-local .gitattributes textconv filter or a configured
-    // diff.external command could otherwise run as a side effect of this codebase's own
-    // `git diff` calls (e.g. gitDirtySignals in hooks_compact.ts, runDiff in read_commands.ts)
-    // on an untrusted repo.
+    // Defense-in-depth: a repo-local .gitattributes textconv filter or a configured diff.external command could otherwise run as a side effect of this codebase's own `git diff` calls (e.g. gitDirtySignals in hooks_compact.ts, runDiff in read_commands.ts) on an untrusted repo.
     vi.mocked(childProcess.spawnSync).mockClear()
     runGit(['diff', '--stat', 'HEAD'])
     const args = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[1] as string[] | undefined
@@ -395,17 +351,12 @@ describe('runGit', () => {
   })
 
   it('passes --no-optional-locks before the subcommand, so a killed status call cannot orphan .git/index.lock', () => {
-    // Every git call here runs against someone else's working repo, and a
-    // `status` that refreshes the index writes .git/index.lock. The hint paths
-    // spawn under a short timeout, so being killed mid-call is expected rather
-    // than exceptional; on 2026-08-05 that left an orphaned lock that blocked
-    // every commit in the target repo until a human deleted it.
+    // Every git call here runs against someone else's working repo, and a `status` that refreshes the index writes .git/index.lock. The hint paths spawn under a short timeout, so being killed mid-call is expected rather than exceptional; on 2026-08-05 that left an orphaned lock that blocked every commit in the target repo until a human deleted it.
     vi.mocked(childProcess.spawnSync).mockClear()
     runGit(['status', '--porcelain'])
     const args = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[1] as string[] | undefined
     expect(args?.[0]).toBe('--no-optional-locks')
-    // It is a git-level flag, not a status-level one: after the subcommand it is
-    // rejected as an unknown option.
+    // It is a git-level flag, not a status-level one: after the subcommand it is rejected as an unknown option.
     expect(args?.indexOf('--no-optional-locks')).toBeLessThan(args?.indexOf('status') ?? -1)
   })
 
@@ -425,10 +376,7 @@ describe('runGit', () => {
   })
 
   it('a real repo-local diff.external config does not run when runGit diffs it, and the normal diff output is still returned', () => {
-    // End-to-end proof against a real repo, not just an args-array assertion: a naive
-    // `-c diff.external=` (empty-string) approach was tried first and made every diff fail
-    // outright ("cannot spawn : No such file or directory") rather than actually disabling the
-    // driver -- this test would have caught that regression, unlike the args-only test above.
+    // End-to-end proof against a real repo, not just an args-array assertion: a naive `-c diff.external=` (empty-string) approach was tried first and made every diff fail outright ("cannot spawn : No such file or directory") rather than actually disabling the driver -- this test would have caught that regression, unlike the args-only test above.
     const dir = mkdtempSync(path.join(tmpdir(), 'tg-rungit-extdiff-'))
     try {
       runGit(['init'], { cwd: dir })
@@ -436,9 +384,7 @@ describe('runGit', () => {
       runGit(['config', 'user.name', 'Token Goat Test'], { cwd: dir })
       runGit(['config', 'commit.gpgsign', 'false'], { cwd: dir })
       const markerFile = path.join(dir, 'external-diff-ran.txt')
-      // Node's spawnSync argv handling on Windows can mangle a raw shell one-liner passed as a
-      // single git-config string, so drive the marker write through a tiny script file instead
-      // of an inline `echo`/redirection command -- portable across cmd.exe and POSIX shells.
+      // Node's spawnSync argv handling on Windows can mangle a raw shell one-liner passed as a single git-config string, so drive the marker write through a tiny script file instead of an inline `echo`/redirection command -- portable across cmd.exe and POSIX shells.
       const markerScriptExt = process.platform === 'win32' ? '.cmd' : '.sh'
       const markerScript = path.join(dir, `write-marker${markerScriptExt}`)
       writeFileSync(
@@ -477,11 +423,7 @@ describe('runGit large output handling', () => {
     runGit(['config', 'user.name', 'Token Goat Test'], { cwd: repoDir })
     runGit(['config', 'commit.gpgsign', 'false'], { cwd: repoDir })
 
-    // 4 commits with ~350 KB commit-message bodies comfortably exceed the 1 MB
-    // threshold via git log's combined output, regardless of the real repo's
-    // history size (unlike the previous version of this test). The message body
-    // is passed via `-F <file>` rather than `-m <string>` so it never has to go
-    // through argv/CreateProcess, which caps command-line length on Windows.
+    // 4 commits with ~350 KB commit-message bodies comfortably exceed the 1 MB threshold via git log's combined output, regardless of the real repo's history size (unlike the previous version of this test). The message body is passed via `-F <file>` rather than `-m <string>` so it never has to go through argv/CreateProcess, which caps command-line length on Windows.
     const filePath = path.join(repoDir, 'file.txt')
     const msgPath = path.join(msgDir, 'msg.txt')
     const bigBody = 'x'.repeat(350 * 1024)
@@ -499,16 +441,9 @@ describe('runGit large output handling', () => {
   })
 
   it('handles large git output (>1MB) without ENOBUFS truncation', () => {
-    // Regression test for: runGit() previously had no maxBuffer option, causing
-    // Node's default 1 MiB limit to truncate large git commands (ls-files, log, diff).
-    // When output exceeded 1 MiB, spawnSync would set result.error=ENOBUFS, and runGit
-    // would return { stdout: '', stderr: <error>, exitCode: -1 }, silently losing output.
+    // Regression test for: runGit() previously had no maxBuffer option, causing Node's default 1 MiB limit to truncate large git commands (ls-files, log, diff). When output exceeded 1 MiB, spawnSync would set result.error=ENOBUFS, and runGit would return { stdout: '', stderr: <error>, exitCode: -1 }, silently losing output.
     //
-    // This drives a synthetic temp repo (built above) instead of this project's own
-    // git history: CI's actions/checkout runs with the default fetch-depth (a shallow,
-    // effectively single-commit clone), so `git log --all` against the real repo would
-    // return only a few hundred bytes there, and this assertion would never actually
-    // exercise runGit's maxBuffer handling in CI.
+    // This drives a synthetic temp repo (built above) instead of this project's own git history: CI's actions/checkout runs with the default fetch-depth (a shallow, effectively single-commit clone), so `git log --all` against the real repo would return only a few hundred bytes there, and this assertion would never actually exercise runGit's maxBuffer handling in CI.
     const result = runGit(['log', '--format=%H%n%an%n%ae%n%ai%n%B%n---END---', '--all'], { cwd: repoDir })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).not.toBe('')
@@ -570,10 +505,7 @@ describe('backupFile', () => {
   })
 
   it('prunes older backups beyond a fixed cap instead of accumulating one per call forever', () => {
-    // Regression: backupFile ran on every install/uninstall of a harness's hook config
-    // (install.ts, codex_install.ts, copilot_cli_install.ts, gemini_install.ts,
-    // openclaw_install.ts) and wrote a new .bak.<timestamp> sibling with no cleanup, so a
-    // config directory a user re-installs into repeatedly accumulated one backup forever.
+    // Regression: backupFile ran on every install/uninstall of a harness's hook config (install.ts, codex_install.ts, copilot_cli_install.ts, gemini_install.ts, openclaw_install.ts) and wrote a new .bak.<timestamp> sibling with no cleanup, so a config directory a user re-installs into repeatedly accumulated one backup forever.
     const target = path.join(testDir, 'config.json')
     writeFileSync(target, 'v0')
 
@@ -624,28 +556,19 @@ describe('isWithinQuietHours', () => {
   })
 })
 
-// Mutation-testing gap: packageNameDistance's length-diff fast-path had no direct unit
-// coverage (only indirect e2e coverage via dep_docs.test.ts's "did you mean" assertions, which
-// only exercise near-miss/far-miss cases well inside or outside the cap, never the exact
-// length-diff == cap boundary). Mutating `> cap` to `>= cap` survived the full e2e suite.
-describe('packageNameDistance', () => {
+// Mutation-testing gap: levenshteinDistance's length-diff fast-path had no direct unit coverage (only indirect e2e coverage via dep_docs.test.ts's "did you mean" assertions, which only exercise near-miss/far-miss cases well inside or outside the cap, never the exact length-diff == cap boundary). Mutating `> cap` to `>= cap` survived the full e2e suite.
+describe('levenshteinDistance', () => {
   it('still computes a real distance when the length difference exactly equals the cap (mutation-testing gap: the fast-path guard must be `>`, not `>=`)', () => {
-    // 'ab' -> 'abcde': length diff is exactly 3 (== cap), true edit distance is 3 (insert 'cde').
-    // A `>=` fast-path would short-circuit to cap+1 (4) here instead of computing the real,
-    // in-range distance, wrongly excluding a legitimate distance-3 match from suggestPackageNames.
-    expect(packageNameDistance('ab', 'abcde', 3)).toBe(3)
+    // 'ab' -> 'abcde': length diff is exactly 3 (== cap), true edit distance is 3 (insert 'cde'). A `>=` fast-path would short-circuit to cap+1 (4) here instead of computing the real, in-range distance, wrongly excluding a legitimate distance-3 match from suggestPackageNames.
+    expect(levenshteinDistance('ab', 'abcde', 3)).toBe(3)
   })
 
   it('short-circuits to cap+1 once the length difference exceeds the cap', () => {
-    expect(packageNameDistance('ab', 'abcdef', 3)).toBe(4)
+    expect(levenshteinDistance('ab', 'abcdef', 3)).toBe(4)
   })
 })
 
-// Mutation-testing gap: escapeRegExp had zero test coverage anywhere in the suite (direct or
-// indirect) before this. It's used to build dynamic regexes from arbitrary strings (a config
-// key in read_commands.ts, an install marker in install.ts), so a dropped character from its
-// escape class is a real correctness bug, not just a style nit -- an unescaped regex
-// metacharacter changes what the resulting pattern actually matches.
+// Mutation-testing gap: escapeRegExp had zero test coverage anywhere in the suite (direct or indirect) before this. It's used to build dynamic regexes from arbitrary strings (a config key in read_commands.ts, an install marker in install.ts), so a dropped character from its escape class is a real correctness bug, not just a style nit -- an unescaped regex metacharacter changes what the resulting pattern actually matches.
 describe('escapeRegExp', () => {
   it('escapes every JS regex metacharacter, including $ (mutation-testing gap: dropping it from the character class went unnoticed by the full suite)', () => {
     const special = '.*+?^${}()|[]\\'
@@ -659,29 +582,13 @@ describe('escapeRegExp', () => {
   })
 
   it('a literal $ in the input is escaped, not treated as an end-of-string anchor', () => {
-    // If $ were left unescaped, this pattern would match "abc" followed by end-of-string, not
-    // the literal three characters "abc$".
+    // If $ were left unescaped, this pattern would match "abc" followed by end-of-string, not the literal three characters "abc$".
     expect(new RegExp(escapeRegExp('abc$')).test('abc$xyz')).toBe(true)
     expect(new RegExp(escapeRegExp('abc$')).test('abcxyz')).toBe(false)
   })
 })
 
-// windowsCmdQuoteArg's output has to survive two sequential parsing passes before it becomes an
-// argv entry again: cmd.exe's own pass (which strips a caret used to escape the character right
-// after it -- the only place `^` appears in this function's output is immediately before a `"`,
-// `%`, or `!`, each emitted outside any quoted span, so a blanket strip is faithful to what
-// cmd.exe actually does here), then the CRT/CommandLineToArgvW argv-splitting pass used by the
-// invoked .cmd/.bat wrapper's underlying executable (node.exe, npm-cli.js, etc.) to re-parse the
-// string cmd hands it (a run of backslashes immediately before a real quote-span boundary
-// decodes to half as many backslashes, plus a literal quote if the run was odd). This two-stage
-// decoder mirrors both passes so the round-trip tests below prove the encoding is actually
-// invertible end to end, not just "looks escaped". The algorithm itself (including the specific
-// interaction bug this function's design comment describes -- caret-escaping a character
-// _inside_ a quoted span leaves the caret as a literal instead of stripping it, and a naive
-// backslash-escaped embedded quote silently closes cmd's own quote tracking early) was verified
-// against a real `cmd.exe /d /s /c` invocation of a `.cmd` wrapper forwarding to node.exe before
-// being written into src/util.ts; this decoder is the offline (non-cmd.exe) re-check of that
-// same behavior for CI, where a real Windows cmd.exe may not be available to shell out to.
+// windowsCmdQuoteArg's output has to survive two sequential parsing passes before it becomes an argv entry again: cmd.exe's own pass (which strips a caret used to escape the character right after it -- the only place `^` appears in this function's output is immediately before a `"`, `%`, or `!`, each emitted outside any quoted span, so a blanket strip is faithful to what cmd.exe actually does here), then the CRT/CommandLineToArgvW argv-splitting pass used by the invoked .cmd/.bat wrapper's underlying executable (node.exe, npm-cli.js, etc.) to re-parse the string cmd hands it (a run of backslashes immediately before a real quote-span boundary decodes to half as many backslashes, plus a literal quote if the run was odd). This two-stage decoder mirrors both passes so the round-trip tests below prove the encoding is actually invertible end to end, not just "looks escaped". The algorithm itself (including the specific interaction bug this function's design comment describes -- caret-escaping a character _inside_ a quoted span leaves the caret as a literal instead of stripping it, and a naive backslash-escaped embedded quote silently closes cmd's own quote tracking early) was verified against a real `cmd.exe /d /s /c` invocation of a `.cmd` wrapper forwarding to node.exe before being written into src/util.ts; this decoder is the offline (non-cmd.exe) re-check of that same behavior for CI, where a real Windows cmd.exe may not be available to shell out to.
 function decodeCmdThenCrt(s: string): string {
   const afterCmd = s.replace(/\^(["%!])/g, '$1')
   let out = ''
@@ -726,11 +633,7 @@ describe('windowsCmdQuoteArg', () => {
   it('round-trips an embedded double quote without letting it terminate the argument early (regression: the previous quoteIfNeeded lambda never escaped an embedded quote)', () => {
     const arg = 'a"b'
     expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
-    // The embedded quote must break out of the quoted span and be caret-escaped (`\^"`), not
-    // left as a bare backslash-escaped quote inside the quotes -- cmd.exe's own quote-state
-    // tracking flips on every literal `"` it sees regardless of a preceding backslash, so a
-    // naive `\"` would close cmd's quoted span early and expose the rest of the argument to
-    // cmd's own tokenizer.
+    // The embedded quote must break out of the quoted span and be caret-escaped (`\^"`), not left as a bare backslash-escaped quote inside the quotes -- cmd.exe's own quote-state tracking flips on every literal `"` it sees regardless of a preceding backslash, so a naive `\"` would close cmd's quoted span early and expose the rest of the argument to cmd's own tokenizer.
     expect(windowsCmdQuoteArg(arg)).toBe('"a"\\^""b"')
   })
 
@@ -832,12 +735,7 @@ describe.skipIf(process.platform !== 'win32')('windowsCmdQuoteArg real cmd.exe r
   })
 })
 
-// Mutation-testing gap: normalizePathForwardSlash had no direct unit test, only indirect
-// coverage through compact.ts's manifest builders -- and every path fixture those tests use is
-// already all-lowercase (alpha.ts, beta.ts, readonly.ts, edited.ts), so none of them could ever
-// catch a regression that unconditionally lowercases the result regardless of the toLowerCase
-// flag. compact.ts's "Edited files"/"Files read" manifest sections rely on the flag defaulting
-// to false (case preserved) so a displayed path like "MyComponent.tsx" isn't silently mangled.
+// Mutation-testing gap: normalizePathForwardSlash had no direct unit test, only indirect coverage through compact.ts's manifest builders -- and every path fixture those tests use is already all-lowercase (alpha.ts, beta.ts, readonly.ts, edited.ts), so none of them could ever catch a regression that unconditionally lowercases the result regardless of the toLowerCase flag. compact.ts's "Edited files"/"Files read" manifest sections rely on the flag defaulting to false (case preserved) so a displayed path like "MyComponent.tsx" isn't silently mangled.
 describe('normalizePathForwardSlash', () => {
   it('preserves original casing when toLowerCase is omitted', () => {
     expect(normalizePathForwardSlash('C:/Proj/MyComponent.tsx')).toBe('c:/Proj/MyComponent.tsx')
@@ -852,31 +750,19 @@ describe('normalizePathForwardSlash', () => {
   })
 })
 
-// Mutation-testing gap: stripLower had no direct unit test. skill_cache.ts's
-// extractNamedSection/extractChecklistSection rely on the trim() half specifically to make a
-// heading like "##  Double Space" (an extra space after the "## " marker, which
-// stripped.slice(3) alone wouldn't remove) or a caller-supplied heading argument with stray
-// whitespace compare equal to a clean heading string -- removing trim() survived the full
-// skill_cache suite because none of its fixtures happen to exercise that whitespace case.
+// Mutation-testing gap: stripLower had no direct unit test. skill_cache.ts's extractNamedSection/extractChecklistSection rely on the trim() half specifically to make a heading like "##  Double Space" (an extra space after the "## " marker, which stripped.slice(3) alone wouldn't remove) or a caller-supplied heading argument with stray whitespace compare equal to a clean heading string -- removing trim() survived the full skill_cache suite because none of its fixtures happen to exercise that whitespace case.
 describe('stripLower', () => {
   it('trims surrounding whitespace as well as lowercasing', () => {
     expect(stripLower('  Heading Text  ')).toBe('heading text')
   })
 
   it('makes an extra-space markdown heading remainder compare equal to its clean form', () => {
-    // "##  Double Space" sliced past "## " (3 chars) leaves " Double Space" (one leading space);
-    // stripLower must fold that to the same string as a normally-spaced heading's stripLower.
+    // "##  Double Space" sliced past "## " (3 chars) leaves " Double Space" (one leading space); stripLower must fold that to the same string as a normally-spaced heading's stripLower.
     expect(stripLower(' Double Space'.slice(0))).toBe(stripLower('Double Space'))
   })
 })
 
-// sanitizeIdForFilename had zero test coverage anywhere in the suite, despite being shared by
-// 5 call sites (compact.ts, disk_cache.ts, doc_compact.ts, session_store.ts x2, snapshots.ts)
-// that all turn a session/content id into a safe directory or file name. Note: mutating the
-// `fallback ?? safe` fallback join to `fallback || safe` was investigated and found to be a
-// dead mutation, not a genuine gap -- `safe` is always '' in that branch (only reached when
-// `safe.length === 0`), so for every possible fallback value the two operators produce an
-// identical result; no test was added for that case.
+// sanitizeIdForFilename had zero test coverage anywhere in the suite, despite being shared by 5 call sites (compact.ts, disk_cache.ts, doc_compact.ts, session_store.ts x2, snapshots.ts) that all turn a session/content id into a safe directory or file name. Note: mutating the `fallback ?? safe` fallback join to `fallback || safe` was investigated and found to be a dead mutation, not a genuine gap -- `safe` is always '' in that branch (only reached when `safe.length === 0`), so for every possible fallback value the two operators produce an identical result; no test was added for that case.
 describe('sanitizeIdForFilename', () => {
   it('replaces every character outside [A-Za-z0-9_-] with an underscore', () => {
     expect(sanitizeIdForFilename('abc:123/def.ts')).toBe('abc_123_def_ts')
@@ -905,9 +791,7 @@ describe('sanitizeIdForFilename', () => {
   })
 })
 
-// stripDelimitedBlock/upsertDelimitedBlock had zero test coverage anywhere in the suite despite
-// being the exact functions install.ts uses to insert/remove token-goat's block in the user's
-// own CLAUDE.md/AGENTS.md file on install/uninstall -- a bug here corrupts real user files.
+// stripDelimitedBlock/upsertDelimitedBlock had zero test coverage anywhere in the suite despite being the exact functions install.ts uses to insert/remove token-goat's block in the user's own CLAUDE.md/AGENTS.md file on install/uninstall -- a bug here corrupts real user files.
 describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
   let dir: string
   let filePath: string
@@ -969,8 +853,7 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
   it('upsertDelimitedBlock returns false without writing when the block is already exactly current (mutation-testing gap: a no-op re-run must not touch the file or its mtime)', () => {
     const content = `# Intro\n${BEGIN}\nsame\n${END}\n# Outro\n`
     writeFileSync(filePath, content, 'utf8')
-    // Back-date mtime so a redundant rewrite that happens to preserve the same bytes is still
-    // caught: a real write always bumps mtime, a genuine no-op leaves this untouched.
+    // Back-date mtime so a redundant rewrite that happens to preserve the same bytes is still caught: a real write always bumps mtime, a genuine no-op leaves this untouched.
     const pastMtime = new Date(Date.now() - 60_000)
     utimesSync(filePath, pastMtime, pastMtime)
     const mtimeBefore = statSync(filePath).mtimeMs
@@ -981,13 +864,7 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
     expect(statSync(filePath).mtimeMs).toBe(mtimeBefore)
   })
 
-  // Real incident: an install --vscode run's *own* base-install scope bug (fixed separately) was
-  // compounded by this file having no recovery copy at all -- unlike writeJsonSettings's
-  // settings.json, upsertDelimitedBlock rewrote ~/.claude/CLAUDE.md in place with zero backup, so
-  // the only reason a hand-edited version survived was luck (an out-of-band verbatim copy), not a
-  // mechanism. writeJsonSettings has always called backupFile before its own overwrite -- this is
-  // the positive control proving that pattern exists and works, so the *absence* on the
-  // delimited-block path was a real asymmetry, not a false read of a consistent codebase.
+  // Real incident: an install --vscode run's *own* base-install scope bug (fixed separately) was compounded by this file having no recovery copy at all -- unlike writeJsonSettings's settings.json, upsertDelimitedBlock rewrote ~/.claude/CLAUDE.md in place with zero backup, so the only reason a hand-edited version survived was luck (an out-of-band verbatim copy), not a mechanism. writeJsonSettings has always called backupFile before its own overwrite -- this is the positive control proving that pattern exists and works, so the *absence* on the delimited-block path was a real asymmetry, not a false read of a consistent codebase.
   it('upsertDelimitedBlock backs up the prior file before an in-place block replacement (regression: it used to write with no backup at all)', () => {
     writeFileSync(filePath, `# Intro\n${BEGIN}\nold\n${END}\n# Outro\n`, 'utf8')
     expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nnew\n${END}`)).toBe(true)
@@ -1008,8 +885,7 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
 
   it('stripDelimitedBlock backs up the prior file before removing the block, and removes the backups it (and any prior install) made', () => {
     writeFileSync(filePath, `# Intro\n${BEGIN}\nold\n${END}\n# Outro\n`, 'utf8')
-    // Simulate an earlier install-side backup this uninstall should also clean up, mirroring
-    // install.ts's uninstallHooks calling removeCreatedBackups(p) after its own uninstall write.
+    // Simulate an earlier install-side backup this uninstall should also clean up, mirroring install.ts's uninstallHooks calling removeCreatedBackups(p) after its own uninstall write.
     expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nold\n${END}`)).toBe(false) // already current, no extra backup
     expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(true)
     expect(readFileSync(filePath, 'utf8')).toBe('# Intro\n\n# Outro\n')
@@ -1018,12 +894,7 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
   })
 })
 
-// isCodeFenceDelimiter had zero direct test coverage anywhere in the suite -- only exercised
-// indirectly via skill_cache.ts's 7 call sites, all of which happen to pre-trim their input
-// before calling it. That masks a genuine gap in the function's own trim() call: removing it
-// survives every test in the suite (including the full skill_cache.test.ts run) because no
-// caller currently passes untrimmed input, even though the function is exported and its doc
-// comment makes no such assumption.
+// isCodeFenceDelimiter had zero direct test coverage anywhere in the suite -- only exercised indirectly via skill_cache.ts's 7 call sites, all of which happen to pre-trim their input before calling it. That masks a genuine gap in the function's own trim() call: removing it survives every test in the suite (including the full skill_cache.test.ts run) because no caller currently passes untrimmed input, even though the function is exported and its doc comment makes no such assumption.
 describe('isCodeFenceDelimiter', () => {
   it('recognizes a backtick fence', () => {
     expect(isCodeFenceDelimiter('```')).toBe(true)
@@ -1047,13 +918,7 @@ describe('isCodeFenceDelimiter', () => {
   })
 })
 
-// requireStrictInt/requireNonNegativeStrictInt/requirePositiveStrictInt had only a dedup guard
-// (tests/guards/require_int_dedup.test.ts) confirming callers import the shared helper instead
-// of reimplementing it -- no test anywhere actually exercised the helpers' own behavior. Note:
-// the `Number.isFinite(n)` guard in requireStrictInt was investigated and found to be dead code,
-// not a genuine gap -- removing it survives the full suite, because every input that passes the
-// `^-?\d+$` regex is a plain decimal digit string, which Number.parseInt always turns into a
-// finite number (even an enormous one loses precision, it doesn't become Infinity/NaN).
+// requireStrictInt/requireNonNegativeStrictInt/requirePositiveStrictInt had only a dedup guard (tests/guards/require_int_dedup.test.ts) confirming callers import the shared helper instead of reimplementing it -- no test anywhere actually exercised the helpers' own behavior. Note: the `Number.isFinite(n)` guard in requireStrictInt was investigated and found to be dead code, not a genuine gap -- removing it survives the full suite, because every input that passes the `^-?\d+$` regex is a plain decimal digit string, which Number.parseInt always turns into a finite number (even an enormous one loses precision, it doesn't become Infinity/NaN).
 describe('requireStrictInt / requireNonNegativeStrictInt / requirePositiveStrictInt', () => {
   it('requireStrictInt accepts a plain integer literal, including negative', () => {
     expect(requireStrictInt('--n', '30')).toBe(30)
@@ -1098,9 +963,7 @@ describe('stripOwnHooksFromMap', () => {
   })
 
   it('does not throw when an event key holds a single table object instead of an array (malformed TOML shape) -- skips it rather than crashing', () => {
-    // TOML's `[hooks.SomeEvent]` (single table) parses to a plain object, not the
-    // array-of-tables `[[hooks.SomeEvent]]` shape this function otherwise assumes --
-    // regression for a real "groups is not iterable" crash hit against a live config.toml.
+    // TOML's `[hooks.SomeEvent]` (single table) parses to a plain object, not the array-of-tables `[[hooks.SomeEvent]]` shape this function otherwise assumes -- regression for a real "groups is not iterable" crash hit against a live config.toml.
     const hooks: Record<string, unknown> = {
       PreToolUse: [{ hooks: [{ command: 'token-goat hook pre_tool_use' }] }],
       SomeEvent: { hooks: [{ command: 'not-ours' }] },
@@ -1140,11 +1003,7 @@ describe('stripStaleGroupHooks', () => {
     expect(next).toEqual([{ matcher: 'Read', hooks: [{ type: 'command', command: 'other' }] }])
   })
 
-  // HAND-DERIVED: every current caller (installCodex, installGemini, installQwen) already guards with
-  // `Array.isArray(hooks[event]) ? [...hooks[event]] : []` before this call, per src/bridges/codex_install.ts,
-  // src/bridges/gemini_install.ts and src/bridges/qwen_install.ts. This drives an unguarded scalar straight
-  // into the function itself to prove the defensive check inside stripStaleGroupHooks (not just at the four
-  // existing call sites) is what stops the corruption class described in project_codex_install_scalar_hooks_field_spread_into_chars.
+  // HAND-DERIVED: every current caller (installCodex, installGemini, installQwen) already guards with `Array.isArray(hooks[event]) ? [...hooks[event]] : []` before this call, per src/bridges/codex_install.ts, src/bridges/gemini_install.ts and src/bridges/qwen_install.ts. This drives an unguarded scalar straight into the function itself to prove the defensive check inside stripStaleGroupHooks (not just at the four existing call sites) is what stops the corruption class described in project_codex_install_scalar_hooks_field_spread_into_chars.
   it('does not iterate a bare string character by character when a future caller forgets to shape-check its input', () => {
     const scalarGroups = 'ab' as unknown as Array<{ matcher?: string; hooks?: Array<{ command: string }> }>
     const next = stripStaleGroupHooks(scalarGroups, (c) => c.includes('token-goat'))
@@ -1157,10 +1016,7 @@ describe('safeSlice', () => {
     expect(safeSlice('hello world', 5)).toBe('hello')
   })
 
-  // Regression: a naive str.slice(0, n) can land exactly between a UTF-16 surrogate
-  // pair's high and low code units (astral-plane characters, e.g. emoji, are
-  // represented as two code units), producing a lone unpaired surrogate -- an
-  // invalid/malformed string. safeSlice must back up one index so the pair stays intact.
+  // Regression: a naive str.slice(0, n) can land exactly between a UTF-16 surrogate pair's high and low code units (astral-plane characters, e.g. emoji, are represented as two code units), producing a lone unpaired surrogate -- an invalid/malformed string. safeSlice must back up one index so the pair stays intact.
   it('backs up one index when the cut point splits a surrogate pair', () => {
     const astral = '\u{1F600}' // 😀 -- a single code point, two UTF-16 code units
     const str = 'ab' + astral + 'cd'
@@ -1213,8 +1069,7 @@ describe('quoteShellPath / hookCommandFor path escaping', () => {
       try {
         const scriptPath = '/home/user/proj"ect/shim.js'
         const command = hookCommandFor(scriptPath, 'pre_tool_use')
-        // The naive unescaped form must never appear: a raw `"` here would close the quoted
-        // argument early and hand the rest of the path to the shell as unquoted tokens.
+        // The naive unescaped form must never appear: a raw `"` here would close the quoted argument early and hand the rest of the path to the shell as unquoted tokens.
         expect(command).not.toContain('proj"ect')
         expect(command).toContain('proj\\"ect/shim.js')
         expect(command).toContain('proj\\"ect/entry.mjs')

@@ -15,8 +15,6 @@ export function levenshteinDistance(a: string, b: string, cap = 3): number {
   return prev[b.length] ?? cap + 1
 }
 
-export const packageNameDistance = levenshteinDistance
-
 export function suggestPackageNames(query: string, names: string[]): string[] {
   return [...new Set(names)]
     .map((n) => ({ n, d: levenshteinDistance(query.toLowerCase(), n.toLowerCase()) }))
