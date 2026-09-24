@@ -452,7 +452,7 @@ token-goat stats
 
 ### Confirming hooks are wired
 
-`doctor` checks the binary, worker, database, and disk. It does not inspect `settings.json` hook wiring. To confirm all three hooks are present, re-run `install`:
+`doctor` checks the binary, worker, database, and disk, and whether the installed Claude Code, Codex and Copilot hook shims match the running build. It does not inspect `settings.json` hook wiring. To confirm all three hooks are present, re-run `install`:
 
 ```
 token-goat install

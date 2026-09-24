@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkHookShim, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
+import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
+import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
+import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
 import { classifyTreeSitterLoadError } from '../src/cli_doctor.js'
 import { missingTreeSitterGrammarPackages, setTreeSitterCoreForTesting } from '../src/parser.js'
 import { createRequire } from 'node:module'
@@ -21,28 +24,19 @@ import { defaultConfig, invalidateConfigCache, loadConfig, saveConfig, type Conf
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
-// runContextStats is `async` (needed for --fix's confirm-gate); runDoctorAndExit's own --context
-// path used to call it fire-and-forget with no await, which turned a synchronous throw into a
-// silently-swallowed unhandled promise rejection instead of propagating like every other doctor
-// error. Mock it to throw so we can assert runDoctorAndExit's own returned promise rejects.
+// runContextStats is `async` (needed for --fix's confirm-gate); runDoctorAndExit's own --context path used to call it fire-and-forget with no await, which turned a synchronous throw into a silently-swallowed unhandled promise rejection instead of propagating like every other doctor error. Mock it to throw so we can assert runDoctorAndExit's own returned promise rejects.
 vi.mock('../src/cli_context_stats.js', async (importOriginal) => {
   const original = await importOriginal<typeof CliContextStats>()
   return { ...original, runContextStats: vi.fn(original.runContextStats) }
 })
 
-// spawnSync is mocked (wrapping the real implementation by default via importOriginal, same
-// pattern as the cli_context_stats mock above) only so one test below can force the df-fallback
-// path's output deterministically, since fs.statfsSync itself can't be stubbed (ESM namespace
-// exports are non-configurable -- see the existing "no module mocking needed" comment further
-// down this file) and a real machine's actual free space can't be controlled from a test.
+// spawnSync is mocked (wrapping the real implementation by default via importOriginal, same pattern as the cli_context_stats mock above) only so one test below can force the df-fallback path's output deterministically, since fs.statfsSync itself can't be stubbed (ESM namespace exports are non-configurable -- see the existing "no module mocking needed" comment further down this file) and a real machine's actual free space can't be controlled from a test.
 vi.mock('child_process', async (importOriginal) => {
   const original = await importOriginal<typeof ChildProcess>()
   return { ...original, spawnSync: vi.fn(original.spawnSync) }
 })
 
-// Passed by every runDoctor test that is not about process health. Gathering the real list shells
-// out to PowerShell for a full Win32_Process listing, which measured 1.2 s of runDoctor's 1.5 s and
-// was the single largest cost in this file. The default gather is still covered, once, below.
+// Passed by every runDoctor test that is not about process health. Gathering the real list shells out to PowerShell for a full Win32_Process listing, which measured 1.2 s of runDoctor's 1.5 s and was the single largest cost in this file. The default gather is still covered, once, below.
 const NO_PROCESSES: ProcessInfo[] = []
 
 describe('cli_doctor', () => {
@@ -53,8 +47,7 @@ describe('cli_doctor', () => {
   })
 
   afterEach(() => {
-    // checkSymbolCount opens the db via getDb, which caches an open handle per path;
-    // close it before rmSync or Windows refuses to delete the locked .db/.db-wal files.
+    // checkSymbolCount opens the db via getDb, which caches an open handle per path; close it before rmSync or Windows refuses to delete the locked .db/.db-wal files.
     clearModuleCaches()
     setTsModuleForTesting(undefined)
     setTreeSitterCoreForTesting(undefined)
@@ -78,9 +71,7 @@ describe('cli_doctor', () => {
     })
 
     it("does not report token-goat's own detached indexing daemon as an orphan", () => {
-      // The daemon is spawned detached on purpose, so it has no live parent from the moment it
-      // starts. Flagging it fired this warning on nearly every install, and the advice attached to
-      // it -- terminate the orphan -- would stop incremental indexing.
+      // The daemon is spawned detached on purpose, so it has no live parent from the moment it starts. Flagging it fired this warning on nearly every install, and the advice attached to it -- terminate the orphan -- would stop incremental indexing.
       const result = checkMcpProcessHealth([
         { processId: 1, parentProcessId: 0, name: 'copilot.exe', commandLine: '' },
         { processId: 7, parentProcessId: 999, name: 'node.exe', commandLine: 'C:\\dist\\token-goat.mjs --worker-daemon' },
@@ -91,8 +82,7 @@ describe('cli_doctor', () => {
     })
 
     it('still reports a genuinely parentless Node process alongside the daemon', () => {
-      // The carve-out must be the daemon flag specifically, not "any parentless node.exe once a
-      // daemon is present" -- otherwise running the daemon would blind the whole check.
+      // The carve-out must be the daemon flag specifically, not "any parentless node.exe once a daemon is present" -- otherwise running the daemon would blind the whole check.
       const result = checkMcpProcessHealth([
         { processId: 7, parentProcessId: 999, name: 'node.exe', commandLine: 'C:\\dist\\token-goat.mjs --worker-daemon' },
         { processId: 8, parentProcessId: 998, name: 'node.exe', commandLine: 'scripts/selfimprove-scheduler.mjs' },
@@ -187,11 +177,7 @@ describe('cli_doctor', () => {
       const result = checkDbExists(tempDir)
       expect(result.status).toBe('ok')
       expect(result.message).toContain('global.db exists')
-      // The healthy message must name the resolved path, exactly as the oversized-db warn branch
-      // already does. TOKEN_GOAT_HOME and the data dir resolve independently, so without the path
-      // a run against the real global index is indistinguishable from an isolated scratch one --
-      // which is how a dogfood claim of "verified against the isolated index" once stood despite
-      // that index holding zero rows.
+      // The healthy message must name the resolved path, exactly as the oversized-db warn branch already does. TOKEN_GOAT_HOME and the data dir resolve independently, so without the path a run against the real global index is indistinguishable from an isolated scratch one -- which is how a dogfood claim of "verified against the isolated index" once stood despite that index holding zero rows.
       expect(result.message).toContain(dbPath)
     })
 
@@ -209,10 +195,7 @@ describe('cli_doctor', () => {
       expect(result.message).toMatch(/\d+ KB/)
     })
 
-    // Regression (task #172): checkDbExists only checked fs.existsSync + reported size,
-    // so a 0-byte or truncated file (e.g. from a crash mid-creation) still reported 'ok'.
-    // It now validates the SQLite magic header ("SQLite format 3\0") the same way
-    // checkConfigValid parses TOML content instead of just checking file presence.
+    // Regression (task #172): checkDbExists only checked fs.existsSync + reported size, so a 0-byte or truncated file (e.g. from a crash mid-creation) still reported 'ok'. It now validates the SQLite magic header ("SQLite format 3\0") the same way checkConfigValid parses TOML content instead of just checking file presence.
     it('returns fail (not ok) for a 0-byte global.db', () => {
       const dbPath = path.join(tempDir, 'global.db')
       fs.writeFileSync(dbPath, '')
@@ -234,12 +217,7 @@ describe('cli_doctor', () => {
     })
   })
 
-  // Regression (round 10 #37): guards against the worker-draining-to-a-stub-callback
-  // failure mode documented in CLAUDE.md's "Critical path" section — a release once
-  // shipped with the queue drain wired to a default stub, so files were marked
-  // indexed while the parser never ran and `symbols` stayed permanently empty. No
-  // existing doctor check caught this because checkDbExists only validates the
-  // SQLite header, not table contents.
+  // Regression (round 10 #37): guards against the worker-draining-to-a-stub-callback failure mode documented in CLAUDE.md's "Critical path" section — a release once shipped with the queue drain wired to a default stub, so files were marked indexed while the parser never ran and `symbols` stayed permanently empty. No existing doctor check caught this because checkDbExists only validates the SQLite header, not table contents.
   describe('checkSymbolCount', () => {
     it('returns ok (no database yet) when global.db does not exist', () => {
       const dbPath = path.join(tempDir, 'global.db')
@@ -267,11 +245,7 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('1 symbol')
     })
 
-    // Previously reported ok ("no files indexed yet, nothing to expect"). That is the wrong
-    // reading: an existing-but-empty index makes every read command return empty, which an agent
-    // reads as a genuine "not found" rather than as missing data. A whole verification pass was
-    // once accepted on an empty scratch index for exactly this reason -- semantic printed
-    // "no matches" and that looked like a result. Warn and name the remedy instead.
+    // Previously reported ok ("no files indexed yet, nothing to expect"). That is the wrong reading: an existing-but-empty index makes every read command return empty, which an agent reads as a genuine "not found" rather than as missing data. A whole verification pass was once accepted on an empty scratch index for exactly this reason -- semantic printed "no matches" and that looked like a result. Warn and name the remedy instead.
     it('warns when the database exists but nothing is indexed', () => {
       const dbPath = path.join(tempDir, 'global.db')
       getDb(dbPath) // creates the schema but inserts nothing
@@ -291,34 +265,21 @@ describe('cli_doctor', () => {
         'typescript',
         1,
       )
-      // Deliberately no INSERT into symbols — simulates the worker draining files
-      // into a stub callback that never invoked the parser.
+      // Deliberately no INSERT into symbols — simulates the worker draining files into a stub callback that never invoked the parser.
 
       const result = checkSymbolCount(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('0 symbols extracted')
     })
 
-    // Regression: global.db is a single machine-wide index shared across every project ever
-    // indexed (see the projectScopeClause fix, commit 6a5ac228, which scoped map/semantic/
-    // find/dead but never touched checkSymbolCount even though it was added in that same
-    // commit). Without a rootDir scope, a project whose OWN parser is broken (0 symbols for
-    // its own files) gets masked by an unrelated project's symbols sharing the same global.db
-    // -- the exact stub-callback failure mode this check exists to catch goes silently
-    // unreported as long as some other project happens to have symbols indexed too.
+    // Regression: global.db is a single machine-wide index shared across every project ever indexed (see the projectScopeClause fix, commit 6a5ac228, which scoped map/semantic/ find/dead but never touched checkSymbolCount even though it was added in that same commit). Without a rootDir scope, a project whose OWN parser is broken (0 symbols for its own files) gets masked by an unrelated project's symbols sharing the same global.db -- the exact stub-callback failure mode this check exists to catch goes silently unreported as long as some other project happens to have symbols indexed too.
     it('scopes counts to rootDir, catching a broken project masked by another project sharing global.db', () => {
       const dbPath = path.join(tempDir, 'global.db')
       const db = getDb(dbPath)
       const brokenRoot = path.join(tempDir, 'proj-broken')
       const healthyRoot = path.join(tempDir, 'proj-healthy')
 
-      // Broken project: file indexed, but the parser never ran -- zero of ITS symbols.
-      // Stored via normalizePath(), matching the invariant every real writer relies on
-      // (see worker.ts's dirty-queue write doc comment, line ~138) -- a raw backslash-replace here
-      // would drift from the real on-disk key on platforms where normalizePath() does more
-      // than swap separators (e.g. macOS's /var -> /private/var alias, or Windows 8.3
-      // short-name expansion when %TEMP% is pinned to short form), silently breaking the
-      // rootDir LIKE-prefix match this test exists to exercise.
+      // Broken project: file indexed, but the parser never ran -- zero of ITS symbols. Stored via normalizePath(), matching the invariant every real writer relies on (see worker.ts's dirty-queue write doc comment, line ~138) -- a raw backslash-replace here would drift from the real on-disk key on platforms where normalizePath() does more than swap separators (e.g. macOS's /var -> /private/var alias, or Windows 8.3 short-name expansion when %TEMP% is pinned to short form), silently breaking the rootDir LIKE-prefix match this test exists to exercise.
       db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)').run(
         normalizePath(path.join(brokenRoot, 'src', 'main.ts')),
         'sha',
@@ -346,20 +307,9 @@ describe('cli_doctor', () => {
     })
   })
 
-  // Symbol coverage and embedding coverage fail independently, and only the first was ever
-  // reported. Every terminal skip in indexFileEmbeddings (a file over
-  // indexing.large_file_symbol_only_kb, a .profile-meta.xml, oversized Salesforce metadata, a
-  // document with no extractable text) stamps a real embed_sha so the worker stops re-reading
-  // the file -- correct individually, and it also means such a file is indistinguishable from an
-  // embedded one at the freshness gate and is never retried. Nothing summed those skips, so a
-  // real index was found with 356 of 11000 files embedded while every doctor check read ok, and
-  // `semantic` reported finding nothing using the same words it uses after searching everything.
+  // Symbol coverage and embedding coverage fail independently, and only the first was ever reported. Every terminal skip in indexFileEmbeddings (a file over indexing.large_file_symbol_only_kb, a .profile-meta.xml, oversized Salesforce metadata, a document with no extractable text) stamps a real embed_sha so the worker stops re-reading the file -- correct individually, and it also means such a file is indistinguishable from an embedded one at the freshness gate and is never retried. Nothing summed those skips, so a real index was found with 356 of 11000 files embedded while every doctor check read ok, and `semantic` reported finding nothing using the same words it uses after searching everything.
   describe('checkEmbeddingCoverage', () => {
-    // tests/setup/isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, so
-    // without this every case below would return early down the "disabled" branch and pass while
-    // asserting nothing about coverage -- the same shape of trap the check itself exists to catch.
-    // Turn it on for this block, and let the disabled case turn it back off explicitly so that it
-    // discriminates instead of agreeing with the ambient default.
+    // tests/setup/isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, so without this every case below would return early down the "disabled" branch and pass while asserting nothing about coverage -- the same shape of trap the check itself exists to catch. Turn it on for this block, and let the disabled case turn it back off explicitly so that it discriminates instead of agreeing with the ambient default.
     let prevEmbedEnv: string | undefined
     beforeEach(() => {
       prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
@@ -412,11 +362,7 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('Exact symbol lookups are unaffected')
     })
 
-    // The discriminating case. One heavily-chunked file produces many chunk ROWS while covering
-    // one file; counting rows instead of distinct paths would read 50 chunks against 10 files as
-    // healthy coverage and hide exactly the condition this check exists to find. Replacing
-    // COUNT(DISTINCT file_path) with COUNT(*) in getEmbeddingCoverage turns this test red and
-    // leaves the two tests above green.
+    // The discriminating case. One heavily-chunked file produces many chunk ROWS while covering one file; counting rows instead of distinct paths would read 50 chunks against 10 files as healthy coverage and hide exactly the condition this check exists to find. Replacing COUNT(DISTINCT file_path) with COUNT(*) in getEmbeddingCoverage turns this test red and leaves the two tests above green.
     it('counts distinct embedded files, not chunk rows', () => {
       const dbPath = path.join(tempDir, 'global.db')
       const db = getDb(dbPath)
@@ -427,8 +373,7 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('1 of 10')
     })
 
-    // Off on purpose is not a health problem. Warning here would be a warning that can never
-    // clear while the setting stands, which is noise the reader learns to ignore.
+    // Off on purpose is not a health problem. Warning here would be a warning that can never clear while the setting stands, which is noise the reader learns to ignore.
     it('returns ok without warning when embeddings are disabled by config', () => {
       const dbPath = path.join(tempDir, 'global.db')
       const db = getDb(dbPath)
@@ -510,15 +455,9 @@ describe('cli_doctor', () => {
     })
   })
 
-  // The manifest token-goat prints ahead of a compaction reaches the summarizing model through a
-  // route Claude Code does not document, so if that route ever closes nothing throws and nothing
-  // fails -- the only symptom is summaries that stop naming real paths. postCompactHandler records
-  // how many sent paths came back out of each summary; this check is what turns that record into
-  // something a person sees. Its whole difficulty is not crying wolf, so most of what is pinned
-  // here is the cases where it must stay quiet.
+  // The manifest token-goat prints ahead of a compaction reaches the summarizing model through a route Claude Code does not document, so if that route ever closes nothing throws and nothing fails -- the only symptom is summaries that stop naming real paths. postCompactHandler records how many sent paths came back out of each summary; this check is what turns that record into something a person sees. Its whole difficulty is not crying wolf, so most of what is pinned here is the cases where it must stay quiet.
   describe('checkCompactionChannel', () => {
-    // Every existing caller below seeds rows at the current (post-fix) VERSION by default, since
-    // they mean to exercise the ordinary working/dead-channel logic, not the version gate itself.
+    // Every existing caller below seeds rows at the current (post-fix) VERSION by default, since they mean to exercise the ordinary working/dead-channel logic, not the version gate itself.
     function seedDetails(dbPath: string, details: string[], tgVersion: string | null = VERSION): void {
       const db = getDb(dbPath)
       db.exec(GLOBAL_SCHEMA_SQL)
@@ -566,18 +505,14 @@ describe('cli_doctor', () => {
     })
 
     it('stays quiet below a full window even when every one of them found nothing', () => {
-      // Four dead compactions is suggestive, not conclusive: a run of short sessions can each
-      // legitimately produce a summary that names nothing. Accusing the harness on thin evidence
-      // is the failure mode that would get this check ignored.
+      // Four dead compactions is suggestive, not conclusive: a run of short sessions can each legitimately produce a summary that names nothing. Accusing the harness on thin evidence is the failure mode that would get this check ignored.
       const dbPath = path.join(tempDir, 'global.db')
       seedDetails(dbPath, Array.from({ length: 4 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'))
       expect(checkCompactionChannel(dbPath).status).toBe('ok')
     })
 
     it('ignores compactions that had nothing to look for, rather than counting them as failures', () => {
-      // manifest_paths=0/0 means the session had touched no files, so the summary could not have
-      // reproduced one. Counting those as evidence would make a machine that mostly runs short
-      // sessions report a dead channel forever.
+      // manifest_paths=0/0 means the session had touched no files, so the summary could not have reproduced one. Counting those as evidence would make a machine that mostly runs short sessions report a dead channel forever.
       const dbPath = path.join(tempDir, 'global.db')
       seedDetails(dbPath, Array.from({ length: 8 }, () => 'trigger=auto bytes=100 est_tokens=34 manifest_paths=0/0'))
       const result = checkCompactionChannel(dbPath)
@@ -608,11 +543,7 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('PreCompact')
     })
 
-    // FORMAT-DERIVED: manifest_paths=0/N is the exact shape d30a8055 documented every pre-fix
-    // compaction recorded (322 real summaries, all 0/64), because the survival check only
-    // accepted an absolute-path match and every real summarizer rewrites paths relative to the
-    // project root. A row from before that fix is not evidence the channel is dead; it is a row
-    // the old matcher could never have marked alive regardless of whether the channel worked.
+    // FORMAT-DERIVED: manifest_paths=0/N is the exact shape d30a8055 documented every pre-fix compaction recorded (322 real summaries, all 0/64), because the survival check only accepted an absolute-path match and every real summarizer rewrites paths relative to the project root. A row from before that fix is not evidence the channel is dead; it is a row the old matcher could never have marked alive regardless of whether the channel worked.
     it('does not report the channel dead on pre-fix rows that could only ever read 0/N', () => {
       const dbPath = path.join(tempDir, 'global.db')
       seedDetails(dbPath, Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'), '2.9.17')
@@ -622,11 +553,7 @@ describe('cli_doctor', () => {
     })
 
     it('reports healthy from older post-fix rows instead of being condemned by more recent pre-fix 0/N rows', () => {
-      // The 5 most recent rows (highest rowid, scanned first) are pre-fix and would, unfiltered,
-      // fill the window with "dead" evidence on their own and report warn. The 5 older rows
-      // behind them are post-fix and genuinely healthy; the fix must skip past the recent
-      // pre-fix rows to reach them rather than stopping at the first COMPACTION_CHANNEL_WINDOW
-      // rows regardless of version.
+      // The 5 most recent rows (highest rowid, scanned first) are pre-fix and would, unfiltered, fill the window with "dead" evidence on their own and report warn. The 5 older rows behind them are post-fix and genuinely healthy; the fix must skip past the recent pre-fix rows to reach them rather than stopping at the first COMPACTION_CHANNEL_WINDOW rows regardless of version.
       const dbPath = path.join(tempDir, 'global.db')
       const db = getDb(dbPath)
       db.exec(GLOBAL_SCHEMA_SQL)
@@ -699,8 +626,7 @@ describe('cli_doctor', () => {
       expect(row?.status).toBe('warn')
     })
 
-    // hooks.latency_budget_ms replaced a hardcoded 1500. These assert on the verdict checkHookLatency actually reached for a fixed population, which is the only thing that proves the consumer read the key rather than the key merely parsing.
-    // HAND-DERIVED: the same 20-40ms durations the healthy case above uses, whose p95 is far below the 1500 default and far above a 10ms budget, so the verdict is decided by the budget alone and by nothing about the data.
+    // hooks.latency_budget_ms replaced a hardcoded 1500. These assert on the verdict checkHookLatency actually reached for a fixed population, which is the only thing that proves the consumer read the key rather than the key merely parsing. HAND-DERIVED: the same 20-40ms durations the healthy case above uses, whose p95 is far below the 1500 default and far above a 10ms budget, so the verdict is decided by the budget alone and by nothing about the data.
     describe('hooks.latency_budget_ms', () => {
       const HEALTHY_DURATIONS = [20, 25, 30, 35, 40]
 
@@ -758,10 +684,7 @@ describe('cli_doctor', () => {
     })
   })
 
-  // Regression: total DB size (checkDbExists' DB_SIZE_WARN_BYTES) is a lagging proxy for the
-  // MAX_SYMBOL_BODY_CHARS pathology -- a healthy-but-large multi-project index can stay well
-  // under the 1 GB line while still containing genuinely oversized bodies from a pre-fix
-  // minified/generated-file leftover. checkSymbolBodySize goes straight at the direct signal.
+  // Regression: total DB size (checkDbExists' DB_SIZE_WARN_BYTES) is a lagging proxy for the MAX_SYMBOL_BODY_CHARS pathology -- a healthy-but-large multi-project index can stay well under the 1 GB line while still containing genuinely oversized bodies from a pre-fix minified/generated-file leftover. checkSymbolBodySize goes straight at the direct signal.
   describe('checkSymbolBodySize', () => {
     it('returns ok (no database yet) when global.db does not exist', () => {
       const dbPath = path.join(tempDir, 'global.db')
@@ -796,10 +719,7 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('CANNOT remove')
       expect(result.message).toContain('reclaim-index --rebuild')
       expect(result.message).toContain('worker stop')
-      // Regression: this message is surfaced verbatim in the SessionStart hook's earliest,
-      // most cacheable context position, so it must not leak the specific offending file path
-      // or exact char length -- neither is guaranteed stable across two runs (LIMIT 1, no
-      // ORDER BY), let alone across a reindex.
+      // Regression: this message is surfaced verbatim in the SessionStart hook's earliest, most cacheable context position, so it must not leak the specific offending file path or exact char length -- neither is guaranteed stable across two runs (LIMIT 1, no ORDER BY), let alone across a reindex.
       expect(result.message).not.toContain('src/generated.js')
       expect(result.message).not.toMatch(/is \d+ chars/)
     })
@@ -828,10 +748,7 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('warn')
     })
 
-    // Regression: the oversized-DB warning named a total size with no way to act on it -- it
-    // never said which table held the bytes, so 'reclaim-index' vs 'project prune' vs leaving
-    // it alone was a guess. HAND-DERIVED: rows are inserted directly by this test, and the
-    // expected byte counts are the same LENGTH() sum the fixture itself can be recomputed from.
+    // Regression: the oversized-DB warning named a total size with no way to act on it -- it never said which table held the bytes, so 'reclaim-index' vs 'project prune' vs leaving it alone was a guess. HAND-DERIVED: rows are inserted directly by this test, and the expected byte counts are the same LENGTH() sum the fixture itself can be recomputed from.
     describe('dbCategoryBreakdown', () => {
       it('names the dominant category first, ahead of smaller ones', () => {
         const dbPath = path.join(tempDir, 'global.db')
@@ -867,12 +784,7 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('could not query symbol body size')
     })
 
-    // This check runs on every SessionStart. Its predicate cannot be served by any of the
-    // name/file_path indexes, so before idx_symbols_oversized_body it read the whole symbols
-    // table: 229 ms per session start on a real 226 MB / 231324-row index, and the early-exit
-    // LIMIT 1 never fires on a healthy index because there is nothing to find. Every assertion
-    // below guards a way of losing the index silently -- the answers stay correct, the check
-    // just goes back to a full scan, which no behavioural test above would notice.
+    // This check runs on every SessionStart. Its predicate cannot be served by any of the name/file_path indexes, so before idx_symbols_oversized_body it read the whole symbols table: 229 ms per session start on a real 226 MB / 231324-row index, and the early-exit LIMIT 1 never fires on a healthy index because there is nothing to find. Every assertion below guards a way of losing the index silently -- the answers stay correct, the check just goes back to a full scan, which no behavioural test above would notice.
     describe('query plan', () => {
       it('creates the partial index on a fresh database', () => {
         const dbPath = path.join(tempDir, 'global.db')
@@ -881,9 +793,7 @@ describe('cli_doctor', () => {
           .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_symbols_oversized_body'`)
           .get() as { sql: string } | undefined
         expect(idx).toBeDefined()
-        // The index predicate and the probe's comparison have to agree textually for SQLite to
-        // prove implication, so pin the shared threshold in both rather than the index's mere
-        // existence -- an index built at a different cap would still be found by the query above.
+        // The index predicate and the probe's comparison have to agree textually for SQLite to prove implication, so pin the shared threshold in both rather than the index's mere existence -- an index built at a different cap would still be found by the query above.
         expect(idx?.sql).toContain(`LENGTH(body) > ${MAX_SYMBOL_BODY_CHARS}`)
         expect(OVERSIZED_BODY_PROBE_SQL).toContain(`LENGTH(body) > ${MAX_SYMBOL_BODY_CHARS}`)
       })
@@ -912,10 +822,7 @@ describe('cli_doctor', () => {
         ins.run('src/small.ts', 'small', 'function', 1, 2, 'x'.repeat(2000), '')
         ins.run('src/huge.ts', 'huge', 'function', 1, 2, 'x'.repeat(200 * 1024), '')
 
-        // The index holds only rows over the cap. A reader asking about a *lower* threshold must
-        // still see both rows: SQLite falls back to a full scan because 2000 does not imply the
-        // index predicate. This is the soundness half of the optimisation -- if the planner ever
-        // reused this index for a threshold it does not cover, callers would silently lose rows.
+        // The index holds only rows over the cap. A reader asking about a *lower* threshold must still see both rows: SQLite falls back to a full scan because 2000 does not imply the index predicate. This is the soundness half of the optimisation -- if the planner ever reused this index for a threshold it does not cover, callers would silently lose rows.
         const rows = db.prepare('SELECT name FROM symbols WHERE LENGTH(body) > 1000').all() as Array<{ name: string }>
         expect(rows.map((r) => r.name).sort()).toEqual(['huge', 'small'])
       })
@@ -951,8 +858,7 @@ describe('cli_doctor', () => {
     })
 
     it('returns ok when the worker is running and its heartbeat is fresh', () => {
-      // A real, currently-alive pid (this test process itself) makes isWorkerRunning's
-      // process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
+      // A real, currently-alive pid (this test process itself) makes isWorkerRunning's process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
       fs.mkdirSync(tempDir, { recursive: true })
       fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
       fs.mkdirSync(path.dirname(drainHeartbeatPathFor(tempDir)), { recursive: true })
@@ -1033,9 +939,7 @@ describe('cli_doctor', () => {
 
     it('includes message with version or error', () => {
       const result = checkInstall()
-      // message is bimodal on real, environment-dependent state (is token-goat installed
-      // globally on this machine?), so an exact pin isn't possible -- but each branch has a
-      // deterministic shape, so pin those instead of a bare ">0".
+      // message is bimodal on real, environment-dependent state (is token-goat installed globally on this machine?), so an exact pin isn't possible -- but each branch has a deterministic shape, so pin those instead of a bare ">0".
       if (result.status === 'ok') {
         expect(result.message).toMatch(/^\d+\.\d+\.\d+/)
       } else {
@@ -1057,9 +961,7 @@ describe('cli_doctor', () => {
 
     it('includes message text', () => {
       const result = checkDiskSpace(tempDir)
-      // Real available-bytes count is environment-dependent, but the message's shape
-      // ("<formatted size> available[ -- warn suffix]") is deterministic -- pin that instead
-      // of a bare ">0".
+      // Real available-bytes count is environment-dependent, but the message's shape ("<formatted size> available[ -- warn suffix]") is deterministic -- pin that instead of a bare ">0".
       expect(result.message).toMatch(/^\d+\.\d (B|KB|MB|GB|TB) available( — running low.*)?$/)
     })
 
@@ -1088,9 +990,7 @@ describe('cli_doctor', () => {
   })
 
   describe('checkTreeSitter', () => {
-    // Provenance: CAPTURE. `tree-sitter` and its grammars are installed as devDependencies in
-    // this repo's own node_modules (see optionalDependencies in package.json), so the real
-    // predicate reports available with no override -- this exercises the actual production path.
+    // Provenance: CAPTURE. `tree-sitter` and its grammars are installed as devDependencies in this repo's own node_modules (see optionalDependencies in package.json), so the real predicate reports available with no override -- this exercises the actual production path.
     it('returns ok with a per-grammar count when tree-sitter is available', () => {
       const result = checkTreeSitter()
       expect(result.name).toBe('Tree-sitter')
@@ -1098,11 +998,7 @@ describe('cli_doctor', () => {
       expect(result.message).toMatch(/^available \(\d+\/\d+ grammars\)$/)
     })
 
-    // Provenance: CAPTURE. Each error is thrown live by its real producer on the running platform:
-    // Node's resolver asked for `tree-sitter` from a directory with none beside it, node-gyp-build
-    // (node_modules/node-gyp-build/node-gyp-build.js, the "No native build was found for" throw)
-    // pointed at a package directory with no prebuilds/ and no build/, and Node's dlopen handed a
-    // file that is not a native module. Nothing here is a string this test wrote.
+    // Provenance: CAPTURE. Each error is thrown live by its real producer on the running platform: Node's resolver asked for `tree-sitter` from a directory with none beside it, node-gyp-build (node_modules/node-gyp-build/node-gyp-build.js, the "No native build was found for" throw) pointed at a package directory with no prebuilds/ and no build/, and Node's dlopen handed a file that is not a native module. Nothing here is a string this test wrote.
     function thrown(fn: () => unknown): Error {
       try {
         fn()
@@ -1168,42 +1064,25 @@ describe('cli_doctor', () => {
       expect(missingTreeSitterGrammarPackages()).toEqual([])
     })
 
-    // `missingTreeSitterGrammarPackages` only calls require.resolve, so an empty list means the
-    // packages are PRESENT, never that they work -- and while the core is down, whether a grammar
-    // loads cannot be established at all. Printing nothing in that case read as a clean bill of
-    // health for the half that was never tested, right beside a core failure the same line reports.
-    // Provenance: HAND-DERIVED from what the check actually performs.
+    // `missingTreeSitterGrammarPackages` only calls require.resolve, so an empty list means the packages are PRESENT, never that they work -- and while the core is down, whether a grammar loads cannot be established at all. Printing nothing in that case read as a clean bill of health for the half that was never tested, right beside a core failure the same line reports. Provenance: HAND-DERIVED from what the check actually performs.
     it('says that only the presence of the grammar packages was checked when the core is unavailable', () => {
       setTreeSitterCoreForTesting(null, dlopenError())
       const result = checkTreeSitter()
-      // Survival anchor: the core diagnosis it exists to deliver is still there, so this cannot
-      // pass by the message having been replaced wholesale.
+      // Survival anchor: the core diagnosis it exists to deliver is still there, so this cannot pass by the message having been replaced wholesale.
       expect(result.message).toContain('native binary will not load')
       expect(result.message).toMatch(/only presence was checked/i)
     })
   })
 
   describe('runDoctor', () => {
-    // The one test that leaves `processes` undefined, so the real gather runs. Without it the
-    // gather would be dead code that no test ever reaches -- every other test here supplies the
-    // argument, which is exactly the injected-seam shape where a shipping path rots unnoticed.
-    // It was already untested before the argument existed: checkMcpProcessHealth had synthetic-row
-    // coverage, but nothing asserted runDoctor wires it in at all.
+    // The one test that leaves `processes` undefined, so the real gather runs. Without it the gather would be dead code that no test ever reaches -- every other test here supplies the argument, which is exactly the injected-seam shape where a shipping path rots unnoticed. It was already untested before the argument existed: checkMcpProcessHealth had synthetic-row coverage, but nothing asserted runDoctor wires it in at all.
     it.runIf(process.platform === 'win32')('gathers the Windows process list itself when none is supplied', () => {
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
       const health = results.find((r) => r.name === 'MCP process health')
       expect(health, 'runDoctor did not run the MCP process-health check at all').toBeDefined()
-      // This process is running right now, so a real gather cannot come back empty; an empty list
-      // would have produced the "no duplicate MCP launchers" ok message with nothing behind it.
+      // This process is running right now, so a real gather cannot come back empty; an empty list would have produced the "no duplicate MCP launchers" ok message with nothing behind it.
       //
-      // A null gather is a different outcome from an empty one and is NOT a product defect: it
-      // means the PowerShell Get-CimInstance call hit its 20s timeout, which the full suite can
-      // provoke under parallel load, and returning null there is the behaviour the next case in
-      // this file asserts on purpose. Observed failing exactly once in a full run and passing
-      // isolated, whole-file, and in a clean full run. Skipping the null case keeps the real
-      // invariant -- a gather that SUCCEEDS must contain this process -- while no longer
-      // reporting an environment timeout as a defect. It is not a skip-to-green: a successful
-      // gather missing our own pid still fails, which is the bug this case was written for.
+      // A null gather is a different outcome from an empty one and is NOT a product defect: it means the PowerShell Get-CimInstance call hit its 20s timeout, which the full suite can provoke under parallel load, and returning null there is the behaviour the next case in this file asserts on purpose. Observed failing exactly once in a full run and passing isolated, whole-file, and in a clean full run. Skipping the null case keeps the real invariant -- a gather that SUCCEEDS must contain this process -- while no longer reporting an environment timeout as a defect. It is not a skip-to-green: a successful gather missing our own pid still fails, which is the bug this case was written for.
       const processes = readWindowsProcesses()
       if (processes !== null) {
         expect(processes.some((p) => p.processId === process.pid)).toBe(true)
@@ -1211,8 +1090,7 @@ describe('cli_doctor', () => {
     })
 
     it('says the process list could not be read rather than reporting a clean bill of health', () => {
-      // A failed gather used to come back as an empty array, indistinguishable from a machine with
-      // no processes, so doctor printed "no duplicate MCP launchers detected" backed by no data.
+      // A failed gather used to come back as an empty array, indistinguishable from a machine with no processes, so doctor printed "no duplicate MCP launchers detected" backed by no data.
       const health = checkMcpProcessHealth(null)
 
       expect(health.status).toBe('warn')
@@ -1227,8 +1105,7 @@ describe('cli_doctor', () => {
       expect(health.message).toContain('no duplicate MCP launchers')
     })
 
-    // Windows-only: off Windows the function returns [] before it ever runs a command, which the
-    // sibling test below pins.
+    // Windows-only: off Windows the function returns [] before it ever runs a command, which the sibling test below pins.
     it.runIf(process.platform === 'win32')('returns null when the process-list command fails, not an empty list', () => {
       const failed = readWindowsProcesses(() => {
         throw new Error('powershell timed out')
@@ -1255,10 +1132,7 @@ describe('cli_doctor', () => {
       expect(results.length).toBeGreaterThan(0)
     })
 
-    // One run, one case, covering what six near-identical cases used to. Each of those ran a
-    // whole doctor pass to assert that one name was present and nothing else about it, so a check
-    // that had been reduced to a bare name with no message still passed all six. This asserts the
-    // full expected set in one pass and requires each of them to actually report something.
+    // One run, one case, covering what six near-identical cases used to. Each of those ran a whole doctor pass to assert that one name was present and nothing else about it, so a check that had been reduced to a bare name with no message still passed all six. This asserts the full expected set in one pass and requires each of them to actually report something.
     it('runs every check it is expected to run, and each one reports something', () => {
       const expected = [
         'Installation',
@@ -1287,11 +1161,7 @@ describe('cli_doctor', () => {
     })
 
     it('scopes the Worker check to the passed-in dataDir, not the real default install dir', () => {
-      // checkDbExists/checkSymbolCount/checkDirtyQueueHealth all correctly scope to the
-      // dataDir runDoctor was given -- the Worker check must too, or a caller diagnosing
-      // one dataDir gets a report describing an entirely different directory's worker.
-      // A real, currently-alive pid (this test process itself) makes isWorkerRunning's
-      // process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
+      // checkDbExists/checkSymbolCount/checkDirtyQueueHealth all correctly scope to the dataDir runDoctor was given -- the Worker check must too, or a caller diagnosing one dataDir gets a report describing an entirely different directory's worker. A real, currently-alive pid (this test process itself) makes isWorkerRunning's process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
       fs.mkdirSync(tempDir, { recursive: true })
       fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
       fs.mkdirSync(path.dirname(drainHeartbeatPathFor(tempDir)), { recursive: true })
@@ -1379,16 +1249,79 @@ describe('cli_doctor', () => {
       expect(result?.message).toContain('did not return valid JSON')
     })
 
-    it('returns ok when the installed hook invokes cleanly and returns valid JSON, end-to-end through a shell exactly like Copilot itself would', () => {
+    // HAND-DERIVED: the installed shim is compared with the script this build's installer writes. The config command runs a stub that answers '{}', so the launch checks pass without spawning the real bundle, and the shim file on its own decides between ok and the drift warning.
+    function writeStubbedInstall(shimText: string): { configPath: string; scriptPath: string } {
+      const stubPath = path.join(tempDir, 'stub-hook.js')
+      fs.writeFileSync(stubPath, "process.stdout.write('{}')")
       const scriptPath = path.join(tempDir, 'token-goat-shim.js')
-      fs.writeFileSync(scriptPath, "process.stdout.write('{}')")
+      fs.writeFileSync(scriptPath, shimText)
       const configPath = path.join(tempDir, 'token-goat.json')
       writeConfig(configPath, {
-        preToolUse: [{ type: 'command', command: `"${process.execPath}" "${scriptPath}"`, timeoutSec: 60 }],
+        preToolUse: [{ type: 'command', command: `"${process.execPath}" "${stubPath}"`, timeoutSec: 60 }],
       })
+      return { configPath, scriptPath }
+    }
+
+    it('returns ok when the installed hook invokes cleanly and returns valid JSON, end-to-end through a shell exactly like Copilot itself would', () => {
+      const { configPath, scriptPath } = writeStubbedInstall(COPILOT_CLI_HOOK_SCRIPT)
 
       const result = checkCopilotCli(configPath, scriptPath)
       expect(result?.status).toBe('ok')
+    })
+
+    it('warns when the installed shim runs but was written by an older build', () => {
+      const { configPath, scriptPath } = writeStubbedInstall(COPILOT_CLI_HOOK_SCRIPT.replace("'use strict'", "'use strict'\n// an older build"))
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('warn')
+      expect(result?.message).toContain('older token-goat build')
+      expect(result?.message).toContain('token-goat install --copilot')
+    })
+
+    it('does not report a shim whose only difference is CRLF line endings as stale', () => {
+      const { configPath, scriptPath } = writeStubbedInstall(COPILOT_CLI_HOOK_SCRIPT.replace(/\n/g, '\r\n'))
+
+      expect(checkCopilotCli(configPath, scriptPath)?.status).toBe('ok')
+    })
+  })
+
+  // HAND-DERIVED: each installer writes its shim constant verbatim (install.ts for Claude Code, codex_install.ts for Codex), so an installed file equal to the constant is current and anything else predates this build.
+  describe('checkHookShim', () => {
+    it('returns null when the shim is not installed', () => {
+      expect(checkHookShim('Codex', path.join(tempDir, 'absent.js'), CODEX_HOOK_SCRIPT, 'token-goat install --codex')).toBeNull()
+    })
+
+    it('returns ok for the shim this build writes, and warns naming the reinstall command for one it would not', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, CLAUDECODE_HOOK_SCRIPT)
+      expect(checkHookShim('Claude Code', scriptPath, CLAUDECODE_HOOK_SCRIPT, 'token-goat install')?.status).toBe('ok')
+
+      fs.writeFileSync(scriptPath, CLAUDECODE_HOOK_SCRIPT.replace("'use strict'", "'use strict'\n// an older build"))
+      const stale = checkHookShim('Claude Code', scriptPath, CLAUDECODE_HOOK_SCRIPT, 'token-goat install')
+      expect(stale?.status).toBe('warn')
+      expect(stale?.message).toContain('older token-goat build')
+      expect(stale?.message).toContain('not reaching Claude Code. Recovery: run "token-goat install"')
+    })
+
+    it('reports a stale Codex shim from runDoctor, resolved through the real install path', () => {
+      const home = path.join(tempDir, 'home')
+      const shim = path.join(home, '.codex', 'hooks', 'token-goat-shim.js')
+      fs.mkdirSync(path.dirname(shim), { recursive: true })
+      fs.writeFileSync(shim, '// a shim from an older build')
+      const saved = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'] }
+      process.env['HOME'] = home
+      process.env['USERPROFILE'] = home
+      try {
+        const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
+        const codex = results.find((r) => r.name === 'Codex')
+        expect(codex?.status).toBe('warn')
+        expect(codex?.message).toContain('token-goat install --codex')
+      } finally {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k]
+          else process.env[k] = v
+        }
+      }
     })
   })
 
@@ -1407,10 +1340,7 @@ describe('cli_doctor', () => {
 
   describe('checkDiskSpace platform coverage (task #104)', () => {
     it('reports a real, non-placeholder available size for an existing directory', () => {
-      // Regression: on stock Windows (no df on PATH) the old implementation always fell
-      // through to the generic "could not determine" message, silently never reporting a
-      // real number. fs.statfsSync works cross-platform (including Windows), so a valid,
-      // existing directory should now produce an actual size, not the placeholder text.
+      // Regression: on stock Windows (no df on PATH) the old implementation always fell through to the generic "could not determine" message, silently never reporting a real number. fs.statfsSync works cross-platform (including Windows), so a valid, existing directory should now produce an actual size, not the placeholder text.
       const result = checkDiskSpace(tempDir)
       expect(result.status).toBe('ok')
       expect(result.message).not.toBe('could not determine')
@@ -1418,12 +1348,7 @@ describe('cli_doctor', () => {
     })
 
     it('warns instead of reporting ok when free space is below the low-disk threshold', async () => {
-      // Regression: checkDiskSpace used to hardcode status: 'ok' on every successful read
-      // regardless of how little space was actually left, making it a "check" that could
-      // never flag the exact problem ("running out of disk") it exists to catch. Forces the
-      // df-fallback path (statfsSync throws on a nonexistent path, and platform is pinned to
-      // non-win32 so the fallback isn't skipped) with a mocked spawnSync returning a `df -k`
-      // response reporting only 100MB available, well under LOW_DISK_WARN_BYTES (1 GiB).
+      // Regression: checkDiskSpace used to hardcode status: 'ok' on every successful read regardless of how little space was actually left, making it a "check" that could never flag the exact problem ("running out of disk") it exists to catch. Forces the df-fallback path (statfsSync throws on a nonexistent path, and platform is pinned to non-win32 so the fallback isn't skipped) with a mocked spawnSync returning a `df -k` response reporting only 100MB available, well under LOW_DISK_WARN_BYTES (1 GiB).
       const originalPlatform = process.platform
       Object.defineProperty(process, 'platform', { value: 'linux' })
       const { spawnSync } = await import('child_process')
@@ -1446,11 +1371,7 @@ describe('cli_doctor', () => {
     })
 
     it('passes -P to df so a wrapped long filesystem-name line does not desync the column parse', async () => {
-      // Regression: plain `df -k` (no -P) is not required to keep each entry on one line -- a
-      // long filesystem/device name can wrap onto its own line, pushing the stat columns to
-      // lines[2] instead of lines[1] and silently misreading `Available` as some other column.
-      // `-P` forces POSIX single-line output. This test both asserts `-P` is actually passed and
-      // proves the parse is still correct in the wrapped-name shape POSIX mode guarantees away.
+      // Regression: plain `df -k` (no -P) is not required to keep each entry on one line -- a long filesystem/device name can wrap onto its own line, pushing the stat columns to lines[2] instead of lines[1] and silently misreading `Available` as some other column. `-P` forces POSIX single-line output. This test both asserts `-P` is actually passed and proves the parse is still correct in the wrapped-name shape POSIX mode guarantees away.
       const originalPlatform = process.platform
       Object.defineProperty(process, 'platform', { value: 'linux' })
       const { spawnSync } = await import('child_process')
@@ -1471,10 +1392,7 @@ describe('cli_doctor', () => {
     })
 
     it('reports an explicit unavailable message, not a silent pass, when no check path works', () => {
-      // A nonexistent path makes fs.statfsSync throw a genuine ENOENT -- no module mocking
-      // needed (fs's ESM namespace exports are non-configurable, so statfsSync can't be
-      // stubbed directly). Forcing platform to win32 makes the df fallback correctly get
-      // skipped, matching a real stock-Windows machine where df is not on PATH either.
+      // A nonexistent path makes fs.statfsSync throw a genuine ENOENT -- no module mocking needed (fs's ESM namespace exports are non-configurable, so statfsSync can't be stubbed directly). Forcing platform to win32 makes the df fallback correctly get skipped, matching a real stock-Windows machine where df is not on PATH either.
       const originalPlatform = process.platform
       Object.defineProperty(process, 'platform', { value: 'win32' })
       try {
@@ -1492,9 +1410,7 @@ describe('cli_doctor', () => {
     it('propagates a runContextStats rejection instead of an unhandled promise rejection', async () => {
       const contextStats = await import('../src/cli_context_stats.js')
       const mocked = contextStats.runContextStats as unknown as ReturnType<typeof vi.fn>
-      // mockRejectedValueOnce is self-limiting -- it only intercepts this one call, then falls
-      // back to the wrapped real implementation for every subsequent call, so no manual restore
-      // is needed.
+      // mockRejectedValueOnce is self-limiting -- it only intercepts this one call, then falls back to the wrapped real implementation for every subsequent call, so no manual restore is needed.
       mocked.mockRejectedValueOnce(new Error('boom from context stats'))
       await expect(runDoctorAndExit({ dataDir: tempDir, context: true, processes: NO_PROCESSES })).rejects.toThrow('boom from context stats')
     })
@@ -1520,8 +1436,7 @@ describe('cli_doctor', () => {
 
     it('lists a skill with multiple cached .meta versions only once, not once per version', async () => {
       fs.writeFileSync(path.join(skillsDir, 'pregen.json'), JSON.stringify({ ts: Date.now(), names: [] }))
-      // Two distinct cached versions of the same skill (e.g. re-read after the skill file was
-      // updated between sessions) -- both missing from pregen.json's names list.
+      // Two distinct cached versions of the same skill (e.g. re-read after the skill file was updated between sessions) -- both missing from pregen.json's names list.
       fs.writeFileSync(
         path.join(skillsDir, 'sess1-my-skill-aaa.meta'),
         JSON.stringify({ outputId: 'sess1-my-skill-aaa', skillName: 'my-skill', contentSha: 'aaa', bodyBytes: 10, ts: 1, truncated: false, sourcePath: '' }),
@@ -1535,9 +1450,7 @@ describe('cli_doctor', () => {
       let calls: unknown[][]
       try {
         await runDoctorAndExit({ dataDir: tempDir, context: true, processes: NO_PROCESSES })
-        // Read the call log before mockRestore() below, which resets it (mockRestore() also
-        // calls mockReset() internally, wiping mock.calls) -- reading it after would always
-        // see zero calls regardless of what actually logged.
+        // Read the call log before mockRestore() below, which resets it (mockRestore() also calls mockReset() internally, wiping mock.calls) -- reading it after would always see zero calls regardless of what actually logged.
         calls = logSpy.mock.calls
       } finally {
         logSpy.mockRestore()
@@ -1545,8 +1458,7 @@ describe('cli_doctor', () => {
 
       const gapLine = calls.map((c) => String(c[0])).find((line) => line.startsWith('Missing from pregen.json:'))
       expect(gapLine).toBeDefined()
-      // Regression: the old implementation pushed one entry per .meta file instead of
-      // deduping by skillName, so a skill with N cached versions was listed N times.
+      // Regression: the old implementation pushed one entry per .meta file instead of deduping by skillName, so a skill with N cached versions was listed N times.
       expect(gapLine).toBe('Missing from pregen.json: my-skill')
     })
   })

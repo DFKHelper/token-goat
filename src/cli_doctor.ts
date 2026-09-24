@@ -18,7 +18,11 @@ import { ensureModelFiles, modelFilesPresent } from './embed_model.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
-import { isInstalled } from './install.js'
+import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
+import { claudeHookScriptPath, isInstalled } from './install.js'
+import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
+import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
+import { codexHookScriptPath } from './bridges/codex_install.js'
 import { cleanupDeprecatedVscodeProjectMcp, vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
 import { cursorMcpPath } from './bridges/cursor_install.js'
@@ -747,7 +751,27 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
     }
   }
 
+  if (!shimIsCurrent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)) {
+    return { name: 'Copilot CLI', status: 'warn', message: staleShimMessage(scriptPath, 'Copilot', 'token-goat install --copilot') + ', then fully restart Copilot CLI.' }
+  }
+
   return { name: 'Copilot CLI', status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' }
+}
+
+/** Does the shim installed at `scriptPath` match the one this build writes? A shim that launches and answers is not necessarily current: install writes it and only the next install rewrites it, so a token-goat upgrade without a reinstall leaves the old one running, and every fix to the shim itself stays off that machine. On the machine this was found on, the Copilot shim was 153 lines behind and dropped every pre-tool note, the Claude Code one 92 lines, and doctor reported both as fine. Line endings are normalized so an editor's CRLF conversion is not reported as drift. */
+function shimIsCurrent(scriptPath: string, expected: string): boolean {
+  return fs.readFileSync(scriptPath, 'utf-8').replace(/\r\n/g, '\n') === expected.replace(/\r\n/g, '\n')
+}
+
+function staleShimMessage(scriptPath: string, harness: string, reinstall: string): string {
+  return `hook shim at ${scriptPath} was written by an older token-goat build, so fixes to it since then are not reaching ${harness}. Recovery: run "${reinstall}"`
+}
+
+/** Checks one installed hook shim against the script this build would write in its place. Null when the shim is not installed, so a harness nobody uses adds no row. */
+export function checkHookShim(name: string, scriptPath: string, expected: string, reinstall: string): DoctorResult | null {
+  if (!fs.existsSync(scriptPath)) return null
+  if (shimIsCurrent(scriptPath, expected)) return { name, status: 'ok', message: `hook shim at ${scriptPath} matches this build` }
+  return { name, status: 'warn', message: staleShimMessage(scriptPath, name, reinstall) + ', then restart any running session.' }
 }
 
 /** Run all doctor checks and return results. */
@@ -765,13 +789,7 @@ const COMPACTION_STATS_SCAN_CEILING = 2000
 /** The release that fixed d30a8055's survival matcher: before it, a summary that named a manifest path relative to the project root (the only form a real summarizer produces) never matched the absolute-path-only check, so every compaction recorded manifest_paths=0/N regardless of whether the channel actually worked. A row written by an older build carries no signal either way and must not be counted toward "dead" or "working" -- see {@link checkCompactionChannel}. */
 const COMPACTION_MANIFEST_FIX_VERSION = '2.9.18'
 
-/**
- * Is the manifest token-goat sends ahead of a compaction still reaching the summary?
- *
- * That manifest travels a route Claude Code does not document: a PreCompact hook's raw stdout is handed to the summarizing model as its instructions. If that ever changes, nothing fails -- the hook still exits 0, the manifest is still built, and the only visible symptom is summaries that quietly stop naming real paths. `postCompactHandler` records how many of the paths it sent came back out of each summary verbatim; this reads that record and says so out loud.
- *
- * Deliberately quiet in every ambiguous case. A run with nothing to look for (`sampled === 0`, i.e. the session had touched no files) proves nothing either way and is skipped rather than counted as a failure, and fewer than {@link COMPACTION_CHANNEL_WINDOW} conclusive runs is not enough evidence to accuse the harness of anything. The alarm only sounds when every one of the last several compactions that had something to find found none of it.
- */
+/** Is the manifest token-goat sends ahead of a compaction still reaching the summary? That manifest travels a route Claude Code does not document: a PreCompact hook's raw stdout is handed to the summarizing model as its instructions. If that ever changes, nothing fails -- the hook still exits 0, the manifest is still built, and the only visible symptom is summaries that quietly stop naming real paths. `postCompactHandler` records how many of the paths it sent came back out of each summary verbatim; this reads that record and says so out loud. Deliberately quiet in every ambiguous case. A run with nothing to look for (`sampled === 0`, i.e. the session had touched no files) proves nothing either way and is skipped rather than counted as a failure, and fewer than {@link COMPACTION_CHANNEL_WINDOW} conclusive runs is not enough evidence to accuse the harness of anything. The alarm only sounds when every one of the last several compactions that had something to find found none of it. */
 export function checkCompactionChannel(dbPath: string): DoctorResult {
   const name = 'Compaction channel'
   if (!fs.existsSync(dbPath)) {
@@ -958,6 +976,10 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
   if (copilotResult) results.push(copilotResult)
+  const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, isInstalled('user') || !isInstalled('project') ? 'token-goat install' : 'token-goat install --project')
+  if (claudeShimResult) results.push(claudeShimResult)
+  const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
+  if (codexShimResult) results.push(codexShimResult)
   const vscodeHooksResult = checkVscodeClaudeHooks(
     vscodeUsesClaudeHooks(),
     isInstalled('user') || isInstalled('project'),
@@ -1045,8 +1067,7 @@ export async function runDoctorRepair(opts?: {
     }
   }
 
-  // 4. Remove empty deprecated .vscode/mcp.json residue if present.
-  // Same ownership rule as `uninstall --vscode`: only a file token-goat created (created-config ledger) is deleted, and the write is scope-confined so a symlinked .vscode cannot point the unlink outside the project.
+  // 4. Remove empty deprecated .vscode/mcp.json residue if present. Same ownership rule as `uninstall --vscode`: only a file token-goat created (created-config ledger) is deleted, and the write is scope-confined so a symlinked .vscode cannot point the unlink outside the project.
   const rootDir = path.resolve(opts?.rootDir ?? process.cwd())
   const projectMcp = path.join(rootDir, '.vscode', 'mcp.json')
   try {
