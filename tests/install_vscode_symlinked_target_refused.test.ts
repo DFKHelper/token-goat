@@ -221,6 +221,7 @@ describe('the population this guard runs against is not empty', () => {
     const written = filesUnder(project).map((f) => path.relative(project, f).replace(/\\/g, '/')).sort()
     expect(written.filter((f) => !/\.bak\.\d{4}-/.test(f))).toEqual([
       '.github/copilot-instructions.md',
+      '.github/hooks/token-goat-shim.cjs',
       '.github/hooks/token-goat-shim.js',
       '.github/hooks/token-goat.json',
       '.github/hooks/token-goat.owners',
@@ -240,7 +241,7 @@ describe('the population this guard runs against is not empty', () => {
     fs.mkdirSync(linkDir, { recursive: true })
     fs.symlinkSync(real, path.join(linkDir, 'token-goat.instructions.md'), 'file')
 
-    expect(() => installVscode({})).not.toThrow()
+    expect(() => installVscode({ projectRoot: project })).not.toThrow()
     const written = path.join(linkDir, 'token-goat.instructions.md')
     expect(fs.readFileSync(written, 'utf8')).toContain('# my own file')
     expect(fs.readFileSync(written, 'utf8')).toContain('token-goat-vscode-begin')

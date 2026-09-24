@@ -1017,6 +1017,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
   if (copilotResult) results.push(copilotResult)
+  const copilotProjectResult = checkCopilotCli(copilotCliConfigPath({ local: true }), copilotCliScriptPath({ local: true }))
+  if (copilotProjectResult) results.push({ ...copilotProjectResult, name: 'Copilot CLI (project)' })
   const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, isInstalled('user') || !isInstalled('project') ? 'token-goat install' : 'token-goat install --project')
   if (claudeShimResult) results.push(claudeShimResult)
   const claudeEventsResult = checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })

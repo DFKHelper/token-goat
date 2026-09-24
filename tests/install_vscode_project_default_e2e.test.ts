@@ -77,6 +77,7 @@ const USER_MCP_REL =
 
 const PROJECT_FILES = [
   '.github/copilot-instructions.md',
+  '.github/hooks/token-goat-shim.cjs',
   '.github/hooks/token-goat-shim.js',
   '.github/hooks/token-goat.json',
   '.github/hooks/token-goat.owners',
@@ -85,6 +86,7 @@ const PROJECT_FILES = [
 
 const USER_FILES = [
   USER_MCP_REL,
+  '.copilot/hooks/token-goat-shim.cjs',
   '.copilot/hooks/token-goat-shim.js',
   '.copilot/hooks/token-goat.json',
   '.copilot/hooks/token-goat.owners',
@@ -152,6 +154,7 @@ describe('install --vscode scope, against the built bundle', () => {
     const homeAfter = tree(home)
     expect(homeAfter).not.toContain('.copilot/hooks/token-goat.json')
     expect(homeAfter).not.toContain('.copilot/hooks/token-goat-shim.js')
+    expect(homeAfter).not.toContain('.copilot/hooks/token-goat-shim.cjs')
     // And the user-scope MCP entry is deregistered, whether or not the file itself survives.
     const userMcp = path.join(home, USER_MCP_REL)
     if (fs.existsSync(userMcp)) expect(fs.readFileSync(userMcp, 'utf8')).not.toContain('token-goat')

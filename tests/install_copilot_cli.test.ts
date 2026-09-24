@@ -28,6 +28,7 @@ import {
   copilotCliScriptPath,
   copilotCliUserHooksDir,
   installCopilotCli,
+  installCopilotHooksFile,
   isCopilotCliInstalled,
   uninstallCopilotCli,
 } from '../src/bridges/copilot_cli_install.js'
@@ -305,12 +306,13 @@ describe('COPILOT_HOME override (user scope)', () => {
 
     expect(copilotCliUserHooksDir()).toBe(path.join(custom, 'hooks'))
     expect(copilotCliConfigPath()).toBe(path.join(custom, 'hooks', 'token-goat.json'))
-    expect(copilotCliScriptPath()).toBe(path.join(custom, 'hooks', 'token-goat-shim.js'))
+    expect(copilotCliScriptPath()).toBe(path.join(custom, 'hooks', 'token-goat-shim.cjs'))
     expect(copilotCliInstructionsPath()).toBe(path.join(custom, 'copilot-instructions.md'))
 
     const result = installCopilotCli()
     expect(fs.existsSync(result.configPath)).toBe(true)
     expect(fs.existsSync(result.scriptPath)).toBe(true)
+    expect(fs.existsSync(path.join(custom, 'hooks', 'token-goat-shim.js'))).toBe(true)
     expect(fs.existsSync(result.instructionsPath)).toBe(true)
     expect(isCopilotCliInstalled()).toBe(true)
     // The whole point: nothing lands in the home-relative default.
@@ -1463,5 +1465,48 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(captured.agent_id).toBe('subagent-abc')
     expect(captured.traceparent).toBe('00-1234567890abcdef1234567890abcdef-1234567890abcdef-01')
     expect(captured.tracestate).toBe('rojo=1')
+  })
+
+  it('runs cleanly in projects with "type": "module" in package.json (both .cjs and .js forwarder)', () => {
+    const cwd = mkIsolated()
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'esm-project', type: 'module' }), 'utf8')
+    const hooksDir = path.join(cwd, '.github', 'hooks')
+    fs.mkdirSync(hooksDir, { recursive: true })
+
+    const res = installCopilotHooksFile(hooksDir, 'copilot')
+    expect(res.scriptPath.endsWith('.cjs')).toBe(true)
+    expect(fs.existsSync(res.scriptPath)).toBe(true)
+
+    const legacyPath = path.join(hooksDir, 'token-goat-shim.js')
+    expect(fs.existsSync(legacyPath)).toBe(true)
+
+    const payload = JSON.stringify({
+      sessionId: 's-esm',
+      cwd,
+      toolName: 'powershell',
+      toolArgs: { command: 'dir' },
+    })
+
+    // 1. Primary .cjs shim
+    const outCjs = spawnSync(process.execPath, [res.scriptPath, 'preToolUse'], {
+      cwd,
+      input: payload,
+      encoding: 'utf8',
+      timeout: 10000,
+    })
+    expect(outCjs.status).toBe(0)
+    expect(outCjs.stderr).toBe('')
+    expect(() => JSON.parse(outCjs.stdout.trim())).not.toThrow()
+
+    // 2. Legacy .js forwarder
+    const outJs = spawnSync(process.execPath, [legacyPath, 'preToolUse'], {
+      cwd,
+      input: payload,
+      encoding: 'utf8',
+      timeout: 10000,
+    })
+    expect(outJs.status).toBe(0)
+    expect(outJs.stderr).toBe('')
+    expect(() => JSON.parse(outJs.stdout.trim())).not.toThrow()
   })
 })

@@ -315,8 +315,15 @@ export interface CopilotCliInstallResult {
 export type CopilotHooksOwner = 'copilot' | 'vscode'
 
 const HOOKS_CONFIG_FILE = 'token-goat.json'
-export const HOOKS_SCRIPT_FILE = 'token-goat-shim.js'
+export const HOOKS_SCRIPT_FILE = 'token-goat-shim.cjs'
+export const LEGACY_HOOKS_SCRIPT_FILE = 'token-goat-shim.js'
 const HOOKS_OWNERS_FILE = 'token-goat.owners'
+
+/** Forwarder written to token-goat-shim.js for compatibility with running Copilot CLI sessions that cached the .js path at startup. Dynamic import is valid in both ESM and CJS across Node 12+. */
+export const HOOKS_SCRIPT_FORWARDER = `#!/usr/bin/env node
+// Forwarder for compatibility with cached hook definitions in running Copilot CLI sessions.
+import('./token-goat-shim.cjs');
+`
 
 export function copilotHooksOwnersPath(hooksDir: string): string {
   return path.join(hooksDir, HOOKS_OWNERS_FILE)
@@ -330,7 +337,12 @@ export function copilotHooksOwnersPath(hooksDir: string): string {
  * call sites below.
  */
 export function copilotHooksFilePaths(hooksDir: string): readonly string[] {
-  return [path.join(hooksDir, HOOKS_CONFIG_FILE), path.join(hooksDir, HOOKS_SCRIPT_FILE), copilotHooksOwnersPath(hooksDir)]
+  return [
+    path.join(hooksDir, HOOKS_CONFIG_FILE),
+    path.join(hooksDir, HOOKS_SCRIPT_FILE),
+    path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE),
+    copilotHooksOwnersPath(hooksDir),
+  ]
 }
 
 /** Owners recorded for `hooksDir`. A hooks file with no sidecar predates the sidecar, when only `install --copilot` wrote it, so it counts as Copilot's. */
@@ -361,11 +373,14 @@ export interface CopilotHooksFileResult {
 export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {
   const configPath = path.join(hooksDir, HOOKS_CONFIG_FILE)
   const scriptPath = path.join(hooksDir, HOOKS_SCRIPT_FILE)
+  const legacyScriptPath = path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE)
   // Read before the config is written, so a legacy file with no sidecar is still credited to Copilot.
   const owners = readCopilotHooksOwners(hooksDir)
 
   // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the hook config itself needs any change (mirrors installCodex()).
+  // Both the primary .cjs shim (immune to "type": "module" in package.json) and the .js forwarder (for running sessions with cached .js hook commands) are written.
   const scriptChanged = writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+  const legacyScriptChanged = writeIfDifferent(legacyScriptPath, HOOKS_SCRIPT_FORWARDER)
   const desiredText = JSON.stringify(buildConfig(scriptPath), null, 2) + '\n'
   const configChanged = writeIfDifferent(configPath, desiredText, true)
   // Recorded on every install, not only on creation: the question this answers later is "did an
@@ -377,7 +392,7 @@ export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
 
   owners.add(owner)
   const ownersChanged = writeIfDifferent(copilotHooksOwnersPath(hooksDir), [...owners].sort().join('\n') + '\n')
-  return { configPath, scriptPath, changed: scriptChanged || configChanged || ownersChanged }
+  return { configPath, scriptPath, changed: scriptChanged || legacyScriptChanged || configChanged || ownersChanged }
 }
 
 /**
@@ -405,8 +420,9 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   // stop being true, or a repository could later drop its own file at that path and inherit the answer.
   takeCreatedConfig(path.join(hooksDir, HOOKS_CONFIG_FILE))
   const scriptRemoved = removeFileInScope(path.join(hooksDir, HOOKS_SCRIPT_FILE))
+  const legacyScriptRemoved = removeFileInScope(path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE))
   const ownersRemoved = removeFileInScope(ownersPath)
-  return configRemoved || scriptRemoved || ownersRemoved
+  return configRemoved || scriptRemoved || legacyScriptRemoved || ownersRemoved
 }
 
 export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCliInstallResult {

@@ -53,7 +53,7 @@ describe('project-scope install warns against committing the machine-specific ho
     expect(line).toBeDefined()
     expect(line).toContain(path.join('.vscode', 'mcp.json'))
     expect(line).toContain(path.join('.github', 'hooks', 'token-goat.json'))
-    expect(line).toContain(path.join('.github', 'hooks', 'token-goat-shim.js'))
+    expect(line).toContain(path.join('.github', 'hooks', 'token-goat-shim.cjs'))
   })
 
   it('install --copilot --local prints the note naming its hook files', () => {
@@ -61,7 +61,7 @@ describe('project-scope install warns against committing the machine-specific ho
     const line = NOTE.exec(stdout)?.[0]
     expect(line).toBeDefined()
     expect(line).toContain(path.join('.github', 'hooks', 'token-goat.json'))
-    expect(line).toContain(path.join('.github', 'hooks', 'token-goat-shim.js'))
+    expect(line).toContain(path.join('.github', 'hooks', 'token-goat-shim.cjs'))
   })
 
   it('user-scope install --vscode --user and install --copilot print no such note', () => {
