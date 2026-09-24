@@ -2,13 +2,12 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { relayInProcess, buildEvent } from '../src/relay.js'
 import { handlersFor, runHook } from '../src/hook_registry.js'
-import { DELIVERS_CONTENT_RE, HINT_PLACEHOLDERS, hintTarget, sharpenRepeatedDeny, sliceCommand, sliceForPath, type HintTarget } from '../src/hint_target.js'
+import { HINT_PLACEHOLDERS, hintTarget, sharpenRepeatedDeny, sliceCommand, sliceForPath, type HintTarget } from '../src/hint_target.js'
 import { leadWithCommand, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { preBashHandler } from '../src/hooks_bash.js'
 import { preReadHandler } from '../src/hooks_read.js'
@@ -167,17 +166,6 @@ describe('leadWithCommand under the suggestion guard', () => {
     expect(out).toContain('command omitted')
     expect(out).not.toContain('curl')
     expect(out.split('\n')[1]).toBe(reason)
-  })
-})
-
-describe('DELIVERS_CONTENT_RE names phrases the content-delivering denies really print', () => {
-  it.each([
-    ['src/hooks_skill.ts', 'is inlined below instead of the full body'],
-    ['src/hooks_skill.ts', 'headings below instead of the full body'],
-    ['src/hooks_read.ts', 'in place of the full file'],
-  ])('%s holds "%s"', (file, phrase) => {
-    expect(fs.readFileSync(fileURLToPath(new URL('../' + file, import.meta.url)), 'utf8')).toContain(phrase)
-    expect(DELIVERS_CONTENT_RE.test('x ' + phrase + ' y')).toBe(true)
   })
 })
 

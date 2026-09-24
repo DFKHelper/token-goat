@@ -1866,6 +1866,14 @@ describe('preBashHandler — python read-modify-write exemption', () => {
   })
 })
 
+// CAPTURE (this machine, 2026-09-24): the first line of a real agent-task transcript under %TEMP%/claude/C--Projects-claude-agents/0d84f3c6-.../tasks/a2af08af400178684.output, cut after the message content opens and closed so the line stays valid JSON.
+const CAPTURED_TRANSCRIPT_HEAD = '{"parentUuid":null,"isSidechain":true,"promptId":"b790d192-f714-471f-86c8-b986260e9595","agentId":"a2af08af400178684","type":"user","message":{"role":"user","content":"You are the advisory pass"}}\n'
+// CAPTURE (same scan): heads of background Bash tasks' `.output` files in the same tasks directories, plain stdout from commands that print JSON, compact and pretty-printed.
+const CAPTURED_PLAIN_JSON_HEADS = [
+  '{"transcripts":514,"toolMessages":96948,"toolUses":100368,"batchedMessages":2362,"searchOnlyMessages":22}\n',
+  '{\n  "summary": "Read-only parallel investigation of four independent open defects in token-goat",\n  "agentCount": 4,\n  "logs": []\n}\n',
+]
+
 describe('preBashHandler — orchestrator state file exemption', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -1882,7 +1890,7 @@ describe('preBashHandler — orchestrator state file exemption', () => {
   it('denies python open() of a .output file that really is a JSONL transcript, and points at bash-output --transcript', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-pyout-'))
     const jsonlFile = join(tmpDir, 'abc123.output')
-    writeFileSync(jsonlFile, '{"type":"user","message":{"role":"user"}}\n')
+    writeFileSync(jsonlFile, CAPTURED_TRANSCRIPT_HEAD)
     try {
       const event = makeBashEvent(`python3 -c "\nimport json\nfor line in open(r'${jsonlFile.replace(/\\/g, '/')}'):\n    print(json.loads(line))\n"`)
       const result = preBashHandler(event)
@@ -1916,6 +1924,19 @@ describe('preBashHandler — orchestrator state file exemption', () => {
     }
   })
 
+  it.each(CAPTURED_PLAIN_JSON_HEADS)('does not deny python open() of a .output file whose stdout is JSON (%#)', (head) => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-pyout-'))
+    const plainFile = join(tmpDir, 'b2kjj6woy.output')
+    writeFileSync(plainFile, head)
+    try {
+      const result = preBashHandler(makeBashEvent(`python3 -c "print(open(r'${plainFile.replace(/\\/g, '/')}').read())"`))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') expect(result.context).toContain("background command's stdout")
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('passes through node readFileSync reading an improve-state JSON', () => {
     const event = makeBashEvent('node -e "const fs = require(\'fs\'); const d = JSON.parse(fs.readFileSync(\'.improve-state-foo.json\', \'utf8\')); console.log(d)"')
     const result = preBashHandler(event)
@@ -1935,7 +1956,7 @@ describe('preBashHandler — task output file interception', () => {
     const tasksDir = join(tmpDir, 'tasks')
     mkdirSync(tasksDir, { recursive: true })
     const jsonlFile = join(tasksDir, 'abc123def456.output')
-    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    writeFileSync(jsonlFile, CAPTURED_TRANSCRIPT_HEAD)
     try {
       const result = preBashHandler(makeBashEvent(`cat "${jsonlFile}"`))
       expect(result.hookType).toBe('deny')
@@ -1959,7 +1980,7 @@ describe('preBashHandler — task output file interception', () => {
     const tasksDir = join(tmpDir, 'tasks')
     mkdirSync(tasksDir, { recursive: true })
     const jsonlFile = join(tasksDir, 'abc123def456.output')
-    writeFileSync(jsonlFile, '{"tool_name":"Bash"}\n')
+    writeFileSync(jsonlFile, CAPTURED_TRANSCRIPT_HEAD)
     try {
       const result = preBashHandler(makeBashEvent(`tail -n 20 "${jsonlFile}"`))
       expect(result.hookType).toBe('deny')
@@ -1988,7 +2009,7 @@ describe('preBashHandler — task output file interception', () => {
     const tasksDir = join(tmpDir, 'tasks')
     mkdirSync(tasksDir, { recursive: true })
     const jsonlFile = join(tasksDir, 'abc123def456.output')
-    writeFileSync(jsonlFile, '{"tool_name":"Bash"}\n')
+    writeFileSync(jsonlFile, CAPTURED_TRANSCRIPT_HEAD)
     try {
       const result = preBashHandler(makeBashEvent(`tail -c 1500 "${jsonlFile}"`))
       expect(result.hookType).toBe('deny')
@@ -2027,13 +2048,28 @@ describe('preBashHandler — task output file interception', () => {
     }
   })
 
+  // A background command that prints JSON leaves a `.output` starting with `{` too; only a transcript's own first key marks one.
+  it.each(CAPTURED_PLAIN_JSON_HEADS)('passes through cat and tail on a tasks output file whose stdout is JSON (%#)', (head) => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const plainJsonFile = join(tasksDir, 'b2kjj6woy.output')
+    writeFileSync(plainJsonFile, head)
+    try {
+      expect(preBashHandler(makeBashEvent(`cat "${plainJsonFile}"`)).hookType).toBe('pass')
+      expect(preBashHandler(makeBashEvent(`tail -n 20 "${plainJsonFile}"`)).hookType).toBe('pass')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('denies cat on a genuine JSONL tasks transcript file', () => {
     // Bug A: true JSONL transcripts should still be denied with the original message
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
     const tasksDir = join(tmpDir, 'tasks')
     mkdirSync(tasksDir, { recursive: true })
     const jsonlFile = join(tasksDir, 'def456.output')
-    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    writeFileSync(jsonlFile, CAPTURED_TRANSCRIPT_HEAD)
     try {
       const result = preBashHandler(makeBashEvent(`cat "${jsonlFile}"`))
       expect(result.hookType).toBe('deny')
@@ -2057,7 +2093,7 @@ describe('preBashHandler — task output file interception', () => {
     const tasksDir = join(tmpDir, 'tasks')
     mkdirSync(tasksDir, { recursive: true })
     const jsonlFile = join(tasksDir, 'gb111.output')
-    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    writeFileSync(jsonlFile, CAPTURED_TRANSCRIPT_HEAD)
     try {
       const gitBashPath = toGitBashPath(jsonlFile)
       const result = preBashHandler(makeBashEvent(`cat "${gitBashPath}"`))
@@ -2092,7 +2128,7 @@ describe('preBashHandler — task output file interception', () => {
     const tasksDir = join(tmpDir, 'tasks')
     mkdirSync(tasksDir, { recursive: true })
     const jsonlFile = join(tasksDir, 'gb333.output')
-    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    writeFileSync(jsonlFile, CAPTURED_TRANSCRIPT_HEAD)
     try {
       const result = preBashHandler(makeBashEvent(`cat "${jsonlFile}"`))
       expect(result.hookType).toBe('deny')

@@ -4,16 +4,14 @@ import { unlinkSync } from 'node:fs'
 
 import type { HookEvent } from '../src/hook_registry.js'
 
-// vi.mock is hoisted — spy on recordStat while still calling through to the real
-// implementation, mirroring tests/hooks_grep.test.ts's injection-detection pattern.
+// vi.mock is hoisted — spy on recordStat while still calling through to the real implementation, mirroring tests/hooks_grep.test.ts's injection-detection pattern.
 vi.mock('../src/stats.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   const real = original['recordStat'] as (...args: unknown[]) => void
   return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) }
 })
 
-// Redirects configPath() to a per-test-file temp file so the glob_dedup_min_matches wiring
-// test can set a non-default config value deterministically. Mirrors tests/hooks_grep.test.ts.
+// Redirects configPath() to a per-test-file temp file so the glob_dedup_min_matches wiring test can set a non-default config value deterministically. Mirrors tests/hooks_grep.test.ts.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, configPath: () => _testConfigPath }
@@ -97,6 +95,18 @@ describe('preGlobDedupHandler', () => {
     expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'glob_dedup_hint')).toBeDefined()
   })
 
+  // A Claude Code Glob answers with structured fields and no text, so a count read from text keys alone recorded 0 and the note never fired. CAPTURE: the tool_input and toolUseResult of a real Glob in transcript C--Projects-token-goat/69437660-bc84-4267-9ca8-cf709837dbe2.jsonl (Claude Code 2.1.268); the capture session behind tg_capture/events_run1.jsonl shows a Glob's toolUseResult byte-identical to its hook tool_response. The events_run1 Glob matched nothing, which reads as 0 either way, so it cannot show the difference.
+  it('counts a structured Glob response at the default threshold, so the note fires on the identical repeat', () => {
+    const toolInput = { pattern: 'scratch/audit2/*' }
+    const filenames = ['mkpdf.mts', 'layout_quad.mts', 'layout_weapon.mts', 'regex_probe.mts', 'fence_probe.mts', 'deadline_destroy.mts', 'drain_cost.mts', 'locate_hang.mts', 'win_paths.mts', 'win2.mts', 'targets.json', 'win3.mts', 'locate_control.mts', 'layout_more.mts', 'layout_more2.mts', 'algo.mts', 'items_probe.mts', 'one.mts', 'algo_real.mts', 'notext.mts', 'pinned.ts', 'pinned_repro.mts', 'hangcheck.mts'].map((f) => 'scratch\\audit2\\' + f)
+    const toolResponse = { filenames, durationMs: 631, numFiles: 23, truncated: false, totalMatches: 23, countIsComplete: true }
+    postGlobHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Glob', toolInput, sessionId: 'test', raw: { tool_input: toolInput, tool_response: toolResponse } }))
+
+    const result = preGlobDedupHandler(makeHookEvent({ toolName: 'Glob', toolInput, sessionId: 'test', raw: { tool_input: toolInput } }))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toContain('"scratch/audit2/*" already ran this session and returned 23 matches.')
+  })
+
   it('stays silent when the prior match count is below glob_dedup_min_matches', () => {
     postGlobHandler(globPostEvent('rare/*.ts', 'only.ts\n'))
 
@@ -131,8 +141,7 @@ describe('preGlobDedupHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  // Mutation guard: a lowered glob_dedup_min_matches must actually change behavior, proving
-  // the field drives this gate rather than a hardcoded literal happening to match the default.
+  // Mutation guard: a lowered glob_dedup_min_matches must actually change behavior, proving the field drives this gate rather than a hardcoded literal happening to match the default.
   it('glob_dedup_min_matches wiring: a lowered threshold surfaces a hint 2 identical Globs would not otherwise clear', () => {
     postGlobHandler(globPostEvent('rare/*.ts', 'only.ts\ntwo.ts\n'))
     expect(preGlobDedupHandler(globEvent('rare/*.ts')).hookType).toBe('pass')

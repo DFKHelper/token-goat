@@ -1,0 +1,4 @@
+/** The wording that marks a token-goat deny as the delivery of content rather than a refusal. Import-free, so hint_target.ts (in the CLI's eager startup set) and tool_error_class.ts share it without the first loading bash_extractors.ts through the second. */
+
+/** The denies that are the delivery rather than a refusal: hooks_skill.ts's inlined compact slice and heading tree, and hooks_read.ts's served compact and notebook sidecars. The content arrives as the deny's text, so the call did its job and is not a failure (tool_error_class.ts), and a second copy is the content itself, so it is never cut down to a pointer (hint_target.ts). tests/tool_error_class.test.ts pins each phrase to its source. */
+export const DELIVERS_CONTENT_RE = /is inlined below instead of the full body|headings below instead of the full body|in place of the full file/

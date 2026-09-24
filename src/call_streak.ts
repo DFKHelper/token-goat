@@ -7,7 +7,7 @@ import { splitShellSegments, stripLeadingAssignments } from './bash_extractors.j
 import { applyHintTracking, settleSelfScoredHints, uncorrelatedHint, type HintCategory } from './hint_stats.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
 import { extractCommand, PIPELINE_PASSTHROUGH_HEADS, pureFileReadPath, stripCommandPrefix, unwrapCompressCommand } from './hooks_bash_commands.js'
-import { contextOutput, estimateResultCount, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
+import { contextOutput, estimateResultCount, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, structuredResultCount } from './hooks_common.js'
 import { sessionSidecarPath } from './session_store.js'
 import { recordStat } from './stats.js'
 import { SEARCH_COMMAND_RE } from './tool_error_class.js'
@@ -42,9 +42,6 @@ const TG_READ_RE = /^(?:token-goat|tg)\s+(?:read|section|outline|skeleton|brief)
 
 /** An output redirection that writes a file; `2>&1` and `>/dev/null` do not. Deliberately loose, so a `>` inside a quoted pattern also disqualifies a command: that only costs a hint, never invents one. */
 const WRITE_REDIRECT_RE = /\d?>>?(?!\s*(?:&\d|\/dev\/null\b))/
-
-/** Result counts a Grep or Glob tool_response carries (CAPTURE, Claude Code 2.1.281, plus transcript `toolUseResult` rows): `numFiles` for files_with_matches, count mode and Glob, `numLines` for content mode, whose `numFiles` stays 0 even when it matched, `numMatches` for count mode. */
-const RESULT_COUNT_KEYS = ['numFiles', 'numLines', 'numMatches'] as const
 
 /** Where a pending acted-on verdict for the batch hint stands: waiting for the first read-only call of a later turn, or for the call after it. */
 type BatchVerdict = 'none' | 'next_turn' | 'second_call'
@@ -139,11 +136,8 @@ function callKind(event: HookEvent): CallKind {
 
 /** How many results a successful search returned, or null when the response says nothing either way. A Bash search that reached the ordinary post event exited 0 (Claude Code sends a non-zero exit to PostToolUseFailure instead), so only an empty output counts as nothing found there: a pipeline such as `rg x | head` exits 0 on no match. */
 function searchResultCount(event: HookEvent): number | null {
-  const response = event.raw['tool_response']
-  if (response !== null && typeof response === 'object') {
-    const counts = RESULT_COUNT_KEYS.map((k) => (response as Record<string, unknown>)[k]).filter((v): v is number => typeof v === 'number')
-    if (counts.length > 0) return Math.max(...counts)
-  }
+  const structured = structuredResultCount(event.raw)
+  if (structured !== null) return structured
   const text = extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
   if (event.toolName === 'Bash') return text.trim() === '' ? 0 : 1
   return text === '' ? null : estimateResultCount(text)
@@ -157,9 +151,9 @@ function searchBrakeText(misses: number): string {
   return `[token-goat] ${misses} searches in a row found nothing. Search by meaning instead of guessing literals: \`token-goat answer "<question>"\` or \`token-goat semantic "<description>"\`.`
 }
 
-/** Emit one line through the hint ledger (which may suppress it), returning the text actually shown or null. */
+/** Emit one line through the hint ledger (which may suppress it), returning the text actually shown or null. The row's correlator is this agent's key, the one {@link settleSelfScoredHints} matches, since a subagent shares its parent's session_id. */
 function trackedLine(event: HookEvent, category: HintCategory, text: string): string | null {
-  const out = applyHintTracking(event, contextOutput(text), uncorrelatedHint(category))
+  const out = applyHintTracking(event, contextOutput(text, [sessionStateKey(event)]), uncorrelatedHint(category))
   if (out.hookType !== 'context') return null
   recordStat('session_hint', 0, 0)
   return out.context
@@ -169,7 +163,7 @@ function trackedLine(event: HookEvent, category: HintCategory, text: string): st
 function breakStreaks(event: HookEvent, state: StreakState): void {
   if (state.batchVerdict === 'second_call') {
     // The first turn after the hint made one read-only call and moved on.
-    settleSelfScoredHints('read_batch', event.sessionId, false)
+    settleSelfScoredHints('read_batch', event, false)
     state.batchVerdict = 'none'
   }
   Object.assign(state, { lastReadPostAt: 0, inFlight: false, serialRun: 0, batchShownInRun: false, zeroHits: 0, brakeShownInRun: false })
@@ -180,13 +174,13 @@ function onReadOnlyPre(event: HookEvent, state: StreakState, kind: CallKind, now
   state.inFlight = true
   // Verdicts first, judged only on calls from a turn after the one the line was attached to: a call batched with that one was issued before the model could have read it.
   if (state.batchVerdict === 'second_call') {
-    settleSelfScoredHints('read_batch', event.sessionId, !serial)
+    settleSelfScoredHints('read_batch', event, !serial)
     state.batchVerdict = 'none'
   } else if (state.batchVerdict === 'next_turn' && serial) {
     state.batchVerdict = 'second_call'
   }
   if (state.brakeVerdict && kind.search && serial) {
-    settleSelfScoredHints('search_brake', event.sessionId, kind.meaningSearch)
+    settleSelfScoredHints('search_brake', event, kind.meaningSearch)
     state.brakeVerdict = false
   }
   if (!serial) {

@@ -1,6 +1,7 @@
 /** Classifies a failed tool call as `expected` (a known failure shape with a named cause) or `unknown` (everything else). One table, read by both the live `post_tool_use_failure` brake and the `session-audit --tool-errors` report, so the two can never disagree about what a failure is. Every pattern was chosen from a census of the local Claude Code transcript corpus (2026-09-24: 3,692 transcripts, about 259,000 tool calls, 7,935 `is_error` tool results, Claude Code 2.1.x) and carries its own count, as `session-audit --tool-errors --json` reported it over that corpus; a failure shape nobody has measured stays `unknown`, so the report's unknown prefixes are the list to promote from rather than a guess about what might go wrong. Inputs arrive from two producers. The hook payload (Claude Code `PostToolUseFailure`, captured on 2.1.281) carries `error` and `is_interrupt`; a transcript `tool_result` carries the same text, often wrapped in `<tool_use_error>`, plus the entry's `toolDenialKind` when the call was refused before it ran. A refused call never reaches the failure hook -- a PreToolUse deny fired neither PostToolUse nor PostToolUseFailure in a capture on 2.1.281 -- so the denial reasons are populated from transcripts alone. */
 
 import { splitShellSegments, stripLeadingAssignments } from './bash_extractors.js'
+import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { safeSlice } from './util.js'
 
 /** Whether a failure has a named, understood cause. */
@@ -34,7 +35,7 @@ interface ExpectedPattern {
   readonly command?: RegExp
 }
 
-/** A denial is a structured harness field, not text, so it is decided before any pattern runs. `permission-rule` is a PreToolUse hook deny or a settings rule (2,767 in the census); 2,764 of them carried token-goat's own wording and are split out as `tg_deny` below. */
+/** A denial is a structured harness field, not text, so it is decided before any pattern runs. `permission-rule` is a PreToolUse hook deny or a settings rule (2,767 in the census); 2,764 of them carried token-goat's own wording and are split out as `tg_deny` below, or `tg_content_delivered` when the deny carried the content. */
 const DENIAL_KIND_REASONS: Readonly<Record<string, string>> = {
   'permission-rule': 'hook_deny',
   // 73 in the census: the user declined an approval prompt.
@@ -45,6 +46,14 @@ const DENIAL_KIND_REASONS: Readonly<Record<string, string>> = {
 
 /** Token-goat's deny wording: the `[tg]` prefix `denyOutput` adds, or a command pointer from releases that predate it. */
 const TG_DENY_RE = /\[tg\]|token-goat/
+
+/** The expected reason of a token-goat deny that delivered the content. The tool-error census leaves these out of its error counts. */
+export const CONTENT_DELIVERED_REASON = 'tg_content_delivered'
+
+/** A token-goat deny's reason: a delivery ({@link DELIVERS_CONTENT_RE}) or a refusal. */
+function tgDenyReason(text: string): string {
+  return DELIVERS_CONTENT_RE.test(text) ? CONTENT_DELIVERED_REASON : 'tg_deny'
+}
 
 /** A hook deny as Claude Code renders it into the tool result when no denial field survives (`PreToolUse:Glob hook error: [tg] ...`, captured on 2.1.281). */
 const HOOK_DENY_TEXT_RE = /^PreToolUse:\S+ hook error: /
@@ -100,6 +109,7 @@ const EXPECTED_PATTERNS: readonly ExpectedPattern[] = [
 export const EXPECTED_REASONS: readonly string[] = [
   'interrupted',
   'tg_deny',
+  CONTENT_DELIVERED_REASON,
   ...new Set(Object.values(DENIAL_KIND_REASONS)),
   ...EXPECTED_PATTERNS.map((p) => p.reason),
 ]
@@ -126,9 +136,9 @@ export function classifyToolError(tool: string | undefined, errorText: string, f
   const denial = flags.denialKind
   if (denial !== undefined && denial !== '') {
     const reason = DENIAL_KIND_REASONS[denial] ?? 'hook_deny'
-    return expected(reason === 'hook_deny' && TG_DENY_RE.test(text) ? 'tg_deny' : reason)
+    return expected(reason === 'hook_deny' && TG_DENY_RE.test(text) ? tgDenyReason(text) : reason)
   }
-  if (HOOK_DENY_TEXT_RE.test(text)) return expected(TG_DENY_RE.test(text) ? 'tg_deny' : 'hook_deny')
+  if (HOOK_DENY_TEXT_RE.test(text)) return expected(TG_DENY_RE.test(text) ? tgDenyReason(text) : 'hook_deny')
   for (const p of EXPECTED_PATTERNS) {
     if (p.tools !== undefined && (tool === undefined || !p.tools.includes(tool))) continue
     if (!p.re.test(text)) continue

@@ -329,6 +329,26 @@ describe('call streak through the real relay (clock pinned to captured timings)'
     expect(emissions(ctx, 'read_batch')).toEqual([{ acted_on: 1, resolved: 1, observable: 1 }])
   })
 
+  it('settles only the emitting agent\'s own batch hint, though a subagent shares its parent\'s session_id', async () => {
+    const ctx = newSession()
+    // FORMAT-DERIVED: `agent_id` is the payload field relay.ts buildEvent reads for a call made inside a subagent; the value is a real agentId from a CAPTURE transcript head (tests/hooks_bash.test.ts CAPTURED_TRANSCRIPT_HEAD).
+    const asSubagent = (payload: Record<string, unknown>): Record<string, unknown> => ({ ...payload, agent_id: 'a2af08af400178684' })
+    let t = T0
+    for (const p of ['a', 'b', 'c']) t = (await serialGrep(ctx, t, p)).next
+    for (const p of ['a', 'b', 'c']) {
+      await at(t, 'pre_tool_use', asSubagent(grepPre(ctx, p)))
+      await at(t + POST_AFTER, 'post_tool_use', asSubagent(grepPost(ctx, p, 1)))
+      t += POST_AFTER + SERIAL_STEP
+    }
+    const pending = { acted_on: 0, resolved: 0, observable: 1 }
+    expect(emissions(ctx, 'read_batch')).toEqual([pending, pending])
+    // The subagent's next turn batches two Greps, so its own hint was heeded; the parent has not made a call since its hint.
+    await at(t, 'pre_tool_use', asSubagent(grepPre(ctx, 'd')))
+    await at(t + POST_AFTER, 'post_tool_use', asSubagent(grepPost(ctx, 'd', 1)))
+    await at(t + POST_AFTER + 4, 'pre_tool_use', asSubagent(grepPre(ctx, 'e')))
+    expect(emissions(ctx, 'read_batch')).toEqual([pending, { acted_on: 1, resolved: 1, observable: 1 }])
+  })
+
   it('scores the brake acted on when the next search is token-goat answer, and not when it is another Grep', async () => {
     const acted = newSession()
     let t = T0

@@ -566,8 +566,8 @@ describe('corrupt / malformed disk state', () => {
     fs.writeFileSync(sessionFile('sid-4'), '{ broken', 'utf8')
     importSessionState({ ...empty(), hintsShown: ['preexisting'] })
     expect(() => loadSessionState('sid-4')).not.toThrow()
-    // importSessionState is only called on a successful parse, so prior state stays.
-    expect(exportSessionState().hintsShown).toEqual(['preexisting'])
+    // Nothing readable on disk loads as a clean session: a process that served another session before this one must not hand it that session's state.
+    expect(exportSessionState().hintsShown).toEqual([])
   })
 
   it('save drops malformed file entries already on disk', () => {

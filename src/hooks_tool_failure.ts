@@ -88,6 +88,7 @@ export const REPEAT_NOTICE_EXEMPT: ReadonlySet<string> = new Set([
   // Refusals and stops. Claude Code never delivers a refused call to this event (a PreToolUse deny fired no PostToolUseFailure in a 2.1.281 capture), so these guard the other harnesses that route failures here.
   'interrupted', // the payload's is_interrupt flag; the census has 0 rows because an interrupt never surfaces as an is_error result
   'tg_deny', // 2,762 rows, 283 repeats, 13 with the same input: the deny names the command to run instead
+  'tg_content_delivered', // a deny whose text is the content (a Skill's compact slice or heading tree, a served Read sidecar): the call did its job, so there is nothing to retry
   'hook_deny', // 5 rows: another hook's refusal, with its own instruction
   'user_rejected', // 73 rows, 21 repeats, 1 with the same input
   'auto_mode_blocked', // 1 row

@@ -1,5 +1,9 @@
+import * as fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it } from 'vitest'
 
+import { DELIVERS_CONTENT_RE } from '../src/delivering_deny.js'
 import { classifyToolError, errorPrefix, ERROR_PREFIX_CHARS, EXPECTED_REASONS, unwrapToolError, UNKNOWN_REASON, type ToolErrorFlags } from '../src/tool_error_class.js'
 
 interface Case {
@@ -31,6 +35,8 @@ const CENSUS_CASES: readonly Case[] = [
   { reason: 'subagent_limit', tool: 'Agent', text: 'Concurrent subagent limit reached. You can run 20 subagents at once. Do not retry. If the user wants more concurrent subagents, ask them to increase CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS.' },
   { reason: 'test_or_build_failed', tool: 'Bash', text: 'Exit code 1\n.F..\r\n======================================================================\r\nFAIL: test_calibration_totals_match_the_emitters (tools.test_selfdescribing_counts.ContractCheckCalibration.test_calibration_totals_match_the_emitters)', flags: { command: 'cd C:/Projects/claude-agents && python -m unittest tools.test_selfdescribing_counts.ContractCheckCalibration 2>&1' } },
   { reason: 'tg_deny', tool: 'Glob', text: 'PreToolUse:Glob hook error: [tg] test deny', flags: { denialKind: 'permission-rule' } },
+  // Transcript C--Projects-token-goat-mem/252ee8fa-5f72-4499-af02-5fc825e4a5e2.jsonl, Claude Code 2.1.240: the inlined slice after the first paragraph is cut.
+  { reason: 'tg_content_delivered', tool: 'Skill', text: 'Skill `brainstorming` is large (66612 bytes); its compact slice (11566 bytes) is inlined below instead of the full body. Run `token-goat skill-body brainstorming` if you need the full body.', flags: { denialKind: 'permission-rule' } },
   { reason: 'tool_unavailable', tool: 'Grag', text: '<tool_use_error>Error: No such tool available: Grag</tool_use_error>' },
   { reason: 'user_rejected', tool: 'Bash', text: 'This command requires approval', flags: { denialKind: 'user-rejected', command: 'python3 -m unittest test_pricing -v' } },
   { reason: UNKNOWN_REASON, tool: 'mcp__claude-in-chrome__browser_batch', text: 'No tab available' },
@@ -84,6 +90,27 @@ describe('classifyToolError', () => {
 
   it('keeps a tool-scoped wording to its own tool', () => {
     expect(classifyToolError('Bash', 'String to replace not found in file.').reason).toBe(UNKNOWN_REASON)
+  })
+})
+
+describe('a token-goat deny that delivers the content', () => {
+  // FORMAT-DERIVED: each phrase is read out of the source file that prints it (asserted below), so a reworded deny fails here rather than drifting back into the error counts.
+  it.each([
+    ['Skill', 'src/hooks_skill.ts', 'is inlined below instead of the full body'],
+    ['Skill', 'src/hooks_skill.ts', 'headings below instead of the full body'],
+    ['Read', 'src/hooks_read.ts', 'in place of the full file'],
+  ])('%s: %s "%s" is delivered on the denial-field path and on the rendered hook-error path', (tool, file, phrase) => {
+    expect(fs.readFileSync(fileURLToPath(new URL('../' + file, import.meta.url)), 'utf8')).toContain(phrase)
+    expect(DELIVERS_CONTENT_RE.test('x ' + phrase + ' y')).toBe(true)
+    const message = '[tg] Serving it, ' + phrase + '.'
+    expect(classifyToolError(tool, message, { denialKind: 'permission-rule' })).toEqual({ kind: 'expected', reason: 'tg_content_delivered' })
+    expect(classifyToolError(tool, 'PreToolUse:' + tool + ' hook error: ' + message)).toEqual({ kind: 'expected', reason: 'tg_content_delivered' })
+  })
+
+  it('only a deny qualifies: a failed command whose output quotes the phrase is not a delivery', () => {
+    // CAPTURE: an is_error Bash result from transcript C--Projects-token-goat/ff860b98-0171-4c77-84c5-2331bc647d0b.jsonl (Claude Code 2.1.280) that printed session_audit.ts's own deny templates; cut to the matching line.
+    const text = "Exit code 1\n# 1 line (~15 tok)\n  { kind: 'compact_sidecar_served', re: /Serving the extractive compact sidecar in place of the full file/, tool: 'Read' },"
+    expect(classifyToolError('Bash', text).reason).not.toBe('tg_content_delivered')
   })
 })
 

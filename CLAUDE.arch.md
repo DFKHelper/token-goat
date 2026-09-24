@@ -387,6 +387,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/copilot_waste.ts`](src/copilot_waste.ts) | Waste analysis for Copilot CLI sessions. |
 | [`src/coverage_query.ts`](src/coverage_query.ts) | Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report (which can run to tens of thousands of lines for a real project) never needs a full ` |
 | [`src/csv_query.ts`](src/csv_query.ts) | Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". |
+| [`src/delivering_deny.ts`](src/delivering_deny.ts) | The wording that marks a token-goat deny as the delivery of content rather than a refusal. |
 | [`src/delivery_cap.ts`](src/delivery_cap.ts) | Exports: `CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES`, `bashOutputCapBytes`, `clipToDeliveryCap`, `deliveredOutputBytes` |
 | [`src/dep_docs.ts`](src/dep_docs.ts) | `token-goat dep-docs <package>` — surgical read for an installed npm dependency. |
 | [`src/doc_comment.ts`](src/doc_comment.ts) | Shared doc-comment recovery, used by both the tree-sitter parser (`parser.ts`) and the regex-based language adapters (`languages/common.ts`). |

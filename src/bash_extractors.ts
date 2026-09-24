@@ -905,15 +905,18 @@ export function extractGetContentHead(cmd: string): { filePath: string; isDoc: b
   return { filePath, isDoc, isConfig, isSql, isXml, n }
 }
 
+/** The head of a Claude Code JSONL transcript: an object whose first key is one the harness writes first. A leading `{` alone is not enough, because a background command that prints JSON starts with one too. CAPTURE (this machine, 2026-09-24): 42 of 62 brace-first `tasks/*.output` files were agent transcripts, every one starting `{"parentUuid":null,"isSidechain":true,`; the other 20 were command output such as `{"transcripts":514,...`, `{"timestamp":"2026-09-07T...` and `{\n  "summary": ...`. Of 2,736 subagent transcripts 2,735 start `{"parentUuid":` and one `{"type":"fork-context-ref",`; main-session transcripts lead with `{"type":`. */
+const JSONL_TRANSCRIPT_HEAD_RE = /^\{\s*"(?:parentUuid|isSidechain|type)"\s*:/
+
 /** Detects `cat` or `tail` commands on a tasks output path and returns the task ID so the caller can emit a `token-goat bash-output` recall hint. Tasks output files follow the pattern `…/tasks/<id>.output`. They are written to disk by the harness (not through the bash-output cache), so re-reading via cat/tail wastes tokens that `token-goat bash-output --file <path>` returns surgically. The matched path is returned so the recall hint can name a command that actually works (`bash-output <id>` misses, since the task id is not a bash-output cache key). */
-/** Whether a `…/tasks/<id>.output` file holds an agent's JSONL transcript rather than a background command's stdout. Both kinds land in the same directory under the same extension, so the extension answers nothing: an agent task's file is JSONL and worth several hundred kilobytes, while a background bash task's file is whatever the command printed and is meant to be read. The first non-whitespace byte tells them apart, and only that byte is read -- the transcripts this guards against are large enough that pulling the whole file in to look at its first character is the cost the guard exists to avoid. Anything unreadable answers false, so a missing file leaves the command alone. `normalizePath` first: Git Bash yields `/c/Users/...` and WSL `/mnt/c/Users/...`, neither of which Node can resolve on Windows, so an unnormalized read always throws ENOENT and silently turns the guard off for those shells. */
+/** Whether a `…/tasks/<id>.output` file holds an agent's JSONL transcript rather than a background command's stdout. Both kinds land in the same directory under the same extension, so the extension answers nothing: an agent task's file is JSONL and worth several hundred kilobytes, while a background bash task's file is whatever the command printed and is meant to be read. The head tells them apart ({@link JSONL_TRANSCRIPT_HEAD_RE}), and only the head is read -- the transcripts this guards against are large enough that pulling the whole file in to look at its first line is the cost the guard exists to avoid. Anything unreadable answers false, so a missing file leaves the command alone. `normalizePath` first: Git Bash yields `/c/Users/...` and WSL `/mnt/c/Users/...`, neither of which Node can resolve on Windows, so an unnormalized read always throws ENOENT and silently turns the guard off for those shells. */
 export function taskOutputIsJsonlTranscript(outPath: string): boolean {
   let fd: number | null = null
   try {
     fd = openSync(normalizePath(outPath), 'r')
     const buf = Buffer.alloc(64)
     const read = readSync(fd, buf, 0, buf.length, 0)
-    return buf.subarray(0, read).toString('utf-8').trim().startsWith('{')
+    return JSONL_TRANSCRIPT_HEAD_RE.test(buf.subarray(0, read).toString('utf-8').trim())
   } catch {
     return false
   } finally {

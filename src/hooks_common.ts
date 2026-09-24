@@ -242,13 +242,7 @@ export function emitRewrite(
   }
   if (savings !== undefined) {
     const bytesSaved = savings.originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
-    // Floored at 0 rather than skipped: `savings.originalBytes` can be a harness delivery-preview
-    // ceiling far smaller than the raw reduction the `isRewriteWorthwhile` gate cleared (see
-    // deliveredOutputBytes in src/delivery_cap.ts), so a genuinely worthwhile rewrite can still
-    // compute a non-positive capped credit. Recording nothing there would make the rewrite's own
-    // kind invisible to `token-goat stats` and to anything selecting on it, which is a worse
-    // failure than an honest zero -- a stat kind that logs a NEGATIVE saving is what corrupts a
-    // summed total, not one that logs zero.
+    // Floored at 0 rather than skipped: `savings.originalBytes` can be a harness delivery-preview ceiling far smaller than the raw reduction the `isRewriteWorthwhile` gate cleared (see deliveredOutputBytes in src/delivery_cap.ts), so a genuinely worthwhile rewrite can still compute a non-positive capped credit. Recording nothing there would make the rewrite's own kind invisible to `token-goat stats` and to anything selecting on it, which is a worse failure than an honest zero -- a stat kind that logs a NEGATIVE saving is what corrupts a summed total, not one that logs zero.
     const credited = Math.max(0, bytesSaved)
     recordStat(savings.kind, credited, savedTokensFromBytes(credited), undefined, savings.detail)
   }
@@ -278,6 +272,17 @@ export function estimateResultCount(text: string): number {
   return countNonEmptyLines(text)
 }
 
+/** Result counts a Grep or Glob tool_response carries (CAPTURE, Claude Code 2.1.281, plus transcript `toolUseResult` rows): `numFiles` for files_with_matches, count mode and Glob, `numLines` for content mode, whose `numFiles` stays 0 even when it matched, `numMatches` for count mode. */
+const RESULT_COUNT_KEYS = ['numFiles', 'numLines', 'numMatches'] as const
+
+/** The result count a structured Grep/Glob tool_response states, the largest of {@link RESULT_COUNT_KEYS} present, or null when it states none (a text response, or a harness that sends one). A files_with_matches Grep and every Glob on Claude Code send only these fields and no text, so a text estimate alone reads them as zero. */
+export function structuredResultCount(raw: Record<string, unknown>): number | null {
+  const response = raw['tool_response']
+  if (response === null || typeof response !== 'object') return null
+  const counts = RESULT_COUNT_KEYS.map((k) => (response as Record<string, unknown>)[k]).filter((v): v is number => typeof v === 'number')
+  return counts.length > 0 ? Math.max(...counts) : null
+}
+
 /** Build the `post_tool_use` / `pre_tool_use` handler pair backing a tool's session-scoped "you already ran this exact query, here's the recall count" advisory hint. Factors out the identical handler bodies shared by Grep and Glob (see hooks_grep.ts / hooks_glob.ts): both record each call's match count keyed by a tool-specific signature, then on a later identical call whose recorded match count meets a tool-specific config threshold, emit a context advisory instead of letting the call silently re-run. The signature shape itself (`buildSignature`) stays genuinely tool-specific and is supplied by the caller, not shared. */
 export function makeDedupHintHandlers(opts: {
   toolName: string
@@ -292,8 +297,7 @@ export function makeDedupHintHandlers(opts: {
       if (getToolName(event) !== opts.toolName) return passOutput()
       const signature = opts.buildSignature(getToolInput(event))
       if (signature === null) return passOutput()
-      const text = extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
-      opts.recordQuery(signature, estimateResultCount(text))
+      opts.recordQuery(signature, structuredResultCount(event.raw) ?? estimateResultCount(extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)))
       return passOutput()
     } catch {
       return passOutput()

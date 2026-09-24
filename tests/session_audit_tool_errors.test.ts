@@ -39,6 +39,14 @@ const OTHER_MODEL_LINES = [
   '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_census_no_tab","is_error":true,"content":"No tab available"}]}}',
 ]
 
+// CAPTURE: two Skill loads a token-goat deny answered with the content, cut down the same way (the args input and the inlined body after the deny's first paragraph dropped): transcript C--Projects-token-goat-mem/252ee8fa-5f72-4499-af02-5fc825e4a5e2.jsonl (Claude Code 2.1.240, the denial field's text) and C--Projects-oss-contrib/1f5d4b82-89f0-448f-b0a2-aa86dfdef57b.jsonl (2.1.280, the rendered hook-error text).
+const DELIVERED_LINES = [
+  '{"type":"assistant","message":{"id":"msg_011CeZZDLxNvUE4B7sLi3x54","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_011UwA7qcfZuju8nypbw8fkr","name":"Skill","input":{"skill":"brainstorming"}}]}}',
+  '{"type":"user","toolDenialKind":"permission-rule","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_011UwA7qcfZuju8nypbw8fkr","is_error":true,"content":"Skill `brainstorming` is large (66612 bytes); its compact slice (11566 bytes) is inlined below instead of the full body. Run `token-goat skill-body brainstorming` if you need the full body."}]}}',
+  '{"type":"assistant","message":{"id":"msg_011CfK1XL9DBdi1oQzyg6xiS","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_01QLpDyg5PHctNRPBTZ1nSSR","name":"Skill","input":{"skill":"humanizer"}}]}}',
+  '{"type":"user","toolDenialKind":"permission-rule","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01QLpDyg5PHctNRPBTZ1nSSR","is_error":true,"content":"PreToolUse:Skill hook error: [tg] Skill `humanizer` is large (52308 bytes), and its compact slice is too large to inline; its heading tree (16 headings) is inlined below instead of the full body. Use `token-goat skill-section humanizer \'<heading>\'` to load a specific section, `token-goat skill-body humanizer --compact` to load the compact slice, or `token-goat skill-body humanizer` for the full body."}]}}',
+]
+
 const DAY_MS = 24 * 60 * 60 * 1000
 
 let corpusDir: string
@@ -109,5 +117,19 @@ describe('session-audit tool-error census', () => {
     expect(new Set(byTool.map(callsEnd))).toEqual(new Set([callsEnd(byTool[0]!)]))
     expect(text).toContain('(1 more ran without an error)')
     expect(text).toMatch(/^ +1 {2}mcp__claude-in-chrome__browser_batch No tab available$/m)
+    // No deny delivered anything in this corpus, so the report carries no line about one.
+    expect(text).not.toContain('Content delivered')
+  })
+
+  it('leaves a deny that delivered the content out of the error count and rate, and says how many it left out', async () => {
+    fs.writeFileSync(path.join(corpusDir, 'proj', 'skill.jsonl'), DELIVERED_LINES.join('\n') + '\n')
+    const summary = await auditSessionCorpus({ dir: corpusDir })
+    // HAND-DERIVED from the fixture lines: both Skill calls were answered with the content, so neither is an error.
+    expect(summary.toolErrors.byTool.find((r) => r.name === 'Skill')).toMatchObject({ calls: 2, errors: 0, unknown: 0, delivered: 2, expected: {} })
+    expect(summary.toolErrors.byModel.find((r) => r.name === 'claude-opus-5')).toMatchObject({ calls: 2, errors: 1, delivered: 1 })
+    const text = formatToolErrorCensus(summary.toolErrors, summary)
+    expect(text.split('\n')[2]).toBe('Content delivered by a token-goat deny, not counted as errors: 2 (Skill 2).')
+    expect(text).not.toMatch(/^Skill /m)
+    expect(text).toContain('(2 more ran without an error)')
   })
 })

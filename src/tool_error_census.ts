@@ -1,7 +1,7 @@
 /** Per-tool and per-model tool-error census behind `session-audit --tool-errors`. Every `is_error` tool result in the corpus classified by {@link classifyToolError}, the same table the live failure brake reads, so the report and the brake never disagree about what a failure is. */
 
 import { displaySafeText } from './paths.js'
-import { classifyToolError, errorPrefix, type ToolErrorFlags } from './tool_error_class.js'
+import { classifyToolError, CONTENT_DELIVERED_REASON, errorPrefix, type ToolErrorFlags } from './tool_error_class.js'
 
 /** One tool's or one model's row. */
 export interface ToolErrorTally {
@@ -12,6 +12,8 @@ export interface ToolErrorTally {
   errors: number
   /** Errors no pattern names. */
   unknown: number
+  /** `is_error` results that were a token-goat deny delivering the content ({@link CONTENT_DELIVERED_REASON}): the call did its job, so they are left out of `errors` and the rate. */
+  delivered: number
   /** Errors per expected reason. */
   readonly expected: Record<string, number>
 }
@@ -53,7 +55,7 @@ const UNKNOWN_MODEL = '(unknown)'
 function tally(map: Map<string, ToolErrorTally>, name: string): ToolErrorTally {
   let row = map.get(name)
   if (row === undefined) {
-    row = { name, calls: 0, errors: 0, unknown: 0, expected: {} }
+    row = { name, calls: 0, errors: 0, unknown: 0, delivered: 0, expected: {} }
     map.set(name, row)
   }
   return row
@@ -79,7 +81,12 @@ export function newToolErrorAccumulator(): ToolErrorAccumulator {
     },
     countError(tool, model, errorText, flags) {
       const verdict = classifyToolError(tool, errorText, flags)
-      for (const row of [tally(tools, tool), tally(models, model ?? UNKNOWN_MODEL)]) {
+      const rows = [tally(tools, tool), tally(models, model ?? UNKNOWN_MODEL)]
+      if (verdict.reason === CONTENT_DELIVERED_REASON) {
+        for (const row of rows) row.delivered += 1
+        return
+      }
+      for (const row of rows) {
         row.errors += 1
         if (verdict.kind === 'unknown') row.unknown += 1
         else row.expected[verdict.reason] = (row.expected[verdict.reason] ?? 0) + 1
@@ -130,6 +137,14 @@ function tableLines(rows: readonly ToolErrorTally[]): string[] {
   return out
 }
 
+/** The one line naming the delivered denies left out of the error counts, per tool, or nothing when there were none. */
+function deliveredLines(rows: readonly ToolErrorTally[]): string[] {
+  const delivering = rows.filter((r) => r.delivered > 0).sort((a, b) => b.delivered - a.delivered || byCodeUnit(a.name, b.name))
+  if (delivering.length === 0) return []
+  const total = delivering.reduce((sum, r) => sum + r.delivered, 0)
+  return [`Content delivered by a token-goat deny, not counted as errors: ${fmt(total)} (${delivering.map((r) => `${displaySafeText(r.name)} ${fmt(r.delivered)}`).join(', ')}).`]
+}
+
 /** Render the census. Deterministic for a given corpus: no runtime, no corpus path, and every tie broken by name. */
 export function formatToolErrorCensus(census: ToolErrorCensus, scope: { readonly filesScanned: number; readonly windowDays: number }): string {
   const calls = census.byTool.reduce((sum, r) => sum + r.calls, 0)
@@ -140,6 +155,7 @@ export function formatToolErrorCensus(census: ToolErrorCensus, scope: { readonly
   const lines = [
     `# Tool errors (${fmt(scope.filesScanned)} transcripts, ${window})`,
     `Calls ${fmt(calls)}, errors ${fmt(errors)} (${rate(errors, calls)}), unknown ${fmt(unknown)}. Expected means a named failure shape in tool_error_class.ts; unknown is everything else.`,
+    ...deliveredLines(census.byTool),
     '',
     '## By tool',
     ...tableLines(census.byTool),

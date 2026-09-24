@@ -11,6 +11,7 @@ import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
+import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import type { HookOutput } from './types.js'
 
 /** What a suggested command slices out of a file: a markdown/TOML/INI section, a code symbol, a config key, or a SQL CREATE block. */
@@ -204,11 +205,9 @@ export function sliceCommand(shownPath: string, target: HintTarget): string {
 /** The command a deny leads with, as leadWithCommand fenced it, or the first fenced `token-goat` command anywhere in it. */
 const LED_COMMAND_RE = /`(token-goat [^`\r\n]+)`/
 
-/** The denies that are the delivery rather than a refusal: hooks_skill.ts's inlined compact slice and heading tree, and hooks_read.ts's served compact and notebook sidecars. A second copy of one of those is the content itself, so it is never cut down to a pointer. tests/hint_target.test.ts pins each phrase to its source. */
-export const DELIVERS_CONTENT_RE = /is inlined below instead of the full body|headings below instead of the full body|in place of the full file/
-
 /** A deny this agent already received for this exact call, since the last compaction, comes back as its command and one line instead of the whole explanation again: 283 of 2,764 measured token-goat denies were a verbatim repeat, and the model that already holds the long version gains nothing from a second copy. Keyed by tool, message and compaction epoch in the per-agent session state relay.ts loads, so a repeat after a compaction (which may have dropped the first) gets the full text again. The session and agent go into the key as well: loadSessionState keeps the previous in-memory state when a session has nothing on disk yet, so a process serving a second session would otherwise read the first one's refusals as its own. */
 export function sharpenRepeatedDeny(event: HookEvent, output: HookOutput): HookOutput {
+  // A deny that delivers the content (DELIVERS_CONTENT_RE) is the content itself the second time too, so it is never cut down to a pointer.
   if (output.hookType !== 'deny' || !event.sessionId || DELIVERS_CONTENT_RE.test(output.message)) return output
   const key = 'deny-repeat:' + sessionStateKey(event) + ':' + (event.toolName ?? '') + ':' + getCompactedAt() + ':' + shortFingerprint(output.message)
   if (!wasHintShown(key)) {

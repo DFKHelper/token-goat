@@ -4,7 +4,7 @@ import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { getHarnessName } from './bridges/registry.js'
 import { loadConfig } from './config.js'
-import { registerHook, type HookEvent } from './hook_registry.js'
+import { registerHook, sessionStateKey, type HookEvent } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
 import { summarize, SOURCE_HINT } from './stats.js'
 import type { HookOutput } from './types.js'
@@ -105,15 +105,15 @@ export function uncorrelatedHint(category: HintCategory): (text: string) => Clas
   return () => ({ category, correlator: null })
 }
 
-/** Categories whose acted-on verdict comes from the module that emitted them ({@link settleSelfScoredHints}) rather than from a later Bash command naming a correlator: what they ask for is a pattern of calls, which no single command can show. Their rows are observable with no correlator, and {@link resolvePendingHintsForEvent} leaves them alone. */
+/** Categories whose acted-on verdict comes from the module that emitted them ({@link settleSelfScoredHints}) rather than from a later Bash command naming a correlator: what they ask for is a pattern of calls, which no single command can show. Their rows are observable whatever their correlator, which holds the emitting agent's {@link sessionStateKey} rather than a pointer, and {@link resolvePendingHintsForEvent} leaves them alone. */
 const SELF_SCORED_HINT_CATEGORIES: ReadonlySet<HintCategory> = new Set<HintCategory>(['read_batch', 'search_brake'])
 
-/** Settle every pending emission of a self-scored category in this session with the verdict its emitter observed. */
-export function settleSelfScoredHints(category: HintCategory, sessionId: string, actedOn: boolean): void {
+/** Settle every pending emission of a self-scored category this agent logged with the verdict its emitter observed. Claude Code subagents share their parent's session_id, so the rows are matched on the agent key their emitter logged as the correlator too: one agent's verdict never resolves another's row. */
+export function settleSelfScoredHints(category: HintCategory, event: HookEvent, actedOn: boolean): void {
   try {
     getDb(globalDbPath())
-      .prepare(`UPDATE hint_emissions SET acted_on = ?, resolved = 1 WHERE category = ? AND session_id = ? AND resolved = 0`)
-      .run(actedOn ? 1 : 0, category, sessionId)
+      .prepare(`UPDATE hint_emissions SET acted_on = ?, resolved = 1 WHERE category = ? AND session_id = ? AND correlator IS ? AND resolved = 0`)
+      .run(actedOn ? 1 : 0, category, event.sessionId, sessionStateKey(event))
   } catch {
     // Fail-soft, same contract as logHintEmission.
   }

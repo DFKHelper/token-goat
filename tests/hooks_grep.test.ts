@@ -284,6 +284,22 @@ describe('preGrepDedupHandler', () => {
     }
   })
 
+  // A files_with_matches Grep on Claude Code answers with structured fields and no text, so a count read from text keys alone recorded 0 and the note never fired. CAPTURE: C:/Users/zelys/AppData/Local/Temp/tg_capture/events_run1.jsonl lines 1-2 (Claude Code 2.1.281), transcript_path dropped. The threshold is lowered to the one file that capture matched.
+  it('counts a structured files_with_matches response, so the note fires on the identical repeat', () => {
+    const envelope = { session_id: 'b0d08203-e7fb-4b9c-b06c-63ee7efc746a', cwd: 'C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_capture\\proj', prompt_id: 'a5d4b644-942c-4453-ad2e-8cb4ea1ca6cd', permission_mode: 'bypassPermissions', tool_name: 'Grep', tool_input: { pattern: 'alpha', path: 'src' }, tool_use_id: 'toolu_01AaJzK9t4i43Zc2R7jHfoou' }
+    const post = { ...envelope, hook_event_name: 'PostToolUse', tool_response: { mode: 'files_with_matches', filenames: ['src\\a.ts'], numFiles: 1, totalFiles: 1 }, duration_ms: 45 }
+    const pre = { ...envelope, hook_event_name: 'PreToolUse' }
+    const cfg = defaultConfig()
+    cfg.hints.grep_dedup_min_matches = 1
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    postGrepHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Grep', toolInput: post.tool_input, sessionId: post.session_id, raw: post }))
+    const result = preGrepDedupHandler(makeHookEvent({ toolName: 'Grep', toolInput: pre.tool_input, sessionId: pre.session_id, raw: pre }))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toContain('"alpha" already ran this session and returned 1 match.')
+  })
+
   it('does not treat a real "No files found" empty result as a 1-match hit', () => {
     postGrepHandler(grepPostEvent('rareTerm', 'No files found'))
 
@@ -450,14 +466,9 @@ describe('extractGrepStructuralSearch', () => {
 })
 
 describe('preGrepHandler — single-file structural searches', () => {
-  // PROVENANCE: HAND-DERIVED. The path and the reason it is refused are read off
-  // extractGrepStructuralSearch's glob-character check, independently of preGrepHandler.
+  // PROVENANCE: HAND-DERIVED. The path and the reason it is refused are read off extractGrepStructuralSearch's glob-character check, independently of preGrepHandler.
   //
-  // What keeps a repository-chosen path from speaking in token-goat's own voice here is not the
-  // escaping in preGrepHandler, which is unreachable, but this refusal: every marker token-goat
-  // speaks needs a `[`, and a `[` makes the extractor decline. The refusal exists for globbing and
-  // happens to close the injection, so relaxing it to allow a literal bracket in a path reopens
-  // that question. This test is the thing that says so when someone does.
+  // What keeps a repository-chosen path from speaking in token-goat's own voice here is not the escaping in preGrepHandler, which is unreachable, but this refusal: every marker token-goat speaks needs a `[`, and a `[` makes the extractor decline. The refusal exists for globbing and happens to close the injection, so relaxing it to allow a literal bracket in a path reopens that question. This test is the thing that says so when someone does.
   it('declines a path containing a bracket, which is what keeps a marker out of the hint', () => {
     const event = makeHookEvent({
       toolName: 'Grep',
