@@ -82,6 +82,7 @@ import {
   extractTranscriptText,
   extractSection,
   runSemantic,
+  runSemanticMulti,
   guardJsonRows,
 } from './read_commands.js'
 import { queryJson } from './json_query.js'
@@ -197,19 +198,24 @@ export { requireInt, requireNonNegativeInt, requirePositiveInt }
 // --- Command handlers -------------------------------------------------------
 
 // Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
-async function cmdSemantic(query: string | undefined, opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean }): Promise<void> {
+async function cmdSemantic(query: string | undefined, more: string[], opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean }): Promise<void> {
   if (!query && !opts.preflight && !opts.warm) {
     throw new CliError('missing required argument: query')
   }
+  // Rejected rather than ignored, as `symbol` rejects --grep with a name: --preflight never searches, so several queries beside it can only be a mistake.
+  if (opts.preflight === true && more.length > 0) {
+    throw new CliError('--preflight checks the embedding setup and runs no query; drop the queries, or drop --preflight to search')
+  }
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
-  const { text, code } = await runSemantic(query ?? '', {
+  const semanticOpts = {
     limit,
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
     ...(opts.excludeTests === true ? { excludeTests: true } : {}),
     ...(opts.preflight === true ? { preflight: true } : {}),
     ...(opts.warm === true ? { warm: true } : {}),
-  })
+  }
+  const { text, code } = more.length > 0 ? await runSemanticMulti([query ?? '', ...more], semanticOpts) : await runSemantic(query ?? '', semanticOpts)
   // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
   ;(opts.json === true || code === 0 ? out : err)(text)
   process.exitCode = code
@@ -1666,8 +1672,8 @@ export function buildProgram(): Command {
     })
 
   program
-    .command('semantic [query]')
-    .description('semantic search (falls back to full-text search)')
+    .command('semantic [query] [more...]')
+    .description('semantic search (falls back to full-text search); several queries run in one call, one headed block per query')
     .option('-l, --limit <n>', 'max results')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'filter to hits whose file path matches this regex (literal substring if it is not valid regex); matched against the path as rendered')
