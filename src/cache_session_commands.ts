@@ -19,13 +19,7 @@ import { loadConfig } from './config.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { emitErr } from './emit.js'
 
-/**
- * Cap a listing to `limit` rows and say so on stderr when rows were dropped.
- *
- * These listings serialize a bare JSON array under `--json`, so there is nowhere in-band to put a `truncated` flag without breaking every pipeline that consumes the array. stderr is the only channel left. A pipeline that discards stderr still cannot see the notice -- that residual risk is real, and named rather than hidden. What is not acceptable is disclosure on neither channel, which is what all three listings did: `--limit 10` against 200 cached entries printed ten rows that were byte-identical to a complete answer.
- *
- * Shared rather than written out three times because the three callers are the same listing with a different row shape, and a notice that exists in two of them is the failure this fixes.
- */
+/** Cap a listing to `limit` rows and say so on stderr when rows were dropped. These listings serialize a bare JSON array under `--json`, so there is nowhere in-band to put a `truncated` flag without breaking every pipeline that consumes the array. stderr is the only channel left. A pipeline that discards stderr still cannot see the notice -- that residual risk is real, and named rather than hidden. What is not acceptable is disclosure on neither channel, which is what all three listings did: `--limit 10` against 200 cached entries printed ten rows that were byte-identical to a complete answer. Shared rather than written out three times because the three callers are the same listing with a different row shape, and a notice that exists in two of them is the failure this fixes. */
 function capAndNote<T>(rows: readonly T[], limit: number): T[] {
   const shown = rows.slice(0, limit)
   if (shown.length < rows.length) {
@@ -34,11 +28,7 @@ function capAndNote<T>(rows: readonly T[], limit: number): T[] {
   return shown
 }
 
-/**
- * Parses a `--limit` option to a positive int, defaulting to `dflt` when unset. Shared by cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way.
- *
- * `--limit 0` is rejected rather than accepted-and-sliced-to-empty: each caller's zero-results branch prints an absolute claim ("No bash output entries cached.") that a silently-empty `.slice(0, 0)` result would make even when entries genuinely exist -- indistinguishable from a real empty cache. Same false-clean failure mode as runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation.
- */
+/** Parses a `--limit` option to a positive int, defaulting to `dflt` when unset. Shared by cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way. `--limit 0` is rejected rather than accepted-and-sliced-to-empty: each caller's zero-results branch prints an absolute claim ("No bash output entries cached.") that a silently-empty `.slice(0, 0)` result would make even when entries genuinely exist -- indistinguishable from a real empty cache. Same false-clean failure mode as runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation. */
 function parseLimitOpt(cmdName: string, limitStr: string | undefined, dflt = 30): number {
   if (limitStr === undefined) return dflt
   let n: number
@@ -93,6 +83,26 @@ function getNewestSessionFiles(): { id: string; sessionCount: number; filesArr: 
 
 // ── bash-history ─────────────────────────────────────────────────────────────
 
+function emitHistoryOutput<T extends { storedAt: number }>(
+  allItems: T[],
+  limit: number,
+  json: boolean | undefined,
+  emptyMessage: string,
+  printTable: (items: T[]) => void,
+): void {
+  const sorted = allItems.sort((a, b) => b.storedAt - a.storedAt)
+  const items = capAndNote(sorted, limit)
+  if (json === true) {
+    process.stdout.write(displaySafeJson(items) + '\n')
+    return
+  }
+  if (items.length === 0) {
+    process.stdout.write(emptyMessage)
+    return
+  }
+  printTable(items)
+}
+
 export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
   const limit = parseLimitOpt('bash-history', opts.limit)
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR)
@@ -111,23 +121,15 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
       }
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
-    .sort((a, b) => b.storedAt - a.storedAt)
-  const items = capAndNote(allItems, limit)
-  if (opts.json === true) {
-    process.stdout.write(displaySafeJson(items) + '\n')
-    return
-  }
-  if (items.length === 0) {
-    process.stdout.write('No bash output entries cached.\n')
-    return
-  }
-  process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  ${pad('exit', 4)}  command\n`)
-  for (const item of items) {
-    // A multi-line command (heredoc, chained script) embeds literal newlines/tabs into item.command; printed raw, each embedded line would break this fixed-width table's one-row-per-entry structure. Same defect class already fixed in mcp_compress.ts's cellText and resume.ts's bash-command line. displaySafeText subsumes the old `[\t\r\n]+ -> ' '` flattening: it escapes those same characters (as `\n`, `\r`, `\t`) so a multi-line command still cannot break this table's one-row-per-entry structure, and it additionally neutralizes the `[tg]` and `[token-goat` spellings, which the strip alone left verbatim.
-    const flatCommand = displaySafeText(item.command)
-    const preview = flatCommand.length > 80 ? flatCommand.slice(0, 77) + '...' : flatCommand
-    process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.sizeBytes), 8)}  ${pad(String(item.exitCode), 4)}  ${preview}\n`)
-  }
+  emitHistoryOutput(allItems, limit, opts.json, 'No bash output entries cached.\n', (items) => {
+    process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  ${pad('exit', 4)}  command\n`)
+    for (const item of items) {
+      // A multi-line command (heredoc, chained script) embeds literal newlines/tabs into item.command; printed raw, each embedded line would break this fixed-width table's one-row-per-entry structure. Same defect class already fixed in mcp_compress.ts's cellText and resume.ts's bash-command line. displaySafeText subsumes the old `[\t\r\n]+ -> ' '` flattening: it escapes those same characters (as `\n`, `\r`, `\t`) so a multi-line command still cannot break this table's one-row-per-entry structure, and it additionally neutralizes the `[tg]` and `[token-goat` spellings, which the strip alone left verbatim.
+      const flatCommand = displaySafeText(item.command)
+      const preview = flatCommand.length > 80 ? flatCommand.slice(0, 77) + '...' : flatCommand
+      process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.sizeBytes), 8)}  ${pad(String(item.exitCode), 4)}  ${preview}\n`)
+    }
+  })
 }
 
 // ── web-history ───────────────────────────────────────────────────────────────
@@ -148,20 +150,12 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
       }
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
-    .sort((a, b) => b.storedAt - a.storedAt)
-  const items = capAndNote(allItems, limit)
-  if (opts.json === true) {
-    process.stdout.write(displaySafeJson(items) + '\n')
-    return
-  }
-  if (items.length === 0) {
-    process.stdout.write('No web output entries cached.\n')
-    return
-  }
-  process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  url\n`)
-  for (const item of items) {
-    process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.bytes), 8)}  ${displaySafeText(item.url)}\n`)
-  }
+  emitHistoryOutput(allItems, limit, opts.json, 'No web output entries cached.\n', (items) => {
+    process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  url\n`)
+    for (const item of items) {
+      process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.bytes), 8)}  ${displaySafeText(item.url)}\n`)
+    }
+  })
 }
 
 // ── mcp-history ───────────────────────────────────────────────────────────────
@@ -184,20 +178,12 @@ export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
       }
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
-    .sort((a, b) => b.storedAt - a.storedAt)
-  const items = capAndNote(allItems, limit)
-  if (opts.json === true) {
-    process.stdout.write(displaySafeJson(items) + '\n')
-    return
-  }
-  if (items.length === 0) {
-    process.stdout.write('No mcp output entries cached.\n')
-    return
-  }
-  process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  tool\n`)
-  for (const item of items) {
-    process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.sizeBytes), 8)}  ${displaySafeText(item.toolName)}\n`)
-  }
+  emitHistoryOutput(allItems, limit, opts.json, 'No mcp output entries cached.\n', (items) => {
+    process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  tool\n`)
+    for (const item of items) {
+      process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.sizeBytes), 8)}  ${displaySafeText(item.toolName)}\n`)
+    }
+  })
 }
 
 // ── clean-cache ───────────────────────────────────────────────────────────────
@@ -343,11 +329,7 @@ export async function cmdResume(opts: { sessionId: string; json?: boolean }): Pr
 
 // ── compact-hint ──────────────────────────────────────────────────────────────
 
-/**
- * Show compact manifest info and context pressure.
- *
- * The manifest is built by the same `manifest.ts` builder the pre_compact hook emits, from session state hydrated off disk for this process. It used to be built by a second, unrelated builder in compact.ts, so the token figure printed here sized text the hook would never produce: a reader checking what the next compaction would carry learned nothing about what it actually carries, and the two builders drifted with nothing to notice.
- */
+/** Show compact manifest info and context pressure. The manifest is built by the same `manifest.ts` builder the pre_compact hook emits, from session state hydrated off disk for this process. It used to be built by a second, unrelated builder in compact.ts, so the token figure printed here sized text the hook would never produce: a reader checking what the next compaction would carry learned nothing about what it actually carries, and the two builders drifted with nothing to notice. */
 export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; json?: boolean }): void {
   const sessionId = opts.sessionId ?? findLatestSessionId()
   const cache = sessionId !== null ? loadSessionCache(sessionId) : null
