@@ -1,8 +1,4 @@
-/**
- * Shell command parsing, git mutation detection, pipeline filtering, and syntax validation.
- *
- * Extracted from hooks_bash.ts to isolate pure shell-command inspection and git working-tree mutation tracking from hook I/O delivery and caching.
- */
+/** Shell command parsing, git mutation detection, pipeline filtering, and syntax validation. Extracted from hooks_bash.ts to isolate pure shell-command inspection and git working-tree mutation tracking from hook I/O delivery and caching. */
 
 import { statSync } from 'node:fs'
 
@@ -27,6 +23,7 @@ import {
   extractLineRangeRead,
   extractLineRangeReadsCompound,
   isTscCommand,
+  stripLeadingAssignments,
 } from './bash_extractors.js'
 import type { HookEvent } from './hook_registry.js'
 
@@ -37,6 +34,11 @@ export function stripCdPrefix(cmd: string): string {
   // Handles: `cd /path && CMD`, `cd "path with spaces" && CMD`, `cd 'path'; CMD`, and `cd /path` on its own line above CMD.
   const stripped = cmd.replace(CD_PREFIX_RE, '')
   return stripped.trim() || cmd
+}
+
+/** The command the extractors match: `rawCmd` past its `cd <dir> &&` prefixes and then its leading environment assignments, so `cd src && FOO=1 cat x` is read as `cat x`. Whatever runs, or is suggested to run, is built from `rawCmd`, which keeps both, and a compression opt-out is read from `rawCmd` for the same reason: `TOKEN_GOAT_BASH_COMPRESS=0` is one of the assignments this drops. */
+export function stripCommandPrefix(rawCmd: string): string {
+  return stripLeadingAssignments(stripCdPrefix(rawCmd))
 }
 
 export function stripTrailingStderrRedirect(cmd: string): string {
@@ -54,9 +56,7 @@ export function isDirectTestRunnerCommand(cmd: string): boolean {
   return /^(?:pytest|(?:npx\s+)?(?:jest|vitest)|go\s+test|cargo\s+test)\b/i.test(cmd)
 }
 
-/**
- * Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the remaining command against the directory the shell would actually land in — not this hook's own cwd — before that path is embedded in a suggested follow-up command.
- */
+/** Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the remaining command against the directory the shell would actually land in — not this hook's own cwd — before that path is embedded in a suggested follow-up command. */
 function extractCdPrefixDirs(rawCmd: string): string[] {
   // Must stay in step with CD_PREFIX_RE: this names the directories that one consumes, and a prefix stripped there but not extracted here resolves the file against the hook's own cwd instead of the directory the shell actually landed in.
   const prefixMatch = rawCmd.match(CD_PREFIX_RE)
@@ -71,9 +71,7 @@ function extractCdPrefixDirs(rawCmd: string): string[] {
   return dirs
 }
 
-/**
- * Resolves filePath against the directory a stripped `cd DIR && ...` prefix leaves the shell in (each cd resolved in turn — relative ones against the previous directory, starting from cwd — mirroring real shell semantics), so a hint naming filePath is resolvable from the hook's actual cwd rather than silently relative to a directory the model never navigated to. Falls back to filePath unchanged if the prefix can't be parsed into at least one directory.
- */
+/** Resolves filePath against the directory a stripped `cd DIR && ...` prefix leaves the shell in (each cd resolved in turn — relative ones against the previous directory, starting from cwd — mirroring real shell semantics), so a hint naming filePath is resolvable from the hook's actual cwd rather than silently relative to a directory the model never navigated to. Falls back to filePath unchanged if the prefix can't be parsed into at least one directory. */
 export function resolveCdHintPath(rawCmd: string, filePath: string, cwd: string): string {
   if (extractCdPrefixDirs(rawCmd).length === 0) return filePath
   return resolveIndexPath(filePath, cdPrefixCwd(rawCmd, cwd))
@@ -86,11 +84,7 @@ export function cdPrefixCwd(rawCmd: string, cwd: string): string {
   return dir
 }
 
-/**
- * Strips a command's downstream pipeline and trailing redirections, returning the base command. Used to key the bash-output cache so that the same build/test command run with different downstream filters (`| tail -40` vs `| grep ERROR`) or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET commands are keyed on their URL.
- *
- * Splits on the first top-level pipe operator (`|`), ignoring `|` inside single or double quotes and the `||` logical-OR operator, then removes trailing stream redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.).
- */
+/** Strips a command's downstream pipeline and trailing redirections, returning the base command. Used to key the bash-output cache so that the same build/test command run with different downstream filters (`| tail -40` vs `| grep ERROR`) or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET commands are keyed on their URL. Splits on the first top-level pipe operator (`|`), ignoring `|` inside single or double quotes and the `||` logical-OR operator, then removes trailing stream redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.). */
 export function stripOutputPipeline(cmd: string): string {
   let inSingle = false
   let inDouble = false
@@ -197,11 +191,7 @@ function segmentCommandIs(segment: string, name: string): boolean {
   return new RegExp('^\\s*(?:\\S*[/\\\\])?' + name + '(?:\\.exe)?\\b', 'i').test(segment)
 }
 
-/**
- * Files rewritten in place by `sed -i`, or `[]` when this segment is not an in-place sed.
- *
- * Handles the three spellings that actually appear: GNU `sed -i 's/a/b/' f`, GNU with a backup suffix `sed -i.bak ... f`, and BSD/macOS `sed -i '' 's/a/b/' f` where the empty suffix is its own argv entry. The first non-option token is the script unless `-e`/`-f` already supplied one.
- */
+/** Files rewritten in place by `sed -i`, or `[]` when this segment is not an in-place sed. Handles the three spellings that actually appear: GNU `sed -i 's/a/b/' f`, GNU with a backup suffix `sed -i.bak ... f`, and BSD/macOS `sed -i '' 's/a/b/' f` where the empty suffix is its own argv entry. The first non-option token is the script unless `-e`/`-f` already supplied one. */
 function extractSedInPlaceFiles(segment: string): string[] {
   if (!segmentCommandIs(segment, 'sed')) return []
   const tokens = safeShlexSplit(segment)
@@ -322,9 +312,7 @@ function workingTreeStatusPaths(gitDir: string): string[] {
   return out
 }
 
-/**
- * Enqueue one rewritten path, filtering the shapes that must never reach the queue: a discard sink, a directory, and anything not actually on disk (a redirect whose target never materialized, or a path parsed out of a command that ran somewhere else). A path under the OS temp dir is refused by enqueueDirtyPathSafe itself, for this detector and the git-mutation one alike.
- */
+/** Enqueue one rewritten path, filtering the shapes that must never reach the queue: a discard sink, a directory, and anything not actually on disk (a redirect whose target never materialized, or a path parsed out of a command that ran somewhere else). A path under the OS temp dir is refused by enqueueDirtyPathSafe itself, for this detector and the git-mutation one alike. */
 function enqueueRewrittenPath(absPath: string): void {
   if (/(?:^|[/\\])(?:NUL|nul)$/.test(absPath) || absPath.replace(/\\/g, '/').endsWith('/dev/null')) return
   try {
@@ -335,13 +323,7 @@ function enqueueRewrittenPath(absPath: string): void {
   enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
-/**
- * Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols.
- *
- * The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before.
- *
- * Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism.
- */
+/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. */
 export function enqueueNonHeadMovingRewrites(cmd: string, rawCmd: string, cwd: string): void {
   // A stripped `cd sub && sed -i ... f` prefix means `f` is relative to `sub`, not to the hook's cwd -- resolving it against cwd would produce a path that is not on disk and silently enqueue nothing.
   const atCwd = (f: string): string => resolveIndexPath(resolveCdHintPath(rawCmd, f, cwd), cwd)
@@ -426,9 +408,7 @@ export function isFullRecallCommand(cmd: string): boolean {
   return Object.values(RECALL_COMMAND).includes(tokens[1] ?? '') && tokens.includes('--full')
 }
 
-/**
- * The file read by a pure file read, or null when `cmd` is not one.
- */
+/** The file read by a pure file read, or null when `cmd` is not one. */
 export function pureFileReadPath(cmd: string): string | null {
   const single = extractCatFile(cmd)?.filePath ?? extractHeadFile(cmd)?.filePath ?? extractTailFile(cmd)?.filePath ?? extractLineRangeRead(cmd)?.filePath
   if (single !== undefined) return single
@@ -442,9 +422,7 @@ function singleFileCompoundReadPath(cmd: string): string | null {
   return reads[0]?.filePath ?? null
 }
 
-/**
- * The file line number each delivered line carries, or null when the command alone does not say.
- */
+/** The file line number each delivered line carries, or null when the command alone does not say. */
 export function deliveredLineNumbers(cmd: string, lineCount: number): Array<number | null> | null {
   const ranged = extractLineRangeRead(cmd)
   if (ranged !== null) {
@@ -462,9 +440,7 @@ export function deliveredLineNumbers(cmd: string, lineCount: number): Array<numb
 
 const WHOLE_FILE_DUMP_RE = /^(?:(?:cat|type|Get-Content|gc)|(?:head|tail)[ \t]+-n[ \t]+\d+)[ \t]+(?:"([A-Za-z0-9._\-/\\:+@ ]+)"|'([A-Za-z0-9._\-/\\:+@ ]+)'|([A-Za-z0-9._\-/\\:+@]+))(?:[ \t]+2>(?:&1|\/dev\/null))?[ \t]*$/i
 
-/**
- * True when `cmd` has the shape of a bare whole-file dump AND names the file {@link pureFileReadPath} already extracted from it.
- */
+/** True when `cmd` has the shape of a bare whole-file dump AND names the file {@link pureFileReadPath} already extracted from it. */
 export function isWholeFileDump(cmd: string, extractedPath: string): boolean {
   const m = WHOLE_FILE_DUMP_RE.exec(cmd)
   if (m === null) return false
@@ -472,9 +448,7 @@ export function isWholeFileDump(cmd: string, extractedPath: string): boolean {
   return shaped !== undefined && shaped === extractedPath
 }
 
-/**
- * Unwrap a `token-goat compress -c "<cmd>"` wrapper command to find the underlying command being executed. Used by the post-hook to key the bash output cache on the original command — identical to the hash the pre-hook computed before the rewrite. Returns null for any non-wrapper command.
- */
+/** Unwrap a `token-goat compress -c "<cmd>"` wrapper command to find the underlying command being executed. Used by the post-hook to key the bash output cache on the original command — identical to the hash the pre-hook computed before the rewrite. Returns null for any non-wrapper command. */
 export function unwrapCompressCommand(executed: string): string | null {
   const t = executed.trim()
   if (!/^(?:token-goat|tg)\s+compress\b/.test(t)) return null
@@ -498,11 +472,7 @@ export function unwrapCompressCommand(executed: string): string | null {
   return null
 }
 
-/**
- * Detect unbalanced shell quoting or unterminated heredocs in a bash command. Returns a human-readable reason string if a clear syntax error is found, or null if the command appears syntactically valid.
- *
- * Conservative approach: only flags unambiguous errors. Better to miss a false negative (let a broken command run and fail naturally) than to false-positive on valid constructs like `git commit -m "don't do that"` (single quote in double quotes).
- */
+/** Detect unbalanced shell quoting or unterminated heredocs in a bash command. Returns a human-readable reason string if a clear syntax error is found, or null if the command appears syntactically valid. Conservative approach: only flags unambiguous errors. Better to miss a false negative (let a broken command run and fail naturally) than to false-positive on valid constructs like `git commit -m "don't do that"` (single quote in double quotes). */
 export function detectUnbalancedShellSyntax(cmd: string): string | null {
   let inSingle = false
   let inDouble = false

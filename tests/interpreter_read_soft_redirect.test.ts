@@ -1,6 +1,7 @@
 /** An inline interpreter file read (`python -c "...open('x')..."`, `node -e "...readFileSync('x')..."`, PowerShell `[IO.File]::ReadAllText('x')`) runs under a token cap through the passthrough filter instead of being refused, and falls back to the refusal wherever the wrapper cannot run. The refusal was measured before this changed: across the Claude Code and Codex transcripts on this machine from 2026-08-08 to 2026-09-23 it fired 217 times, and about 203 of those commands were projections (one key, a count, a slice) against a single whole-file dump. The next call after a refusal was another python or node variant 31% of the time, and one session took 91 consecutive refusals. */
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { shellQuoteSingle } from '../src/bash_extractors.js'
 import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { preBashHandler } from '../src/hooks_bash.js'
 import type { HookOutput } from '../src/types.js'
@@ -61,6 +62,22 @@ describe('inline interpreter file reads run capped instead of refused', () => {
       expect(result.message).toContain('Python `open()` file reads bypass read hooks.')
       expect(result.message).toContain('token-goat json-outline "C:/Users/zelys/AppData/Local/Temp/tweet.json"')
     }
+  })
+
+  // PROVENANCE: HAND-DERIVED. The extractors match the command past its leading assignments, but the wrapper runs the command as written, so the read still sees the variable it set.
+  it.each([
+    `PYTHONIOENCODING=utf-8 python -c "print(open('package.json').read())"`,
+    `env PYTHONIOENCODING=utf-8 python -c "print(open('package.json').read())"`,
+  ])('wraps a read carrying its own environment assignment, and runs it with that assignment: %s', (command) => {
+    const rewritten = wrapped(preBashHandler(bashEvent(command)))
+    expect(rewritten).toContain(' -f passthrough ')
+    expect(rewritten.endsWith(` -c ${shellQuoteSingle(command)}`)).toBe(true)
+  })
+
+  it('refuses a read whose own prefix switches compression off, as the environment opt-out does, since the cap is compression', () => {
+    const result = preBashHandler(bashEvent(`TOKEN_GOAT_BASH_COMPRESS=0 ${PROJECTION_ONE_LINE}`))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toContain('Python `open()` file reads bypass read hooks.')
   })
 
   it('wraps a heredoc read too, the shape 81 of the 217 measured refusals arrived in', () => {

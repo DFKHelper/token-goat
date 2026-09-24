@@ -28,6 +28,7 @@ import {
   extractLineRangeReadsCompound,
   extractHeadFile,
   extractGetContentSelectFirst,
+  stripLeadingAssignments,
 } from '../src/bash_extractors.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
@@ -728,6 +729,56 @@ describe('preBashHandler — cd-prefix stripping', () => {
       const expectedPath = resolveIndexPath('file.py', resolveIndexPath('subdir', '/repo'))
       expect(result.context).toContain(expectedPath)
     }
+  })
+})
+
+// PROVENANCE: HAND-DERIVED command strings. Every extractor anchors at the start of the command, so an environment assignment in front of a read carried it past every gate the bare read meets.
+describe('preBashHandler — leading environment assignment stripping', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it.each([
+    ['FOO=1 cat src/auth.ts', 'cat src/auth.ts'],
+    ['LANG="C.UTF-8" cat src/auth.ts', 'cat src/auth.ts'],
+    ['env -u HOME FOO=1 cat src/auth.ts', 'cat src/auth.ts'],
+    ['cd /repo && FOO=1 cat src/auth.ts', 'cd /repo && cat src/auth.ts'],
+  ])('meets the gate the bare cat meets: %s', (command, bare) => {
+    const prefixed = preBashHandler(makeBashEvent(command))
+    expect(prefixed.hookType).not.toBe('pass')
+    expect(prefixed).toEqual(preBashHandler(makeBashEvent(bare)))
+  })
+
+  it('refuses an assignment-prefixed cat outright, since only a stripped cd makes the refusal advisory', () => {
+    expect(preBashHandler(makeBashEvent('FOO=1 cat src/auth.ts')).hookType).toBe('deny')
+  })
+
+  it('an assignment-prefixed sed read meets the overlap dedup of an earlier bare one', () => {
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_env_demo.ts"))
+    const result = preBashHandler(makeBashEvent("LANG=C sed -n '50,100p' src/paging_env_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toContain('src/paging_env_demo.ts@61-100')
+  })
+
+  it.each([
+    ['FOO=1 cat x.ts', 'cat x.ts'],
+    [`FOO="a b" python -c "print(open('x.json').read())"`, `python -c "print(open('x.json').read())"`],
+    ["env -i -u HOME FOO=1 cat 'a b.ts'", "cat 'a b.ts'"],
+  ])('returns the command itself byte for byte: %s', (command, expected) => {
+    expect(stripLeadingAssignments(command)).toBe(expected)
+  })
+
+  it.each([
+    'cat x.ts',
+    'FOO=1',
+    'FOO=1; cat x.ts',
+    'FOO=1 && cat x.ts',
+    'FOO=$(pwd) cat x.ts',
+    'FOO=1\ncat x.ts',
+    'time cat x.ts',
+    'export FOO=1',
+  ])('leaves a command alone when what follows is not the command the assignments belong to: %s', (command) => {
+    expect(stripLeadingAssignments(command)).toBe(command)
   })
 })
 
@@ -4537,6 +4588,16 @@ describe('postBashHandler — feeds Bash file dumps into the session read-cache'
     expect(wasFileReadThisSession(target)).toBe(false)
 
     await postBashHandler(makePostBashEvent('cat package.json', '{ "name": "token-goat" }'))
+
+    expect(wasFileReadThisSession(target)).toBe(true)
+  })
+
+  // PROVENANCE: HAND-DERIVED. The assignment scopes a variable to the one command; the file dumped is the same one.
+  it('an assignment-prefixed `cat` marks the file as read just as the bare one does', async () => {
+    const target = resolveIndexPath('package.json', process.cwd())
+    expect(wasFileReadThisSession(target)).toBe(false)
+
+    await postBashHandler(makePostBashEvent('LC_ALL=C cat package.json', '{ "name": "token-goat" }'))
 
     expect(wasFileReadThisSession(target)).toBe(true)
   })

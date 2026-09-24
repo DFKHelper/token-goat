@@ -1092,10 +1092,17 @@ export function extractGrepPipeChain(cmd: string): boolean {
 
 /** Splits a command into shell-ish words, honouring single and double quotes and dropping the quote characters, so a flag value that contains spaces stays one word. */
 export function splitCommandWords(cmd: string): string[] {
+  return splitCommandWordsAt(cmd).words
+}
+
+/** {@link splitCommandWords} with the offset in `cmd` where each word begins, for a caller that has to hand back part of `cmd` itself rather than words rebuilt without their quotes. */
+function splitCommandWordsAt(cmd: string): { words: string[]; starts: number[] } {
   const words: string[] = []
+  const starts: number[] = []
   let cur = ''
   let quote: string | null = null
   let started = false
+  let start = 0
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i] as string
     if (quote !== null) {
@@ -1109,6 +1116,7 @@ export function splitCommandWords(cmd: string): string[] {
       else cur += ch
       continue
     }
+    if (!started) start = i
     if (ch === '\\' && i + 1 < cmd.length) {
       cur += cmd[i + 1] as string
       i++
@@ -1121,7 +1129,10 @@ export function splitCommandWords(cmd: string): string[] {
       continue
     }
     if (/\s/.test(ch)) {
-      if (started) words.push(cur)
+      if (started) {
+        words.push(cur)
+        starts.push(start)
+      }
       cur = ''
       started = false
       continue
@@ -1129,8 +1140,11 @@ export function splitCommandWords(cmd: string): string[] {
     cur += ch
     started = true
   }
-  if (started) words.push(cur)
-  return words
+  if (started) {
+    words.push(cur)
+    starts.push(start)
+  }
+  return { words, starts }
 }
 
 const COMPRESS_OPT_OUT_VAR = 'TOKEN_GOAT_BASH_COMPRESS'
@@ -1159,6 +1173,48 @@ const ASSIGNMENT_PREFIX_WORDS = new Set(['env', 'export', 'time', 'command', 'no
 /** `env` flags whose value is the next word, which would otherwise end the scan before the assignments that follow it. */
 const ENV_VALUE_FLAGS = new Set(['-u', '--unset', '-C', '--chdir'])
 
+/** The one prefix word that exists only to set a command's environment: `env -u X FOO=1 cat x` runs `cat x` just as `FOO=1 cat x` does. */
+const ENV_PREFIX_WORDS = new Set(['env'])
+
+/** Walks the assignments leading one simple command, and the `prefixWords` (with their own flags) that can stand in front of them. Returns each assignment met and the index of the first word that is the command itself, `words.length` when there is none. A PowerShell `$env:NAME = value` is a statement of its own rather than a prefix, so the walk ends at it; its name comes back upper-cased because PowerShell names are case-insensitive, while a POSIX assignment is neither case-insensitive nor spaced around `=`. */
+function walkCommandPrefix(words: readonly string[], prefixWords: ReadonlySet<string>): { command: number; assignments: Array<{ name: string; value: string | undefined }> } {
+  const assignments: Array<{ name: string; value: string | undefined }> = []
+  let prefixed = false
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i] as string
+    const pwsh = /^\$env:([A-Za-z_]\w*)(?:=(.*))?$/i.exec(word)
+    if (pwsh !== null) {
+      assignments.push({ name: pwsh[1]!.toUpperCase(), value: pwsh[2] ?? (words[i + 1] === '=' ? words[i + 2] : undefined) })
+      return { command: i, assignments }
+    }
+    const posix = /^([A-Za-z_]\w*)=(.*)$/.exec(word)
+    if (posix !== null) {
+      assignments.push({ name: posix[1]!, value: posix[2] })
+      continue
+    }
+    if (prefixWords.has(word)) {
+      prefixed = true
+      continue
+    }
+    // A prefix's own flags (`env -i`, `time -p`) sit between it and the assignments it sets.
+    if (prefixed && word.startsWith('-')) {
+      if (ENV_VALUE_FLAGS.has(word)) i++
+      continue
+    }
+    return { command: i, assignments }
+  }
+  return { command: words.length, assignments }
+}
+
+/** `cmd` past the environment assignments leading it, so an extractor anchored at `^cat` or `^python` reads `FOO=1 cat x` and `env -u X FOO=1 cat x` as the `cat x` they run. A slice of `cmd`, so the command keeps its own quoting byte for byte. `cmd` itself when nothing leads it, when nothing follows the assignments, or when the leading words fail the single-command test the compression gate applies (`FOO=1; cat x`, `FOO=1 && cat x`, `FOO=$(pwd) cat x`): what follows those is not the command the assignments belong to. Only for matching: anything run or suggested to run keeps the assignments. */
+export function stripLeadingAssignments(cmd: string): string {
+  const { words, starts } = splitCommandWordsAt(cmd)
+  const at = starts[walkCommandPrefix(words, ENV_PREFIX_WORDS).command]
+  if (at === undefined || at === 0) return cmd
+  // Through the command's first character too, so an operator standing where the command should be (`FOO=1 && cat x`) fails the test like one inside the assignments does.
+  return isCompressibleSingleCommand(cmd.slice(0, at + 1)) ? cmd.slice(at) : cmd
+}
+
 /** True when the command itself switches Bash compression off: `TOKEN_GOAT_BASH_COMPRESS=0` (or `false`/`no`/`off`) as a leading assignment of any simple command in it, including after `export`, `env` and its flags, `time`, `do`, or an opening `(`, or PowerShell's `$env:TOKEN_GOAT_BASH_COMPRESS = 0`. The hooks read their own environment, which an inline prefix never reaches, so this is the only place that prefix is seen at all. One segment is enough for the whole command: in the shell the assignment scopes the variable to one stage of a pipeline, but whoever wrote it asked for the output uncompressed, and the output the hook would compress is the whole pipeline's. */
 export function commandOptsOutOfCompression(cmd: string): boolean {
   if (!cmd.toUpperCase().includes(COMPRESS_OPT_OUT_VAR)) return false
@@ -1166,33 +1222,9 @@ export function commandOptsOutOfCompression(cmd: string): boolean {
   // A heredoc body is text being written or fed to a program, not commands: a README line reading `TOKEN_GOAT_BASH_COMPRESS=0 cmd` asks for nothing.
   const commands = cmd.includes('<<') ? stripHeredocBodies(cmd) : cmd
   for (const segment of splitShellSegments(commands)) {
-    const words = splitCommandWords(segment)
-    let prefixed = false
-    for (let i = 0; i < words.length; i++) {
-      const word = (words[i] as string).replace(/^\(+/, '')
-      // PowerShell names are case-insensitive and allow spaces around `=`; a POSIX assignment is neither.
-      const pwsh = /^\$env:([A-Za-z_]\w*)(?:=(.*))?$/i.exec(word)
-      if (pwsh !== null) {
-        const value = pwsh[2] ?? (words[i + 1] === '=' ? words[i + 2] : undefined)
-        if (pwsh[1]!.toUpperCase() === COMPRESS_OPT_OUT_VAR && optsOut(value)) return true
-        break
-      }
-      const posix = /^([A-Za-z_]\w*)=(.*)$/.exec(word)
-      if (posix !== null) {
-        if (posix[1] === COMPRESS_OPT_OUT_VAR && optsOut(posix[2])) return true
-        continue
-      }
-      if (ASSIGNMENT_PREFIX_WORDS.has(word)) {
-        prefixed = true
-        continue
-      }
-      // A prefix's own flags (`env -i`, `time -p`) sit between it and the assignments it sets.
-      if (prefixed && word.startsWith('-')) {
-        if (ENV_VALUE_FLAGS.has(word)) i++
-        continue
-      }
-      break
-    }
+    // An opening subshell `(` sits glued to the first word it opens.
+    const words = splitCommandWords(segment).map((word) => word.replace(/^\(+/, ''))
+    if (walkCommandPrefix(words, ASSIGNMENT_PREFIX_WORDS).assignments.some(({ name, value }) => name === COMPRESS_OPT_OUT_VAR && optsOut(value))) return true
   }
   return false
 }

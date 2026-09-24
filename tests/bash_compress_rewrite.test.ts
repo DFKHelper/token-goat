@@ -158,9 +158,19 @@ describe('preBashHandler: compression rewrite', () => {
     'TOKEN_GOAT_BASH_COMPRESS=off cargo build',
     'FOO=1 TOKEN_GOAT_BASH_COMPRESS=false cargo build',
     'env -i TOKEN_GOAT_BASH_COMPRESS=no cargo build',
-    'cd /repo && TOKEN_GOAT_BASH_COMPRESS=0 cargo test',
   ])('respects an inline opt-out prefix on the command itself: %s', (command) => {
     expect(preBashHandler(preEvent({ command })).hookType).toBe('pass')
+  })
+
+  // HAND-DERIVED. This passed untouched only while the assignment hid `cargo test` from every gate; seen now, it gets what `cargo test` under the environment's opt-out gets: no wrapper, and the budget advice the wrapper's own timeout would otherwise stand in for.
+  it('keeps the wrapper off a test runner behind an inline opt-out, leaving the budget advice its bare spelling meets', () => {
+    const result = preBashHandler(preEvent({ command: 'cd /repo && TOKEN_GOAT_BASH_COMPRESS=0 cargo test' }))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toContain('no targeted selector or explicit timeout')
+    clearModuleCaches()
+    process.env['TOKEN_GOAT_BASH_COMPRESS'] = '0'
+    invalidateConfigCache()
+    expect(preBashHandler(preEvent({ command: 'cd /repo && cargo test' }))).toEqual(result)
   })
 
   it.each([
