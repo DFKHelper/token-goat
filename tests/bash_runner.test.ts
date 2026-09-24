@@ -69,7 +69,7 @@ describe('bash_runner.run (in-process)', () => {
     expect(out).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
   })
 
-  // Regression: the marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, but that env var only ever takes effect when set in the environment that launches the harness -- setting it inline in this same wrapped command can never reach the hook process that reads it, so before this fix a compressed single-command run left the model with no working way to see the untruncated bytes at all.
+  // Regression: the marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, but acting on it means running the command again, so before this fix a compressed single-command run left the model no way to see the untruncated bytes of the run it already paid for.
   it('stores a recallable copy of the full output and points at it, since the marker notice cannot be actioned inline', async () => {
     const s = script('dup2.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''

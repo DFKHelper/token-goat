@@ -303,6 +303,34 @@ describe('postBashHandler', () => {
     }
   })
 
+  // PROVENANCE: HAND-DERIVED from a real session's shape, `TOKEN_GOAT_BASH_COMPRESS=0 awk '...' SKILL.md | cut -c1-900`, which came back fenced and capped at ~2,000 tokens: the prefix scopes the variable to one pipeline stage in the shell and never reaches the hook at all.
+  it.each([
+    'TOKEN_GOAT_BASH_COMPRESS=0 grep pattern app.log | sort',
+    'grep pattern app.log | TOKEN_GOAT_BASH_COMPRESS=0 sort',
+    'export TOKEN_GOAT_BASH_COMPRESS=0; grep pattern app.log | sort',
+    "$env:TOKEN_GOAT_BASH_COMPRESS = '0'; grep pattern app.log | sort",
+    'time TOKEN_GOAT_BASH_COMPRESS=0 grep pattern app.log | sort',
+    '(TOKEN_GOAT_BASH_COMPRESS=0 grep pattern app.log) | sort',
+    'env -u FOO TOKEN_GOAT_BASH_COMPRESS=0 grep pattern app.log | sort',
+    'FOO=1 env TOKEN_GOAT_BASH_COMPRESS=0 grep pattern app.log | sort',
+    'for f in a.log b.log; do TOKEN_GOAT_BASH_COMPRESS=0 grep pattern "$f"; done | sort',
+  ])('does not compress a piped command carrying its own opt-out: %s', async (command) => {
+    const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+    expect((await postBashHandler(makePostBashEvent(command, dup))).hookType).toBe('pass')
+  })
+
+  it('still compresses a command whose heredoc body has a line starting with the opt-out', async () => {
+    // The body is text written to a file, not a command: a README line documenting the prefix asks for nothing.
+    const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+    const command = "cat <<'EOF' > notes.md\nTOKEN_GOAT_BASH_COMPRESS=0 turns compression off\nEOF\ngrep pattern app.log | sort"
+    expect((await postBashHandler(makePostBashEvent(command, dup))).hookType).toBe('rewriteOutput')
+  })
+
+  it('still compresses a piped command that only mentions the opt-out inside an argument', async () => {
+    const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+    expect((await postBashHandler(makePostBashEvent('grep "TOKEN_GOAT_BASH_COMPRESS=0" app.log | sort', dup))).hookType).toBe('rewriteOutput')
+  })
+
   it('does NOT compact a failing compound command — its diagnostics must reach the model in full', async () => {
     // A non-zero exit means the pipeline failed; the model needs the whole error on its first read, not a compacted view behind a --full recall. Pre-fix (no exit-code gate) this compacted like any other compound command.
     const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)

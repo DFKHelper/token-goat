@@ -8,7 +8,7 @@ import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDe
 import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
+import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
 import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -107,6 +107,7 @@ import {
   extractGhViewForBatchAdvisory,
   buildGhViewBatchAdvisory,
   extractCurlDownload,
+  commandOptsOutOfCompression,
   buildRecallHint,
   shellQuoteSingle,
   isCompressibleSingleCommand
@@ -125,8 +126,11 @@ export {
   extractCurlDownload,
 } from './bash_extractors.js'
 
-/** Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled. @param event  hook event; its toolInput is preserved verbatim except `command` @param rawCmd original command INCLUDING any `cd … &&` prefix (run by compress) @param cmd    the cd-stripped command, used only to pick the filter */
-// `cap`, when given, runs the command through the passthrough filter under a token cap and names the narrower command to print if the cap cuts: set for an inline interpreter file read, whose output is a file's contents rather than tool output.
+/** Whether compression is switched off for this command, by the hook's own environment or by the command's own `TOKEN_GOAT_BASH_COMPRESS=0` prefix. */
+function compressionOptedOut(cmd: string): boolean {
+  return process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0' || commandOptsOutOfCompression(cmd)
+}
+
 /** Token budget for an inline interpreter file read run under the wrapper: room for one registry entry or config block printed whole, well under a whole-file dump. */
 const INTERPRETER_READ_TOKEN_CAP = 2000
 
@@ -135,8 +139,12 @@ function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, le
   return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? denyOutput(lead + hint)
 }
 
+/** Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled. @param event  hook event; its toolInput is preserved verbatim except `command` @param rawCmd original command INCLUDING any `cd … &&` prefix (run by compress) @param cmd    the cd-stripped command, used only to pick the filter */
+// `cap`, when given, runs the command through the passthrough filter under a token cap and names the narrower command to print if the cap cuts: set for an inline interpreter file read, whose output is a file's contents rather than tool output.
 function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap?: { maxTokens: number; hint: string }): HookOutput | null {
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  // The capped interpreter read ignores an inline prefix, because declining here turns that read into a refusal rather than an uncompressed run.
+  if (cap === undefined && commandOptsOutOfCompression(rawCmd)) return null
   // VS Code's run_in_terminal runs the command in whatever shell the user's terminal uses, and its payload does not say which one, so no quoting of the wrapped command is safe in every one of them: the command is never rewritten there.
   if (event.raw['_tg_harness'] === 'vscode') return null
 
@@ -323,8 +331,9 @@ async function maybeCollapseIdenticalRead(
   exitCode: number | null,
   cwd: string | null,
   cacheMinBytes: number,
+  persisted = false,
 ): Promise<HookOutput | null> {
-  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  if (compressionOptedOut(rawCmd)) return null
   // A failed read's output is an error message, not file content. Never store one as the baseline a later run would be collapsed against, and never collapse one away.
   if (exitCode !== null && exitCode !== 0) return null
   const filePath = pureFileReadPath(cmd)
@@ -380,7 +389,8 @@ async function maybeCollapseIdenticalRead(
     // Exactly what the model was shown, never what the command printed. A later read of this file is matched against this copy, so storing a rewrite the net-benefit gate went on to decline would record lines as withheld that the reader actually received.
     const storedId = await storeBashOutput(cmd, rewrite?.text ?? output, exitCode ?? 0, cwd)
     recordBashOutput(sessionKey, storedId, originalBytes)
-    recordFileServedOutput(fileKey, storedId)
+    // A persisted result reached the model as a 2 KB preview, so none of it counts as served: a later overlapping read withheld against it would point at lines the model never saw, and a recall of a body this size is persisted and previewed all over again.
+    if (!persisted) recordFileServedOutput(fileKey, storedId)
     if (rewrite === null) return null
     // Priced against the delivered size for the same reason the containment pointer below is: the harness truncates a Bash result before the model sees it, so collapsing an oversized body spares at most the delivered slice.
     return emitRewrite(rewrite.text, rewrite.reason, { kind: rewrite.kind, originalBytes: deliveredOutputBytes(originalBytes), ...(rewrite.detail === undefined ? {} : { detail: rewrite.detail }) })
@@ -401,8 +411,9 @@ async function maybeElideServedGenericOutput(
   exitCode: number | null,
   cwd: string | null,
   cacheMinBytes: number,
+  persisted = false,
 ): Promise<HookOutput | null> {
-  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  if (compressionOptedOut(cmd)) return null
   if (!loadConfig().bash_compress.elide_served_shell_output) return null
   // A failed command's output is an error message, not content a later run should be matched against or have withheld from it.
   if (exitCode !== null && exitCode !== 0) return null
@@ -422,8 +433,8 @@ async function maybeElideServedGenericOutput(
       rewrittenText = fenced
     }
   }
-  const storedId = await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, cwd)
-  recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, storedId)
+  // Nothing to record when the harness persisted the result, for the reason maybeCollapseIdenticalRead gives.
+  if (!persisted) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, cwd))
   if (rewrittenText === null) return null
   return emitRewrite(rewrittenText, 'already-served shell output collapsed', { kind: 'bash_compress:generic-served-elision', originalBytes: deliveredOutputBytes(originalBytes) })
 }
@@ -436,7 +447,7 @@ async function maybeCompressCompoundOutput(
   cacheMinBytes: number,
   isUnwrapped = false,
 ): Promise<HookOutput | null> {
-  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  if (compressionOptedOut(cmd)) return null
   // A wrapped command's output already went through the runner, whatever its shape: the capped interpreter-read wrapper runs multi-line scripts and heredocs too, and keyed on the inner command being a single one, their already-capped output was compressed a second time as a compound command's. Unwrapped single commands (e.g. in environments without pre-hook rewriting) reach here and are eligible for compression.
   if (!isUnwrapped) return null
   // A recall of already-delivered full output must survive verbatim, or a piped/chained read of it (e.g. `bash-output <id> --full | head -300`) gets recompressed into a new, smaller pointer -- the model asked for the full text back and got another summary.
@@ -1205,6 +1216,16 @@ function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): s
 }
 
 // Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen. Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one. extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record.
+/** Drop the line ranges the pre-hook recorded for a line-range read whose result the harness persisted, keyed the way the pre-hook keyed them. It records before the output exists, so it cannot know the model will see a 2 KB preview; left in place, those ranges make a later Read of the same lines a refusal for lines the model never saw. The whole file's ranges go, not just this read's: session_store.ts merges ranges as a union and only a file-level removal survives the merge. */
+function forgetPersistedLineRangeReads(rawCmd: string, cmd: string, cwd: string | null): void {
+  const hintCwd = cwd ?? process.cwd()
+  const single = extractLineRangeRead(cmd)
+  for (const { filePath } of single !== null ? [single] : extractLineRangeReadsCompound(cmd) ?? []) {
+    const hintPath = displaySafePath(cmd !== rawCmd ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    resetFileLineRanges(resolveIndexPath(hintPath, hintCwd))
+  }
+}
+
 function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): void {
   const resolve = (p: string) => resolveIndexPath(p, cwd ?? process.cwd())
 
@@ -1264,7 +1285,7 @@ async function maybeEmitLargeUncompressedHint(
   const outputBytes = Buffer.byteLength(output, 'utf-8')
   if (
     outputBytes < 4096 ||
-    process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0' ||
+    compressionOptedOut(cmd) ||
     (exitCode !== null && exitCode !== 0) ||
     // token-goat's own output is already the narrow form; telling the model to compress it is noise.
     /^\s*token-goat\s/.test(cmd) ||
@@ -1301,6 +1322,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const cwd = getCwd(event) ?? null
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
+    const resp = event.raw['tool_response']
+    const persisted = resp !== null && typeof resp === 'object' && typeof (resp as Record<string, unknown>)['persistedOutputPath'] === 'string' && (resp as Record<string, unknown>)['persistedOutputPath'] !== ''
+    // The two lossless-looking passes below carry no opt-out check of their own, since config folds the environment's into `bash_compress.enabled`; a prefix on the command itself never reaches config.
+    const optedOut = commandOptsOutOfCompression(rawCmd)
 
     // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
     if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
@@ -1339,8 +1364,9 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
     }
 
-    // Feed the pre-hook's own file-path extractors into the session read-cache so a file dumped through Bash (cat/head/Get-Content) is no longer invisible to a later Read's dedup hint. Whole-file dumps record a full read; partial dumps (head/tail/-Tail/-First) record only what was actually shown, so a later Read is never falsely told the whole file was already seen.
-    if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, cwd)
+    // Feed the pre-hook's own file-path extractors into the session read-cache so a file dumped through Bash (cat/head/Get-Content) is no longer invisible to a later Read's dedup hint. Whole-file dumps record a full read; partial dumps (head/tail/-Tail/-First) record only what was actually shown, so a later Read is never falsely told the whole file was already seen. A persisted result reached the model as a 2 KB preview, so it records no read at all, and the ranges the pre-hook recorded for it come back out.
+    if (persisted) forgetPersistedLineRangeReads(rawCmd, cmd, cwd)
+    else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, cwd)
 
     // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
 
@@ -1414,7 +1440,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const isFileRead = pureFileReadPath(cmd) !== null
     if (isFileRead || (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd))) {
       // A plain file read reaches here and, before this branch existed, left with nothing: no cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger suppresses. Re-reading the same unchanged file therefore cost its full body every time. Collapse the byte-identical repeat first, since it is strictly cheaper than compressing a body the model has already been given verbatim.
-      const identical = await maybeCollapseIdenticalRead(cmd, rawCmd, output, exitCode, cwd, cacheMinBytes)
+      const identical = await maybeCollapseIdenticalRead(cmd, rawCmd, output, exitCode, cwd, cacheMinBytes, persisted)
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap for compression) or an unwrapped single command gets its already-captured output compressed here. File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression. Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
       if (!isFileRead && (!isUnwrapped || !isCompressibleSingleCommand(cmd))) {
@@ -1423,11 +1449,11 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
       // A file read stays out of the generic list entirely, including the two-or-more-file compound shape `pureFileReadPath` itself declines to name (a single `filePath` has nowhere to put a second file): it already has its own per-file served store above, and letting a `sed`/`awk` range read's content leak into the session-wide list here is how a second, unrelated file that happens to share text with the first gets a stretch of itself withheld on the strength of a read of a DIFFERENT file -- exactly what the per-file scoping above exists to prevent.
       if (!isFileRead && extractLineRangeReadsCompound(cmd) === null) {
-        const genericElision = await maybeElideServedGenericOutput(cmd, output, exitCode, cwd, cacheMinBytes)
+        const genericElision = await maybeElideServedGenericOutput(cmd, output, exitCode, cwd, cacheMinBytes, persisted)
         if (genericElision !== null) return genericElision
       }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
-      const ansiStripped = maybeStripAnsiOnly(output)
+      const ansiStripped = optedOut ? null : maybeStripAnsiOnly(output)
       const largeHint = await maybeEmitLargeUncompressedHint(cmd, output, exitCode, cwd, isUnwrapped, event, ansiStripped)
       if (largeHint !== null) return largeHint
       return ansiStripped ?? passOutput()
@@ -1453,10 +1479,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
     }
     // A curl of an HTML page is folded before the ansi-only pass, since the ansi pass alone cannot help a page that carries no escape codes at all.
-    const curlHtmlFold = maybeFoldCurlHtml(cmd, output, id)
+    const curlHtmlFold = optedOut ? null : maybeFoldCurlHtml(cmd, output, id)
     if (curlHtmlFold !== null) return curlHtmlFold
     // Deliberately after the delta hint, which keeps its existing priority: a hook returns one channel, and the delta is only reachable on a rerun whose output actually changed. Every other cached command -- including the colourised build runs `isBuildCommand` routes here -- reaches this line, so this is where most escape bytes are removed.
-    const ansiOnly = maybeStripAnsiOnly(output)
+    const ansiOnly = optedOut ? null : maybeStripAnsiOnly(output)
     const largeHint = await maybeEmitLargeUncompressedHint(cmd, output, exitCode, cwd, isUnwrapped, event, ansiOnly)
     if (largeHint !== null) return largeHint
     if (ansiOnly !== null) return ansiOnly

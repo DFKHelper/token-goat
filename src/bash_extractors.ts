@@ -8,6 +8,7 @@ import type { HookEvent } from './hook_registry.js'
 import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } from './tool_filters/index.js'
 import { getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
+import { FALSY_ENV_VALUES } from './env.js'
 
 // bash_extractors.ts has no index/DB access (adding one pulled index_reader.js's chunk into the eagerly-loaded core bundle, tripping the ceiling tests/guards/core_bundle_stays_split.test.ts enforces), so a whole-file-dump hint built here can never confirm a real symbol name the way hooks_read.ts::realSymbolReadHint can for its own Read-hook deny sites -- `outline` is always true and never claims a specific but possibly-fake `::SymbolName`.
 function genericSurgicalFallback(shown: string): string {
@@ -1130,6 +1131,70 @@ export function splitCommandWords(cmd: string): string[] {
   }
   if (started) words.push(cur)
   return words
+}
+
+const COMPRESS_OPT_OUT_VAR = 'TOKEN_GOAT_BASH_COMPRESS'
+
+/** A heredoc opener, `<<EOF`, `<<-'EOF'` or `<< "EOF"`, capturing its terminator. `(?<!<)` and `(?!<)` leave a `<<<` here-string alone. */
+const HEREDOC_OPENER_RE = /(?<!<)<<(?!<)-?[\t ]*(['"]?)([A-Za-z_]\w*)\1/g
+
+/** `cmd` without its heredoc bodies: each opener's line is kept and the lines after it are dropped through the one holding its terminator. */
+function stripHeredocBodies(cmd: string): string {
+  const kept: string[] = []
+  const pending: string[] = []
+  for (const line of cmd.split('\n')) {
+    if (pending.length > 0) {
+      if (line.trim() === pending[0]) pending.shift()
+      continue
+    }
+    kept.push(line)
+    for (const m of line.matchAll(HEREDOC_OPENER_RE)) pending.push(m[2] as string)
+  }
+  return kept.join('\n')
+}
+
+/** Words that can stand in front of a command's own assignments without being the command: `time X=0 cmd`, `do X=0 cmd; done`, `export X=0`. */
+const ASSIGNMENT_PREFIX_WORDS = new Set(['env', 'export', 'time', 'command', 'nohup', 'exec', '!', '{', 'do', 'then', 'else'])
+
+/** `env` flags whose value is the next word, which would otherwise end the scan before the assignments that follow it. */
+const ENV_VALUE_FLAGS = new Set(['-u', '--unset', '-C', '--chdir'])
+
+/** True when the command itself switches Bash compression off: `TOKEN_GOAT_BASH_COMPRESS=0` (or `false`/`no`/`off`) as a leading assignment of any simple command in it, including after `export`, `env` and its flags, `time`, `do`, or an opening `(`, or PowerShell's `$env:TOKEN_GOAT_BASH_COMPRESS = 0`. The hooks read their own environment, which an inline prefix never reaches, so this is the only place that prefix is seen at all. One segment is enough for the whole command: in the shell the assignment scopes the variable to one stage of a pipeline, but whoever wrote it asked for the output uncompressed, and the output the hook would compress is the whole pipeline's. */
+export function commandOptsOutOfCompression(cmd: string): boolean {
+  if (!cmd.toUpperCase().includes(COMPRESS_OPT_OUT_VAR)) return false
+  const optsOut = (value: string | undefined): boolean => value !== undefined && FALSY_ENV_VALUES.has(value.trim().toLowerCase())
+  // A heredoc body is text being written or fed to a program, not commands: a README line reading `TOKEN_GOAT_BASH_COMPRESS=0 cmd` asks for nothing.
+  const commands = cmd.includes('<<') ? stripHeredocBodies(cmd) : cmd
+  for (const segment of splitShellSegments(commands)) {
+    const words = splitCommandWords(segment)
+    let prefixed = false
+    for (let i = 0; i < words.length; i++) {
+      const word = (words[i] as string).replace(/^\(+/, '')
+      // PowerShell names are case-insensitive and allow spaces around `=`; a POSIX assignment is neither.
+      const pwsh = /^\$env:([A-Za-z_]\w*)(?:=(.*))?$/i.exec(word)
+      if (pwsh !== null) {
+        const value = pwsh[2] ?? (words[i + 1] === '=' ? words[i + 2] : undefined)
+        if (pwsh[1]!.toUpperCase() === COMPRESS_OPT_OUT_VAR && optsOut(value)) return true
+        break
+      }
+      const posix = /^([A-Za-z_]\w*)=(.*)$/.exec(word)
+      if (posix !== null) {
+        if (posix[1] === COMPRESS_OPT_OUT_VAR && optsOut(posix[2])) return true
+        continue
+      }
+      if (ASSIGNMENT_PREFIX_WORDS.has(word)) {
+        prefixed = true
+        continue
+      }
+      // A prefix's own flags (`env -i`, `time -p`) sit between it and the assignments it sets.
+      if (prefixed && word.startsWith('-')) {
+        if (ENV_VALUE_FLAGS.has(word)) i++
+        continue
+      }
+      break
+    }
+  }
+  return false
 }
 
 /** curl flags whose next word is a value rather than the request target. A URL sitting in one of these is not what curl fetches -- `-H 'Referer: https://cdn…'` and `-A 'Bot https://bot…'` both carry one -- so the target has to be picked by argument position, not by "first URL in the string". */

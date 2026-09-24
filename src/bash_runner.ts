@@ -334,7 +334,7 @@ async function wrapAndCompress(
   let body = text + marker
   // A cap that cut the output is a loss the same as a filter that did, so it gets the same recall. Keyed on `applied` alone, a passthrough run capped to 2,000 tokens dropped the rest with nothing to recover it from.
   if (applied || capped) {
-    // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, but that env var has to be set in the environment that launches the harness, not inline in this same command -- the hook process reads its own environment, never the wrapped command's, so an inline prefix here can never reach it. A recall of the untruncated bytes is the actionable follow-up, so store them the same way the compound post-hook path already does and point at it.
+    // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, and a rerun carrying it as a prefix is left unwrapped by the pre-hook, but that costs the command a second run. A recall of the untruncated bytes is the cheaper follow-up, so store them the same way the compound post-hook path already does and point at it.
     const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
     const recallId = storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
     body += '\n[token-goat] full output: bash-output ' + recallId + ' --full'

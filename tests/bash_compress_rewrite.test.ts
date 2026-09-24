@@ -1,24 +1,4 @@
-/**
- * Phase 3 — wiring the bash-output compression framework into the pre_tool_use
- * hook. A recognized build/test command with no cached prior output is rewritten
- * to run through `token-goat compress`, so its output is structurally compressed
- * before it reaches the model.
- *
- * Two layers, per the project's injected-seam discipline:
- *   1. In-process unit tests of `preBashHandler` / `postBashHandler` /
- *      `serializeOutput` — the rewrite decision, field preservation, the cd
- *      prefix, the env + disabled-filter opt-outs, and the post-hook unwrap that
- *      keeps recall keyed on the original command.
- *   2. A built-bundle e2e that pipes a real `PreToolUse` payload through
- *      `dist/token-goat.mjs hook pre_tool_use` and asserts the exact wire JSON
- *      (`hookSpecificOutput.{hookEventName,permissionDecision,updatedInput}`).
- *      This is the authoritative coverage: a wrong wire shape silently disables
- *      the feature in production, which an in-process test cannot catch.
- *
- * The unit tests need a writable config to exercise the `disabled_filters`
- * branch, so `configPath()` is redirected (hoisted vi.mock) to a per-test temp
- * file — the same pattern tests/config.test.ts uses.
- */
+/** Phase 3 — wiring the bash-output compression framework into the pre_tool_use hook. A recognized build/test command with no cached prior output is rewritten to run through `token-goat compress`, so its output is structurally compressed before it reaches the model. Two layers, per the project's injected-seam discipline: 1. In-process unit tests of `preBashHandler` / `postBashHandler` / `serializeOutput` — the rewrite decision, field preservation, the cd prefix, the env + disabled-filter opt-outs, and the post-hook unwrap that keeps recall keyed on the original command. 2. A built-bundle e2e that pipes a real `PreToolUse` payload through `dist/token-goat.mjs hook pre_tool_use` and asserts the exact wire JSON (`hookSpecificOutput.{hookEventName,permissionDecision,updatedInput}`). This is the authoritative coverage: a wrong wire shape silently disables the feature in production, which an in-process test cannot catch. The unit tests need a writable config to exercise the `disabled_filters` branch, so `configPath()` is redirected (hoisted vi.mock) to a per-test temp file — the same pattern tests/config.test.ts uses. */
 import { tempConfigPath } from './helpers/temp-config.js'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -170,6 +150,24 @@ describe('preBashHandler: compression rewrite', () => {
     invalidateConfigCache()
     const result = preBashHandler(preEvent({ command: 'cargo build' }))
     expect(result.hookType).toBe('pass')
+  })
+
+  // PROVENANCE: HAND-DERIVED. The hook reads its own environment, so a prefix on the command never reached it and `TOKEN_GOAT_BASH_COMPRESS=0 cargo build` was wrapped and compressed like the bare command.
+  it.each([
+    'TOKEN_GOAT_BASH_COMPRESS=0 cargo build',
+    'TOKEN_GOAT_BASH_COMPRESS=off cargo build',
+    'FOO=1 TOKEN_GOAT_BASH_COMPRESS=false cargo build',
+    'env -i TOKEN_GOAT_BASH_COMPRESS=no cargo build',
+    'cd /repo && TOKEN_GOAT_BASH_COMPRESS=0 cargo test',
+  ])('respects an inline opt-out prefix on the command itself: %s', (command) => {
+    expect(preBashHandler(preEvent({ command })).hookType).toBe('pass')
+  })
+
+  it.each([
+    'TOKEN_GOAT_BASH_COMPRESS=1 cargo build',
+    "cargo build --features 'TOKEN_GOAT_BASH_COMPRESS=0'",
+  ])('still wraps a command whose mention of the variable does not switch it off: %s', (command) => {
+    expect(preBashHandler(preEvent({ command })).hookType).toBe('rewriteInput')
   })
 
   it('respects a disabled filter in config (no rewrite)', () => {
