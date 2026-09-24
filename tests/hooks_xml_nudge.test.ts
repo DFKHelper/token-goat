@@ -14,6 +14,7 @@ import { preBashHandler } from '../src/hooks_bash.js'
 import { preReadHandler } from '../src/hooks_read.js'
 import { dispatchFileTypeHandler } from '../src/hints/file_type_handler.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { HINT_PLACEHOLDERS } from '../src/hint_target.js'
 
 describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception', () => {
   let tempDir: string
@@ -67,11 +68,13 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
 
   describe('surgical hints for XML formats', () => {
     it('produces xml-outline and xml-query guidance when isXml is true', () => {
-      const hint = surgicalHintFor('Package.dtsx', false, false, false, true)
+      // The XML branch names no heading, key or symbol, so an unresolved target stands in.
+      const noTarget = { name: HINT_PLACEHOLDERS.section, real: false, slice: 'section' } as const
+      const hint = surgicalHintFor('Package.dtsx', false, false, false, true, noTarget)
       expect(hint).toContain('token-goat xml-outline "Package.dtsx"')
       expect(hint).toContain('token-goat xml-query "Package.dtsx" "<selector>"')
 
-      const cfgHint = surgicalHintForConfigDoc('Workflow.ampkg', false, false, false, true)
+      const cfgHint = surgicalHintForConfigDoc('Workflow.ampkg', false, false, false, true, noTarget)
       expect(cfgHint).toContain('token-goat xml-outline "Workflow.ampkg"')
       expect(cfgHint).toContain('token-goat xml-query "Workflow.ampkg" "<selector>"')
     })

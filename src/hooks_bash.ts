@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
@@ -28,7 +28,7 @@ import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
-import { runnableTargetFor } from './bash_surgical_target.js'
+import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -66,6 +66,7 @@ export { isHeadMovingGitCommand, stripTrailingStderrRedirect } from './hooks_bas
 import {
   surgicalHintFor,
   surgicalHintForConfigDoc,
+  sqlTableHint,
   extractCatSourceFile,
   extractCatFile,
   extractCatFilesMulti,
@@ -136,8 +137,8 @@ function compressionOptedOut(rawCmd: string): boolean {
 const INTERPRETER_READ_TOKEN_CAP = 2000
 
 // Runs an inline interpreter file read under a token cap instead of refusing it. Many are projections, `json.load(open('r.json'))['118615']`, that print a few lines no token-goat command beats by a second round trip; refused, each cost the agent a retry and often a second refusal before it found a spelling the hook let through. A projection now passes whole, and a whole-file dump comes back capped with its recall id and the same surgical command the refusal named. The refusal stays wherever the wrapper cannot run: compression off, a pipeline or chain, a background `&`, a script past the command-line ceiling, VS Code. The hint passes the suggestion guard here because the relay only guards a refusal: printed after the capped output, a path that broke its quoting would reach the model unguarded.
-function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, lead: string, hint: string): HookOutput {
-  return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? denyOutput(lead + hint)
+function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hint: string, denial: string): HookOutput {
+  return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? denyOutput(denial)
 }
 
 /** Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled. @param event  hook event; its toolInput is preserved verbatim except `command` @param rawCmd original command INCLUDING any `cd … &&` prefix and leading assignments (run by compress) @param cmd    the command with both stripped, used only to pick the filter */
@@ -592,6 +593,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Every hint below that names a file returns through this instead of a bare contextOutput, so the efficacy ledger is handed the path the hint was built from rather than regex-scraping one back out of the rendered sentence (see extractPathCorrelator's doc comment for what that scrape actually recorded). Measurement only -- relay.ts drops the field before the harness sees the output, so the hint text is byte-identical either way. The `token-goat bash-output <id>` recall branches near the end deliberately do NOT use this: their correlator is a cache id, which classifyBashHint already reads straight out of the command it printed, not a path.
   const pathHint = (paths: string | readonly string[], text: string): HookOutput =>
     contextOutput(text, typeof paths === 'string' ? [paths] : paths)
+  // The name a surgical-read suggestion below carries, resolved against the directory the command would run in: a heading, key, table or symbol the file holds, or hint_target.ts's placeholder.
+  const targetFor = (hintPath: string, slice: HintSlice = sliceForPath(hintPath)): HintTarget => hintTarget(hintPath, slice, { cwd: hintCwd, event })
   // A leading-lines read's substitute, priced, or null when it could not be priced or was not cheaper -- the same gate the sed/awk branch applies, reached through one expression because two branches need it identically.
   const pricedSubstitute = (hintPath: string, start: number, end: number): RangeSubstituteFigures | null => {
     const sub = rangeSubstituteFor(hintPath, hintCwd, [[start, end]])
@@ -736,7 +739,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isConfig, isSql, isXml } = gcTailResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath, '`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
+    return pathHint(hintPath, surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml, targetFor(hintPath), '`Get-Content -Tail` bypasses read hooks.'))
   }
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
@@ -765,9 +768,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     const label = isDirectJq ? '`jq`' : '`cat | jq`'
-    return pathHint(hintPath,
-      label + ' loads the whole file. Use `token-goat json-query "' + hintPath + '" "<key>"` or `token-goat config-get "' + hintPath + '" KEY_NAME` to slice one value.',
-    )
+    return pathHint(hintPath, surgicalHintFor(hintPath, false, true, false, false, targetFor(hintPath, 'key'), label + ' loads the whole file.'))
   }
 
   const psJsonPipe = extractPowerShellJsonPipeline(cmd)
@@ -789,35 +790,25 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml, cmd0, advisoryOnly } = catResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    if (isSql) {
-      return pathHint(hintPath,
-        '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
-      )
-    }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
+    const reason = '`' + cmd0 + '` loads the entire file into context.'
+    if (isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), reason))
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, targetFor(hintPath, isEnv ? 'key' : undefined), reason)
     // advisoryOnly: a `2>/dev/null`-suffixed read tolerates the file being absent, so it gets guidance rather than a deny (a deny would redirect the agent at a file that may not exist).
-    return cdStripped || advisoryOnly ? pathHint(hintPath, '`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
+    return cdStripped || advisoryOnly ? pathHint(hintPath, hint) : denyOutput(hint)
   }
 
   const catMulti = extractCatFilesMulti(cmd)
   if (catMulti !== null) {
     recordStat('session_hint', 0, 0)
     const cmd0 = catMulti[0]!.cmd0
+    // One command-led line per file, each carrying its own path, so the first thing in the message is a command that runs.
     const perPath = catMulti.map(({ filePath, isDoc, isEnv, isConfig, isSql, isXml }) => {
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-      const how = isXml
-        ? 'token-goat xml-outline "' + hintPath + '" or token-goat xml-query "' + hintPath + '" "<selector>"'
-        : isSql
-          ? 'token-goat section "' + hintPath + '::table_name"'
-          : isEnv || isConfig
-            ? 'token-goat config-get "' + hintPath + '" KEY_NAME'
-            : isDoc
-              ? 'token-goat section "' + hintPath + '::SectionHeading"'
-              : 'token-goat read "' + hintPath + '::SymbolName"'
-      return '  ' + hintPath + ' -> `' + how + '`'
+      return isSql
+        ? sqlTableHint(hintPath, targetFor(hintPath, 'table'))
+        : surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, targetFor(hintPath, isEnv ? 'key' : undefined))
     })
-    const msg =
-      '`' + cmd0 + '` on multiple files loads them all into context. Read each surgically instead:\n' + perPath.join('\n')
+    const msg = perPath.join('\n') + '\n`' + cmd0 + '` on multiple files loads them all into context; read each surgically instead.'
     return cdStripped ? pathHint(catMulti.map((m) => displaySafePath(resolveCdHintPath(rawCmd, m.filePath, hintCwd))), msg) : denyOutput(msg)
   }
 
@@ -826,13 +817,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = psGetContentResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
+    const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context.'
     if (isSql) {
-      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat section "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as the cd-unprefixed branch below does for every other file type) would block a legitimate workflow this hint category was never meant to gate that hard.
-      return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat read "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as the cd-unprefixed branch below does for every other file type) would block a legitimate workflow this hint category was never meant to gate that hard.
+      return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), lead))
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
-    return cdStripped ? pathHint(hintPath, lead + hint) : denyOutput(lead + hint)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, targetFor(hintPath, isEnv ? 'key' : undefined), lead)
+    return cdStripped ? pathHint(hintPath, hint) : denyOutput(hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
@@ -840,13 +831,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = wslCatResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    if (isSql) {
-      return pathHint(hintPath,
-        '`cat` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
-      )
-    }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
-    return cdStripped ? pathHint(hintPath, '`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
+    const reason = '`cat` loads the entire file into context.'
+    if (isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), reason))
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, targetFor(hintPath, isEnv ? 'key' : undefined), reason)
+    return cdStripped ? pathHint(hintPath, hint) : denyOutput(hint)
   }
 
   const pyRead = extractPythonFileRead(cmd)
@@ -864,13 +852,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         'This `.output` file is a background command\'s stdout. Use `token-goat bash-output --file "' + hintPath + '"` to narrow it with `--grep PATTERN`, `--tail N` or `--head N`, instead of reading the whole file.',
       )
     }
-    if (isSql) {
-      return pathHint(hintPath,
-        'Python `open()` file reads bypass read hooks. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
-      )
-    }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
-    return cdStripped ? pathHint(hintPath, 'Python `open()` file reads bypass read hooks. ' + hint) : cappedInterpreterRead(event, rawCmd, cmd, 'Python `open()` file reads bypass read hooks. ', hint)
+    const reason = 'Python `open()` file reads bypass read hooks.'
+    if (isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), reason))
+    const target = targetFor(hintPath, isEnv ? 'key' : undefined)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml ?? false, target)
+    const denial = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml ?? false, target, reason)
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
   }
 
   const tailResult = extractTailFile(cmd)
@@ -878,7 +865,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, isDoc, isConfig, isSql, isXml } = tailResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath, '`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml))
+    return pathHint(hintPath, surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql, isXml, targetFor(hintPath), '`tail` bypasses read hooks.'))
   }
 
   const headResult = extractHeadFile(cmd)
@@ -895,30 +882,34 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (nodeRead !== null) {
     const { filePath, isDoc, isConfig, isSql } = nodeRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-    const lead = 'Node.js `fs.readFileSync()` bypasses read hooks. '
+    const lead = 'Node.js `fs.readFileSync()` bypasses read hooks.'
     if (isSql) {
-      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile/extractPowerShellWrappedGetContent's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat section "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as this handler did for every other file type, unconditionally, before this fix) would block a legitimate workflow this hint category was never meant to gate that hard. This branch previously fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case below, so a non-cd-prefixed `node -e "readFileSync('x.sql')"` was hard-denied while the equivalent `cat x.sql` was always advisory -- the exact SQL-hint-classifier divergence already fixed for cat/head/tail/Get-Content.
+      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile/extractPowerShellWrappedGetContent's deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is routinely read in full for review, and `token-goat read "file::table_name"` only extracts one block at a time, so denying the whole-file read here (as this handler did for every other file type, unconditionally, before this fix) would block a legitimate workflow this hint category was never meant to gate that hard. This branch previously fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case below, so a non-cd-prefixed `node -e "readFileSync('x.sql')"` was hard-denied while the equivalent `cat x.sql` was always advisory -- the exact SQL-hint-classifier divergence already fixed for cat/head/tail/Get-Content.
       recordStat('session_hint', 0, 0)
-      return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+      return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), lead))
     }
-    // Folded onto the shared ladder every other whole-file-dump branch already uses. It was an inlined near-copy with the same placeholders, plus one this codebase warns against everywhere else: `read "path::SymbolName"` claims a specific symbol that file may not have, which is exactly the fabricated name genericSurgicalFallback's note in bash_extractors.ts says to never print. extractNodeFileRead reports no isEnv/isXml, so both pass false, which is what the inlined ladder assumed anyway.
-    const hint = surgicalHintFor(hintPath, false, isConfig, isDoc, false, runnableTargetFor(hintPath, hintCwd, event))
+    // Folded onto the shared ladder every other whole-file-dump branch already uses. It was an inlined near-copy with the same placeholders, plus one this codebase warns against everywhere else: `read "path::SymbolName"` claims a specific symbol that file may not have, which is exactly the fabricated name surgicalHintFor in bash_extractors.ts never prints for an unresolved symbol. extractNodeFileRead reports no isEnv/isXml, so both pass false, which is what the inlined ladder assumed anyway.
+    const target = targetFor(hintPath)
+    const hint = surgicalHintFor(hintPath, false, isConfig, isDoc, false, target)
+    const denial = surgicalHintFor(hintPath, false, isConfig, isDoc, false, target, lead)
     recordStat('session_hint', 0, 0)
-    return cdStripped ? pathHint(hintPath, lead + hint) : cappedInterpreterRead(event, rawCmd, cmd, lead, hint)
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
   }
 
   const psMethodRead = extractPowerShellFileMethodRead(cmd, event)
   if (psMethodRead !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = psMethodRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-    const lead = 'PowerShell `[IO.File]::ReadAllText()` bypasses read hooks. '
+    const lead = 'PowerShell `[IO.File]::ReadAllText()` bypasses read hooks.'
     if (isSql) {
       recordStat('session_hint', 0, 0)
-      return pathHint(hintPath, lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+      return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), lead))
     }
-    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, runnableTargetFor(hintPath, hintCwd, event))
+    const target = targetFor(hintPath, isEnv ? 'key' : undefined)
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, target)
+    const denial = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, target, lead)
     recordStat('session_hint', 0, 0)
-    return cdStripped ? pathHint(hintPath, lead + hint) : cappedInterpreterRead(event, rawCmd, cmd, lead, hint)
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
   }
 
   // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an exact index answer -- rewrite the command to it instead of just hinting, so the model gets the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape rather than something this call needs to special-case.
@@ -941,10 +932,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath } = mdHeadingGrep
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath,
-      'Use `token-goat outline "' + hintPath + '"` to get all headings with line ranges — ' +
-      'then `token-goat section "' + hintPath + '::Heading"` to read one section.',
-    )
+    return pathHint(hintPath, leadWithCommand('token-goat section "' + hintPath + '::' + targetFor(hintPath, 'section').name + '"', 'to read one section, or `token-goat outline "' + hintPath + '"` for every heading with line ranges'))
   }
 
   // Bare identifier search on a single source file — symbol lookup is cheaper
@@ -987,7 +975,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         return contextOutput(
           'Prior output from `' + cmd + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached. ' +
           'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
-          '`token-goat read \'' + catFile + '::SymbolName\'` to extract only the symbol you need.'
+          '`' + sliceCommand(displaySafePath(catFile), targetFor(displaySafePath(catFile))) + '` to extract only the part you need.'
         )
       }
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
@@ -1011,11 +999,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       clearCurlDownload(curlDl.url)
     } else if (prevPath !== null && prevResolvedPath !== null && statSync(prevResolvedPath).size >= loadConfig().hints.bash_dedup_min_bytes) {
       recordStat('session_hint', 0, 0)
-      return denyOutput(
-        'Already downloaded to ' + prevPath + ' earlier this session. ' +
-        'Use `rg \'<pattern>\' ' + prevPath + '` to search it, or ' +
-        '`token-goat read "' + prevPath + '::SectionName"` to read a part of it.',
-      )
+      return denyOutput(leadWithCommand(sliceCommand(prevPath, targetFor(prevPath)), 'to read a part of it, or `rg \'<pattern>\' ' + prevPath + '` to search it', 'Already downloaded to ' + prevPath + ' earlier this session.'))
     }
   }
 
@@ -1031,10 +1015,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       const curlBytes = curlEntry.sizeBytes
       recordStat('bash_compress:recall', curlBytes, savedTokensFromBytes(curlBytes))
       const curlPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+      const curlHeading = hintTarget('', 'section', { content: curlEntry.output })
       return contextOutput(
         'curl response cached (`' + curlPreview + '`).' + pipelineDivergenceNote(cmd, curlEntry.command) + ' ' +
-        'Use `token-goat bash-output ' + curlOutputId + '` to recall it. ' +
-        'Append `--grep PATTERN` to filter or `--section HeadingName` for a markdown section.',
+        (curlHeading.real
+          ? leadWithCommand('token-goat bash-output ' + curlOutputId + ' --section "' + curlHeading.name + '"', 'to read one markdown section, or `token-goat bash-output ' + curlOutputId + '` to recall it all (`--grep PATTERN` filters)')
+          : 'Use `token-goat bash-output ' + curlOutputId + '` to recall it. Append `--grep PATTERN` to filter or `--section HeadingName` for a markdown section.'),
       )
     }
   }

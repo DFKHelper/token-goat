@@ -1,15 +1,4 @@
-/**
- * MCP read-tool caching hooks.
- *
- * post_tool_use: persist a read-only `mcp__*` result into the shared
- * bash-output store. pre_tool_use: when an identical read-only `mcp__*` call was
- * already cached this session, deny it and point at `token-goat bash-output
- * <id>` so the model recalls a slice instead of paying the round trip again.
- *
- * Both handlers register with no toolName filter (MCP tool names are dynamic)
- * and self-gate on {@link isMcpReadOnly} plus a present sessionId, so they are
- * inert for every non-MCP and mutating tool.
- */
+/** MCP read-tool caching hooks. post_tool_use: persist a read-only `mcp__*` result into the shared bash-output store. pre_tool_use: when an identical read-only `mcp__*` call was already cached this session, deny it and point at `token-goat bash-output <id>` so the model recalls a slice instead of paying the round trip again. Both handlers register with no toolName filter (MCP tool names are dynamic) and self-gate on {@link isMcpReadOnly} plus a present sessionId, so they are inert for every non-MCP and mutating tool. */
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
@@ -26,6 +15,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { clipToDeliveryCap } from './delivery_cap.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
+import { hintTarget } from './hint_target.js'
 
 export const MCP_OVERSIZED_THRESHOLD_BYTES = 25_000
 
@@ -130,11 +120,13 @@ function postMcpHandler(event: HookEvent): HookOutput {
   if (rawBytes >= MCP_OVERSIZED_THRESHOLD_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
     if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
     if (id !== null) {
+      // A heading the payload really carries, double-quoted as hint_target.ts vetted it; this rewrite never passes the relay's suggestion guard, so the vetting is the only check it gets.
+      const heading = hintTarget('', 'section', { content: redactedResult.text })
       const notice =
         `[token-goat: oversized MCP result (${rawBytes} bytes) cached as ${id}]\n` +
         `The full payload was cached to prevent harness context spill. Slicing commands:\n` +
         `  token-goat mcp-output ${id} --json-query '<path>' (e.g. 'issues[*].key', 'values[*].id')\n` +
-        `  token-goat mcp-output ${id} --section '<heading>'\n` +
+        `  token-goat mcp-output ${id} --section ${heading.real ? '"' + heading.name + '"' : "'<heading>'"}\n` +
         `  token-goat mcp-output ${id} --grep '<regex>' --max-matches 20\n` +
         `  token-goat mcp-output ${id} --head 50\n\n`
       const preview = clipToDeliveryCap(redactedResult.text, Buffer.byteLength(notice, 'utf-8') + 500)

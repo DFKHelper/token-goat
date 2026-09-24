@@ -5,9 +5,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
-// vi.mock is hoisted -- this redirects configPath() to a per-test-file temp file so the
-// hints.pre_skill_advisory wiring tests below can set a non-default config value
-// deterministically. Mirrors tests/hooks_read.test.ts's config.toml mock.
+// vi.mock is hoisted -- this redirects configPath() to a per-test-file temp file so the hints.pre_skill_advisory wiring tests below can set a non-default config value deterministically. Mirrors tests/hooks_read.test.ts's config.toml mock.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>();
   return {
@@ -196,10 +194,7 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     }
   });
 
-  // Regression: a denied re-load genuinely blocks the cached body from reaching the model
-  // (same shape as hooks_read.ts's read_count_deny), so the session_hint stat it records
-  // should credit those bytes, not the (0, 0) default a bare `recordStat('session_hint')`
-  // call produces. Pre-fix this delta is 0; post-fix it equals the cached body's byte size.
+  // Regression: a denied re-load genuinely blocks the cached body from reaching the model (same shape as hooks_read.ts's read_count_deny), so the session_hint stat it records should credit those bytes, not the (0, 0) default a bare `recordStat('session_hint')` call produces. Pre-fix this delta is 0; post-fix it equals the cached body's byte size.
   it('credits the blocked body bytes on the duplicate-load deny, not zero', async () => {
     const body = 'Body for ollama.';
     await runHook(skillPostEvent('ollama', body, 'sess-credit'));
@@ -337,9 +332,7 @@ describe('preSkillHandler — oversized first-load gate', () => {
   });
 });
 
-// Regression: hints.pre_skill_advisory was defined, validated, persisted, and displayed in
-// config.ts but had zero consumers -- both preSkillHandler denies (already-loaded-this-session,
-// oversized-first-load) fired unconditionally regardless of the flag's value.
+// Regression: hints.pre_skill_advisory was defined, validated, persisted, and displayed in config.ts but had zero consumers -- both preSkillHandler denies (already-loaded-this-session, oversized-first-load) fired unconditionally regardless of the flag's value.
 describe('hints.pre_skill_advisory wiring', () => {
   afterEach(() => {
     invalidateConfigCache();
@@ -474,17 +467,13 @@ describe('hints.pre_skill_advisory wiring', () => {
   });
 });
 
-// HAND-DERIVED fixtures below: bodies are constructed directly from the heading/byte-count
-// thresholds the production code checks (OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, OUTLINE_MIN_HEADINGS,
-// OUTLINE_MAX_REPLACEMENT_RATIO), not read off preSkillHandler's own implementation.
+// HAND-DERIVED fixtures below: bodies are constructed directly from the heading/byte-count thresholds the production code checks (OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO), not read off preSkillHandler's own implementation.
 describe('preSkillHandler — heading-tree fallback for an oversized skill with no compact marker', () => {
   it('(a) denies with the heading tree inlined and names both recall commands when there are enough headings and the tree clears the ratio cap', async () => {
     const skillName = 'heading-tree-enough-headings';
     const skillDir = path.join(sourceDir, skillName);
     await fs.mkdir(skillDir, { recursive: true });
-    // 8 short headings, each followed by a 1200-byte filler paragraph: >6000 bytes total, well
-    // past OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, but the rendered tree (a handful of short
-    // bullet lines) stays a small fraction of that -- clears OUTLINE_MAX_REPLACEMENT_RATIO (0.4).
+    // 8 short headings, each followed by a 1200-byte filler paragraph: >6000 bytes total, well past OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, but the rendered tree (a handful of short bullet lines) stays a small fraction of that -- clears OUTLINE_MAX_REPLACEMENT_RATIO (0.4).
     const paragraph = 'p'.repeat(1200);
     const body = Array.from({ length: 8 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
     const bodyBytes = Buffer.byteLength(body, 'utf-8');
@@ -496,9 +485,7 @@ describe('preSkillHandler — heading-tree fallback for an oversized skill with 
     expect(out.hookType).toBe('deny');
     if (out.hookType !== 'deny' || !out.message) return;
 
-    // Anti-vacuity guard: the inlined tree has to be materially smaller than the body before
-    // any assertion about its content means anything -- otherwise a branch that accidentally
-    // inlined the whole body back would still pass a bare "contains these substrings" check.
+    // Anti-vacuity guard: the inlined tree has to be materially smaller than the body before any assertion about its content means anything -- otherwise a branch that accidentally inlined the whole body back would still pass a bare "contains these substrings" check.
     expect(out.message.length).toBeLessThan(bodyBytes * 0.5);
 
     expect(out.message).toContain('with no compact slice');
@@ -530,9 +517,7 @@ describe('preSkillHandler — heading-tree fallback for an oversized skill with 
     const skillName = 'heading-tree-ratio-too-large';
     const skillDir = path.join(sourceDir, skillName);
     await fs.mkdir(skillDir, { recursive: true });
-    // 45 headings, each carrying a long title and no body text under it, so headings are nearly
-    // the entire file: the rendered tree ends up close to the same size as the body it would
-    // replace, well past OUTLINE_MAX_REPLACEMENT_RATIO (0.4).
+    // 45 headings, each carrying a long title and no body text under it, so headings are nearly the entire file: the rendered tree ends up close to the same size as the body it would replace, well past OUTLINE_MAX_REPLACEMENT_RATIO (0.4).
     const longTitle = 'L'.repeat(150);
     const body = Array.from({ length: 45 }, (_, i) => `## H${i} ${longTitle}`).join('\n');
     expect(Buffer.byteLength(body, 'utf-8')).toBeGreaterThan(6000);
@@ -565,10 +550,7 @@ describe('preSkillHandler — heading-tree fallback for an oversized skill with 
     const skillName = 'heading-tree-under-size-threshold';
     const skillDir = path.join(sourceDir, skillName);
     await fs.mkdir(skillDir, { recursive: true });
-    // Same shape as fixture (a) -- 8 headings, each with enough filler that the rendered tree
-    // would clear OUTLINE_MAX_REPLACEMENT_RATIO -- but scaled down so the body itself never
-    // crosses OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES (6000). This isolates the size gate: a
-    // fixture with too few headings or a bad ratio would still pass for the wrong reason.
+    // Same shape as fixture (a) -- 8 headings, each with enough filler that the rendered tree would clear OUTLINE_MAX_REPLACEMENT_RATIO -- but scaled down so the body itself never crosses OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES (6000). This isolates the size gate: a fixture with too few headings or a bad ratio would still pass for the wrong reason.
     const paragraph = 'p'.repeat(600);
     const body = Array.from({ length: 8 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
     expect(Buffer.byteLength(body, 'utf-8')).toBeLessThan(6000);
@@ -579,10 +561,7 @@ describe('preSkillHandler — heading-tree fallback for an oversized skill with 
   });
 });
 
-// HAND-DERIVED fixtures below: both bodies are constructed directly from the heading-count
-// thresholds the production code checks (OUTLINE_MIN_HEADINGS, the MAX_HEADINGS=40 display cap
-// inside extractMarkdownHeadings, OUTLINE_MAX_REPLACEMENT_RATIO), not read off preSkillHandler's
-// own implementation or its message-building logic.
+// HAND-DERIVED fixtures below: both bodies are constructed directly from the heading-count thresholds the production code checks (OUTLINE_MIN_HEADINGS, the MAX_HEADINGS=40 display cap inside extractMarkdownHeadings, OUTLINE_MAX_REPLACEMENT_RATIO), not read off preSkillHandler's own implementation or its message-building logic.
 describe('preSkillHandler — heading-tree message states the true total when the displayed tree is capped', () => {
   it('over-cap (51 real headings) and under-cap (8 real headings) fixtures produce DIFFERENT deny-message wording', async () => {
     const paragraph = 'p'.repeat(1200);
@@ -604,9 +583,7 @@ describe('preSkillHandler — heading-tree message states the true total when th
     expect(underCapOut.hookType).toBe('deny');
     if (overCapOut.hookType !== 'deny' || !overCapOut.message || underCapOut.hookType !== 'deny' || !underCapOut.message) return;
 
-    // Anti-vacuity guard, evaluated before either fixture's content is checked: if a bug made
-    // both bodies take the same message branch, a pair of tests that only check "contains the
-    // right substring" could both still pass.
+    // Anti-vacuity guard, evaluated before either fixture's content is checked: if a bug made both bodies take the same message branch, a pair of tests that only check "contains the right substring" could both still pass.
     expect(overCapOut.message).not.toBe(underCapOut.message);
     const overCapSentence = overCapOut.message.slice(0, overCapOut.message.indexOf('Use `token-goat skill-section'));
     const underCapSentence = underCapOut.message.slice(0, underCapOut.message.indexOf('Use `token-goat skill-section'));
@@ -622,11 +599,7 @@ describe('preSkillHandler — heading-tree message states the true total when th
 });
 
 
-// HAND-DERIVED fixtures: each body is built from the thresholds the production code checks
-// (OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, the compactBytes * 2 <= bodyBytes inline ratio,
-// OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO), never read off preSkillHandler.
-// The marker POSITION is CAPTURE-shaped: three skills installed on the machine this was written on
-// carry <!-- COMPACT_END --> at 97%, 97% and 62% of their body, which is the shape that lands here.
+// HAND-DERIVED fixtures: each body is built from the thresholds the production code checks (OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, the compactBytes * 2 <= bodyBytes inline ratio, OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO), never read off preSkillHandler. The marker POSITION is CAPTURE-shaped: three skills installed on the machine this was written on carry <!-- COMPACT_END --> at 97%, 97% and 62% of their body, which is the shape that lands here.
 describe('preSkillHandler -- an oversized skill whose compact slice is too large to inline still gets a map', () => {
   /** 8 headings with 1200-byte paragraphs, and the marker placed so the slice is ~97% of the body: past the inline ratio, so this is the arm that used to hand back a bare pointer. */
   function lateMarkerBody(): string {
@@ -649,10 +622,7 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     return Buffer.byteLength(body, 'utf-8');
   }
 
-  // Pre-fix this returned 'is large (N bytes) and has a compact slice available. Use `token-goat
-  // skill-section <name> `<heading>` ...' -- a pointer naming a command whose one required argument
-  // the deny never supplied, so recovering the heading list cost a separate call the handler had
-  // every byte needed to answer. It is the single most-taken branch on this surface.
+  // Pre-fix this returned 'is large (N bytes) and has a compact slice available. Use `token-goat skill-section <name> `<heading>` ...' -- a pointer naming a command whose one required argument the deny never supplied, so recovering the heading list cost a separate call the handler had every byte needed to answer. It is the single most-taken branch on this surface.
   it('inlines the heading tree rather than naming skill-section without ever saying what the headings are', async () => {
     const body = lateMarkerBody();
     const bodyBytes = await installSkillBody('late-marker-tree', body);
@@ -671,8 +641,7 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     expect(out.message).toContain('too large to inline');
   });
 
-  // The load-bearing invariant, and the one the bug inverted: a marker in the wrong place used to
-  // be strictly worse than no marker at all, because only the no-marker arm reached the tree.
+  // The load-bearing invariant, and the one the bug inverted: a marker in the wrong place used to be strictly worse than no marker at all, because only the no-marker arm reached the tree.
   it('gives a badly-placed marker the same map a skill with no marker gets', async () => {
     const withMarker = lateMarkerBody();
     const withoutMarker = withMarker.slice(0, withMarker.indexOf('<!-- COMPACT_END -->'));
@@ -687,8 +656,8 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     expect(marked.hookType).toBe('deny');
     expect(bare.hookType).toBe('deny');
     if (marked.hookType !== 'deny' || bare.hookType !== 'deny' || !marked.message || !bare.message) return;
-    // Both arms deliver the same eight headings. Compared as a set rather than as whole strings: the two messages differ on purpose in how they describe the slice, and pinning that prose here would make every future wording change a failure in the wrong file.
-    const headingsOf = (m: string): string[] => (m.match(/Section \d/g) ?? []).sort();
+    // Both arms deliver the same eight headings. Compared as a set rather than as whole strings: the two messages differ on purpose in how they describe the slice, and pinning that prose here would make every future wording change a failure in the wrong file. Distinct names: the skill-section pointer above the tree now names one of these headings too, so a raw count would see it twice.
+    const headingsOf = (m: string): string[] => [...new Set(m.match(/Section \d/g) ?? [])].sort();
     expect(headingsOf(marked.message)).toEqual(headingsOf(bare.message));
     expect(headingsOf(marked.message).length).toBe(8);
     // Same kind, same credit, and the detail keeps the authoring signal the merge would otherwise bury: 'unusable' is a fixable marker placement, 'none' is a skill that never opted in.
@@ -696,11 +665,7 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     expect(bareDetail).toContain('marker=none');
   });
 
-  // The credit has to price the counterfactual this arm actually had. The body was never going to
-  // be delivered here -- the pointer deny already stopped it -- so crediting body-minus-tree would
-  // book bytes nothing was ever going to send. The marker sits at ~60% in this fixture precisely so
-  // the two candidate numbers are far apart; on a real skill the marker sits near the end and they
-  // land within a few percent of each other, which is what would have made the wrong one look right.
+  // The credit has to price the counterfactual this arm actually had. The body was never going to be delivered here -- the pointer deny already stopped it -- so crediting body-minus-tree would book bytes nothing was ever going to send. The marker sits at ~60% in this fixture precisely so the two candidate numbers are far apart; on a real skill the marker sits near the end and they land within a few percent of each other, which is what would have made the wrong one look right.
   it('credits the slice the old pointer named, not the body that was already being withheld', async () => {
     const paragraph = 'p'.repeat(1200);
     const sections = Array.from({ length: 8 }, (_, i) => '## Section ' + i + String.fromCharCode(10) + paragraph);
@@ -726,8 +691,7 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     expect(credited).toBeGreaterThan(sliceBytes * 0.9);
   });
 
-  // Guards the fix against over-reach: a body with nothing to map must still fall back to the
-  // pointer, because a tree of one heading is not worth the round trip.
+  // Guards the fix against over-reach: a body with nothing to map must still fall back to the pointer, because a tree of one heading is not worth the round trip.
   it('still falls back to the bare pointer when the body has too little structure to map', async () => {
     await installSkillBody('late-marker-flat', 'x'.repeat(25_000) + String.fromCharCode(10) + '<!-- COMPACT_END -->' + String.fromCharCode(10) + 'y'.repeat(7000));
 

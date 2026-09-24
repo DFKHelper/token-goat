@@ -372,7 +372,7 @@ const CACHE_READ_MULTIPLIER = 0.1
 
 /** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
 /** Matches token-goat's own pre-read deny/serve message templates (hooks_read.ts). A Read tool_result matching this AND smaller than READ_DIVERT_MAX_BYTES is a diverted read: token-goat replaced the file body with a pointer. Kept deliberately narrow; template drift makes this under-count, never over-count. */
-const READ_DIVERT_MARKER_RE = /(?:was already read this session|Already read |You've already read|Use `token-goat (?:section|read|bash-output|config-get|skeleton)|token-goat bash-output --file)/
+const READ_DIVERT_MARKER_RE = /(?:was already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
 /** A divert message is a short pointer; a matching result at or above this size is a real file body that merely mentions a token-goat command, not a divert. */
 const READ_DIVERT_MAX_BYTES = 2500
 /** Non-diverted Read results at or above this size are counted as the full-serve pool surgical reads exist to shrink. */
@@ -381,6 +381,9 @@ const READ_FULL_SERVE_MIN_BYTES = 10240
 /** Per-kind classifiers for every Read-deny message template hooks_read.ts's `denyOutput(` call sites can produce, derived by reading (never editing) hooks_read.ts and hints/file_type_handler.ts. Tested in array order, first match wins -- entries are ordered specific-literal-first so a message that could satisfy two templates (e.g. the .improve-state and generic session-artifact re-read denials both end in the same `sessionArtifactRecall` sentence) resolves to its own narrower kind rather than the generic one further down. This table exists because READ_DIVERT_MARKER_RE above is deliberately narrow (by its own doc comment) and was never meant to distinguish kinds -- it only flags "this looks like one of ours". A live corpus query saw divertedByMarker at 422 against a deny population believed to be roughly 1512: most denies never had a kind at all before this table existed. When adding a kind, do not take a branch's own recorded `*_deny` stat name as evidence that it is already classified. Several branches share a stat name with a sibling while emitting wording no template for that name matches, and the census then drops them silently -- it gets shorter, never empty, so there is no error to notice. Both `range_reread_deny` and `sequential_paging_deny` below were found that way, each having ridden an existing stat name (`read_served_deny`, `read_count_deny`) and matched nothing here since the branch was written. A wording is covered only when a regex in this table matches the string the branch actually prints. */
 /** `tool` is the tool whose result can legitimately carry this wording, and matching is refused for any other. Without it the table matches a *document about* a deny as a deny: a Read of this repo's own fixture file, or of a measurement script quoting the text, classified as a real event. Measured over the user's session corpus, that accounted for 16 of 693 skill_ matches -- and for three of the five skill_ kinds it was every single match, so their true count was zero while the census reported activity. It also produced a non-zero `retried` rate on a Skill kind, which is structurally impossible: only a Read result carries the path that outcome matches on. The gate cannot separate a Read deny from a Read of a file quoting one -- both are Read results -- so that residual stays. Measured the same way over the same corpus, 19 of 1,595 Read-kind matches (1.2%) have the wording more than 400 bytes into the body, which is the signal that it is embedded text rather than the whole result. Result size is NOT a usable second signal here, because markdown_heading_tree_deny inlines a heading tree and is legitimately large. */
 const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }> = [
+  // hint_target.ts's sharpenRepeatedDeny replaces a verbatim repeat of any deny with this one line, so the kind the first copy had is not recoverable from the second.
+  { kind: 'repeat_refusal_deny', re: /Repeat refusal of this exact call/, tool: 'Read' },
+  { kind: 'skill_repeat_refusal_deny', re: /Repeat refusal of this exact call/, tool: 'Skill' },
   { kind: 'node_modules_deny', re: /node_modules is typically noise/, tool: 'Read' },
   { kind: 'lock_file_deny', re: /Lock files are rarely useful to read in full/, tool: 'Read' },
   { kind: 'tsbuildinfo_deny', re: /TypeScript incremental build cache file/, tool: 'Read' },
@@ -400,12 +403,12 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   { kind: 'session_artifact_large_deny', re: /(?:Session transcript|Tool-result file) is large \(/, tool: 'Read' },
   { kind: 'session_artifact_generic_reread_deny', re: /already read this session\. Use `token-goat bash-output --file/, tool: 'Read' },
   { kind: 'truncated_read_deny', re: /File was truncated on last read \(>33K tokens\)/, tool: 'Read' },
-  { kind: 'doc_unchanged_deny', re: /is unchanged since last read\. Use `token-goat (?:section|read)/, tool: 'Read' },
-  { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?Use `token-goat (?:section|read)/, tool: 'Read' },
+  { kind: 'doc_unchanged_deny', re: /is unchanged since last read\. (?:Use|Run) `token-goat (?:section|read|skeleton|json-query|yaml-query)/, tool: 'Read' },
+  { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?(?:Use|Run) `token-goat (?:section|read|skeleton|json-query|yaml-query)/, tool: 'Read' },
   { kind: 'read_served_deny', re: /was already served in this session, byte for byte/, tool: 'Read' },
   // Its own kind rather than folded into read_served_deny above, whose stat name this branch shares: the wording is disjoint (a span, not a byte-for-byte whole serve) and so is the follow-up it invites, since the model still needs part of that span and has to choose a narrower call rather than recall the whole result.
   { kind: 'range_reread_deny', re: /Lines \d+\.\.\d+ of [\s\S]*?was already read this session/, tool: 'Read' },
-  { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\. Use `token-goat section/, tool: 'Read' },
+  { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\./, tool: 'Read' },
   { kind: 'read_count_deny', re: /(?:Read|Tried to read) this file \d+ times already/, tool: 'Read' },
   // Shares read_count_deny's stat name and matches none of its wording: this branch fires on the SHAPE of the reads (consecutive line windows walking one file) rather than on their count, and says so.
   { kind: 'sequential_paging_deny', re: /Sequential line-range paging detected on /, tool: 'Read' },

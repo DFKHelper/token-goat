@@ -1,67 +1,73 @@
 /** Command line extractors, classification, and surgical hint builders for bash hook handlers. */
 import { statSync, openSync, readSync, closeSync } from 'node:fs'
 
-import { isUnderSystemTemp, escapesOntoNetworkThroughLinks } from './project.js'
-import { preToolPathDeclined } from './vscode_path_gate.js'
+import { isUnderSystemTemp } from './project.js'
+import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { resolveIndexPath, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import type { HookEvent } from './hook_registry.js'
 import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } from './tool_filters/index.js'
 import { getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 import { FALSY_ENV_VALUES } from './env.js'
+import { leadWithCommand } from './hint_suggestion_guard.js'
+import type { HintTarget } from './hint_target.js'
 
-// bash_extractors.ts has no index/DB access (adding one pulled index_reader.js's chunk into the eagerly-loaded core bundle, tripping the ceiling tests/guards/core_bundle_stays_split.test.ts enforces), so a whole-file-dump hint built here can never confirm a real symbol name the way hooks_read.ts::realSymbolReadHint can for its own Read-hook deny sites -- `outline` is always true and never claims a specific but possibly-fake `::SymbolName`.
-function genericSurgicalFallback(shown: string): string {
-  return '`token-goat outline "' + shown + '"`'
+// Defined beside preToolPathDeclined, the rule it applies, so hint_target.ts can gate a path without pulling this module into the core bundle.
+export { commandPathIsTouchable }
+
+// bash_extractors.ts has no index/DB access (adding one pulled index_reader.js's chunk into the eagerly-loaded core bundle, tripping the ceiling tests/guards/core_bundle_stays_split.test.ts enforces), so every ladder below takes a `target` its hook-side caller resolved through hint_target.ts's hintTarget, which knows the index and can read the file; the type import is erased at build time.
+function outlineCommand(shown: string): string {
+  return 'token-goat outline "' + shown + '"'
 }
 
-// JSON and YAML get their own pair rather than the flat-key reader: the query command walks the parsed document and takes `['a.b']` for a key holding a dot, which config-get cannot spell, and the outline lists every top-level key with its type and size, narrowed by `--filter` when a registry holds hundreds. The outline comes first because it runs verbatim, where the query needs a key the agent may not know yet.
-function structuredDataHint(hintPath: string, target: string | null): string | null {
+// JSON and YAML get their own pair rather than the flat-key reader: the query command walks the parsed document and takes `['a.b']` for a key holding a dot, which config-get cannot spell, and the outline lists every top-level key with its type and size, narrowed by `--filter` when a registry holds hundreds. With no key in hand the outline leads, because it runs verbatim where the query needs a key the agent may not know yet.
+function structuredDataHint(hintPath: string, target: string | null, reason = ''): string | null {
   const ext = /\.(json|ya?ml)$/i.exec(hintPath)?.[1]
   if (ext === undefined) return null
   const fmt = ext.toLowerCase() === 'json' ? 'json' : 'yaml'
-  const outline = '`token-goat ' + fmt + '-outline "' + hintPath + '"`'
+  const outline = 'token-goat ' + fmt + '-outline "' + hintPath + '"'
   // Double quotes around the key, never single: the relay's stripUnsafeSuggestions accepts only a double-quoted argument, and replaced a single-quoted one with a placeholder that took the rest of the sentence with it. A key the shell would expand or unquote inside double quotes gets the generic form instead.
-  const query = (path: string): string => '`token-goat ' + fmt + '-query "' + hintPath + '" "' + path + '"`'
+  const query = (path: string): string => 'token-goat ' + fmt + '-query "' + hintPath + '" "' + path + '"'
   if (target === null || /["'`$\\]/.test(target)) {
-    return 'Use ' + outline + ' to list the top-level keys with their type and size (`--filter TEXT` narrows a large one), then ' + query('KEY') + ' to read one value (`"[\'a.b\']"` for a key holding a dot).'
+    return leadWithCommand(outline, 'to list the top-level keys with their type and size (`--filter TEXT` narrows a large one), then `' + query('KEY') + '` to read one value (`"[\'a.b\']"` for a key holding a dot)', reason)
   }
   const path = /^[\w-]+$/.test(target) ? target : "['" + target + "']"
-  return 'Use ' + query(path) + ' to read that value, or ' + outline + ' for every top-level key with its type and size.'
+  return leadWithCommand(query(path), 'to read that value, or `' + outline + '` for every top-level key with its type and size', reason)
 }
 
-/** Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL-specific hint and lead-in text, then falls through to this for the rest. */
+/** The SQL branch every whole-file read shares: `read` returns one CREATE TABLE / CREATE TYPE block by the name the SQL adapter indexes it under. It used to print `section "file::table_name"`, which cannot run at all -- `section` finds markdown/TOML/INI headers and exits 1 with "has no headings" on a .sql file (measured 2026-09-24 against the built binary). */
+export function sqlTableHint(hintPath: string, target: HintTarget, reason = ''): string {
+  return leadWithCommand('token-goat read "' + hintPath + '::' + target.name + '"', 'to pull one CREATE TABLE / CREATE TYPE block', reason)
+}
+
+/** Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL branch and passes its lead-in as `reason`, which follows the command. */
 // Every caller passes a hintPath already through displaySafePath, because the path here comes out of the shell command's own arguments and so is whatever a repository named its files, while the hint is delivered on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Sanitizing at the fifteen assignment sites rather than at the thirty interpolations below is what keeps that invariant checkable, and it is the identity function on every path that does not contain a marker or a control character, so the index lookups keyed on the same value are unaffected for any real file.
-export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml = false, target: string | null = null): string {
-  // The whole-file branches are a hard deny, so the sentence they print is the agent's only next move, and the placeholders it used to print do not run: verified against the built binary on 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with "Key 'KEY_NAME' not found". `target`, when the caller could resolve one out of the index, is a name that file really holds, so the command runs verbatim. A null target keeps the old wording, which is exactly what shipped before. Resolution lives in bash_surgical_target.ts, not here: this module has no index/DB access on purpose (see genericSurgicalFallback above).
+export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml: boolean, target: HintTarget, reason = ''): string {
+  // The whole-file branches are a hard deny, so the command they print is the agent's only next move, and the placeholders they used to print do not run: verified against the built binary on 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with "Key 'KEY_NAME' not found". `target.name` is a name that file really holds whenever `target.real`, so the command runs verbatim; otherwise it is hint_target.ts's placeholder.
   //
-  // The config branch substitutes into the config-get half ONLY. Its `section "file::sectionName"` half takes a section, and the name the index yields for a JSON/YAML file is a property -- measured, `token-goat section "package.json::name"` exits 1 while `token-goat config-get "package.json" name` returns the value -- so putting the resolved name there would replace a placeholder the agent knows to substitute with a broken command it has no reason to doubt. With a real key in hand that half has nothing to add, and outline is offered instead: it is always runnable and lists every key with its line range.
-  const key = target ?? 'KEY_NAME'
-  const section = target ?? 'SectionHeading'
-  return isXml
-    ? 'Use `token-goat xml-outline "' + hintPath + '"` to inspect structure, or `token-goat xml-query "' + hintPath + '" "<selector>"` to query specific nodes.'
-    : isEnv
-      ? 'Use `token-goat config-get "' + hintPath + '" ' + key + '` to read a specific variable.'
-      : isConfig
-        ? structuredDataHint(hintPath, target) ?? (target === null
-          ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-          : 'Use `token-goat config-get "' + hintPath + '" ' + key + '` to read a specific value, or ' + genericSurgicalFallback(hintPath) + ' for every key with line ranges.')
-        : isDoc
-          ? 'Use `token-goat section "' + hintPath + '::' + section + '"` to read one section' + (target === null ? '.' : ', or ' + genericSurgicalFallback(hintPath) + ' for every heading with line ranges.')
-          : 'Use ' + genericSurgicalFallback(hintPath) + ' to read one function or class.'
+  // A config file's name goes where its format takes it: a JSON/YAML key to the query command, a TOML/INI table to `section` (measured, `config-get "cfg.toml" tool` exits 1 on a table while `section "cfg.toml::tool"` returns it), a .properties key to config-get. A JSON property is never put in a `section` slot: `token-goat section "package.json::name"` exits 1.
+  const outline = outlineCommand(hintPath)
+  if (isXml) return leadWithCommand('token-goat xml-outline "' + hintPath + '"', 'to inspect structure, or `token-goat xml-query "' + hintPath + '" "<selector>"` to query specific nodes', reason)
+  if (isEnv) return leadWithCommand('token-goat config-get "' + hintPath + '" ' + target.name, 'to read a specific variable', reason)
+  if (isConfig) {
+    const structured = structuredDataHint(hintPath, target.real ? target.name : null, reason)
+    if (structured !== null) return structured
+    return target.slice === 'key'
+      ? leadWithCommand('token-goat config-get "' + hintPath + '" ' + target.name, 'to read a specific value, or `' + outline + '` for every key with line ranges', reason)
+      : leadWithCommand('token-goat section "' + hintPath + '::' + target.name + '"', 'to read one table, or `' + outline + '` for every key with line ranges', reason)
+  }
+  if (isDoc) return leadWithCommand('token-goat section "' + hintPath + '::' + target.name + '"', 'to read one section, or `' + outline + '` for every heading with line ranges', reason)
+  // A source file with no nameable symbol leads with outline, which always runs, rather than a `read "file::SymbolName"` that never does.
+  return target.real
+    ? leadWithCommand('token-goat read "' + hintPath + '::' + target.name + '"', 'to read one function or class, or `' + outline + '` for all of them', reason)
+    : leadWithCommand(outline, 'to list every function and class with its line range', reason)
 }
 
 /** Shared hint ladder for `tail`/`head`/`Get-Content -Tail`/`Select-Object -First`-style partial-file-read commands, which (unlike the whole-file-dump commands {@link surgicalHintFor} covers) can also point at `token-goat skeleton` for the non-doc, non-config case since the caller already knows the file structure is what's wanted. */
-export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean, isSql: boolean, isXml = false): string {
-  return isXml
-    ? 'Use `token-goat xml-outline "' + filePath + '"` to inspect structure, or `token-goat xml-query "' + filePath + '" "<selector>"` to query specific nodes.'
-    : isConfig
-      ? structuredDataHint(filePath, null) ?? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-      : isSql
-        ? 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
-        : isDoc
-          ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-          : 'Use ' + genericSurgicalFallback(filePath) + ' or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean, isSql: boolean, isXml: boolean, target: HintTarget, reason = ''): string {
+  if (isXml || isConfig || isDoc) return surgicalHintFor(filePath, false, isConfig, isDoc, isXml, target, reason)
+  if (isSql) return sqlTableHint(filePath, target, reason)
+  return leadWithCommand(outlineCommand(filePath), 'or `token-goat skeleton "' + filePath + '"` to see the file structure', reason)
 }
 
 
@@ -216,12 +222,6 @@ export function isLargeFileOnDisk(filePath: string, floor: number): boolean {
   } catch {
     return false
   }
-}
-
-/** Whether a path this hook parsed OUT OF a command may be touched on disk before the user has approved that command. Every other pre_tool_use handler asks {@link preToolPathDeclined} before its first fs call, because the harness fires the hook before the approval prompt and the path is the model's choice until then -- and on Windows a `statSync` of `\\host\share\...` opens an SMB session, carrying an authentication attempt, to a host a repository named. This handler was outside that discipline for one reason that reads plausible and is wrong: its tool carries a command rather than a path. It carries about twenty paths, extracted from the command, and stats two of them. Answers false rather than throwing: the caller's only use for the size is deciding whether to emit a hint, and declining to measure is the same outcome as measuring and finding nothing. `event === undefined` still refuses a network or device path, including one reached through a link, so a caller that has no event to hand -- a direct unit test of an extractor, or a future one -- loses only the workspace half of the rule, never the network half. */
-export function commandPathIsTouchable(filePath: string, event: HookEvent | undefined): boolean {
-  if (event === undefined) return !escapesOntoNetworkThroughLinks(filePath)
-  return !preToolPathDeclined(event, filePath)
 }
 
 /** Extracts the read path from a `powershell -Command "Get-Content '<path>' -Raw"` (or pwsh/cat/type) wrapper, which otherwise bypasses every Get-Content/cat extractor because the command token is `powershell`. Tolerates a trailing `-Raw`/`-Encoding` that bare extractCatFile rejects. Temp paths are size-gated: a small scratch read stays silent, a large one still earns a recall hint. */

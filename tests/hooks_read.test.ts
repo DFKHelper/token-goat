@@ -2727,7 +2727,7 @@ content here` },
     })
   })
 
-  it('a memory/MEMORY.md re-read with no snapshot still gets the exact original bare deny text (loadSnapshotDiff returns kind "none" when nothing was ever saved by postReadHandler)', () => {
+  it('a memory/MEMORY.md re-read with no snapshot gets the exact bare deny text, led by a section command naming the file\'s real heading (loadSnapshotDiff returns kind "none" when nothing was ever saved by postReadHandler)', () => {
     const dir = path.join(os.tmpdir(), `tg-mem7-${process.pid}`)
     fs.mkdirSync(dir, { recursive: true })
     const p = path.join(dir, 'memory', 'MEMORY.md')
@@ -2742,13 +2742,14 @@ content here` },
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toBe(
-        '[tg] MEMORY.md was already read this session. Memory files rarely change mid-session. ' +
-        'Use `token-goat section "' + normalizePath(p) + '::SectionHeading"` to extract one section.',
+        // HAND-DERIVED: the file's only heading is `# Memory`.
+        '[tg] Run `token-goat section "' + normalizePath(p) + '::Memory"` to extract one section. ' +
+        'MEMORY.md was already read this session. Memory files rarely change mid-session.',
       )
     }
   })
 
-  it('a generic memory-file re-read with no snapshot still gets the exact original bare deny text', () => {
+  it('a generic memory-file re-read with no snapshot gets the exact bare deny text, led by a section command naming the file\'s real heading', () => {
     const dir = path.join(os.tmpdir(), `tg-mem8-${process.pid}`)
     fs.mkdirSync(dir, { recursive: true })
     const p = path.join(dir, 'memory', 'project_findings.md')
@@ -2764,8 +2765,9 @@ content here` },
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toBe(
-        '[tg] ' + shownPath + ' was already read this session. Memory files rarely change mid-session. ' +
-        'Use `token-goat section "' + shownPath + '::SectionHeading"` to extract one section.',
+        // HAND-DERIVED: the file's only heading is `# Findings`.
+        '[tg] Run `token-goat section "' + shownPath + '::Findings"` to extract one section. ' +
+        shownPath + ' was already read this session. Memory files rarely change mid-session.',
       )
     }
   })
@@ -3144,7 +3146,7 @@ content here` },
     })
   })
 
-  it('flag ON: .yaml (in DIFFABLE_SOURCE_RE) gets the section-style hint on unchanged re-read', () => {
+  it('flag ON: .yaml (in DIFFABLE_SOURCE_RE) gets a yaml-query hint naming its first key on unchanged re-read', () => {
     pinProtectRecentReadsToZero()
     withDiffFlag(true, () => {
       const content = 'name: app\nversion: 1\nsteps:\n  - build\n  - test\n'
@@ -3155,8 +3157,8 @@ content here` },
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
         expect(result.message).toContain('unchanged since last read')
-        // .yaml is section-style, not symbol-style
-        expect(result.message).toContain('token-goat section')
+        // HAND-DERIVED: the file's first top-level key is `name`. A YAML key goes to yaml-query, never to a symbol read.
+        expect(result.message).toContain('token-goat yaml-query "' + normalizePath(p) + '" "name"')
         expect(result.message).not.toContain('token-goat read')
       }
     })

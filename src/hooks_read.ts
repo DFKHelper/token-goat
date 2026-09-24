@@ -8,6 +8,8 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
+import { leadWithCommand } from './hint_suggestion_guard.js'
+import { hintTarget, sliceCommand, sliceForPath, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, normalizePath, toDisplayPath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
@@ -242,36 +244,37 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename) && !basename.toLowerCase().endsWith('-meta.xml')
 
   if (isXmlFile) {
-    return `Use \`token-goat xml-outline "${filePath}"\` for structure or \`token-goat xml-query "${filePath}" "<selector>"\` for nodes.`
+    return leadWithCommand(`token-goat xml-outline "${filePath}"`, `for structure, or \`token-goat xml-query "${filePath}" "<selector>"\` for nodes`)
   } else if (isDocFile) {
+    // The lead name comes from hintTarget, which passes over a document's lone title (its section is the whole file just refused); the list after it is the first headings in file order, as before.
+    let top: string[] = []
     if (fileContent !== undefined && /\.(md|mdx)$/i.test(basename)) {
-      const top = extractMarkdownHeadings(fileContent)
+      top = extractMarkdownHeadings(fileContent)
         .map((h) => escapeHintName(h.text.trim()))
         .filter((name) => name !== '')
         .slice(0, HINT_NAME_COUNT)
-      if (top.length > 0) {
-        return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
-      }
-    }
-    if (fileContent === undefined) {
+    } else if (fileContent === undefined) {
       try {
-        const top = indexedHintNames({ filePath, kind: 'heading' })
-        if (top.length > 0) {
-          return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
-        }
+        top = indexedHintNames({ filePath, kind: 'heading' })
       } catch {
         // The index is advisory; retain the clean fallback when it is unavailable.
       }
     }
-    return `Use \`token-goat section "${filePath}::HeadingName"\` to extract a part.`
-  } else if (isJsonFile) {
-    return `Use \`token-goat json-query "${filePath}" "<key>"\` (or \`token-goat json-outline "${filePath}"\`) to slice one value.`
-  } else if (isYamlFile) {
-    return `Use \`token-goat section "${filePath}::name"\` or \`token-goat yaml-query "${filePath}" "<key>"\` to extract a part.`
+    const heading = hintTarget(filePath, 'section', { content: fileContent, placeholder: 'HeadingName' })
+    return leadWithCommand(`token-goat section "${filePath}::${heading.name}"`, (top.length > 0 ? `(or sections: ${top.join(', ')}) ` : '') + 'to extract a part')
+  } else if (isJsonFile || isYamlFile) {
+    const fmt = isJsonFile ? 'json' : 'yaml'
+    const key = hintTarget(filePath, 'key', { content: fileContent })
+    if (key.real) return leadWithCommand(sliceCommand(filePath, key), `to read that value, or \`token-goat ${fmt}-outline "${filePath}"\` for every top-level key`)
+    return isJsonFile
+      ? leadWithCommand(`token-goat json-query "${filePath}" "<key>"`, `(or \`token-goat json-outline "${filePath}"\`) to slice one value`)
+      : leadWithCommand(`token-goat section "${filePath}::name"`, `or \`token-goat yaml-query "${filePath}" "<key>"\` to extract a part`)
   } else if (isHtmlFile) {
-    return `Use \`token-goat section "${filePath}::HeadingName"\` or \`token-goat outline "${filePath}"\` to navigate HTML structure.`
+    return leadWithCommand(`token-goat section "${filePath}::${hintTarget(filePath, 'section', { content: fileContent, placeholder: 'HeadingName' }).name}"`, `or \`token-goat outline "${filePath}"\` to navigate HTML structure`)
   } else if (isSectionFile) {
-    return `Use \`token-goat section "${filePath}::name"\` to extract a part.`
+    // TOML tables only: a stylesheet has no heading or table header hintTarget could name, so it keeps the placeholder.
+    const table = /\.toml$/i.test(basename) ? hintTarget(filePath, 'section', { content: fileContent, placeholder: 'name' }).name : 'name'
+    return leadWithCommand(`token-goat section "${filePath}::${table}"`, 'to extract a part')
   } else {
     const isShellScript = /\.(sh|bash|zsh|ksh)$/i.test(basename)
     const samples = fileContent !== undefined
@@ -287,10 +290,11 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
             return []
           }
         })()
-    const sym = samples[0] || 'SymbolName'
-    const avail = samples.length > 0 ? ` (available: ${samples.join(', ')})` : ''
+    const fallback = samples.length > 0 ? null : hintTarget(filePath, 'symbol', { content: fileContent })
+    const sym = samples[0] ?? fallback?.name ?? HINT_PLACEHOLDERS.symbol
+    const avail = samples.length > 0 ? `(available: ${samples.join(', ')}) ` : ''
     if (isShellScript && samples.length > 0) {
-      return `Use \`token-goat section "${filePath}::${sym}"\`${avail} for a section, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
+      return leadWithCommand(`token-goat section "${filePath}::${sym}"`, `${avail}for a section, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure`)
     }
     // The DB, not fileContent's naive regex scan, is what knows a symbol's real line span -- consulted here purely as a size check even on the fileContent-available path, so a symbol this large is never recommended for a whole-body read regardless of which branch found its name.
     if (samples.length > 0) {
@@ -303,13 +307,15 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
         // The index is advisory; retain the plain read recommendation when it is unavailable.
       }
     }
-    return `Use \`token-goat read "${filePath}::${sym}"\`${avail} for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
+    // With no name the file really holds, the command that runs leads and the read form trails as the pattern to fill in.
+    if (fallback?.real === false) return leadWithCommand(`token-goat skeleton "${filePath}"`, `or \`token-goat outline "${filePath}"\` for structure, then \`token-goat read "${filePath}::${sym}"\` for one function`)
+    return leadWithCommand(`token-goat read "${filePath}::${sym}"`, `${avail}for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure`)
   }
 }
 
 // Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely, keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
-/** Renders an indexed symbol/heading/key name safe to interpolate into a hint's own quoted argument, or '' when it cannot be: backslashes and double quotes are escaped, and anything displaySafeText would rewrite (a token-goat marker, a control character) is refused outright rather than shipped on the context channel, which does not fence its payload the way the deny channel does. Exported for bash_surgical_target.ts, which needs the same guarantee for the whole-file deny's own named target. */
-export function escapeHintName(name: string): string {
+/** Renders an indexed symbol/heading/key name safe to interpolate into a hint's own quoted argument, or '' when it cannot be: backslashes and double quotes are escaped, and anything displaySafeText would rewrite (a token-goat marker, a control character) is refused outright rather than shipped on the context channel, which does not fence its payload the way the deny channel does. */
+function escapeHintName(name: string): string {
   const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
   const safe = displaySafeText(quoted)
   return safe !== quoted ? '' : safe.trim()
@@ -463,12 +469,12 @@ function recordActualSlice(event: HookEvent, filePath: string): void {
   }
 }
 
-/** contextOutput, degraded to passOutput during hints.quiet_hours. Only the advisory/ informational hint paths (contextOutput -- lets the call proceed, injects a suggestion) are gated this way; correctness-relevant denyOutput blocks (truncation, oversized-file, reread-deny) are never suppressed by quiet hours. */
-function quietContextOutput(context: string): HookOutput {
+/** contextOutput, degraded to passOutput during hints.quiet_hours. Only the advisory/ informational hint paths (contextOutput -- lets the call proceed, injects a suggestion) are gated this way; correctness-relevant denyOutput blocks (truncation, oversized-file, reread-deny) are never suppressed by quiet hours. A hint that names a real heading or symbol passes its path as `correlators`, so hint-stats credits a follow-through on any part of that file, as it did when the hint printed a placeholder extractPathCorrelator strips. */
+function quietContextOutput(context: string, correlators?: readonly string[]): HookOutput {
   if (isWithinQuietHours(loadConfig().hints.quiet_hours)) {
     return passOutput()
   }
-  return contextOutput(context)
+  return contextOutput(context, correlators)
 }
 
 /** Suffix appended to the large-file structural-nav hint when context pressure is elevated, gated on hints.context_threshold_advisory. Only 'hot'/'critical' warrant surfacing this -- 'cool'/'warm' are the normal operating range and would just be noise on every large-file hint. */
@@ -579,9 +585,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   if (isManifestFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
+    const field = hintTarget(normalized, sliceForPath(normalized))
     return quietContextOutput(
-      'You\'ve already read ' + basename + '. Use `token-goat section "' + shown + '::<field>"` ' +
-      'or `token-goat config-get ' + shown + ' <key>` to extract just the value you need.',
+      field.real
+        ? leadWithCommand(sliceCommand(shown, field), 'to extract just the value you need', 'You\'ve already read ' + basename + '.')
+        : 'You\'ve already read ' + basename + '. Use `token-goat section "' + shown + '::<field>"` ' +
+          'or `token-goat config-get ' + shown + ' <key>` to extract just the value you need.',
+      [shown],
     )
   }
 
@@ -628,7 +638,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'the first heading are dropped entirely, each section is cut to its opening ' +
           'sentences, and long code fences are truncated. If you need content it left out, ' +
           're-read with offset/limit for a line window, or ' +
-          '`token-goat section "' + shown + '::Heading"` for one section in full. ' +
+          '`token-goat section "' + shown + '::' + hintTarget(normalized, 'section', { placeholder: 'Heading' }).name + '"` for one section in full. ' +
           'Use `token-goat compact-doc "' + shown + '" --force` to rebuild it, ' +
           'or `token-goat compact-doc "' + shown + '" --show` to view it directly. ' +
           editAnywayHint(normalized),
@@ -695,8 +705,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
           ? extractChangelogVersionHint(fileContent, normalized)
           : ''
-        // guidance is token-goat's own authored instruction text (the "use token-goat section" preamble plus the "Sections:" label) and stays OUTSIDE the fence, same as wellKnownText below. sectionsList (the actual heading text) and changelogExtra (version headings) are verbatim bytes from the file, so they are fenced as untrusted data before being spliced into a message the harness attributes to token-goat. wellKnownText is not fenced either: it is built from token-goat's own hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing it would spend markers on nothing.
-        let message = guidance + '\n' + fenceUntrustedFileContent(sectionsList + changelogExtra) + wellKnownText
+        // guidance is token-goat's own authored instruction text (the "use token-goat section" preamble plus the "Sections:" label) and stays OUTSIDE the fence, same as wellKnownText below. sectionsList (the actual heading text) and changelogExtra (version headings) are verbatim bytes from the file, so they are fenced as untrusted data before being spliced into a message the harness attributes to token-goat. wellKnownText is not fenced either: it is built from token-goat's own hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing it would spend markers on nothing. formatHeadingTreeParts' example line names a literal "Heading Name", which `section` cannot find; with a real heading in hand a command naming it leads and that line is dropped. The swap happens here because markdown_hints.ts is an embedding-fingerprinted source.
+        const headingTarget = hintTarget(normalized, 'section', { headings, content: fileContent })
+        const treeLead = headingTarget.real ? leadWithCommand('token-goat section "' + shown + '::' + headingTarget.name + '"', 'to read one section') + '\n' : ''
+        const treeGuidance = headingTarget.real ? guidance.split('\n').filter((line) => !line.includes('::Heading Name"')).join('\n') : guidance
+        let message = treeLead + treeGuidance + '\n' + fenceUntrustedFileContent(sectionsList + changelogExtra) + wellKnownText
         // A re-read is always hard-denied. A first read is also hard-denied when the file is at or above the generic large-file deny threshold: this branch returns before the size-based deny further below ever runs, so it must enforce that gate itself. A genuine, bounded offset/limit request gates on the requested slice's size instead of the whole file's, same as the generic large-file gate and the file-type dispatcher further below — a small window into a huge markdown file should be let through rather than hard-denied.
         const slice = estimateRequestedSlice(event, normalized)
         const gateSize =
@@ -755,7 +768,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           )
         }
         recordActualRead(event, normalized)
-        return quietContextOutput(message)
+        return quietContextOutput(message, [normalized])
       }
     }
   }
@@ -790,11 +803,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     const isMainMemory = basename.toLowerCase() === 'memory.md'
-    return denyOutput(
-      isMainMemory
-        ? 'MEMORY.md was already read this session. Memory files rarely change mid-session. Use `token-goat section "' + shown + '::SectionHeading"` to extract one section.'
-        : shown + ' was already read this session. Memory files rarely change mid-session. Use `token-goat section "' + shown + '::SectionHeading"` to extract one section.',
-    )
+    return denyOutput(leadWithCommand(
+      'token-goat section "' + shown + '::' + hintTarget(normalized, 'section').name + '"',
+      'to extract one section',
+      (isMainMemory ? 'MEMORY.md' : shown) + ' was already read this session. Memory files rarely change mid-session.',
+    ))
   }
 
   // Item 5: .improve-state-*.json re-read denial
@@ -820,10 +833,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (/^\.env(\.\w+)?$/.test(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
-    return denyOutput(
-      shown + ' was already read this session. Environment files rarely change mid-session. ' +
-      'Use `token-goat config-get ' + shown + ' KEY_NAME` to extract a specific variable.',
-    )
+    return denyOutput(leadWithCommand(
+      'token-goat config-get "' + shown + '" ' + hintTarget(normalized, 'key').name,
+      'to extract a specific variable',
+      shown + ' was already read this session. Environment files rarely change mid-session.',
+    ))
   }
 
   // Session artifact re-read dedup: tasks/<id>.output and tool-results/<id>.txt On first read of tasks/*.output, emit a proactive hint toward --tail/--grep. On re-reads (either type), inject a diff or "unchanged" denial using the same snapshot logic as doc files.
@@ -939,10 +953,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const ttlSecs = config.hints.cross_session_read_dedup_ttl_secs
         if (scanCrossSessionManifests(project.root, project.hash, normalized, ttlSecs)) {
           recordActualRead(event, normalized)
+          const slice = hintTarget(normalized, sliceForPath(normalized))
           return quietContextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
             'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
-            'or use `token-goat read ' + shown + '::SymbolName` for a narrower slice instead of a full re-read.',
+            'or use `' + (slice.real ? sliceCommand(shown, slice) : 'token-goat read ' + shown + '::SymbolName') + '` for a narrower slice instead of a full re-read.',
+            [shown],
           )
         }
       }
@@ -1078,18 +1094,18 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (!window.isExplicitSlice && fullReads >= 1 && /\.(md|mdx|markdown|rst)$/i.test(basename)) {
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-doc-deny')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-        return denyOutput(
-          'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.',
-        )
+        return denyOutput(leadWithCommand(
+          'token-goat section "' + shown + '::' + hintTarget(normalized, 'section', { placeholder: 'HeadingName' }).name + '"',
+          'to read one section',
+          'Markdown file already read this session.',
+        ))
       }
 
       // Structured re-read denial: .json / .html files >= 8KB already read this session (fullReads >= 1: same reasoning as the markdown branch above)
       if (!window.isExplicitSlice && fullReads >= 1 && /\.(json|jsonc|html|htm)$/i.test(basename) && rereadBytes >= 8192) {
         const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
-        return denyOutput(
-          shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
-        )
+        return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').').trimStart())
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
@@ -1098,23 +1114,15 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-        return denyOutput(
-          'Tried to read this file ' + reads + ' times already — ' +
-          surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)),
-        )
+        return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.').trimStart())
       }
     }
 
     const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
-    const contextHint = _isDocFile(normalized)
-      ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
-      : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2)) {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-      return denyOutput(
-        shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
-      )
+      return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').').trimStart())
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this used to) over-counted the ledger on every quiet-hours re-read that produced no visible output at all. Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     const pagingWindow = readRequestedSliceWindow(event)
@@ -1127,9 +1135,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
     }
     recordActualSlice(event, normalized)
+    const rereadNote = 'Note: ' + shown + ' was already read this session (' + reads + ' ' + plural + ').'
     return quietContextOutput(
-      'Note: ' + shown + ' was already read this session (' + reads + ' ' + plural + '). ' +
-        contextHint + pagingNote,
+      (_isDocFile(normalized)
+        ? leadWithCommand('token-goat section "' + shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name + '"', 'to read one section', rereadNote)
+        : rereadNote + ' Use token-goat read/section/symbol to re-read surgically.') + pagingNote,
+      [shown],
     )
   }
 
@@ -1154,7 +1165,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const denyCredit = counterfactualCredit(size)
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'large-file-deny')
       return denyOutput(
-        shown + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
+        (hint + ' ' + shown + ' is very large (' + kb + 'KB). ').trimStart() + describeSliceAdvice(slice, normalized) +
         ' ' + editAnywayHint(normalized),
       )
     }
@@ -1172,10 +1183,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
       recordStat('session_hint', 0, 0)
     }
-    return quietContextOutput(
-      'Note: ' + shown + ' is large (' + kb + 'KB). ' +
-        hint + contextPressureAdvisorySuffix(),
-    )
+    return quietContextOutput((hint + ' ' + shown + ' is large (' + kb + 'KB).').trimStart() + contextPressureAdvisorySuffix(), [shown])
   }
 
   // Universal file type handler (catch-all for non-code, non-markdown large files)
@@ -1254,13 +1262,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const nudge = isXmlNudge
         ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline "${shown}"\` or \`token-goat xml-query "${shown}" "<selector>"\``
         : isDocNudge
-        ? `Note: token-goat available for this file type, consider section first: \`token-goat section "${shown}::HeadingName"\``
+        ? `Note: token-goat available for this file type, consider section first: \`token-goat section "${shown}::${hintTarget(normalized, 'section', { placeholder: 'HeadingName' }).name}"\``
         : isTestFile
-        ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read "${shown}::DescribeBlockName"\` or \`token-goat skeleton "${shown}"\``
+        ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read "${shown}::${hintTarget(normalized, 'symbol', { placeholder: 'DescribeBlockName' }).name}"\` or \`token-goat skeleton "${shown}"\``
         : isScriptNudge
-        ? `Note: token-goat available for this PowerShell file, consider surgical read first: \`token-goat read "${shown}::FunctionName"\` or \`token-goat skeleton "${shown}"\``
+        ? `Note: token-goat available for this PowerShell file, consider surgical read first: \`token-goat read "${shown}::${hintTarget(normalized, 'symbol', { placeholder: 'FunctionName' }).name}"\` or \`token-goat skeleton "${shown}"\``
         : `Note: token-goat has this file indexed (>80% read), consider surgical read first: ${surgicalHint(normalized, basename, lineCount)}`
-      return quietContextOutput(nudge)
+      return quietContextOutput(nudge, isXmlNudge ? undefined : [shown])
     }
   }
 

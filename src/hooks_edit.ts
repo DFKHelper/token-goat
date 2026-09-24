@@ -1,16 +1,4 @@
-/**
- * post_tool_use edit hooks (Write / Edit / NotebookEdit).
- *
- * Ports `hooks_edit.py::post_edit`: after a successful Write/Edit/NotebookEdit,
- * record the file in the session cache and append it to the dirty queue so the
- * background indexer (Layer 7) reindexes only what changed. Never blocks an
- * edit — returns `context` for markdown files (with a section hint) or `pass`
- * for others.
- *
- * The dirty-queue path and write logic live in `hooks_index.ts`
- * ({@link appendDirtyPath}) so this writer and the queue drainer share one
- * definition.
- */
+/** post_tool_use edit hooks (Write / Edit / NotebookEdit). Ports `hooks_edit.py::post_edit`: after a successful Write/Edit/NotebookEdit, record the file in the session cache and append it to the dirty queue so the background indexer (Layer 7) reindexes only what changed. Never blocks an edit — returns `context` for markdown files (with a section hint) or `pass` for others. The dirty-queue path and write logic live in `hooks_index.ts` ({@link appendDirtyPath}) so this writer and the queue drainer share one definition. */
 
 import * as path from 'node:path'
 import { statSync } from 'node:fs'
@@ -20,6 +8,8 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
 import { applyHintTracking, classifyEditHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
+import { leadWithCommand } from './hint_suggestion_guard.js'
+import { hintTarget } from './hint_target.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { displaySafePath, normalizePath } from './paths.js'
@@ -32,15 +22,7 @@ import { compactPathFor, markCompactStale } from './doc_compact.js'
 import { ensureWorkerAlive } from './worker.js'
 import type { HookOutput } from './types.js'
 
-/**
- * post_tool_use handler for Write/Edit/NotebookEdit.
- *
- * Records the edit in the session cache and enqueues the normalized path for
- * reindexing. A missing path (malformed payload — `file_path` for Write/Edit,
- * `notebook_path` for NotebookEdit) is tolerated — the call passes through
- * without touching the queue. Returns a context hint for markdown/rst files
- * suggesting the token-goat section command for re-reading.
- */
+/** post_tool_use handler for Write/Edit/NotebookEdit. Records the edit in the session cache and enqueues the normalized path for reindexing. A missing path (malformed payload — `file_path` for Write/Edit, `notebook_path` for NotebookEdit) is tolerated — the call passes through without touching the queue. Returns a context hint for markdown/rst files suggesting the token-goat section command for re-reading. */
 function postEditHandlerInner(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
@@ -90,15 +72,13 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
       // The file was edited, it is markdown, and a `section` hint was composable from it, so price is the only thing that stopped this one -- the same decision declineUnpriced records for bash redirects, in the category that emits more hints than any other and had never recorded a refusal.
       logSuppressedDetection('edit_reread_suggest', event.sessionId, normalized)
     } else {
-      // displaySafePath first: the backtick/quote escaping below is about not breaking the
-      // markdown span, and does nothing about a newline in the file name, which would end the
-      // hint line and let the rest of the name read as a note of token-goat's own.
+      // displaySafePath first: the backtick/quote escaping below is about not breaking the markdown span, and does nothing about a newline in the file name, which would end the hint line and let the rest of the name read as a note of token-goat's own.
       const escapedPath = displaySafePath(normalized).replace(/`/g, '\\`').replace(/"/g, '\\"')
+      // The index row for this file was just queued stale, so hintTarget reads the heading off the written file's first bytes. The path goes in as the correlator, so hint-stats credits a `section` on any heading of it, as it did when this printed a placeholder.
+      const heading = hintTarget(normalized, 'section', { placeholder: 'HeadingName' })
       return contextOutput(
-        displaySafePath(editedBasename) +
-          ' was edited. Use `token-goat section "' +
-          escapedPath +
-          '::HeadingName"` to re-read a specific section rather than the full file.',
+        leadWithCommand('token-goat section "' + escapedPath + '::' + heading.name + '"', 'to re-read a specific section rather than the full file', displaySafePath(editedBasename) + ' was edited.'),
+        [escapedPath],
       )
     }
   }

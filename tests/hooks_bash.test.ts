@@ -841,10 +841,9 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      // Both paths are surfaced with a surgical-read suggestion.
-      expect(result.message).toContain('src/a.ts')
-      expect(result.message).toContain('src/b.ts')
-      expect(result.message).toContain('token-goat read')
+      // Both paths are surfaced with a surgical-read suggestion; neither file exists here, so each leads with the outline, which runs without a symbol name.
+      expect(result.message).toContain('token-goat outline "src/a.ts"')
+      expect(result.message).toContain('token-goat outline "src/b.ts"')
     }
   })
 
@@ -901,7 +900,8 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(makeBashEvent('cat supabase/migrations/0001_init.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
+      // `read`, not `section`: `section` finds no headings in a .sql file and exits 1, while `read` returns the CREATE block the SQL adapter indexes by name.
+      expect(result.context).toContain('token-goat read "supabase/migrations/0001_init.sql::table_name"')
       expect(result.context).toContain('CREATE TABLE')
     }
   })
@@ -949,11 +949,11 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  it('tail command on a TOML config file still names config-get', () => {
+  it('tail command on a TOML config file names a table through section, which config-get cannot read', () => {
     const result = preBashHandler(makeBashEvent('tail -n 30 src/config.toml'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('config-get')
+      expect(result.context).toContain('token-goat section "src/config.toml::')
     }
   })
 
@@ -1257,8 +1257,7 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
-      expect(result.context).toContain('table_name')
+      expect(result.context).toContain('token-goat read "migrations/0001_init.sql::table_name"')
     }
   })
 
@@ -1646,8 +1645,8 @@ describe('preBashHandler — cat | jq pipe interception', () => {
     const result = preBashHandler(makeBashEvent("cat package.json | jq '.dependencies | keys'"))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('config-get')
-      expect(result.context).toContain('package.json')
+      // HAND-DERIVED: this repository's package.json opens with `"name"`, so the hint names that key.
+      expect(result.context).toContain('token-goat json-query "package.json" "name"')
     }
   })
 
@@ -1655,7 +1654,7 @@ describe('preBashHandler — cat | jq pipe interception', () => {
     const result = preBashHandler(makeBashEvent('cat tsconfig.json | jq .'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('config-get')
+      expect(result.context).toContain('token-goat json-query "tsconfig.json" "')
     }
   })
 
@@ -1663,7 +1662,8 @@ describe('preBashHandler — cat | jq pipe interception', () => {
     const result = preBashHandler(makeBashEvent('cat "C:/Projects/app/package.json" | jq \'.version\''))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('config-get')
+      // The file does not exist, so no key can be named: the outline, which runs as printed, leads.
+      expect(result.context.startsWith('Run `token-goat json-outline "C:/Projects/app/package.json"`')).toBe(true)
     }
   })
 
@@ -2937,7 +2937,8 @@ describe('preBashHandler — curl download dedup', () => {
         // The recall message shows the fully-resolved, normalized path recorded at download time (see the "resolves a relative -o path against the ORIGINAL download cwd" regression below), not the raw -o argument as typed on the command line.
         expect(result.message).toContain(resolveIndexPath(v1Path))
         expect(result.message).toContain('rg')
-        expect(result.message).toContain('token-goat read')
+        // HAND-DERIVED: the downloaded JSON's first key is `items`, so the lead command queries it.
+        expect(result.message).toContain('Run `token-goat json-query "' + resolveIndexPath(v1Path) + '" "items"`')
       }
     } finally {
       try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
@@ -3420,7 +3421,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent('cat schema.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
       expect(result.context).toContain('CREATE TABLE')
     }
   })
@@ -3429,7 +3430,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent('cat migration.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('token-goat read "migration.sql::table_name"')
     }
   })
 
@@ -3443,7 +3444,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent(`powershell -Command "Get-Content 'schema.sql'"`))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
       expect(result.context).toContain('CREATE TABLE')
     }
   })
@@ -3875,7 +3876,7 @@ describe('preBashHandler — powershell-wrapped Get-Content recall (wiring)', ()
     const result = preBashHandler(makeBashEvent(`pwsh -c "gc README.md"`))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat section "README.md::SectionHeading"')
+      expect(result.message).toContain('token-goat section "README.md::')
     }
   })
 })
@@ -4682,7 +4683,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat src/auth_loop46.ts 2>&1'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toBe('[tg] `cat` loads the entire file into context. Use `token-goat outline "src/auth_loop46.ts"` to read one function or class.')
+      expect(result.message).toBe('[tg] Run `token-goat outline "src/auth_loop46.ts"` to list every function and class with its line range.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -4690,7 +4691,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat docs/loop46_memory.md 2>/dev/null'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('`cat` loads the entire file into context. Use `token-goat section "docs/loop46_memory.md::SectionHeading"` to read one section.')
+      expect(result.context).toBe('Run `token-goat section "docs/loop46_memory.md::SectionHeading"` to read one section, or `token-goat outline "docs/loop46_memory.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -4714,7 +4715,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat -n README_loop46.md 2>/dev/null | tail -60'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('`tail` bypasses read hooks. Use `token-goat section "README_loop46.md::SectionHeading"` to read one section.')
+      expect(result.context).toBe('Run `token-goat section "README_loop46.md::SectionHeading"` to read one section, or `token-goat outline "README_loop46.md"` for every heading with line ranges.\n`tail` bypasses read hooks.')
     }
   })
 
@@ -4912,14 +4913,14 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
   it('denies a doc .NET file read with section hint', () => {
     const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('README.md')`))
     expect(interceptedReadHint(result)).not.toBeNull()
-    expect(interceptedReadHint(result)).toContain('token-goat section "README.md::SectionHeading"')
+    expect(interceptedReadHint(result)).toContain('token-goat section "README.md::')
   })
 
   it('emits advisory contextOutput for SQL .NET file read', () => {
     const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('schema.sql')`))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section "schema.sql::table_name"')
+      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
     }
   })
 
@@ -4982,7 +4983,7 @@ describe('extractPythonFileRead — PowerShell here-string and multi-format supp
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section "db/schema.sql::table_name"')
+      expect(result.context).toContain('token-goat read "db/schema.sql::table_name"')
     }
   })
 })

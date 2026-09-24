@@ -1,13 +1,11 @@
-/**
- * Line windowing, slice estimation, line diffing, and truncated-read detection.
- *
- * Extracted from hooks_read.ts to isolate window parsing, disk window reading, and diff generation.
- */
+/** Line windowing, slice estimation, line diffing, and truncated-read detection. Extracted from hooks_read.ts to isolate window parsing, disk window reading, and diff generation. */
 
 import * as fs from 'node:fs'
 
 import type { HookEvent } from './hook_registry.js'
 import { displaySafePath } from './paths.js'
+import { leadWithCommand } from './hint_suggestion_guard.js'
+import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
 import { decodeSource, statSize, toKB } from './util.js'
 import { load as snapshotLoad } from './snapshots.js'
 import { BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
@@ -35,10 +33,7 @@ export interface RequestedSliceWindow {
   readonly isExplicitSlice: boolean
 }
 
-/**
- * Normalizes multi-harness line window parameters across Claude Code (`offset`/`limit`),
- * Copilot CLI (`view_range: [start, end]`), and other tools (`lines`, `range`, `start_line`/`end_line`).
- */
+/** Normalizes multi-harness line window parameters across Claude Code (`offset`/`limit`), Copilot CLI (`view_range: [start, end]`), and other tools (`lines`, `range`, `start_line`/`end_line`). */
 export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow {
   const rawOffset = readIntToolInput(event, 'offset')
   const rawLimit = readIntToolInput(event, 'limit')
@@ -97,9 +92,7 @@ export function readStartLine(event: HookEvent): number {
 
 const HARNESS_TRUNCATION_NOTICE_RE = /^[ \t]*\[Truncated: PARTIAL view/m
 
-/**
- * True when the harness handed back only part of the read, so folding it would withhold lines the model never received.
- */
+/** True when the harness handed back only part of the read, so folding it would withhold lines the model never received. */
 export function isTruncatedReadDelivery(event: HookEvent, respText: string): boolean {
   const resp = event.raw['tool_response'] as Record<string, unknown> | null
   const file = resp?.['file'] as Record<string, unknown> | null
@@ -118,9 +111,7 @@ interface SliceScan {
   nearSingleLine: boolean
 }
 
-/**
- * Scans the 1-indexed line window [offset, offset + limit) without reading the whole file into memory.
- */
+/** Scans the 1-indexed line window [offset, offset + limit) without reading the whole file into memory. */
 function scanRequestedSlice(absPath: string, offset: number, limit: number): SliceScan | null {
   const windowEnd = offset + limit
   let fd: number
@@ -171,9 +162,7 @@ export type RequestedSlice =
   | { readonly kind: 'unbounded' }
   | { readonly kind: 'nearSingleLine' }
 
-/**
- * Reads `offset`/`limit` off the Read tool call and estimates the size of just that slice.
- */
+/** Reads `offset`/`limit` off the Read tool call and estimates the size of just that slice. */
 export function estimateRequestedSlice(event: HookEvent, absPath: string): RequestedSlice {
   const window = readRequestedSliceWindow(event)
   if (window.limit === undefined || window.limit <= 0) return { kind: 'unbounded' }
@@ -200,9 +189,7 @@ export function describeSliceAdvice(slice: RequestedSlice, rawAbsPath: string): 
   return 'Use Read with offset/limit to sample specific sections.'
 }
 
-/**
- * Compute a compact unified-style diff between two versions of a doc file.
- */
+/** Compute a compact unified-style diff between two versions of a doc file. */
 function buildLineDiffDetailed(oldContent: string, newContent: string, label: string): { readonly text: string; readonly truncated: boolean } {
   const oldLines = oldContent.split('\n')
   const newLines = newContent.split('\n')
@@ -259,9 +246,7 @@ export type SnapshotDiffResult =
   | { readonly kind: 'diff'; readonly diff: string; readonly savedBytes: number; readonly currentContent: string }
   | { readonly kind: 'none' }
 
-/**
- * Compare prior snapshot to the file's current on-disk content.
- */
+/** Compare prior snapshot to the file's current on-disk content. */
 export function loadSnapshotDiff(sessionId: string, normalized: string, basename: string): SnapshotDiffResult {
   const oldSnap = snapshotLoad(sessionId, normalized)
   if (oldSnap === null) return { kind: 'none' }
@@ -315,9 +300,12 @@ export function editAnywayHint(rawPath: string): string {
 
 export function truncatedReadDenyMessage(rawPath: string): string {
   const normalized = displaySafePath(rawPath)
-  return (
-    'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.'
-  )
+  const reason = 'File was truncated on last read (>33K tokens).'
+  const skeleton = 'token-goat skeleton "' + normalized + '"'
+  const target = hintTarget(rawPath, sliceForPath(rawPath))
+  return target.real
+    ? leadWithCommand(sliceCommand(normalized, target), 'for one part, or `' + skeleton + '` for structure', reason)
+    : leadWithCommand(skeleton, 'for structure, or `token-goat read "' + normalized + '::SymbolName"` for one function', reason)
 }
 
 /** Slices window text directly from disk. */
@@ -342,9 +330,7 @@ export interface ParsedReadResult {
   readonly trailer: string[]
 }
 
-/**
- * Split a Read result into the `cat -n` block it delivered and the harness text around it.
- */
+/** Split a Read result into the `cat -n` block it delivered and the harness text around it. */
 export function parseNumberedReadResult(respText: string, firstLine = 1): ParsedReadResult | null {
   const lines = respText.split('\n')
   const header: string[] = []

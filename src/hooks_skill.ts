@@ -18,11 +18,19 @@ import { PER_FILE_COUNTERFACTUAL_CEILING } from './util.js';
 import { extractMarkdownHeadings, formatHeadingTreeParts } from './hints/markdown_hints.js';
 import { OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO } from './fold_structure.js';
 import { fenceUntrustedFileContent } from './injection_scan.js';
+import { hintTarget } from './hint_target.js';
 
 const OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES = 6000;
 
 // Largest compact slice still worth inlining rather than pointing at. Deliberately NOT the oversize gate above: that number answers "is the full body too big to hand over", which is a different question from "is this slice cheaper to inline than to make the agent fetch". Denying never prevents the bytes -- the agent runs `skill-body --compact` and receives the identical slice one turn later, having also paid the deny text, a reasoning turn, and a Bash spawn -- so inlining wins at every size the slice is actually smaller than the body. The cap exists only to stop a degenerate marker (a "compact" slice nearly as large as the body it summarises) from being force-fed; past it, the pointer deny still gives the agent the choice.
 const COMPACT_INLINE_MAX_BYTES = 24_000;
+
+/** The `skill-section` heading argument: one the skill body really holds, double-quoted (the only form the relay's suggestion guard keeps), else the `'<heading>'` placeholder. `body` is the text already read on the cold-load path; the reload deny passes only the path and hintTarget reads a bounded head of it. */
+function skillSectionArg(skillPath: string | null, body?: string): string {
+  if (skillPath === null) return "'<heading>'";
+  const heading = hintTarget(skillPath, 'section', { content: body });
+  return heading.real ? '"' + heading.name + '"' : "'<heading>'";
+}
 
 function extractSkillName(toolInput: Record<string, unknown>): string | null {
   const skill = toolInput['skill'] as string;
@@ -40,8 +48,7 @@ function extractSkillBody(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
 }
 
-/** Shared prologue for {@link preSkillHandler}/{@link postSkillHandler}: only a Skill call with
- * an extractable skill name and a session id is in scope; everything else passes through. */
+/** Shared prologue for {@link preSkillHandler}/{@link postSkillHandler}: only a Skill call with an extractable skill name and a session id is in scope; everything else passes through. */
 function resolveSkillContext(event: HookEvent): { skillName: string } | null {
   const toolName = getToolName(event);
   if (toolName !== 'Skill') {
@@ -61,14 +68,7 @@ function resolveSkillContext(event: HookEvent): { skillName: string } | null {
   return { skillName };
 }
 
-/**
- * Heading-tree stand-in for an oversized skill body, or null when the body is not worth mapping.
- *
- * Two callers, one floor pair. Both floors come verbatim from fold_structure.ts's large-markdown
- * outline, which measured them against real session transcripts: a skill needs at least
- * OUTLINE_MIN_HEADINGS of structure to be worth a map at all, and the map has to be genuinely small
- * next to the body (OUTLINE_MAX_REPLACEMENT_RATIO) or the round trip costs more than it saves.
- */
+/** Heading-tree stand-in for an oversized skill body, or null when the body is not worth mapping. Two callers, one floor pair. Both floors come verbatim from fold_structure.ts's large-markdown outline, which measured them against real session transcripts: a skill needs at least OUTLINE_MIN_HEADINGS of structure to be worth a map at all, and the map has to be genuinely small next to the body (OUTLINE_MAX_REPLACEMENT_RATIO) or the round trip costs more than it saves. */
 function planHeadingTree(body: string, bodyBytes: number, skillName: string): { sectionsList: string; treeBytes: number; phrase: string } | null {
   const headings = extractMarkdownHeadings(body);
   if (headings.length < OUTLINE_MIN_HEADINGS) return null;
@@ -98,19 +98,13 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
 
     // Skill already loaded earlier this session: its body is cached and recallable, so re-loading just re-injects the whole thing. Deny and point at the cheaper compact recall instead.
     if (await hasSessionOutput(event.sessionId, skillName)) {
-      // The blocked re-load's body never reaches the model -- this is the same shape as
-      // read_count_deny's blocked re-read, so credit it the same way: the cached body's real
-      // byte size (sessionOutputBodyBytes), capped at PER_FILE_COUNTERFACTUAL_CEILING because
-      // the counterfactual being priced is "the load that didn't happen", and that load would
-      // itself have been truncated past this ceiling (see PER_FILE_COUNTERFACTUAL_CEILING).
-      // No sibling stat credits these same bytes: skill_load (postSkillHandler) is event-only
-      // (0 bytes) and only fires on an actual load, which this deny prevents.
+      // The blocked re-load's body never reaches the model -- this is the same shape as read_count_deny's blocked re-read, so credit it the same way: the cached body's real byte size (sessionOutputBodyBytes), capped at PER_FILE_COUNTERFACTUAL_CEILING because the counterfactual being priced is "the load that didn't happen", and that load would itself have been truncated past this ceiling (see PER_FILE_COUNTERFACTUAL_CEILING). No sibling stat credits these same bytes: skill_load (postSkillHandler) is event-only (0 bytes) and only fires on an actual load, which this deny prevents.
       const cachedBytes = await sessionOutputBodyBytes(event.sessionId, skillName);
       const denyCredit = cachedBytes !== null ? Math.min(cachedBytes, PER_FILE_COUNTERFACTUAL_CEILING) : 0;
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'skill-reload-deny');
       return denyOutput(
         'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-section ' +
-          skillName + ' \'<heading>\'` to recall a section, `token-goat skill-body ' +
+          skillName + ' ' + skillSectionArg(await installedSkillPath(skillName)) + '` to recall a section, `token-goat skill-body ' +
           skillName + ' --compact` to recall the compact slice, or `token-goat skill-body ' + skillName +
           '` for the full body instead of re-loading it.',
       );
@@ -134,7 +128,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
               return denyOutput(
                 'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
                   ' bytes) is inlined below instead of the full body. For a specific section, run `token-goat skill-section ' + skillName +
-                  ' \'<heading>\'`, or `token-goat skill-body ' + skillName + '` if you need the full body.\n\n' + compact,
+                  ' ' + skillSectionArg(sourcePath, body) + '`, or `token-goat skill-body ' + skillName + '` if you need the full body.\n\n' + compact,
               );
             }
           }
@@ -149,7 +143,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             return denyOutput(
               'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes)' +
                 (compact !== null ? ', and its compact slice is too large to inline; ' : ' with no compact slice; ') + tree.phrase +
-                ' Use `token-goat skill-section ' + skillName + ' \'<heading>\'` to load a specific section' +
+                ' Use `token-goat skill-section ' + skillName + ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section' +
                 (compact !== null ? ', `token-goat skill-body ' + skillName + ' --compact` to load the compact slice' : '') +
                 ', or `token-goat skill-body ' + skillName + '` for the full body.\n\n' +
                 fenceUntrustedFileContent(tree.sectionsList),
@@ -161,7 +155,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             return denyOutput(
               'Skill `' + skillName + '` is large (' + bodyBytes +
                 ' bytes) and has a compact slice available. Use `token-goat skill-section ' + skillName +
-                ' \'<heading>\'` to load a specific section, `token-goat skill-body ' + skillName +
+                ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section, `token-goat skill-body ' + skillName +
                 ' --compact` to load the compact slice, or `token-goat skill-body ' + skillName + '` for the full body.',
             );
           }
@@ -197,8 +191,7 @@ export async function postSkillHandler(event: HookEvent): Promise<HookOutput> {
     await storeOutput(event.sessionId, skillName, body, sourcePath ? { sourcePath } : undefined);
     // Increment hit count for skill recall tracking.
     await incrementSkillHit(skillName);
-    // Stamp this (re)load's CLI version/command set as the session's drift baseline -- see
-    // skill_version_drift.ts. No-op unless skillName is 'token-goat' itself.
+    // Stamp this (re)load's CLI version/command set as the session's drift baseline -- see skill_version_drift.ts. No-op unless skillName is 'token-goat' itself.
     await recordSkillVersionSnapshot(event.sessionId, skillName);
 
     return passOutput();

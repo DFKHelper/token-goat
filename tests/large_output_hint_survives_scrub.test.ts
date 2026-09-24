@@ -36,7 +36,7 @@ describe('large uncompressed output hint', () => {
   })
 
   it('stays silent on token-goat\'s own commands', () => {
-    const targets = ['src/hooks_bash.ts@1370-1405', 'src/hint_suggestion_guard.ts@110-175']
+    const targets = ['src/hooks_bash.ts@1370-1405', 'src/hooks_bash.ts@1406-1440']
     const stdout = targets.map((t) => spawnSync(process.execPath, [BUNDLE, 'read', t], { cwd: ROOT, encoding: 'utf-8', env }).stdout).join('')
     expect(stdout.length).toBeGreaterThan(4096)
     // Calibration: the same real output under a foreign command does draw the hint, so silence below is the own-command exemption and not a filter rewriting the output first.

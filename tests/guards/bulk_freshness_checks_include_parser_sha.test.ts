@@ -1,30 +1,4 @@
-/**
- * Structural guard for the "freshness gate keyed on one of two inputs" defect class.
- *
- * `reconcile.ts::reconcileProject`'s drift sweep used to compare only a file's content hash
- * (`files.sha`) against a fresh disk read, and treat a match as "nothing to do" -- skipping the
- * file entirely, forever, unless something later happened to edit it. That misses the case a
- * parser fix or a new parser version creates: a file nobody touched afterward still holds
- * symbol/reference rows written by the OLD extractor, recorded in `files.parser_sha`. Content and
- * parser version are two independent freshness keys (see `fold_delivery.ts::resolveFoldSpans`'s own
- * doc comment: "measured on a real index, 37 of 237 source files disagreed with what the current
- * parser produced while their content sha still matched"), and a function that reads `files.sha`
- * to decide whether to skip re-deriving a file's rows has to check both or it is wrong in exactly
- * this shape.
- *
- * A per-site regression test (tests/reconcile_parser_stale.test.ts) pins reconcile.ts's own fix. It
- * says nothing about the next bulk sweep someone writes that makes the same content-only mistake --
- * this repo's cmdIndex, worker.ts's dirty-drain, and fold_delivery.ts's fold-span resolver all read
- * `files.sha` for the same kind of decision, and a new one is exactly as easy to get wrong as
- * reconcile.ts's was.
- *
- * So this guard enumerates every top-level function in `src/` whose body calls `fingerprintFile(`
- * (the disk-hash primitive every one of these checks uses) and requires an explicit classification:
- * does it gate a skip/reuse decision on BOTH `files.sha` and `files.parser_sha`/`PARSER_FINGERPRINT`,
- * does it only ever WRITE the current parser fingerprint (not gate a skip on it), or does it operate
- * on one file the caller named explicitly rather than running a background bulk sweep that could
- * silently skip a parser-stale file forever? An unclassified function is red.
- */
+/** Structural guard for the "freshness gate keyed on one of two inputs" defect class. `reconcile.ts::reconcileProject`'s drift sweep used to compare only a file's content hash (`files.sha`) against a fresh disk read, and treat a match as "nothing to do" -- skipping the file entirely, forever, unless something later happened to edit it. That misses the case a parser fix or a new parser version creates: a file nobody touched afterward still holds symbol/reference rows written by the OLD extractor, recorded in `files.parser_sha`. Content and parser version are two independent freshness keys (see `fold_delivery.ts::resolveFoldSpans`'s own doc comment: "measured on a real index, 37 of 237 source files disagreed with what the current parser produced while their content sha still matched"), and a function that reads `files.sha` to decide whether to skip re-deriving a file's rows has to check both or it is wrong in exactly this shape. A per-site regression test (tests/reconcile_parser_stale.test.ts) pins reconcile.ts's own fix. It says nothing about the next bulk sweep someone writes that makes the same content-only mistake -- this repo's cmdIndex, worker.ts's dirty-drain, and fold_delivery.ts's fold-span resolver all read `files.sha` for the same kind of decision, and a new one is exactly as easy to get wrong as reconcile.ts's was. So this guard enumerates every top-level function in `src/` whose body calls `fingerprintFile(` (the disk-hash primitive every one of these checks uses) and requires an explicit classification: does it gate a skip/reuse decision on BOTH `files.sha` and `files.parser_sha`/`PARSER_FINGERPRINT`, does it only ever WRITE the current parser fingerprint (not gate a skip on it), or does it operate on one file the caller named explicitly rather than running a background bulk sweep that could silently skip a parser-stale file forever? An unclassified function is red. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -66,12 +40,9 @@ function sites(): readonly Site[] {
 type Bucket =
   /** Compares files.sha AND files.parser_sha/PARSER_FINGERPRINT before treating a row as reusable. */
   | 'gates-a-skip-decision-on-both-freshness-keys'
-  /** Always stamps the CURRENT parser fingerprint on write; nothing here reuses an old row based on
-   * a sha match, so there is no skip decision to key on parser_sha in the first place. */
+  /** Always stamps the CURRENT parser fingerprint on write; nothing here reuses an old row based on a sha match, so there is no skip decision to key on parser_sha in the first place. */
   | 'always-writes-current-parser-sha-does-not-gate-a-skip'
-  /** Runs against one file the caller (or an explicit dirty-queue entry) already named, not a
-   * background bulk sweep that could silently skip a parser-stale file forever -- a parser upgrade
-   * affecting this file is caught by reconcile.ts's own sweep instead. */
+  /** Runs against one file the caller (or an explicit dirty-queue entry) already named, not a background bulk sweep that could silently skip a parser-stale file forever -- a parser upgrade affecting this file is caught by reconcile.ts's own sweep instead. */
   | 'explicit-single-file-path-not-a-bulk-skip-sweep'
 
 interface Classification {
@@ -144,7 +115,7 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
       reason:
         'index_freshness.ts holds the one copy of the four-line check its three hook-tier callers ' +
         'used to each carry inline -- detectStructuralIndexRewrite (bash_structural_index.ts), ' +
-        'rangeSubstituteFor (bash_range_savings.ts) and runnableTargetFor (bash_surgical_target.ts). ' +
+        'rangeSubstituteFor (bash_range_savings.ts) and hintTarget (hint_target.ts). ' +
         'Every one of them checks the single file an rg/sed/cat command already named, against a ' +
         'fresh disk read: the same single-named-file scope as staleWarning, built from getFileEntry ' +
         '+ fingerprintFile rather than by importing staleWarning itself, because read_commands.ts ' +

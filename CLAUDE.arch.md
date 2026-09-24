@@ -255,7 +255,6 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bash_range_savings.ts`](src/bash_range_savings.ts) | Prices a line-range read's proposed surgical replacement against the read itself, so a hint that redirects a line-range read can be required to prove it saves something before it i |
 | [`src/bash_runner.ts`](src/bash_runner.ts) | Exports: `DEFAULT_TIMEOUT_SECONDS`, `MAX_CAPTURE_BYTES`, `RunOptions`, `run` |
 | [`src/bash_structural_index.ts`](src/bash_structural_index.ts) | Recognizes a plain-enumeration `rg`/`grep` invocation over a single, already-fresh-indexed file whose pattern maps exactly to a token-goat index answer (`outline`/`imports`), and r |
-| [`src/bash_surgical_target.ts`](src/bash_surgical_target.ts) | Resolves one real, runnable target inside a file the whole-file deny is about to block on. |
 | [`src/filters.ts`](src/filters.ts) | Shared output-filter helpers |
 | [`src/tool_filters/ai_clis.ts`](src/tool_filters/ai_clis.ts) | Bash output compression and normalization filter for ai_clis |
 | [`src/tool_filters/base.ts`](src/tool_filters/base.ts) | Bash output compression and normalization filter for base |
@@ -413,6 +412,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/harness_channels.ts`](src/harness_channels.ts) | Which harnesses discard which hook event's response. |
 | [`src/hint_stats.ts`](src/hint_stats.ts) | Efficacy tracking + auto-suppression for token-goat's discretionary hint hooks (`token-goat hint-stats`). |
 | [`src/hint_suggestion_guard.ts`](src/hint_suggestion_guard.ts) | Strip shell commands that a path broke out of, from hint and deny text on its way to the model. |
+| [`src/hint_target.ts`](src/hint_target.ts) | Resolves the real name a deny or read hint's suggested command carries -- a heading, symbol, key or table the file actually holds -- so the command it leads with runs as printed, a |
 | [`src/hints.ts`](src/hints.ts) | Session-hint text builder |
 | [`src/hook_latency.ts`](src/hook_latency.ts) | Read/render side of Batch S's hook wall-clock timing: `token-goat stats --hooks` and `doctor`'s Hook latency check both go through hookLatencyBreakdown(). |
 | [`src/hook_lib.ts`](src/hook_lib.ts) | In-process hook library entry point. |

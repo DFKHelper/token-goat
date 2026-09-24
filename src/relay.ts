@@ -5,6 +5,7 @@ import { applyCallStreak } from './call_streak.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
 import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { sharpenRepeatedDeny } from './hint_target.js'
 import { normalizePayload, type Harness } from './hooks_cli.js'
 import { commitPendingContext } from './pending_context.js'
 import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
@@ -157,7 +158,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown, har
     } catch {
       // fail-soft: a load failure just means a cold session
     }
-    const output = safeSuggestions(applyCallStreak(event, await runHook(event), receivedAt))
+    const output = safeSuggestions(sharpenRepeatedDeny(event, applyCallStreak(event, await runHook(event), receivedAt)))
     // Clear the deferred-hint queue only once the text is in the output that is about to be serialized. The handler that reads that queue is advisory, and runHook discards an advisory result whenever a later non-advisory handler returns one of its own, so consuming the queue at read time deleted queued compaction manifests that then reached nothing. Checking the emitted string makes delivery a fact rather than an assumption, and leaves an undelivered hint queued for the next tool call. See pending_context.ts.
     if (event.sessionId) {
       commitPendingContext(stateKey, output.hookType === 'context' ? output.context : null)
