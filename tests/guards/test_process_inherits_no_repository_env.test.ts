@@ -59,8 +59,8 @@ describe('the test process inherits no repository-location environment', () => {
     // Calibration: unscrubbed, the fixture's init and config land in the victim, so a clean victim below is the scrub's doing and not a probe that cannot see the leak.
     const leaked = buildFixture(hookEnv)
     expect(fs.existsSync(path.join(leaked, '.git')), 'the unscrubbed fixture made its own repository, so this probe no longer reproduces the leak').toBe(false)
+    // The leaked identity is the calibration; `core.bare = true`, which the recorded incident also showed, is written by git 2.53 but not by 2.55, so it is not asserted.
     expect(configOf(victim)).toContain('Leaked Fixture')
-    expect(configOf(victim)).toMatch(/bare = true/)
 
     fs.writeFileSync(path.join(victim, '.git', 'config'), pristine)
     const env = { ...hookEnv }
