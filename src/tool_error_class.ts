@@ -51,7 +51,7 @@ const HOOK_DENY_TEXT_RE = /^PreToolUse:\S+ hook error: /
 
 const TEST_OR_BUILD_COMMAND_RE = /^(?:npm\s+(?:test|run\s+(?:test|build|lint|typecheck))|npx\s+(?:vitest|tsc|eslint|jest|playwright)|vitest|jest|pytest|tsc|eslint|cargo\s+(?:test|build|check|clippy)|go\s+(?:test|build|vet)|make|gradle|mvn|dotnet\s+(?:test|build)|ruff|mypy|python3?\s+-m\s+(?:pytest|unittest))\b/
 
-const SEARCH_COMMAND_RE = /^(?:grep|egrep|fgrep|rg|findstr)\b/
+export const SEARCH_COMMAND_RE = /^(?:grep|egrep|fgrep|rg|findstr)\b/
 
 /** Whether any command in a Bash call's chain starts with `head` once its own environment assignments are peeled; a runner named only as an argument (`which jest`, `pkill -f "python -m pytest"`, `ls vitest.config.*`) does not count. */
 function runsCommand(command: string, head: RegExp): boolean {

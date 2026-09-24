@@ -1,44 +1,4 @@
-/**
- * Every filesystem or network touch the VS Code relay makes BEFORE a handler runs must be gated.
- *
- * `tests/vscode_pre_handler_path_gate.test.ts` sweeps the handler REGISTRY, so it can only see code
- * a registered pre_tool_use handler reaches. Three times now a pre-approval touch has been added
- * ABOVE that line -- in `relay.ts` itself or in something it calls before `runHook` dispatches --
- * and been invisible to that sweep every time:
- *
- *   1. `view_image` stat'd a UNC or out-of-workspace path before approval;
- *   2. every VS Code pre hook stat'd its path before approval (fixed 1c6368fd by the shared
- *      `vscode_path_gate` + a registry sweep -- which is exactly the guard that cannot see here);
- *   3. `vscode_duplicate.ts::userScopeCopyIsRedundant` ran a bare `fs.existsSync` on a
- *      VS-Code-supplied `cwd`, which on Windows opens an SMB connection carrying an NTLM
- *      authentication attempt when that cwd is a UNC path, with no timeout on the in-process path.
- *
- * So this guard's population is the OTHER half: the call graph reachable from `relayInProcess` up
- * to the first handler dispatch. Default is inverted -- an fs/net call in a function nobody has
- * classified fails on arrival, and the author has to either route it through the path gate or name
- * it here with a reason. A guard that only knows about touches somebody remembered to declare is
- * the thing that failed three times.
- *
- * Of those three, only #3 is IN this population, and that is by construction rather than by
- * omission: #1 and #2 both sat inside registered pre_tool_use handlers, which is the other guard's
- * half of the relay. The two populations partition it -- everything up to `runHook` here,
- * everything past it there -- so neither one alone would have caught all three, and the pair does.
- *
- * Scope limits, stated rather than papered over. Only DIRECT fs/net calls count. A function that
- * passes a payload-derived path into a wrapper (`ensureDirSync`, `atomicWriteText`) is not flagged,
- * because propagating "touches" transitively up the call graph makes every caller including
- * `relayInProcess` red and the guard useless. All three historical instances were direct calls, so
- * this is the shape that has actually recurred; a wrapper-laundered one would slip past.
- * Resolution is by NAME through import statements:
- * a call through a variable, a method on an object, or a dynamically imported module is not
- * followed, and `calleeNames`-style matching over-approximates edges (a false edge only widens the
- * population, which is the safe direction). The traversal stops at `runHook` because everything
- * past it is the registry sweep's job. Being static, it says nothing about whether a gated call is
- * gated CORRECTLY -- `tests/vscode_pre_handler_path_gate.test.ts` and
- * `tests/vscode_duplicate.test.ts` cover that at runtime.
- *
- * I/O: reads `src/**\/*.ts` once and does no network, spawn, or write -- lefthook runs it pre-commit.
- */
+/** Every filesystem or network touch the VS Code relay makes BEFORE a handler runs must be gated. `tests/vscode_pre_handler_path_gate.test.ts` sweeps the handler REGISTRY, so it can only see code a registered pre_tool_use handler reaches. Three times now a pre-approval touch has been added ABOVE that line -- in `relay.ts` itself or in something it calls before `runHook` dispatches -- and been invisible to that sweep every time: 1. `view_image` stat'd a UNC or out-of-workspace path before approval; 2. every VS Code pre hook stat'd its path before approval (fixed 1c6368fd by the shared `vscode_path_gate` + a registry sweep -- which is exactly the guard that cannot see here); 3. `vscode_duplicate.ts::userScopeCopyIsRedundant` ran a bare `fs.existsSync` on a VS-Code-supplied `cwd`, which on Windows opens an SMB connection carrying an NTLM authentication attempt when that cwd is a UNC path, with no timeout on the in-process path. So this guard's population is the OTHER half: the call graph reachable from `relayInProcess` up to the first handler dispatch. Default is inverted -- an fs/net call in a function nobody has classified fails on arrival, and the author has to either route it through the path gate or name it here with a reason. A guard that only knows about touches somebody remembered to declare is the thing that failed three times. Of those three, only #3 is IN this population, and that is by construction rather than by omission: #1 and #2 both sat inside registered pre_tool_use handlers, which is the other guard's half of the relay. The two populations partition it -- everything up to `runHook` here, everything past it there -- so neither one alone would have caught all three, and the pair does. Scope limits, stated rather than papered over. Only DIRECT fs/net calls count. A function that passes a payload-derived path into a wrapper (`ensureDirSync`, `atomicWriteText`) is not flagged, because propagating "touches" transitively up the call graph makes every caller including `relayInProcess` red and the guard useless. All three historical instances were direct calls, so this is the shape that has actually recurred; a wrapper-laundered one would slip past. Resolution is by NAME through import statements: a call through a variable, a method on an object, or a dynamically imported module is not followed, and `calleeNames`-style matching over-approximates edges (a false edge only widens the population, which is the safe direction). The traversal stops at `runHook` because everything past it is the registry sweep's job. Being static, it says nothing about whether a gated call is gated CORRECTLY -- `tests/vscode_pre_handler_path_gate.test.ts` and `tests/vscode_duplicate.test.ts` cover that at runtime. I/O: reads `src/**\/*.ts` once and does no network, spawn, or write -- lefthook runs it pre-commit. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -192,14 +152,7 @@ function isGated(body: string): boolean {
   return /preToolPathDeclined|vscodePathAllowed|isUncOrDevicePath/.test(body)
 }
 
-/**
- * A leaf reader is classified when every pre-dispatch caller gated the path first.
- *
- * This is the one inference the guard makes, and it is deliberately not transitive: a single
- * ungated caller re-reds the leaf. That coupling is the point -- deleting the gate line from
- * `userScopeCopyIsRedundant` turns `readCopilotHooksOwners` red without anyone having to remember
- * to also remove an exemption for it.
- */
+/** A leaf reader is classified when every pre-dispatch caller gated the path first. This is the one inference the guard makes, and it is deliberately not transitive: a single ungated caller re-reds the leaf. That coupling is the point -- deleting the gate line from `userScopeCopyIsRedundant` turns `readCopilotHooksOwners` red without anyone having to remember to also remove an exemption for it. */
 function isGatedByEveryCaller(v: Visited, byKey: Map<string, Visited>): boolean {
   if (v.callers.size === 0) return false
   return [...v.callers].every((c) => {
@@ -216,14 +169,7 @@ function unclassifiedTouchers(): string[] {
     .map((v) => `${v.key} -> ${v.touches.join(', ')}`)
 }
 
-/**
- * Touching functions that are allowed to reach fs/net before dispatch, each with the reason it is
- * not a pre-approval hazard.
- *
- * The bar for an entry: the path it touches must NOT be derived from the hook payload. A path the
- * harness or the model supplied belongs behind the gate, not on this list. Add an entry only with
- * the reason written out -- an unexplained exemption reads as a decision and is worse than a gap.
- */
+/** Touching functions that are allowed to reach fs/net before dispatch, each with the reason it is not a pre-approval hazard. The bar for an entry: the path it touches must NOT be derived from the hook payload. A path the harness or the model supplied belongs behind the gate, not on this list. Add an entry only with the reason written out -- an unexplained exemption reads as a decision and is worse than a gap. */
 const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['constants.ts::ensureDataDirPrivate', 'takes no argument; mkdir/chmod/stat only on dataDir(), which is derived from the environment and never from a payload'],
   ['constants.ts::ensureHomeDirPrivate', 'the same helper for the other root: takes no argument, and mkdir/chmod/stat only on tokenGoatHome(), which is TOKEN_GOAT_HOME or $HOME/.token-goat and never a payload path'],
@@ -238,6 +184,11 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['util.ts::withFileLock', 'generic lockfile primitive, same reasoning as ensureDirSync'],
   ['pending_context.ts::commitPendingContext', 'relayInProcess calls it AFTER runHook, to clear a delivered hint, so it is only on this list because static reachability cannot see where in the function the call sits. The path is sessionSidecarPath(sessionId, ...) under tokenGoatHome(): env-derived root, and the payload-derived session id is sanitized to a stem and containment-checked inside that helper before it becomes a path -- the same provenance as session_store.ts::saveSessionState above'],
   ['pending_context.ts::readPending', 'the read half of the same pair: it only ever opens the path commitPendingContext and peekPendingContext computed, with that same sanitization'],
+  ['call_streak.ts::readState', 'relayInProcess calls applyCallStreak AFTER runHook, the same position as pending_context.ts::commitPendingContext above. The path is sessionSidecarPath(sessionStateKey(event), ...) under tokenGoatHome(): env-derived root, and the payload-derived session and agent ids are sanitized to a stem and containment-checked inside that helper before they become a path'],
+  ['call_streak.ts::writeState', 'the write half of the same pair: it only ever writes the path readState was given, with that same sanitization'],
+  ['config_project.ts::readConfigSource', 'reached only through call_streak.ts::trackedLine -> hint_stats.ts::applyHintTracking -> config.ts::loadConfig, after runHook; it reads configPath() (env-derived) and projectConfigPath(resolveConfigProjectRoot()), whose root is found from process.cwd(), never from the hook payload'],
+  ['project.ts::markerExists', 'reached only through config_project.ts::resolveConfigProjectRoot -> project.ts::findProject(process.cwd()) on the same loadConfig path as readConfigSource above: the directories it probes are process.cwd() and its ancestors, never a path from the hook payload'],
+  ['project.ts::isRepoContainer', 'the same findProject(process.cwd()) walk as markerExists, with the same provenance'],
   ['db.ts::getDb','reached from relayInProcess via recordStat -> getGlobalDb (Batch S hook-latency timing); the dbPath it existsSync-checks is always dataDir()/dataDirForHome(homeDir) + \'global.db\', never a value from the hook payload'],
   ['stats.ts::recordStatWriteFailure', 'reached from relayInProcess via recordStat\'s own catch when the global.db write fails; the marker and log paths it stats/writes/appends are always dataDir() + \'stats-write-failed.marker\'/\'stats-write-failed.log\', never a value from the hook payload -- same shape as db.ts::getDb above'],
 ])
@@ -248,9 +199,9 @@ describe('the pre-dispatch call graph is real', () => {
     pinnedPopulation({
       what: 'functions reachable from relayInProcess before handler dispatch',
       items: closure.map((v) => v.key),
-      // Measured, not believed. This was pinned at 40 against a BELIEVED population of 45; the real one is 112, so the floor could have lost 72 members -- 64% of the closure -- before saying anything. The ceiling is what makes the belief falsifiable: a 45-sized belief implies a ceiling around 55, which goes red at 112 instead of passing silently. Measure both (raise the floor to 9999, read the count out of the failure) whenever the traversal or the shared parser in reachability.ts changes -- widening that parser moves this number. Moved 140 -> 141 when relay.ts, delivery_cap.ts and compact.ts stopped importing detectHarness through the bridges barrel: the call was always made, but a re-export hid it from this traversal, so the single new member is bridges/registry.ts::detectHarness becoming visible rather than new code entering the pre-dispatch path. Moved 141 -> 168 when relayInProcess started importing recordStat (Batch S's hook-latency timing) from stats.ts, which transitively reaches db.ts::getDb and its own dependency graph -- genuinely new code on the pre-dispatch path this time, not a re-export; see db.ts::getDb's EXEMPT entry below for why its one fs touch is not a pre-approval hazard.
-      floor: 150,
-      ceiling: 190,
+      // Measured, not believed. This was pinned at 40 against a BELIEVED population of 45; the real one is 112, so the floor could have lost 72 members -- 64% of the closure -- before saying anything. The ceiling is what makes the belief falsifiable: a 45-sized belief implies a ceiling around 55, which goes red at 112 instead of passing silently. Measure both (raise the floor to 9999, read the count out of the failure) whenever the traversal or the shared parser in reachability.ts changes -- widening that parser moves this number. Moved 140 -> 141 when relay.ts, delivery_cap.ts and compact.ts stopped importing detectHarness through the bridges barrel: the call was always made, but a re-export hid it from this traversal, so the single new member is bridges/registry.ts::detectHarness becoming visible rather than new code entering the pre-dispatch path. Moved 141 -> 168 when relayInProcess started importing recordStat (Batch S's hook-latency timing) from stats.ts, which transitively reaches db.ts::getDb and its own dependency graph -- genuinely new code on the pre-dispatch path this time, not a re-export; see db.ts::getDb's EXEMPT entry below for why its one fs touch is not a pre-approval hazard. Moved 176 -> 273 when relayInProcess started passing every pre/post tool answer through call_streak.ts::applyCallStreak, which reaches the Bash command classifiers (hooks_bash_commands.ts, bash_extractors.ts) and hint_stats.ts's ledger; measured on HEAD's src and on the change's src with this file's own traversal. Genuinely new code on the path, run after runHook, and its five new fs touchers are each named in EXEMPT below.
+      floor: 245,
+      ceiling: 305,
       mustInclude: ['relay.ts::relayInProcess', 'relay.ts::buildEvent', 'vscode_duplicate.ts::shouldSuppressDuplicateVscodeHook', 'vscode_duplicate.ts::userScopeCopyIsRedundant'],
     })
   })
@@ -260,8 +211,8 @@ describe('the pre-dispatch call graph is real', () => {
     pinnedPopulation({
       what: 'pre-dispatch functions that touch fs or net',
       items: touching.map((v) => v.key),
-      floor: 8, // measured the same way: 11 live
-      ceiling: 20,
+      floor: 18, // measured the same way: 21 live, 16 before call_streak.ts added its sidecar read and write and the loadConfig path's three
+      ceiling: 24,
       mustInclude: ['vscode_duplicate.ts::alreadyClaimed', 'bridges/copilot_cli_install.ts::readCopilotHooksOwners', 'constants.ts::ensureDataDirPrivate'],
     })
   })
@@ -279,8 +230,7 @@ describe('every pre-dispatch fs/net touch is gated or named', () => {
   })
 
   it('names no exemption that has stopped touching anything', () => {
-    // A stale exemption is the other half of the false-exemption failure: it reads as a live
-    // decision about code that no longer exists, and it hides the next real one behind it.
+    // A stale exemption is the other half of the false-exemption failure: it reads as a live decision about code that no longer exists, and it hides the next real one behind it.
     const touchers = new Set(preDispatchClosure(loadModules()).filter((v) => v.touches.length > 0).map((v) => v.key))
     expect([...EXEMPT.keys()].filter((k) => !touchers.has(k))).toEqual([])
   })

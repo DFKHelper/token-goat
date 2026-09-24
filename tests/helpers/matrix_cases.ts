@@ -1,24 +1,4 @@
-/**
- * Shared fixture, helpers, and case table for the built-bundle command matrix (see the sharded
- * command_matrix_e2e.*.test.ts files). Builds the real shipping artifact (dist/token-goat.mjs),
- * indexes one shared git fixture, then exposes EVERY registered command as a case that runs
- * against the bundle and asserts real output. The case table is driven off the same registry the
- * fast registration guard uses (tests/registry.ts::allCommandNames), so a newly registered
- * command with no matrix case fails the coverage gate in command_matrix_e2e.1.test.ts
- * automatically -- there is no second list to forget.
- *
- * Most commands get a concrete output assertion. A small set is inherently unsuited to a
- * hermetic real-output check and is verified for *reachability* instead (the bundle dispatches
- * to the handler, it is not a Commander "unknown command" error, and it does not crash with a
- * tree-shaken module error): `web-output` (process-local cache, always a miss in a fresh
- * process) and `gdrive-sections` (needs network + a live public doc). These still catch the
- * unregistered / tree-shaken-out-of-bundle bug class.
- *
- * The 143 cases are sharded 4 ways across command_matrix_e2e.1.test.ts .. .4.test.ts via
- * shardKeys() below, interleaved rather than sliced contiguously because per-case durations are
- * heavily skewed (a few multi-second cases, most well under a second), so a contiguous slice
- * would leave shards lopsided and defeat the point of sharding.
- */
+/** Shared fixture, helpers, and case table for the built-bundle command matrix (see the sharded command_matrix_e2e.*.test.ts files). Builds the real shipping artifact (dist/token-goat.mjs), indexes one shared git fixture, then exposes EVERY registered command as a case that runs against the bundle and asserts real output. The case table is driven off the same registry the fast registration guard uses (tests/registry.ts::allCommandNames), so a newly registered command with no matrix case fails the coverage gate in command_matrix_e2e.1.test.ts automatically -- there is no second list to forget. Most commands get a concrete output assertion. A small set is inherently unsuited to a hermetic real-output check and is verified for *reachability* instead (the bundle dispatches to the handler, it is not a Commander "unknown command" error, and it does not crash with a tree-shaken module error): `web-output` (process-local cache, always a miss in a fresh process) and `gdrive-sections` (needs network + a live public doc). These still catch the unregistered / tree-shaken-out-of-bundle bug class. The 143 cases are sharded 4 ways across command_matrix_e2e.1.test.ts .. .4.test.ts via shardKeys() below, interleaved rather than sliced contiguously because per-case durations are heavily skewed (a few multi-second cases, most well under a second), so a contiguous slice would leave shards lopsided and defeat the point of sharding. */
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -83,11 +63,7 @@ export function expectRead(args: string[], substr: string): void {
   expect(r.stdout).toContain(substr)
 }
 
-/**
- * Unwrap the shared `{items, truncated, totalCount}` `--json` envelope, asserting it against the
- * real built bundle before returning the rows. Row-list commands (`symbol`/`refs`/`skeleton`/
- * `outline`/`types`/`callers`/`dead`/`test-for`/`semantic`) all emit this shape unconditionally.
- */
+/** Unwrap the shared `{items, truncated, totalCount}` `--json` envelope, asserting it against the real built bundle before returning the rows. Row-list commands (`symbol`/`refs`/`skeleton`/ `outline`/`types`/`callers`/`dead`/`test-for`/`semantic`) all emit this shape unconditionally. */
 export function envelopeItems<T>(stdout: string): T[] {
   const parsed: unknown = JSON.parse(stdout)
   expect(Array.isArray(parsed)).toBe(false)
@@ -123,16 +99,13 @@ export function setupMatrixFixture(): void {
     "import { alphaSym } from './src/mod.js'\n" +
       'export function useAlpha(): number {\n  return alphaSym()\n}\n',
   )
-  // Second importer with a DISJOINT module specifier, so `imports "a,b"` can be asserted on a
-  // specifier unique to each file rather than on mere non-emptiness.
+  // Second importer with a DISJOINT module specifier, so `imports "a,b"` can be asserted on a specifier unique to each file rather than on mere non-emptiness.
   fs.writeFileSync(
     path.join(repo, 'ctximporter.ts'),
     "import { refHelper } from './caller.js'\n" +
       'export function useRefHelper(): number {\n  return refHelper()\n}\n',
   )
-  // Fixture for `refs`/`callers` --exclude-tests: one production call site and two test-file
-  // call sites of the same symbol, plus a dead symbol defined ONLY in a test file (for `dead
-  // --exclude-tests`, which filters on the DEFINITION site rather than a reference site).
+  // Fixture for `refs`/`callers` --exclude-tests: one production call site and two test-file call sites of the same symbol, plus a dead symbol defined ONLY in a test file (for `dead --exclude-tests`, which filters on the DEFINITION site rather than a reference site).
   fs.writeFileSync(
     path.join(repo, 'exclhelper.ts'),
     'export function exclHelperFn(): number {\n  return 1\n}\n',
@@ -155,18 +128,14 @@ export function setupMatrixFixture(): void {
     '# Fixture\n\n## Install\n\nRun npm install to set up the project.\n',
   )
   fs.writeFileSync(path.join(repo, 'pkg.json'), '{\n  "version": "3.2.1"\n}\n')
-  // Same-file ambiguous symbol (a top-level function and an unrelated class method share the
-  // name 'dup') so the `read` case below can exercise the `file::symbol@LINE` anchor form
-  // against the real built bundle, not just the in-process unit tests.
+  // Same-file ambiguous symbol (a top-level function and an unrelated class method share the name 'dup') so the `read` case below can exercise the `file::symbol@LINE` anchor form against the real built bundle, not just the in-process unit tests.
   fs.writeFileSync(
     path.join(repo, 'dupfile.ts'),
     'export class DupHolder {\n  dup(): number {\n    return 10\n  }\n}\n' +
       'export function dup(): number {\n  return 20\n}\n',
   )
 
-  // Fixture for `grep --symbol`: two distinct functions each containing a match (proves the
-  // annotation isn't hardcoded to symbols[0]), plus one match at module/top-level scope outside
-  // any function (proves an out-of-scope hit gets no symbol tag rather than the nearest one).
+  // Fixture for `grep --symbol`: two distinct functions each containing a match (proves the annotation isn't hardcoded to symbols[0]), plus one match at module/top-level scope outside any function (proves an out-of-scope hit gets no symbol tag rather than the nearest one).
   fs.writeFileSync(
     path.join(repo, 'grepsym.ts'),
     'export function grepsymFirst(): number {\n' +
@@ -179,9 +148,7 @@ export function setupMatrixFixture(): void {
       '}\n' +
       '// grepsymmarker module top level\n',
   )
-  // Fixture for `exports` location: one export the parser indexes (has a symbol row) and one
-  // re-export form extractExportNames catches from source text but querySymbols never indexes
-  // (it isn't declared in this file, only re-exported).
+  // Fixture for `exports` location: one export the parser indexes (has a symbol row) and one re-export form extractExportNames catches from source text but querySymbols never indexes (it isn't declared in this file, only re-exported).
   fs.writeFileSync(
     path.join(repo, 'exportsloc.ts'),
     'export function indexedExportLoc(): number {\n  return 42\n}\n' +
@@ -194,8 +161,7 @@ export function setupMatrixFixture(): void {
   git(['init'])
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
   git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
-  // Fixture for `types --grep`: two type declarations with disjoint names so a grep pattern can
-  // be asserted to keep one and drop the other.
+  // Fixture for `types --grep`: two type declarations with disjoint names so a grep pattern can be asserted to keep one and drop the other.
   fs.writeFileSync(
     path.join(repo, 'typesgrep.ts'),
     'export interface TypesGrepAlphaFixture { x: number }\nexport interface TypesGrepBetaFixture { y: number }\n',
@@ -215,9 +181,7 @@ export function setupMatrixFixture(): void {
     path.join(repo, 'src', 'mod.ts'),
     'export function gammaSym(): number {\n  return 3\n}\n',
   )
-  // ...and one test file, so `changed --exclude-tests` has something to actually hide. A trailing
-  // comment rather than a new function on purpose: it puts a test-file path in the file-mode diff
-  // without adding a symbol, so the hunk-scoping assertions on `--symbol` above stay untouched.
+  // ...and one test file, so `changed --exclude-tests` has something to actually hide. A trailing comment rather than a new function on purpose: it puts a test-file path in the file-mode diff without adding a symbol, so the hunk-scoping assertions on `--symbol` above stay untouched.
   fs.appendFileSync(path.join(repo, 'exclcaller.test.ts'), '// touched by the second commit\n')
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
   git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'second'])
@@ -263,11 +227,7 @@ export const MIXED_FONTS_PDF = '%PDF-1.4\n' +
   '6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n' +
   'trailer\n<< /Size 7 /Root 1 0 R >>\n%%EOF\n'
 
-/**
- * One assertion per registered command. Keys MUST equal the registered command
- * set (enforced by the coverage gate in command_matrix_e2e.1.test.ts). Read commands run
- * against the shared indexed fixture; stateful commands use their own isolated dirs.
- */
+/** One assertion per registered command. Keys MUST equal the registered command set (enforced by the coverage gate in command_matrix_e2e.1.test.ts). Read commands run against the shared indexed fixture; stateful commands use their own isolated dirs. */
 export const cases: Record<string, () => void | Promise<void>> = {
   index: () => {
     const r = run(['index', '.'])
@@ -276,11 +236,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
   symbol: () => {
     expectRead(['symbol', 'alphaSym'], 'alphaSym')
-    // A SECOND project sharing this global index and defining the same symbol name is what makes
-    // this falsifiable. With only the one fixture repo, bare and --project return the same single
-    // row, so the assertions pass even when the CLI registers --project and never forwards
-    // projectRoot -- verified: severing that wiring while leaving the flag registered left the
-    // whole matrix green. Two projects make the counts differ, so the wiring itself is pinned.
+    // A SECOND project sharing this global index and defining the same symbol name is what makes this falsifiable. With only the one fixture repo, bare and --project return the same single row, so the assertions pass even when the CLI registers --project and never forwards projectRoot -- verified: severing that wiring while leaving the flag registered left the whole matrix green. Two projects make the counts differ, so the wiring itself is pinned.
     const otherRepo = mkIsolated('tg-matrix-other-')
     fs.writeFileSync(path.join(otherRepo, 'other.ts'), 'export function alphaSym(): number {\n  return 9\n}\n')
     const otherIdx = run(['index', '.', '--walk'], { cwd: otherRepo })
@@ -300,16 +256,10 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(scopedPayload.items[0]?.name).toBe('alphaSym')
     expect(scopedPayload.items[0]?.filePath.replace(/\\/g, '/')).toContain('src/mod.ts')
 
-    // `--json`'s filePath now renders root-relative against the real built binary, matching
-    // outline/skeleton/refs --json -- pinned as an exact equality (not just `.toContain`) so a
-    // regression back to the absolute spelling is caught.
+    // `--json`'s filePath now renders root-relative against the real built binary, matching outline/skeleton/refs --json -- pinned as an exact equality (not just `.toContain`) so a regression back to the absolute spelling is caught.
     expect(scopedPayload.items[0]?.filePath.replace(/\\/g, '/')).toBe('src/mod.ts')
 
-    // --exclude-tests: opt-in, additive, filtering on the DEFINITION site like `dead` (not a
-    // reference site, unlike refs/callers). exclDeadOnlyInTest is defined only in
-    // excldead.test.ts, so the flag empties the result -- and the empty view must name the
-    // filter rather than report the plain "No matches" a genuinely unindexed name gets, which
-    // is the difference between "wrong question" and "no answer".
+    // --exclude-tests: opt-in, additive, filtering on the DEFINITION site like `dead` (not a reference site, unlike refs/callers). exclDeadOnlyInTest is defined only in excldead.test.ts, so the flag empties the result -- and the empty view must name the filter rather than report the plain "No matches" a genuinely unindexed name gets, which is the difference between "wrong question" and "no answer".
     const xtOff = run(['symbol', 'exclDeadOnlyInTest', '--project'])
     expect(xtOff.status, xtOff.stderr).toBe(0)
     expect(xtOff.stdout).toContain('excldead.test.ts')
@@ -319,8 +269,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(xtOn.stdout).toContain('hidden by --exclude-tests')
     expect(xtOn.stdout).not.toContain('No matches')
 
-    // --stats against the real built bundle -- proves the flag reaches the shipping CLI and its
-    // handler forwarding, not just the in-process unit tests.
+    // --stats against the real built bundle -- proves the flag reaches the shipping CLI and its handler forwarding, not just the in-process unit tests.
     const stats = run(['symbol', 'alphaSym', '--stats'])
     expect(stats.status, stats.stderr).toBe(0)
     expect(stats.stdout).toMatch(/\[\d+ refs?, (un)?documented\]/)
@@ -340,15 +289,11 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(cross.stdout).toContain('src/mod.ts::alphaSym')
     expect(cross.stdout).toContain('return 1')
     expect(cross.stdout).toContain('caller.ts::refHelper')
-    // --stats against the real built bundle -- proves the flag reaches the shipping CLI, not
-    // just the in-process unit tests.
+    // --stats against the real built bundle -- proves the flag reaches the shipping CLI, not just the in-process unit tests.
     const stats = run(['read', 'src/mod.ts::alphaSym', '--stats'])
     expect(stats.status, stats.stderr).toBe(0)
     expect(stats.stdout).toMatch(/\[\d+ refs?, (un)?documented\]/)
-    // file::symbol@LINE anchor, round-tripped through the real built bundle. `dupfile.ts`
-    // deliberately has two definitions named 'dup' (a class method and a top-level function) --
-    // the ambiguity error's own suggested retry is parsed out and re-run rather than hardcoding
-    // an assumed line number, since that suggestion IS the anchor form under test.
+    // file::symbol@LINE anchor, round-tripped through the real built bundle. `dupfile.ts` deliberately has two definitions named 'dup' (a class method and a top-level function) -- the ambiguity error's own suggested retry is parsed out and re-run rather than hardcoding an assumed line number, since that suggestion IS the anchor form under test.
     const ambiguous = run(['read', 'dupfile.ts::dup'])
     expect(ambiguous.status).toBe(1)
     expect(ambiguous.stderr).toContain("Ambiguous symbol 'dup'")
@@ -360,19 +305,10 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(anchored.stdout).not.toContain('return 10')
   },
   section: () => expectRead(['section', 'README.md::Install'], 'npm install'),
-  // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this
-  // shared fixture is indexed with embeddings disabled (isolate-home.ts sets
-  // TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, and tgEnv inherits it), so this
-  // case only exercises the FTS keyword fallback and would pass identically whether or not
-  // real semantic search is wired up - it is not a substitute for that proof. The dedicated
-  // proof - a meaning-only natural-language query finding a symbol whose name/body never uses
-  // the query's words, with a control run showing the same query genuinely misses under FTS
-  // alone - lives in tests/semantic_embeddings_e2e.test.ts.
+  // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this shared fixture is indexed with embeddings disabled (isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, and tgEnv inherits it), so this case only exercises the FTS keyword fallback and would pass identically whether or not real semantic search is wired up - it is not a substitute for that proof. The dedicated proof - a meaning-only natural-language query finding a symbol whose name/body never uses the query's words, with a control run showing the same query genuinely misses under FTS alone - lives in tests/semantic_embeddings_e2e.test.ts.
   semantic: () => {
     expectRead(['semantic', 'alphamarker'], 'alphaSym')
-    // --json against the real built bundle: proves the JSON envelope (guardJsonRows'
-    // {items, truncated, totalCount}) actually reaches stdout through the shipped CLI, not just
-    // through the in-process runSemantic() unit tests.
+    // --json against the real built bundle: proves the JSON envelope (guardJsonRows' {items, truncated, totalCount}) actually reaches stdout through the shipped CLI, not just through the in-process runSemantic() unit tests.
     const r = run(['semantic', 'alphamarker', '--json'])
     expect(r.status, r.stderr).toBe(0)
     const payload = JSON.parse(r.stdout) as { source: string; items: Array<{ filePath: string }>; truncated: boolean; totalCount: number }
@@ -381,8 +317,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(payload.items.length).toBeGreaterThan(0)
     expect(typeof payload.truncated).toBe('boolean')
     expect(typeof payload.totalCount).toBe('number')
-    // `--json`'s filePath now renders root-relative against the real built binary, matching
-    // outline/skeleton/refs --json.
+    // `--json`'s filePath now renders root-relative against the real built binary, matching outline/skeleton/refs --json.
     for (const item of payload.items) {
       expect(item.filePath.replace(/\\/g, '/')).not.toContain(repo.split(path.sep).join('/'))
       expect(path.isAbsolute(item.filePath)).toBe(false)
@@ -393,8 +328,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['skeleton', 'src/mod.ts', '--stats'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+ refs?/)
-    // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
-    // Same flag on skeleton, exercised on the shipping bundle rather than only in unit tests.
+    // Comma-separated multi-file spec: both files reported, each with a symbol unique to it. Same flag on skeleton, exercised on the shipping bundle rather than only in unit tests.
     const skGrep = run(['skeleton', 'src/mod.ts', '--grep', 'alphaSym'])
     expect(skGrep.status, skGrep.stderr).toBe(0)
     expect(skGrep.stdout).toContain('alphaSym')
@@ -410,8 +344,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['outline', 'src/mod.ts', '--stats'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+ refs?/)
-    // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
-    // A multi-file spec with --json must be ONE parseable document, not two concatenated ones.
+    // Comma-separated multi-file spec: both files reported, each with a symbol unique to it. A multi-file spec with --json must be ONE parseable document, not two concatenated ones.
     const multiJson = run(['outline', 'src/mod.ts,caller.ts', '--json'])
     expect(multiJson.status, multiJson.stderr).toBe(0)
     const mergedNames = (JSON.parse(multiJson.stdout) as { items: Array<{ name: string }> }).items.map((i) => i.name)
@@ -450,8 +383,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(multi.stdout).toContain('betaSym')
     expect(multi.stdout).toContain('return 2')
 
-    // `--json`'s symbol.filePath now renders root-relative against the real built binary,
-    // matching the plain-text block above and the outline/skeleton/refs --json convention.
+    // `--json`'s symbol.filePath now renders root-relative against the real built binary, matching the plain-text block above and the outline/skeleton/refs --json convention.
     const j = run(['brief', 'src/mod.ts::alphaSym', '--json'])
     expect(j.status, j.stderr).toBe(0)
     const payload = JSON.parse(j.stdout) as { symbol: { filePath: string } }
@@ -476,9 +408,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const zero = run(['refs', 'caller.ts::refHelper', '-C', '0'])
     expect(zero.stdout).toBe(plain.stdout)
 
-    // --exclude-tests: opt-in, additive. Absent the flag, both test-file callers are present
-    // (byte-identical to today); with it, only the production caller remains and the two test
-    // paths are gone -- proves the flag is actually threaded through, not just registered.
+    // --exclude-tests: opt-in, additive. Absent the flag, both test-file callers are present (byte-identical to today); with it, only the production caller remains and the two test paths are gone -- proves the flag is actually threaded through, not just registered.
     const withoutFlag = run(['refs', 'exclhelper.ts::exclHelperFn'])
     expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
     expect(withoutFlag.stdout).toContain('exclprod.ts')
@@ -489,15 +419,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(withFlag.stdout).not.toContain('exclcaller.test.ts')
     expect(withFlag.stdout).toContain('hidden by --exclude-tests')
 
-    // Cross-file spec path (runRefsCrossFile) is a distinct code path from the single-symbol
-    // spec above -- exercise it against the real built bundle too.
+    // Cross-file spec path (runRefsCrossFile) is a distinct code path from the single-symbol spec above -- exercise it against the real built bundle too.
     const crossWithFlag = run(['refs', 'exclhelper.ts::exclHelperFn,src/mod.ts::alphaSym', '--exclude-tests'])
     expect(crossWithFlag.status, crossWithFlag.stderr).toBe(0)
     expect(crossWithFlag.stdout).not.toContain('exclcaller.test.ts')
 
-    // --grep: filters on the call-site FILE PATH, not the enclosing symbol name. A matching
-    // pattern keeps only that file's references; a non-matching pattern must not read as "no
-    // references found" (the symbol IS referenced -- --grep just filtered every hit).
+    // --grep: filters on the call-site FILE PATH, not the enclosing symbol name. A matching pattern keeps only that file's references; a non-matching pattern must not read as "no references found" (the symbol IS referenced -- --grep just filtered every hit).
     const grepMatch = run(['refs', 'exclhelper.ts::exclHelperFn', '--grep', 'exclprod'])
     expect(grepMatch.status, grepMatch.stderr).toBe(0)
     expect(grepMatch.stdout).toContain('exclprod.ts')
@@ -559,8 +486,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const unindexed = items.find((i) => i.name === 'reExportedOnlyLoc')
     expect(indexed?.lineStart).toBe(1)
     expect(indexed?.lineEnd).toBe(3)
-    // Cross-check against a second command rather than eyeballing.
-    // outline maps a file without its bodies; the JSON branch must not ship them either (it used to, via a raw row spread).
+    // Cross-check against a second command rather than eyeballing. outline maps a file without its bodies; the JSON branch must not ship them either (it used to, via a raw row spread).
     const outlineJson = run(['outline', 'exportsloc.ts', '--json'])
     expect(outlineJson.status, outlineJson.stderr).toBe(0)
     const outlineItems = JSON.parse(outlineJson.stdout) as { items: Array<{ name: string; lineStart: number; lineEnd: number }> }
@@ -571,8 +497,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(unindexed?.lineStart).toBe(null)
     expect(unindexed?.lineEnd).toBe(null)
 
-    // --grep narrows by exported NAME against the real built binary, and an all-filtered
-    // result names the filter instead of looking like the file has no exports at all.
+    // --grep narrows by exported NAME against the real built binary, and an all-filtered result names the filter instead of looking like the file has no exports at all.
     const grepped = run(['exports', 'exportsloc.ts', '--grep', 'indexedExportLoc'])
     expect(grepped.status, grepped.stderr).toBe(0)
     expect(grepped.stdout).toContain('indexedExportLoc')
@@ -599,8 +524,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(multi.stdout).toContain('./src/mod.js')
     expect(multi.stdout).toContain('./caller.js')
 
-    // --grep narrows by MODULE SPECIFIER, and an all-filtered result names the filter
-    // instead of looking like the file has no imports at all.
+    // --grep narrows by MODULE SPECIFIER, and an all-filtered result names the filter instead of looking like the file has no imports at all.
     const grepped = run(['imports', 'app.ts', '--grep', 'mod'])
     expect(grepped.status, grepped.stderr).toBe(0)
     expect(grepped.stdout).toContain('mod')
@@ -628,8 +552,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(withSymbol.status, withSymbol.stderr).toBe(0)
     const lines = withSymbol.stdout.trim().split(/\r?\n/)
     expect(lines.length).toBe(3)
-    // Order matches file order: first function, second function, then the trailing
-    // module/top-level comment (outside any function's line range).
+    // Order matches file order: first function, second function, then the trailing module/top-level comment (outside any function's line range).
     expect(lines[0]).toContain('[grepsymFirst (function)]')
     expect(lines[1]).toContain('[grepsymSecond (function)]')
     expect(lines[2]).not.toMatch(/\[/)
@@ -648,31 +571,24 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['changed', '--since', 'HEAD~1'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/mod\.ts/)
-    // Regression: --symbol must be hunk-scoped to the lines the diff actually touched,
-    // not every symbol in a file that has any changed line. The second commit only
-    // appended gammaSym to the end of src/mod.ts, so alphaSym/betaSym (defined above
-    // the appended hunk, untouched) must not be reported as changed symbols.
+    // Regression: --symbol must be hunk-scoped to the lines the diff actually touched, not every symbol in a file that has any changed line. The second commit only appended gammaSym to the end of src/mod.ts, so alphaSym/betaSym (defined above the appended hunk, untouched) must not be reported as changed symbols.
     const rs = run(['changed', '--since', 'HEAD~1', '--symbol'])
     expect(rs.status, rs.stderr).toBe(0)
     expect(rs.stdout).toContain('gammaSym')
     expect(rs.stdout).not.toContain('alphaSym')
     expect(rs.stdout).not.toContain('betaSym')
-    // Regression: `changed <ref>` positional form (README-documented) must reach the same
-    // resolution as `--since <ref>` through the built bundle, not be silently dropped.
+    // Regression: `changed <ref>` positional form (README-documented) must reach the same resolution as `--since <ref>` through the built bundle, not be silently dropped.
     const rPositional = run(['changed', 'HEAD~1'])
     expect(rPositional.status, rPositional.stderr).toBe(0)
     expect(rPositional.stdout).toMatch(/mod\.ts/)
-    // Regression: bare `changed` in this fixture's 2-commit shallow repo must fail against
-    // the default HEAD~5 with the hint appended, instead of a bare unexplained git error.
+    // Regression: bare `changed` in this fixture's 2-commit shallow repo must fail against the default HEAD~5 with the hint appended, instead of a bare unexplained git error.
     const rBareShallow = run(['changed'])
     expect(rBareShallow.status).toBe(1)
     expect(rBareShallow.stderr).toContain('git diff failed')
     expect(rBareShallow.stderr).toMatch(/Hint: this repo has only 2 commits/)
     expect(rBareShallow.stderr).toContain('token-goat changed --since HEAD~1')
 
-    // --grep: filters on the changed FILE PATH. A matching pattern keeps the file; a
-    // non-matching pattern must not read as "No files changed." (a file DID change, --grep
-    // just filtered it out).
+    // --grep: filters on the changed FILE PATH. A matching pattern keeps the file; a non-matching pattern must not read as "No files changed." (a file DID change, --grep just filtered it out).
     const grepMatch = run(['changed', '--since', 'HEAD~1', '--grep', 'mod'])
     expect(grepMatch.status, grepMatch.stderr).toBe(0)
     expect(grepMatch.stdout).toMatch(/mod\.ts/)
@@ -685,10 +601,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
     expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
 
-    // --exclude-tests through the real bundle. The second commit touched both src/mod.ts and
-    // exclcaller.test.ts, so the flag has something to hide -- asserting the test path is gone
-    // while the production one remains is what catches the flag being registered on the command
-    // but never forwarded into runChanged, which a byte-identical no-op check cannot see.
+    // --exclude-tests through the real bundle. The second commit touched both src/mod.ts and exclcaller.test.ts, so the flag has something to hide -- asserting the test path is gone while the production one remains is what catches the flag being registered on the command but never forwarded into runChanged, which a byte-identical no-op check cannot see.
     const exclOff = run(['changed', '--since', 'HEAD~1'])
     expect(exclOff.status, exclOff.stderr).toBe(0)
     expect(exclOff.stdout).toMatch(/exclcaller\.test\.ts/)
@@ -697,8 +610,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(exclOn.stdout).toMatch(/mod\.ts/)
     expect(exclOn.stdout).not.toMatch(/exclcaller\.test\.ts/)
 
-    // Every zero-row path must stay parseable under --json: exit 0 with a prose body hands a
-    // consumer a success status it cannot read.
+    // Every zero-row path must stay parseable under --json: exit 0 with a prose body hands a consumer a success status it cannot read.
     const jsonGrepEmpty = run(['changed', '--since', 'HEAD~1', '--grep', 'nomatch-zz-12345', '--json'])
     expect(jsonGrepEmpty.status, jsonGrepEmpty.stderr).toBe(0)
     expect(() => JSON.parse(jsonGrepEmpty.stdout)).not.toThrow()
@@ -720,8 +632,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rMissing.stderr).toContain('not found')
   },
   log: () => {
-    // gammaSym was added by the second commit; the log for its own line range should show that
-    // commit's history, scoped via git's own `-L` line-range tracking.
+    // gammaSym was added by the second commit; the log for its own line range should show that commit's history, scoped via git's own `-L` line-range tracking.
     const r = run(['log', 'src/mod.ts::gammaSym'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('gammaSym')
@@ -944,9 +855,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rMissing.stderr).toContain('not found')
   },
   'pr-slice': () => {
-    // gh's presence/auth state varies by machine and CI image (and this suite must stay
-    // hermetic -- no real gh/network calls) -- verify dispatch via --help reachability rather
-    // than full behavioral output, same pattern as video-chapters/fetch-image.
+    // gh's presence/auth state varies by machine and CI image (and this suite must stay hermetic -- no real gh/network calls) -- verify dispatch via --help reachability rather than full behavioral output, same pattern as video-chapters/fetch-image.
     const r = run(['pr-slice', '--help'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
@@ -1128,11 +1037,9 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rj.status, rj.stderr).toBe(0)
     const meta = JSON.parse(rj.stdout) as { pageCount: number; title: string | null; author: string | null; hasTextLayer: boolean }
     expect(meta.pageCount).toBe(1)
-    // hasTextLayer is the field a caller acts on -- it decides whether pdf-extract is worth running.
-    // In text it is a prose sentence you have to substring-match; here it must be a real boolean.
+    // hasTextLayer is the field a caller acts on -- it decides whether pdf-extract is worth running. In text it is a prose sentence you have to substring-match; here it must be a real boolean.
     expect(meta.hasTextLayer).toBe(true)
-    // An absent title must come back as null, not the literal string "(none)" the text form prints:
-    // that rendering cannot be told apart from a PDF actually titled "(none)".
+    // An absent title must come back as null, not the literal string "(none)" the text form prints: that rendering cannot be told apart from a PDF actually titled "(none)".
     expect(meta.title).toBeNull()
     expect(meta.author).toBeNull()
   },
@@ -1164,10 +1071,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
   'image-text': () => {
     const dir = mkIsolated('tg-matrix-imgtext-')
     const imgPath = path.join(dir, 'missing.png')
-    // Real tesseract.js needs a cached language model that may not be available in CI, so this
-    // sticks to reachability like video-chapters's own matrix case: dispatch, no crash, sane
-    // shape. Command-specific behavior (confidence honesty, degrade message) is covered by
-    // tests/image_meta_text.test.ts and tests/image_meta_sharp_unavailable.test.ts with stubs.
+    // Real tesseract.js needs a cached language model that may not be available in CI, so this sticks to reachability like video-chapters's own matrix case: dispatch, no crash, sane shape. Command-specific behavior (confidence honesty, degrade message) is covered by tests/image_meta_text.test.ts and tests/image_meta_sharp_unavailable.test.ts with stubs.
     const rMissing = run(['image-text', imgPath])
     expect(rMissing.status).not.toBe(0)
     expect(rMissing.stderr).toContain('Could not read')
@@ -1203,8 +1107,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rMissing.stdout).toContain('could not resolve a local synced copy')
   },
   'video-chapters': () => {
-    // ffprobe's presence/version varies by machine and CI image — verify dispatch via
-    // --help reachability rather than full behavioral output (same pattern as fetch-image).
+    // ffprobe's presence/version varies by machine and CI image — verify dispatch via --help reachability rather than full behavioral output (same pattern as fetch-image).
     const r = run(['video-chapters', '--help'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
@@ -1234,17 +1137,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(typeof sheets[0]?.rows).toBe('number')
     expect(typeof sheets[0]?.ref).toBe('string')
 
-    // The point of the flag: a sheet name taken straight from the JSON has to be accepted by the
-    // sibling command whose --sheet help text says "see xlsx-sheets". Parsing it back out of the
-    // padded text line was the step this removes, so the round-trip is what actually needs pinning.
+    // The point of the flag: a sheet name taken straight from the JSON has to be accepted by the sibling command whose --sheet help text says "see xlsx-sheets". Parsing it back out of the padded text line was the step this removes, so the round-trip is what actually needs pinning.
     const rHead = run(['xlsx-head', xlsxPath, '--sheet', sheets[0]!.name])
     expect(rHead.status, rHead.stderr).toBe(0)
     expect(rHead.stdout).toContain('Alice')
 
-    // Excel allows consecutive spaces in a sheet name, and the text form separates its columns with
-    // two spaces -- so `Q1  Draft  A1:A1  (1 rows x 1 cols)` cannot be split back into fields at all.
-    // That makes this a correctness gap in the text handoff, not just an ergonomic one: JSON must
-    // return the name byte-exact, and it has to still drive --sheet.
+    // Excel allows consecutive spaces in a sheet name, and the text form separates its columns with two spaces -- so `Q1  Draft  A1:A1  (1 rows x 1 cols)` cannot be split back into fields at all. That makes this a correctness gap in the text handoff, not just an ergonomic one: JSON must return the name byte-exact, and it has to still drive --sheet.
     const awkward = sheets.find((s) => s.name.includes('  '))
     expect(awkward?.name).toBe('Q1  Draft')
     const rAwkward = run(['xlsx-head', xlsxPath, '--sheet', awkward!.name])
@@ -1386,9 +1284,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Welcome to the meeting.')
   },
   screenshot: () => {
-    // Real behavior needs a real browser (present on dev machines, not guaranteed in CI) and
-    // network access -- same constraint 'fetch-image' below hits, same fix: verify dispatch
-    // via --help instead of a real invocation.
+    // Real behavior needs a real browser (present on dev machines, not guaranteed in CI) and network access -- same constraint 'fetch-image' below hits, same fix: verify dispatch via --help instead of a real invocation.
     const r = run(['screenshot', '--help'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
@@ -1400,10 +1296,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout).toMatch(/mod|src/)
 
-    // `--compact` must route through the same real indexed data as the plain
-    // form (buildProjectMap), not the legacy repomap.ts path -- so it should
-    // surface a real fixture symbol (alphaSym, defined in src/mod.ts) rather
-    // than an alphabetical file listing with no symbol data.
+    // `--compact` must route through the same real indexed data as the plain form (buildProjectMap), not the legacy repomap.ts path -- so it should surface a real fixture symbol (alphaSym, defined in src/mod.ts) rather than an alphabetical file listing with no symbol data.
     const compact = run(['map', '--compact'])
     expect(compact.status, compact.stderr).toBe(0)
     expect(compact.stdout).toContain('alphaSym')
@@ -1454,10 +1347,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rBad.stdout + rBad.stderr).toContain('not an mcp-output id')
   },
   compress: () => {
-    // Real output: the generic filter collapses the 60 identical lines to one.
-    // 60 (not 6) repeats so the dedupe savings clear the net-benefit floor
-    // (bash_compress.min_net_savings_bytes) -- a handful of repeats only saves
-    // marker-sized bytes and legitimately falls back to the untouched original.
+    // Real output: the generic filter collapses the 60 identical lines to one. 60 (not 6) repeats so the dedupe savings clear the net-benefit floor (bash_compress.min_net_savings_bytes) -- a handful of repeats only saves marker-sized bytes and legitimately falls back to the untouched original.
     const r = run([
       'compress',
       '--filter',
@@ -1506,12 +1396,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
 
     const rFull = run(['stats', '--full'])
     expect(rFull.status, rFull.stderr).toBe(0)
-    // Length-only (`>0`) wouldn't distinguish --full from the bare totals-only output checked
-    // above -- it would still pass even if --full silently stopped adding the by-source/
-    // by-command/by-day breakdown and just re-printed the same totals. Assert the real,
-    // documented difference structurally (strictly more content than the bare form) rather than
-    // pinning exact section-header text, since the actual rendered text depends on the TTY/color
-    // path this process takes and isn't guaranteed to be the plain "## By Source" markdown form.
+    // Length-only (`>0`) wouldn't distinguish --full from the bare totals-only output checked above -- it would still pass even if --full silently stopped adding the by-source/ by-command/by-day breakdown and just re-printed the same totals. Assert the real, documented difference structurally (strictly more content than the bare form) rather than pinning exact section-header text, since the actual rendered text depends on the TTY/color path this process takes and isn't guaranteed to be the plain "## By Source" markdown form.
     expect(rFull.stdout.length).toBeGreaterThan(r.stdout.length)
   },
   capabilities: () => {
@@ -1525,8 +1410,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       version: string
       capabilities: Array<{ id: string; kind: string; enabled: boolean; controlledBy: string; enforcedAt: string }>
     }
-    // Exact id set, not a count: this is what a reviewer's pipeline asserts on, so a capability
-    // that silently disappears from the report has to fail here rather than shrink a number.
+    // Exact id set, not a count: this is what a reviewer's pipeline asserts on, so a capability that silently disappears from the report has to fail here rather than shrink a number.
     expect(parsed.capabilities.map((c) => c.id).sort()).toEqual([
       'at_rest.command_output_cache',
       'at_rest.symbol_index',
@@ -1540,8 +1424,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     for (const c of parsed.capabilities) {
       expect(['egress', 'at-rest']).toContain(c.kind)
       expect(typeof c.enabled).toBe('boolean')
-      // `enforcedAt` is the whole point: a reviewer opens it. An empty string would render a
-      // confident-looking report that points nowhere.
+      // `enforcedAt` is the whole point: a reviewer opens it. An empty string would render a confident-looking report that points nowhere.
       expect(c.enforcedAt.length).toBeGreaterThan(0)
       expect(c.controlledBy.length).toBeGreaterThan(0)
     }
@@ -1802,16 +1685,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
       servers: Array<{ name: string; perCallTokens: number; callCount: number; totalTokens: number }>
     }
     expect(parsed.configFound).toBe(true)
-    // toBeDefined() alone would still pass on an empty array, missing the actual fixture server
-    // the .mcp.json above declares -- pin that it's really surfaced by name.
+    // toBeDefined() alone would still pass on an empty array, missing the actual fixture server the .mcp.json above declares -- pin that it's really surfaced by name.
     expect(parsed.servers.map((s) => s.name)).toContain('example-server')
   },
 
   recall: () => {
-    // The recall index (cache_recall / cache_recall_fts) lives in dataBase's shared global.db,
-    // not the per-case-isolated TOKEN_GOAT_HOME blob store, so a random query with no other
-    // matrix case populating a matching entry is a reliable, pollution-proof "no hits" check
-    // regardless of what else this suite has indexed.
+    // The recall index (cache_recall / cache_recall_fts) lives in dataBase's shared global.db, not the per-case-isolated TOKEN_GOAT_HOME blob store, so a random query with no other matrix case populating a matching entry is a reliable, pollution-proof "no hits" check regardless of what else this suite has indexed.
     const nonce = `zzz-nonexistent-query-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const r = run(['recall', nonce])
     expect(r.status, r.stderr).toBe(0)
@@ -1830,8 +1709,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rBadType.status).not.toBe(0)
     expect(rBadType.stdout + rBadType.stderr).toContain('--type must be one of')
 
-    // The browse form: no query at all must list rather than error out on a missing argument.
-    // This is the CLI-layer wiring ([query] vs <query>) that no unit test can pin.
+    // The browse form: no query at all must list rather than error out on a missing argument. This is the CLI-layer wiring ([query] vs <query>) that no unit test can pin.
     const rBrowse = run(['recall', '--limit', '3'])
     expect(rBrowse.status, rBrowse.stderr).toBe(0)
     expect(rBrowse.stdout + rBrowse.stderr).not.toMatch(/missing required argument|unknown command/)
@@ -1842,9 +1720,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
 
   'hint-stats': () => {
-    // hint_emissions/hint_manual_marks live in dataBase's shared global.db (same DB recall
-    // uses) -- reset first so this case's assertions are independent of whatever other cases
-    // in this suite ran before it.
+    // hint_emissions/hint_manual_marks live in dataBase's shared global.db (same DB recall uses) -- reset first so this case's assertions are independent of whatever other cases in this suite ran before it.
     const r0 = run(['hint-stats', '--reset'])
     expect(r0.status, r0.stderr).toBe(0)
     expect(r0.stdout).toContain('cleared')
@@ -1860,14 +1736,18 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(5)
+    expect(rows.length).toBe(9)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
     expect(rows.map((row) => row.category).sort()).toEqual([
       'bash_recall',
       'bash_redirect',
       'edit_reread_suggest',
+      'glob_dedup_hint',
+      'grep_dedup_hint',
+      'read_batch',
       'read_reread_dedup',
       'read_structural_nav',
+      'search_brake',
     ])
 
     const r = run(['hint-stats'])
@@ -1917,8 +1797,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const manifest = JSON.parse(rJson.stdout) as Array<{ name: string; description: string; options: unknown[]; subcommands: Array<{ name: string }> }>
     expect(manifest.length).toBeGreaterThan(10)
     const symbolEntry = manifest.find((e) => e.name === 'symbol')
-    // Length-only would still pass on any placeholder/garbled description text -- pin the real
-    // one so a regression that swapped/blanked/duplicated a command's description is caught.
+    // Length-only would still pass on any placeholder/garbled description text -- pin the real one so a regression that swapped/blanked/duplicated a command's description is caught.
     expect(symbolEntry?.description).toBe('search for a symbol by name, or project-wide by --grep name pattern')
     const workerEntry = manifest.find((e) => e.name === 'worker')
     expect(workerEntry?.subcommands.map((s) => s.name)).toContain('start')
@@ -1950,9 +1829,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
   },
   statusline: () => {
-    // Must never throw or hang: valid payload, empty stdin, and malformed stdin all exit 0
-    // with a single non-empty stdout line, through the real built bundle and its own
-    // (shorter than the hook relay's) stdin timeout.
+    // Must never throw or hang: valid payload, empty stdin, and malformed stdin all exit 0 with a single non-empty stdout line, through the real built bundle and its own (shorter than the hook relay's) stdin timeout.
     const payload = JSON.stringify({
       model: { display_name: 'Opus' },
       workspace: { current_dir: repo },
@@ -1965,9 +1842,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
 
     const rEmpty = run(['statusline'], { input: '' })
     expect(rEmpty.status, rEmpty.stderr).toBe(0)
-    // Length-only wouldn't catch a fallback that degraded into multi-line or garbled output --
-    // pin the same single-line shape the payload case above checks, plus the documented
-    // `<project> | idx <status>` structure the empty-stdin fallback falls back to.
+    // Length-only wouldn't catch a fallback that degraded into multi-line or garbled output -- pin the same single-line shape the payload case above checks, plus the documented `<project> | idx <status>` structure the empty-stdin fallback falls back to.
     expect(rEmpty.stdout.split('\n').filter((l) => l.length > 0).length).toBe(1)
     expect(rEmpty.stdout).toMatch(/^\S+ \| idx \S+/)
 
@@ -2035,9 +1910,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
   install: () => {
     const proj = mkIsolated('tg-matrix-proj-')
-    // A bare `install --project` installs the Claude Code hooks; a scoped `--vscode` install run
-    // alongside it is additive rather than implied by it (see cli.ts's wantsClaudeCodeBase) -- so
-    // this exercises both, one call each, matching how a caller who wants both would run them.
+    // A bare `install --project` installs the Claude Code hooks; a scoped `--vscode` install run alongside it is additive rather than implied by it (see cli.ts's wantsClaudeCodeBase) -- so this exercises both, one call each, matching how a caller who wants both would run them.
     const r = run(['install', '--project'], { cwd: proj })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Installed token-goat hooks \(project\)/)
@@ -2058,19 +1931,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(shimPath, `no shim path wired (string or exec form): command=${preCommand} args=${JSON.stringify(preHook?.args)}`).toBeDefined()
     expect(fs.existsSync(shimPath!)).toBe(true)
 
-    // The narrowed PreToolUse/PostToolUse matcher must cover every tool with a real handler,
-    // not just whichever hook modules cli.ts's OTHER commands happen to import for unrelated
-    // reasons. cmdInstall used to call installHooks() without first importing relay.ts (which
-    // side-effect-imports every hook handler module to populate the registry toolMatcherFor
-    // narrows against), so a real install narrowed PreToolUse down to only "^Read$|^Grep$" and
-    // PostToolUse down to only "^Read$" -- silently dropping Bash/Write/Edit/Glob/WebFetch/
-    // WebSearch/Agent/Skill hook coverage from every fresh install and from re-narrowing any
-    // existing one. HAND-DERIVED from real `registerHook('pre_tool_use'|'post_tool_use', ...,
-    // { toolName: ... })` call sites read directly in src/hooks_bash.ts, hooks_write.ts,
-    // hooks_glob.ts, hooks_fetch.ts, hooks_websearch.ts, hooks_skill.ts, hooks_agent_spawn.ts,
-    // hooks_edit.ts, hooks_bashoutput.ts, hooks_taskoutput.ts, hooks_exitplanmode.ts --
-    // independent of hook_registry.ts's own toolMatcherFor implementation, since this only
-    // string-matches the JSON the real built bundle wrote.
+    // The narrowed PreToolUse/PostToolUse matcher must cover every tool with a real handler, not just whichever hook modules cli.ts's OTHER commands happen to import for unrelated reasons. cmdInstall used to call installHooks() without first importing relay.ts (which side-effect-imports every hook handler module to populate the registry toolMatcherFor narrows against), so a real install narrowed PreToolUse down to only "^Read$|^Grep$" and PostToolUse down to only "^Read$" -- silently dropping Bash/Write/Edit/Glob/WebFetch/ WebSearch/Agent/Skill hook coverage from every fresh install and from re-narrowing any existing one. HAND-DERIVED from real `registerHook('pre_tool_use'|'post_tool_use', ..., { toolName: ... })` call sites read directly in src/hooks_bash.ts, hooks_write.ts, hooks_glob.ts, hooks_fetch.ts, hooks_websearch.ts, hooks_skill.ts, hooks_agent_spawn.ts, hooks_edit.ts, hooks_bashoutput.ts, hooks_taskoutput.ts, hooks_exitplanmode.ts -- independent of hook_registry.ts's own toolMatcherFor implementation, since this only string-matches the JSON the real built bundle wrote.
     const preMatcher = settings.hooks['PreToolUse']?.[0]?.matcher ?? ''
     for (const name of ['Bash', 'Write', 'Glob', 'WebFetch', 'WebSearch', 'Skill', 'Agent']) {
       expect(preMatcher, `PreToolUse matcher missing ^${name}$: ${preMatcher}`).toContain(`^${name}$`)
@@ -2081,8 +1942,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     }
   },
   'mcp-status': () => {
-    // Backs the VS Code extension's ensureDecoderSetup check -- must run through the built
-    // bundle since it drives what the extension shells out to at runtime.
+    // Backs the VS Code extension's ensureDecoderSetup check -- must run through the built bundle since it drives what the extension shells out to at runtime.
     const proj = mkIsolated('tg-matrix-mcp-status-')
     const before = run(['mcp-status', '--vscode', '--project'], { cwd: proj })
     expect(before.status, before.stderr).toBe(0)
@@ -2102,16 +1962,13 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect((JSON.parse(vsAfter.stdout) as { configured: boolean }).configured).toBe(true)
   },
   uninstall: () => {
-    // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message.
-    // A bare `install --project` for the Claude Code hooks, and a separate `--vscode` install:
-    // scoped harness flags no longer imply the Claude Code base (see cli.ts's wantsClaudeCodeBase).
+    // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message. A bare `install --project` for the Claude Code hooks, and a separate `--vscode` install: scoped harness flags no longer imply the Claude Code base (see cli.ts's wantsClaudeCodeBase).
     const proj = mkIsolated('tg-matrix-uninstall-')
     const installed = run(['install', '--project'], { cwd: proj })
     expect(installed.status, installed.stderr).toBe(0)
     const installedVscode = run(['install', '--project', '--vscode'], { cwd: proj })
     expect(installedVscode.status, installedVscode.stderr).toBe(0)
-    // uninstall --project --vscode is scoped to VS Code only now (see cli.ts's wantsClaudeCodeBase);
-    // it must not also strip the Claude Code hooks the caller installed separately above.
+    // uninstall --project --vscode is scoped to VS Code only now (see cli.ts's wantsClaudeCodeBase); it must not also strip the Claude Code hooks the caller installed separately above.
     const vscodeUninstall = run(['uninstall', '--project', '--vscode'], { cwd: proj })
     expect(vscodeUninstall.status, vscodeUninstall.stderr).toBe(0)
     expect(vscodeUninstall.stdout).toMatch(/Removed token-goat VS Code MCP integration\./)
@@ -2186,12 +2043,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function|Cannot find package/)
   },
   'mcp-serve': async () => {
-    // mcp-serve is a long-running stdio server, not a one-shot command, so it can't go through
-    // the shared spawnSync-based run() helper (spawnSync writes stdin, closes it, and waits for
-    // exit -- but this process never exits on its own). Spawn it directly, write one real
-    // tools/list JSON-RPC request, read stdout until a response with a matching id arrives (or a
-    // bounded timeout elapses), then always kill the child so a broken response can't hang the
-    // suite.
+    // mcp-serve is a long-running stdio server, not a one-shot command, so it can't go through the shared spawnSync-based run() helper (spawnSync writes stdin, closes it, and waits for exit -- but this process never exits on its own). Spawn it directly, write one real tools/list JSON-RPC request, read stdout until a response with a matching id arrives (or a bounded timeout elapses), then always kill the child so a broken response can't hang the suite.
     const child = spawn(process.execPath, [BUNDLE, 'mcp-serve'], { cwd: repo, env: tgEnv(dataBase) })
     let stderr = ''
     child.stderr.on('data', (chunk: Buffer) => {
@@ -2200,13 +2052,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     try {
       const toolNames = await new Promise<string[]>((resolve, reject) => {
         let buf = ''
-        // The server is a cold Node process booting the whole bundle, spawned
-        // while the rest of the suite is competing for the same cores, so the wait has to cover a
-        // contended cold start. It can be generous because it is no longer the only way this
-        // fails: a server that dies rejects on 'exit' immediately, with its exit code and stderr,
-        // rather than sitting here until the clock runs out. Without that, a crash and a slow
-        // start produced the same bare "timed out" message and neither could be told from the
-        // other. The test itself allows 120s, so this stays well inside it.
+        // The server is a cold Node process booting the whole bundle, spawned while the rest of the suite is competing for the same cores, so the wait has to cover a contended cold start. It can be generous because it is no longer the only way this fails: a server that dies rejects on 'exit' immediately, with its exit code and stderr, rather than sitting here until the clock runs out. Without that, a crash and a slow start produced the same bare "timed out" message and neither could be told from the other. The test itself allows 120s, so this stays well inside it.
         const timer = setTimeout(() => reject(new Error(`mcp-serve: timed out waiting for tools/list response. stderr: ${stderr || '(empty)'}`)), 60000)
         child.on('exit', (code, signal) => {
           clearTimeout(timer)
@@ -2316,9 +2162,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(ctx.status, ctx.stderr).toBe(0)
     expect(ctx.stdout).toContain('return refHelper() + refHelper()')
 
-    // --exclude-tests: opt-in, additive. exclHelperFn has one production caller
-    // (exclProdCaller) and two test-file callers (exclcaller.test.ts); absent the flag both
-    // test callers surface (unchanged from today), with it only the production one remains.
+    // --exclude-tests: opt-in, additive. exclHelperFn has one production caller (exclProdCaller) and two test-file callers (exclcaller.test.ts); absent the flag both test callers surface (unchanged from today), with it only the production one remains.
     const withoutFlag = run(['callers', 'exclhelper.ts::exclHelperFn'])
     expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
     expect(withoutFlag.stdout).toContain('exclProdCaller')
@@ -2331,9 +2175,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(withFlag.stdout).not.toContain('exclTestCallerB')
     expect(withFlag.stdout).toContain('hidden by --exclude-tests')
 
-    // --grep: filters on the CALLER SYMBOL NAME. A matching pattern keeps only that caller; a
-    // non-matching pattern must not read as "no references found" (callers DO exist, --grep
-    // just filtered every hit).
+    // --grep: filters on the CALLER SYMBOL NAME. A matching pattern keeps only that caller; a non-matching pattern must not read as "no references found" (callers DO exist, --grep just filtered every hit).
     const grepMatch = run(['callers', 'exclhelper.ts::exclHelperFn', '--grep', 'exclProdCaller'])
     expect(grepMatch.status, grepMatch.stderr).toBe(0)
     expect(grepMatch.stdout).toContain('exclProdCaller')
@@ -2347,8 +2189,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
     expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
 
-    // `--json`'s file now renders root-relative against the real built binary, matching the
-    // plain-text rows above and the outline/skeleton/refs --json convention.
+    // `--json`'s file now renders root-relative against the real built binary, matching the plain-text rows above and the outline/skeleton/refs --json convention.
     const j = run(['callers', 'refHelper', '--json'])
     expect(j.status, j.stderr).toBe(0)
     const jParsed = envelopeItems<{ file: string }>(j.stdout)
@@ -2356,9 +2197,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     for (const entry of jParsed) expect(path.isAbsolute(entry.file)).toBe(false)
   },
   'call-chain': () => {
-    // refHelper is called by refDriver which has no further callers in the tiny fixture. Same
-    // fixture fact the sibling 'impact' case below pins by content -- length-only here wouldn't
-    // catch a regression that printed an unrelated (but still non-empty) chain.
+    // refHelper is called by refDriver which has no further callers in the tiny fixture. Same fixture fact the sibling 'impact' case below pins by content -- length-only here wouldn't catch a regression that printed an unrelated (but still non-empty) chain.
     const r = run(['call-chain', 'refHelper', '--depth', '4'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/refDriver/)
@@ -2383,23 +2222,19 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
 
-    // --exclude-tests: opt-in, additive, and filters on the symbol's own DEFINITION site (not a
-    // reference site, unlike refs/callers). exclDeadOnlyInTest is defined in excldead.test.ts and
-    // never called anywhere -- present without the flag (byte-identical to today), gone with it.
+    // --exclude-tests: opt-in, additive, and filters on the symbol's own DEFINITION site (not a reference site, unlike refs/callers). exclDeadOnlyInTest is defined in excldead.test.ts and never called anywhere -- present without the flag (byte-identical to today), gone with it.
     const withoutFlag = run(['dead', '--top', '500', '--json'])
     expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
     const withoutParsed = envelopeItems<{ name: string; file: string }>(withoutFlag.stdout)
     expect(withoutParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(true)
-    // `--json`'s file now renders root-relative against the real built binary, matching the
-    // outline/skeleton/refs --json convention.
+    // `--json`'s file now renders root-relative against the real built binary, matching the outline/skeleton/refs --json convention.
     for (const entry of withoutParsed) expect(path.isAbsolute(entry.file)).toBe(false)
     const withFlag = run(['dead', '--top', '500', '--json', '--exclude-tests'])
     expect(withFlag.status, withFlag.stderr).toBe(0)
     const withParsed = envelopeItems<{ name: string }>(withFlag.stdout)
     expect(withParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(false)
 
-    // --grep narrows by NAME, and an all-filtered result names the filter instead of looking
-    // like a genuinely clean codebase.
+    // --grep narrows by NAME, and an all-filtered result names the filter instead of looking like a genuinely clean codebase.
     const grepped = run(['dead', '--top', '500', '--json', '--grep', 'exclDeadOnlyInTest'])
     expect(grepped.status, grepped.stderr).toBe(0)
     const greppedParsed = envelopeItems<{ name: string }>(grepped.stdout)
@@ -2415,9 +2250,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
   },
   deps: () => {
-    // app.ts imports from ./src/mod.js — deps must list that as an internal dep, rendered as a
-    // root-relative path (not an absolute Windows path) so it can be fed straight back into
-    // `outline`/`read`/`skeleton`.
+    // app.ts imports from ./src/mod.js — deps must list that as an internal dep, rendered as a root-relative path (not an absolute Windows path) so it can be fed straight back into `outline`/`read`/`skeleton`.
     const r = run(['deps', 'app.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/mod|internal/)
@@ -2430,8 +2263,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(parsed.internal).toContain('src/mod.ts')
     for (const entry of parsed.internal) expect(entry).not.toContain('\\')
 
-    // --grep narrows on the module specifier, and an all-filtered result names the filter
-    // instead of looking like the file has no imports at all.
+    // --grep narrows on the module specifier, and an all-filtered result names the filter instead of looking like the file has no imports at all.
     const grepped = run(['deps', 'app.ts', '--grep', 'mod'])
     expect(grepped.status, grepped.stderr).toBe(0)
     expect(grepped.stdout).toContain('src/mod.ts')
@@ -2451,14 +2283,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status).not.toBeNull()
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function|Cannot find package/)
 
-    // --grep narrows by NAME against the typesgrep.ts fixture, and an all-filtered result
-    // names the filter instead of looking like the store is empty.
+    // --grep narrows by NAME against the typesgrep.ts fixture, and an all-filtered result names the filter instead of looking like the store is empty.
     const grepped = run(['types', 'typesgrep.ts', '--json', '--grep', 'Alpha'])
     expect(grepped.status, grepped.stderr).toBe(0)
     const greppedParsed = envelopeItems<{ name: string; filePath: string }>(grepped.stdout)
     expect(greppedParsed.map((t) => t.name)).toEqual(['TypesGrepAlphaFixture'])
-    // `--json`'s filePath now renders root-relative against the real built binary, matching the
-    // outline/skeleton/refs --json convention.
+    // `--json`'s filePath now renders root-relative against the real built binary, matching the outline/skeleton/refs --json convention.
     expect(greppedParsed[0]?.filePath.replace(/\\/g, '/')).toBe('typesgrep.ts')
 
     const grepMiss = run(['types', 'typesgrep.ts', '--grep', 'zzzzNoSuchType'])
@@ -2501,10 +2331,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
   'context-for': () => {
-    // This tiny fixture has no symbol matching "parse symbols" even after the widen-on-empty OR
-    // retry, so a clean "no matches" (exit 1) is the correct, expected outcome here -- same
-    // reachable-either-way pattern as 'similar' above; this is a wiring smoke test, not a
-    // relevance test.
+    // This tiny fixture has no symbol matching "parse symbols" even after the widen-on-empty OR retry, so a clean "no matches" (exit 1) is the correct, expected outcome here -- same reachable-either-way pattern as 'similar' above; this is a wiring smoke test, not a relevance test.
     const r = run(['context-for', 'parse symbols'])
     expect(r.status).not.toBeNull()
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
@@ -2525,9 +2352,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
 
-    // `--json`'s testFile now renders root-relative against the real built binary, matching the
-    // outline/skeleton/refs --json convention. exclhelper.ts is referenced by exclcaller.test.ts
-    // (see the 'refs'/'callers' --exclude-tests fixtures above), so this exercises a real hit.
+    // `--json`'s testFile now renders root-relative against the real built binary, matching the outline/skeleton/refs --json convention. exclhelper.ts is referenced by exclcaller.test.ts (see the 'refs'/'callers' --exclude-tests fixtures above), so this exercises a real hit.
     const j = run(['test-for', 'exclhelper.ts', '--json'])
     expect(j.status, j.stderr).toBe(0)
     const jParsed = envelopeItems<{ testFile: string }>(j.stdout)
@@ -2545,20 +2370,13 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toMatch(/hubs/)
   },
   affected: () => {
-    // The shared fixture has real import edges (app.ts imports src/mod.js) but no test file that
-    // imports anything, so the default answer here is a correct empty one. Asserting only that
-    // would be worthless -- an empty result passes whether the walk works or never runs -- and
-    // adding an importing test file to a fixture other cases assert counts against would be the
-    // more expensive mistake. So the traversal is pinned through --filter on the real edge, and
-    // the default run is asserted for the honest empty answer it should give.
+    // The shared fixture has real import edges (app.ts imports src/mod.js) but no test file that imports anything, so the default answer here is a correct empty one. Asserting only that would be worthless -- an empty result passes whether the walk works or never runs -- and adding an importing test file to a fixture other cases assert counts against would be the more expensive mistake. So the traversal is pinned through --filter on the real edge, and the default run is asserted for the honest empty answer it should give.
     const hit = run(['affected', 'src/mod.ts', '--filter', 'app\\.ts$', '--json'])
     expect(hit.status, hit.stderr).toBe(0)
     expect(hit.stdout + hit.stderr).not.toMatch(/unknown command|is not a function/)
     const hitParsed = JSON.parse(hit.stdout) as { unknownSeeds: string[]; testFiles: string[]; reachedCount: number }
     expect(hitParsed.testFiles.map((f) => f.replace(/\\/g, '/')), 'the reverse walk must cross the app.ts -> src/mod.ts edge').toContain('app.ts')
-    // Calibration: the seed resolved, and the walk reached past the seed itself. Without these,
-    // the assertions here would still pass if seed matching broke and the walk started from
-    // nothing, or if it never left hop 0.
+    // Calibration: the seed resolved, and the walk reached past the seed itself. Without these, the assertions here would still pass if seed matching broke and the walk started from nothing, or if it never left hop 0.
     expect(hitParsed.unknownSeeds, 'a tracked seed must not be reported as unknown').toEqual([])
     expect(hitParsed.reachedCount, 'the walk must reach beyond the seed itself').toBeGreaterThan(1)
 
@@ -2566,21 +2384,17 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout, 'no fixture test file imports anything, so this must say so plainly').toContain('No test files import')
 
-    // A seed git does not track is named rather than dropped: the failure this command exists to
-    // prevent is a short, plausible, empty answer that a caller trusts to narrow a CI run.
+    // A seed git does not track is named rather than dropped: the failure this command exists to prevent is a short, plausible, empty answer that a caller trusts to narrow a CI run.
     const u = run(['affected', 'no-such-file-here.ts'])
     expect(u.status, u.stderr).toBe(0)
     expect(u.stderr, 'an untracked seed must be named on stderr').toContain('no-such-file-here.ts')
 
-    // An invalid --filter is refused rather than silently degraded to a substring match, because
-    // this flag decides which tests a CI run executes.
+    // An invalid --filter is refused rather than silently degraded to a substring match, because this flag decides which tests a CI run executes.
     const bad = run(['affected', 'exclhelper.ts', '--filter', '('])
     expect(bad.status, 'an invalid --filter regex must fail, not fall back to substring').toBe(1)
   },
   reconcile: () => {
-    // The fixture was indexed moments ago, so the sweep must come back clean over a real, nonzero
-    // population -- and say how big that population was, since "clean" over zero files checked is
-    // the shape of confident-wrong-answer this command is built to avoid.
+    // The fixture was indexed moments ago, so the sweep must come back clean over a real, nonzero population -- and say how big that population was, since "clean" over zero files checked is the shape of confident-wrong-answer this command is built to avoid.
     const r = run(['reconcile', '--dry-run'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
@@ -2593,8 +2407,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       scanned: number; changed: string[]; added: string[]; removed: string[]
       trackedUnavailable: boolean; enqueued: number
     }
-    // Calibration first: a sweep that examined nothing would satisfy every emptiness assertion
-    // below, and is exactly how this command could look correct while doing no work at all.
+    // Calibration first: a sweep that examined nothing would satisfy every emptiness assertion below, and is exactly how this command could look correct while doing no work at all.
     expect(parsed.scanned, 'the sweep must have examined a real population').toBeGreaterThan(0)
     expect(parsed.trackedUnavailable, 'git enumerated the fixture, so the no-files guard must not fire').toBe(false)
     expect(parsed.changed).toEqual([])
@@ -2630,8 +2443,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const rj = run(['tokens', 'src/mod.ts', '--json'])
     expect(rj.status, rj.stderr).toBe(0)
     const parsed = JSON.parse(rj.stdout) as { entries: unknown[]; total_tokens: number }
-    // Exactly one file was requested -- pin the exact entry count so a regression that
-    // duplicated or dropped rows (still non-empty either way) is caught.
+    // Exactly one file was requested -- pin the exact entry count so a regression that duplicated or dropped rows (still non-empty either way) is caught.
     expect(parsed.entries.length).toBe(1)
     expect(parsed.total_tokens).toBeGreaterThan(0)
   },
@@ -2663,28 +2475,24 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const rj = run(['failures', '--json'], { input })
     expect(rj.status, rj.stderr).toBe(0)
     const parsed = JSON.parse(rj.stdout) as { failures: Array<{ name: string }> }
-    // The fixture has exactly one failure block -- pin the exact count and name so a
-    // regression that emitted a duplicate or unrelated entry (still non-empty) is caught.
+    // The fixture has exactly one failure block -- pin the exact count and name so a regression that emitted a duplicate or unrelated entry (still non-empty) is caught.
     expect(parsed.failures.length).toBe(1)
     expect(parsed.failures[0]?.name).toBe('test_add')
 
-    // --delta: first invocation for this --key has no baseline yet, so the current failure is
-    // reported as newly-failing rather than an empty/silent delta.
+    // --delta: first invocation for this --key has no baseline yet, so the current failure is reported as newly-failing rather than an empty/silent delta.
     const first = run(['failures', '--delta', '--key', 'matrix-e2e'], { input })
     expect(first.status, first.stderr).toBe(0)
     expect(first.stdout).toContain('No baseline yet')
     expect(first.stdout).toContain('test_add')
 
-    // Second invocation with the SAME failure: nothing newly failing/fixed, one still-failing
-    // (reported as a count, not a re-dump of the block body).
+    // Second invocation with the SAME failure: nothing newly failing/fixed, one still-failing (reported as a count, not a re-dump of the block body).
     const second = run(['failures', '--delta', '--key', 'matrix-e2e'], { input })
     expect(second.status, second.stderr).toBe(0)
     expect(second.stdout).toContain('Newly failing (0)')
     expect(second.stdout).toContain('Newly fixed (0)')
     expect(second.stdout).toContain('Still failing (unchanged): 1')
 
-    // Third invocation with a different failing test: the old one is newly-fixed, the new one is
-    // newly-failing.
+    // Third invocation with a different failing test: the old one is newly-fixed, the new one is newly-failing.
     const changedInput = [
       '=== FAILURES ===',
       '______ test_subtract ______',
@@ -2702,8 +2510,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(third.stdout).toContain('Newly fixed (1)')
     expect(third.stdout).toContain('test_add')
 
-    // --json shape for --delta: hasBaseline, newlyFailing/newlyFixed arrays, stillFailingCount
-    // (not a full stillFailing array).
+    // --json shape for --delta: hasBaseline, newlyFailing/newlyFixed arrays, stillFailingCount (not a full stillFailing array).
     const fourthJson = run(['failures', '--delta', '--key', 'matrix-e2e-json', '--json'], { input })
     expect(fourthJson.status, fourthJson.stderr).toBe(0)
     const firstDelta = JSON.parse(fourthJson.stdout) as { hasBaseline: boolean; newlyFailing: string[] }
@@ -2733,8 +2540,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const rj = run(['todo', fixture, '--json'])
     expect(rj.status, rj.stderr).toBe(0)
     const parsed = JSON.parse(rj.stdout) as { items: Array<{ file: string; kind: string; text: string; line: number }> }
-    // The fixture has exactly one TODO marker -- pin the exact count/kind/line/text so a
-    // regression that emitted a duplicate or misparsed entry (still non-empty) is caught.
+    // The fixture has exactly one TODO marker -- pin the exact count/kind/line/text so a regression that emitted a duplicate or misparsed entry (still non-empty) is caught.
     expect(parsed.items).toEqual([{ file: expect.any(String), kind: 'TODO', text: 'fix this', line: 1 }])
   },
   trace: () => {
@@ -2750,8 +2556,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
 
-    // Mixed CI log flexing the built bundle's Node/Rust/JVM/.NET grammar support (not just
-    // Python), one combined case per the "or one combined multi-grammar case" allowance.
+    // Mixed CI log flexing the built bundle's Node/Rust/JVM/.NET grammar support (not just Python), one combined case per the "or one combined multi-grammar case" allowance.
     const mixed = [
       'Error: boom',
       '    at helper (main.js:12:34)',
@@ -2784,8 +2589,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // npm-summary line should be dropped; identical normalised lines should fold
     expect(r.stdout).not.toContain('added 5 packages')
     expect(r.stdout).toMatch(/hit/)
-    // --fold-repeats folds non-adjacent duplicates too, attributing the total count to the
-    // first occurrence.
+    // --fold-repeats folds non-adjacent duplicates too, attributing the total count to the first occurrence.
     const r2 = run(['logfold', '--fold-repeats'], { input: 'boom\nnoise\nboom\n' })
     expect(r2.status, r2.stderr).toBe(0)
     expect(r2.stdout).toContain('(x2)')
@@ -2798,8 +2602,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('package-lock.json')
   },
   'dep-docs': () => {
-    // token-goat depends on commander directly (see package.json); run against the repo root
-    // so package.json/README/types resolution all hit the real installed package.
+    // token-goat depends on commander directly (see package.json); run against the repo root so package.json/README/types resolution all hit the real installed package.
     const r = run(['dep-docs', 'commander', '--json'], { cwd: ROOT })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { package: string; readme: { file: string } | null; types: { source: string } | null }
@@ -2885,8 +2688,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(Array.isArray(arr)).toBe(true)
   },
   'reclaim-index': () => {
-    // Runs against its own isolated data dir, never `dataBase`: --rebuild drops every derived
-    // row, which would wipe the shared index the rest of this suite reads from.
+    // Runs against its own isolated data dir, never `dataBase`: --rebuild drops every derived row, which would wipe the shared index the rest of this suite reads from.
     const isolated = mkIsolated('tg-reclaim-')
     const env = { ...tgEnv(isolated) }
     const rIdx = run(['index'], { env })
@@ -2901,8 +2703,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       afterBytes: number
     }
     expect(p.rebuilt).toBe(true)
-    // The fixture repo really was indexed above, so the rebuild must report dropping real rows
-    // -- a 0 here would mean the delete ran against an empty or wrong database.
+    // The fixture repo really was indexed above, so the rebuild must report dropping real rows -- a 0 here would mean the delete ran against an empty or wrong database.
     expect(p.dropped['symbols']).toBeGreaterThan(0)
     expect(p.afterBytes).toBeGreaterThan(0)
 
@@ -3054,8 +2855,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rj.status, rj.stderr).toBe(0)
     const p = JSON.parse(rj.stdout) as { path: string; compact: string }
     expect(typeof p.compact).toBe('string')
-    // Length-only wouldn't catch --json returning an unrelated (but still non-empty) section --
-    // pin the same real content the plain-text form above already checks.
+    // Length-only wouldn't catch --json returning an unrelated (but still non-empty) section -- pin the same real content the plain-text form above already checks.
     expect(p.compact).toContain('Install')
   },
   'fetch-image': () => {
@@ -3079,11 +2879,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
 
   bench: () => {
-    // `run` executes from an isolated scratch repo, so the corpus is named absolutely rather than
-    // left to the default relative path. Exercising the shipped bundle matters here beyond the
-    // usual reason: bench measures the compressors through `deliverCompressed`, so a build that
-    // tree-shook a filter registry would report a corpus with no filters matched -- as a clean 0%
-    // run, not as an error.
+    // `run` executes from an isolated scratch repo, so the corpus is named absolutely rather than left to the default relative path. Exercising the shipped bundle matters here beyond the usual reason: bench measures the compressors through `deliverCompressed`, so a build that tree-shook a filter registry would report a corpus with no filters matched -- as a clean 0% run, not as an error.
     const corpus = path.join(ROOT, 'tests', 'fixtures', 'bench')
     const r = run(['bench', '--corpus', corpus])
     expect(r.status, r.stderr).toBe(0)
@@ -3117,12 +2913,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
 /** Number of sharded command_matrix_e2e.*.test.ts files the case table is split across. A guard asserts this equals the number of shard files actually on disk, since raising it without adding the file would drop those cases from the run while every other check still passed. */
 export const SHARD_COUNT = 4
 
-// Relative cost of the cases that are not roughly average, in arbitrary units of ~1s, measured on a
-// full run. Interleaving by sorted name balances case COUNT, and case cost is spread over more than
-// an order of magnitude (mean ~1.2s, `refs` alone 14.7s), so counting produced a 56s shard next to a
-// 37s one. Only balance depends on these numbers, never correctness: a stale or missing weight makes
-// a shard lopsided, it can never drop or duplicate a case, which is what the union guard pins.
-// Unlisted cases weigh 1. Worth re-measuring only if the shards visibly diverge again.
+// Relative cost of the cases that are not roughly average, in arbitrary units of ~1s, measured on a full run. Interleaving by sorted name balances case COUNT, and case cost is spread over more than an order of magnitude (mean ~1.2s, `refs` alone 14.7s), so counting produced a 56s shard next to a 37s one. Only balance depends on these numbers, never correctness: a stale or missing weight makes a shard lopsided, it can never drop or duplicate a case, which is what the union guard pins. Unlisted cases weigh 1. Worth re-measuring only if the shards visibly diverge again.
 const CASE_WEIGHTS: Record<string, number> = {
   refs: 15,
   changed: 6,
@@ -3140,23 +2931,10 @@ const CASE_WEIGHTS: Record<string, number> = {
   read: 3,
 }
 
-/**
- * Deterministic, cost-balanced slice of `cases`' keys for one shard (0-indexed).
- *
- * Greedy longest-processing-time: heaviest case first, each assigned to the shard that is lightest
- * so far, ties broken by name and then by lowest shard index so the split is identical on every
- * machine and every run.
- *
- * Balance only, not wall clock. Splitting further was tried and reverted: 8 shards did cut the
- * slowest matrix file from 56s to 24s and made the full suite *slower*, 83-87s against 82s. The
- * slowest file was never the binding constraint -- it finished well inside the run -- while each
- * added file pays its own fixture setup and module import, and import is already 120s across the
- * suite. Shard count is worth raising only if one shard ever approaches the whole wall clock.
- */
+/** Deterministic, cost-balanced slice of `cases`' keys for one shard (0-indexed). Greedy longest-processing-time: heaviest case first, each assigned to the shard that is lightest so far, ties broken by name and then by lowest shard index so the split is identical on every machine and every run. Balance only, not wall clock. Splitting further was tried and reverted: 8 shards did cut the slowest matrix file from 56s to 24s and made the full suite *slower*, 83-87s against 82s. The slowest file was never the binding constraint -- it finished well inside the run -- while each added file pays its own fixture setup and module import, and import is already 120s across the suite. Shard count is worth raising only if one shard ever approaches the whole wall clock. */
 export function shardKeys(shard: number): string[] {
   const buckets: Array<{ total: number; keys: string[] }> = Array.from({ length: SHARD_COUNT }, () => ({ total: 0, keys: [] }))
-  // Codepoint order, not localeCompare: the tie-break decides which shard a case lands in, and a
-  // locale-sensitive comparison would split differently on a differently-configured machine.
+  // Codepoint order, not localeCompare: the tie-break decides which shard a case lands in, and a locale-sensitive comparison would split differently on a differently-configured machine.
   const ordered = Object.keys(cases).sort((a, b) => (CASE_WEIGHTS[b] ?? 1) - (CASE_WEIGHTS[a] ?? 1) || (a < b ? -1 : a > b ? 1 : 0))
   for (const name of ordered) {
     let lightest = 0

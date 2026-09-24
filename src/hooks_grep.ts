@@ -1,11 +1,5 @@
-/**
- * post_tool_use / pre_tool_use handlers for the Grep tool.
- *
- * Grep has no other output-side treatment anywhere in the codebase: unlike Read/Bash/WebFetch,
- * a repeated identical Grep just silently re-runs. This records each Grep's match count keyed by
- * (pattern, path, output_mode, glob) so an identical repeat later in the session, once the last
- * known match count meets hints.grep_dedup_min_matches, gets a recall-style advisory instead.
- */
+/** post_tool_use / pre_tool_use handlers for the Grep tool. Grep has no other output-side treatment anywhere in the codebase: unlike Read/Bash/WebFetch, a repeated identical Grep just silently re-runs. This records each Grep's match count keyed by (pattern, path, output_mode, glob) so an identical repeat later in the session, once the last known match count meets hints.grep_dedup_min_matches, gets a recall-style advisory instead. */
+import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { registerHook } from './hook_registry.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
@@ -18,8 +12,7 @@ import { recordStat } from './stats.js'
 import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
 
-/** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating
- *  a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
+/** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
 function grepIntInput(toolInput: Record<string, unknown>, key: string): number | undefined {
   const value = toolInput[key]
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -30,10 +23,7 @@ function grepIntInput(toolInput: Record<string, unknown>, key: string): number |
   return undefined
 }
 
-/** Session-scoped identity for a Grep call: two calls with the same signature searched the
- *  same thing the same way. Returns null when there is no pattern to key on. Keys on every
- *  param that can change the output: two Greps with the same pattern/path/output_mode/glob but
- *  different case-sensitivity, context lines, or head_limit are NOT the same call. */
+/** Session-scoped identity for a Grep call: two calls with the same signature searched the same thing the same way. Returns null when there is no pattern to key on. Keys on every param that can change the output: two Greps with the same pattern/path/output_mode/glob but different case-sensitivity, context lines, or head_limit are NOT the same call. */
 function grepSignature(toolInput: Record<string, unknown>): string | null {
   const pattern = toolInput['pattern']
   if (typeof pattern !== 'string' || pattern === '') return null
@@ -65,17 +55,10 @@ const { post: dedupPostHandler, pre: preGrepDedupHandler } = makeDedupHintHandle
   statName: 'grep_dedup_hint',
 })
 
-/** Strict `path:lineNo:` match-line shape required of every non-empty line before content-mode
- *  folding is attempted. One line failing this bails the whole rewrite (guard 5). */
+/** Strict `path:lineNo:` match-line shape required of every non-empty line before content-mode folding is attempted. One line failing this bails the whole rewrite (guard 5). */
 const CONTENT_LINE_RE = /^(.+?):(\d+):(.*)$/s
 
-/** Lossless re-layout of Grep `content`-mode output: groups consecutive-in-source match lines
- *  under a single `path:` header instead of repeating the path on every line, e.g.
- *  `src/a.ts:12:x` + `src/a.ts:40:y` -> `src/a.ts` + `  12: x` + `  40: y`. Every matched line and
- *  line number survives verbatim -- this only removes the repeated path prefix, never a match.
- *  Bails to passOutput() unchanged if any of the mandatory safety guards fails (see module docs /
- *  task spec): non-`content` output_mode, `multiline`, any context flag (`-A`/`-B`/`-C`/`context`),
- *  `-n: false`, an unparseable line, fewer than 2 lines sharing a file, or the net-benefit floor. */
+/** Lossless re-layout of Grep `content`-mode output: groups consecutive-in-source match lines under a single `path:` header instead of repeating the path on every line, e.g. `src/a.ts:12:x` + `src/a.ts:40:y` -> `src/a.ts` + `  12: x` + `  40: y`. Every matched line and line number survives verbatim -- this only removes the repeated path prefix, never a match. Bails to passOutput() unchanged if any of the mandatory safety guards fails (see module docs / task spec): non-`content` output_mode, `multiline`, any context flag (`-A`/`-B`/`-C`/`context`), `-n: false`, an unparseable line, fewer than 2 lines sharing a file, or the net-benefit floor. */
 function foldGrepContentHandler(event: HookEvent): HookOutput {
   try {
     if (getToolName(event) !== 'Grep') return passOutput()
@@ -187,13 +170,7 @@ export function extractGrepStructuralSearch(toolInput: Record<string, unknown>):
   return null
 }
 
-/**
- * pre_tool_use handler for the Grep tool.
- *
- * Checks for single-file structural searches (e.g. def/class in Python, headings in Markdown)
- * to advise surgical token-goat outline/skeleton/section commands instead of dumping large match
- * outputs, and falls back to duplicate-search deduplication advice.
- */
+/** pre_tool_use handler for the Grep tool. Checks for single-file structural searches (e.g. def/class in Python, headings in Markdown) to advise surgical token-goat outline/skeleton/section commands instead of dumping large match outputs, and falls back to duplicate-search deduplication advice. */
 function preGrepHandler(event: HookEvent): HookOutput {
   try {
     if (getToolName(event) !== 'Grep') return passOutput()
@@ -209,15 +186,13 @@ function preGrepHandler(event: HookEvent): HookOutput {
         : 'Scanning a source file for symbols loads large match output. Use `token-goat skeleton "' + filePath + '"` to see the file structure or `token-goat read "' + filePath + '::SymbolName"` to inspect a specific symbol.'
       return contextOutput(hint)
     }
-    return preGrepDedupHandler(event)
+    return applyHintTracking(event, preGrepDedupHandler(event), uncorrelatedHint('grep_dedup_hint'))
   } catch {
     return passOutput()
   }
 }
 
-/** Combines the dedup-count recorder (unconditional side effect, always passes) with the
- *  content-mode path-folding rewrite above: the fold's rewrite wins when it fires, otherwise
- *  this falls back to whatever the dedup handler returned (always `pass`). */
+/** Combines the dedup-count recorder (unconditional side effect, always passes) with the content-mode path-folding rewrite above: the fold's rewrite wins when it fires, otherwise this falls back to whatever the dedup handler returned (always `pass`). */
 function postGrepHandler(event: HookEvent): HookOutput {
   const dedupResult = dedupPostHandler(event)
   const foldResult = foldGrepContentHandler(event)

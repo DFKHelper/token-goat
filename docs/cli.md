@@ -309,7 +309,7 @@ Run `token-goat recall` with **no query** to browse instead of search: every cac
 
 ### Hint efficacy tracking
 
-Every hint hook (the re-read/dedup/surgical-read nudges in the Bash, Read, and Edit hooks) is
+Every hint hook (the re-read/dedup/surgical-read nudges in the Bash, Read, Edit, Grep and Glob hooks, and the call-streak hints) is
 worth its keep only if it's actually followed. `token-goat hint-stats` reports, per hint
 category: how many times it fired, how many times a later Bash command in the same session
 actually invoked the specific `token-goat` command (or referenced the specific cached-output id)
@@ -319,14 +319,18 @@ that category — the real cost of emitting it, not just how often it fired):
 
 ```
 $ token-goat hint-stats
-category              emitted  undisplayed  acted-on  efficacy   suppressed  manual+  manual-  spent-bytes
-bash_redirect          42       -            9         21.4%      no          0        0        3150
-bash_recall            18       -            15        83.3%      no          0        0        1080
-read_reread_dedup      11       -            2         18.2% *    no          0        0        660
-read_structural_nav    7        3            1         14.3%      yes         0        1        420
-edit_reread_suggest    3        -            0         0% *       no          0        0        180
+category              emitted  undisplayed  acted-on  efficacy    suppressed       manual+  manual-  spent-bytes
+bash_redirect         42       -            9         21.4%       no               0        0        3150
+bash_recall           18       -            15        83.3%       no               0        0        1080
+read_reread_dedup     11       -            2         18.2% *     no               0        0        660
+read_structural_nav   7        3            1         14.3% *     yes              0        1        420
+edit_reread_suggest   3        -            0         0% *        no               0        0        180
+read_batch            6        -            4         66.7%       no               0        0        900
+search_brake          2        -            1         50.0%       no               0        0        330
+grep_dedup_hint       4        -            0         n/a         no               0        0        240
+glob_dedup_hint       1        -            0         n/a         no               0        0        60
 
-TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=5490 (hint_emissions ledger only)
+TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=7020 (hint_emissions ledger only)
 ```
 
 `spent-bytes` (and the `TOTAL` line's `spent-bytes`) render `n/a` instead of a fake `0` whenever a
@@ -361,6 +365,8 @@ are shown alongside the automatic percentage but never blended into it. `--json`
 Note that what this feature calls "harness" (Claude Code, Codex, Gemini, ...) is not the same as
 "which LLM model" — no bridge in this codebase exposes an LLM model identifier to hooks, so
 harness is the closest real signal available.
+
+Two categories are scored on a pattern of calls rather than a named command. `read_batch` (three or more reads or searches in a row, each sent a full turn after the previous result) counts as acted on when the first later turn that makes read-only calls makes at least two of them together. `search_brake` (three searches in a row found nothing) counts as acted on when the next search from a later turn is `token-goat answer` or `token-goat semantic`. Until that later call arrives the emission stays pending and counts as not acted on. `grep_dedup_hint` and `glob_dedup_hint` (an identical Grep or Glob already ran this session) are never scored: the note rides on the re-run it describes, so no later call can show whether it was heeded. They appear in `spent-bytes` and as the `~N` beside `emitted`, never in `emitted` itself or the efficacy figure.
 
 ### Scoring the compressors — `token-goat bench`
 

@@ -1,39 +1,4 @@
-/**
- * Guard for the third emit channel, the one the other two guards do not walk.
- *
- * token-goat speaks to the model on three channels and they are not equally defended.
- * `denyOutput` neutralizes its message and puts the `[tg]` prefix outside the neutralized region.
- * `emitRewrite` is the boundary `substituted_output_reaches_fence.test.ts` walks. `contextOutput`
- * does neither: its callers carry their own `[token-goat]` prefix INSIDE the payload, so the model
- * reads the whole block as tooling, and nothing escapes a marker that arrived in a value token-goat
- * did not author.
- *
- * That asymmetry produced nine live findings in one release, plus two more sites escaped as a
- * survival layer where an unrelated upstream gate happens to close the path today. The live nine: a
- * filename in a shell command, an agent name from a project roster, a fetched URL in the compaction
- * manifest, a stale-evidence path, an MCP tool name, an image basename, a skill's declared name, a
- * search pattern, and a manifest re-read basename. In every case the helper that fixes it
- * (`displaySafeText`, or `displaySafePath` which delegates to it) already existed and the call site
- * simply did not use it, while its siblings did.
- *
- * The two unreachable ones are worth as much as the nine, because each was reported as live and
- * refuted only by reading the callers. Assume a site is live and you ship a changelog entry claiming
- * a hole that was already closed; assume it is safe and you ship the hole.
- *
- * Fencing is the wrong remedy here and that is why this is a separate guard rather than a wider
- * population for the existing one. A fence around a `contextOutput` payload would run the marker
- * neutralizer over token-goat's own prefix and hand the model `&#91;token-goat]`. The remedy is
- * per-value escaping, which no structural scan can confirm: whether `'... ' + x + ' ...'` is safe
- * depends on where `x` came from, and that is a judgement.
- *
- * So this guard does the one thing a scan can do honestly. It pins WHO is on the channel. Every
- * function reaching `contextOutput` must appear below with a one-line adjudication saying what it
- * interpolates and why that is safe. A new arrival fails until someone answers the question.
- *
- * That is not hypothetical. The grep hook in ADJUDICATED below landed on main from another machine
- * while the other eight were being fixed, carrying the same shape into a file with no sanitizing
- * call in it. Nothing in the suite noticed. This is the test that would have.
- */
+/** Guard for the third emit channel, the one the other two guards do not walk. token-goat speaks to the model on three channels and they are not equally defended. `denyOutput` neutralizes its message and puts the `[tg]` prefix outside the neutralized region. `emitRewrite` is the boundary `substituted_output_reaches_fence.test.ts` walks. `contextOutput` does neither: its callers carry their own `[token-goat]` prefix INSIDE the payload, so the model reads the whole block as tooling, and nothing escapes a marker that arrived in a value token-goat did not author. That asymmetry produced nine live findings in one release, plus two more sites escaped as a survival layer where an unrelated upstream gate happens to close the path today. The live nine: a filename in a shell command, an agent name from a project roster, a fetched URL in the compaction manifest, a stale-evidence path, an MCP tool name, an image basename, a skill's declared name, a search pattern, and a manifest re-read basename. In every case the helper that fixes it (`displaySafeText`, or `displaySafePath` which delegates to it) already existed and the call site simply did not use it, while its siblings did. The two unreachable ones are worth as much as the nine, because each was reported as live and refuted only by reading the callers. Assume a site is live and you ship a changelog entry claiming a hole that was already closed; assume it is safe and you ship the hole. Fencing is the wrong remedy here and that is why this is a separate guard rather than a wider population for the existing one. A fence around a `contextOutput` payload would run the marker neutralizer over token-goat's own prefix and hand the model `&#91;token-goat]`. The remedy is per-value escaping, which no structural scan can confirm: whether `'... ' + x + ' ...'` is safe depends on where `x` came from, and that is a judgement. So this guard does the one thing a scan can do honestly. It pins WHO is on the channel. Every function reaching `contextOutput` must appear below with a one-line adjudication saying what it interpolates and why that is safe. A new arrival fails until someone answers the question. That is not hypothetical. The grep hook in ADJUDICATED below landed on main from another machine while the other eight were being fixed, carrying the same shape into a file with no sanitizing call in it. Nothing in the suite noticed. This is the test that would have. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -50,11 +15,7 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
 /** The emit boundary this guard walks. */
 const CONTEXT_CALL = 'contextOutput('
 
-/**
- * Every function that reaches `contextOutput`, with what it interpolates and why that is safe.
- * Keyed `file.ts::function`. A function here is a promise that someone read it, not that it is
- * inert: three of these entries describe a value that IS third-party and IS escaped on the way in.
- */
+/** Every function that reaches `contextOutput`, with what it interpolates and why that is safe. Keyed `file.ts::function`. A function here is a promise that someone read it, not that it is inert: three of these entries describe a value that IS third-party and IS escaped on the way in. */
 const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_bash.ts::preBashHandlerInner':
     'The surgical-read hints quote the path out of the shell command, which a repository names. Sixteen sites build that path: fifteen assign `hintPath = displaySafePath(cdStripped ? ...)`, and a sixteenth, extractToolResultsFile\'s tool-results recall hint, only validated the trailing `tool-results/<safe-id>.txt` suffix and interpolated the arbitrary parent directory raw -- found by adversarial review, now wrapped the same way as `outPath = displaySafePath(toolResults.path)`. All sixteen now wrap in displaySafePath, which is why the escaping is checkable in one grep rather than at the thirty places that print it. Adding another unwrapped path assignment reopens it.',
@@ -72,6 +33,13 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Names the image it shrank, and a repository names its images. The basename is escaped once where it is computed, which also covers the stats label it feeds. The OCR text beside it was already fenced separately.',
   'hooks_tool_failure.ts::postToolUseFailureHandler':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
+  'call_streak.ts::trackedLine':
+    'Emits batchHintText or searchBrakeText, whose only interpolation is a streak count this module computed; the command in the brake is a fixed template with placeholder arguments. No path, pattern, command or tool name from the payload is echoed.',
+  'call_streak.ts::onReadOnlyPre': 'Reaches the channel only through trackedLine. Interpolates nothing of its own.',
+  'call_streak.ts::onSearchMiss': 'Reaches the channel only through trackedLine. Interpolates nothing of its own.',
+  'call_streak.ts::onReadOnlyPost': 'Reaches the channel only through onSearchMiss. Interpolates nothing of its own.',
+  'call_streak.ts::applyCallStreak': 'Appends the line trackedLine returned to the handlers\' own answer, or wraps it alone. Interpolates nothing of its own.',
+  'call_streak.ts::callStreakAfterFailure': 'Wraps the brake line onSearchMiss returned. Interpolates nothing of its own.',
   'hooks_session_start.ts::sessionStartHandler':
     'Three contributors. reconcileNote emits counts only. The delta capsule lists paths from files a Read touched, escaped in evidence_cache.ts. The DB health message is text token-goat authored itself.',
   'hooks_edit.ts::postEditHandlerInner':
@@ -90,9 +58,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'One site, reached through quietContextOutput. Its path comes through the same displaySafePath-derived `shown` the pre-read hints use.',
   'hooks_agent_spawn.ts::postAgentHandler':
     'The unrestricted-spawn advisory names agent definitions from a roster that includes the project you are in. AGENT_NAME_RE constrains the name at the parser and neutralizeSpokenMarkers escapes it again at the sentence, so widening the character set cannot quietly reopen it.',
-  // The six below are outer handlers whose whole contribution is a try/catch and a dispatch to the
-  // Inner adjudicated above them. They are in the population because the walk is transitive, which
-  // is the right default: a wrapper that started composing its own text would otherwise be invisible.
+  // The six below are outer handlers whose whole contribution is a try/catch and a dispatch to the Inner adjudicated above them. They are in the population because the walk is transitive, which is the right default: a wrapper that started composing its own text would otherwise be invisible.
   'hooks_bash.ts::preBashHandler': 'Wrapper over preBashHandlerInner. Interpolates nothing of its own.',
   'hooks_bash.ts::postBashHandler': 'Wrapper over the post-Bash path. Interpolates nothing of its own.',
   'hooks_edit.ts::postEditHandler': 'Wrapper over postEditHandlerInner. Interpolates nothing of its own.',
@@ -102,14 +68,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Wrapper that dispatches to finalizeShrinkResult, adjudicated above. Interpolates nothing of its own.',
 }
 
-/**
- * How many functions must reach the channel for this file to be saying anything.
- *
- * CAPTURE: 21 reached it against the build at the time this was written. The floor sits below that
- * so an ordinary refactor merging two handlers does not fire it, and far enough above zero that the
- * failure this guard exists to prevent -- the scan matching nothing and every assertion passing on
- * an empty set -- cannot come back quietly.
- */
+/** How many functions must reach the channel for this file to be saying anything. CAPTURE: 21 reached it against the build at the time this was written. The floor sits below that so an ordinary refactor merging two handlers does not fire it, and far enough above zero that the failure this guard exists to prevent -- the scan matching nothing and every assertion passing on an empty set -- cannot come back quietly. */
 const POPULATION_FLOOR = 15
 
 function srcFiles(): string[] {
@@ -140,8 +99,7 @@ describe('every function on the context channel has been adjudicated', () => {
       what: 'functions reaching contextOutput in src/*.ts',
       items: contextSites(),
       floor: POPULATION_FLOOR,
-      // Named individually rather than trusted to the count: a rename leaves the total intact while
-      // silently dropping the one entry that mattered, and the union being non-empty hides it.
+      // Named individually rather than trusted to the count: a rename leaves the total intact while silently dropping the one entry that mattered, and the union being non-empty hides it.
       mustInclude: ['hooks_bash.ts::preBashHandlerInner', 'image_shrink.ts::finalizeShrinkResult'],
     })
   })
@@ -162,17 +120,13 @@ describe('every function on the context channel has been adjudicated', () => {
         unadjudicated.join('\n  '),
     ).toEqual([])
 
-    // The other direction, so the list cannot rot into a description of a codebase that has moved.
-    // A stale key reads as coverage of something that no longer exists.
+    // The other direction, so the list cannot rot into a description of a codebase that has moved. A stale key reads as coverage of something that no longer exists.
     const stale = Object.keys(ADJUDICATED).filter((k) => !found.includes(k))
     expect(stale, `ADJUDICATED names functions that no longer reach contextOutput:\n  ${stale.join('\n  ')}`).toEqual([])
   })
 
   it('keeps the escaping helper reachable from the sites that promised to use it', () => {
-    // The entries above are prose, and prose cannot fail. These four promised a specific mechanism,
-    // so the mechanism is asserted directly: if someone removes the call the entry describes, the
-    // entry becomes a false exemption, which is worse than no entry at all because it reads as a
-    // decision somebody made.
+    // The entries above are prose, and prose cannot fail. These four promised a specific mechanism, so the mechanism is asserted directly: if someone removes the call the entry describes, the entry becomes a false exemption, which is worse than no entry at all because it reads as a decision somebody made.
     const bash = fs.readFileSync(path.join(SRC_DIR, 'hooks_bash.ts'), 'utf8')
     expect(bash).not.toMatch(/const hintPath = cdStripped \?/)
     expect(bash.match(/const hintPath = displaySafePath\(cdStripped \?/g) ?? []).not.toHaveLength(0)

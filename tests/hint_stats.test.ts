@@ -33,22 +33,12 @@ function nonce(): string {
   return `hs${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
 
-/**
- * A real correlator that nothing in the test will ever mention, for the seeds below that only need
- * "this category emitted and nobody followed through". They used to pass `null`, which now marks a
- * row unobservable -- excluded from the efficacy sample entirely rather than counted as a miss --
- * so a null here would seed nothing at all. Unique per call so two seeds never credit each other.
- */
+/** A real correlator that nothing in the test will ever mention, for the seeds below that only need "this category emitted and nobody followed through". They used to pass `null`, which now marks a row unobservable -- excluded from the efficacy sample entirely rather than counted as a miss -- so a null here would seed nothing at all. Unique per call so two seeds never credit each other. */
 function unfollowed(): string {
   return `C:/repo/src/unfollowed-${Math.random().toString(36).slice(2, 10)}.ts`
 }
 
-/**
- * The suppression-category counterpart: a hint whose warned-against re-read never happened, which
- * is the absence that books compliance. Spelled as a real pointer plus an expiring window rather
- * than as a null correlator, because those are now different things -- the first is an observed
- * compliance, the second is no observation at all.
- */
+/** The suppression-category counterpart: a hint whose warned-against re-read never happened, which is the absence that books compliance. Spelled as a real pointer plus an expiring window rather than as a null correlator, because those are now different things -- the first is an observed compliance, the second is no observation at all. */
 function seedComplied(category: 'read_reread_dedup' | 'read_structural_nav' | 'edit_reread_suggest', bytesEmitted: number | null = null): void {
   const session = nonce()
   logHintEmission(category, session, unfollowed(), false, bytesEmitted)
@@ -77,8 +67,7 @@ function readEvent(sessionId: string, filePath: string): HookEvent {
   }
 }
 
-// saveConfig does not create configPath()'s parent directory itself; make sure it
-// exists before writing (same pattern as bash_runner.test.ts / tool_filters_*.test.ts).
+// saveConfig does not create configPath()'s parent directory itself; make sure it exists before writing (same pattern as bash_runner.test.ts / tool_filters_*.test.ts).
 fs.mkdirSync(path.dirname(configPath()), { recursive: true })
 
 beforeEach(() => {
@@ -89,18 +78,7 @@ beforeEach(() => {
 afterEach(() => {
   resetHintStats()
   clearModuleCaches()
-  // Regression (#50): several tests in this file call saveConfig() against the real,
-  // unmocked configPath() -- which resolves to the DATA_DIR shared by every test file
-  // running in this vitest worker (isolate-home.ts pins DATA_DIR per worker PID, not per
-  // file). saveConfig() always serializes the FULL config object, so even a test that
-  // only means to set hint_stats.min_sample_size also persists an explicit
-  // compact_assist.auto_trigger_multiplier at its default value. Left uncleaned, that
-  // flips isAutoTriggerMultiplierExplicit() to true for the rest of this worker's test
-  // run, corrupting getContextPressure()'s tier/fillFraction for any sibling test file
-  // that relies on the harness-default multiplier (observed in
-  // cache_session_commands.test.ts's tier assertion). Restore the shared config.toml to
-  // its absent/default state after every test, the same way tool_filters_git.test.ts,
-  // tool_filters_misc.test.ts, and tool_filters_shell_file.test.ts already do.
+  // Regression (#50): several tests in this file call saveConfig() against the real, unmocked configPath() -- which resolves to the DATA_DIR shared by every test file running in this vitest worker (isolate-home.ts pins DATA_DIR per worker PID, not per file). saveConfig() always serializes the FULL config object, so even a test that only means to set hint_stats.min_sample_size also persists an explicit compact_assist.auto_trigger_multiplier at its default value. Left uncleaned, that flips isAutoTriggerMultiplierExplicit() to true for the rest of this worker's test run, corrupting getContextPressure()'s tier/fillFraction for any sibling test file that relies on the harness-default multiplier (observed in cache_session_commands.test.ts's tier assertion). Restore the shared config.toml to its absent/default state after every test, the same way tool_filters_git.test.ts, tool_filters_misc.test.ts, and tool_filters_shell_file.test.ts already do.
   invalidateConfigCache()
   try {
     fs.unlinkSync(configPath())
@@ -110,7 +88,7 @@ afterEach(() => {
 })
 
 describe('isHintCategory', () => {
-  it('accepts exactly the five tracked categories', () => {
+  it('accepts exactly the tracked categories', () => {
     for (const c of HINT_CATEGORIES) {
       expect(isHintCategory(c)).toBe(true)
     }
@@ -136,15 +114,7 @@ describe('extractPathCorrelator', () => {
     expect(extractPathCorrelator('See C:/repo/file.ts for details.')).toBe('C:/repo/file.ts')
   })
 
-  // Regression: hint text templates in hooks_edit.ts/hooks_read.ts splice a literal
-  // `::<placeholder>` (e.g. `::HeadingName`, `::SectionName`, `::<field>`, `::Symbol`,
-  // `::SymbolName`, `::name`, or a bracketed `::<...>` name) onto the real path so a human
-  // reads it as "put a heading/symbol name here" -- not a real value. An agent that actually
-  // follows the hint substitutes its own concrete heading/symbol, so isActedOn's
-  // `command.includes(correlator)` check could never match if the correlator kept the literal
-  // placeholder text, permanently pinning the category's efficacy at 0% and triggering
-  // auto-suppression despite perfect real-world follow-through. The correlator must therefore
-  // be just the bare path when the `::` suffix is one of these known placeholders.
+  // Regression: hint text templates in hooks_edit.ts/hooks_read.ts splice a literal `::<placeholder>` (e.g. `::HeadingName`, `::SectionName`, `::<field>`, `::Symbol`, `::SymbolName`, `::name`, or a bracketed `::<...>` name) onto the real path so a human reads it as "put a heading/symbol name here" -- not a real value. An agent that actually follows the hint substitutes its own concrete heading/symbol, so isActedOn's `command.includes(correlator)` check could never match if the correlator kept the literal placeholder text, permanently pinning the category's efficacy at 0% and triggering auto-suppression despite perfect real-world follow-through. The correlator must therefore be just the bare path when the `::` suffix is one of these known placeholders.
   it('strips a known literal placeholder suffix, keeping only the bare path', () => {
     expect(extractPathCorrelator('Use `token-goat section "C:/repo/README.md::HeadingName"` to re-read a specific section.')).toBe('C:/repo/README.md')
     expect(extractPathCorrelator('Use `token-goat section "' + '/a/b.md' + '::SectionName"` to read one section.')).toBe('/a/b.md')
@@ -152,11 +122,7 @@ describe('extractPathCorrelator', () => {
     expect(extractPathCorrelator('Use `token-goat read "' + '/a/b.ts' + '::SymbolName"` for one function.')).toBe('/a/b.ts')
   })
 
-  // Regression: hooks_bash.ts's markdown-heading-grep and extractNodeFileRead hints splice
-  // `::Heading`, `::sectionName`, and `::table_name` onto the real path, but none of the three
-  // were in KNOWN_CORRELATOR_PLACEHOLDERS -- the exact same permanently-pinned-at-0%-efficacy
-  // bug the placeholder set exists to prevent, just for a hint family not covered by the
-  // original regression test above.
+  // Regression: hooks_bash.ts's markdown-heading-grep and extractNodeFileRead hints splice `::Heading`, `::sectionName`, and `::table_name` onto the real path, but none of the three were in KNOWN_CORRELATOR_PLACEHOLDERS -- the exact same permanently-pinned-at-0%-efficacy bug the placeholder set exists to prevent, just for a hint family not covered by the original regression test above.
   it('strips the hooks_bash.ts placeholder suffixes (Heading, sectionName, table_name)', () => {
     expect(extractPathCorrelator('Use `token-goat outline "/a/b.md"` to get all headings — then `token-goat section "/a/b.md::Heading"` to read one section.')).toBe('/a/b.md')
     expect(extractPathCorrelator('Use `token-goat config-get "/a/b.yaml" KEY_NAME` or `token-goat section "/a/b.yaml::sectionName"` to read a specific value.')).toBe('/a/b.yaml')
@@ -194,9 +160,7 @@ describe('classifyBashHint', () => {
   it('classifies a surgical-redirect hint by its embedded path when no bash-output id is present', () => {
     const result = classifyBashHint('`cat` loads the entire file into context. Use `token-goat read "C:/repo/file.ts::SymbolName"` to read one function or class.')
     expect(result.category).toBe('bash_redirect')
-    // Regression: "SymbolName" is the literal placeholder this hint text template splices onto
-    // the path -- an agent following the hint substitutes a real symbol name, so the correlator
-    // must be the bare path (see extractPathCorrelator's regression test for the full explanation).
+    // Regression: "SymbolName" is the literal placeholder this hint text template splices onto the path -- an agent following the hint substitutes a real symbol name, so the correlator must be the bare path (see extractPathCorrelator's regression test for the full explanation).
     expect(result.correlator).toBe('C:/repo/file.ts')
   })
 
@@ -225,10 +189,7 @@ describe('classifyEditHint', () => {
   it('always classifies as edit_reread_suggest', () => {
     const result = classifyEditHint('README.md was edited. Use `token-goat section "C:/repo/README.md::HeadingName"` to re-read a specific section.')
     expect(result.category).toBe('edit_reread_suggest')
-    // Regression: "HeadingName" is the literal placeholder this hint text template splices onto
-    // the path -- an agent following the hint substitutes a real heading, so the correlator must
-    // be the bare path, not the placeholder text (see extractPathCorrelator's regression test
-    // above for the full explanation).
+    // Regression: "HeadingName" is the literal placeholder this hint text template splices onto the path -- an agent following the hint substitutes a real heading, so the correlator must be the bare path, not the placeholder text (see extractPathCorrelator's regression test above for the full explanation).
     expect(result.correlator).toBe('C:/repo/README.md')
   })
 })
@@ -244,11 +205,7 @@ describe('logHintEmission', () => {
     expect(row).toBeDefined()
     expect(row?.resolved).toBe(0)
     expect(row?.acted_on).toBe(0)
-    // Pins the actual default (hint_stats.ts's private ACTED_ON_WINDOW = 5) rather than just
-    // "some positive number" -- a `toBeGreaterThan(0)` here would pass unchanged even if a
-    // regression made every emission carry the compensateSelfResolve +1 bump regardless of the
-    // call site (this call passes no fourth argument, so compensateSelfResolve defaults false
-    // and calls_remaining must be exactly ACTED_ON_WINDOW, not ACTED_ON_WINDOW + 1).
+    // Pins the actual default (hint_stats.ts's private ACTED_ON_WINDOW = 5) rather than just "some positive number" -- a `toBeGreaterThan(0)` here would pass unchanged even if a regression made every emission carry the compensateSelfResolve +1 bump regardless of the call site (this call passes no fourth argument, so compensateSelfResolve defaults false and calls_remaining must be exactly ACTED_ON_WINDOW, not ACTED_ON_WINDOW + 1).
     expect(row?.calls_remaining).toBe(5)
   })
 
@@ -261,11 +218,7 @@ describe('logHintEmission', () => {
     expect(row?.acted_on).toBe(0)
   })
 
-  // This used to assert the opposite -- that a correlator-less emission counted toward `emitted`
-  // with acted_on 0. It was changed deliberately, not because it was inconvenient: a row carrying
-  // no pointer cannot be matched by any later command, so booking it a miss reports a verdict
-  // nobody observed. On the live ledger that was 174 of bash_redirect's 698 rows. See
-  // tests/hint_unobservable_rows.test.ts for the full contract; this pins the `emitted` half of it.
+  // This used to assert the opposite -- that a correlator-less emission counted toward `emitted` with acted_on 0. It was changed deliberately, not because it was inconvenient: a row carrying no pointer cannot be matched by any later command, so booking it a miss reports a verdict nobody observed. On the live ledger that was 174 of bash_redirect's 698 rows. See tests/hint_unobservable_rows.test.ts for the full contract; this pins the `emitted` half of it.
   it('does not count toward emitted with a null correlator, and is disclosed separately', () => {
     const n = nonce()
     logHintEmission('bash_redirect', n, null)
@@ -313,8 +266,7 @@ describe('getHintStatsSummary — spend (bytesEmitted/legacyEmissions)', () => {
   })
 
   it('reports bytesEmitted null (not a fake 0) when every emission predates spend tracking', () => {
-    // Simulates a pre-migration row: bytes_emitted left unset, same shape the v9->v10 ALTER
-    // TABLE migration leaves a pre-existing row in (see db.test.ts's v9->v10 migration test).
+    // Simulates a pre-migration row: bytes_emitted left unset, same shape the v9->v10 ALTER TABLE migration leaves a pre-existing row in (see db.test.ts's v9->v10 migration test).
     seedComplied('edit_reread_suggest')
     seedComplied('edit_reread_suggest')
     const summary = getHintStatsSummary()
@@ -365,17 +317,11 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.resolved).toBe(1)
   })
 
-  // Regression (mutation-testing gap): isActedOn requires a bash_recall's later command to
-  // contain the literal substring 'bash-output', not merely mention the exact correlator id
-  // somewhere in a token-goat invocation -- an id could coincidentally reappear as an argument
-  // to a completely different subcommand. Dropping that requirement still passed the full
-  // suite, since no existing fixture exercises a token-goat command that mentions the correlator
-  // without also being a bash-output call.
+  // Regression (mutation-testing gap): isActedOn requires a bash_recall's later command to contain the literal substring 'bash-output', not merely mention the exact correlator id somewhere in a token-goat invocation -- an id could coincidentally reappear as an argument to a completely different subcommand. Dropping that requirement still passed the full suite, since no existing fixture exercises a token-goat command that mentions the correlator without also being a bash-output call.
   it('does not credit acted_on for bash_recall when the correlator id appears in an unrelated token-goat subcommand, not a bash-output call', () => {
     const n = nonce()
     logHintEmission('bash_recall', n, 'ab12cd34')
-    // The id reappears verbatim as, say, a grep pattern argument to an unrelated subcommand --
-    // never actually recalling the cached output the hint pointed at.
+    // The id reappears verbatim as, say, a grep pattern argument to an unrelated subcommand -- never actually recalling the cached output the hint pointed at.
     resolvePendingHintsForEvent(bashEvent(n, 'token-goat grep ab12cd34'))
 
     const db = getDb(globalDbPath())
@@ -386,9 +332,7 @@ describe('resolvePendingHintsForEvent', () => {
   it('does not credit acted_on when a later command touches a different file that merely shares the correlator as a prefix (e.g. foo.ts vs foo.tsx)', () => {
     const n = nonce()
     logHintEmission('bash_redirect', n, 'C:/repo/foo.ts')
-    // foo.tsx is a distinct, unrelated file whose path happens to start with the exact
-    // correlator text 'C:/repo/foo.ts' -- a naive `command.includes(correlator)` check would
-    // wrongly credit this as following the hint about foo.ts.
+    // foo.tsx is a distinct, unrelated file whose path happens to start with the exact correlator text 'C:/repo/foo.ts' -- a naive `command.includes(correlator)` check would wrongly credit this as following the hint about foo.ts.
     resolvePendingHintsForEvent(bashEvent(n, 'token-goat read "C:/repo/foo.tsx::Foo"'))
 
     const db = getDb(globalDbPath())
@@ -406,12 +350,7 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.acted_on).toBe(0)
   })
 
-  // Regression: commandMentionsCorrelator only checked the character AFTER a substring match
-  // (guarding the prefix-collision direction above, e.g. ab12 vs ab1234), never the character
-  // BEFORE it -- so a later id that merely shares the correlator as a SUFFIX of a longer,
-  // distinct token (e.g. correlator '1234abcd' inside 'x1234abcd') was wrongly credited as
-  // acted-on. Mirrors read_commands.ts's endsWithPathBoundary / coverage_query.ts's
-  // endsWithPathBoundaryLocal convention, which both guard the boundary on the side missing here.
+  // Regression: commandMentionsCorrelator only checked the character AFTER a substring match (guarding the prefix-collision direction above, e.g. ab12 vs ab1234), never the character BEFORE it -- so a later id that merely shares the correlator as a SUFFIX of a longer, distinct token (e.g. correlator '1234abcd' inside 'x1234abcd') was wrongly credited as acted-on. Mirrors read_commands.ts's endsWithPathBoundary / coverage_query.ts's endsWithPathBoundaryLocal convention, which both guard the boundary on the side missing here.
   it('does not credit acted_on for bash_recall when a later id merely shares the correlator as a suffix (e.g. 1234abcd vs x1234abcd)', () => {
     const n = nonce()
     logHintEmission('bash_recall', n, '1234abcd')
@@ -441,9 +380,7 @@ describe('resolvePendingHintsForEvent', () => {
   it('resolves exactly on the ACTED_ON_WINDOW-th unrelated call, not one call earlier or later', () => {
     const n = nonce()
     logHintEmission('bash_redirect', n, 'C:/repo/file.ts')
-    // ACTED_ON_WINDOW is 5 (see the module doc comment) -- 4 unrelated calls must leave the row
-    // pending (calls_remaining decrements to 1, not 0), and the 5th must be the one that flips it
-    // to resolved. A `calls_remaining < 0` off-by-one would instead require a 6th call.
+    // ACTED_ON_WINDOW is 5 (see the module doc comment) -- 4 unrelated calls must leave the row pending (calls_remaining decrements to 1, not 0), and the 5th must be the one that flips it to resolved. A `calls_remaining < 0` off-by-one would instead require a 6th call.
     for (let i = 0; i < 4; i++) {
       resolvePendingHintsForEvent(readEvent(n, `C:/repo/unrelated-${i}.ts`))
     }
@@ -470,9 +407,7 @@ describe('resolvePendingHintsForEvent', () => {
   })
 
   it('does not credit acted_on when "token-goat" only appears as a path segment, not an actual CLI invocation', () => {
-    // This project's own working directory is literally named "token-goat", so a command that
-    // re-runs the exact wasteful pattern the hint warned about -- but whose target path merely
-    // lies inside this repo -- must not falsely satisfy the "did the agent invoke token-goat" check.
+    // This project's own working directory is literally named "token-goat", so a command that re-runs the exact wasteful pattern the hint warned about -- but whose target path merely lies inside this repo -- must not falsely satisfy the "did the agent invoke token-goat" check.
     const n = nonce()
     const correlator = 'C:/Projects/token-goat/src/hint_stats.ts'
     logHintEmission('bash_redirect', n, correlator)
@@ -522,11 +457,7 @@ describe('efficacy calculation', () => {
     const n1 = nonce()
     const n2 = nonce()
     const n3 = nonce()
-    // A redirect category is the right vehicle for this arithmetic: it is the polarity where a
-    // hint that times out unfollowed genuinely means "not acted on", so the 1-of-3 split the
-    // percentage is checked against is real. A suppression category would give 3 of 3 here,
-    // because leaving b.ts and c.ts unread is precisely what those hints asked for -- see
-    // 'acted-on polarity for suppression-shaped hints' below.
+    // A redirect category is the right vehicle for this arithmetic: it is the polarity where a hint that times out unfollowed genuinely means "not acted on", so the 1-of-3 split the percentage is checked against is real. A suppression category would give 3 of 3 here, because leaving b.ts and c.ts unread is precisely what those hints asked for -- see 'acted-on polarity for suppression-shaped hints' below.
     logHintEmission('bash_redirect', n1, 'C:/repo/a.ts')
     logHintEmission('bash_redirect', n2, 'C:/repo/b.ts')
     logHintEmission('bash_redirect', n3, 'C:/repo/c.ts')
@@ -599,9 +530,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     cfg.hint_stats.suppress_threshold_pct = 50
     saveConfig(cfg)
 
-    // bash_redirect (not a suppression category): its null-correlator row books acted_on=0,
-    // same as before this fix's polarity change to read_structural_nav -- keeps this test's
-    // threshold/sample-size scaffold orthogonal to that fix.
+    // bash_redirect (not a suppression category): its null-correlator row books acted_on=0, same as before this fix's polarity change to read_structural_nav -- keeps this test's threshold/sample-size scaffold orthogonal to that fix.
     const nActed = nonce()
     logHintEmission('bash_redirect', nActed, 'C:/repo/a.ts')
     resolvePendingHintsForEvent(bashEvent(nActed, 'token-goat skeleton "C:/repo/a.ts"'))
@@ -616,10 +545,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
 
-  // Regression (mutation-testing gap): getHintStatsSummary's per-category `suppressed` field is
-  // never asserted anywhere else in this file (every other test only checks emitted/actedOn/
-  // efficacyPct, or calls the standalone shouldSuppress() directly). Hardcoding
-  // `suppressed: false` in getHintStatsSummary still passed the full suite.
+  // Regression (mutation-testing gap): getHintStatsSummary's per-category `suppressed` field is never asserted anywhere else in this file (every other test only checks emitted/actedOn/ efficacyPct, or calls the standalone shouldSuppress() directly). Hardcoding `suppressed: false` in getHintStatsSummary still passed the full suite.
   it('reflects a suppressed category in getHintStatsSummary\'s per-category suppressed field', () => {
     const cfg = defaultConfig()
     cfg.hint_stats.min_sample_size = 1
@@ -717,11 +643,7 @@ describe('applyHintTracking', () => {
     const result = applyHintTracking(event, contextOut, classify)
     expect(result).toEqual({ hookType: 'pass' })
 
-    // No DISPLAYED emission: the agent saw nothing, so nothing may be scored against it. The
-    // suppressed detection does now leave a zero-byte displayed=0 row, which is the point of that
-    // column -- without it a category muted into silence and one whose trigger stopped firing are
-    // indistinguishable in the ledger. This assertion moved from "no row" to "no displayed row"
-    // for that reason; tests/hint_undisplayed_detections.test.ts pins the row's own shape.
+    // No DISPLAYED emission: the agent saw nothing, so nothing may be scored against it. The suppressed detection does now leave a zero-byte displayed=0 row, which is the point of that column -- without it a category muted into silence and one whose trigger stopped firing are indistinguishable in the ledger. This assertion moved from "no row" to "no displayed row" for that reason; tests/hint_undisplayed_detections.test.ts pins the row's own shape.
     const db = getDb(globalDbPath())
     const shown = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ? AND displayed = 1').get(n) as { n: number }
     expect(shown.n).toBe(0)
@@ -731,9 +653,7 @@ describe('applyHintTracking', () => {
 
   it('preserves the full ACTED_ON_WINDOW of genuinely subsequent chances for a pre_tool_use-emitted hint, despite the guaranteed self-resolving post_tool_use pass for the same tool call', () => {
     const n = nonce()
-    // preBashHandler fires on pre_tool_use — the real production caller of applyHintTracking for
-    // bash_redirect hints. Its own post_tool_use event for this SAME command is guaranteed to run
-    // resolvePendingHintsForEvent next, before any genuinely later tool call can occur.
+    // preBashHandler fires on pre_tool_use — the real production caller of applyHintTracking for bash_redirect hints. Its own post_tool_use event for this SAME command is guaranteed to run resolvePendingHintsForEvent next, before any genuinely later tool call can occur.
     const triggerCommand = 'cat C:/repo/file.ts'
     const preEvent: HookEvent = { eventName: 'pre_tool_use', toolName: 'Bash', toolInput: { command: triggerCommand }, sessionId: n, agentId: undefined, raw: {} }
     const contextOut = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/file.ts::Foo"` instead.' }
@@ -787,13 +707,7 @@ describe('isProbeOccasion', () => {
   })
 })
 
-// Regression: applyHintTracking only ever reached logHintEmission on the NOT-suppressed branch,
-// so once a category crossed shouldSuppress's threshold it could never accumulate fresh
-// acted-on signal and stayed suppressed permanently, with no recovery path short of a manual
-// `--mark-effective` override or a full `--reset`. hints.backoff_thresholds now fixes this by
-// letting a scheduled occasion through as a real, logged "probe" -- these tests would fail on
-// the pre-fix code (which had no isProbeOccasion, no hint_suppression_probes counter, and always
-// returned passOutput() for a suppressed occasion with nothing ever logged).
+// Regression: applyHintTracking only ever reached logHintEmission on the NOT-suppressed branch, so once a category crossed shouldSuppress's threshold it could never accumulate fresh acted-on signal and stayed suppressed permanently, with no recovery path short of a manual `--mark-effective` override or a full `--reset`. hints.backoff_thresholds now fixes this by letting a scheduled occasion through as a real, logged "probe" -- these tests would fail on the pre-fix code (which had no isProbeOccasion, no hint_suppression_probes counter, and always returned passOutput() for a suppressed occasion with nothing ever logged).
 describe('probe recovery (hints.backoff_thresholds)', () => {
   const classify = (text: string): { category: 'bash_redirect'; correlator: string | null } => ({ category: 'bash_redirect', correlator: extractPathCorrelator(text) })
 
@@ -809,8 +723,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     logHintEmission('bash_redirect', seedSession, unfollowed())
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
-    // Occasion 1 while suppressed matches backoff_thresholds' single threshold (1) -- must probe:
-    // shown to the caller AND logged as a real emission, unlike an ordinary suppressed occasion.
+    // Occasion 1 while suppressed matches backoff_thresholds' single threshold (1) -- must probe: shown to the caller AND logged as a real emission, unlike an ordinary suppressed occasion.
     const n = nonce()
     const event = bashEvent(n, 'cat C:/repo/probe.ts')
     const contextOut = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/probe.ts::Foo"` instead.' }
@@ -848,9 +761,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
       const contextOut = { hookType: 'context' as const, context: `Use \`token-goat read "C:/repo/skip-${i}.ts::Foo"\` instead.` }
       const result = applyHintTracking(event, contextOut, classify)
       expect(result).toEqual({ hookType: 'pass' })
-      // Silently suppressed means the agent was told nothing, not that the ledger forgot: the
-      // occasion leaves a zero-byte displayed=0 row so the backoff schedule's own denominator is
-      // recoverable later. See the same assertion's sibling above for why it moved.
+      // Silently suppressed means the agent was told nothing, not that the ledger forgot: the occasion leaves a zero-byte displayed=0 row so the backoff schedule's own denominator is recoverable later. See the same assertion's sibling above for why it moved.
       const db = getDb(globalDbPath())
       const shown = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ? AND displayed = 1').get(n) as { n: number }
       expect(shown.n).toBe(0)
@@ -888,26 +799,16 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
 
-  // Regression (mutation-testing gap): applyHintTracking's not-suppressed branch calls
-  // resetSuppressionStreak so a fresh suppression episode's backoff schedule restarts from
-  // occasion 1, rather than continuing the streak accumulated by a PRIOR suppression episode
-  // that has since lifted. Dropping that reset call still passed the full suite, since every
-  // other probe-recovery test only ever exercises one continuous suppression episode -- none
-  // lift suppression, let it re-trigger, and then check whether the backoff schedule restarted.
+  // Regression (mutation-testing gap): applyHintTracking's not-suppressed branch calls resetSuppressionStreak so a fresh suppression episode's backoff schedule restarts from occasion 1, rather than continuing the streak accumulated by a PRIOR suppression episode that has since lifted. Dropping that reset call still passed the full suite, since every other probe-recovery test only ever exercises one continuous suppression episode -- none lift suppression, let it re-trigger, and then check whether the backoff schedule restarted.
   it('restarts the backoff streak from occasion 1 when a fresh suppression episode begins after a prior one lifted', () => {
     const cfg = defaultConfig()
     cfg.hint_stats.min_sample_size = 1
     cfg.hint_stats.suppress_threshold_pct = 50
-    // [1, 5], not just [1]: with a sole threshold of 1, isProbeOccasion's "every multiple of the
-    // largest threshold" fallback makes every occasion >= 1 probe regardless of the streak's
-    // actual value, which would make this test pass even without the streak reset. A leftover
-    // (unreset) streak of 1 bumped to 2 for episode 2's first call must NOT match [1, 5] (2 is
-    // in neither the list nor a multiple of 5), so only a genuinely-reset streak of 1 probes.
+    // [1, 5], not just [1]: with a sole threshold of 1, isProbeOccasion's "every multiple of the largest threshold" fallback makes every occasion >= 1 probe regardless of the streak's actual value, which would make this test pass even without the streak reset. A leftover (unreset) streak of 1 bumped to 2 for episode 2's first call must NOT match [1, 5] (2 is in neither the list nor a multiple of 5), so only a genuinely-reset streak of 1 probes.
     cfg.hints.backoff_thresholds = [1, 5]
     saveConfig(cfg)
 
-    // Episode 1: seed a 0%-acted-on emission -> suppressed. Occasion 1 matches threshold [1] and
-    // probes through.
+    // Episode 1: seed a 0%-acted-on emission -> suppressed. Occasion 1 matches threshold [1] and probes through.
     const seedSession = nonce()
     logHintEmission('bash_redirect', seedSession, unfollowed())
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
@@ -917,23 +818,18 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     const probeContext = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/probe.ts::Foo"` instead.' }
     expect(applyHintTracking(probeEvent, probeContext, classify)).toEqual(probeContext) // probed through
 
-    // Act on the probe's own pointer: emitted=2, actedOn=1 -> 50%, not below a 50% threshold ->
-    // suppression genuinely lifts (a fresh episode, not just a probe).
+    // Act on the probe's own pointer: emitted=2, actedOn=1 -> 50%, not below a 50% threshold -> suppression genuinely lifts (a fresh episode, not just a probe).
     resolvePendingHintsForEvent(bashEvent(probeSession, 'token-goat read "C:/repo/probe.ts::Foo"'))
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
 
-    // This not-suppressed call must reset the streak, AND its own never-acted-on emission tips
-    // the cumulative percentage back below threshold (emitted=3, actedOn=1 -> 33.3%), so the
-    // category is suppressed again for the NEXT call -- episode 2 begins here.
+    // This not-suppressed call must reset the streak, AND its own never-acted-on emission tips the cumulative percentage back below threshold (emitted=3, actedOn=1 -> 33.3%), so the category is suppressed again for the NEXT call -- episode 2 begins here.
     const liftedSession = nonce()
     const liftedEvent = bashEvent(liftedSession, 'cat C:/repo/lifted.ts')
     const liftedContext = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/lifted.ts::Foo"` instead.' }
     expect(applyHintTracking(liftedEvent, liftedContext, classify)).toEqual(liftedContext) // shown: not suppressed yet
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true) // suppressed again starting now
 
-    // Episode 2, occasion 1: if the streak was properly reset to 0, this is occasion 1 again,
-    // which matches threshold [1] and must probe through -- not stay silently suppressed as it
-    // would if the streak had kept counting up from episode 1's leftover value.
+    // Episode 2, occasion 1: if the streak was properly reset to 0, this is occasion 1 again, which matches threshold [1] and must probe through -- not stay silently suppressed as it would if the streak had kept counting up from episode 1's leftover value.
     const episode2Session = nonce()
     const episode2Event = bashEvent(episode2Session, 'cat C:/repo/episode2.ts')
     const episode2Context = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/episode2.ts::Foo"` instead.' }
@@ -956,11 +852,7 @@ describe('manual marks', () => {
   })
 })
 
-// HAND-DERIVED: hint_emissions/hint_suppression_probes have no retention policy (resetHintStats
-// only clears everything, on demand) -- recordStat's real maintenance entry point (stats.ts's
-// maybeRunStatsMaintenance, throttled via the shared stats_maintenance row) must age hint_emissions
-// out the same way it already does for `stats`, without changing shouldSuppress's verdict since
-// categoryStats aggregates hint_emissions all-time with no window of its own.
+// HAND-DERIVED: hint_emissions/hint_suppression_probes have no retention policy (resetHintStats only clears everything, on demand) -- recordStat's real maintenance entry point (stats.ts's maybeRunStatsMaintenance, throttled via the shared stats_maintenance row) must age hint_emissions out the same way it already does for `stats`, without changing shouldSuppress's verdict since categoryStats aggregates hint_emissions all-time with no window of its own.
 describe('pruneHintEmissions (retention via the shared stats maintenance throttle)', () => {
   it('deletes hint_emissions rows older than the retention window and leaves recent rows, keeping shouldSuppress\'s verdict unchanged', () => {
     const cfg = defaultConfig()
@@ -1056,10 +948,7 @@ describe('getHintStatsTotals harness scope', () => {
   })
 })
 
-// Regression (#50): a saveConfig() call in this file used to leave the real, shared
-// per-worker config.toml behind, silently persisting an explicit
-// compact_assist.auto_trigger_multiplier (at its default value) that corrupted
-// getContextPressure() for any sibling test file sharing this worker.
+// Regression (#50): a saveConfig() call in this file used to leave the real, shared per-worker config.toml behind, silently persisting an explicit compact_assist.auto_trigger_multiplier (at its default value) that corrupted getContextPressure() for any sibling test file sharing this worker.
 describe('config isolation (regression #50)', () => {
   it('restores the shared config.toml to absent after a test that calls saveConfig', () => {
     const cfg = defaultConfig()
@@ -1073,28 +962,7 @@ describe('config isolation (regression #50)', () => {
   })
 })
 
-/**
- * Polarity regression: a hint that asks for an absence must be scored on that absence.
- *
- * `read_reread_dedup` and `edit_reread_suggest` say "you already have this file, don't read it
- * again." Doing what they ask means issuing no command at all, but `isActedOn` credits follow-through
- * only when a later Bash command invokes token-goat AND names the correlator. So every one of those
- * rows resolved `acted_on = 0` however well the hint worked, the two categories sat at exactly 0%
- * efficacy, and `shouldSuppress` muted each for good once `min_sample_size` (default 5) rows had
- * accrued -- the hints that save a whole file read were the first to switch themselves off, on
- * evidence that could not exist. Observed live: those two categories at 0.0% on 5 emissions each and
- * both suppressed, while all three redirect categories scored above zero.
- *
- * Why didn't a test catch this: every existing case in this file drives the acted-on path with a
- * follow-up `token-goat ...` command, which is the redirect categories' compliance shape. No case
- * ever let a suppression hint's window simply expire and then asked what that meant, because the
- * expiry branch looked like uninteresting bookkeeping shared by all five categories. The gap was in
- * which category was fed to the shared branch, not in the branch's logic, so exercising the existing
- * cases harder could never reach it.
- *
- * Both polarities are asserted here, so a fix that flipped the default globally -- making every
- * unfollowed redirect hint look effective -- fails just as loudly as the original bug.
- */
+/** Polarity regression: a hint that asks for an absence must be scored on that absence. `read_reread_dedup` and `edit_reread_suggest` say "you already have this file, don't read it again." Doing what they ask means issuing no command at all, but `isActedOn` credits follow-through only when a later Bash command invokes token-goat AND names the correlator. So every one of those rows resolved `acted_on = 0` however well the hint worked, the two categories sat at exactly 0% efficacy, and `shouldSuppress` muted each for good once `min_sample_size` (default 5) rows had accrued -- the hints that save a whole file read were the first to switch themselves off, on evidence that could not exist. Observed live: those two categories at 0.0% on 5 emissions each and both suppressed, while all three redirect categories scored above zero. Why didn't a test catch this: every existing case in this file drives the acted-on path with a follow-up `token-goat ...` command, which is the redirect categories' compliance shape. No case ever let a suppression hint's window simply expire and then asked what that meant, because the expiry branch looked like uninteresting bookkeeping shared by all five categories. The gap was in which category was fed to the shared branch, not in the branch's logic, so exercising the existing cases harder could never reach it. Both polarities are asserted here, so a fix that flipped the default globally -- making every unfollowed redirect hint look effective -- fails just as loudly as the original bug. */
 describe('acted-on polarity for suppression-shaped hints', () => {
   /** Run the window down with unrelated tool calls, one call per turn. */
   function idleOut(sessionId: string, turns = 6): void {
@@ -1131,10 +999,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     expect(rowFor(n)?.acted_on).toBe(1)
   })
 
-  // Regression: read_structural_nav is worded exactly like read_reread_dedup ("use structural
-  // navigation instead of a future full re-read"), but was measured with the redirect-category
-  // presence test until now, so a session that never re-read the file (the compliance the hint
-  // actually asked for) still booked acted_on=0 and drove the category toward auto-suppression.
+  // Regression: read_structural_nav is worded exactly like read_reread_dedup ("use structural navigation instead of a future full re-read"), but was measured with the redirect-category presence test until now, so a session that never re-read the file (the compliance the hint actually asked for) still booked acted_on=0 and drove the category toward auto-suppression.
   it('credits a structural-nav hint when the window expires with no re-read (regression: wrong polarity muted this category on its own compliance)', () => {
     const n = nonce()
     logHintEmission('read_structural_nav', n, 'C:/repo/src/big.ts')
@@ -1167,8 +1032,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     logHintEmission('read_reread_dedup', n, 'C:/repo/src/big.ts')
     resolvePendingHintsForEvent(bashEvent(n, 'cat C:/repo/src/big.ts'))
     const row = rowFor(n)
-    // Resolution is the discriminating half: before the fix a `cat` of the named file merely
-    // decremented the window like any unrelated call, so acted_on alone read 0 either way.
+    // Resolution is the discriminating half: before the fix a `cat` of the named file merely decremented the window like any unrelated call, so acted_on alone read 0 either way.
     expect(row?.resolved, 'the re-read must settle the row there and then').toBe(1)
     expect(row?.acted_on).toBe(0)
   })
@@ -1176,8 +1040,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
   it('does not count a surgical token-goat read of that file as defiance', () => {
     const n = nonce()
     logHintEmission('read_reread_dedup', n, 'C:/repo/src/big.ts')
-    // Green on both sides of the fix by design: this guards the new isDefiance path from
-    // over-classifying the surgical route as a re-read, which would invert the fix's own benefit.
+    // Green on both sides of the fix by design: this guards the new isDefiance path from over-classifying the surgical route as a re-read, which would invert the fix's own benefit.
     resolvePendingHintsForEvent(bashEvent(n, 'token-goat read "C:/repo/src/big.ts::parse"'))
     const row = rowFor(n)
     expect(row?.resolved).toBe(1)
@@ -1202,11 +1065,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     expect(row?.acted_on, 'a redirect hint names a command to run; silence is not compliance').toBe(0)
   })
 
-  // This used to assert that a correlator-less hint was booked BY ITS POLARITY: 1 for a
-  // suppression category, 0 for a redirect one. Both readings are defensible and both are
-  // inventions, and mixing an invention into a measured rate is the defect this replaced. The row
-  // is now marked unobservable and left at 0, which the efficacy queries skip rather than read --
-  // so the 0 below is an absence of verdict, not a miss, and `observable` is what says which.
+  // This used to assert that a correlator-less hint was booked BY ITS POLARITY: 1 for a suppression category, 0 for a redirect one. Both readings are defensible and both are inventions, and mixing an invention into a measured rate is the defect this replaced. The row is now marked unobservable and left at 0, which the efficacy queries skip rather than read -- so the 0 below is an absence of verdict, not a miss, and `observable` is what says which.
   it('books no verdict at all for a correlator-less hint, whatever its polarity', () => {
     const sup = nonce()
     logHintEmission('read_reread_dedup', sup, null)
@@ -1227,11 +1086,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
   })
 
   it('lets a category already muted by pre-fix rows recover on its next obeyed probe', () => {
-    // The shape this machine was actually found in: read_reread_dedup at 0 acted-on across 5
-    // emissions and suppressed, every one of those zeros produced by the rule this fix replaced.
-    // Recovery does not need those rows rewritten -- the backoff probe schedule already exists to
-    // let a muted category earn its way back, and it could not work while compliance was
-    // unobservable. One probe the agent obeys is now enough to clear the threshold.
+    // The shape this machine was actually found in: read_reread_dedup at 0 acted-on across 5 emissions and suppressed, every one of those zeros produced by the rule this fix replaced. Recovery does not need those rows rewritten -- the backoff probe schedule already exists to let a muted category earn its way back, and it could not work while compliance was unobservable. One probe the agent obeys is now enough to clear the threshold.
     saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, defiance_threshold_pct: 85, min_sample_size: 5 } })
     invalidateConfigCache()
     for (let i = 0; i < 5; i++) {
@@ -1260,10 +1115,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     expect(shouldSuppress('read_reread_dedup', nonce()), 'an obeyed category muted itself').toBe(false)
   })
 
-  // Regression: `suppressed: true` used to mean two operationally opposite things -- throttled
-  // and self-healing (probes configured), or off until a manual reset (backoff_thresholds = [],
-  // a documented, supported value). They rendered identically, which is how a reader of this
-  // table once concluded the suppression path was broken when it was working as specified.
+  // Regression: `suppressed: true` used to mean two operationally opposite things -- throttled and self-healing (probes configured), or off until a manual reset (backoff_thresholds = [], a documented, supported value). They rendered identically, which is how a reader of this table once concluded the suppression path was broken when it was working as specified.
   it.each([
     [[1, 3, 10, 30], false, 'probes configured: suppression is a self-healing throttle'],
     [[], true, 'no probes: suppression is permanent until a manual reset'],
@@ -1288,33 +1140,14 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     cfg.hints.backoff_thresholds = []
     saveConfig(cfg)
 
-    // bash_recall has no emissions, so it is below min_sample_size and cannot be suppressed.
-    // Empty backoff_thresholds must not make an unsuppressed category look permanently off.
+    // bash_recall has no emissions, so it is below min_sample_size and cannot be suppressed. Empty backoff_thresholds must not make an unsuppressed category look permanently off.
     const row = getHintStatsSummary().find((r) => r.category === 'bash_recall')
     expect(row?.suppressed).toBe(false)
     expect(row?.suppressionPermanent).toBe(false)
   })
 })
 
-/**
- * hint_stats.defiance_threshold_pct: a suppression category is judged against its own ceiling.
- *
- * Provenance HAND-DERIVED for the percentages and CAPTURE for the polarity they rest on. The two
- * 50% populations below are each built by driving logHintEmission and resolvePendingHintsForEvent
- * -- the real write path -- rather than by inserting hint_emissions rows, so what `acted_on` means
- * for each category is whatever the shipping code writes, not whatever this test assumed. The
- * first test asserts that meaning directly, because the premise this change was specified against
- * ("a suppression category's stored number counts defiance, so one threshold reads it backwards")
- * is not what the code does: logHintEmission and the suppression arm of resolvePendingHintsForEvent
- * already normalise to compliance at write time, booking acted_on=1 for an unobserved re-read and
- * acted_on=0 only when defiance is actually seen. Both stored percentages are therefore
- * higher-is-better and the single threshold was never inverted. What differs is the base rate: a
- * suppression category defaults to compliance when its window simply expires, so it sits near 100%
- * where an uptake rate sits near 0%, and one number cannot be calibrated for both. Hence a second
- * ceiling expressed in the units that category is actually about -- its defiance rate, 100 minus
- * the stored figure -- defaulting to the exact complement of suppress_threshold_pct so no existing
- * verdict moves.
- */
+/** hint_stats.defiance_threshold_pct: a suppression category is judged against its own ceiling. Provenance HAND-DERIVED for the percentages and CAPTURE for the polarity they rest on. The two 50% populations below are each built by driving logHintEmission and resolvePendingHintsForEvent -- the real write path -- rather than by inserting hint_emissions rows, so what `acted_on` means for each category is whatever the shipping code writes, not whatever this test assumed. The first test asserts that meaning directly, because the premise this change was specified against ("a suppression category's stored number counts defiance, so one threshold reads it backwards") is not what the code does: logHintEmission and the suppression arm of resolvePendingHintsForEvent already normalise to compliance at write time, booking acted_on=1 for an unobserved re-read and acted_on=0 only when defiance is actually seen. Both stored percentages are therefore higher-is-better and the single threshold was never inverted. What differs is the base rate: a suppression category defaults to compliance when its window simply expires, so it sits near 100% where an uptake rate sits near 0%, and one number cannot be calibrated for both. Hence a second ceiling expressed in the units that category is actually about -- its defiance rate, 100 minus the stored figure -- defaulting to the exact complement of suppress_threshold_pct so no existing verdict moves. */
 describe('shouldSuppress — defiance_threshold_pct for inverted-polarity categories', () => {
   /** A normal category at exactly 50% acted-on: one followed pointer, one no-signal emission. */
   function seedNormalAt50Pct(): void {
@@ -1350,9 +1183,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     expect(normal?.emitted).toBe(2)
     expect(normal?.efficacyPct).toBe(50)
     expect(suppression?.emitted).toBe(2)
-    // The observed re-read booked 0 and the unobserved one booked 1. Were the column counting
-    // defiance, this would read 50 for the opposite reason and the assertion below on which
-    // emission was which would not hold.
+    // The observed re-read booked 0 and the unobserved one booked 1. Were the column counting defiance, this would read 50 for the opposite reason and the assertion below on which emission was which would not hold.
     expect(suppression?.efficacyPct).toBe(50)
   })
 
@@ -1360,8 +1191,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     const cfg = defaultConfig()
     expect(cfg.hint_stats.suppress_threshold_pct).toBe(15)
     expect(cfg.hint_stats.defiance_threshold_pct).toBe(85)
-    // 15 and 85 make `pct < 15` and `100 - pct > 85` the same predicate, so every category's
-    // pre-change verdict survives untouched until an operator separates the two.
+    // 15 and 85 make `pct < 15` and `100 - pct > 85` the same predicate, so every category's pre-change verdict survives untouched until an operator separates the two.
     configure(15, 85)
     seedNormalAt50Pct()
     seedSuppressionAt50Pct()
@@ -1401,13 +1231,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     }
   })
 
-  /**
-   * A pre-upgrade config file: real saveConfig() output with the one line 5cc2708e added deleted
-   * again, which is exactly what an operator's file looks like after upgrading without editing it.
-   * Provenance: CAPTURE — src/config.ts::saveConfig writes the file in this helper and the strip is
-   * asserted to have actually removed the key, so a renamed key fails here instead of silently
-   * testing the present-key path.
-   */
+  /** A pre-upgrade config file: real saveConfig() output with the one line 5cc2708e added deleted again, which is exactly what an operator's file looks like after upgrading without editing it. Provenance: CAPTURE — src/config.ts::saveConfig writes the file in this helper and the strip is asserted to have actually removed the key, so a renamed key fails here instead of silently testing the present-key path. */
   function configureWithoutDefianceKey(suppressPct: number): void {
     const cfg = defaultConfig()
     cfg.hint_stats.min_sample_size = 2
@@ -1429,9 +1253,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
   }
 
   it('derives the absent ceiling from the file that turned suppression off, leaving it off', () => {
-    // suppress_threshold_pct = 0 is how an operator disables auto-suppression: no percentage is
-    // below zero. Falling back to the compiled 85 would re-enable it for the suppression
-    // categories at 0% acted-on (100 - 0 > 85), with no config change and nothing in the output.
+    // suppress_threshold_pct = 0 is how an operator disables auto-suppression: no percentage is below zero. Falling back to the compiled 85 would re-enable it for the suppression categories at 0% acted-on (100 - 0 > 85), with no config change and nothing in the output.
     configureWithoutDefianceKey(0)
     expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(100)
     seedSuppressionAllDefiance(3)
@@ -1439,8 +1261,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
   })
 
   it('derives the absent ceiling at a non-default value whose complement is not round', () => {
-    // 37 complements to 63. At 25% acted-on the old single-threshold predicate suppressed
-    // (25 < 37); the compiled 85 would spare it (100 - 25 is not above 85).
+    // 37 complements to 63. At 25% acted-on the old single-threshold predicate suppressed (25 < 37); the compiled 85 would spare it (100 - 25 is not above 85).
     configureWithoutDefianceKey(37)
     expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(63)
     seedSuppressionAllDefiance(3)

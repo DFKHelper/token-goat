@@ -1,26 +1,7 @@
-/**
- * Hook relay — the `token-goat hook <event>` entry point.
- *
- * Claude Code (and the bridge shims) invoke `token-goat hook <event>` for each
- * hook, piping the payload as JSON on stdin and reading the response JSON from
- * stdout. {@link relay} is that entry point: it reads stdin (with a timeout),
- * shapes the payload into a {@link HookEvent}, runs the registered handlers via
- * {@link runHook}, serializes the result with {@link serializeOutput}, and
- * writes it to stdout.
- *
- * The cardinal rule: never block Claude Code. Any failure results in a wire
- * response on stdout so a broken hook degrades rather than wedging the tool
- * call: an unparseable/unreadable stdin payload degrades to an empty payload
- * (letting each handler apply its own missing-field fallback, e.g.
- * `sessionStartHandler`'s `GENERIC_REMINDER`; see {@link relay}), while a
- * throwing handler or an unknown event still degrades all the way to a bare
- * `{}` no-op pass-through.
- *
- * Importing this module pulls in every hook-registering module for its
- * side-effects, so the registry is populated by the time {@link relay} runs.
- */
+/** Hook relay — the `token-goat hook <event>` entry point. Claude Code (and the bridge shims) invoke `token-goat hook <event>` for each hook, piping the payload as JSON on stdin and reading the response JSON from stdout. {@link relay} is that entry point: it reads stdin (with a timeout), shapes the payload into a {@link HookEvent}, runs the registered handlers via {@link runHook}, serializes the result with {@link serializeOutput}, and writes it to stdout. The cardinal rule: never block Claude Code. Any failure results in a wire response on stdout so a broken hook degrades rather than wedging the tool call: an unparseable/unreadable stdin payload degrades to an empty payload (letting each handler apply its own missing-field fallback, e.g. `sessionStartHandler`'s `GENERIC_REMINDER`; see {@link relay}), while a throwing handler or an unknown event still degrades all the way to a bare `{}` no-op pass-through. Importing this module pulls in every hook-registering module for its side-effects, so the registry is populated by the time {@link relay} runs. */
 
 import { detectHarness } from './bridges/registry.js'
+import { applyCallStreak } from './call_streak.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
 import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
@@ -65,15 +46,7 @@ function isHookEventName(name: string): name is HookEventName {
   return (HOOK_EVENTS as readonly string[]).includes(name)
 }
 
-/**
- * Shape a raw stdin payload into a {@link HookEvent}.
- *
- * Pulls `tool_name`, `tool_input`, and `session_id` from the Claude Code wire
- * payload (the shapes the relay sees from every supported harness). Missing or
- * malformed fields degrade to safe defaults (`undefined` tool name, empty
- * input, empty session id) rather than throwing — the handlers themselves
- * decide what to do with a thin event.
- */
+/** Shape a raw stdin payload into a {@link HookEvent}. Pulls `tool_name`, `tool_input`, and `session_id` from the Claude Code wire payload (the shapes the relay sees from every supported harness). Missing or malformed fields degrade to safe defaults (`undefined` tool name, empty input, empty session id) rather than throwing — the handlers themselves decide what to do with a thin event. */
 export function buildEvent(eventName: HookEventName, payload: unknown): HookEvent {
   const obj: Record<string, unknown> =
     typeof payload === 'object' && payload !== null && !Array.isArray(payload)
@@ -117,19 +90,7 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
   return { eventName, toolName, toolInput, sessionId, agentId, traceparent, tracestate, raw: obj }
 }
 
-/**
- * Map the env-detected harness ({@link detectHarness}) onto {@link Harness}, the
- * narrower harness identifier {@link normalizePayload} understands.
- *
- * Codex, Gemini, and Grok all need tool-name remapping (their harness-native
- * names never match the canonical names registerHook(..., { toolName })
- * filters on -- Grok's entire wire payload is also camelCase rather than
- * snake_case, handled in hooks_cli.ts's grok branch); 'claudecode' /
- * 'opencode' / 'generic' payloads already use canonical tool names and pass
- * through unchanged. Uses detectHarness() (uncached) rather than
- * getHarnessName(): each hook invocation is a fresh, short-lived process, so
- * there is no benefit to memoizing and no stale-cache risk to worry about.
- */
+/** Map the env-detected harness ({@link detectHarness}) onto {@link Harness}, the narrower harness identifier {@link normalizePayload} understands. Codex, Gemini, and Grok all need tool-name remapping (their harness-native names never match the canonical names registerHook(..., { toolName }) filters on -- Grok's entire wire payload is also camelCase rather than snake_case, handled in hooks_cli.ts's grok branch); 'claudecode' / 'opencode' / 'generic' payloads already use canonical tool names and pass through unchanged. Uses detectHarness() (uncached) rather than getHarnessName(): each hook invocation is a fresh, short-lived process, so there is no benefit to memoizing and no stale-cache risk to worry about. */
 function harnessForNormalization(): Harness {
   // detectHarness() (bridges/registry.ts) can return 'gemini' (or 'hermes' / 'openclaw') via env-var detection -- it is the single canonical implementation, unioned with the harness set compact.ts used to detect separately. installGemini() (bridges/gemini_install.ts) wires `token-goat hook <event>` directly into ~/.gemini/settings.json (no shim process like Codex's, so no other layer sets a harness flag) -- the child process inherits Gemini CLI's own environment (GEMINI_API_KEY / GOOGLE_API_KEY), so detectHarness() resolving to 'gemini' here is what makes normalizePayload()'s 'gemini' branch in hooks_cli.ts reachable for a real Gemini CLI install. hermes/openclaw still have no bridge/payload-writer, so they fall through to 'claude' unchanged for now.
   const detected = detectHarness()
@@ -147,50 +108,20 @@ function harnessForNormalization(): Harness {
   return 'claude'
 }
 
-/**
- * Remove any `token-goat …` suggestion whose quoting a file path broke out of.
- *
- * Every hook's output passes through here, which is the reason the check lives at this seam rather
- * than at the ~40 places that build one of these strings by concatenation: a new hint site is safe
- * the day it is written, without its author having to know. See {@link stripUnsafeSuggestions} for
- * what a break looks like and why a path can contain one.
- *
- * Only the two variants token-goat composes itself are rewritten. `rewriteInput` is deliberately
- * excluded: the one command token-goat makes executable is the `token-goat compress -c '<cmd>'`
- * wrapper, which is already quoted at its own call site, and a user command legitimately containing
- * `$` would be destroyed by a check meant for suggestions. `rewriteOutput` is excluded for the
- * mirror-image reason: it carries captured tool output, so a file that merely quotes a token-goat
- * command would be edited as though it were one.
- */
+/** Remove any `token-goat …` suggestion whose quoting a file path broke out of. Every hook's output passes through here, which is the reason the check lives at this seam rather than at the ~40 places that build one of these strings by concatenation: a new hint site is safe the day it is written, without its author having to know. See {@link stripUnsafeSuggestions} for what a break looks like and why a path can contain one. Only the two variants token-goat composes itself are rewritten. `rewriteInput` is deliberately excluded: the one command token-goat makes executable is the `token-goat compress -c '<cmd>'` wrapper, which is already quoted at its own call site, and a user command legitimately containing `$` would be destroyed by a check meant for suggestions. `rewriteOutput` is excluded for the mirror-image reason: it carries captured tool output, so a file that merely quotes a token-goat command would be edited as though it were one. */
 function safeSuggestions(output: HookOutput): HookOutput {
   if (output.hookType === 'deny') return { hookType: 'deny', message: stripUnsafeSuggestions(output.message) }
   if (output.hookType === 'context') return { hookType: 'context', context: stripUnsafeSuggestions(output.context) }
   return output
 }
 
-/**
- * Run the hook for `eventName` against an already-parsed payload and return the
- * serialized wire JSON response as a string (never writes to stdout/stdin).
- *
- * This is the in-process counterpart of {@link relay}: it contains every step
- * relay() performs after reading stdin, factored out so bridges that already
- * run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn
- * their own shim process (Codex, Claude Code, Copilot CLI) can call straight
- * into the hook registry via `import()` instead of `spawnSync`-ing a second
- * `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually
- * waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and
- * prints its early `{"async":true}` marker before this function ever runs, so the shim's own
- * `performance.now()` at that print is the true harness-visible latency; without it, the `finally`
- * below would keep recording this call's own full process lifetime even though the harness stopped
- * listening long before that. Omitted for every synchronous call, where process lifetime and
- * harness wait are the same number. On *any* error — invalid event name,
- * malformed payload, handler throw — it resolves to `'{}'` so the caller's
- * tool call proceeds unchanged. This function never throws and never rejects.
- */
+/** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. */
 export async function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'
   }
+  // When this event reached token-goat, before any handler time: call_streak.ts tells a batched call from a serial one by the gap between events.
+  const receivedAt = Date.now()
   // Wall-clock from process start, not from this line: what a harness actually waits on is everything since `node` began -- module load and import resolution included -- not just dispatch, which used to be all this recorded (~28ms of an ~89ms real wait, confirmed against an external stopwatch on the production shim). `performance.now()` reads elapsed time since `performance.timeOrigin` (process start), so reading it once in the finally block below, rather than diffing two timestamps taken inside this function, is what makes the total include everything before this function ever ran -- true for every synchronous call, and for an async-detached one whose caller did not pass `harnessWaitMs`.
   try {
     // Read before the CLAUDE_CODE_SESSION_ID seeding below, which sets that variable for every harness and would make a later detection answer 'claudecode' everywhere. serializeOutput needs the true harness to decide the pre_compact wire form, so capture it while the environment still says who we are.
@@ -226,7 +157,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown, har
     } catch {
       // fail-soft: a load failure just means a cold session
     }
-    const output = safeSuggestions(await runHook(event))
+    const output = safeSuggestions(applyCallStreak(event, await runHook(event), receivedAt))
     // Clear the deferred-hint queue only once the text is in the output that is about to be serialized. The handler that reads that queue is advisory, and runHook discards an advisory result whenever a later non-advisory handler returns one of its own, so consuming the queue at read time deleted queued compaction manifests that then reached nothing. Checking the emitted string makes delivery a fact rather than an assumption, and leaves an undelivered hint queued for the next tool call. See pending_context.ts.
     if (event.sessionId) {
       commitPendingContext(stateKey, output.hookType === 'context' ? output.context : null)
@@ -246,28 +177,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown, har
   }
 }
 
-/**
- * Run the hook for `eventName` and write the wire JSON response to stdout.
- *
- * Reads stdin, then delegates to {@link relayInProcess} for everything else,
- * and prints its result. This function never throws.
- *
- * A stdin read failure (timeout, oversized payload, or -- the common real case on
- * Windows -- a caller that string-interpolated a raw backslash path into the JSON
- * text instead of escaping it, so `JSON.parse` rejects) degrades to an *empty*
- * payload (`{}` as a parsed object) rather than abandoning the call outright: the
- * event name is already known from `eventName` (a CLI arg, never part of the
- * unparseable stdin), so every handler still runs with all-fields-missing input and
- * gets the same chance to apply its own graceful fallback that "field omitted"
- * already gives it (e.g. session_start's `sessionStartHandler` falls back to
- * `GENERIC_REMINDER` when `cwd` is missing -- see hooks_session_start.ts). Treating
- * a malformed payload as strictly worse than a merely incomplete one produced a
- * silent `{"hookType":"pass"}`-shaped `{}` with zero diagnostics, indistinguishable
- * from "no hook registered for this event," even though the event itself was
- * perfectly identifiable and every handler was fully able to degrade gracefully.
- * Only a genuinely unknown/invalid `eventName` -- which no fallback can route --
- * still short-circuits straight to the bare pass-through `{}` below.
- */
+/** Run the hook for `eventName` and write the wire JSON response to stdout. Reads stdin, then delegates to {@link relayInProcess} for everything else, and prints its result. This function never throws. A stdin read failure (timeout, oversized payload, or -- the common real case on Windows -- a caller that string-interpolated a raw backslash path into the JSON text instead of escaping it, so `JSON.parse` rejects) degrades to an *empty* payload (`{}` as a parsed object) rather than abandoning the call outright: the event name is already known from `eventName` (a CLI arg, never part of the unparseable stdin), so every handler still runs with all-fields-missing input and gets the same chance to apply its own graceful fallback that "field omitted" already gives it (e.g. session_start's `sessionStartHandler` falls back to `GENERIC_REMINDER` when `cwd` is missing -- see hooks_session_start.ts). Treating a malformed payload as strictly worse than a merely incomplete one produced a silent `{"hookType":"pass"}`-shaped `{}` with zero diagnostics, indistinguishable from "no hook registered for this event," even though the event itself was perfectly identifiable and every handler was fully able to degrade gracefully. Only a genuinely unknown/invalid `eventName` -- which no fallback can route -- still short-circuits straight to the bare pass-through `{}` below. */
 export async function relay(eventName: string): Promise<void> {
   try {
     if (!isHookEventName(eventName)) {

@@ -1,133 +1,4 @@
-/**
- * Efficacy tracking + auto-suppression for token-goat's discretionary hint hooks
- * (`token-goat hint-stats`).
- *
- * ## What counts as a "hint" here
- *
- * A hint is a *discretionary* nudge: a hook noticed the agent doing something wasteful
- * (re-reading a file, cat-ing a whole source file, re-running an already-cached command, ...)
- * and suggested a cheaper alternative via a `context` {@link HookOutput} (see contextOutput in
- * hooks_common.ts). This module deliberately does NOT track every `context` output in the
- * codebase -- only the ones wired through {@link applyHintTracking} below, which are exactly
- * the ones this feature's Step-2 discovery pass found to be conditional, behavior-triggered
- * nudges:
- *
- *   - `bash_redirect`  (hooks_bash.ts, preBashHandler) -- "you used an expensive/bypassing
- *     shell read pattern (cat/tail/head/sed/python open/node readFileSync/PowerShell
- *     Get-Content/find/grep chains/rg symbol search/...), use a token-goat surgical command
- *     (or fd) instead."
- *   - `bash_recall`    (hooks_bash.ts, preBashHandler) -- "this exact command/URL/output is
- *     already cached this session, reuse it via `token-goat bash-output <id>` instead of
- *     re-running it."
- *   - `read_reread_dedup` (hooks_read.ts, preReadHandler) -- "this file (or an overlapping
- *     line range) was already read this session (or by another session/agent), don't re-read
- *     it in full."
- *   - `read_structural_nav` (hooks_read.ts, preReadHandler + postReadHandler) -- "this file is
- *     large / has many lines, use `token-goat skeleton`/`outline`/`section` for structural
- *     navigation instead of a future full re-read."
- *   - `edit_reread_suggest` (hooks_edit.ts, postEditHandler) -- "you just edited this doc file,
- *     re-read one section via `token-goat section` instead of the whole file."
- *
- * Deliberately EXCLUDED, with the reason each is not a discretionary nudge:
- *   - hooks_compact.ts's `preCompactHandler` (pre_compact manifest) -- unconditional: it fires
- *     on every single pre_compact event with no "wasteful behavior" trigger, and IS the
- *     hook's entire job (feeding session continuity into compaction). Treating it as
- *     suppressible "hint efficacy" would risk auto-suppressing session continuity itself,
- *     which is a correctness regression, not a token-savings tradeoff -- an entirely
- *     different risk class from the other categories above.
- *   - hooks_session.ts's `userPromptSubmitHandler` (branch/summary context) -- same reason:
- *     unconditional informational context, not a "you did X, try Y instead" nudge.
- *   - image_shrink.ts's `preReadImageHandler` -- returns a `context` output, but the content
- *     IS the (already-shrunk) image payload substituting for the original read, not a
- *     suggestion to do something differently next time. Suppressing it would mean serving the
- *     full-size image instead, which is a regression, not a "was this tip useful" question.
- *   - hooks_mcp.ts's MCP output compression -- returns `rewriteOutput`, not `context`; the
- *     tool call already happened and this only changes what the model sees of a result already
- *     produced, not a suggestion about what to do differently.
- *   - hooks_agent_spawn.ts's subagent briefing -- returns `rewriteInput` (it rewrites the
- *     Agent tool's own prompt before the call), not a `context` hint.
- *
- * ## Honest signal design (see also the module's own emission/detection code below)
- *
- * Every one of the five tracked categories gets a REAL automatic "acted on" signal, not a
- * fabricated one: each hint's own text is mined (via {@link extractPathCorrelator} or the
- * bash-output-id regex in `classifyBashHint`) for the *specific* file path or cache id the hint
- * pointed at. A pending row is only created when that extraction succeeds. The subsequent
- * `post_tool_use` advisory handler at the bottom of this file then checks, for every tool call
- * in the same session for up to {@link ACTED_ON_WINDOW} further tool calls, whether a Bash
- * command was run that both mentions `token-goat` and mentions that exact correlator --
- * i.e. did the agent actually follow the specific pointer this hint gave, not just "did some
- * unrelated token-goat command happen to run afterward." This is a real, session-scoped,
- * hook-dispatch-order-based correlation, not guesswork.
- *
- * It is still a PROXY for causation, not proof: a match means the agent ran the suggested
- * command shortly after the hint, but cannot prove the hint caused that (the agent might have
- * been about to do it anyway). This is disclosed here and in the CLI output rather than
- * asserted as certainty. When no correlator is supplied or can be extracted (a small
- * minority of branches with no path/id in their message, e.g. the "collapse grep|grep" or
- * "unbalanced shell quoting, use Write tool" hints), the emission is logged as resolved
- * immediately and marked `observable = 0`: no later command can match a pointer the row does not
- * carry, so no verdict about it was ever observed. Efficacy skips those rows in both numerator and
- * denominator rather than booking a verdict for them. It used to book one, and which way depended
- * on the category's polarity -- a redirect hint booked 0 because the substitute it named was never
- * seen, a suppression hint booked 1 because the re-read it warned against was never seen either.
- * Both readings are defensible and both are inventions, and mixing an invention into a measured
- * rate is what held `bash_redirect` at a reported 0.86% when its observed figure was 1.15%: 174 of
- * its 698 rows carried no pointer at all. `token-goat hint-stats --mark-effective/--mark-ineffective <category>` exists as a
- * human override/supplement for exactly this gap; it is tracked as a SEPARATE counter
- * (hint_manual_marks) and never blended into the automatic acted_on/emitted percentage, so the
- * two signals are never silently conflated.
- *
- * ## "model" vs. harness
- *
- * The spec for this feature asked for a `(category, model, sessionId)` suppression key. This
- * codebase's {@link HookEvent} (hook_registry.ts) carries no LLM model identifier anywhere --
- * Claude Code's hook payload does not expose which model is running, and no other bridge in
- * src/bridges does either (verified: no `model` field exists on HookEvent, its `raw` payload,
- * or in any bridge normalizer). Rather than fabricate a model dimension, this module uses
- * {@link getHarnessName} (bridges/registry.ts) -- the harness/CLI driving the session (Claude
- * Code, Codex, Gemini, ...) -- as the closest real, already-existing analog. This is called out
- * explicitly here and in the CLI/README so "harness" is never mistaken for "LLM model."
- *
- * ## Suppression persistence
- *
- * `shouldSuppress` is re-evaluated by querying hint_emissions on every call (hook invocations
- * are short-lived CLI processes with no shared memory -- see db.ts's WAL/busy_timeout doc
- * comment -- so there is no in-process cache to hold a "suppressed this session" flag across
- * calls). Suppression is scoped to `(category, harness)`, not further split by session, because
- * the underlying data store is the one shared cross-session/cross-process `global.db` and a
- * single session rarely emits `min_sample_size` occurrences of one category on its own. In
- * practice this means: once a category's cumulative (category, harness) efficacy crosses the
- * threshold with enough samples, it stays suppressed for every session using that harness until
- * `token-goat hint-stats --reset` is run -- a deliberate, disclosed deviation from a literal
- * "resets every session" reading, chosen because nothing in this codebase's hook-process model
- * could implement true per-session-only suppression honestly.
- *
- * ## Probe recovery (`hints.backoff_thresholds`)
- *
- * A suppressed category would otherwise stay suppressed forever: {@link logHintEmission} is
- * only ever reached on the NOT-suppressed branch of {@link applyHintTracking}, so a fully
- * suppressed category can never accumulate the fresh acted-on signal that would lift it back
- * above `suppress_threshold_pct`. `hints.backoff_thresholds` (an ascending list of occasion
- * counts, e.g. `[1, 3, 10, 30]`) fixes this with a classic backoff-retry schedule: while a
- * category stays suppressed, {@link isProbeOccasion} counts consecutive suppressed occasions
- * since suppression began (persisted durably in the `hint_suppression_probes` table -- see
- * db.ts's schema comment -- because hook invocations are short-lived processes with no shared
- * in-memory counter, same reasoning as `shouldSuppress` above). At the 1st, 3rd, 10th, 30th, ...
- * matching occasion, the hint is let through as a genuine "probe": shown to the caller AND
- * logged via `logHintEmission` like any normal emission, so a real acted-on signal can move
- * `categoryStats` on the very next `shouldSuppress` check. A probe occasion does NOT reset the
- * streak counter by itself -- only a category actually exiting suppression (the top-level
- * `shouldSuppress` check returning `false` again) does, via {@link applyHintTracking}'s
- * not-suppressed branch. This is a deliberate reading of "count occasions since last shown": if
- * a probe firing reset the counter to 0 every time, the very next suppressed occasion would
- * immediately re-match the smallest configured threshold (1, by default), turning probing into
- * "show it every single time" and making the 3rd/10th/30th thresholds unreachable -- an
- * anchored-at-suppression-onset counter is the only reading under which all four configured
- * thresholds do anything. An empty `backoff_thresholds` (`[]`) means no probes at all --
- * suppression is permanent until a manual `--reset`, matching this array's pre-existing
- * round-trip-tested "empty means off" default-empty-list semantics in config.ts.
- */
+/** Efficacy tracking + auto-suppression for token-goat's discretionary hint hooks (`token-goat hint-stats`). ## What counts as a "hint" here A hint is a *discretionary* nudge: a hook noticed the agent doing something wasteful (re-reading a file, cat-ing a whole source file, re-running an already-cached command, ...) and suggested a cheaper alternative via a `context` {@link HookOutput} (see contextOutput in hooks_common.ts). This module deliberately does NOT track every `context` output in the codebase -- only the ones wired through {@link applyHintTracking} below, which are exactly the ones this feature's Step-2 discovery pass found to be conditional, behavior-triggered nudges: - `bash_redirect`  (hooks_bash.ts, preBashHandler) -- "you used an expensive/bypassing shell read pattern (cat/tail/head/sed/python open/node readFileSync/PowerShell Get-Content/find/grep chains/rg symbol search/...), use a token-goat surgical command (or fd) instead." - `bash_recall`    (hooks_bash.ts, preBashHandler) -- "this exact command/URL/output is already cached this session, reuse it via `token-goat bash-output <id>` instead of re-running it." - `read_reread_dedup` (hooks_read.ts, preReadHandler) -- "this file (or an overlapping line range) was already read this session (or by another session/agent), don't re-read it in full." - `read_structural_nav` (hooks_read.ts, preReadHandler + postReadHandler) -- "this file is large / has many lines, use `token-goat skeleton`/`outline`/`section` for structural navigation instead of a future full re-read." - `edit_reread_suggest` (hooks_edit.ts, postEditHandler) -- "you just edited this doc file, re-read one section via `token-goat section` instead of the whole file." - `read_batch` / `search_brake` (call_streak.ts) -- "these reads went out one turn at a time, send independent ones together" and "these searches all found nothing, search by meaning instead". Scored by call_streak.ts itself; see SELF_SCORED_HINT_CATEGORIES. - `grep_dedup_hint` / `glob_dedup_hint` (hooks_common.ts's makeDedupHintHandlers) -- "this identical search already ran". Counted and costed, never scored; see HINT_CATEGORIES. Deliberately EXCLUDED, with the reason each is not a discretionary nudge: - hooks_compact.ts's `preCompactHandler` (pre_compact manifest) -- unconditional: it fires on every single pre_compact event with no "wasteful behavior" trigger, and IS the hook's entire job (feeding session continuity into compaction). Treating it as suppressible "hint efficacy" would risk auto-suppressing session continuity itself, which is a correctness regression, not a token-savings tradeoff -- an entirely different risk class from the other categories above. - hooks_session.ts's `userPromptSubmitHandler` (branch/summary context) -- same reason: unconditional informational context, not a "you did X, try Y instead" nudge. - image_shrink.ts's `preReadImageHandler` -- returns a `context` output, but the content IS the (already-shrunk) image payload substituting for the original read, not a suggestion to do something differently next time. Suppressing it would mean serving the full-size image instead, which is a regression, not a "was this tip useful" question. - hooks_mcp.ts's MCP output compression -- returns `rewriteOutput`, not `context`; the tool call already happened and this only changes what the model sees of a result already produced, not a suggestion about what to do differently. - hooks_agent_spawn.ts's subagent briefing -- returns `rewriteInput` (it rewrites the Agent tool's own prompt before the call), not a `context` hint. ## Honest signal design (see also the module's own emission/detection code below) Every one of the five correlator-scored categories gets a REAL automatic "acted on" signal, not a fabricated one: each hint's own text is mined (via {@link extractPathCorrelator} or the bash-output-id regex in `classifyBashHint`) for the *specific* file path or cache id the hint pointed at. A pending row is only created when that extraction succeeds. The subsequent `post_tool_use` advisory handler at the bottom of this file then checks, for every tool call in the same session for up to {@link ACTED_ON_WINDOW} further tool calls, whether a Bash command was run that both mentions `token-goat` and mentions that exact correlator -- i.e. did the agent actually follow the specific pointer this hint gave, not just "did some unrelated token-goat command happen to run afterward." This is a real, session-scoped, hook-dispatch-order-based correlation, not guesswork. It is still a PROXY for causation, not proof: a match means the agent ran the suggested command shortly after the hint, but cannot prove the hint caused that (the agent might have been about to do it anyway). This is disclosed here and in the CLI output rather than asserted as certainty. When no correlator is supplied or can be extracted (a small minority of branches with no path/id in their message, e.g. the "collapse grep|grep" or "unbalanced shell quoting, use Write tool" hints), the emission is logged as resolved immediately and marked `observable = 0`: no later command can match a pointer the row does not carry, so no verdict about it was ever observed. Efficacy skips those rows in both numerator and denominator rather than booking a verdict for them. It used to book one, and which way depended on the category's polarity -- a redirect hint booked 0 because the substitute it named was never seen, a suppression hint booked 1 because the re-read it warned against was never seen either. Both readings are defensible and both are inventions, and mixing an invention into a measured rate is what held `bash_redirect` at a reported 0.86% when its observed figure was 1.15%: 174 of its 698 rows carried no pointer at all. `token-goat hint-stats --mark-effective/--mark-ineffective <category>` exists as a human override/supplement for exactly this gap; it is tracked as a SEPARATE counter (hint_manual_marks) and never blended into the automatic acted_on/emitted percentage, so the two signals are never silently conflated. ## "model" vs. harness The spec for this feature asked for a `(category, model, sessionId)` suppression key. This codebase's {@link HookEvent} (hook_registry.ts) carries no LLM model identifier anywhere -- Claude Code's hook payload does not expose which model is running, and no other bridge in src/bridges does either (verified: no `model` field exists on HookEvent, its `raw` payload, or in any bridge normalizer). Rather than fabricate a model dimension, this module uses {@link getHarnessName} (bridges/registry.ts) -- the harness/CLI driving the session (Claude Code, Codex, Gemini, ...) -- as the closest real, already-existing analog. This is called out explicitly here and in the CLI/README so "harness" is never mistaken for "LLM model." ## Suppression persistence `shouldSuppress` is re-evaluated by querying hint_emissions on every call (hook invocations are short-lived CLI processes with no shared memory -- see db.ts's WAL/busy_timeout doc comment -- so there is no in-process cache to hold a "suppressed this session" flag across calls). Suppression is scoped to `(category, harness)`, not further split by session, because the underlying data store is the one shared cross-session/cross-process `global.db` and a single session rarely emits `min_sample_size` occurrences of one category on its own. In practice this means: once a category's cumulative (category, harness) efficacy crosses the threshold with enough samples, it stays suppressed for every session using that harness until `token-goat hint-stats --reset` is run -- a deliberate, disclosed deviation from a literal "resets every session" reading, chosen because nothing in this codebase's hook-process model could implement true per-session-only suppression honestly. ## Probe recovery (`hints.backoff_thresholds`) A suppressed category would otherwise stay suppressed forever: {@link logHintEmission} is only ever reached on the NOT-suppressed branch of {@link applyHintTracking}, so a fully suppressed category can never accumulate the fresh acted-on signal that would lift it back above `suppress_threshold_pct`. `hints.backoff_thresholds` (an ascending list of occasion counts, e.g. `[1, 3, 10, 30]`) fixes this with a classic backoff-retry schedule: while a category stays suppressed, {@link isProbeOccasion} counts consecutive suppressed occasions since suppression began (persisted durably in the `hint_suppression_probes` table -- see db.ts's schema comment -- because hook invocations are short-lived processes with no shared in-memory counter, same reasoning as `shouldSuppress` above). At the 1st, 3rd, 10th, 30th, ... matching occasion, the hint is let through as a genuine "probe": shown to the caller AND logged via `logHintEmission` like any normal emission, so a real acted-on signal can move `categoryStats` on the very next `shouldSuppress` check. A probe occasion does NOT reset the streak counter by itself -- only a category actually exiting suppression (the top-level `shouldSuppress` check returning `false` again) does, via {@link applyHintTracking}'s not-suppressed branch. This is a deliberate reading of "count occasions since last shown": if a probe firing reset the counter to 0 every time, the very next suppressed occasion would immediately re-match the smallest configured threshold (1, by default), turning probing into "show it every single time" and making the 3rd/10th/30th thresholds unreachable -- an anchored-at-suppression-onset counter is the only reading under which all four configured thresholds do anything. An empty `backoff_thresholds` (`[]`) means no probes at all -- suppression is permanent until a manual `--reset`, matching this array's pre-existing round-trip-tested "empty means off" default-empty-list semantics in config.ts. */
 
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
@@ -144,6 +15,12 @@ export const HINT_CATEGORIES = [
   'read_reread_dedup',
   'read_structural_nav',
   'edit_reread_suggest',
+  // call_streak.ts: serial read-only calls that could have gone out in one message, and consecutive searches that found nothing. Both are scored by that module itself (see SELF_SCORED_HINT_CATEGORIES).
+  'read_batch',
+  'search_brake',
+  // The Grep/Glob dedup notes from hooks_common.ts's makeDedupHintHandlers. Logged with no correlator, so they count as spend and emissions but never as a verdict: the note is attached to the re-run it describes, so no later call can show whether it was heeded.
+  'grep_dedup_hint',
+  'glob_dedup_hint',
 ] as const
 
 export type HintCategory = (typeof HINT_CATEGORIES)[number]
@@ -152,11 +29,7 @@ export function isHintCategory(value: string): value is HintCategory {
   return (HINT_CATEGORIES as readonly string[]).includes(value)
 }
 
-// How many subsequent tool-use events (any tool) a pending hint stays eligible for
-// auto-detected credit before it's given up on as "not acted on." 5 is deliberately small: the
-// categories tracked here are all "do the narrower thing right now instead" nudges, so a
-// genuine follow-through should show up within the immediate next couple of tool calls, not
-// dozens of turns later where crediting it to this specific hint would stop being credible.
+// How many subsequent tool-use events (any tool) a pending hint stays eligible for auto-detected credit before it's given up on as "not acted on." 5 is deliberately small: the categories tracked here are all "do the narrower thing right now instead" nudges, so a genuine follow-through should show up within the immediate next couple of tool calls, not dozens of turns later where crediting it to this specific hint would stop being credible.
 const ACTED_ON_WINDOW = 5
 
 interface Classification {
@@ -164,39 +37,8 @@ interface Classification {
   correlator: string | null
 }
 
-/**
- * FALLBACK ONLY, for hint builders that do not yet pass their own path via HookOutput's
- * `correlators` field. Best-effort extraction of the specific file path a hint's text points at,
- * so the acted-on check can require the SAME path to reappear in a later command rather than
- * crediting any unrelated token-goat invocation. Matches a Windows drive-letter path or a
- * POSIX/relative path run of non-whitespace/non-quote characters; trims trailing punctuation a
- * hint's own sentence structure might have appended (a period, closing backtick/quote, etc.).
- *
- * Why it is a fallback and not the mechanism: scraping a path back out of already-rendered prose
- * cannot tell a path from any other slash-bearing English. The third alternative below is a bare
- * `/`, so the words "For a whole function/class" in this codebase's own sed-range hint yielded the
- * correlator `/class`, and a relative `src/hooks_read.ts` yielded `/hooks_read.ts` (nothing in the
- * pattern matches the `src` before the slash). Measured against the author's global ledger on
- * 2026-09-20: of 697 `bash_redirect` emissions, 245 carried `/class`, 174 carried no correlator at
- * all, and only 153 carried a path a later command could plausibly repeat -- so 78% of the
- * category was scored `acted_on = 0` by construction and the published 0.9% efficacy figure was
- * not a measurement of anything. A builder knows its own path; prose does not.
- */
-// Literal `::<placeholder>` suffixes this codebase's own hint text templates splice onto a real
-// path (e.g. hooks_edit.ts's `... + '::HeadingName"` ...`, hooks_read.ts's `::SectionName`,
-// `::<field>`, `::Symbol`) so a human reads them as "put a heading/symbol name here" -- not
-// real values. An agent that actually follows the hint substitutes its own concrete heading or
-// symbol, so the command it runs shares the path but never this exact placeholder text, and
-// isActedOn's `command.includes(correlator)` check can then never match: acted_on is
-// permanently 0 for every hint text that embeds one of these, silently pinning the category's
-// efficacy at 0% until it crosses shouldSuppress's threshold and gets auto-suppressed despite
-// perfect real-world follow-through. `::compilerOptions` is deliberately excluded -- that one
-// names a real, specific tsconfig field in its hint text, not a fill-in-the-blank. `Heading`,
-// `sectionName`, and `table_name` (hooks_bash.ts's extractNodeFileRead/markdown-heading-grep
-// hints) were missing here for the same reason until this fix -- adding a new hint template
-// with a fresh `::<Placeholder>` string is exactly the failure mode this set exists to catch,
-// so grep the codebase for `::[A-Za-z][A-Za-z0-9_]*["'`]` in hint text before assuming it's
-// covered.
+/** FALLBACK ONLY, for hint builders that do not yet pass their own path via HookOutput's `correlators` field. Best-effort extraction of the specific file path a hint's text points at, so the acted-on check can require the SAME path to reappear in a later command rather than crediting any unrelated token-goat invocation. Matches a Windows drive-letter path or a POSIX/relative path run of non-whitespace/non-quote characters; trims trailing punctuation a hint's own sentence structure might have appended (a period, closing backtick/quote, etc.). Why it is a fallback and not the mechanism: scraping a path back out of already-rendered prose cannot tell a path from any other slash-bearing English. The third alternative below is a bare `/`, so the words "For a whole function/class" in this codebase's own sed-range hint yielded the correlator `/class`, and a relative `src/hooks_read.ts` yielded `/hooks_read.ts` (nothing in the pattern matches the `src` before the slash). Measured against the author's global ledger on 2026-09-20: of 697 `bash_redirect` emissions, 245 carried `/class`, 174 carried no correlator at all, and only 153 carried a path a later command could plausibly repeat -- so 78% of the category was scored `acted_on = 0` by construction and the published 0.9% efficacy figure was not a measurement of anything. A builder knows its own path; prose does not. */
+// Literal `::<placeholder>` suffixes this codebase's own hint text templates splice onto a real path (e.g. hooks_edit.ts's `... + '::HeadingName"` ...`, hooks_read.ts's `::SectionName`, `::<field>`, `::Symbol`) so a human reads them as "put a heading/symbol name here" -- not real values. An agent that actually follows the hint substitutes its own concrete heading or symbol, so the command it runs shares the path but never this exact placeholder text, and isActedOn's `command.includes(correlator)` check can then never match: acted_on is permanently 0 for every hint text that embeds one of these, silently pinning the category's efficacy at 0% until it crosses shouldSuppress's threshold and gets auto-suppressed despite perfect real-world follow-through. `::compilerOptions` is deliberately excluded -- that one names a real, specific tsconfig field in its hint text, not a fill-in-the-blank. `Heading`, `sectionName`, and `table_name` (hooks_bash.ts's extractNodeFileRead/markdown-heading-grep hints) were missing here for the same reason until this fix -- adding a new hint template with a fresh `::<Placeholder>` string is exactly the failure mode this set exists to catch, so grep the codebase for `::[A-Za-z][A-Za-z0-9_]*["'`]` in hint text before assuming it's covered.
 const KNOWN_CORRELATOR_PLACEHOLDERS = new Set([
   'Heading',
   'HeadingName',
@@ -209,9 +51,7 @@ const KNOWN_CORRELATOR_PLACEHOLDERS = new Set([
   'name',
 ])
 
-/**
- * A single hint emission can cover several files: hooks_bash.ts's sed/awk line-range branch joins one hint per file into one `contextOutput`, so one row in `hint_emissions` stands for two or three paths. The chosen representation is the SET, not a primary path -- picking the first would score a genuine follow-through on the second file as a failure, which is the same false-negative class this whole change exists to remove -- stored newline-separated in the existing TEXT column (no schema change; a real path can never contain a newline). {@link isActedOn} and {@link isDefiance} therefore match on ANY member: running the surgical command for any one of the named files is follow-through, and re-reading any one of them whole is defiance.
- */
+/** A single hint emission can cover several files: hooks_bash.ts's sed/awk line-range branch joins one hint per file into one `contextOutput`, so one row in `hint_emissions` stands for two or three paths. The chosen representation is the SET, not a primary path -- picking the first would score a genuine follow-through on the second file as a failure, which is the same false-negative class this whole change exists to remove -- stored newline-separated in the existing TEXT column (no schema change; a real path can never contain a newline). {@link isActedOn} and {@link isDefiance} therefore match on ANY member: running the surgical command for any one of the named files is follow-through, and re-reading any one of them whole is defiance. */
 function joinCorrelators(correlators: readonly string[]): string | null {
   const kept = correlators.filter((c) => c !== '' && !c.includes('\n'))
   return kept.length === 0 ? null : [...new Set(kept)].join('\n')
@@ -237,11 +77,7 @@ export function extractPathCorrelator(text: string): string | null {
 
 /** Classifier for hooks_bash.ts's preBashHandler hints. */
 export function classifyBashHint(text: string): Classification {
-  // The `--file "<path>"` form (used by the tasks-output and Python-transcript hints) must be
-  // matched before the bare-id form below: `[A-Za-z0-9_.-]+` includes `-`, so it would otherwise
-  // capture the literal flag token `--file` itself as the correlator, and isActedOn's
-  // `command.includes(correlator)` would then credit ANY later `bash-output --file <anything>`
-  // call as having followed this hint, regardless of which file it actually points at.
+  // The `--file "<path>"` form (used by the tasks-output and Python-transcript hints) must be matched before the bare-id form below: `[A-Za-z0-9_.-]+` includes `-`, so it would otherwise capture the literal flag token `--file` itself as the correlator, and isActedOn's `command.includes(correlator)` would then credit ANY later `bash-output --file <anything>` call as having followed this hint, regardless of which file it actually points at.
   const fileMatch = /token-goat bash-output --file "([^"]+)"/.exec(text)
   if (fileMatch?.[1] !== undefined) {
     return { category: 'bash_recall', correlator: fileMatch[1] }
@@ -264,16 +100,26 @@ export function classifyEditHint(text: string): Classification {
   return { category: 'edit_reread_suggest', correlator: extractPathCorrelator(text) }
 }
 
-/**
- * Whether `occasion` (a 1-based count of consecutive suppressed occasions since a category last
- * had a hint actually shown) is a scheduled probe point under `thresholds`. `thresholds` need not
- * arrive pre-sorted or pre-filtered -- non-positive entries are dropped and the rest sorted
- * ascending before matching, since `hints.backoff_thresholds` is user-settable via `config set`
- * with no ordering guarantee. An empty (or all-non-positive) list never probes, preserving the
- * documented "no probes, suppression is permanent" behavior for `backoff_thresholds: []`. Once
- * `occasion` exceeds the largest configured threshold, it probes every multiple of that largest
- * threshold thereafter (e.g. every 30th occasion beyond an initial `[1, 3, 10, 30]` schedule).
- */
+/** Classifier for a hint whose category is fixed by its producer and whose text names no path to correlate on. */
+export function uncorrelatedHint(category: HintCategory): (text: string) => Classification {
+  return () => ({ category, correlator: null })
+}
+
+/** Categories whose acted-on verdict comes from the module that emitted them ({@link settleSelfScoredHints}) rather than from a later Bash command naming a correlator: what they ask for is a pattern of calls, which no single command can show. Their rows are observable with no correlator, and {@link resolvePendingHintsForEvent} leaves them alone. */
+const SELF_SCORED_HINT_CATEGORIES: ReadonlySet<HintCategory> = new Set<HintCategory>(['read_batch', 'search_brake'])
+
+/** Settle every pending emission of a self-scored category in this session with the verdict its emitter observed. */
+export function settleSelfScoredHints(category: HintCategory, sessionId: string, actedOn: boolean): void {
+  try {
+    getDb(globalDbPath())
+      .prepare(`UPDATE hint_emissions SET acted_on = ?, resolved = 1 WHERE category = ? AND session_id = ? AND resolved = 0`)
+      .run(actedOn ? 1 : 0, category, sessionId)
+  } catch {
+    // Fail-soft, same contract as logHintEmission.
+  }
+}
+
+/** Whether `occasion` (a 1-based count of consecutive suppressed occasions since a category last had a hint actually shown) is a scheduled probe point under `thresholds`. `thresholds` need not arrive pre-sorted or pre-filtered -- non-positive entries are dropped and the rest sorted ascending before matching, since `hints.backoff_thresholds` is user-settable via `config set` with no ordering guarantee. An empty (or all-non-positive) list never probes, preserving the documented "no probes, suppression is permanent" behavior for `backoff_thresholds: []`. Once `occasion` exceeds the largest configured threshold, it probes every multiple of that largest threshold thereafter (e.g. every 30th occasion beyond an initial `[1, 3, 10, 30]` schedule). */
 export function isProbeOccasion(occasion: number, thresholds: readonly number[]): boolean {
   const sorted = [...new Set(thresholds.filter((t) => t > 0))].sort((a, b) => a - b)
   if (sorted.length === 0) return false
@@ -282,14 +128,7 @@ export function isProbeOccasion(occasion: number, thresholds: readonly number[])
   return occasion > last && occasion % last === 0
 }
 
-/**
- * Increment and return the durable `(category, harness)` suppressed-occasion streak backing
- * {@link isProbeOccasion} -- see hint_suppression_probes' schema comment in db.ts and this
- * module's "Probe recovery" doc-comment section for why this counter exists and how it's scoped.
- * Fail-soft like every other hook-path DB write here: a failure returns 0, which
- * {@link isProbeOccasion} never treats as a probe match for any non-empty threshold list, so a
- * transient DB error degrades to "stay suppressed" rather than accidentally probing.
- */
+/** Increment and return the durable `(category, harness)` suppressed-occasion streak backing {@link isProbeOccasion} -- see hint_suppression_probes' schema comment in db.ts and this module's "Probe recovery" doc-comment section for why this counter exists and how it's scoped. Fail-soft like every other hook-path DB write here: a failure returns 0, which {@link isProbeOccasion} never treats as a probe match for any non-empty threshold list, so a transient DB error degrades to "stay suppressed" rather than accidentally probing. */
 function bumpSuppressionStreak(category: HintCategory): number {
   try {
     const db = getDb(globalDbPath())
@@ -317,41 +156,14 @@ function resetSuppressionStreak(category: HintCategory): void {
   }
 }
 
-/**
- * Wrap a hook handler's already-computed {@link HookOutput}: non-`context` outputs pass through
- * untouched (deny/pass/rewrite* are not hints in this module's sense -- see the module doc
- * comment). A `context` output is classified via `classify`, checked against
- * {@link shouldSuppress}. When suppressed, this occasion's streak is bumped and checked against
- * `hints.backoff_thresholds` via {@link isProbeOccasion}: a matching occasion is let through and
- * logged as a genuine probe (see the module doc comment's "Probe recovery" section); any other
- * suppressed occasion is swapped for a silent `passOutput()`, same as before probing existed.
- * When not suppressed, the streak is reset (a fresh suppression episode later starts its backoff
- * schedule over from occasion 1) and the emission is logged via {@link logHintEmission} as
- * always.
- *
- * Called from each instrumented hook file's thin public wrapper (e.g. hooks_bash.ts's
- * `preBashHandler` calling into the renamed `preBashHandlerInner`) rather than from inside the
- * ~30-branch handler bodies themselves, so none of those branches' own logic needed touching --
- * every `context` output they can possibly produce is intercepted at the one return boundary.
- */
+/** Wrap a hook handler's already-computed {@link HookOutput}: non-`context` outputs pass through untouched (deny/pass/rewrite* are not hints in this module's sense -- see the module doc comment). A `context` output is classified via `classify`, checked against {@link shouldSuppress}. When suppressed, this occasion's streak is bumped and checked against `hints.backoff_thresholds` via {@link isProbeOccasion}: a matching occasion is let through and logged as a genuine probe (see the module doc comment's "Probe recovery" section); any other suppressed occasion is swapped for a silent `passOutput()`, same as before probing existed. When not suppressed, the streak is reset (a fresh suppression episode later starts its backoff schedule over from occasion 1) and the emission is logged via {@link logHintEmission} as always. Called from each instrumented hook file's thin public wrapper (e.g. hooks_bash.ts's `preBashHandler` calling into the renamed `preBashHandlerInner`) rather than from inside the ~30-branch handler bodies themselves, so none of those branches' own logic needed touching -- every `context` output they can possibly produce is intercepted at the one return boundary. */
 export function applyHintTracking(event: HookEvent, output: HookOutput, classify: (text: string) => Classification): HookOutput {
   if (output.hookType !== 'context') return output
   const classified = classify(output.context)
   const { category } = classified
   // A builder that supplied its own correlators wins outright over classify's regex scrape, including when it supplied an empty list: an empty list is the builder saying "this hint names no file", which is a truthful null, where the scrape on that same text returns whatever path-shaped run of characters the prose happens to contain. See extractPathCorrelator's doc comment for the measured damage the scrape did.
   const correlator = output.correlators === undefined ? classified.correlator : joinCorrelators(output.correlators)
-  // A pre_tool_use-emitted hint (bash_redirect/bash_recall from preBashHandler,
-  // read_structural_nav/read_reread_dedup from preReadHandler) is always followed, in a
-  // guaranteed-next, separate `token-goat hook post_tool_use` process invocation, by
-  // resolvePendingHintsForEvent processing that SAME tool call's own post_tool_use event before
-  // any genuinely later tool call can occur -- consuming one calls_remaining unit against the
-  // very command the hint was warning about, not a "further" call. A post_tool_use-emitted hint
-  // (edit_reread_suggest from postEditHandler, or any hint from postReadHandler) does not have
-  // this problem: resolvePendingHintsForEvent is registered before those handlers (hint_stats.ts
-  // is pulled in transitively by hooks_read.ts, the first hook module relay.ts imports), so it
-  // runs earlier in the same runHook pass and never sees a row that handler hasn't inserted yet.
-  // Compensate only for the pre_tool_use case so both paths get the documented ACTED_ON_WINDOW
-  // worth of genuinely subsequent chances.
+  // A pre_tool_use-emitted hint (bash_redirect/bash_recall from preBashHandler, read_structural_nav/read_reread_dedup from preReadHandler) is always followed, in a guaranteed-next, separate `token-goat hook post_tool_use` process invocation, by resolvePendingHintsForEvent processing that SAME tool call's own post_tool_use event before any genuinely later tool call can occur -- consuming one calls_remaining unit against the very command the hint was warning about, not a "further" call. A post_tool_use-emitted hint (edit_reread_suggest from postEditHandler, or any hint from postReadHandler) does not have this problem: resolvePendingHintsForEvent is registered before those handlers (hint_stats.ts is pulled in transitively by hooks_read.ts, the first hook module relay.ts imports), so it runs earlier in the same runHook pass and never sees a row that handler hasn't inserted yet. Compensate only for the pre_tool_use case so both paths get the documented ACTED_ON_WINDOW worth of genuinely subsequent chances.
   const compensateSelfResolve = event.eventName === 'pre_tool_use'
   if (shouldSuppress(category, event.sessionId)) {
     const occasion = bumpSuppressionStreak(category)
@@ -360,8 +172,7 @@ export function applyHintTracking(event: HookEvent, output: HookOutput, classify
       logSuppressedDetection(category, event.sessionId, correlator)
       return passOutput()
     }
-    // Probe occasion: let it through and log it exactly like a normal (non-suppressed) emission
-    // -- see the module doc comment for why the streak is deliberately NOT reset here.
+    // Probe occasion: let it through and log it exactly like a normal (non-suppressed) emission -- see the module doc comment for why the streak is deliberately NOT reset here.
     logHintEmission(category, event.sessionId, correlator, compensateSelfResolve, output.context.length)
     return output
   }
@@ -371,22 +182,7 @@ export function applyHintTracking(event: HookEvent, output: HookOutput, classify
 }
 
 /** Fail-soft: never throws, matching every other hook-path DB write in this codebase (see recall_index.ts's indexRecallEntry doc comment). `bytesEmitted` is the hint text's own length (the real cost of injecting it into context) -- left `null` (never defaulted to 0) when the caller has no figure to give, so a legacy/untracked emission stays honestly distinguishable from a genuine zero-byte spend; see hint_emissions.bytes_emitted's schema comment in db.ts. */
-/**
- * Record a detection the agent never saw: auto-suppressed, or declined by a hint's own
- * net-benefit gate.
- *
- * Until this existed, a suppressed detection left no trace at all, so the ledger could not tell a
- * category that had been muted into silence from one that had simply stopped triggering -- and
- * those call for opposite actions. The row is written zero-byte (nothing was shown, so nothing was
- * spent), `displayed = 0`, `observable = 0` (no verdict was available about a hint nobody read)
- * and already resolved, so it never occupies a slot in the pending-resolution scan. It carries its
- * correlator anyway: what a suppressed category keeps firing on is the first thing worth knowing
- * when deciding whether to fix it or retire it.
- *
- * Retention is hint_emissions' own 180-day window -- pruneHintEmissions (stats.ts) deletes on
- * emitted_at with no other predicate, so these rows age out with the rest rather than accumulating
- * the way an unpruned counter table would.
- */
+/** Record a detection the agent never saw: auto-suppressed, or declined by a hint's own net-benefit gate. Until this existed, a suppressed detection left no trace at all, so the ledger could not tell a category that had been muted into silence from one that had simply stopped triggering -- and those call for opposite actions. The row is written zero-byte (nothing was shown, so nothing was spent), `displayed = 0`, `observable = 0` (no verdict was available about a hint nobody read) and already resolved, so it never occupies a slot in the pending-resolution scan. It carries its correlator anyway: what a suppressed category keeps firing on is the first thing worth knowing when deciding whether to fix it or retire it. Retention is hint_emissions' own 180-day window -- pruneHintEmissions (stats.ts) deletes on emitted_at with no other predicate, so these rows age out with the rest rather than accumulating the way an unpruned counter table would. */
 export function logSuppressedDetection(category: HintCategory, sessionId: string, correlator: string | null): void {
   try {
     getDb(globalDbPath())
@@ -396,20 +192,17 @@ export function logSuppressedDetection(category: HintCategory, sessionId: string
       )
       .run({ category, sessionId, harness: getHarnessName(), correlator, emittedAt: Date.now() })
   } catch {
-    // Fail-soft, same contract as logHintEmission: a tracking failure must never change what the
-    // hook returns.
+    // Fail-soft, same contract as logHintEmission: a tracking failure must never change what the hook returns.
   }
 }
 
 export function logHintEmission(category: HintCategory, sessionId: string, correlator: string | null, compensateSelfResolve = false, bytesEmitted: number | null = null): void {
   try {
     const db = getDb(globalDbPath())
-    const resolved = correlator === null ? 1 : 0
-    // A row with no correlator names nothing a later command could match, so no verdict about it is
-    // ever observed. It used to be booked as a failure here, except in a suppression category where
-    // it was booked as a success instead -- two opposite fabrications, both averaged into a measured
-    // rate. It is now marked unobservable and left at acted_on=0, which the efficacy queries skip
-    // entirely rather than read; see the hint_emissions.observable schema comment in db.ts.
+    // A self-scored category waits for its emitter's verdict instead of a correlator.
+    const observable = correlator !== null || SELF_SCORED_HINT_CATEGORIES.has(category)
+    const resolved = observable ? 0 : 1
+    // A row with no correlator names nothing a later command could match, so no verdict about it is ever observed. It used to be booked as a failure here, except in a suppression category where it was booked as a success instead -- two opposite fabrications, both averaged into a measured rate. It is now marked unobservable and left at acted_on=0, which the efficacy queries skip entirely rather than read; see the hint_emissions.observable schema comment in db.ts.
     const window = ACTED_ON_WINDOW + (compensateSelfResolve ? 1 : 0)
     db.prepare(
       `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted, observable)
@@ -421,34 +214,19 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
       correlator,
       emittedAt: Date.now(),
       resolved,
-      callsRemaining: correlator === null ? 0 : window,
+      callsRemaining: observable ? window : 0,
       bytesEmitted,
-      observable: correlator === null ? 0 : 1,
+      observable: observable ? 1 : 0,
     })
   } catch {
     // Fail-soft: a hint-tracking failure must never block the hint (or the tool call) it accompanies.
   }
 }
 
-// Matches "token-goat" only when it appears as a standalone command/argument token (bounded by
-// start-of-string, whitespace, or a shell operator on the left and whitespace/end-of-string on the
-// right) -- NOT when it's merely a path segment, e.g. `cat C:/Projects/token-goat/src/foo.ts`. This
-// project's own working directory is literally named "token-goat", so a naive `.includes('token-goat')`
-// would be trivially satisfied by any command whose target path lies inside this repo, defeating the
-// whole point of checking that the CLI was actually invoked.
+// Matches "token-goat" only when it appears as a standalone command/argument token (bounded by start-of-string, whitespace, or a shell operator on the left and whitespace/end-of-string on the right) -- NOT when it's merely a path segment, e.g. `cat C:/Projects/token-goat/src/foo.ts`. This project's own working directory is literally named "token-goat", so a naive `.includes('token-goat')` would be trivially satisfied by any command whose target path lies inside this repo, defeating the whole point of checking that the CLI was actually invoked.
 const TOKEN_GOAT_INVOCATION_RE = /(?:^|[\s;&|])(?:token-goat|tg)(?=[\s]|$)/
 
-/** True when `command` contains `correlator` as a whole path/id token, not merely as a prefix or
- * suffix of a longer, unrelated one (e.g. correlator `foo.ts` must not match `foo.tsx`, id `ab12`
- * must not match `ab1234`, and correlator `1234abcd` must not match `x1234abcd`) -- mirrors the
- * boundary check other prefix/suffix-matching code in this codebase (e.g.
- * read_commands.ts's endsWithPathBoundary / coverage_query.ts's endsWithPathBoundaryLocal, and
- * skill_cache.ts's session-fragment guard) already applies. Requires the character immediately
- * before AND after every match to be absent or not a path/id-continuation character
- * (alphanumeric, `_`, `.`, `-`) -- a correlator extracted from a hint's own text always starts and
- * ends at such a boundary there, but that says nothing about whether a later, unrelated command
- * happens to embed the same substring glued onto a longer token, so both sides of every match in
- * `command` must be checked independently. */
+/** True when `command` contains `correlator` as a whole path/id token, not merely as a prefix or suffix of a longer, unrelated one (e.g. correlator `foo.ts` must not match `foo.tsx`, id `ab12` must not match `ab1234`, and correlator `1234abcd` must not match `x1234abcd`) -- mirrors the boundary check other prefix/suffix-matching code in this codebase (e.g. read_commands.ts's endsWithPathBoundary / coverage_query.ts's endsWithPathBoundaryLocal, and skill_cache.ts's session-fragment guard) already applies. Requires the character immediately before AND after every match to be absent or not a path/id-continuation character (alphanumeric, `_`, `.`, `-`) -- a correlator extracted from a hint's own text always starts and ends at such a boundary there, but that says nothing about whether a later, unrelated command happens to embed the same substring glued onto a longer token, so both sides of every match in `command` must be checked independently. */
 function commandMentionsCorrelator(command: string, correlator: string): boolean {
   let idx = command.indexOf(correlator)
   while (idx !== -1) {
@@ -462,19 +240,7 @@ function commandMentionsCorrelator(command: string, correlator: string): boolean
   return false
 }
 
-/**
- * Categories whose hint asks the agent NOT to do something ("you already read this file, recall it
- * instead of re-reading"). Compliance with one of these is an *absence*: the agent reads nothing and
- * moves on, so there is no command to observe. The redirect categories are the opposite -- they name
- * a cheaper command to run instead, and running it is the observable proof.
- *
- * Measuring these with the same presence test made them structurally unable to score: every row
- * resolved `acted_on = 0` no matter how well the hint worked, efficacy sat at exactly 0%, and
- * `shouldSuppress` muted the category for good once `min_sample_size` rows had accrued. So the
- * hints that save the most -- the ones that stop a whole re-read -- were the first to turn
- * themselves off, on evidence that could not exist. Polarity is therefore inverted for these:
- * assume compliance, and count only observed defiance against them.
- */
+/** Categories whose hint asks the agent NOT to do something ("you already read this file, recall it instead of re-reading"). Compliance with one of these is an *absence*: the agent reads nothing and moves on, so there is no command to observe. The redirect categories are the opposite -- they name a cheaper command to run instead, and running it is the observable proof. Measuring these with the same presence test made them structurally unable to score: every row resolved `acted_on = 0` no matter how well the hint worked, efficacy sat at exactly 0%, and `shouldSuppress` muted the category for good once `min_sample_size` rows had accrued. So the hints that save the most -- the ones that stop a whole re-read -- were the first to turn themselves off, on evidence that could not exist. Polarity is therefore inverted for these: assume compliance, and count only observed defiance against them. */
 const SUPPRESSION_HINT_CATEGORIES: ReadonlySet<HintCategory> = new Set<HintCategory>([
   'read_reread_dedup',
   'edit_reread_suggest',
@@ -489,11 +255,7 @@ export function isSuppressionCategory(category: HintCategory): boolean {
 /** Tool-input keys that name the file a non-Bash read/edit tool is about, across harnesses. */
 const EVENT_PATH_KEYS = ['file_path', 'filePath', 'notebook_path', 'path'] as const
 
-/**
- * The text of this event that a correlator can be looked for in: the Bash command, or the file path
- * a Read/Edit-shaped tool was pointed at. A suppression hint is defied by a plain `Read` just as
- * much as by a `cat`, so both shapes have to be visible here.
- */
+/** The text of this event that a correlator can be looked for in: the Bash command, or the file path a Read/Edit-shaped tool was pointed at. A suppression hint is defied by a plain `Read` just as much as by a `cat`, so both shapes have to be visible here. */
 function eventTargetText(event: HookEvent): string {
   if (event.toolName === 'Bash') {
     const c = event.toolInput['command']
@@ -506,11 +268,7 @@ function eventTargetText(event: HookEvent): string {
   return ''
 }
 
-/**
- * True when this event re-reads the very path a suppression hint just said was already in hand,
- * by a route that costs the full file. A token-goat invocation is excluded: taking the surgical
- * route is following the hint, not defying it.
- */
+/** True when this event re-reads the very path a suppression hint just said was already in hand, by a route that costs the full file. A token-goat invocation is excluded: taking the surgical route is following the hint, not defying it. */
 function isDefiance(correlator: string, target: string): boolean {
   if (target === '') return false
   if (TOKEN_GOAT_INVOCATION_RE.test(target)) return false
@@ -525,14 +283,7 @@ function isActedOn(category: HintCategory, correlator: string, command: string):
   return anyMatch
 }
 
-/**
- * Advance every unresolved pending hint for this session by one tool-use event: mark
- * `acted_on` when this event's Bash command demonstrates follow-through (see {@link isActedOn}),
- * otherwise decrement its remaining window and resolve it (still not acted on) once that
- * window is exhausted. Every tool call token-goat observes consumes one unit of window for
- * every pending row, not just Bash calls, since the window models "how soon after the hint," not
- * "how many Bash calls specifically."
- */
+/** Advance every unresolved pending hint for this session by one tool-use event: mark `acted_on` when this event's Bash command demonstrates follow-through (see {@link isActedOn}), otherwise decrement its remaining window and resolve it (still not acted on) once that window is exhausted. Every tool call token-goat observes consumes one unit of window for every pending row, not just Bash calls, since the window models "how soon after the hint," not "how many Bash calls specifically." */
 export function resolvePendingHintsForEvent(event: HookEvent): void {
   try {
     const db = getDb(globalDbPath())
@@ -543,18 +294,14 @@ export function resolvePendingHintsForEvent(event: HookEvent): void {
       .all(event.sessionId) as Array<{ id: number; category: string; correlator: string | null; calls_remaining: number }>
 
     for (const row of pending) {
+      if (isHintCategory(row.category) && SELF_SCORED_HINT_CATEGORIES.has(row.category)) continue
       if (!isHintCategory(row.category) || row.correlator === null) {
-        // Nothing observable to wait for: no later command can match a pointer this row does not
-        // carry. Recorded as unobservable rather than given a manufactured verdict in either
-        // direction -- this branch used to book a failure, or a success in a suppression category,
-        // and efficacy averaged both. See hint_emissions.observable's schema comment in db.ts.
+        // Nothing observable to wait for: no later command can match a pointer this row does not carry. Recorded as unobservable rather than given a manufactured verdict in either direction -- this branch used to book a failure, or a success in a suppression category, and efficacy averaged both. See hint_emissions.observable's schema comment in db.ts.
         db.prepare(`UPDATE hint_emissions SET acted_on = 0, resolved = 1, observable = 0 WHERE id = ?`).run(row.id)
         continue
       }
       if (isSuppressionCategory(row.category)) {
-        // Inverted polarity: a re-read of the named path is the only thing that counts against
-        // this hint. Anything else -- including the window simply running out because the agent
-        // read nothing -- is the compliance the hint asked for.
+        // Inverted polarity: a re-read of the named path is the only thing that counts against this hint. Anything else -- including the window simply running out because the agent read nothing -- is the compliance the hint asked for.
         if (isDefiance(row.correlator, target)) {
           db.prepare(`UPDATE hint_emissions SET acted_on = 0, resolved = 1 WHERE id = ?`).run(row.id)
           continue
@@ -587,19 +334,9 @@ export function resolvePendingHintsForEvent(event: HookEvent): void {
   }
 }
 
-// Advisory (never short-circuits another handler — see hook_registry.ts's Registration.advisory
-// doc comment) and unfiltered by toolName so every observed tool call gets a chance to resolve
-// pending hints, not just Bash calls (a Read/Edit/Grep/etc. call still consumes one unit of
-// window even though it can never itself satisfy isActedOn's Bash-command check).
+// Advisory (never short-circuits another handler — see hook_registry.ts's Registration.advisory doc comment) and unfiltered by toolName so every observed tool call gets a chance to resolve pending hints, not just Bash calls (a Read/Edit/Grep/etc. call still consumes one unit of window even though it can never itself satisfy isActedOn's Bash-command check).
 //
-// followsMatcher: this is the one handler that would otherwise force PostToolUse to a catch-all
-// matcher, making every unrelated tool call spawn a whole hook process (~90% of which is Node
-// startup plus bundle evaluation) purely to tick a counter. Accepting the installed matcher means
-// the window counts tool calls token-goat *observes* rather than every tool call in the session —
-// roughly 15% fewer in practice, so a pending hint survives slightly longer in wall-clock terms.
-// That is within ACTED_ON_WINDOW's own stated tolerance (5 is a deliberately rough "the immediate
-// next couple of tool calls"), and it cannot change which hints are creditable: only a Bash call
-// ever satisfies isActedOn, and Bash is always in the matcher.
+// followsMatcher: this is the one handler that would otherwise force PostToolUse to a catch-all matcher, making every unrelated tool call spawn a whole hook process (~90% of which is Node startup plus bundle evaluation) purely to tick a counter. Accepting the installed matcher means the window counts tool calls token-goat *observes* rather than every tool call in the session — roughly 15% fewer in practice, so a pending hint survives slightly longer in wall-clock terms. That is within ACTED_ON_WINDOW's own stated tolerance (5 is a deliberately rough "the immediate next couple of tool calls"), and it cannot change which hints are creditable: only a Bash call ever satisfies isActedOn, and Bash is always in the matcher.
 registerHook(
   'post_tool_use',
   (event) => {
@@ -619,14 +356,7 @@ export interface CategoryEfficacy {
   /** Count of this category's detections that were never shown to the agent -- auto-suppressed, or declined by a hint's own net-benefit gate. Zero-byte by construction, so absent from every other count here. Surfaced because a muted category and a category that has stopped triggering print identically otherwise, and they call for opposite actions: one is a throttle to review, the other is a hint whose trigger has gone away. */
   detected: number
   suppressed: boolean
-  /**
-   * True only when this category is suppressed *and* `hints.backoff_thresholds` is empty, so no
-   * probe occasion will ever let it through again and the suppression can only be lifted by a
-   * manual `token-goat hint-stats --reset`. False when the category is not suppressed, and also
-   * when it is suppressed but probes are configured, where suppression is a self-healing throttle
-   * rather than an off switch. Those two states are operationally opposite and used to render
-   * identically; see the config comment on `backoff_thresholds` for why `[]` is a supported value.
-   */
+  /** True only when this category is suppressed *and* `hints.backoff_thresholds` is empty, so no probe occasion will ever let it through again and the suppression can only be lifted by a manual `token-goat hint-stats --reset`. False when the category is not suppressed, and also when it is suppressed but probes are configured, where suppression is a self-healing throttle rather than an off switch. Those two states are operationally opposite and used to render identically; see the config comment on `backoff_thresholds` for why `[]` is a supported value. */
   suppressionPermanent: boolean
   manualEffective: number
   manualIneffective: number
@@ -649,17 +379,7 @@ function categoryStats(category: HintCategory): EmissionRow {
   const db = getDb(globalDbPath())
   const row = db
     .prepare(
-      // Three populations, deliberately not pooled. `emitted` is what was shown AND could be
-      // scored, so it is the only honest denominator for efficacy: including a row nothing could
-      // ever have satisfied would divide a real numerator by partly-imaginary rows. `unobservable`
-      // was shown but carried no pointer -- it spent bytes and earned no verdict. `detected` was
-      // never shown at all (suppressed, or declined by a net-benefit gate) and spent nothing.
-      // bytesEmitted and legacyEmissions span every row, which is correct in each case: the
-      // unobservable rows really did cost the agent, and the never-displayed ones are zero-byte,
-      // so neither distorts the spend figure.
-      // COALESCE on the counts that stay `number`: SUM over no rows is NULL where the COUNT(*)
-      // this replaced was 0, and an aggregate query always returns its row, so the `?? default`
-      // below would not have caught it.
+      // Three populations, deliberately not pooled. `emitted` is what was shown AND could be scored, so it is the only honest denominator for efficacy: including a row nothing could ever have satisfied would divide a real numerator by partly-imaginary rows. `unobservable` was shown but carried no pointer -- it spent bytes and earned no verdict. `detected` was never shown at all (suppressed, or declined by a net-benefit gate) and spent nothing. bytesEmitted and legacyEmissions span every row, which is correct in each case: the unobservable rows really did cost the agent, and the never-displayed ones are zero-byte, so neither distorts the spend figure. COALESCE on the counts that stay `number`: SUM over no rows is NULL where the COUNT(*) this replaced was 0, and an aggregate query always returns its row, so the `?? default` below would not have caught it.
       `SELECT COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 1 THEN 1 ELSE 0 END), 0) AS emitted,
               SUM(CASE WHEN displayed = 1 AND observable = 1 THEN acted_on ELSE 0 END) AS actedOn,
               COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 0 THEN 1 ELSE 0 END), 0) AS unobservable,
@@ -672,22 +392,7 @@ function categoryStats(category: HintCategory): EmissionRow {
   return row ?? { emitted: 0, actedOn: 0, unobservable: 0, detected: 0, bytesEmitted: null, legacyEmissions: 0 }
 }
 
-/**
- * True once (category, current harness) has at least `hint_stats.min_sample_size` emissions AND
- * the category has failed the bar its own polarity is measured against — see the module doc
- * comment's "Suppression persistence" section for why this is not literally scoped to only the
- * current `sessionId` despite accepting it as a parameter (kept for interface honesty/future
- * use and because it is the natural key this feature was specified against).
- *
- * Two bars, because the two kinds of category measure different quantities. A normal hint names a
- * substitute command, so `acted_on` counts uptake and the question is whether uptake fell below
- * `suppress_threshold_pct`. A suppression category asks for an absence and is booked
- * compliance-first (see {@link SUPPRESSION_HINT_CATEGORIES}), so `100 - efficacy` is its observed
- * defiance rate and the question is whether that rate rose above `defiance_threshold_pct`. The
- * defaults are exact complements (15 / 85), so the two branches agree on every verdict until an
- * operator deliberately separates them; they are separate keys because an uptake rate and a
- * defiance rate have unrelated base rates and one number cannot be well-calibrated for both.
- */
+/** True once (category, current harness) has at least `hint_stats.min_sample_size` emissions AND the category has failed the bar its own polarity is measured against — see the module doc comment's "Suppression persistence" section for why this is not literally scoped to only the current `sessionId` despite accepting it as a parameter (kept for interface honesty/future use and because it is the natural key this feature was specified against). Two bars, because the two kinds of category measure different quantities. A normal hint names a substitute command, so `acted_on` counts uptake and the question is whether uptake fell below `suppress_threshold_pct`. A suppression category asks for an absence and is booked compliance-first (see {@link SUPPRESSION_HINT_CATEGORIES}), so `100 - efficacy` is its observed defiance rate and the question is whether that rate rose above `defiance_threshold_pct`. The defaults are exact complements (15 / 85), so the two branches agree on every verdict until an operator deliberately separates them; they are separate keys because an uptake rate and a defiance rate have unrelated base rates and one number cannot be well-calibrated for both. */
 export function shouldSuppress(category: HintCategory, _sessionId: string): boolean {
   try {
     const cfg = loadConfig().hint_stats
@@ -701,17 +406,7 @@ export function shouldSuppress(category: HintCategory, _sessionId: string): bool
   }
 }
 
-/**
- * True when a specific hint emission's own quantified byte savings meet
- * `hints.min_session_hint_savings_bytes`. Unlike {@link shouldSuppress} (a cross-session,
- * per-category historical-efficacy signal backed by `hint_emissions`), this is a cheap, local,
- * per-call floor: "is THIS hint's savings big enough to be worth the friction of showing it,
- * right now" — no persistence, no sampling, just the one number the caller already computed.
- * Callers that already derive a concrete bytesSaved figure immediately before emitting a
- * `context` hint should gate on this the same way they gate on {@link shouldSuppress} results —
- * swap the hint for a silent `passOutput()` (or let the underlying command run normally) when
- * it returns false.
- */
+/** True when a specific hint emission's own quantified byte savings meet `hints.min_session_hint_savings_bytes`. Unlike {@link shouldSuppress} (a cross-session, per-category historical-efficacy signal backed by `hint_emissions`), this is a cheap, local, per-call floor: "is THIS hint's savings big enough to be worth the friction of showing it, right now" — no persistence, no sampling, just the one number the caller already computed. Callers that already derive a concrete bytesSaved figure immediately before emitting a `context` hint should gate on this the same way they gate on {@link shouldSuppress} results — swap the hint for a silent `passOutput()` (or let the underlying command run normally) when it returns false. */
 export function meetsSavingsFloor(bytesSaved: number): boolean {
   return bytesSaved >= loadConfig().hints.min_session_hint_savings_bytes
 }
@@ -761,20 +456,7 @@ export interface HintStatsTotals {
   legacyEmissions: number
 }
 
-/**
- * All-time saved/spent totals for `token-goat hint-stats`'s summary line — see {@link getHintStatsSummary} for
- * the per-category breakdown this rolls up. Deliberately NOT harness-scoped, unlike the per-category rows above
- * it: `savedBytes` comes from the `stats` ledger, which has no `harness` column at all (see stats.ts's
- * GLOBAL_SCHEMA_SQL) and therefore spans every harness.
- *
- * Regression note: this used to also return a `netBytes = savedBytes - spentBytes` figure. `savedBytes` is an
- * all-time aggregate over every kind stats.ts maps to `SOURCE_HINT` (session_hint, diff_hint,
- * evidence_cache_hit, etc. -- tens of thousands of events), while `spentBytes` sums only the much smaller
- * `hint_emissions` ledger (a handful of tracked rows, since that table only started recording spend
- * post-migration). Those are disjoint populations: subtracting one from the other produced a "net" figure in
- * the billions that implied a few dozen tracked emissions netted gigabytes, which they never did. Report the
- * two figures separately, each labelled with its own population, and never combine them into a difference.
- */
+/** All-time saved/spent totals for `token-goat hint-stats`'s summary line — see {@link getHintStatsSummary} for the per-category breakdown this rolls up. Deliberately NOT harness-scoped, unlike the per-category rows above it: `savedBytes` comes from the `stats` ledger, which has no `harness` column at all (see stats.ts's GLOBAL_SCHEMA_SQL) and therefore spans every harness. Regression note: this used to also return a `netBytes = savedBytes - spentBytes` figure. `savedBytes` is an all-time aggregate over every kind stats.ts maps to `SOURCE_HINT` (session_hint, diff_hint, evidence_cache_hit, etc. -- tens of thousands of events), while `spentBytes` sums only the much smaller `hint_emissions` ledger (a handful of tracked rows, since that table only started recording spend post-migration). Those are disjoint populations: subtracting one from the other produced a "net" figure in the billions that implied a few dozen tracked emissions netted gigabytes, which they never did. Report the two figures separately, each labelled with its own population, and never combine them into a difference. */
 export function getHintStatsTotals(): HintStatsTotals {
   const db = getDb(globalDbPath())
   const row = db

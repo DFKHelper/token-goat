@@ -351,6 +351,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/batch_serve.ts`](src/batch_serve.ts) | `--batch-serve`: run many CLI invocations inside one already-started process. |
 | [`src/bridges_status.ts`](src/bridges_status.ts) | Bridge hook-event parity matrix. |
 | [`src/cache_session_commands.ts`](src/cache_session_commands.ts) | Cache and history commands: bash-history, web-history, clean-cache, prune-cache, cache-audit. |
+| [`src/call_streak.ts`](src/call_streak.ts) | Call-streak advisories: the two hints that judge a run of tool calls rather than one call. |
 | [`src/canonical_skill.ts`](src/canonical_skill.ts) | The canonical token-goat skill installed by `token-goat install`. |
 | [`src/capabilities.ts`](src/capabilities.ts) | A machine-readable statement of every capability token-goat has that can send data off the machine or leave data on it, with its effective state and the place that state is enforce |
 | [`src/claude_config_dir.ts`](src/claude_config_dir.ts) | Where Claude Code keeps its own per-user configuration, and nothing else. |

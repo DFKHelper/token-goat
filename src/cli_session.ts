@@ -30,7 +30,7 @@ import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
 import { runStatuslineCommand } from './cli_statusline.js'
 import { runHintStatsCommand } from './cli_hint_stats.js'
-import { isHintCategory } from './hint_stats.js'
+import { HINT_CATEGORIES, isHintCategory } from './hint_stats.js'
 
 export function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
   return runContextStats(opts)
@@ -173,10 +173,10 @@ export function cmdStatusline(opts: { json?: boolean } = {}): Promise<void> {
 
 export function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: string; markIneffective?: string } = {}): void {
   if (opts.markEffective !== undefined && !isHintCategory(opts.markEffective)) {
-    throw new CliError(`--mark-effective must be one of: bash_redirect, bash_recall, read_reread_dedup, read_structural_nav, edit_reread_suggest (got: ${opts.markEffective})`)
+    throw new CliError(`--mark-effective must be one of: ${HINT_CATEGORIES.join(', ')} (got: ${opts.markEffective})`)
   }
   if (opts.markIneffective !== undefined && !isHintCategory(opts.markIneffective)) {
-    throw new CliError(`--mark-ineffective must be one of: bash_redirect, bash_recall, read_reread_dedup, read_structural_nav, edit_reread_suggest (got: ${opts.markIneffective})`)
+    throw new CliError(`--mark-ineffective must be one of: ${HINT_CATEGORIES.join(', ')} (got: ${opts.markIneffective})`)
   }
   runHintStatsCommand({
     ...(opts.json === true ? { json: true } : {}),

@@ -3,8 +3,10 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, relative } from 'node:path'
 
+import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
+import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput } from './hooks_common.js'
 import { displaySafeText, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
@@ -15,7 +17,7 @@ import { recordStat } from './stats.js'
 import { classifyToolError } from './tool_error_class.js'
 import type { HookOutput } from './types.js'
 
-const FAILURE_SUFFIX = '.tool-failures.json'
+const FAILURE_SUFFIX = '.tool-failures'
 
 /** Signatures tracked per session before the oldest is dropped. A ledger is only ever consulted for membership, so the cap bounds the file rather than the usefulness: a session that has produced 64 distinct tool failures is not one where remembering the 65th changes an outcome. */
 export const MAX_TRACKED_FAILURES = 64
@@ -204,10 +206,14 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     if (errorText === '') return passOutput()
 
     const toolName = getToolName(event)
-    const command = getToolInput(event)['command']
+    const executed = getToolInput(event)['command']
+    // A command the pre-hook rewrote into a `token-goat compress` wrapper arrives here as that wrapper, so classify the command inside it: otherwise every wrapped grep that found nothing reads as an unknown failure.
+    const command = typeof executed === 'string' ? (unwrapCompressCommand(executed) ?? executed) : executed
     const verdict = classifyToolError(toolName, errorText, { isInterrupt: event.raw['is_interrupt'] === true, ...(typeof command === 'string' ? { command } : {}) })
     recordStat('tool_failure', 0, 0, undefined, `tool=${(toolName ?? 'unknown').replace(/\s+/g, '_')} class=${verdict.kind} reason=${verdict.reason}`)
-    if (REPEAT_NOTICE_EXEMPT.has(verdict.reason)) return passOutput()
+    // Only a `search_no_match` can produce a line here, and that reason is exempt below, so the brake never competes with the repeat notice.
+    const streakLine = callStreakAfterFailure(event, verdict.reason)
+    if (REPEAT_NOTICE_EXEMPT.has(verdict.reason)) return streakLine ?? passOutput()
 
     if (!event.sessionId) return passOutput()
     const target = ledgerPath(event.sessionId)

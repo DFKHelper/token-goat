@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { runHintStatsCommand } from '../src/cli_hint_stats.js'
-import { logHintEmission, logSuppressedDetection, markCategoryEffective, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
+import { HINT_CATEGORIES, logHintEmission, logSuppressedDetection, markCategoryEffective, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
 import { defaultConfig, saveConfig } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordStat } from '../src/stats.js'
@@ -36,11 +36,7 @@ function captureStdout(fn: () => void): string {
 }
 
 describe('runHintStatsCommand — human output', () => {
-  // Categories are registered statically, so an untouched store renders a full table of zeros.
-  // "0 emitted / 0 acted-on / n/a" reads as measured ineffectiveness, and the action that
-  // invites (retire the hints) is the opposite of the correct one (go collect data). The note
-  // must appear only while the store is genuinely untouched, and the table must still render --
-  // dropping it would narrow existing output.
+  // Categories are registered statically, so an untouched store renders a full table of zeros. "0 emitted / 0 acted-on / n/a" reads as measured ineffectiveness, and the action that invites (retire the hints) is the opposite of the correct one (go collect data). The note must appear only while the store is genuinely untouched, and the table must still render -- dropping it would narrow existing output.
   it('says the zeros are absence of data when nothing has been recorded', () => {
     const output = captureStdout(() => runHintStatsCommand())
     expect(output).toContain('No hint emissions recorded yet')
@@ -80,10 +76,7 @@ describe('runHintStatsCommand — human output', () => {
     expect(line).toContain('100%')
   })
 
-  // A bare "yes" in the suppressed column covered two opposite states: throttled but able to
-  // earn its way back on a probe occasion, and off until someone runs --reset. A reader of this
-  // table once took the second for a broken suppression path and had to trace four source files
-  // and two databases to find out otherwise. The table has to say which one it is.
+  // A bare "yes" in the suppressed column covered two opposite states: throttled but able to earn its way back on a probe occasion, and off until someone runs --reset. A reader of this table once took the second for a broken suppression path and had to trace four source files and two databases to find out otherwise. The table has to say which one it is.
   function suppressOneCategory(thresholds: number[]): void {
     const cfg = defaultConfig()
     cfg.hint_stats.min_sample_size = 1
@@ -91,9 +84,7 @@ describe('runHintStatsCommand — human output', () => {
     cfg.hints.backoff_thresholds = thresholds
     saveConfig(cfg)
     clearModuleCaches()
-    // A real correlator, because this helper's job is "this category emitted and was never acted
-    // on". A null correlator now means the opposite -- nothing a later command could have matched,
-    // so no verdict was observed -- and such a row is not part of the sample shouldSuppress judges.
+    // A real correlator, because this helper's job is "this category emitted and was never acted on". A null correlator now means the opposite -- nothing a later command could have matched, so no verdict was observed -- and such a row is not part of the sample shouldSuppress judges.
     logHintEmission('bash_redirect', nonce(), 'C:/x/suppress.ts')
   }
 
@@ -134,8 +125,7 @@ describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
   })
 
   it('shows the spend total as "n/a" (not a fake 0) when every row predates spend tracking (legacy)', () => {
-    // Simulate a pre-migration row directly, the same shape db.test.ts's v9->v10 migration test
-    // leaves a pre-existing row in: no bytes_emitted value at all.
+    // Simulate a pre-migration row directly, the same shape db.test.ts's v9->v10 migration test leaves a pre-existing row in: no bytes_emitted value at all.
     const sid = nonce()
     logHintEmission('bash_redirect', sid, 'C:/x/legacy.ts')
     const output = captureStdout(() => runHintStatsCommand())
@@ -158,12 +148,7 @@ describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
     expect(output).toContain('1 legacy')
   })
 
-  // Regression: the TOTAL line used to compute net = saved - spent, where `saved` is an all-time
-  // aggregate over the entire `stats` table (every kind mapped to SOURCE_HINT -- tens of
-  // thousands of events across the codebase) and `spent` sums only the much smaller
-  // `hint_emissions` ledger. Those are disjoint populations, so the "net" implied a handful of
-  // tracked emissions produced gigabytes of savings. The TOTAL line must report the two figures
-  // separately, each labelled with its own population, and never combine them into a difference.
+  // Regression: the TOTAL line used to compute net = saved - spent, where `saved` is an all-time aggregate over the entire `stats` table (every kind mapped to SOURCE_HINT -- tens of thousands of events across the codebase) and `spent` sums only the much smaller `hint_emissions` ledger. Those are disjoint populations, so the "net" implied a handful of tracked emissions produced gigabytes of savings. The TOTAL line must report the two figures separately, each labelled with its own population, and never combine them into a difference.
   it('never nets the stats-ledger saved total against the much smaller hint_emissions spend total', () => {
     recordStat('session_hint', 5_000_000_000, 0)
     const sid = nonce()
@@ -183,7 +168,7 @@ describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
     logHintEmission('bash_redirect', sid, null, false, 77)
     const output = captureStdout(() => runHintStatsCommand({ json: true }))
     const parsed = JSON.parse(output) as Array<{ category: string; bytesEmitted: number | null; legacyEmissions: number }>
-    expect(parsed.length).toBe(5)
+    expect(parsed.map((r) => r.category).sort()).toEqual([...HINT_CATEGORIES].sort())
     const row = parsed.find((r) => r.category === 'bash_redirect')
     expect(row?.bytesEmitted).toBe(77)
     expect(row?.legacyEmissions).toBe(0)
@@ -194,7 +179,7 @@ describe('runHintStatsCommand — --json', () => {
   it('emits a machine-readable array with one entry per category', () => {
     const output = captureStdout(() => runHintStatsCommand({ json: true }))
     const parsed = JSON.parse(output) as Array<{ category: string; emitted: number; efficacyPct: number | null; suppressed: boolean }>
-    expect(parsed.length).toBe(5)
+    expect(parsed.map((r) => r.category).sort()).toEqual([...HINT_CATEGORIES].sort())
     for (const row of parsed) {
       expect(row.emitted).toBe(0)
       expect(row.efficacyPct).toBe(null)
@@ -286,10 +271,7 @@ describe('runHintStatsCommand — efficacy polarity disclosure', () => {
   })
 })
 
-// Unobservable rows leave the emitted count, which shrinks a number a reader uses to size a
-// category -- bash_redirect reads as 524 where 698 were really pushed at the agent. A count that
-// silently drops a quarter of its population looks like data loss unless the table says otherwise.
-// Both halves of the branch are checked, for the same reason the footnote above checks both.
+// Unobservable rows leave the emitted count, which shrinks a number a reader uses to size a category -- bash_redirect reads as 524 where 698 were really pushed at the agent. A count that silently drops a quarter of its population looks like data loss unless the table says otherwise. Both halves of the branch are checked, for the same reason the footnote above checks both.
 describe('runHintStatsCommand — unobservable emissions are disclosed, not silently dropped', () => {
   it('marks the emitted cell and explains the marker when a category has unobservable rows', () => {
     const sid = nonce()
@@ -326,8 +308,7 @@ describe('runHintStatsCommand — unobservable emissions are disclosed, not sile
     expect(output).toContain('undisplayed')
     const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
     expect(line).toBeDefined()
-    // One shown, two never shown. The emitted count stays 1 -- the point of the column is that the
-    // two populations are reported side by side, not pooled.
+    // One shown, two never shown. The emitted count stays 1 -- the point of the column is that the two populations are reported side by side, not pooled.
     expect(line).toMatch(/^bash_redirect\s+1\s+2\s/)
     expect(output).toContain('never reached the agent')
   })
@@ -353,8 +334,7 @@ describe('runHintStatsCommand — unobservable emissions are disclosed, not sile
   it('a store holding only unobservable rows is not reported as absence of data', () => {
     logHintEmission('bash_redirect', nonce(), null)
     const output = captureStdout(() => runHintStatsCommand())
-    // The zeros here mean "recorded but unscoreable", which calls for fixing the hint builder that
-    // supplies no correlator -- the opposite action from "go collect data".
+    // The zeros here mean "recorded but unscoreable", which calls for fixing the hint builder that supplies no correlator -- the opposite action from "go collect data".
     expect(output).not.toContain('No hint emissions recorded yet')
     expect(output).toContain('carried no correlator')
   })

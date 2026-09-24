@@ -156,7 +156,7 @@ describe('postToolUseFailureHandler', () => {
     const session = uniqueSession()
     const errorText = 'AuthenticationError: request failed using key AKIAIOSFODNN7EXAMPLE'
     postToolUseFailureHandler(failureEvent(session, 'Bash', errorText))
-    const target = sessionSidecarPath(session, '.tool-failures.json')
+    const target = sessionSidecarPath(session, '.tool-failures')
     expect(target).not.toBeNull()
     const raw = readFileSync(target as string, 'utf8')
     expect(raw).not.toContain('AKIAIOSFODNN7EXAMPLE')

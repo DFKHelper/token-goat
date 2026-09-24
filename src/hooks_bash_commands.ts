@@ -343,7 +343,7 @@ export function enqueueNonHeadMovingRewrites(cmd: string, rawCmd: string, cwd: s
   for (const p of paths) enqueueRewrittenPath(p)
 }
 
-const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])
+export const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])
 
 const CI_FILTER_NAMES = /^(?:generic-ci|jest|vitest|pytest|go_test|cargo_test|cargo|go|make|cmake|gradle|maven|dotnet|turbo|nx|lerna|webpack|eslint|ruff|clippy|flake8|mypy|prettier|tsc)$/
 
