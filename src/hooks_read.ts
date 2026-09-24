@@ -1,8 +1,4 @@
-/**
- * pre_tool_use read hooks (Read / Grep / Glob).
- * Ports the re-read dedup and large-file nudge from `hooks_read.py::pre_read` to the TypeScript hook surface. On each Read/Grep/Glob the handler: 1. extracts `file_path` (passes through when absent), 2. emits a re-read hint if the file was already read this session, 3. emits a large-file hint when the file exceeds {@link LARGE_FILE_BYTES}, 4. records the read so later calls dedup against it.
- * The handler returns at most one `context` output per call; image routing (Layer 6) and the heavier `pre_read` machinery are out of scope here.
- */
+/** pre_tool_use read hooks (Read / Grep / Glob). Ports the re-read dedup and large-file nudge from `hooks_read.py::pre_read` to the TypeScript hook surface. On each Read/Grep/Glob the handler: 1. extracts `file_path` (passes through when absent), 2. emits a re-read hint if the file was already read this session, 3. emits a large-file hint when the file exceeds {@link LARGE_FILE_BYTES}, 4. records the read so later calls dedup against it. The handler returns at most one `context` output per call; image routing (Layer 6) and the heavier `pre_read` machinery are out of scope here. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -17,7 +13,7 @@ import { displaySafePath, displaySafeText, normalizePath, toDisplayPath, TOOL_RE
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
+import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, wasHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
 import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
@@ -76,29 +72,19 @@ function isTsConfigFile(basename: string): boolean {
   return /^tsconfig(\..+)?\.json$/i.test(lower) || lower === 'jsconfig.json'
 }
 
-/**
- * Size at or above which a read is nudged toward a surgical command.
- * Shared with {@link FILE_TYPE_THRESHOLDS}.generic — both represent the same "large file" boundary and must stay numerically identical, or a file sized between the two literals gets a hard block from the universal file-type handler (checked further below) instead of the softer "large" context nudge this branch would otherwise give it.
- */
+/** Size at or above which a read is nudged toward a surgical command. Shared with {@link FILE_TYPE_THRESHOLDS}.generic — both represent the same "large file" boundary and must stay numerically identical, or a file sized between the two literals gets a hard block from the universal file-type handler (checked further below) instead of the softer "large" context nudge this branch would otherwise give it. */
 const LARGE_FILE_BYTES = FILE_TYPE_THRESHOLDS.generic
 
-/**
- * Size gate for the *first* read of a tasks/<id>.output file. Unlike the markdown intercept (MARKDOWN_SIZE_THRESHOLD) and the generic large-file gate (LARGE_FILE_BYTES) in this same function, the tasks/*.output first-read branch used to let any size through unconditionally with only an advisory hint -- a real session showed a 57,920-byte first read going through unsized. Small task outputs stay a cheap advisory pass; anything at or above this is denied outright, same as a re-read.
- */
+/** Size gate for the *first* read of a tasks/<id>.output file. Unlike the markdown intercept (MARKDOWN_SIZE_THRESHOLD) and the generic large-file gate (LARGE_FILE_BYTES) in this same function, the tasks/*.output first-read branch used to let any size through unconditionally with only an advisory hint -- a real session showed a 57,920-byte first read going through unsized. Small task outputs stay a cheap advisory pass; anything at or above this is denied outright, same as a re-read. */
 const TASK_OUTPUT_DENY_BYTES = 20 * 1024
 
-/**
- * Size gate for `hints.subagent_markdown_first_read_deny`: a subagent's first, un-ranged Read of a markdown file this large is denied in favour of its heading tree.
- * 30KB, not the 10KB where the measured pool starts. Across 4,664 real session transcripts, a subagent's first un-ranged Read of a >=10KB markdown file was 1,645 events / 50.7MB -- 10.4% of all Reads but 38.5% of all Read result bytes, and only 12% of them were followed by an Edit of the same file within 10 calls, so this is overwhelmingly reading-to-understand. The >=30KB slice is 643 of those events / 31.3MB: roughly 62% of the bytes for 39% of the interruptions, which is the highest-value, lowest-regret cut of the pool. Widening to 10KB triples the number of denied reads for the remaining 38% of the bytes and is deliberately left for a later version, after this one has enough fires for session-audit to report real outcome rates.
- */
+/** Size gate for `hints.subagent_markdown_first_read_deny`: a subagent's first, un-ranged Read of a markdown file this large is denied in favour of its heading tree. 30KB, not the 10KB where the measured pool starts. Across 4,664 real session transcripts, a subagent's first un-ranged Read of a >=10KB markdown file was 1,645 events / 50.7MB -- 10.4% of all Reads but 38.5% of all Read result bytes, and only 12% of them were followed by an Edit of the same file within 10 calls, so this is overwhelmingly reading-to-understand. The >=30KB slice is 643 of those events / 31.3MB: roughly 62% of the bytes for 39% of the interruptions, which is the highest-value, lowest-regret cut of the pool. Widening to 10KB triples the number of denied reads for the remaining 38% of the bytes and is deliberately left for a later version, after this one has enough fires for session-audit to report real outcome rates. */
 const SUBAGENT_MD_FIRST_READ_DENY_BYTES = 30 * 1024
 
 /** Markdown extensions the subagent first-read deny covers. Narrower than the heading-tree intercept's own regex, which also accepts `.rst`: the measured pool is markdown only, so reStructuredText is left to the existing advisory path. */
 const SUBAGENT_MD_FIRST_READ_DENY_EXT_RE = /\.(md|mdx|markdown)$/i
 
-/**
- * Multiplies `hints.large_read_redirect_bytes` down as context pressure rises, so a first read that's fine when the session is cool gets redirected to a surgical read sooner once the window is nearly full. Mirrors the pre-TS-port pressure-scaling design (commit 66a25e88): cool keeps the configured base, critical tightens to ~18% of it.
- */
+/** Multiplies `hints.large_read_redirect_bytes` down as context pressure rises, so a first read that's fine when the session is cool gets redirected to a surgical read sooner once the window is nearly full. Mirrors the pre-TS-port pressure-scaling design (commit 66a25e88): cool keeps the configured base, critical tightens to ~18% of it. */
 const DENY_THRESHOLD_TIER_MULTIPLIERS: Record<'cool' | 'warm' | 'hot' | 'critical', number> = {
   cool: 1.0,
   warm: 0.67,
@@ -125,9 +111,7 @@ function diffHintCredit(counterfactualBytes: number, body: string): number | nul
   return credit
 }
 
-/** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually
- * Forward-slashed path of `target` relative to `root`, or null when `target` is not actually inside `root`. A bare `!rel.startsWith('..')` check (the previous form of this guard, at both cross-session-manifest call sites below) is not sufficient on Windows: when `root` and `target` are on different drive letters, `path.relative` returns `target`'s own absolute path unchanged rather than a `..`-prefixed relative path (this is documented Node behavior, not a bug in path.relative), so a file on an unrelated drive silently passed the guard and got written into (or matched against) the project's cross-session read-dedup manifest as if it were a real in-project relative path -- leaking an out-of-project absolute path into a manifest meant to hold only project-relative paths. Mirrors pack.ts's `isPathWithinRoot` * guard, which already includes the `!path.isAbsolute(rel)` check this lacked.
- *  guard, which already includes the `!path.isAbsolute(rel)` check this lacked. */
+/** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually Forward-slashed path of `target` relative to `root`, or null when `target` is not actually inside `root`. A bare `!rel.startsWith('..')` check (the previous form of this guard, at both cross-session-manifest call sites below) is not sufficient on Windows: when `root` and `target` are on different drive letters, `path.relative` returns `target`'s own absolute path unchanged rather than a `..`-prefixed relative path (this is documented Node behavior, not a bug in path.relative), so a file on an unrelated drive silently passed the guard and got written into (or matched against) the project's cross-session read-dedup manifest as if it were a real in-project relative path -- leaking an out-of-project absolute path into a manifest meant to hold only project-relative paths. Mirrors pack.ts's `isPathWithinRoot` * guard, which already includes the `!path.isAbsolute(rel)` check this lacked. guard, which already includes the `!path.isAbsolute(rel)` check this lacked. */
 export function relPathWithinRoot(root: string, target: string): string | null {
   const rel = path.relative(root, target).replace(/\\/g, '/')
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null
@@ -145,18 +129,14 @@ function _isDocFile(filePath: string): boolean {
   )
 }
 
-/**
- * True when the path is a Claude session artifact file: a tasks output blob (`…/tasks/<id>.output`) or a tool-results file (`…/tool-results/<id>.txt`). Matches both forward-slash and backslash separators.
- */
+/** True when the path is a Claude session artifact file: a tasks output blob (`…/tasks/<id>.output`) or a tool-results file (`…/tool-results/<id>.txt`). Matches both forward-slash and backslash separators. */
 function isSessionArtifactFile(filePath: string): boolean {
   if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(filePath)) return true
   if (new RegExp('[/\\\\]tool-results[/\\\\]' + TOOL_RESULTS_ID_CHARS + '\\.txt$', 'i').test(filePath)) return true
   return false
 }
 
-/**
- * Recall hint for a session artifact file. Names a `bash-output --file` command that actually works: the artifact is on disk but not in the bash-output cache, so a bare `bash-output --tail N` (no id/path) or `bash-output <id>` (id is not a cache key) both error. `--file <path>` reads the file and applies the slice.
- */
+/** Recall hint for a session artifact file. Names a `bash-output --file` command that actually works: the artifact is on disk but not in the bash-output cache, so a bare `bash-output --tail N` (no id/path) or `bash-output <id>` (id is not a cache key) both error. `--file <path>` reads the file and applies the slice. */
 function sessionArtifactRecall(rawPath: string): string {
   const filePath = displaySafePath(rawPath)
   return 'Use `token-goat bash-output --file "' + filePath + '" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'
@@ -428,9 +408,7 @@ function detectSkillFile(filePath: string): string | null {
   return match ? displaySafePath(match[1]!) : null
 }
 
-/**
- * True if a sibling session's manifest (see compact.ts) shows a recent read of filePath. Delegates the directory walk / staleness / corrupt-JSON handling to readAllSessionManifests instead of re-implementing it, so both cross-session dedup and compaction share one reader.
- */
+/** True if a sibling session's manifest (see compact.ts) shows a recent read of filePath. Delegates the directory walk / staleness / corrupt-JSON handling to readAllSessionManifests instead of re-implementing it, so both cross-session dedup and compaction share one reader. */
 function scanCrossSessionManifests(
   projectRoot: string,
   projectHash: string,
@@ -485,9 +463,7 @@ function recordActualSlice(event: HookEvent, filePath: string): void {
   }
 }
 
-/**
- * contextOutput, degraded to passOutput during hints.quiet_hours. Only the advisory/ informational hint paths (contextOutput -- lets the call proceed, injects a suggestion) are gated this way; correctness-relevant denyOutput blocks (truncation, oversized-file, reread-deny) are never suppressed by quiet hours.
- */
+/** contextOutput, degraded to passOutput during hints.quiet_hours. Only the advisory/ informational hint paths (contextOutput -- lets the call proceed, injects a suggestion) are gated this way; correctness-relevant denyOutput blocks (truncation, oversized-file, reread-deny) are never suppressed by quiet hours. */
 function quietContextOutput(context: string): HookOutput {
   if (isWithinQuietHours(loadConfig().hints.quiet_hours)) {
     return passOutput()
@@ -495,9 +471,7 @@ function quietContextOutput(context: string): HookOutput {
   return contextOutput(context)
 }
 
-/**
- * Suffix appended to the large-file structural-nav hint when context pressure is elevated, gated on hints.context_threshold_advisory. Only 'hot'/'critical' warrant surfacing this -- 'cool'/'warm' are the normal operating range and would just be noise on every large-file hint.
- */
+/** Suffix appended to the large-file structural-nav hint when context pressure is elevated, gated on hints.context_threshold_advisory. Only 'hot'/'critical' warrant surfacing this -- 'cool'/'warm' are the normal operating range and would just be noise on every large-file hint. */
 function contextPressureAdvisorySuffix(): string {
   if (!loadConfig().hints.context_threshold_advisory) return ''
   const tier = getContextPressure(loadSessionCache(getSessionId()) ?? undefined, getTranscriptPath()).tier
@@ -510,10 +484,7 @@ function contextPressureAdvisorySuffix(): string {
   return ''
 }
 
-/**
- * True if `normalized` is among the `n` most-recently-read files this session (ranked by lastReadAt descending, ties broken by path for determinism). `n` <= 0 means no exemption ever applies. Used to exempt just-read files from the re-read-deny hints below.
- * The path tiebreak uses a plain ordinal (UTF-16 code-unit) comparison, never localeCompare() -- with no explicit locale it resolves to the host's default ICU collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which genuinely differs across locales for non-ASCII paths. lastReadAt ties are common in practice: a reloaded session's entries come from session_store.ts's second-granularity persisted timestamps (`lastReadTs * 1000`), so any two files read within the same second tie exactly, and a locale-dependent tiebreak could silently protect a different file on a different machine. Same fix already applied to graph_commands.ts's compareHopEntries for the identical reason.
- */
+/** True if `normalized` is among the `n` most-recently-read files this session (ranked by lastReadAt descending, ties broken by path for determinism). `n` <= 0 means no exemption ever applies. Used to exempt just-read files from the re-read-deny hints below. The path tiebreak uses a plain ordinal (UTF-16 code-unit) comparison, never localeCompare() -- with no explicit locale it resolves to the host's default ICU collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which genuinely differs across locales for non-ASCII paths. lastReadAt ties are common in practice: a reloaded session's entries come from session_store.ts's second-granularity persisted timestamps (`lastReadTs * 1000`), so any two files read within the same second tie exactly, and a locale-dependent tiebreak could silently protect a different file on a different machine. Same fix already applied to graph_commands.ts's compareHopEntries for the identical reason. */
 function isProtectedRecentRead(normalized: string, n: number): boolean {
   if (n <= 0) return false
   const entry = getSessionFileEntry(normalized)
@@ -530,14 +501,7 @@ function isProtectedRecentRead(normalized: string, n: number): boolean {
   return rank !== -1 && rank < n
 }
 
-/**
- * pre_tool_use handler for Read/Grep/Glob.
- *
- * Returns `deny` for: node_modules, lock files, .tsbuildinfo, build artifacts, large markdown files with headings, re-reads of files >50KB, first reads of files >500KB, and file-type specific oversize files.
- * Returns `context` for: manifest/tsconfig re-reads, and large files 100KB–500KB.
- * Returns `pass` otherwise.
- * Always records the read so the re-read hint fires on the next touch.
- */
+/** pre_tool_use handler for Read/Grep/Glob. Returns `deny` for: node_modules, lock files, .tsbuildinfo, build artifacts, large markdown files with headings, re-reads of files >50KB, first reads of files >500KB, and file-type specific oversize files. Returns `context` for: manifest/tsconfig re-reads, and large files 100KB–500KB. Returns `pass` otherwise. Always records the read so the re-read hint fires on the next touch. */
 function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
@@ -1074,17 +1038,23 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
       // Item 2.5: sequential line-range paging on source files and docs/XML (3+ slices read so far)
       const isPagingTracked = isSourceExt || /\.(md|mdx|markdown|rst|xml|dtsx|ampkg|xaml)$/i.test(basename)
-      if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3) {
+      // Denied once per file per compaction epoch. A reported session was refused 18 times in a row on one file, each retry an adjusted window: a caller that pages again after this deny has either a reason to want literal lines or will not switch tools, and a second refusal changes neither, it only costs a turn. Later slices pass with the paging note below. The key carries the epoch because the ranges this counts are themselves cleared at compaction, and a caller that no longer holds the deny should see it once more.
+      const pagingDenyKey = 'paging-deny:' + getCompactedAt() + ':' + foldPath(normalized)
+      if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3 && !wasHintShown(pagingDenyKey)) {
         // A window this narrow relative to the symbol it sits inside (see isWindowInsideMuchLargerSymbol) is already the narrowest handle available -- denying it in favor of reading the whole symbol would hand back a much bigger body than the window ever asked for, so this specific deny is skipped and the read proceeds.
         const pagingWindowSpan = window.offset !== undefined && window.limit !== undefined
           ? { start: window.offset, end: window.offset + window.limit - 1 }
           : undefined
         if (pagingWindowSpan === undefined || !isWindowInsideMuchLargerSymbol(normalized, pagingWindowSpan.start, pagingWindowSpan.end)) {
+          markHintShown(pagingDenyKey)
           recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
           recordStat('session_hint', 0, 0)
+          // Name the symbols at the lines asked for: the file-order names surgicalHint lists sit at the top of the file, so a caller after lines 140..165 was pointed at the first function and went back to slicing. Source files only: docs and XML are paged here too, and their tools are section and xml-query, which surgicalHint already names.
+          const hint = pagingWindowSpan !== undefined && isSourceExt
+            ? 'For lines ' + pagingWindowSpan.start + '..' + pagingWindowSpan.end + ', run ' + realSymbolReadHint(normalized, shown, pagingWindowSpan) + '; `token-goat skeleton "' + shown + '"` maps the rest.'
+            : surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
           return denyOutput(
-            'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' +
-            surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) +
+            'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
             ' Inspect structure directly without manual chunk paging.',
           )
         }
@@ -1315,10 +1285,7 @@ function extractReadOutput(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
 }
 
-/**
- * post_tool_use handler for the Read tool.
- * Detects truncation markers in the tool response and flags the file so the next pre_tool_use for the same file returns an immediate deny with a surgical-read hint instead of allowing another full (and expensive) read.
- */
+/** post_tool_use handler for the Read tool. Detects truncation markers in the tool response and flags the file so the next pre_tool_use for the same file returns an immediate deny with a surgical-read hint instead of allowing another full (and expensive) read. */
 function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
@@ -1412,11 +1379,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   return passOutput()
 }
 
-/**
- * The id of an already-served body that provably contains every line this Read would deliver, or null when there is no such proof.
- * The count-based re-read machinery below reasons about how many times a *file* was read. That is a heuristic, and the recent-read protection window exists precisely because it can be wrong. This is not a heuristic: the bytes this Read would hand over are compared, whole-line aligned, against bytes the session recorded as already delivered for this same file. A hit means the model is holding this exact text.
- * Everything about the comparison fails toward allowing the read: - the current text comes from disk, so a file that changed since the earlier delivery no longer matches and the read proceeds. Line numbers are never consulted, for the reason stated on `_fileServedOutputs` in session.ts: an edit token-goat did not observe moves them. - stored bodies pass through secret redaction on the way in, so a body that carried a secret no longer matches the raw file and the read proceeds rather than being answered from a redacted copy. - a body below the shared floor is not worth a pointer that is itself ~200 bytes.
- */
+/** The id of an already-served body that provably contains every line this Read would deliver, or null when there is no such proof. The count-based re-read machinery below reasons about how many times a *file* was read. That is a heuristic, and the recent-read protection window exists precisely because it can be wrong. This is not a heuristic: the bytes this Read would hand over are compared, whole-line aligned, against bytes the session recorded as already delivered for this same file. A hit means the model is holding this exact text. Everything about the comparison fails toward allowing the read: - the current text comes from disk, so a file that changed since the earlier delivery no longer matches and the read proceeds. Line numbers are never consulted, for the reason stated on `_fileServedOutputs` in session.ts: an edit token-goat did not observe moves them. - stored bodies pass through secret redaction on the way in, so a body that carried a secret no longer matches the raw file and the read proceeds rather than being answered from a redacted copy. - a body below the shared floor is not worth a pointer that is itself ~200 bytes. */
 function alreadyServedOutputId(event: HookEvent, normalized: string): { id: string; bytes: number } | null {
   try {
     const ids = getFileServedOutputs(normalized)
@@ -1438,12 +1401,7 @@ function alreadyServedOutputId(event: HookEvent, normalized: string): { id: stri
   }
 }
 
-/**
- * Record what a completed Read handed the model, as raw file lines, so the shell-side re-read collapse in hooks_bash.ts can recognise a later `sed -n 'A,Bp'` or `cat` of the same lines as bytes the model is already holding.
- * That collapse decides containment on BYTES rather than on line numbers, deliberately: an edit token-goat never observed moves the lines while leaving a recorded range looking valid, so a number-keyed store would happily withhold text the model does not have. It therefore needs the served text itself -- and until now only Bash ever produced any. A file first delivered through the Read tool was invisible to it, which is why its contained-re-read branch booked nothing at all while a third of bounded shell reads asked for lines already delivered.
- * Three constraints follow from "the model is already holding these bytes", and each is a skip: - Store only the slice actually delivered. A Read carrying offset/limit handed over that window and nothing else, so storing the whole file would let the collapse withhold lines that were never shown. - Skip a truncated Read entirely. It delivered less than its own window and there is no way from here to know where it stopped. - Store raw file lines, not the Read tool's rendered output. The rendered form carries line-number prefixes, and the later shell read emits neither; whole-line containment is compared against what `sed`/`cat` will actually print.
- * Best-effort throughout: the Read has already completed and nothing here may change its result. Synchronous on purpose: a hook is its own short-lived process, so a write left pending on the microtask queue is a write that may never reach disk.
- */
+/** Record what a completed Read handed the model, as raw file lines, so the shell-side re-read collapse in hooks_bash.ts can recognise a later `sed -n 'A,Bp'` or `cat` of the same lines as bytes the model is already holding. That collapse decides containment on BYTES rather than on line numbers, deliberately: an edit token-goat never observed moves the lines while leaving a recorded range looking valid, so a number-keyed store would happily withhold text the model does not have. It therefore needs the served text itself -- and until now only Bash ever produced any. A file first delivered through the Read tool was invisible to it, which is why its contained-re-read branch booked nothing at all while a third of bounded shell reads asked for lines already delivered. Three constraints follow from "the model is already holding these bytes", and each is a skip: - Store only the slice actually delivered. A Read carrying offset/limit handed over that window and nothing else, so storing the whole file would let the collapse withhold lines that were never shown. - Skip a truncated Read entirely. It delivered less than its own window and there is no way from here to know where it stopped. - Store raw file lines, not the Read tool's rendered output. The rendered form carries line-number prefixes, and the later shell read emits neither; whole-line containment is compared against what `sed`/`cat` will actually print. Best-effort throughout: the Read has already completed and nothing here may change its result. Synchronous on purpose: a hook is its own short-lived process, so a write left pending on the microtask queue is a write that may never reach disk. */
 function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null = null): void {
   try {
     const cfg = loadConfig().bash_compress
@@ -1478,12 +1436,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
   }
 }
 
-/**
- * Replace stretches of a completed Read that the session has already been handed, keeping every line it has not.
- * `alreadyServedOutputId` withholds a read whose window is entirely inside an earlier delivery. The partial case is the larger one and it cannot be denied: measured over a month of real sessions, 589 Read calls carried a mix of new and already-served lines against 400 fully-served ones, and denying any of the 589 would have deleted the new lines along with the old. Rewriting the result keeps the new lines and turns the rest into a pointer at the copy the model holds.
- * Line numbers survive untouched -- an elided run becomes a notice naming the exact range it stood for, and every kept row is emitted verbatim, padding included, so the rewrite is purely subtractive. Nothing downstream has to re-derive a position from a shortened body, and no part of the saving comes from quietly reformatting rows that were not withheld.
- * Skipped, each toward showing the model more rather than less: - anything a precise secret pattern matches (`hasPreciseSecret`, not the recall-tuned catch-all, which false-fires on ordinary source and would forfeit the rewrite without protecting anything). On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor.
- */
+/** Replace stretches of a completed Read that the session has already been handed, keeping every line it has not. `alreadyServedOutputId` withholds a read whose window is entirely inside an earlier delivery. The partial case is the larger one and it cannot be denied: measured over a month of real sessions, 589 Read calls carried a mix of new and already-served lines against 400 fully-served ones, and denying any of the 589 would have deleted the new lines along with the old. Rewriting the result keeps the new lines and turns the rest into a pointer at the copy the model holds. Line numbers survive untouched -- an elided run becomes a notice naming the exact range it stood for, and every kept row is emitted verbatim, padding included, so the rewrite is purely subtractive. Nothing downstream has to re-derive a position from a shortened body, and no part of the saving comes from quietly reformatting rows that were not withheld. Skipped, each toward showing the model more rather than less: - anything a precise secret pattern matches (`hasPreciseSecret`, not the recall-tuned catch-all, which false-fires on ordinary source and would forfeit the rewrite without protecting anything). On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor. */
 function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput | null {
   if (!loadConfig().hints.elide_served_lines) return null
   const filePath = getFilePath(event)
@@ -1541,17 +1494,8 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   return emitRewrite(rewritten, 'read', { kind: 'read:served_elide', originalBytes })
 }
 
-/**
- * Replace the inside of long function bodies with a pointer, keeping everything else verbatim.
- * This is the only mechanism on the Read path aimed at a FIRST read. Everything beside it -- served-run elision, identical-read collapse, the heading-tree re-read deny -- keys on prior sight, and 83.6% of hooked Read bytes have none.
- * It uses the rewrite channel rather than a deny on purpose. A deny that carries a compact still blocks the call: the agent pays a round trip, may re-acquire the file anyway, and the measured analogue abandons its task 42.7% of the time and runs edit errors at 4x baseline. A rewrite changes only what the same successful call delivers, so none of those costs apply.
- * Returns the rewrite together with the raw text it actually delivered, because the served-output store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}.
- */
-/**
- * The gates only a Read can answer, applied ahead of either structural planner below.
- * Untargeted only: a reader who asked for a specific window gets that window, not a map of the file it came from. Never a truncated delivery, or the rewrite would withhold lines the model was never handed in the first place. And never a body a precise secret pattern matches: composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted, so declining is the honest move and the same call {@link foldCodeBodies} makes.
- * Returns the delivered rows together with the harness text around them, which is the one thing a shell read has no equivalent of and the reason this split falls where it does.
- */
+/** Replace the inside of long function bodies with a pointer, keeping everything else verbatim. This is the only mechanism on the Read path aimed at a FIRST read. Everything beside it -- served-run elision, identical-read collapse, the heading-tree re-read deny -- keys on prior sight, and 83.6% of hooked Read bytes have none. It uses the rewrite channel rather than a deny on purpose. A deny that carries a compact still blocks the call: the agent pays a round trip, may re-acquire the file anyway, and the measured analogue abandons its task 42.7% of the time and runs edit errors at 4x baseline. A rewrite changes only what the same successful call delivers, so none of those costs apply. Returns the rewrite together with the raw text it actually delivered, because the served-output store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}. */
+/** The gates only a Read can answer, applied ahead of either structural planner below. Untargeted only: a reader who asked for a specific window gets that window, not a map of the file it came from. Never a truncated delivery, or the rewrite would withhold lines the model was never handed in the first place. And never a body a precise secret pattern matches: composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted, so declining is the honest move and the same call {@link foldCodeBodies} makes. Returns the delivered rows together with the harness text around them, which is the one thing a shell read has no equivalent of and the reason this split falls where it does. */
 function structuralFoldInputs(event: HookEvent, respText: string): { rows: readonly NumberedRow[]; header: string[]; trailer: string[]; normalized: string; shown: string; originalBytes: number } | null {
   const filePath = getFilePath(event)
   if (filePath === undefined) return null
@@ -1566,10 +1510,7 @@ function structuralFoldInputs(event: HookEvent, respText: string): { rows: reado
   return { rows: parsed.rows, header: parsed.header, trailer: parsed.trailer, normalized, shown, originalBytes: Buffer.byteLength(respText, 'utf-8') }
 }
 
-/**
- * Assemble a planned structural fold back into a Read delivery, or decline it on the shared acceptance gate.
- * The recorded `deliveredRaw` is the plan's own `raw` field and nothing else, the same contract {@link foldCodeBodies} relies on: a line the plan withheld, trimmed at the lead-in cap, or rendered into a heading tree rather than delivered verbatim must never be recorded as served, or a later read of the file would elide a line the reader was never shown.
- */
+/** Assemble a planned structural fold back into a Read delivery, or decline it on the shared acceptance gate. The recorded `deliveredRaw` is the plan's own `raw` field and nothing else, the same contract {@link foldCodeBodies} relies on: a line the plan withheld, trimmed at the lead-in cap, or rendered into a heading tree rather than delivered verbatim must never be recorded as served, or a later read of the file would elide a line the reader was never shown. */
 function emitStructuralFold(inputs: { header: string[]; trailer: string[]; originalBytes: number }, fold: StructuralFold): { output: HookOutput; deliveredRaw: string } | null {
   const rewritten = [...inputs.header, ...fold.numbered, ...inputs.trailer].join('\n')
   if (!isStructuralRewriteAccepted(inputs.originalBytes, Buffer.byteLength(rewritten, 'utf-8'), fold.ratioCap)) return null
@@ -1579,10 +1520,7 @@ function emitStructuralFold(inputs: { header: string[]; trailer: string[]; origi
   }
 }
 
-/**
- * Replace a large, untargeted markdown Read with its heading tree plus the document's lead-in, so a reader who wanted the whole document's prose still gets pointed at each section by name instead of losing it outright.
- * The planning lives in fold_structure.ts, shared with the shell-read surface: `cat CLAUDE.arch.md` delivers the same bytes as `Read CLAUDE.arch.md` and now gets the same tree, rather than one surface folding and the other not.
- */
+/** Replace a large, untargeted markdown Read with its heading tree plus the document's lead-in, so a reader who wanted the whole document's prose still gets pointed at each section by name instead of losing it outright. The planning lives in fold_structure.ts, shared with the shell-read surface: `cat CLAUDE.arch.md` delivers the same bytes as `Read CLAUDE.arch.md` and now gets the same tree, rather than one surface folding and the other not. */
 function foldMarkdownOutline(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
   const inputs = structuralFoldInputs(event, respText)
   if (inputs === null) return null
@@ -1590,10 +1528,7 @@ function foldMarkdownOutline(event: HookEvent, respText: string): { output: Hook
   return fold === null ? null : emitStructuralFold(inputs, fold)
 }
 
-/**
- * Replace a large, untargeted source Read with its structural skeleton, so a reader who asked for a whole file still gets every declaration by name plus the command that returns any one body verbatim.
- * The source-code sibling of {@link foldMarkdownOutline} above, sharing its gates and, through fold_structure.ts, its planner with the shell-read surface.
- */
+/** Replace a large, untargeted source Read with its structural skeleton, so a reader who asked for a whole file still gets every declaration by name plus the command that returns any one body verbatim. The source-code sibling of {@link foldMarkdownOutline} above, sharing its gates and, through fold_structure.ts, its planner with the shell-read surface. */
 function foldSourceSkeleton(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
   const inputs = structuralFoldInputs(event, respText)
   if (inputs === null) return null
@@ -1644,13 +1579,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   }
 }
 
-/**
- * Public wrapper: same tracking as {@link preReadHandler} above, plus the served-line elision.
- * The order of these three lines is the whole correctness argument.
- * The elision runs FIRST, before {@link recordReadAsServedOutput} puts this very read into the store it compares against -- otherwise every line matches itself and the entire result is withheld as "already served". It is the same self-contamination shape as a structural guard that scans its own source.
- * It also runs before {@link postReadHandlerInner}, whose structural-navigation hint would otherwise be composed, booked as shown by {@link applyHintTracking}, and then thrown away in favour of the rewrite -- a hint charged to the efficacy ledger that no model ever saw. The flag is a required parameter rather than a defaulted one so no call site can silently take the un-suppressed path the shipping one does not.
- * The rewrite wins over the hint where both apply, because it acts on the bytes instead of asking: a hint is followed a small fraction of the time, and a withheld run is withheld.
- */
+/** Public wrapper: same tracking as {@link preReadHandler} above, plus the served-line elision. The order of these three lines is the whole correctness argument. The elision runs FIRST, before {@link recordReadAsServedOutput} puts this very read into the store it compares against -- otherwise every line matches itself and the entire result is withheld as "already served". It is the same self-contamination shape as a structural guard that scans its own source. It also runs before {@link postReadHandlerInner}, whose structural-navigation hint would otherwise be composed, booked as shown by {@link applyHintTracking}, and then thrown away in favour of the rewrite -- a hint charged to the efficacy ledger that no model ever saw. The flag is a required parameter rather than a defaulted one so no call site can silently take the un-suppressed path the shipping one does not. The rewrite wins over the hint where both apply, because it acts on the bytes instead of asking: a hint is followed a small fraction of the time, and a withheld run is withheld. */
 export function postReadHandler(event: HookEvent): HookOutput {
   const respText = extractReadOutput(event.raw)
   const elided = elideAlreadyServedLines(event, respText)

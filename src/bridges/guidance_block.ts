@@ -1,24 +1,4 @@
-/**
- * Shared guidance-block builder for every harness that gets a token-goat
- * routing block written into its instructions file (Claude Code's CLAUDE.md,
- * Codex's AGENTS.md, Copilot CLI's copilot-instructions.md).
- *
- * There used to be three hand-maintained copies of this text -- one per call
- * site -- and they drifted: the CLAUDE.md and AGENTS.md blocks differed, and a
- * user's hand-written Copilot block differed from both. Factoring the wording
- * here makes drift impossible: every call site renders the same body, and only
- * the two things that legitimately differ per harness are parameters -- the
- * begin/end markers and the one clause that names *that harness's own* read
- * tools when resolving the conflict with its built-in tool-preference rules.
- *
- * Design intent (why this reads as a gate, not a tip): an advisory "prefer
- * token-goat" line loses to a harness's imperative tool-preference rule that
- * fires at the exact moment a read happens. This block is therefore phrased as
- * a pre-call gate with an exhaustive exemption list (so it is decidable, not a
- * judgment call) and concrete failure shapes (recognizable shapes beat abstract
- * rules), and it explicitly subordinates the harness's own read-tool rules to
- * the fallback decision rather than the whether-to-check decision.
- */
+/** Shared guidance-block builder for every harness that gets a token-goat routing block written into its instructions file (Claude Code's CLAUDE.md, Codex's AGENTS.md, Copilot CLI's copilot-instructions.md). There used to be three hand-maintained copies of this text -- one per call site -- and they drifted: the CLAUDE.md and AGENTS.md blocks differed, and a user's hand-written Copilot block differed from both. Factoring the wording here makes drift impossible: every call site renders the same body, and only the two things that legitimately differ per harness are parameters -- the begin/end markers and the one clause that names *that harness's own* read tools when resolving the conflict with its built-in tool-preference rules. Design intent (why this reads as a gate, not a tip): an advisory "prefer token-goat" line loses to a harness's imperative tool-preference rule that fires at the exact moment a read happens. This block is therefore phrased as a pre-call gate with an exhaustive exemption list (so it is decidable, not a judgment call) and concrete failure shapes (recognizable shapes beat abstract rules), and it explicitly subordinates the harness's own read-tool rules to the fallback decision rather than the whether-to-check decision. */
 
 /** One harness's parameters for {@link buildGuidanceBlock}. */
 export interface GuidanceHarness {
@@ -26,11 +6,7 @@ export interface GuidanceHarness {
   readonly beginMarker: string
   /** Closing HTML-comment marker, e.g. `<!-- token-goat-end -->`. */
   readonly endMarker: string
-  /**
-   * Names this harness's own read tools for the conflict-resolution clause, e.g.
-   * "Claude Code's own Read, Grep, and Glob preference rules". Rendered inline
-   * after "Your harness's own read-tool rules (…)".
-   */
+  /** Names this harness's own read tools for the conflict-resolution clause, e.g. "Claude Code's own Read, Grep, and Glob preference rules". Rendered inline after "Your harness's own read-tool rules (…)". */
   readonly fallbackToolClause: string
   /** See {@link GuidanceOptions.gdrive}. */
   readonly gdrive?: boolean
@@ -38,30 +14,11 @@ export interface GuidanceHarness {
 
 /** Per-install switches that change which commands the gate advertises. */
 export interface GuidanceOptions {
-  /**
-   * Whether to name `gdrive-sections` in the `Commands:` line. False when an operator has set
-   * `gdrive.enabled = false`, which refuses the command outright: advertising a command the
-   * install will refuse teaches an agent to reach for a dead end, and an organisation that does
-   * not use Google Drive asked not to see the integration at all. Defaults to true.
-   */
+  /** Whether to name `gdrive-sections` in the `Commands:` line. False when an operator has set `gdrive.enabled = false`, which refuses the command outright: advertising a command the install will refuse teaches an agent to reach for a dead end, and an organisation that does not use Google Drive asked not to see the integration at all. Defaults to true. */
   readonly gdrive?: boolean
 }
 
-/**
- * Render the shared token-goat routing gate *body* — the guidance itself,
- * without any delimited-block markers. This is the single source of the gate
- * wording used by all four surfaces:
- *   - `buildGuidanceBlock` wraps it in begin/end markers for the three files
- *     upserted into user-owned instruction files (CLAUDE.md, AGENTS.md,
- *     copilot-instructions.md);
- *   - the SKILL.md writer in `../install.ts` embeds it whole, under its own
- *     frontmatter, because a skill file is written as a complete standalone
- *     document rather than patched into a delimited region.
- *
- * `fallbackToolClause` names the surface's own read tools for the
- * conflict-resolution clause, e.g. "Claude Code's own Read, Grep, and Glob
- * preference rules".
- */
+/** Render the shared token-goat routing gate *body* — the guidance itself, without any delimited-block markers. This is the single source of the gate wording used by all four surfaces: - `buildGuidanceBlock` wraps it in begin/end markers for the three files upserted into user-owned instruction files (CLAUDE.md, AGENTS.md, copilot-instructions.md); - the SKILL.md writer in `../install.ts` embeds it whole, under its own frontmatter, because a skill file is written as a complete standalone document rather than patched into a delimited region. `fallbackToolClause` names the surface's own read tools for the conflict-resolution clause, e.g. "Claude Code's own Read, Grep, and Glob preference rules". */
 export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOptions = {}): string {
   const gdrive = opts.gdrive !== false
   return [
@@ -79,6 +36,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- not knowing which command answers a question you can already state in words → `answer "<question>"`, which resolves the subject in the index, runs the right command, prints `via: <command>`, and refuses rather than guess',
     '- a shell text search with context flags to find a function body → `read "file::symbol"`',
     '- paging one function with view/view_range → `read "file::symbol"`',
+    '- a read refused by a `[tg]` deny, retried with a shifted range or a different read tool → the command the deny names',
     '- reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`',
     '- reading one heading of a large doc → `section "file::Heading"`',
     "- searching for a symbol's callers → `refs file::symbol --callers`",
@@ -100,28 +58,12 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
   ].join('\n')
 }
 
-/**
- * The `description:` frontmatter line every token-goat SKILL.md declares.
- *
- * Shared by the Claude Code skill writer (`skillMdFrontmatter` in ../install.ts)
- * and the Kimi Code one (`kimiSkillContent` in ./kimi_install.ts), which shipped
- * byte-identical copies of it. It is the relevance trigger a harness reads to
- * decide *whether to load the skill at all*, so it is DELIBERATELY exempt from
- * the gate wording {@link buildGuidanceBody} renders: it must stay a plain,
- * keyword-dense one-liner. Do NOT "fix" it into the gate phrasing for
- * consistency with the body -- that degrades skill-loading recall for no
- * benefit. Returned without the trailing newline so each caller can place it.
- */
+/** The `description:` frontmatter line every token-goat SKILL.md declares. Shared by the Claude Code skill writer (`skillMdFrontmatter` in ../install.ts) and the Kimi Code one (`kimiSkillContent` in ./kimi_install.ts), which shipped byte-identical copies of it. It is the relevance trigger a harness reads to decide *whether to load the skill at all*, so it is DELIBERATELY exempt from the gate wording {@link buildGuidanceBody} renders: it must stay a plain, keyword-dense one-liner. Do NOT "fix" it into the gate phrasing for consistency with the body -- that degrades skill-loading recall for no benefit. Returned without the trailing newline so each caller can place it. */
 export function skillDescriptionLine(gdrive: boolean): string {
   return `description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output${gdrive ? ', gdrive-sections' : ''}) return narrow slices of code and docs at a fraction of the token cost.`
 }
 
-/**
- * Render the shared token-goat routing gate for one harness, wrapped in the
- * harness's begin/end markers. The body is identical across harnesses (see
- * {@link buildGuidanceBody}); only the markers and the fallback-tool clause
- * vary. Returned as a single string ready to hand to `upsertDelimitedBlock`.
- */
+/** Render the shared token-goat routing gate for one harness, wrapped in the harness's begin/end markers. The body is identical across harnesses (see {@link buildGuidanceBody}); only the markers and the fallback-tool clause vary. Returned as a single string ready to hand to `upsertDelimitedBlock`. */
 export function buildGuidanceBlock(h: GuidanceHarness): string {
   return [h.beginMarker, buildGuidanceBody(h.fallbackToolClause, h.gdrive === undefined ? {} : { gdrive: h.gdrive }), h.endMarker].join('\n')
 }

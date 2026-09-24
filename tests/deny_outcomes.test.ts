@@ -1,18 +1,4 @@
-/**
- * Coverage for the deny-outcome census in src/session_audit.ts: DENY_TEMPLATES (per-kind Read-
- * deny message classification) and the join in auditOneFile that measures what actually happened
- * after each deny (compacted / retried / substituted / unresolved / abandoned).
- *
- * Privacy: every Read-deny fixture message text below is tagged FORMAT-DERIVED -- copied from the
- * literal template strings in src/hooks_read.ts and src/hints/file_type_handler.ts (cited per
- * fixture), never from a real session transcript. The four skill_-prefixed fixtures are tagged
- * CAPTURE instead -- the literal `reason` text `node dist/token-goat.mjs hook pre_tool_use`
- * printed for a real installed skill (cited per fixture), never retyped from hooks_skill.ts's own
- * source, since a fixture written from the code that emits it agrees with that code by
- * construction and proves only that the matcher matches itself. The surrounding JSONL is a
- * synthetic envelope this file constructs itself, in the same hand-written-literal style as
- * tests/session_audit.test.ts.
- */
+/** Coverage for the deny-outcome census in src/session_audit.ts: DENY_TEMPLATES (per-kind Read- deny message classification) and the join in auditOneFile that measures what actually happened after each deny (compacted / retried / substituted / unresolved / abandoned). Privacy: every Read-deny fixture message text below is tagged FORMAT-DERIVED -- copied from the literal template strings in src/hooks_read.ts and src/hints/file_type_handler.ts (cited per fixture), never from a real session transcript. The four skill_-prefixed fixtures are tagged CAPTURE instead -- the literal `reason` text `node dist/token-goat.mjs hook pre_tool_use` printed for a real installed skill (cited per fixture), never retyped from hooks_skill.ts's own source, since a fixture written from the code that emits it agrees with that code by construction and proves only that the matcher matches itself. The surrounding JSONL is a synthetic envelope this file constructs itself, in the same hand-written-literal style as tests/session_audit.test.ts. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -26,26 +12,12 @@ const use = (id: string, name: string, input: Record<string, unknown>): string =
   JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
 const result = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
-// FORMAT-DERIVED: `is_error` is a real, optional boolean field on an Anthropic Messages API
-// `tool_result` content block (https://docs.claude.com/en/api/messages -- content block types),
-// the same schema this file's `use`/`result` helpers already hand-construct above. Never copied
-// from a real session transcript; the census only ever reads this boolean, never any error text.
+// FORMAT-DERIVED: `is_error` is a real, optional boolean field on an Anthropic Messages API `tool_result` content block (https://docs.claude.com/en/api/messages -- content block types), the same schema this file's `use`/`result` helpers already hand-construct above. Never copied from a real session transcript; the census only ever reads this boolean, never any error text.
 const errorResult = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] } })
 const COMPACT = '{"type":"system","subtype":"compact_boundary"}'
 
-/**
- * One fixture per DENY_TEMPLATES kind (src/session_audit.ts). `text` is FORMAT-DERIVED for the
- * Read-deny kinds: copied from that kind's `denyOutput(` call site in hooks_read.ts (or
- * hints/file_type_handler.ts for file_type_handler_deny), citing the branch each was read from.
- * For the four skill_-prefixed kinds `text` is CAPTURE: the literal `reason` a real
- * `node dist/token-goat.mjs hook pre_tool_use` run printed for a real installed skill, per its
- * own provenance comment. `expectedWithheldBytes` is hand-computed from the same literal size
- * figure the text embeds (or null where that call site's template never prints one, which is
- * every skill_ kind -- they print the skill's total body size, not a withheld-bytes figure).
- * `toolName` defaults to 'Read'; the skill_ fixtures set it to 'Skill' so the synthetic envelope
- * beforeAll builds matches what the classifier now also accepts.
- */
+/** One fixture per DENY_TEMPLATES kind (src/session_audit.ts). `text` is FORMAT-DERIVED for the Read-deny kinds: copied from that kind's `denyOutput(` call site in hooks_read.ts (or hints/file_type_handler.ts for file_type_handler_deny), citing the branch each was read from. For the four skill_-prefixed kinds `text` is CAPTURE: the literal `reason` a real `node dist/token-goat.mjs hook pre_tool_use` run printed for a real installed skill, per its own provenance comment. `expectedWithheldBytes` is hand-computed from the same literal size figure the text embeds (or null where that call site's template never prints one, which is every skill_ kind -- they print the skill's total body size, not a withheld-bytes figure). `toolName` defaults to 'Read'; the skill_ fixtures set it to 'Skill' so the synthetic envelope beforeAll builds matches what the classifier now also accepts. */
 const DENY_FIXTURES: Array<{ kind: string; text: string; expectedWithheldBytes: number | null; toolName?: string }> = [
   // FORMAT-DERIVED: hooks_read.ts, denyOutput, node_modules branch
   { kind: 'node_modules_deny', text: 'node_modules is typically noise; use npm ls, npm outdated, or npm audit instead for dependency info. To force access, use: token-goat read node_modules/package/file.js::symbol-name or token-goat section node_modules/package/file.js::heading', expectedWithheldBytes: null },
@@ -89,8 +61,8 @@ const DENY_FIXTURES: Array<{ kind: string; text: string; expectedWithheldBytes: 
   { kind: 'read_served_deny', text: 'Every line of foo.ts this read would return was already served in this session, byte for byte. Recall it with `token-goat bash-output abc123`, or pull just the part you need with `token-goat read "foo.ts::Symbol"`. To edit it anyway, use `token-goat replace "foo.ts" --old-b64 <base64> --new-b64 <base64>`.', expectedWithheldBytes: null },
   // CAPTURE: the literal `reason` a `token-goat hook pre_tool_use` run printed (installed 2.9.25 bundle, 2026-09-22) for a re-read of lines 548..552 of a 600-symbol file already served whole at 540..560. The path is shortened here; nothing in the classifier reads it.
   { kind: 'range_reread_deny', text: 'Lines 548..552 of src/big.ts was already read this session. Pull just the part you need with `token-goat read "src/big.ts::tgDogIsolationProbe548"` (or: tgDogIsolationProbe549, tgDogIsolationProbe550).', expectedWithheldBytes: null },
-  // FORMAT-DERIVED: hooks_read.ts, sequential line-range paging branch, with surgicalHint()'s source-file form rendered in the tail it appends
-  { kind: 'sequential_paging_deny', text: 'Sequential line-range paging detected on src/big.ts (4 slices read). Use `token-goat skeleton src/big.ts` to see its structure. Inspect structure directly without manual chunk paging.', expectedWithheldBytes: null },
+  // FORMAT-DERIVED: hooks_read.ts, sequential line-range paging branch for a bounded window, with realSymbolReadHint()'s read form naming the symbol at the requested lines
+  { kind: 'sequential_paging_deny', text: 'Sequential line-range paging detected on src/big.py (4 slices read). For lines 140..165, run `token-goat read "src/big.py::fn_4"` (or: fn_5); `token-goat skeleton "src/big.py"` maps the rest. Inspect structure directly without manual chunk paging.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, Item 2 (markdown already-read) branch + editAnywayHint()
   { kind: 'markdown_already_read_deny', text: 'Markdown file already read this session. Use `token-goat section "README.md::HeadingName"` to read one section. To edit it anyway, use `token-goat replace "README.md" --old-b64 <base64> --new-b64 <base64>`.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, count-based (3rd+ read) deny branch + editAnywayHint()
@@ -146,9 +118,7 @@ describe('DENY_TEMPLATES classification', () => {
       const row = byKind.get(fx.kind)
       expect(row, `missing row for kind ${fx.kind}`).toBeDefined()
       expect(row!.count).toBe(1)
-      // 0 tool calls follow the deny in each isolated fixture file, so every kind here resolves
-      // to 'unresolved' -- this also proves the row was reached at all (a misclassified fixture
-      // would either produce no row for its kind, or an extra row nobody expected).
+      // 0 tool calls follow the deny in each isolated fixture file, so every kind here resolves to 'unresolved' -- this also proves the row was reached at all (a misclassified fixture would either produce no row for its kind, or an extra row nobody expected).
       expect(row!.unresolvedRate).toBe(1)
       expect(row!.medianWithheldBytes).toBe(fx.expectedWithheldBytes)
       expect(row!.withheldBytesUnknownFraction).toBe(fx.expectedWithheldBytes === null ? 1 : 0)
@@ -185,9 +155,7 @@ describe('Skill deny classification reaches the census (TASK D)', () => {
   it('reports a non-zero count for the skill_ kinds, and the truncated wording never lands in the complete kind (TASK D anti-vacuity + ordering)', async () => {
     const s = await auditSessionCorpus({ dir: skillDir })
     const byKind = new Map(s.denyOutcomes.map((r) => [r.kind, r]))
-    // Anti-vacuity guard, evaluated before anything else: a census that silently classifies
-    // nothing (e.g. the tool-name condition reverting to Read-only) still passes a bare
-    // toBeDefined() check on an empty row, so the count itself has to be asserted non-zero first.
+    // Anti-vacuity guard, evaluated before anything else: a census that silently classifies nothing (e.g. the tool-name condition reverting to Read-only) still passes a bare toBeDefined() check on an empty row, so the count itself has to be asserted non-zero first.
     expect(byKind.get('skill_heading_tree_complete_deny')?.count ?? 0).toBeGreaterThan(0)
     expect(byKind.get('skill_heading_tree_truncated_deny')?.count ?? 0).toBeGreaterThan(0)
     expect(byKind.get('skill_already_loaded_deny')?.count ?? 0).toBeGreaterThan(0)
@@ -205,10 +173,7 @@ describe('Skill deny classification reaches the census (TASK D)', () => {
   })
 
   it('does not count a Read whose file content merely quotes a Skill deny (contamination guard)', async () => {
-    // Measured over the user's session corpus before this gate existed: 16 of 693 skill_ matches came
-    // from Read results, and for skill_already_loaded_deny and both heading-tree kinds that was 100% of
-    // their matches -- the census reported activity for three kinds whose true count was zero. The
-    // files doing it were this repo's own fixture file and the measurement scripts quoting the wording.
+    // Measured over the user's session corpus before this gate existed: 16 of 693 skill_ matches came from Read results, and for skill_already_loaded_deny and both heading-tree kinds that was 100% of their matches -- the census reported activity for three kinds whose true count was zero. The files doing it were this repo's own fixture file and the measurement scripts quoting the wording.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-quote-'))
     try {
       const projectDir = path.join(dir, 'p0')
@@ -224,8 +189,7 @@ describe('Skill deny classification reaches the census (TASK D)', () => {
       ]
       fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
       const s = await auditSessionCorpus({ dir })
-      // Anti-vacuity first: the fixture text really does match the template, so a zero below is the
-      // tool gate working rather than the regex having quietly stopped matching anything at all.
+      // Anti-vacuity first: the fixture text really does match the template, so a zero below is the tool gate working rather than the regex having quietly stopped matching anything at all.
       expect(quoted.text).toMatch(/heading tree \(\d+ headings\) is inlined below instead of the full body/)
       expect(body).toContain('heading tree (19 headings) is inlined below instead of the full body')
       expect(s.denyOutcomes.filter((r) => r.kind.startsWith('skill_'))).toHaveLength(0)
@@ -246,20 +210,7 @@ describe('Skill deny classification reaches the census (TASK D)', () => {
   })
 })
 
-/**
- * Superseded deny wordings that DENY_TEMPLATES must keep matching.
- *
- * DENY_TEMPLATES is not just a matcher for the denies token-goat emits today. session-audit
- * classifies a HISTORICAL corpus, and a transcript written before a message was reworded carries
- * the old text forever. So an alternative is "dead" only when no transcript still contains it,
- * which is a fact about recorded history, not about the current source.
- *
- * CAPTURE: the text below is the literal message src/hooks_read.ts emitted before commit
- * 3d044feb reworded it (that commit dropped the matching alternative as unreachable). Measured
- * against the local corpus at the time, the drop took memory_md_reread_deny from 51 events to 30
- * -- 41% of the kind's history became unclassifiable, with a green suite and no visible error.
- * Any per-kind rate re-derived afterwards would have used the shrunken denominator.
- */
+/** Superseded deny wordings that DENY_TEMPLATES must keep matching. DENY_TEMPLATES is not just a matcher for the denies token-goat emits today. session-audit classifies a HISTORICAL corpus, and a transcript written before a message was reworded carries the old text forever. So an alternative is "dead" only when no transcript still contains it, which is a fact about recorded history, not about the current source. CAPTURE: the text below is the literal message src/hooks_read.ts emitted before commit 3d044feb reworded it (that commit dropped the matching alternative as unreachable). Measured against the local corpus at the time, the drop took memory_md_reread_deny from 51 events to 30 -- 41% of the kind's history became unclassifiable, with a green suite and no visible error. Any per-kind rate re-derived afterwards would have used the shrunken denominator. */
 const SUPERSEDED_DENY_FIXTURES: Array<{ kind: string; text: string }> = [
   {
     kind: 'memory_md_reread_deny',
@@ -354,8 +305,7 @@ beforeAll(() => {
     result('a3', 'ok'),
   ])
 
-  // shell_read: a Bash command reads the denied file by basename via a shell reader binary
-  // (sed/grep/cat/...) within the window -- what would otherwise silently fall into 'abandoned'.
+  // shell_read: a Bash command reads the denied file by basename via a shell reader binary (sed/grep/cat/...) within the window -- what would otherwise silently fall into 'abandoned'.
   writeScenario('shell_read', [
     use('d6', 'Read', { file_path: 'src/wanted.ts' }),
     result('d6', LARGE_DENY_TEXT),
@@ -375,21 +325,13 @@ afterAll(() => {
 })
 
 describe('outcome partition', () => {
-  // TASK B added a sixth bucket, 'shell_read', subdividing what used to fall into 'abandoned'
-  // (see the DenyOutcome doc comment in src/session_audit.ts for the classification order and
-  // why 'shell_read' is a genuine partition member and not an overlapping metric). This scenario
-  // set grew from five fixtures to six for that reason, so the expected per-bucket rate moved
-  // from 1/5 (0.2) to 1/6 -- the invariant under test (every bucket present, rates sum to
-  // exactly 1) is unchanged and still asserted; only the fixture count and the resulting
-  // fraction changed, because a sixth real fixture was added, not because a number was tuned.
+  // TASK B added a sixth bucket, 'shell_read', subdividing what used to fall into 'abandoned' (see the DenyOutcome doc comment in src/session_audit.ts for the classification order and why 'shell_read' is a genuine partition member and not an overlapping metric). This scenario set grew from five fixtures to six for that reason, so the expected per-bucket rate moved from 1/5 (0.2) to 1/6 -- the invariant under test (every bucket present, rates sum to exactly 1) is unchanged and still asserted; only the fixture count and the resulting fraction changed, because a sixth real fixture was added, not because a number was tuned.
   it('lands every deny in exactly one of the six buckets, including compaction and session-ended', async () => {
     const s = await auditSessionCorpus({ dir: partitionDir })
     const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
     expect(row).toBeDefined()
     expect(row!.count).toBe(6)
-    // One deny per bucket: each rate is exactly 1/6, and they sum to exactly 1 -- a true
-    // partition, not an overlapping classification where two rates could both be nonzero
-    // for the same deny or the rates could sum to more/less than the whole population.
+    // One deny per bucket: each rate is exactly 1/6, and they sum to exactly 1 -- a true partition, not an overlapping classification where two rates could both be nonzero for the same deny or the rates could sum to more/less than the whole population.
     expect(row!.compactedRate).toBeCloseTo(1 / 6, 10)
     expect(row!.retriedRate).toBeCloseTo(1 / 6, 10)
     expect(row!.substitutedRate).toBeCloseTo(1 / 6, 10)
@@ -398,8 +340,7 @@ describe('outcome partition', () => {
     expect(row!.abandonedRate).toBeCloseTo(1 / 6, 10)
     const sum = row!.compactedRate + row!.retriedRate + row!.substitutedRate + row!.shellReadRate + row!.unresolvedRate + row!.abandonedRate
     expect(sum).toBeCloseTo(1, 10)
-    // The same fixtures double as the withheldBytes/median check: all six denies print the
-    // identical "(523KB)" figure, so the kind-wide median must reproduce it exactly.
+    // The same fixtures double as the withheldBytes/median check: all six denies print the identical "(523KB)" figure, so the kind-wide median must reproduce it exactly.
     expect(row!.medianWithheldBytes).toBe(523 * 1024)
     expect(row!.withheldBytesUnknownFraction).toBe(0)
   })
@@ -421,8 +362,7 @@ beforeAll(() => {
     result('u3', 'ok'),
     use('u4', 'Bash', { command: 'ls' }),
     result('u4', 'ok'),
-    // The 5th tool call after the deny: a plain re-read of the same path, outside the 3-call
-    // outcome window but inside the 10-call retriedWithin10 window.
+    // The 5th tool call after the deny: a plain re-read of the same path, outside the 3-call outcome window but inside the 10-call retriedWithin10 window.
     use('d6r', 'Read', { file_path: 'x/state.json' }),
     result('d6r', 'retry content'),
   ]
@@ -447,13 +387,7 @@ describe('retriedWithin10 vs the 3-call outcome window', () => {
   })
 })
 
-/**
- * Coverage for TASK A (unanchored SURGICAL_COMMAND_RE), TASK B (the shell-read outcome class and
- * its basename-boundary guard), and TASK C (the Edit-error canary + corpus-wide baseline). All
- * scenario text below is FORMAT-DERIVED/HAND-DERIVED in the same style as the fixtures above:
- * `use`/`result`/`errorResult` hand-construct the JSONL envelope; only `LARGE_DENY_TEXT` (the deny
- * message itself) is FORMAT-DERIVED from hooks_read.ts, cited above. No real transcript content.
- */
+/** Coverage for TASK A (unanchored SURGICAL_COMMAND_RE), TASK B (the shell-read outcome class and its basename-boundary guard), and TASK C (the Edit-error canary + corpus-wide baseline). All scenario text below is FORMAT-DERIVED/HAND-DERIVED in the same style as the fixtures above: `use`/`result`/`errorResult` hand-construct the JSONL envelope; only `LARGE_DENY_TEXT` (the deny message itself) is FORMAT-DERIVED from hooks_read.ts, cited above. No real transcript content. */
 function writeProject(dir: string, name: string, lines: string[]): void {
   const projectDir = path.join(dir, name)
   fs.mkdirSync(projectDir)
@@ -465,8 +399,7 @@ let censusDir = ''
 beforeAll(() => {
   censusDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-census-'))
 
-  // TASK A: SURGICAL_COMMAND_RE must recognize token-goat after a shell separator (cd x &&),
-  // not just at the start of the command.
+  // TASK A: SURGICAL_COMMAND_RE must recognize token-goat after a shell separator (cd x &&), not just at the start of the command.
   writeProject(censusDir, 'cd-prefixed', [
     use('d1', 'Read', { file_path: 'src/big.ts' }),
     result('d1', LARGE_DENY_TEXT),
@@ -474,9 +407,7 @@ beforeAll(() => {
     result('s1', 'ok'),
   ])
 
-  // TASK A: node <path>/token-goat.mjs <subcommand> must also be recognized as substituted, and
-  // -- because it is checked before the shell-read class -- never fall into 'shell_read' just
-  // because node is also a shell-reader binary.
+  // TASK A: node <path>/token-goat.mjs <subcommand> must also be recognized as substituted, and -- because it is checked before the shell-read class -- never fall into 'shell_read' just because node is also a shell-reader binary.
   writeProject(censusDir, 'node-invoked', [
     use('d2', 'Read', { file_path: 'src/other.ts' }),
     result('d2', LARGE_DENY_TEXT),
@@ -484,8 +415,7 @@ beforeAll(() => {
     result('s2', 'ok'),
   ])
 
-  // TASK B: sed reading the denied file by basename, boundary-adjacent (quoted on one side,
-  // path-separator on the other) -- a confident shell_read match.
+  // TASK B: sed reading the denied file by basename, boundary-adjacent (quoted on one side, path-separator on the other) -- a confident shell_read match.
   writeProject(censusDir, 'sed-read', [
     use('d3', 'Read', { file_path: 'src/wanted.ts' }),
     result('d3', LARGE_DENY_TEXT),
@@ -501,10 +431,7 @@ beforeAll(() => {
     result('s4', 'match line'),
   ])
 
-  // TASK B guard: a short basename ("index.ts") appears only as an incidental substring of a
-  // different file's name ("myindex.tsx"), not adjacent to any path separator/quote/word
-  // boundary. Must NOT be credited as shell_read (a bare substring test would over-credit it);
-  // must be counted in the dedicated ambiguous field instead of silently dropped either way.
+  // TASK B guard: a short basename ("index.ts") appears only as an incidental substring of a different file's name ("myindex.tsx"), not adjacent to any path separator/quote/word boundary. Must NOT be credited as shell_read (a bare substring test would over-credit it); must be counted in the dedicated ambiguous field instead of silently dropped either way.
   writeProject(censusDir, 'ambiguous-basename', [
     use('d5', 'Read', { file_path: 'src/index.ts' }),
     result('d5', LARGE_DENY_TEXT),
@@ -512,9 +439,7 @@ beforeAll(() => {
     result('s5', 'match line'),
   ])
 
-  // TASK C: an Edit on the exact denied path whose tool_result carries is_error: true, within
-  // the 10-call window -- the Edit-error canary. Also contributes one Edit + one error to the
-  // corpus-wide baseline denominator.
+  // TASK C: an Edit on the exact denied path whose tool_result carries is_error: true, within the 10-call window -- the Edit-error canary. Also contributes one Edit + one error to the corpus-wide baseline denominator.
   writeProject(censusDir, 'edit-error', [
     use('d6', 'Read', { file_path: 'src/errfile.ts' }),
     result('d6', LARGE_DENY_TEXT),
@@ -522,8 +447,7 @@ beforeAll(() => {
     errorResult('e6', 'edit blocked: file has not been read in this session'),
   ])
 
-  // TASK C: Edit calls with no preceding deny at all, to prove the baseline is corpus-wide and
-  // not scoped to denied paths -- two successful Edits, one erroring.
+  // TASK C: Edit calls with no preceding deny at all, to prove the baseline is corpus-wide and not scoped to denied paths -- two successful Edits, one erroring.
   writeProject(censusDir, 'baseline-edits', [
     use('b1', 'Edit', { file_path: 'x/a.ts', old_string: 'x', new_string: 'y' }),
     errorResult('b1', 'edit blocked: file has not been read in this session'),
@@ -543,8 +467,7 @@ describe('unanchored SURGICAL_COMMAND_RE (TASK A)', () => {
     const s = await auditSessionCorpus({ dir: censusDir })
     const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
     expect(row).toBeDefined()
-    // substituted: cd-prefixed + node-invoked. shell_read: sed-read + grep-read.
-    // unresolved: ambiguous-basename + edit-error (each ends with exactly 1 tool call).
+    // substituted: cd-prefixed + node-invoked. shell_read: sed-read + grep-read. unresolved: ambiguous-basename + edit-error (each ends with exactly 1 tool call).
     expect(row!.count).toBe(6)
     expect(row!.substitutedRate).toBeCloseTo(2 / 6, 10)
     expect(row!.shellReadRate).toBeCloseTo(2 / 6, 10)
@@ -564,8 +487,7 @@ describe('shell-read outcome class and its basename-boundary guard (TASK B)', ()
     const s = await auditSessionCorpus({ dir: censusDir })
     const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
     expect(row).toBeDefined()
-    // Exactly one ambiguous case (myindex.tsx vs index.ts) -- the sed/grep/edit-error scenarios
-    // above all use full-word, boundary-adjacent basenames and must not add to this count.
+    // Exactly one ambiguous case (myindex.tsx vs index.ts) -- the sed/grep/edit-error scenarios above all use full-word, boundary-adjacent basenames and must not add to this count.
     expect(row!.shellReadAmbiguousCount).toBe(1)
   })
 })
@@ -590,12 +512,10 @@ describe('Edit-error canary and corpus-wide baseline (TASK C)', () => {
     const s = await auditSessionCorpus({ dir: censusDir })
     const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
     expect(row).toBeDefined()
-    // FORMAT-DERIVED: 'edit-error' project writes 1 Edit on the denied path, which errored.
-    // 'baseline-edits' has no deny, so those Edits do not add to editWithin10Count.
+    // FORMAT-DERIVED: 'edit-error' project writes 1 Edit on the denied path, which errored. 'baseline-edits' has no deny, so those Edits do not add to editWithin10Count.
     expect(row!.editWithin10Count).toBe(1)
     expect(row!.editErrorWithin10Count).toBe(1)
-    // Ratio should be computable and correct: 1/1 = 1.0 (100% error rate on denied Edits).
-    // Compare against editErrorBaseline: corpus-wide 2/4 = 0.5 (50% error rate on all Edits).
+    // Ratio should be computable and correct: 1/1 = 1.0 (100% error rate on denied Edits). Compare against editErrorBaseline: corpus-wide 2/4 = 0.5 (50% error rate on all Edits).
   })
 
   it('surfaces the baseline and per-kind shell-read/edit-error fields in both the text report and --json', async () => {
@@ -613,20 +533,7 @@ describe('Edit-error canary and corpus-wide baseline (TASK C)', () => {
   })
 })
 
-/**
- * Regression: a denied path's basename is taken from readPathById, which stores
- * normalizeReadPath's output -- lower-cased. The two Bash-side classifiers beside it matched that
- * lower-cased basename against the raw command line: `bashCommand.includes(o.basename)` for
- * 'substituted', and shellReadMatch's own `command.includes(basename)` plus an un-flagged RegExp
- * for 'shell_read'. Any file whose name carries an upper-case character therefore never matched,
- * and its follow-up was booked as 'abandoned'. The kinds this hit are the ones whose targets are
- * conventionally capitalised -- CLAUDE.md, README.md, MEMORY.md, SKILL.md -- so the census
- * under-reported exactly the denies it is most often read for. The retry and edit classifiers were
- * always immune: both normalise each side before comparing.
- *
- * HAND-DERIVED: the two commands are the ordinary spellings a follow-up takes, written against an
- * upper-case filename rather than read off either matcher.
- */
+/** Regression: a denied path's basename is taken from readPathById, which stores normalizeReadPath's output -- lower-cased. The two Bash-side classifiers beside it matched that lower-cased basename against the raw command line: `bashCommand.includes(o.basename)` for 'substituted', and shellReadMatch's own `command.includes(basename)` plus an un-flagged RegExp for 'shell_read'. Any file whose name carries an upper-case character therefore never matched, and its follow-up was booked as 'abandoned'. The kinds this hit are the ones whose targets are conventionally capitalised -- CLAUDE.md, README.md, MEMORY.md, SKILL.md -- so the census under-reported exactly the denies it is most often read for. The retry and edit classifiers were always immune: both normalise each side before comparing. HAND-DERIVED: the two commands are the ordinary spellings a follow-up takes, written against an upper-case filename rather than read off either matcher. */
 describe('deny outcomes for an upper-case basename', () => {
   let caseDir = ''
 
