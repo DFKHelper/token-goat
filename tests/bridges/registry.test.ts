@@ -1,14 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { detectHarness, getHarnessName } from '../../src/bridges/registry.js'
+import { detectHarness, getHarnessName, setRelaySeededSessionId } from '../../src/bridges/registry.js'
 import { clearModuleCaches } from '../../src/reset.js'
 import { HARNESS_DETECTION_ENV_KEYS } from '../helpers/harness-env.js'
 
-// Every env var any branch of detectHarness() reads, across both spellings
-// codex/opencode ever used (CODEX_SESSION_ID vs CODEX_SESSION, OPENCODE_SESSION_ID
-// vs OPENCODE_SESSION) plus the harness-override escape hatch.
-// The four beyond the shared detection set are ones this file's own "ollama launch claude" test
-// sets; detectHarness() never reads them, so they belong here rather than in the shared list.
+// Every env var any branch of detectHarness() reads, across both spellings codex/opencode ever used (CODEX_SESSION_ID vs CODEX_SESSION, OPENCODE_SESSION_ID vs OPENCODE_SESSION) plus the harness-override escape hatch. The four beyond the shared detection set are ones this file's own "ollama launch claude" test sets; detectHarness() never reads them, so they belong here rather than in the shared list.
 const ENV_KEYS = [
   ...HARNESS_DETECTION_ENV_KEYS,
   'ANTHROPIC_BASE_URL',
@@ -77,15 +73,27 @@ describe('harness detection', () => {
       expect(detectHarness()).toBe('opencode')
     })
 
+    // A long-lived host keeps relay's seed in its environment between hook calls; only a value the harness set itself is evidence of Claude Code.
+    it('does not take a CLAUDE_CODE_SESSION_ID relay seeded for Claude Code, but still takes one the harness set', () => {
+      process.env['OPENCODE_SESSION_ID'] = 'xyz'
+      process.env['CLAUDE_CODE_SESSION_ID'] = 'seeded-by-relay'
+      setRelaySeededSessionId('seeded-by-relay')
+      try {
+        expect(detectHarness()).toBe('opencode')
+        process.env['CLAUDE_CODE_SESSION_ID'] = 'set-by-harness'
+        expect(detectHarness()).toBe('claudecode')
+      } finally {
+        setRelaySeededSessionId(undefined)
+      }
+    })
+
     it('returns openclaw when OPENCLAW_SESSION_ID is set', () => {
       process.env['OPENCLAW_SESSION_ID'] = 'oc-1'
       expect(detectHarness()).toBe('openclaw')
     })
 
     it('returns grok when GROK_SESSION_ID is set', () => {
-      // Confirmed empirically (2026-07-09): grok 0.2.93 sets GROK_SESSION_ID
-      // on every hook subprocess it spawns (see registry.ts for the live
-      // capture this was verified against).
+      // Confirmed empirically (2026-07-09): grok 0.2.93 sets GROK_SESSION_ID on every hook subprocess it spawns (see registry.ts for the live capture this was verified against).
       process.env['GROK_SESSION_ID'] = 'g-1'
       expect(detectHarness()).toBe('grok')
     })
@@ -151,9 +159,7 @@ describe('harness detection', () => {
     })
 
     it('returns grok, not claudecode, when GROK_SESSION_ID and a bare ANTHROPIC_API_KEY are both set', () => {
-      // Grok reuses Claude Code's own settings.json, so an ambient
-      // ANTHROPIC_API_KEY is normal in a grok session; the bare-key claudecode
-      // fallback must not preempt the GROK_SESSION_ID branch.
+      // Grok reuses Claude Code's own settings.json, so an ambient ANTHROPIC_API_KEY is normal in a grok session; the bare-key claudecode fallback must not preempt the GROK_SESSION_ID branch.
       process.env['GROK_SESSION_ID'] = 'g-1'
       process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
       expect(detectHarness()).toBe('grok')

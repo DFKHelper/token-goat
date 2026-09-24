@@ -117,8 +117,8 @@ export const TIMESTAMP_PREFIX_RE =
 /** A single token that is a shell redirect (`>`, `2>`, `>>`, `<`, `&>`, ...). */
 export const REDIRECT_TOKEN_RE = /^(\d*)(>>?|<<?).*$|^&>$|^>&.*$/
 
-/** Replace the contents of single- and double-quoted spans in `cmd` with `x` filler (same length, no quote/escape metacharacters preserved) so control- operator detection on the raw string doesn't false-positive on a literal `&`, `|`, `;`, etc. inside a quoted argument. Malformed/unterminated quotes mask through to the end of the string rather than throwing. */
-function maskQuotedSpans(cmd: string): string {
+/** Replace the contents of single- and double-quoted spans in `cmd` with `x` filler, dropping the quote characters themselves, and each backslash escape outside quotes with `xx`, so control-operator detection on the raw string doesn't false-positive on a literal `&`, `|`, `;`, etc. inside a quoted argument. The result is shorter than `cmd` by the quote characters it drops, so an index into it is not an index into `cmd`. Malformed/unterminated quotes mask through to the end of the string rather than throwing. */
+export function maskQuotedSpans(cmd: string): string {
   let out = ''
   let i = 0
   const n = cmd.length

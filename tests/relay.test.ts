@@ -9,15 +9,11 @@ import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 
 import { registerHook } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { buildEvent, readStdinJson, relay } from '../src/relay.js'
+import { buildEvent, readStdinJson, relay, relayInProcess, RELAY_QUEUE_WAIT_MS } from '../src/relay.js'
+import type { HookOutput } from '../src/types.js'
 import { getSessionId, getTranscriptPath } from '../src/session.js'
 
-/**
- * Replace process.stdin with a fake emitter and capture process.stdout writes.
- *
- * `emit(payload)` pushes the payload (or raw string) then signals `end`, on the
- * next microtask so the relay's listeners are attached first.
- */
+/** Replace process.stdin with a fake emitter and capture process.stdout writes. `emit(payload)` pushes the payload (or raw string) then signals `end`, on the next microtask so the relay's listeners are attached first. */
 function withFakeIo(): {
   emit: (payload: string) => void
   emitError: (err: Error) => void
@@ -105,10 +101,7 @@ describe('buildEvent', () => {
   })
 
   it('resolves the session id from a grok-shaped camelCase pre_compact payload (sessionId, not session_id)', () => {
-    // Grok inherits claudecode's full 7-event hook wiring but sends camelCase
-    // payloads. On non-tool events (pre_compact/stop/notification/...) there is
-    // no session_id key, so without a sessionId fallback the state loads/saves
-    // under an empty string.
+    // Grok inherits claudecode's full 7-event hook wiring but sends camelCase payloads. On non-tool events (pre_compact/stop/notification/...) there is no session_id key, so without a sessionId fallback the state loads/saves under an empty string.
     const ev = buildEvent('pre_compact', { sessionId: 'grok-sess-1' })
     expect(ev.sessionId).toBe('grok-sess-1')
   })
@@ -210,9 +203,7 @@ describe('readStdinJson', () => {
   })
 
   it('rejects once accumulated stdin exceeds maxBytes, instead of buffering unbounded until the timeout fires (regression: M10)', async () => {
-    // A generous timeout (5000ms) so the size cap — not the timeout — is what
-    // actually stops the read. Without the cap this payload would simply
-    // buffer in full and parse successfully well within the timeout.
+    // A generous timeout (5000ms) so the size cap — not the timeout — is what actually stops the read. Without the cap this payload would simply buffer in full and parse successfully well within the timeout.
     io.emit('x'.repeat(50))
     await expect(readStdinJson(5000, 10)).rejects.toThrow(/exceeded 10 bytes/)
   })
@@ -257,17 +248,45 @@ describe('relay', () => {
   })
 })
 
+// relayInProcess runs one call at a time per process, so a handler that never settles used to hold every later hook call in a bridge host (opencode, pi, OpenClaw) forever.
+describe('relayInProcess queue bound', () => {
+  // Captured before any test fakes timers: the fallback in the race below has to run on the real clock.
+  const realSetTimeout = globalThis.setTimeout
+  const realDelay = (ms: number): Promise<void> => new Promise((resolve) => realSetTimeout(resolve, ms))
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('runs the next call once RELAY_QUEUE_WAIT_MS passes behind one that never settles, and the stalled call still gets its own result', async () => {
+    let release: ((output: HookOutput) => void) | undefined
+    registerHook('pre_tool_use', (event) => (event.toolInput['hang'] === true ? new Promise<HookOutput>((resolve) => { release = resolve }) : { hookType: 'pass' }), { toolName: 'TgQueueProbe' })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const settled: string[] = []
+    const first = relayInProcess('pre_tool_use', { tool_name: 'TgQueueProbe', tool_input: { hang: true } }).then((out) => {
+      settled.push('first')
+      return out
+    })
+    const second = relayInProcess('pre_tool_use', { tool_name: 'TgQueueProbe', tool_input: {} }).then((out) => {
+      settled.push('second')
+      return out
+    })
+    for (let i = 0; i < 250 && release === undefined; i++) await realDelay(20)
+    expect(release).toBeDefined()
+
+    await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS - 1)
+    expect(settled).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await Promise.race([second, realDelay(5000).then(() => 'still waiting')])).toBe('{}')
+    expect(settled).toEqual(['second'])
+
+    release?.({ hookType: 'deny', message: 'late verdict' })
+    expect(await first).toContain('late verdict')
+  })
+})
+
 describe('relay tool-name normalization (regression: M49 — toolName filters inert under Codex)', () => {
-  // detectHarness() (bridges/registry.ts) now recognizes more signals than just
-  // these four -- CLAUDE_CODE_SESSION_ID/ANTHROPIC_API_KEY (claudecode),
-  // CODEX_SESSION (codex), OPENCODE_SESSION (opencode), OPENCLAW_SESSION_ID
-  // (openclaw), HERMES_SESSION_ID/HERMES_HOME (hermes), OPENAI_API_KEY/
-  // GEMINI_API_KEY/GOOGLE_API_KEY (codex/gemini fallback), and the
-  // TOKEN_GOAT_HARNESS_OVERRIDE escape hatch. All of them must be cleared here,
-  // not just the original two: this suite runs inside a real Claude Code
-  // session, which sets CLAUDE_CODE_SESSION_ID in the test process's ambient
-  // environment, so without clearing it the claudecode branch (checked before
-  // codex) wins over this test's CODEX_SESSION_ID and silently breaks it.
+  // detectHarness() (bridges/registry.ts) now recognizes more signals than just these four -- CLAUDE_CODE_SESSION_ID/ANTHROPIC_API_KEY (claudecode), CODEX_SESSION (codex), OPENCODE_SESSION (opencode), OPENCLAW_SESSION_ID (openclaw), HERMES_SESSION_ID/HERMES_HOME (hermes), OPENAI_API_KEY/ GEMINI_API_KEY/GOOGLE_API_KEY (codex/gemini fallback), and the TOKEN_GOAT_HARNESS_OVERRIDE escape hatch. All of them must be cleared here, not just the original two: this suite runs inside a real Claude Code session, which sets CLAUDE_CODE_SESSION_ID in the test process's ambient environment, so without clearing it the claudecode branch (checked before codex) wins over this test's CODEX_SESSION_ID and silently breaks it.
   const ENV_KEYS = HARNESS_DETECTION_ENV_KEYS
   const savedEnv: Record<string, string | undefined> = {}
 
@@ -298,11 +317,7 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
       { toolName: 'Bash' },
     )
 
-    // Codex's raw hook payload carries its own snake_case tool name ('bash'), not
-    // token-goat's canonical 'Bash'. Before this fix, relay() forwarded tool_name
-    // straight into buildEvent() with no normalization, so a handler registered
-    // via registerHook(..., { toolName: 'Bash' }) never matched — it silently
-    // never ran for a real Codex invocation.
+    // Codex's raw hook payload carries its own snake_case tool name ('bash'), not token-goat's canonical 'Bash'. Before this fix, relay() forwarded tool_name straight into buildEvent() with no normalization, so a handler registered via registerHook(..., { toolName: 'Bash' }) never matched — it silently never ran for a real Codex invocation.
     io.emit(
       JSON.stringify({ tool_name: 'bash', tool_input: { command: 'echo hi' }, session_id: 's' }),
     )
@@ -343,12 +358,7 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
       { toolName: 'Bash' },
     )
 
-    // Gemini CLI's raw hook payload carries its own snake_case tool name
-    // ('run_shell_command'), not token-goat's canonical 'Bash'. Before this
-    // fix, harnessForNormalization() collapsed every detected 'gemini' harness
-    // down to 'claude', so normalizePayload() never ran its 'gemini' branch
-    // and a handler registered via registerHook(..., { toolName: 'Bash' })
-    // never matched a real Gemini CLI invocation.
+    // Gemini CLI's raw hook payload carries its own snake_case tool name ('run_shell_command'), not token-goat's canonical 'Bash'. Before this fix, harnessForNormalization() collapsed every detected 'gemini' harness down to 'claude', so normalizePayload() never ran its 'gemini' branch and a handler registered via registerHook(..., { toolName: 'Bash' }) never matched a real Gemini CLI invocation.
     io.emit(
       JSON.stringify({ tool_name: 'run_shell_command', tool_input: { command: 'echo hi' }, session_id: 's' }),
     )
@@ -358,13 +368,7 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
   })
 
   it('normalizes a raw grok tool_name/camelCase payload through the real relay() path so a toolName-filtered handler actually matches', async () => {
-    // Confirmed empirically (2026-07-09) against grok 0.2.93: grok invokes
-    // the same `token-goat hook pre_tool_use` command Claude Code's own
-    // ~/.claude/settings.json already registers, but sends an entirely
-    // camelCase payload (toolName/toolInput/sessionId, not
-    // tool_name/tool_input/session_id) with its own tool-name vocabulary
-    // ('run_terminal_command', not 'Bash') -- see hooks_cli.ts's grok branch.
-    // GROK_SESSION_ID is set on every hook subprocess grok spawns.
+    // Confirmed empirically (2026-07-09) against grok 0.2.93: grok invokes the same `token-goat hook pre_tool_use` command Claude Code's own ~/.claude/settings.json already registers, but sends an entirely camelCase payload (toolName/toolInput/sessionId, not tool_name/tool_input/session_id) with its own tool-name vocabulary ('run_terminal_command', not 'Bash') -- see hooks_cli.ts's grok branch. GROK_SESSION_ID is set on every hook subprocess grok spawns.
     process.env['GROK_SESSION_ID'] = 'grok-test-session'
 
     let observedToolName: string | undefined
@@ -414,28 +418,7 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
 })
 
 describe('relay Gemini deny wire format (regression: Gemini CLI has no output-reshaping bridge -- gemini_install.ts wires `token-goat hook <event>` directly into ~/.gemini/settings.json, with no shim script the way Codex/Copilot CLI have, so serializeOutput\'s wire JSON is exactly what a real Gemini CLI process reads from stdout -- this suite verifies token-goat\'s deny shape against Gemini CLI\'s documented BeforeTool contract instead of merely assuming compatibility, since a plausible fail-open regression here would mean a real Gemini user\'s dangerous-command/confirmed-re-read/dedup denials silently proceed)', () => {
-  // Verified against docs/hooks/reference.md in google-gemini/gemini-cli (raw
-  // GitHub source fetched directly, 2026-07-09) -- gemini CLI itself is not
-  // installed on this machine (checked: `gemini --version`/`where gemini`/npm
-  // global list/a recursive $env:USERPROFILE search all came up empty), so
-  // this is documentation-verified, not live-dogfooded against a real gemini
-  // binary. Relevant excerpts from that doc:
-  //   "Common output fields" table: `decision` (string) -- "allow" or "deny"
-  //   (alias "block")"; `reason` (string) -- "The feedback/error message
-  //   provided when a decision is deny."
-  //   "BeforeTool" section, "Relevant Output Fields": `decision`: Set to
-  //   "deny" (or "block") to prevent the tool from executing. `reason`:
-  //   Required if denied. This text is sent to the agent as a tool error.
-  //   BeforeTool has no additionalContext/hookSpecificOutput-wrapped output
-  //   field at all (that only exists on AfterTool/SessionStart/BeforeAgent).
-  // token-goat's serializeOutput (src/hook_registry.ts) emits exactly
-  // {"decision":"block","reason":"<message>"} for every deny, on every
-  // harness -- there is no per-harness output branch anywhere in the
-  // relay()/hook_registry.ts pipeline. "block" is a documented Gemini alias
-  // for "deny", so this already is Gemini's own native BeforeTool shape,
-  // with zero translation code required -- the real bug being verified here
-  // was that this compatibility was previously assumed, never actually
-  // checked against Gemini's real contract or exercised by a test.
+  // Verified against docs/hooks/reference.md in google-gemini/gemini-cli (raw GitHub source fetched directly, 2026-07-09) -- gemini CLI itself is not installed on this machine (checked: `gemini --version`/`where gemini`/npm global list/a recursive $env:USERPROFILE search all came up empty), so this is documentation-verified, not live-dogfooded against a real gemini binary. Relevant excerpts from that doc: "Common output fields" table: `decision` (string) -- "allow" or "deny" (alias "block")"; `reason` (string) -- "The feedback/error message provided when a decision is deny." "BeforeTool" section, "Relevant Output Fields": `decision`: Set to "deny" (or "block") to prevent the tool from executing. `reason`: Required if denied. This text is sent to the agent as a tool error. BeforeTool has no additionalContext/hookSpecificOutput-wrapped output field at all (that only exists on AfterTool/SessionStart/BeforeAgent). token-goat's serializeOutput (src/hook_registry.ts) emits exactly {"decision":"block","reason":"<message>"} for every deny, on every harness -- there is no per-harness output branch anywhere in the relay()/hook_registry.ts pipeline. "block" is a documented Gemini alias for "deny", so this already is Gemini's own native BeforeTool shape, with zero translation code required -- the real bug being verified here was that this compatibility was previously assumed, never actually checked against Gemini's real contract or exercised by a test.
   const ENV_KEYS = HARNESS_DETECTION_ENV_KEYS
   const savedEnv: Record<string, string | undefined> = {}
 
@@ -444,11 +427,7 @@ describe('relay Gemini deny wire format (regression: Gemini CLI has no output-re
       savedEnv[k] = process.env[k]
       delete process.env[k]
     }
-    // A real Gemini CLI hook subprocess inherits Gemini CLI's own ambient
-    // environment (GEMINI_API_KEY / GOOGLE_API_KEY) -- see
-    // harnessForNormalization()'s doc comment in src/relay.ts. Setting this
-    // is what makes detectHarness() resolve to 'gemini' for these tests,
-    // exactly as it would for a real installed Gemini CLI.
+    // A real Gemini CLI hook subprocess inherits Gemini CLI's own ambient environment (GEMINI_API_KEY / GOOGLE_API_KEY) -- see harnessForNormalization()'s doc comment in src/relay.ts. Setting this is what makes detectHarness() resolve to 'gemini' for these tests, exactly as it would for a real installed Gemini CLI.
     process.env['GEMINI_API_KEY'] = 'gemini-test-key'
   })
 
@@ -473,10 +452,7 @@ describe('relay Gemini deny wire format (regression: Gemini CLI has no output-re
     // Gemini's BeforeTool schema accepts "deny" or its documented alias "block".
     expect(['deny', 'block']).toContain(parsed['decision'])
     expect(parsed['reason']).toBe('blocked by test policy')
-    // BeforeTool has no hookSpecificOutput-wrapped field in its schema at
-    // all -- confirm the response is the flat shape Gemini actually parses,
-    // not Claude Code's hookSpecificOutput-nested additionalContext shape
-    // (used by other hookType variants) leaking into a deny response.
+    // BeforeTool has no hookSpecificOutput-wrapped field in its schema at all -- confirm the response is the flat shape Gemini actually parses, not Claude Code's hookSpecificOutput-nested additionalContext shape (used by other hookType variants) leaking into a deny response.
     expect(parsed['hookSpecificOutput']).toBeUndefined()
     expect(Object.keys(parsed).sort()).toEqual(['decision', 'reason'])
   })
@@ -527,13 +503,9 @@ describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Cla
       savedEnv[k] = process.env[k]
       delete process.env[k]
     }
-    // A real Codex hook subprocess sets CODEX_SESSION_ID in its own ambient environment (see
-    // harnessForNormalization()'s Codex branch), but -- unlike Claude Code -- never sets
-    // CLAUDE_CODE_SESSION_ID. Simulate that: harness detection resolves to 'codex', while
-    // getSessionId() has nothing to resolve from except what relay() seeds from the wire.
+    // A real Codex hook subprocess sets CODEX_SESSION_ID in its own ambient environment (see harnessForNormalization()'s Codex branch), but -- unlike Claude Code -- never sets CLAUDE_CODE_SESSION_ID. Simulate that: harness detection resolves to 'codex', while getSessionId() has nothing to resolve from except what relay() seeds from the wire.
     process.env['CODEX_SESSION_ID'] = 'codex-test-session'
-    // getSessionId() memoizes its result in a module-level variable; reset it (and every other
-    // session.ts global) so this suite starts from a clean slate regardless of test order.
+    // getSessionId() memoizes its result in a module-level variable; reset it (and every other session.ts global) so this suite starts from a clean slate regardless of test order.
     clearModuleCaches()
   })
 
@@ -548,10 +520,7 @@ describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Cla
   it('seeds CLAUDE_CODE_SESSION_ID from event.sessionId so getSessionId() resolves it consistently across two separate simulated hook calls', async () => {
     const wireSessionId = 'codex-wire-session-77'
 
-    // First simulated hook call (pre_tool_use): CLAUDE_CODE_SESSION_ID starts unset, as it
-    // would for a genuine Codex subprocess. relay() must seed it from the wire payload's
-    // session_id before any handler (including getSessionId() consumers like hooks_read.ts)
-    // runs.
+    // First simulated hook call (pre_tool_use): CLAUDE_CODE_SESSION_ID starts unset, as it would for a genuine Codex subprocess. relay() must seed it from the wire payload's session_id before any handler (including getSessionId() consumers like hooks_read.ts) runs.
     io.emit(
       JSON.stringify({
         tool_name: 'Read',
@@ -567,9 +536,7 @@ describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Cla
     io.restore()
     io = withFakeIo()
 
-    // Second simulated hook call (post_tool_use), same wire session id: getSessionId() must
-    // keep resolving to the same id it did on the first call, proving continuity across
-    // separate hook invocations rather than a fresh random id per call.
+    // Second simulated hook call (post_tool_use), same wire session id: getSessionId() must keep resolving to the same id it did on the first call, proving continuity across separate hook invocations rather than a fresh random id per call.
     io.emit(
       JSON.stringify({
         tool_name: 'Read',
@@ -599,8 +566,8 @@ describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Cla
     expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe('preexisting-session')
   })
 
-  // The env var seeded above latches to the first session a process sees, and the bridges in src/bridges/ module-cache relayInProcess, so one long-lived bridge process can relay two sessions' events. Pairing the transcript path with that latched id would have paired session B's transcript with session A's id and passed the check, handing getContextPressure a measurement of the wrong conversation -- worse than the estimate it replaced, since a measured number reads as fact. Pairing with the wire id instead makes the mismatch visible and falls back to the estimate.
-  it('does not serve a second session\'s transcript path to the first session', async () => {
+  // The bridges in src/bridges/ module-cache relayInProcess, so one long-lived bridge process relays one session's events after another's. The seeded id used to latch to the first session, so every handler in the second one read the first one's id; and a transcript paired with the wrong session hands getContextPressure a measurement of another conversation, worse than the estimate it replaced, since a measured number reads as fact.
+  it('answers each session with its own id, and does not serve a second session\'s transcript path to the first session', async () => {
     io.emit(
       JSON.stringify({
         tool_name: 'Read',
@@ -627,9 +594,46 @@ describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Cla
     )
     await relay('pre_tool_use')
 
-    // The env latch means this process still answers as session A; B's transcript must therefore be withheld rather than measured for A.
+    expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe('transcript-session-b')
+    expect(getSessionId()).toBe('transcript-session-b')
+    expect(getTranscriptPath()).toBe('/tmp/transcript-b.jsonl')
+
+    io.restore()
+    io = withFakeIo()
+
+    // Back to A with no transcript on the wire: B's is the one on record, and it must be withheld rather than measured for A.
+    io.emit(
+      JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/transcript-pairing-a.ts' },
+        session_id: 'transcript-session-a',
+      }),
+    )
+    await relay('pre_tool_use')
+
     expect(getSessionId()).toBe('transcript-session-a')
     expect(getTranscriptPath()).toBeUndefined()
+  })
+
+  it('clears the id it seeded when an event carries none, rather than answering for the previous session', async () => {
+    io.emit(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/tmp/seed-clear.ts' }, session_id: 'seeded-then-cleared' }))
+    await relay('pre_tool_use')
+    expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe('seeded-then-cleared')
+
+    io.restore()
+    io = withFakeIo()
+
+    io.emit(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/tmp/seed-clear.ts' } }))
+    await relay('pre_tool_use')
+    expect(process.env['CLAUDE_CODE_SESSION_ID']).toBeUndefined()
+    expect(getSessionId()).not.toBe('seeded-then-cleared')
+  })
+
+  it('leaves a harness-set id alone for an event that carries none', async () => {
+    process.env['CLAUDE_CODE_SESSION_ID'] = 'harness-own-session'
+    io.emit(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/tmp/seed-keep.ts' } }))
+    await relay('pre_tool_use')
+    expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe('harness-own-session')
   })
 
   it('propagates wire traceparent and tracestate to process.env', async () => {

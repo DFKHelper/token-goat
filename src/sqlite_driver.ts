@@ -1,73 +1,12 @@
-/**
- * A better-sqlite3-shaped facade over Node's built-in `node:sqlite`.
- *
- * Why this file exists: `better-sqlite3` is a native addon, and it is the single largest thing a
- * default `npm i -g token-goat` drags in. Measured against the real lockfile it is 36 of the 106
- * packages a default install resolves, the only package in the tree still marked deprecated, and
- * one of the 14 that run an install script. With it gone, `npm i --omit=optional token-goat`
- * resolves **two** packages and runs no install scripts at all. Node ships the same SQLite engine
- * in core -- `node:sqlite` was unflagged in Node 22.13.0 -- so the dependency buys nothing the
- * runtime does not already have. The pieces this file needs on top of that (`columns()`,
- * `isTransaction`, the `timeout` constructor option) landed in 22.16.0, which is why the package's
- * `engines` floor moved there rather than staying at 22.13.
- *
- * What it is not: a general better-sqlite3 polyfill. It covers exactly the surface this repository
- * uses, which `tests/sqlite_driver.test.ts` pins against better-sqlite3 itself as a differential
- * oracle. Adding a call to some other part of better-sqlite3's API will not silently fall through
- * to something approximate; it will fail to compile, because the interfaces below are the contract.
- *
- * Five places the two libraries genuinely differ, and what is done about each:
- *
- *   1. `node:sqlite` has no `pragma()`. `PRAGMA x` and `PRAGMA x = y` both prepare and execute
- *      fine, so {@link Database.pragma} is `prepare('PRAGMA ' + source).all()`, with `{simple:true}`
- *      taking the first column of the first row exactly as better-sqlite3 does. An assigning pragma
- *      returns no rows, which `simple` reports as `undefined` -- the same thing better-sqlite3
- *      returns there.
- *   2. `node:sqlite` has no `transaction()`. {@link Database.transaction} builds it, including the
- *      `.immediate()` variant six call sites in this repository depend on, and including SAVEPOINT
- *      nesting so a transaction opened inside another one does not try to `BEGIN` twice. Nesting is
- *      decided by SQLite's own `isTransaction`, not a counter this file keeps, so a transaction
- *      opened by any other route is still seen.
- *   3. Loading `node:sqlite` emits an `ExperimentalWarning` on stderr. token-goat runs as a
- *      PreToolUse hook on every Read, Grep, Glob and WebFetch, so an unconditional line of stderr
- *      per invocation is not cosmetic. {@link suppressSqliteExperimentalWarning} removes that one
- *      warning and then uninstalls itself -- see its own comment for why it cannot simply restore
- *      after the require returns.
- *   4. The two report the same failure under different names. better-sqlite3 puts the result code's
- *      name in `err.code`; `node:sqlite` puts a generic `ERR_SQLITE_ERROR` there and the numeric
- *      extended code in `err.errcode`. {@link sqliteResultCodeName} translates one into the other
- *      and {@link attempt} applies it to every call that can throw, so a caller branching on
- *      `SQLITE_BUSY` keeps working. This was not hypothetical: `index_reclaim.ts` tells routine
- *      lock contention apart from a real error that way, and without the translation a deferred
- *      VACUUM became a thrown `database is locked`.
- *   5. They disagree on the default `busy_timeout`: better-sqlite3 opens at 5000ms, `node:sqlite`
- *      at 0. The constructor below restores 5000 so a connection that names no timeout keeps the
- *      patience it used to have, which matters for the readonly connections `sqlite_query.ts`
- *      opens on databases this program does not own and cannot re-open on a retry.
- */
+/** A better-sqlite3-shaped facade over Node's built-in `node:sqlite`. Why this file exists: `better-sqlite3` is a native addon, and it is the single largest thing a default `npm i -g token-goat` drags in. Measured against the real lockfile it is 36 of the 106 packages a default install resolves, the only package in the tree still marked deprecated, and one of the 14 that run an install script. With it gone, `npm i --omit=optional token-goat` resolves **two** packages and runs no install scripts at all. Node ships the same SQLite engine in core -- `node:sqlite` was unflagged in Node 22.13.0 -- so the dependency buys nothing the runtime does not already have. The pieces this file needs on top of that (`columns()`, `isTransaction`, the `timeout` constructor option) landed in 22.16.0, which is why the package's `engines` floor moved there rather than staying at 22.13. What it is not: a general better-sqlite3 polyfill. It covers exactly the surface this repository uses, which `tests/sqlite_driver.test.ts` pins against better-sqlite3 itself as a differential oracle. Adding a call to some other part of better-sqlite3's API will not silently fall through to something approximate; it will fail to compile, because the interfaces below are the contract. Five places the two libraries genuinely differ, and what is done about each: 1. `node:sqlite` has no `pragma()`. `PRAGMA x` and `PRAGMA x = y` both prepare and execute fine, so {@link Database.pragma} is `prepare('PRAGMA ' + source).all()`, with `{simple:true}` taking the first column of the first row exactly as better-sqlite3 does. An assigning pragma returns no rows, which `simple` reports as `undefined` -- the same thing better-sqlite3 returns there. 2. `node:sqlite` has no `transaction()`. {@link Database.transaction} builds it, including the `.immediate()` variant six call sites in this repository depend on, and including SAVEPOINT nesting so a transaction opened inside another one does not try to `BEGIN` twice. Nesting is decided by SQLite's own `isTransaction`, not a counter this file keeps, so a transaction opened by any other route is still seen. 3. Loading `node:sqlite` emits an `ExperimentalWarning` on stderr. token-goat runs as a PreToolUse hook on every Read, Grep, Glob and WebFetch, so an unconditional line of stderr per invocation is not cosmetic. {@link suppressSqliteExperimentalWarning} removes that one warning and then uninstalls itself -- see its own comment for why it cannot simply restore after the require returns. 4. The two report the same failure under different names. better-sqlite3 puts the result code's name in `err.code`; `node:sqlite` puts a generic `ERR_SQLITE_ERROR` there and the numeric extended code in `err.errcode`. {@link sqliteResultCodeName} translates one into the other and {@link attempt} applies it to every call that can throw, so a caller branching on `SQLITE_BUSY` keeps working. This was not hypothetical: `index_reclaim.ts` tells routine lock contention apart from a real error that way, and without the translation a deferred VACUUM became a thrown `database is locked`. 5. They disagree on the default `busy_timeout`: better-sqlite3 opens at 5000ms, `node:sqlite` at 0. The constructor below restores 5000 so a connection that names no timeout keeps the patience it used to have, which matters for the readonly connections `sqlite_query.ts` opens on databases this program does not own and cannot re-open on a retry. */
 
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 
 const _require = createRequire(import.meta.url)
 
-/**
- * Swallow the single `ExperimentalWarning` that loading `node:sqlite` emits, and nothing else.
- *
- * `process.emitWarning` defers to `process.nextTick`, so the warning has not fired by the time
- * `require('node:sqlite')` returns -- restoring `process.emit` on the next line would be too early
- * and the warning would print anyway (verified, not assumed). So the filter stays installed until
- * it has actually seen its warning, and removes itself at that point; a `setImmediate` bounds it to
- * one turn of the event loop in case the warning never comes, and a process short enough to exit
- * first never had a second warning to miss.
- *
- * The predicate is deliberately narrow: the name must be `ExperimentalWarning` and the message must
- * mention SQLite. A genuine `DeprecationWarning`, or an `ExperimentalWarning` about anything else,
- * goes through untouched -- both checked in the driver tests, because a filter that quietly ate
- * every warning would look identical from the outside on the day it started mattering.
- *
- * Exported only so those tests can drive it directly; nothing else should call it.
- */
+/** Swallow the single `ExperimentalWarning` that loading `node:sqlite` emits, and nothing else. `process.emitWarning` defers to `process.nextTick`, so the warning has not fired by the time `require('node:sqlite')` returns -- restoring `process.emit` on the next line would be too early and the warning would print anyway (verified, not assumed). So the filter stays installed until it has actually seen its warning, and removes itself at that point; a `setImmediate` bounds it to one turn of the event loop in case the warning never comes, and a process short enough to exit first never had a second warning to miss. The predicate is deliberately narrow: the name must be `ExperimentalWarning` and the message must mention SQLite. A genuine `DeprecationWarning`, or an `ExperimentalWarning` about anything else, goes through untouched -- both checked in the driver tests, because a filter that quietly ate every warning would look identical from the outside on the day it started mattering. Exported only so those tests can drive it directly; nothing else should call it. */
 export function suppressSqliteExperimentalWarning(): () => void {
   const original = process.emit
   let armed = true
@@ -94,12 +33,7 @@ export function suppressSqliteExperimentalWarning(): () => void {
   return restore
 }
 
-/**
- * The subset of `node:sqlite` this file drives. Declared structurally rather than imported from
- * `node:sqlite`'s own types: an ESM `import` is hoisted above every statement in the module, which
- * would run the require before the warning filter could be installed. `createRequire` is an
- * ordinary call and runs where it is written.
- */
+/** The subset of `node:sqlite` this file drives. Declared structurally rather than imported from `node:sqlite`'s own types: an ESM `import` is hoisted above every statement in the module, which would run the require before the warning filter could be installed. `createRequire` is an ordinary call and runs where it is written. */
 interface NodeStatementSync {
   get(...params: unknown[]): unknown
   all(...params: unknown[]): unknown[]
@@ -170,20 +104,7 @@ const SQLITE_EXTENDED_SUFFIXES: Record<string, readonly (string | null)[]> = {
   SQLITE_WARNING: ['AUTOINDEX'],
 }
 
-/**
- * Spell a numeric SQLite result code the way better-sqlite3 spells it in `err.code`.
- *
- * The two libraries report the same failure under different names: better-sqlite3 puts the result
- * code's name in `code` (`SQLITE_BUSY`), while `node:sqlite` puts its own generic
- * `ERR_SQLITE_ERROR` there and the numeric extended code in `errcode`. Code in this repository
- * branches on the former -- `index_reclaim.ts` decides whether a failed VACUUM is contention it
- * should defer or a real error it must rethrow by prefix-matching `SQLITE_BUSY`/`SQLITE_LOCKED` --
- * so without translation that check silently stops matching and a routine lock loss surfaces as a
- * crash. Exported for the driver tests, which check the table against better-sqlite3's own answers.
- *
- * An extended code is `primary | (subcode << 8)`. Unknown codes fall back to the primary name, and
- * an unknown primary to `ERR_SQLITE_ERROR`, so a future SQLite adding a code cannot throw here.
- */
+/** Spell a numeric SQLite result code the way better-sqlite3 spells it in `err.code`. The two libraries report the same failure under different names: better-sqlite3 puts the result code's name in `code` (`SQLITE_BUSY`), while `node:sqlite` puts its own generic `ERR_SQLITE_ERROR` there and the numeric extended code in `errcode`. Code in this repository branches on the former -- `index_reclaim.ts` decides whether a failed VACUUM is contention it should defer or a real error it must rethrow by prefix-matching `SQLITE_BUSY`/`SQLITE_LOCKED` -- so without translation that check silently stops matching and a routine lock loss surfaces as a crash. Exported for the driver tests, which check the table against better-sqlite3's own answers. An extended code is `primary | (subcode << 8)`. Unknown codes fall back to the primary name, and an unknown primary to `ERR_SQLITE_ERROR`, so a future SQLite adding a code cannot throw here. */
 export function sqliteResultCodeName(errcode: number): string {
   if (!Number.isInteger(errcode) || errcode < 0) return 'ERR_SQLITE_ERROR'
   if (errcode === 100) return 'SQLITE_ROW'
@@ -239,12 +160,7 @@ export interface SqliteStatement {
   readonly source: string
 }
 
-/**
- * What `db.transaction(fn)` returns: callable, plus the three explicit lock modes. `.immediate()`
- * is the one that matters here -- a plain `BEGIN` is deferred, which takes the write lock only at
- * the first write and so can fail mid-transaction under concurrency; six call sites in this
- * repository use `.immediate()` for exactly that reason.
- */
+/** What `db.transaction(fn)` returns: callable, plus the three explicit lock modes. `.immediate()` is the one that matters here -- a plain `BEGIN` is deferred, which takes the write lock only at the first write and so can fail mid-transaction under concurrency; six call sites in this repository use `.immediate()` for exactly that reason. */
 export interface SqliteTransaction<A extends unknown[], R> {
   (...args: A): R
   default(...args: A): R
@@ -272,6 +188,8 @@ export interface SqliteOptions {
   readonly?: boolean
   fileMustExist?: boolean
   timeout?: number
+  /** Open through a `file:` URI with `immutable=1`, so SQLite reads the main file alone: no -wal, no -shm, no locks. Not a better-sqlite3 option; db.ts uses it with `readonly` for a WAL index whose directory cannot hold the -shm a plain read-only open needs. */
+  immutable?: boolean
 }
 
 class Statement implements SqliteStatement {
@@ -286,18 +204,7 @@ class Statement implements SqliteStatement {
     return this.#stmt.sourceSQL
   }
 
-  /**
-   * better-sqlite3's `reader` flag: does this statement return rows?
-   *
-   * `node:sqlite` has no equivalent, so it is derived from the prepared statement's own column
-   * count -- SQLite gives a row-producing statement its result columns at prepare time and gives a
-   * non-producing one none. That is a derivation, and this is the third defence-in-depth layer in
-   * `sqlite_query.ts`'s read-only guard, so it is not taken on faith: the driver tests run both
-   * libraries side by side over SELECT, a CTE, VALUES, EXPLAIN, an empty-result SELECT, INSERT,
-   * UPDATE, DELETE, CREATE, a reading PRAGMA and an assigning PRAGMA, and require every verdict to
-   * agree. If a future SQLite statement form ever breaks the equivalence, that test fails rather
-   * than the guard quietly weakening.
-   */
+  /** better-sqlite3's `reader` flag: does this statement return rows? `node:sqlite` has no equivalent, so it is derived from the prepared statement's own column count -- SQLite gives a row-producing statement its result columns at prepare time and gives a non-producing one none. That is a derivation, and this is the third defence-in-depth layer in `sqlite_query.ts`'s read-only guard, so it is not taken on faith: the driver tests run both libraries side by side over SELECT, a CTE, VALUES, EXPLAIN, an empty-result SELECT, INSERT, UPDATE, DELETE, CREATE, a reading PRAGMA and an assigning PRAGMA, and require every verdict to agree. If a future SQLite statement form ever breaks the equivalence, that test fails rather than the guard quietly weakening. */
   get reader(): boolean {
     return attempt(() => this.#stmt.columns()).length > 0
   }
@@ -348,11 +255,7 @@ class Statement implements SqliteStatement {
   }
 }
 
-/**
- * A SQLite connection. Constructed exactly as better-sqlite3's is -- `new Database(path)` or
- * `new Database(path, { readonly: true, fileMustExist: true })` -- so the two call sites that build
- * one needed no change beyond the import.
- */
+/** A SQLite connection. Constructed exactly as better-sqlite3's is -- `new Database(path)` or `new Database(path, { readonly: true, fileMustExist: true })` -- so the two call sites that build one needed no change beyond the import. */
 export default class Database implements SqliteDatabase {
   #db: NodeDatabaseSync
   #path: string
@@ -365,7 +268,8 @@ export default class Database implements SqliteDatabase {
     if (wantsExisting && dbPath !== ':memory:' && !fs.existsSync(dbPath)) {
       throw new Error('unable to open database file')
     }
-    this.#db = attempt(() => new DatabaseSync(dbPath, {
+    const target = options.immutable === true ? `${pathToFileURL(dbPath).href}?immutable=1` : dbPath
+    this.#db = attempt(() => new DatabaseSync(target, {
       readOnly: options.readonly === true,
       // sqlite-vec is loaded through db.loadExtension by initConnection, which node:sqlite refuses unless the connection opted in at construction. Harmless when no extension is ever loaded.
       allowExtension: true,
@@ -421,18 +325,7 @@ export default class Database implements SqliteDatabase {
     attempt(() => this.#db.close())
   }
 
-  /**
-   * Wrap `fn` so it runs inside a transaction, committing on return and rolling back on throw.
-   *
-   * Nesting uses SAVEPOINT, which is what makes it safe for a transactional helper to call another
-   * one: an inner `BEGIN` would throw ("cannot start a transaction within a transaction"), an inner
-   * SAVEPOINT composes. Whether we are nested is read from SQLite via `isTransaction` rather than
-   * tracked in a counter here, so a transaction some other code path opened still nests correctly.
-   *
-   * The rollback is best-effort and never replaces the caller's error: if the ROLLBACK itself fails
-   * -- the connection died, the transaction was already unwound -- the original failure is still
-   * what propagates, because that is the one that explains what went wrong.
-   */
+  /** Wrap `fn` so it runs inside a transaction, committing on return and rolling back on throw. Nesting uses SAVEPOINT, which is what makes it safe for a transactional helper to call another one: an inner `BEGIN` would throw ("cannot start a transaction within a transaction"), an inner SAVEPOINT composes. Whether we are nested is read from SQLite via `isTransaction` rather than tracked in a counter here, so a transaction some other code path opened still nests correctly. The rollback is best-effort and never replaces the caller's error: if the ROLLBACK itself fails -- the connection died, the transaction was already unwound -- the original failure is still what propagates, because that is the one that explains what went wrong. */
   transaction<A extends unknown[], R>(fn: (...args: A) => R): SqliteTransaction<A, R> {
     const build =
       (beginSql: string) =>

@@ -931,7 +931,8 @@ export function taskOutputIsJsonlTranscript(outPath: string): boolean {
 }
 
 export function extractTasksOutput(cmd: string): { id: string; path: string; n?: number } | null {
-  const taskOutputRe = /[/\\]tasks[/\\]([a-z0-9]+)\.output$/
+  // `tasks` may also open the path: `cat tasks/<id>.output` run from the directory holding it.
+  const taskOutputRe = /(?:^|[/\\])tasks[/\\]([a-z0-9]+)\.output$/
 
   // cat command (same regex structure as extractCatFile, checked before isTempPath)
   const catM = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)

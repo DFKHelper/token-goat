@@ -190,6 +190,8 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['project.ts::markerExists', 'reached only through config_project.ts::resolveConfigProjectRoot -> project.ts::findProject(process.cwd()) on the same loadConfig path as readConfigSource above: the directories it probes are process.cwd() and its ancestors, never a path from the hook payload'],
   ['project.ts::isRepoContainer', 'the same findProject(process.cwd()) walk as markerExists, with the same provenance'],
   ['db.ts::getDb','reached from relayInProcess via recordStat -> getGlobalDb (Batch S hook-latency timing); the dbPath it existsSync-checks is always dataDir()/dataDirForHome(homeDir) + \'global.db\', never a value from the hook payload'],
+  ['db.ts::writeRefusal', 'getDb\'s read-only fallback probe: runs only after allowReadOnlyIndex, which the CLI read commands call and no hook does, and on getDb\'s own dbPath, the same dataDir()-derived global.db as the getDb entry above'],
+  ['db.ts::openReadOnlyFallback', 'the same fallback as writeRefusal, with the same gate and the same dbPath; its existsSync only decides which of two open errors to report'],
   ['stats.ts::recordStatWriteFailure', 'reached from relayInProcess via recordStat\'s own catch when the global.db write fails; the marker and log paths it stats/writes/appends are always dataDir() + \'stats-write-failed.marker\'/\'stats-write-failed.log\', never a value from the hook payload -- same shape as db.ts::getDb above'],
 ])
 

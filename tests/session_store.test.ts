@@ -200,10 +200,11 @@ describe('empty session id', () => {
     expect(fs.existsSync(path.join(tmpHome, 'sessions'))).toBe(false)
   })
 
-  it('load is a no-op for an empty id', () => {
-    importSessionState({ ...empty(), hintsShown: ['keep'] })
+  // A bridge host serves one session after another in one process, so what is in memory at an event with no session id belongs to whichever session came before it.
+  it('load starts an empty id clean rather than keeping the previous session in memory', () => {
+    importSessionState({ ...empty(), hintsShown: ['previous-session'] })
     loadSessionState('')
-    expect(exportSessionState().hintsShown).toEqual(['keep'])
+    expect(exportSessionState().hintsShown).toEqual([])
   })
 })
 

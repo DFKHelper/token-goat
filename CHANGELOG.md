@@ -2,6 +2,18 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **A hook call that never finishes no longer stalls every later hook call in the pi, opencode and OpenClaw hosts.** Those bridges run hook calls one at a time inside the host's own process, so one call that never settled held every call behind it; on the built bundle, the call queued after a stalled one was still waiting 130 s later. A call now waits at most 120 s for the one before it and then runs. The longest of 66,625 recorded hook calls took 31 s (p99 494 ms), and a slow call still gets its own answer when it finishes.
+- **In the pi, opencode and OpenClaw hosts, a hook event that names no session no longer sees the previous session's reads.** Such an event kept whatever the last session had loaded, so a file that session had read was refused as already read. It now starts from an empty session.
+- **In the pi, opencode and OpenClaw hosts, each session's hooks see that session's own id.** The id came from the first session the host served and stayed for every session after it, so context-pressure checks and transcript pairing in a later session read the first one's. The id now follows each event and is cleared for an event that carries none. A session id Claude Code sets itself is never replaced.
+- **In the opencode and OpenClaw hosts, every hook call is answered for that host, not only the first.** token-goat copies the event's session id into Claude Code's session variable for hosts that never set it, and harness detection then read that variable as a sign of Claude Code. The plugins serve every call from one process, so each call after the first was answered in Claude Code's wire form, and an opencode compaction received no file manifest. Detection now ignores a session id token-goat set itself.
+- **A task output read by a relative path is recognized.** `cat tasks/b0gc3pltn.output` or `tail -n 20 tasks/x.output` never matched, so an agent transcript read that way went through whole while the same read by absolute path was refused. A relative path, a Python `open()` read included, is now resolved against the directory the command runs in rather than the hook's own, and the recall command names the file by its absolute path.
+- **A read wrapped in a subshell meets the same read gates as the bare read.** `( cat big.txt )` and `( FOO=1 cat big.txt )` passed every Bash read gate that `cat big.txt` meets. A single group wrapping the whole command is now looked through, a `cd` inside it included; `(a) && b`, `( a ); b` and `$( ... )` are left as written.
+- **Read commands answer from an index they cannot write.** Under a read-only sandbox or a data directory that denies writes, `read`, `symbol`, `semantic`, `answer` and the other lookup commands failed after about 15 s per database open with `db: failed to enable WAL mode (unable to open database file)`. They now open the index read-only, say so once on stderr and exit 0. Stats are not recorded, and a file changed since indexing is served from the older index with a stale warning saying it cannot be updated this run, `--force-refresh` included. An index written by an older token-goat is refused rather than served, because upgrading it needs write access. Indexing and the worker still fail on such an index.
+
 ## [2.9.28] - 2026-09-24
 
 ### Added

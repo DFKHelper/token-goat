@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { SqliteDatabase } from './sqlite_driver.js'
 import Database from './sqlite_driver.js'
-import { getDb } from './db.js'
+import { getDb, isReadOnlyDb } from './db.js'
 import { dataDir, dataDirForHome } from './constants.js'
 import { VERSION } from './version.js'
 import type { ContentClass } from './token_estimate.js'
@@ -530,7 +530,8 @@ export function getGlobalDb(homeDir?: string): SqliteDatabase {
   const basePath = homeDir ? dataDirForHome(homeDir) : dataDir()
   const dbPath = path.join(basePath, 'global.db')
   const db = getDb(dbPath)
-  if (!_globalSchemaApplied.has(dbPath)) {
+  // A read-only fallback connection (db.ts's allowReadOnlyIndex) cannot take DDL; its tables are the ones the last writable open left.
+  if (!_globalSchemaApplied.has(dbPath) && !isReadOnlyDb(dbPath)) {
     db.exec(GLOBAL_SCHEMA_SQL)
     migrateGlobalSchema(db)
     _globalSchemaApplied.add(dbPath)
@@ -692,6 +693,8 @@ export function recordStat(
   try {
     // getGlobalDb() ensures schema/migrations exist via the shared, patient connection first -- a rare, idempotent bootstrap step left on db.ts's normal budget rather than given a second timeout regime.
     if (!_testDb) getGlobalDb()
+    // Served read-only (db.ts's allowReadOnlyIndex): the row has nowhere to go, and the run has already said stats are not recorded.
+    if (!_testDb && isReadOnlyDb(path.join(dataDir(), 'global.db'))) return
     db = _testDb ?? new Database(path.join(dataDir(), 'global.db'), { timeout: STATS_WRITE_BUSY_TIMEOUT_MS })
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null

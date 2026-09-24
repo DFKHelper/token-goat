@@ -1,10 +1,4 @@
-/**
- * SQLite connection management and index-DB schema.
- *
- * Ports the connection-pragma setup from `db.py` (WAL journal mode, NORMAL synchronous) and the index schema (files / symbols / refs / FTS5) that later layers query. Each database file gets one lazily-opened, cached connection.
- *
- * The connection itself comes from `./sqlite_driver.js`, a thin better-sqlite3-shaped facade over Node's built-in `node:sqlite`; nothing in this file talks to `node:sqlite` directly.
- */
+/** SQLite connection management and index-DB schema. Ports the connection-pragma setup from `db.py` (WAL journal mode, NORMAL synchronous) and the index schema (files / symbols / refs / FTS5) that later layers query. Each database file gets one lazily-opened, cached connection. The connection itself comes from `./sqlite_driver.js`, a thin better-sqlite3-shaped facade over Node's built-in `node:sqlite`; nothing in this file talks to `node:sqlite` directly. */
 
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -25,23 +19,7 @@ const _require = createRequire(import.meta.url)
 // One Database handle per absolute db path. Keyed by the resolved path so two callers naming the same file via different relative strings share a handle.
 const _connections = new Map<string, SqliteDatabase>()
 
-/**
- * Index-DB schema (matches the spec for Layer 2).
- *
- * Tables:
- *   - files   — one row per indexed source file.
- *   - symbols — extracted definitions (functions, classes, types, ...).
- *   - refs    — references/usages of names, for caller lookups.
- *   - chunks  — semantic search chunk metadata (filePath, startLine, endLine, text, kind).
- *   - notes   — file/symbol-attached architecture notes with a staleness fingerprint (notes.ts).
- *   - symbols_fts — FTS5 mirror of symbols for full-text name/body search.
- *
- * The FTS5 table is content-linked to `symbols` (external-content) so the row data lives once in `symbols`; triggers keep the index in sync on write.
- *
- * `index_retries` holds the worker's transient-read-failure counters instead of a column on `files`. The count has to survive across processes -- the edit hook is a short-lived CLI process, the drain loop a long-lived daemon -- so it has to be on disk in the DB they share. Putting it in `files` meant minting a row there for a path that had never been indexed, and a `files` row is what three readers take to mean "this file is in the index": indexMatchesDisk (index_freshness.ts) and healStaleIndex/staleWarning (read_commands.ts) each read a row with no sha as a pre-fingerprinting legacy row and accept it as-is, so a never-indexed file that hit one transient lock during a drain looked indexed and lost its on-demand self-heal for good. `files.retry_count` is still created for older databases and is no longer read or written.
- *
- * Prose belongs in this comment rather than in an SQL `--` line inside the template literal below: a comment here is stripped by the bundler, while one inside the string ships verbatim in every hook process's eager chunk set. tests/guards/dist_chunks_deduped.test.ts holds the ceiling that catches the difference.
- */
+/** Index-DB schema (matches the spec for Layer 2). Tables: - files   — one row per indexed source file. - symbols — extracted definitions (functions, classes, types, ...). - refs    — references/usages of names, for caller lookups. - chunks  — semantic search chunk metadata (filePath, startLine, endLine, text, kind). - notes   — file/symbol-attached architecture notes with a staleness fingerprint (notes.ts). - symbols_fts — FTS5 mirror of symbols for full-text name/body search. The FTS5 table is content-linked to `symbols` (external-content) so the row data lives once in `symbols`; triggers keep the index in sync on write. `index_retries` holds the worker's transient-read-failure counters instead of a column on `files`. The count has to survive across processes -- the edit hook is a short-lived CLI process, the drain loop a long-lived daemon -- so it has to be on disk in the DB they share. Putting it in `files` meant minting a row there for a path that had never been indexed, and a `files` row is what three readers take to mean "this file is in the index": indexMatchesDisk (index_freshness.ts) and healStaleIndex/staleWarning (read_commands.ts) each read a row with no sha as a pre-fingerprinting legacy row and accept it as-is, so a never-indexed file that hit one transient lock during a drain looked indexed and lost its on-demand self-heal for good. `files.retry_count` is still created for older databases and is no longer read or written. Prose belongs in this comment rather than in an SQL `--` line inside the template literal below: a comment here is stripped by the bundler, while one inside the string ships verbatim in every hook process's eager chunk set. tests/guards/dist_chunks_deduped.test.ts holds the ceiling that catches the difference. */
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS files (
   path TEXT PRIMARY KEY,
@@ -308,11 +286,7 @@ CREATE TABLE IF NOT EXISTS embedding_provenance (
 `
 
 // FTS5 is a compile-time-optional SQLite extension. Node's bundled SQLite ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
-/**
- * The tokenizer both FTS5 mirrors are declared with.
- *
- * `remove_diacritics 2` rather than FTS5's default of 1: the default folds only diacritics encoded as a single precomposed codepoint, so `café` was already findable as `cafe` before this was set, but `Hà Nội` was not findable as `Ha Noi` (https://sqlite.org/fts5.html#unicode61_tokenizer). Named as a constant because {@link rebuildFtsAtCurrentTokenizer} has to compare a database's stored declaration against it, and a second copy of the string is exactly how those two drift apart.
- */
+/** The tokenizer both FTS5 mirrors are declared with. `remove_diacritics 2` rather than FTS5's default of 1: the default folds only diacritics encoded as a single precomposed codepoint, so `café` was already findable as `cafe` before this was set, but `Hà Nội` was not findable as `Ha Noi` (https://sqlite.org/fts5.html#unicode61_tokenizer). Named as a constant because {@link rebuildFtsAtCurrentTokenizer} has to compare a database's stored declaration against it, and a second copy of the string is exactly how those two drift apart. */
 export const FTS_TOKENIZER = 'unicode61 remove_diacritics 2'
 
 // The `tokenize=` argument here reaches a database exactly once, when its virtual table is first created: `CREATE VIRTUAL TABLE IF NOT EXISTS` against an existing table of the same name is a silent no-op, and SQLite reports no error and no warning when the stored declaration differs from this one. Changing the tokenizer therefore needs a SCHEMA_VERSION bump and a step in MIGRATIONS that drops, re-creates and rebuilds both tables -- see MIGRATIONS[13] -- or the change reaches only databases created after it, leaving two populations that search differently with nothing to tell them apart. tests/guards/fts_tokenizer_reaches_existing_databases.test.ts fails if this literal moves without that bump.
@@ -382,11 +356,7 @@ function alterTableIdempotent(conn: SqliteDatabase, sql: string): void {
   }
 }
 
-/**
- * Delete every chunk (and matching vector) belonging to a dotenv file, and clear those files' `embed_sha` so they are re-embedded through the redacting path.
- *
- * Paths are filtered in JS with the same {@link isDotenvPath} predicate the redaction uses, rather than with a `LIKE '%.env%'` pattern, so this covers exactly the file set the fix covers and cannot drift from it. `chunk_vectors` is the optional sqlite-vec virtual table: on a build without the native extension the statement throws at prepare time, which is not a reason to fail the migration -- the chunk rows carrying the secret text are deleted either way, and a vector with no chunk row is unreadable (searchSemantic joins them by rowid).
- */
+/** Delete every chunk (and matching vector) belonging to a dotenv file, and clear those files' `embed_sha` so they are re-embedded through the redacting path. Paths are filtered in JS with the same {@link isDotenvPath} predicate the redaction uses, rather than with a `LIKE '%.env%'` pattern, so this covers exactly the file set the fix covers and cannot drift from it. `chunk_vectors` is the optional sqlite-vec virtual table: on a build without the native extension the statement throws at prepare time, which is not a reason to fail the migration -- the chunk rows carrying the secret text are deleted either way, and a vector with no chunk row is unreadable (searchSemantic joins them by rowid). */
 function purgeDotenvEmbeddings(conn: SqliteDatabase): void {
   let paths: string[]
   try {
@@ -414,17 +384,7 @@ function purgeDotenvEmbeddings(conn: SqliteDatabase): void {
   }
 }
 
-/**
- * Drop both FTS5 mirrors, re-create them from {@link FTS_SQL}, and repopulate each from its content table.
- *
- * Every other migration step here exists because `CREATE TABLE IF NOT EXISTS` cannot alter a populated table. This one exists because `CREATE VIRTUAL TABLE IF NOT EXISTS` cannot alter an EMPTY one either: against an existing table of that name it is a silent no-op, so a changed `tokenize=` argument would otherwise reach new databases only.
- *
- * Both tables are external-content (`content='symbols'` / `content='cache_recall'`), so the rows are not lost by the drop and `'rebuild'` re-derives the whole index from the base table. The triggers are left alone: they name the tables rather than depending on their declaration, and FTS_SQL's `CREATE TRIGGER IF NOT EXISTS` keeps them in place.
- *
- * A SQLite build without FTS5 has neither table, and every statement here throws at prepare time. That is not a migration failure -- higher layers already fall back to LIKE when the mirrors are absent (see the FTS_SQL call site in ensureSchema), and the same build could not have created them in the first place.
- *
- * Runs as one immediate transaction, which every previous step could do without. They add columns; this one drops a table that the `symbols` triggers write to, so between the DROP and the CREATE there is a window where an ordinary insert by another process fails with "no such table: main.symbols_fts" -- observed, not theorised: tests/index_concurrent_write_race.test.ts caught exactly that on the first run of this step, with one of eleven concurrently indexed files lost. Measured across six runs each way, that test fails 5 times in 6 without the transaction and 0 in 6 with it, so a single green run of it is not evidence this step is safe -- repeat it if this function changes. Taking the write lock up front instead makes that process wait out the rebuild under the 15s busy_timeout set in initConnection. `.immediate()` rather than the deferred default for the reason given on Database.transaction: a deferred transaction takes the lock at its first write, which here is already past the DROP.
- */
+/** Drop both FTS5 mirrors, re-create them from {@link FTS_SQL}, and repopulate each from its content table. Every other migration step here exists because `CREATE TABLE IF NOT EXISTS` cannot alter a populated table. This one exists because `CREATE VIRTUAL TABLE IF NOT EXISTS` cannot alter an EMPTY one either: against an existing table of that name it is a silent no-op, so a changed `tokenize=` argument would otherwise reach new databases only. Both tables are external-content (`content='symbols'` / `content='cache_recall'`), so the rows are not lost by the drop and `'rebuild'` re-derives the whole index from the base table. The triggers are left alone: they name the tables rather than depending on their declaration, and FTS_SQL's `CREATE TRIGGER IF NOT EXISTS` keeps them in place. A SQLite build without FTS5 has neither table, and every statement here throws at prepare time. That is not a migration failure -- higher layers already fall back to LIKE when the mirrors are absent (see the FTS_SQL call site in ensureSchema), and the same build could not have created them in the first place. Runs as one immediate transaction, which every previous step could do without. They add columns; this one drops a table that the `symbols` triggers write to, so between the DROP and the CREATE there is a window where an ordinary insert by another process fails with "no such table: main.symbols_fts" -- observed, not theorised: tests/index_concurrent_write_race.test.ts caught exactly that on the first run of this step, with one of eleven concurrently indexed files lost. Measured across six runs each way, that test fails 5 times in 6 without the transaction and 0 in 6 with it, so a single green run of it is not evidence this step is safe -- repeat it if this function changes. Taking the write lock up front instead makes that process wait out the rebuild under the 15s busy_timeout set in initConnection. `.immediate()` rather than the deferred default for the reason given on Database.transaction: a deferred transaction takes the lock at its first write, which here is already past the DROP. */
 function rebuildFtsAtCurrentTokenizer(conn: SqliteDatabase): void {
   try {
     // Every migration step runs on a brand-new database too, which is stamped 0 and so walks the whole ladder. FTS_SQL created both tables at the current tokenizer moments earlier, so without this check a first-ever open would drop and re-create them for nothing -- and, less obviously, so would every test that opens a fresh index. Ask the database what it has rather than inferring it from the stamped version, which is also the honest check for a database whose tables were created by a build where FTS5 was missing and later restored.
@@ -481,16 +441,8 @@ function runMigrations(conn: SqliteDatabase, fromVersion: number, toVersion: num
 /** How long {@link enableWalWithRetry} keeps trying before giving up, matched to `busy_timeout`. */
 const WAL_SWITCH_DEADLINE_MS = 15_000
 
-/**
- * Put a connection into WAL mode, waiting out other processes rather than failing on the first refusal.
- *
- * Converting a database's journal mode needs exclusive access, and SQLite answers `SQLITE_BUSY` for that conversion **without consulting the busy handler** -- the wait `busy_timeout` configures applies to ordinary lock contention, not to this. So on a database that does not exist yet, where every process racing to create it runs this conversion, `busy_timeout` cannot help and the losers throw immediately. Reproduced with six processes indexing one new database under load: one threw `database is locked` from this very pragma and dropped the file it was indexing, while the run still exited 0. That is the same silent-file-loss the deferred-`BEGIN` fix in `writeParseResult` removed, arriving by a second and entirely separate route -- which is why the comment that used to sit here, saying moving `busy_timeout` first was mere hardening because it "did not change it", was reporting a real remaining failure as a non-event.
- *
- * A process that loses the race has nothing to fix and nothing to report: whoever won is doing the conversion it wanted done. So each attempt re-reads the mode, and finding `wal` is success no matter who set it. Only a deadline passing with the database still not in WAL is an error, and it carries the last refusal so a genuine permission or filesystem problem is not reported as contention.
- *
- * `budgetMs` exists so the giving-up branch can be reached in a test without spending the real fifteen seconds to get there. Production callers pass nothing and get that full budget.
- */
-export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetMs: number = WAL_SWITCH_DEADLINE_MS): void {
+/** Put a connection into WAL mode, waiting out other processes rather than failing on the first refusal. Converting a database's journal mode needs exclusive access, and SQLite answers `SQLITE_BUSY` for that conversion **without consulting the busy handler** -- the wait `busy_timeout` configures applies to ordinary lock contention, not to this. So on a database that does not exist yet, where every process racing to create it runs this conversion, `busy_timeout` cannot help and the losers throw immediately. Reproduced with six processes indexing one new database under load: one threw `database is locked` from this very pragma and dropped the file it was indexing, while the run still exited 0. That is the same silent-file-loss the deferred-`BEGIN` fix in `writeParseResult` removed, arriving by a second and entirely separate route -- which is why the comment that used to sit here, saying moving `busy_timeout` first was mere hardening because it "did not change it", was reporting a real remaining failure as a non-event. A process that loses the race has nothing to fix and nothing to report: whoever won is doing the conversion it wanted done. So each attempt re-reads the mode, and finding `wal` is success no matter who set it. Only a deadline passing with the database still not in WAL is an error, and it carries the last refusal so a genuine permission or filesystem problem is not reported as contention. `budgetMs` exists so the giving-up branch can be reached in a test without spending the real fifteen seconds to get there. Production callers pass nothing and get that full budget. `stopOn`, when given, ends the wait at the first refusal it matches. Only a caller that has somewhere else to go passes it: getDb with the read-only fallback on, which would otherwise spend the whole budget on a refusal no waiting cures (measured: 15.3 s per open against a write-denied index, three opens for one `semantic`). */
+export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetMs: number = WAL_SWITCH_DEADLINE_MS, stopOn?: (e: unknown) => boolean): void {
   const deadline = Date.now() + budgetMs
   let lastError: unknown
   for (;;) {
@@ -500,6 +452,7 @@ export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetM
       lastError = new Error(`got: ${String(mode)}`)
     } catch (e) {
       lastError = e
+      if (stopOn?.(e) === true) throw walSwitchError(e)
     }
     // Another process may already have finished the conversion while this one was being refused, in which case there is nothing left to do and no reason to keep waiting.
     try {
@@ -507,36 +460,30 @@ export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetM
     } catch {
       // Reading the mode can fail for the same contention reason; fall through and retry.
     }
-    if (Date.now() >= deadline) {
-      throw new Error(`db: failed to enable WAL mode (${lastError instanceof Error ? lastError.message : String(lastError)})`)
-    }
+    if (Date.now() >= deadline) throw walSwitchError(lastError)
     sleepSync(25)
   }
 }
 
-function initConnection(conn: SqliteDatabase): void {
-  // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
-  // Set FIRST, before any statement that can contend, rather than after the two pragmas below as it used to be. The switch to WAL and the schema creation that follows it both need an exclusive lock, and on a database that does not exist yet every process racing to create it runs both -- with the timeout armed only afterwards, those two steps ran with SQLite's default of no wait at all. This is hardening rather than a fix for a reproduced failure: the concurrent-index failure that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in parser.ts), and moving this line did not change it.
+/** The error {@link enableWalWithRetry} gives up with. Carries the last refusal as `cause`, so {@link isWriteAccessError} can read its SQLite code through the wrapper. */
+function walSwitchError(lastError: unknown): Error {
+  return new Error(`db: failed to enable WAL mode (${lastError instanceof Error ? lastError.message : String(lastError)})`, { cause: lastError })
+}
+
+function initConnection(conn: SqliteDatabase, walStopOn?: (e: unknown) => boolean): void {
+  // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging. Set FIRST, before any statement that can contend, rather than after the two pragmas below as it used to be. The switch to WAL and the schema creation that follows it both need an exclusive lock, and on a database that does not exist yet every process racing to create it runs both -- with the timeout armed only afterwards, those two steps ran with SQLite's default of no wait at all. This is hardening rather than a fix for a reproduced failure: the concurrent-index failure that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in parser.ts), and moving this line did not change it.
   conn.pragma('busy_timeout = 15000')
-  enableWalWithRetry(conn)
+  enableWalWithRetry(conn, WAL_SWITCH_DEADLINE_MS, walStopOn)
   conn.pragma('synchronous = NORMAL')
   conn.pragma('cache_size = -32000')
   conn.pragma('temp_store = MEMORY')
   conn.pragma('mmap_size = 134217728')
 
-  // Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte consistent. Registered once per connection (not per-query) and marked deterministic so SQLite can use it in query planning the same way it would a built-in function.
-  conn.function('TG_LOWER', { deterministic: true }, (value: unknown) =>
-    value === null ? null : foldCase(String(value)),
-  )
+  registerTgLower(conn)
 
   // A single cheap read on every open -- this runs on the hot path (every hook call, every CLI invocation), so no schema work happens here beyond one PRAGMA read. Anything ABOVE SCHEMA_VERSION means an older binary opened a database written by a newer one (a downgrade, or two globally-installed versions pointed at the same project): refuse rather than risk an old binary misinterpreting or corrupting a schema shape it doesn't understand.
   const storedVersion = Number(conn.pragma('user_version', { simple: true }))
-  if (storedVersion > SCHEMA_VERSION) {
-    throw new Error(
-      `db: index schema version ${storedVersion} is newer than this token-goat build supports (expected ${SCHEMA_VERSION}). ` +
-        `Update token-goat, or delete the stale index database and let it rebuild.`,
-    )
-  }
+  if (storedVersion > SCHEMA_VERSION) throw newerSchemaError(storedVersion)
 
   conn.exec(SCHEMA_SQL)
 
@@ -546,18 +493,17 @@ function initConnection(conn: SqliteDatabase): void {
     // FTS5 unavailable in this SQLite build — search falls back to LIKE in higher layers. The base tables are still usable.
   }
 
-  // sqlite-vec is an optional dependency; the vec0 virtual table only exists when the package is installed and its extension can be loaded. Wrap the entire load+create so a missing package or load failure is non-fatal.
-  try {
-    // Dynamic require so a missing package does not break module resolution.
-    const sqliteVec = _require('sqlite-vec') as { load: (db: SqliteDatabase) => void }
-    sqliteVec.load(conn)
-    conn.exec(
-      `CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
+  // sqlite-vec is an optional dependency; the vec0 virtual table only exists when the package is installed and its extension can be loaded. A missing package, a load failure or a failed create is non-fatal.
+  if (loadSqliteVec(conn)) {
+    try {
+      conn.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
          embedding float[384]
        );`,
-    )
-  } catch {
-    // sqlite-vec not installed or extension load failed — semantic search is disabled but every other index feature works.
+      )
+    } catch {
+      // The extension loaded but the table could not be created: semantic search is disabled but every other index feature works.
+    }
   }
 
   // BELOW SCHEMA_VERSION covers two cases identically: a brand-new DB (storedVersion 0, tables just created above) and an old DB from a pre-migration-mechanism release (also storedVersion 0, since older code never stamped it, but already schema-shape-compatible with version 1 -- that constant IS today's schema). Both are stamped current with no real migration step to run. A genuine future gap -- SCHEMA_VERSION bumped for a change `CREATE TABLE IF NOT EXISTS` can't express, e.g. an ALTER TABLE on an existing table -- runs through MIGRATIONS above.
@@ -567,11 +513,128 @@ function initConnection(conn: SqliteDatabase): void {
   }
 }
 
-/**
- * Resolve a db path argument to an absolute path under the data directory.
- *
- * A bare filename (no directory separator) is placed in {@link dataDir}; an already-absolute or explicitly-relative path is resolved as given so callers can point at a temp file in tests.
- */
+/** The refusal for a database stamped by a newer build than this one, shared by the read-write and read-only opens. */
+function newerSchemaError(storedVersion: number): Error {
+  return new Error(
+    `db: index schema version ${storedVersion} is newer than this token-goat build supports (expected ${SCHEMA_VERSION}). ` +
+      `Update token-goat, or delete the stale index database and let it rebuild.`,
+  )
+}
+
+/** Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte consistent. Registered once per connection (not per-query) and marked deterministic so SQLite can use it in query planning the same way it would a built-in function. */
+function registerTgLower(conn: SqliteDatabase): void {
+  conn.function('TG_LOWER', { deterministic: true }, (value: unknown) =>
+    value === null ? null : foldCase(String(value)),
+  )
+}
+
+/** Load the optional sqlite-vec extension into `conn`; false when the package is missing or its extension fails to load. Required dynamically so a missing package does not break module resolution. */
+function loadSqliteVec(conn: SqliteDatabase): boolean {
+  try {
+    const sqliteVec = _require('sqlite-vec') as { load: (db: SqliteDatabase) => void }
+    sqliteVec.load(conn)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Set by {@link allowReadOnlyIndex}: when present, getDb may answer from a read-only connection to a database it cannot open for writing, and calls this once, the first time it does. */
+let _readOnlyFallback: { onFirstUse: () => void; used: boolean } | undefined
+
+/** Read-only connections getDb opened because the read-write open was refused, keyed like {@link _connections}. Kept apart from that map so a read-only handle is only ever returned while {@link allowReadOnlyIndex} is in force: a writer never opts in, so it never receives one. */
+const _readOnlyConnections = new Map<string, SqliteDatabase>()
+
+/** Let getDb answer from a read-only connection when a database cannot be opened for writing: permission denied, a read-only filesystem or sandbox, or a WAL switch refused for that reason. Only a process that does nothing but query the index may call this, and only before its first getDb: the CLI calls it for the commands in cli.ts's READ_ONLY_INDEX_COMMANDS. The worker, `index`, `doctor`, the hooks and every other writer never do, so they keep failing loudly on the same database. Within an opted-in process a write through the read-only handle throws SQLITE_READONLY rather than succeeding somewhere else; the read path's own writes (stats, stale-file reindexing) check {@link isReadOnlyDb} and stand down. `onFirstUse` runs once, when the first read-only connection is opened, so the caller can say that this run neither records stats nor reindexes. */
+export function allowReadOnlyIndex(onFirstUse: () => void): void {
+  _readOnlyFallback = { onFirstUse, used: false }
+}
+
+/** True when getDb is serving `dbPath` through a read-only fallback connection. In a process that called {@link allowReadOnlyIndex} this opens the connection if nothing has yet, because only that open decides whether the run can write: `--force-refresh` asks before any query has run. */
+export function isReadOnlyDb(dbPath: string): boolean {
+  // The opt-in check comes first: every read-path caller asks this on each call, and without it no read-only connection can exist, while connectionKey resolves the path on disk (and refuses a `:memory:` path outright).
+  if (_readOnlyFallback === undefined) return false
+  try {
+    getDb(dbPath)
+  } catch {
+    // Not read-only, just unopenable: the caller's own getDb reports why.
+    return false
+  }
+  return _readOnlyConnections.has(connectionKey(dbPath).key)
+}
+
+const WRITE_ACCESS_SQLITE_CODE_RE = /^SQLITE_(?:CANTOPEN|READONLY|PERM|IOERR_ACCESS|IOERR_SHMOPEN)/
+const WRITE_ACCESS_FS_CODES = new Set(['EACCES', 'EPERM', 'EROFS'])
+
+/** Does `e` say this process may not write the database or create its -wal/-shm files, as opposed to contention, corruption or a schema it cannot read? Follows `cause`, which is how {@link walSwitchError} carries SQLite's code. */
+function isWriteAccessError(e: unknown): boolean {
+  for (let cur: unknown = e, depth = 0; cur instanceof Error && depth < 4; cur = cur.cause, depth++) {
+    const code = (cur as { code?: unknown }).code
+    if (typeof code === 'string' && (WRITE_ACCESS_SQLITE_CODE_RE.test(code) || WRITE_ACCESS_FS_CODES.has(code))) return true
+  }
+  return false
+}
+
+/** The error opening `resolved` for writing raises when the file exists and this process may not write it, else undefined. SQLite cannot be asked: its read-write open of a write-protected file quietly becomes a read-only one, so an index whose -wal and -shm already exist opens, answers, and fails only at its first write, with nothing said about why. */
+function writeRefusal(resolved: string): unknown {
+  let fd: number
+  try {
+    fd = fs.openSync(resolved, 'r+')
+  } catch (e) {
+    return isWriteAccessError(e) ? e : undefined
+  }
+  fs.closeSync(fd)
+  return undefined
+}
+
+/** Open `resolved` read-only and read its schema version, closing the handle if the read fails. */
+function openReadOnlyAt(resolved: string, immutable: boolean): { conn: SqliteDatabase; storedVersion: number } {
+  const conn = new Database(resolved, { readonly: true, fileMustExist: true, immutable })
+  try {
+    conn.pragma('busy_timeout = 15000')
+    return { conn, storedVersion: Number(conn.pragma('user_version', { simple: true })) }
+  } catch (e) {
+    try {
+      conn.close()
+    } catch {
+      // Best-effort: the read failure is what the caller acts on.
+    }
+    throw e
+  }
+}
+
+/** Open an existing index read-only: no WAL switch, no schema DDL, no migrations, no sqlite-vec table creation, only the TG_LOWER function and the sqlite-vec module the queries need. A plain read-only open of a WAL database still needs its -wal and -shm files to exist or be creatable. A clean close deletes both, so on a write-denied directory that open fails (measured on Windows: "unable to open database file"), and the second attempt opens with `immutable=1`, which reads the main file alone. That trades two things away: SQLite then ignores whatever the -wal holds, so the answer is as of the last checkpoint, and it takes no locks, so a writer elsewhere that checkpoints mid-query can make that query fail. Neither can change the file, which this process has no way to write. A stored schema version older than SCHEMA_VERSION is refused rather than served. Migrations cannot run without write access, and the ones they would have run matter to a reader: v10 -> v11 purges `.env` values that older builds embedded verbatim, which `semantic` would otherwise return, v13 -> v14 rebuilds the FTS tables for the current tokenizer, and several steps add columns the queries read. A newer version is refused with the same error the read-write open gives. */
+function openIndexReadOnly(resolved: string): SqliteDatabase {
+  let opened: { conn: SqliteDatabase; storedVersion: number }
+  try {
+    opened = openReadOnlyAt(resolved, false)
+  } catch (e) {
+    if (!isWriteAccessError(e)) throw e
+    opened = openReadOnlyAt(resolved, true)
+  }
+  const { conn, storedVersion } = opened
+  try {
+    if (storedVersion > SCHEMA_VERSION) throw newerSchemaError(storedVersion)
+    if (storedVersion < SCHEMA_VERSION) {
+      throw new Error(
+        `db: index schema version ${storedVersion} predates this token-goat build (expected ${SCHEMA_VERSION}) and cannot be upgraded without write access. ` +
+          `Run token-goat once where its data directory is writable.`,
+      )
+    }
+    registerTgLower(conn)
+    loadSqliteVec(conn)
+  } catch (e) {
+    try {
+      conn.close()
+    } catch {
+      // Best-effort: the version error is what the caller needs.
+    }
+    throw e
+  }
+  return conn
+}
+
+/** Resolve a db path argument to an absolute path under the data directory. A bare filename (no directory separator) is placed in {@link dataDir}; an already-absolute or explicitly-relative path is resolved as given so callers can point at a temp file in tests. */
 function resolveDbPath(dbPath: string): string {
   if (path.isAbsolute(dbPath)) return dbPath
   if (dbPath.includes('/') || dbPath.includes('\\')) return path.resolve(dbPath)
@@ -584,16 +647,19 @@ function connectionKey(dbPath: string): { resolved: string; key: string } {
   return { resolved, key: foldPath(resolved) }
 }
 
-/**
- * Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access.
- *
- * The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle.
- */
+/** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
 export function getDb(dbPath: string): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
   const { resolved, key } = connectionKey(dbPath)
   const existing = _connections.get(key)
   if (existing !== undefined) return existing
+  const fallback = _readOnlyFallback
+  if (fallback !== undefined) {
+    const readOnly = _readOnlyConnections.get(key)
+    if (readOnly !== undefined) return readOnly
+    const refused = writeRefusal(resolved)
+    if (refused !== undefined) return openReadOnlyFallback(resolved, key, fallback, refused)
+  }
 
   // Ensure the parent directory exists before SQLite tries to create the file. Retry on Windows race conditions.
   const dir = path.dirname(resolved)
@@ -603,49 +669,70 @@ export function getDb(dbPath: string): SqliteDatabase {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
   }
 
-  const conn = new Database(resolved)
+  let conn: SqliteDatabase | undefined
   try {
-    initConnection(conn)
+    conn = new Database(resolved)
+    initConnection(conn, fallback !== undefined ? isWriteAccessError : undefined)
   } catch (e) {
     // A setup step (WAL pragma, schema exec, ...) failed after the handle was already opened. Close it before propagating so the failure does not leak a file descriptor.
     try {
-      conn.close()
+      conn?.close()
     } catch {
       // Best-effort: the original setup error is what matters to the caller.
     }
+    if (fallback !== undefined && isWriteAccessError(e)) return openReadOnlyFallback(resolved, key, fallback, e)
     throw e
   }
   _connections.set(key, conn)
   return conn
 }
 
+/** The read-only half of getDb, reached only with {@link allowReadOnlyIndex} in force and a read-write open refused for lack of write access. When the read-only open fails too, the read-write refusal is what the caller sees, unless the database was readable and turned out to be one this build cannot serve (a schema version error), which is the more useful thing to say. */
+function openReadOnlyFallback(resolved: string, key: string, fallback: { onFirstUse: () => void; used: boolean }, writeError: unknown): SqliteDatabase {
+  let conn: SqliteDatabase
+  try {
+    conn = openIndexReadOnly(resolved)
+  } catch (e) {
+    throw isWriteAccessError(e) || !fs.existsSync(resolved) ? writeError : e
+  }
+  _readOnlyConnections.set(key, conn)
+  if (!fallback.used) {
+    fallback.used = true
+    fallback.onFirstUse()
+  }
+  return conn
+}
+
 /** Close the cached connection for `dbPath` if one is open. No-op otherwise. */
 export function closeDb(dbPath: string): void {
   const { key } = connectionKey(dbPath)
-  const conn = _connections.get(key)
-  if (conn === undefined) return
-  try {
-    conn.close()
-  } catch {
-    // Already closed or close raced with another caller — the handle is gone either way, so dropping it from the map is the only thing that matters.
-  }
-  _connections.delete(key)
-}
-
-/**
- * Close every open connection and clear the cache.
- *
- * Registered with {@link registerReset} so tests start from a clean slate, and usable directly for process shutdown.
- */
-export function closeAllDbs(): void {
-  for (const conn of _connections.values()) {
+  for (const cache of [_connections, _readOnlyConnections]) {
+    const conn = cache.get(key)
+    if (conn === undefined) continue
     try {
       conn.close()
     } catch {
-      // Best-effort: continue closing the rest even if one handle errors.
+      // Already closed or close raced with another caller — the handle is gone either way, so dropping it from the map is the only thing that matters.
     }
+    cache.delete(key)
   }
-  _connections.clear()
+}
+
+/** Close every open connection and clear the cache. Registered with {@link registerReset} so tests start from a clean slate, and usable directly for process shutdown. */
+export function closeAllDbs(): void {
+  for (const cache of [_connections, _readOnlyConnections]) {
+    for (const conn of cache.values()) {
+      try {
+        conn.close()
+      } catch {
+        // Best-effort: continue closing the rest even if one handle errors.
+      }
+    }
+    cache.clear()
+  }
 }
 
 registerReset(closeAllDbs)
+registerReset(() => {
+  _readOnlyFallback = undefined
+})

@@ -1,28 +1,10 @@
-/**
- * Harness detection.
- *
- * {@link detectHarness} inspects the process environment to decide which AI
- * harness token-goat is running under; {@link getHarnessName} memoizes the
- * result for the life of the process (cleared by `clearModuleCaches` so tests
- * can flip env vars between cases).
- *
- * This is the single canonical detection implementation. It used to be
- * duplicated: this file recognized only claudecode/codex/opencode via
- * `*_SESSION_ID` env vars, while `compact.ts` had its own copy recognizing
- * six harnesses (also covering gemini/hermes) via a *different*,
- * non-overlapping set of env vars for the same two shared harnesses
- * (`CODEX_SESSION` vs `CODEX_SESSION_ID`, `OPENCODE_SESSION` vs
- * `OPENCODE_SESSION_ID`). Both spellings are unioned below so a real
- * Codex/opencode invocation setting either var is detected; `compact.ts` now
- * imports this function instead of keeping its own copy.
- */
+/** Harness detection. {@link detectHarness} inspects the process environment to decide which AI harness token-goat is running under; {@link getHarnessName} memoizes the result for the life of the process (cleared by `clearModuleCaches` so tests can flip env vars between cases). This is the single canonical detection implementation. It used to be duplicated: this file recognized only claudecode/codex/opencode via `*_SESSION_ID` env vars, while `compact.ts` had its own copy recognizing six harnesses (also covering gemini/hermes) via a *different*, non-overlapping set of env vars for the same two shared harnesses (`CODEX_SESSION` vs `CODEX_SESSION_ID`, `OPENCODE_SESSION` vs `OPENCODE_SESSION_ID`). Both spellings are unioned below so a real Codex/opencode invocation setting either var is detected; `compact.ts` now imports this function instead of keeping its own copy. */
 
 import { ENV_KEYS } from '../constants.js'
 import { registerReset } from '../reset.js'
 import type { HarnessName } from './types.js'
 
-/** Every value {@link detectHarness} can return; used to validate the override env var and, via
- * config.ts's re-export, `config set compact_assist.harness`. */
+/** Every value {@link detectHarness} can return; used to validate the override env var and, via config.ts's re-export, `config set compact_assist.harness`. */
 export const KNOWN_HARNESS_NAMES = new Set<string>([
   'claudecode',
   'codex',
@@ -40,50 +22,20 @@ export const KNOWN_HARNESS_NAMES = new Set<string>([
   'generic',
 ])
 
-/**
- * Detect the running harness from environment variables.
- *
- * Checked in priority order (first match wins):
- *  1. `TOKEN_GOAT_HARNESS_OVERRIDE` -- top-priority escape hatch for tests
- *     and manual debugging; overrides every signal below when set to a
- *     recognized harness name.
- *  2. Hermes -- `HERMES_SESSION_ID` or `HERMES_HOME`. Checked ahead of Claude
- *     Code because a Hermes session can still carry an `ANTHROPIC_API_KEY`.
- *  3. Claude Code -- `TERM_PROGRAM=claude-code`, `CLAUDE_CODE_VERSION`,
- *     `CLAUDE_CODE_SESSION_ID`, or `ANTHROPIC_API_KEY`.
- *  4. Codex -- `CODEX_SESSION_ID` or `CODEX_SESSION` (both spellings; the two
- *     prior detectHarness() copies each only checked one of them).
- *  5. opencode -- `OPENCODE_SESSION_ID` or `OPENCODE_SESSION` (same reason).
- *  6. Grok CLI -- `GROK_SESSION_ID`, confirmed (not guessed) by capturing a
- *     real hook invocation from grok 0.2.93 -- see the note at that branch
- *     below for how it was verified.
- *  7. OpenClaw -- `OPENCLAW_SESSION_ID`. No OpenClaw env var turned up
- *     anywhere in this codebase or its docs, so this is a best-effort guess
- *     following the `*_SESSION_ID` convention the harnesses above use -- revisit if
- *     OpenClaw's actual signal turns out to differ.
- *  8. Codex, API-key fallback -- `OPENAI_API_KEY` set and no
- *     `ANTHROPIC_API_KEY`.
- *  9. Gemini -- `GEMINI_API_KEY` or `GOOGLE_API_KEY`, and no
- *     `ANTHROPIC_API_KEY`.
- *  10. `generic` -- no signal matched.
- *
- * `copilot_cli` (GitHub Copilot CLI) has no branch here: its documentation
- * (hooks reference / use-hooks guide) lists `COPILOT_HOME` and
- * `COPILOT_MODEL` as user-configurable overrides, not an ambient signal
- * Copilot sets in every subprocess/tool-execution environment the way
- * `CODEX_SESSION_ID` or `OPENCODE_SESSION_ID` are. Rather than guess, the
- * Copilot bridge (src/bridges/copilot_cli.ts) sets
- * `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before invoking `token-goat
- * hook`, the same workaround `pi` uses for the same reason (see PI_EXTENSION_SCRIPT
- * in src/bridges/pi.ts).
- *
- * `kimi` (Kimi Code CLI) has no branch here either, for the same reason: every
- * environment variable Kimi documents (`KIMI_CODE_HOME`,
- * `KIMI_DISABLE_TELEMETRY`, the `KIMI_MODEL_*` family, and the provider
- * credential names) is a user-set input rather than a signal the CLI exports
- * into each hook subprocess. Its shim (KIMI_HOOK_SCRIPT in src/bridges/kimi.ts)
- * sets `TOKEN_GOAT_HARNESS_OVERRIDE=kimi` itself.
- */
+/** The `CLAUDE_CODE_SESSION_ID` value relay.ts last seeded from the wire for a harness that never sets that variable itself, or undefined when the variable holds no seed of relay's. {@link detectHarness} does not count this value as a sign of Claude Code: the pi, opencode and OpenClaw bridges run every hook call in one long-lived host process, where relay's seed from one call is still in the environment when the next call detects, so counting it turned every call after the first into Claude Code. Deliberately not reset by clearModuleCaches: batch_serve resets between requests, and a cleared record would make relay and this check both take relay's own leftover value for the harness's. */
+let relaySeededSessionIdValue: string | undefined
+
+/** Record the `CLAUDE_CODE_SESSION_ID` value relay.ts just put in the environment, or undefined once it has removed it. */
+export function setRelaySeededSessionId(id: string | undefined): void {
+  relaySeededSessionIdValue = id
+}
+
+/** The `CLAUDE_CODE_SESSION_ID` value relay.ts last seeded; see {@link setRelaySeededSessionId}. */
+export function relaySeededSessionId(): string | undefined {
+  return relaySeededSessionIdValue
+}
+
+/** Detect the running harness from environment variables. Checked in priority order (first match wins): 1. `TOKEN_GOAT_HARNESS_OVERRIDE` -- top-priority escape hatch for tests and manual debugging; overrides every signal below when set to a recognized harness name. 2. Hermes -- `HERMES_SESSION_ID` or `HERMES_HOME`. Checked ahead of Claude Code because a Hermes session can still carry an `ANTHROPIC_API_KEY`. 3. Claude Code -- `TERM_PROGRAM=claude-code`, `CLAUDE_CODE_VERSION`, `CLAUDE_CODE_SESSION_ID` unless relay seeded that value itself ({@link relaySeededSessionId}), or `ANTHROPIC_API_KEY`. 4. Codex -- `CODEX_SESSION_ID` or `CODEX_SESSION` (both spellings; the two prior detectHarness() copies each only checked one of them). 5. opencode -- `OPENCODE_SESSION_ID` or `OPENCODE_SESSION` (same reason). 6. Grok CLI -- `GROK_SESSION_ID`, confirmed (not guessed) by capturing a real hook invocation from grok 0.2.93 -- see the note at that branch below for how it was verified. 7. OpenClaw -- `OPENCLAW_SESSION_ID`. No OpenClaw env var turned up anywhere in this codebase or its docs, so this is a best-effort guess following the `*_SESSION_ID` convention the harnesses above use -- revisit if OpenClaw's actual signal turns out to differ. 8. Codex, API-key fallback -- `OPENAI_API_KEY` set and no `ANTHROPIC_API_KEY`. 9. Gemini -- `GEMINI_API_KEY` or `GOOGLE_API_KEY`, and no `ANTHROPIC_API_KEY`. 10. `generic` -- no signal matched. `copilot_cli` (GitHub Copilot CLI) has no branch here: its documentation (hooks reference / use-hooks guide) lists `COPILOT_HOME` and `COPILOT_MODEL` as user-configurable overrides, not an ambient signal Copilot sets in every subprocess/tool-execution environment the way `CODEX_SESSION_ID` or `OPENCODE_SESSION_ID` are. Rather than guess, the Copilot bridge (src/bridges/copilot_cli.ts) sets `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before invoking `token-goat hook`, the same workaround `pi` uses for the same reason (see PI_EXTENSION_SCRIPT in src/bridges/pi.ts). `kimi` (Kimi Code CLI) has no branch here either, for the same reason: every environment variable Kimi documents (`KIMI_CODE_HOME`, `KIMI_DISABLE_TELEMETRY`, the `KIMI_MODEL_*` family, and the provider credential names) is a user-set input rather than a signal the CLI exports into each hook subprocess. Its shim (KIMI_HOOK_SCRIPT in src/bridges/kimi.ts) sets `TOKEN_GOAT_HARNESS_OVERRIDE=kimi` itself. */
 export function detectHarness(): HarnessName {
   const env = process.env
 
@@ -99,7 +51,7 @@ export function detectHarness(): HarnessName {
   if (
     env['TERM_PROGRAM'] === 'claude-code' ||
     env['CLAUDE_CODE_VERSION'] !== undefined ||
-    env['CLAUDE_CODE_SESSION_ID']
+    (env['CLAUDE_CODE_SESSION_ID'] && env['CLAUDE_CODE_SESSION_ID'] !== relaySeededSessionIdValue)
   ) {
     return 'claudecode'
   }
@@ -112,13 +64,7 @@ export function detectHarness(): HarnessName {
     return 'opencode'
   }
 
-  // Grok CLI -- `GROK_SESSION_ID`. Confirmed empirically (2026-07-09): grok
-  // 0.2.93 executes the *global* `~/.claude/settings.json` hooks config
-  // unmodified (it does not read a project-local .claude/settings.json --
-  // `grok inspect` reported "Project: (none)" even with one present) and
-  // sets GROK_SESSION_ID/GROK_HOOK_EVENT/GROK_HOOK_NAME/GROK_WORKSPACE_ROOT
-  // on every hook subprocess it spawns, so this is a real ambient signal,
-  // not a guess.
+  // Grok CLI -- `GROK_SESSION_ID`. Confirmed empirically (2026-07-09): grok 0.2.93 executes the *global* `~/.claude/settings.json` hooks config unmodified (it does not read a project-local .claude/settings.json -- `grok inspect` reported "Project: (none)" even with one present) and sets GROK_SESSION_ID/GROK_HOOK_EVENT/GROK_HOOK_NAME/GROK_WORKSPACE_ROOT on every hook subprocess it spawns, so this is a real ambient signal, not a guess.
   if (env['GROK_SESSION_ID'] !== undefined) {
     return 'grok'
   }
@@ -127,12 +73,7 @@ export function detectHarness(): HarnessName {
     return 'openclaw'
   }
 
-  // Claude Code, bare-API-key fallback. Checked AFTER every harness-specific
-  // `*_SESSION_ID` branch above (Codex/opencode/Grok/OpenClaw), for the same
-  // reason Hermes is checked ahead of Claude Code: a Grok/Codex/opencode
-  // session can still carry an ambient `ANTHROPIC_API_KEY` (Grok reuses Claude
-  // Code's own settings.json), so an early bare-key match would misdetect those
-  // harnesses as claudecode and silently disable their wire-format translation.
+  // Claude Code, bare-API-key fallback. Checked AFTER every harness-specific `*_SESSION_ID` branch above (Codex/opencode/Grok/OpenClaw), for the same reason Hermes is checked ahead of Claude Code: a Grok/Codex/opencode session can still carry an ambient `ANTHROPIC_API_KEY` (Grok reuses Claude Code's own settings.json), so an early bare-key match would misdetect those harnesses as claudecode and silently disable their wire-format translation.
   if (env['ANTHROPIC_API_KEY']) {
     return 'claudecode'
   }
@@ -151,12 +92,7 @@ export function detectHarness(): HarnessName {
 /** Memoized result of {@link detectHarness}; `null` until first resolved. */
 let _cached: HarnessName | null = null
 
-/**
- * Return the detected harness, computing it once and caching the result.
- *
- * Detection is environment-stable within a process, so memoizing avoids
- * re-scanning env on every hook. The cache is cleared by `clearModuleCaches`.
- */
+/** Return the detected harness, computing it once and caching the result. Detection is environment-stable within a process, so memoizing avoids re-scanning env on every hook. The cache is cleared by `clearModuleCaches`. */
 export function getHarnessName(): HarnessName {
   if (_cached === null) {
     _cached = detectHarness()

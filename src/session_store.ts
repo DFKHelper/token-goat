@@ -489,11 +489,10 @@ export function listSiblingSessionStates(sessionId: string): SerializedSession[]
 /** What a session with nothing on disk starts from. */
 const EMPTY_SESSION: SerializedSession = { files: [], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
 
-/** Load the persisted state for `sessionId` into the in-memory session maps. No-op when the id is empty/unusable. A clean session when no file exists, never the previous one's: the pi, opencode and OpenClaw bridges call relayInProcess inside their long-lived host process, which serves one session after another (pi re-fires session_start with a new id on new, resume and fork). Fail-soft: a corrupt file leaves the session empty rather than throwing. */
+/** Load the persisted state for `sessionId` into the in-memory session maps. A clean session when no file exists or the id is empty/unusable, never the previous one's: the pi, opencode and OpenClaw bridges call relayInProcess inside their long-lived host process, which serves one session after another (pi re-fires session_start with a new id on new, resume and fork). Fail-soft: a corrupt file leaves the session empty rather than throwing. */
 export function loadSessionState(sessionId: string): void {
   const p = sessionPath(sessionId)
-  if (!p) return
-  importSessionState(readDiskState(p) ?? EMPTY_SESSION)
+  importSessionState((p ? readDiskState(p) : null) ?? EMPTY_SESSION)
 }
 
 /** Persist the in-memory session state for `sessionId`, merged with whatever is already on disk (so a concurrent same-session hook process is not clobbered). No-op when the id is empty/unusable. Fail-soft: a disk error is swallowed. */

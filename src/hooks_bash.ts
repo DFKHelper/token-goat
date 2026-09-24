@@ -39,6 +39,7 @@ import { MAX_CAPTURE_BYTES } from './bash_runner.js'
 import {
   stripCdPrefix,
   stripCommandPrefix,
+  stripSubshellGroup,
   stripTrailingStderrRedirect,
   hasTestRunScopeOrBudget,
   isDirectTestRunnerCommand,
@@ -584,8 +585,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCommandPrefix(rawCmd)
-  // Only a stripped `cd` moves the directory a relative path resolves against; a stripped assignment does not.
-  const cdStripped = stripCdPrefix(rawCmd) !== rawCmd
+  // Only a stripped `cd` moves the directory a relative path resolves against; a stripped assignment or subshell group does not, though a `cd` inside the group does.
+  const grouped = stripSubshellGroup(rawCmd)
+  const cdStripped = stripCdPrefix(grouped) !== grouped
   // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell itself would — hoisted here (rather than computed right before its first use) so every path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
   const preHookCwd = getCwd(event) ?? null
   // When a cd prefix was stripped, path-based hints below resolve their filePath against the directory that cd would actually leave the shell in, not this hook's own cwd.
@@ -595,6 +597,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     contextOutput(text, typeof paths === 'string' ? [paths] : paths)
   // The name a surgical-read suggestion below carries, resolved against the directory the command would run in: a heading, key, table or symbol the file holds, or hint_target.ts's placeholder.
   const targetFor = (hintPath: string, slice: HintSlice = sliceForPath(hintPath)): HintTarget => hintTarget(hintPath, slice, { cwd: hintCwd, event })
+  // A task `.output` path as the shell would open it, against the directory the command runs in rather than this hook's own cwd, and as a recall command should name it: a relative one comes back absolute, so the suggested command runs as printed from any directory.
+  const taskOutputPath = (typed: string): { probe: string; shown: string } | null => {
+    // Gated before resolveIndexPath, which is itself an fs call on Windows (an 8.3 segment expands through realpathSync.native).
+    if (!commandPathIsTouchable(typed, event)) return null
+    if (path.isAbsolute(typed) || path.win32.isAbsolute(typed)) return { probe: typed, shown: displaySafePath(typed) }
+    const probe = resolveIndexPath(typed, cdPrefixCwd(rawCmd, hintCwd))
+    return { probe, shown: displaySafePath(probe) }
+  }
   // A leading-lines read's substitute, priced, or null when it could not be priced or was not cheaper -- the same gate the sed/awk branch applies, reached through one expression because two branches need it identically.
   const pricedSubstitute = (hintPath: string, start: number, end: number): RangeSubstituteFigures | null => {
     const sub = rangeSubstituteFor(hintPath, hintCwd, [[start, end]])
@@ -628,10 +638,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Item 3: task output file — already cached, recall with bash-output
   const taskOutput = extractTasksOutput(cmd)
   if (taskOutput !== null) {
-    const { id, path: outPath, n } = taskOutput
+    const { id, n } = taskOutput
+    const outPaths = taskOutputPath(taskOutput.path)
     recordStat('session_hint', 0, 0)
     // Only deny a genuine JSONL transcript; a background command's stdout is meant to be read and falls through to normal handling.
-    if (taskOutputIsJsonlTranscript(outPath)) {
+    if (outPaths !== null && taskOutputIsJsonlTranscript(outPaths.probe)) {
+      const outPath = outPaths.shown
       const tail = n ?? 50
       return denyOutput(
         'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read "' + outPath + '@START-END"`, instead of reading the whole file.',
@@ -844,8 +856,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     if (isOutputFile) {
       // Same two kinds the cat/tail guard above tells apart, decided the same way. An agent transcript is JSONL worth hundreds of kilobytes and reading it whole is the mistake worth blocking; a background command's stdout is plain text the harness expects to be read, so that only gets advice about narrowing it, never a refusal.
-      if (taskOutputIsJsonlTranscript(filePath)) {
-        const tHint = 'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file "' + hintPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
+      const outPaths = taskOutputPath(filePath)
+      if (outPaths !== null && taskOutputIsJsonlTranscript(outPaths.probe)) {
+        const tHint = 'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file "' + outPaths.shown + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
         return cdStripped ? pathHint(hintPath, tHint) : denyOutput(tHint)
       }
       return pathHint(hintPath,

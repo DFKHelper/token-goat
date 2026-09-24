@@ -2,9 +2,9 @@ import { indexableDir, tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 import type { HookOutput } from '../src/types.js'
-import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
@@ -30,6 +30,7 @@ import {
   extractGetContentSelectFirst,
   stripLeadingAssignments,
 } from '../src/bash_extractors.js'
+import { stripCommandPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -779,6 +780,40 @@ describe('preBashHandler — leading environment assignment stripping', () => {
     'export FOO=1',
   ])('leaves a command alone when what follows is not the command the assignments belong to: %s', (command) => {
     expect(stripLeadingAssignments(command)).toBe(command)
+  })
+})
+
+// PROVENANCE: HAND-DERIVED command strings. Every extractor anchors at the start of the command, so a read wrapped in a subshell group reached the read gates as an unrecognized command and passed where the bare read is refused.
+describe('preBashHandler — subshell group stripping', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it.each([
+    ['( cat src/auth.ts )', 'cat src/auth.ts'],
+    ['(cat src/auth.ts)', 'cat src/auth.ts'],
+    ['( FOO=1 cat src/auth.ts )', 'cat src/auth.ts'],
+    ['( cd /repo && cat src/auth.ts )', 'cd /repo && cat src/auth.ts'],
+  ])('meets the gate the bare command meets: %s', (command, bare) => {
+    const grouped = preBashHandler(makeBashEvent(command))
+    expect(grouped.hookType).not.toBe('pass')
+    expect(grouped).toEqual(preBashHandler(makeBashEvent(bare)))
+  })
+
+  it.each([
+    '(cat src/auth.ts) && echo done',
+    '( cat src/auth.ts ); echo done',
+    '$( cat src/auth.ts )',
+    '(( n = 1 + 2 ))',
+    '(cat src/auth.ts) (echo done)',
+    "( echo ')' ) x",
+  ])('leaves a group that does not wrap the whole command as written: %s', (command) => {
+    expect(stripSubshellGroup(command)).toBe(command)
+    expect(stripCommandPrefix(command)).toBe(command)
+  })
+
+  it('does not count a paren inside quotes toward the group', () => {
+    expect(stripSubshellGroup(`( grep ')' src/auth.ts )`)).toBe(`grep ')' src/auth.ts`)
   })
 })
 
@@ -2065,6 +2100,50 @@ describe('preBashHandler — task output file interception', () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }
+  })
+
+  // `cat tasks/<id>.output` run from the directory holding `tasks/` was never recognized, and every `.output` sniff opened the path as typed, against the hook process's own cwd rather than the event's, which a long-lived host does not share.
+  describe('a path relative to the event cwd', () => {
+    // PROVENANCE: the transcript head is CAPTURED_TRANSCRIPT_HEAD (CAPTURE, above); the plain stdout is HAND-DERIVED vitest summary text, the same the python plain-stdout case above uses.
+    const inTasksDir = (head: string, run: (projectDir: string) => void): void => {
+      const projectDir = mkdtempSync(join(tmpdir(), 'tg-tasks-rel-'))
+      mkdirSync(join(projectDir, 'tasks'))
+      writeFileSync(join(projectDir, 'tasks', 'b0gc3pltn.output'), head)
+      try {
+        run(projectDir)
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true })
+      }
+    }
+
+    it.each([
+      'cat tasks/b0gc3pltn.output',
+      'tail -n 20 tasks/b0gc3pltn.output',
+      'cat ./tasks/b0gc3pltn.output',
+      `python3 -c "print(open('tasks/b0gc3pltn.output').read())"`,
+    ])('denies %s of a transcript, naming the file by its absolute path', (command) => {
+      inTasksDir(CAPTURED_TRANSCRIPT_HEAD, (projectDir) => {
+        const result = preBashHandler(makeBashEvent(command, projectDir))
+        expect(result.hookType).toBe('deny')
+        if (result.hookType === 'deny') {
+          expect(result.message).toContain('--transcript')
+          const named = /--file "([^"]+)"/.exec(result.message)?.[1] ?? ''
+          expect(isAbsolute(named)).toBe(true)
+          expect(statSync(named, { bigint: true }).ino).toBe(statSync(join(projectDir, 'tasks', 'b0gc3pltn.output'), { bigint: true }).ino)
+        }
+      })
+    })
+
+    it.each([
+      'cat tasks/b0gc3pltn.output',
+      'tail -n 20 tasks/b0gc3pltn.output',
+      `python3 -c "print(open('tasks/b0gc3pltn.output').read())"`,
+    ])('does not treat %s of a background command\'s plain stdout as a transcript', (command) => {
+      inTasksDir('\n Test Files  450 passed (450)\n      Tests  10288 passed | 17 skipped\n', (projectDir) => {
+        const result = preBashHandler(makeBashEvent(command, projectDir))
+        expect(JSON.stringify(result)).not.toContain('transcript')
+      })
+    })
   })
 
   it('denies cat on a genuine JSONL tasks transcript file', () => {

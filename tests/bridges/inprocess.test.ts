@@ -22,6 +22,7 @@ import { expandShortPath } from '../../src/paths.js'
 import { readSessionStateFile } from '../../src/session_store.js'
 import { summarize } from '../../src/stats.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
+import { HARNESS_DETECTION_ENV_KEYS } from '../helpers/harness-env.js'
 
 const tempDirs: string[] = []
 let sharedHookFixture: { entryPath: string; markerPath: string; dir: string } | undefined
@@ -240,6 +241,91 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     await read(first)
     await expect(read(second)).resolves.toBeUndefined()
     await expect(read(first)).rejects.toThrow(/already read/)
+  })
+
+  // An event that names no session belongs to none of the sessions the host served before it, yet it used to be answered from the previous session's in-memory reads.
+  it('serves an event carrying no session id from a clean session, not the previous one\'s', async () => {
+    const cwd = mkIsolated()
+    const { entryPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+    const envPath = makeEnvFixture(cwd)
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+    const read = (sessionID: string | undefined): Promise<void> => hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, { args: { filePath: envPath }, output: '' })
+    const first = 'inprocess-before-noid-' + Math.random().toString(36).slice(2)
+
+    await read(first)
+    await expect(read(undefined)).resolves.toBeUndefined()
+    await expect(read(first)).rejects.toThrow(/already read/)
+  })
+
+  // Handlers read the session id from CLAUDE_CODE_SESSION_ID (session.ts getSessionId), which relay seeds from the wire because opencode never sets it. Seeded once, it stayed on the host's first session for every session after it.
+  it('moves the session id handlers read to each session the host serves, and clears it for an event carrying none', async () => {
+    const prior = process.env['CLAUDE_CODE_SESSION_ID']
+    delete process.env['CLAUDE_CODE_SESSION_ID']
+    try {
+      const cwd = mkIsolated()
+      const { entryPath } = setupPoisonedEntryWithRealHookLib(cwd)
+      writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+      const pluginPath = join(cwd, 'plugin.mjs')
+      writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+      const envPath = makeEnvFixture(cwd)
+      const mod = (await import(pathToFileURL(pluginPath).href)) as {
+        TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+      }
+      const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+      const read = (sessionID: string | undefined): Promise<void> => hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, { args: { filePath: envPath }, output: '' })
+      const first = 'inprocess-seed-a-' + Math.random().toString(36).slice(2)
+      const second = 'inprocess-seed-b-' + Math.random().toString(36).slice(2)
+
+      await read(first)
+      expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe(first)
+      await read(second)
+      expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe(second)
+      await read(undefined)
+      expect(process.env['CLAUDE_CODE_SESSION_ID']).toBeUndefined()
+    } finally {
+      if (prior === undefined) delete process.env['CLAUDE_CODE_SESSION_ID']
+      else process.env['CLAUDE_CODE_SESSION_ID'] = prior
+    }
+  })
+
+  // Relay seeds CLAUDE_CODE_SESSION_ID from the wire, and detectHarness() used to take that seed for Claude Code, so from the host's second hook call on opencode got Claude Code's pre_compact wire form: raw text the plugin cannot parse, so the compaction manifest never arrived. The opencode signal is OPENCODE_SESSION_ID (bridges/registry.ts), not the override the rest of this block pins.
+  it('keeps detecting opencode after relay has seeded the session id, so a compaction still receives the manifest', async () => {
+    const saved = new Map(HARNESS_DETECTION_ENV_KEYS.map((k) => [k, process.env[k]]))
+    for (const k of HARNESS_DETECTION_ENV_KEYS) delete process.env[k]
+    process.env['OPENCODE_SESSION_ID'] = 'inprocess-opencode-host'
+    try {
+      const cwd = mkIsolated()
+      const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+      writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+      const pluginPath = join(cwd, 'plugin.mjs')
+      writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+      const envPath = makeEnvFixture(cwd)
+      const mod = (await import(pathToFileURL(pluginPath).href)) as {
+        TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+      }
+      const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+      const sessionID = 'inprocess-detect-' + Math.random().toString(36).slice(2)
+
+      await hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, { args: { filePath: envPath }, output: '' })
+      expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe(sessionID)
+      const compacted = { context: [] as string[] }
+      await hooks['experimental.session.compacting']!({ sessionID }, compacted)
+
+      expect(compacted.context).toHaveLength(1)
+      expect(compacted.context[0]).toContain('## Session context')
+      expect(existsSync(markerPath)).toBe(false)
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
   })
 
   // opencode can run tool calls concurrently in its one process, and each relay loads session state into module-level maps, awaits the handlers, then saves: a second call's load used to land while the first was suspended, so its reads were saved under the other session's key or dropped.

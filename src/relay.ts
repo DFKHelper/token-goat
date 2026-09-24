@@ -1,6 +1,6 @@
 /** Hook relay — the `token-goat hook <event>` entry point. Claude Code (and the bridge shims) invoke `token-goat hook <event>` for each hook, piping the payload as JSON on stdin and reading the response JSON from stdout. {@link relay} is that entry point: it reads stdin (with a timeout), shapes the payload into a {@link HookEvent}, runs the registered handlers via {@link runHook}, serializes the result with {@link serializeOutput}, and writes it to stdout. The cardinal rule: never block Claude Code. Any failure results in a wire response on stdout so a broken hook degrades rather than wedging the tool call: an unparseable/unreadable stdin payload degrades to an empty payload (letting each handler apply its own missing-field fallback, e.g. `sessionStartHandler`'s `GENERIC_REMINDER`; see {@link relay}), while a throwing handler or an unknown event still degrades all the way to a bare `{}` no-op pass-through. Importing this module pulls in every hook-registering module for its side-effects, so the registry is populated by the time {@link relay} runs. */
 
-import { detectHarness } from './bridges/registry.js'
+import { detectHarness, relaySeededSessionId, setRelaySeededSessionId } from './bridges/registry.js'
 import { applyCallStreak } from './call_streak.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
@@ -119,23 +119,38 @@ function safeSuggestions(output: HookOutput): HookOutput {
 /** Settles when the most recent {@link relayInProcess} call has; never rejects, so one failed call never blocks the next. */
 let relayQueue: Promise<unknown> = Promise.resolve()
 
-/** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. Calls within one process run one at a time, in arrival order: each loads its session's state into module-level maps, awaits the handlers, then saves, so a concurrent call's load (opencode, OpenClaw and pi can run tool calls concurrently in one host process) used to replace the maps mid-call and save one session's reads under another's key. */
+/** How long a {@link relayInProcess} call waits for the one before it to settle before it runs anyway. A handler that never settles would otherwise stall every later hook call in the host process for good, where the bridges' spawn fallback kills its child after 3000 ms. Set far above what a hook call has been seen to take: of 66,625 `hook:*` rows in this machine's ledger (2026-09-20 to 2026-09-24, Claude Code, Codex and Copilot CLI; each row a whole process lifetime, node startup included) p50 was 98 ms, p99 494 ms, p99.9 2,052 ms and the maximum 31,185 ms, and a document extraction a handler starts may run for MAX_DOCUMENT_WORK_MILLIS (60,000 ms) on its own. */
+export const RELAY_QUEUE_WAIT_MS = 120_000
+
+/** Resolves once `previous` settles, or after {@link RELAY_QUEUE_WAIT_MS}, whichever comes first. The timer is cleared on settle and unref'd, so a one-shot `token-goat hook` process never waits on it to exit. */
+function afterPredecessor(previous: Promise<unknown>): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, RELAY_QUEUE_WAIT_MS)
+    timer.unref()
+    void previous.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+/** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. Calls within one process run one at a time, in arrival order: each loads its session's state into module-level maps, awaits the handlers, then saves, so a concurrent call's load (opencode, OpenClaw and pi can run tool calls concurrently in one host process) used to replace the maps mid-call and save one session's reads under another's key. A call waits at most {@link RELAY_QUEUE_WAIT_MS} for the one before it, so one that never settles cannot stall the process's later calls; it still resolves to its own result whenever that arrives. */
 export function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number): Promise<string> {
   // When this event reached token-goat, before any handler time or wait behind an earlier call: call_streak.ts tells a batched call from a serial one by the gap between events.
   const receivedAt = Date.now()
-  const run = relayQueue.then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt))
+  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt))
   relayQueue = run.catch(() => undefined)
   return run
 }
 
-/** One {@link relayInProcess} call, run once every earlier call has settled. */
+/** One {@link relayInProcess} call, run once every earlier call has settled or {@link RELAY_QUEUE_WAIT_MS} has passed. */
 async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'
   }
   // Wall-clock from process start, not from this line: what a harness actually waits on is everything since `node` began -- module load and import resolution included -- not just dispatch, which used to be all this recorded (~28ms of an ~89ms real wait, confirmed against an external stopwatch on the production shim). `performance.now()` reads elapsed time since `performance.timeOrigin` (process start), so reading it once in the finally block below, rather than diffing two timestamps taken inside this function, is what makes the total include everything before this function ever ran -- true for every synchronous call, and for an async-detached one whose caller did not pass `harnessWaitMs`.
   try {
-    // Read before the CLAUDE_CODE_SESSION_ID seeding below, which sets that variable for every harness and would make a later detection answer 'claudecode' everywhere. serializeOutput needs the true harness to decide the pre_compact wire form, so capture it while the environment still says who we are.
+    // serializeOutput needs the true harness to decide the pre_compact wire form. The CLAUDE_CODE_SESSION_ID seeding below does not change this answer: detectHarness() discounts a value relay seeded (registry.ts::relaySeededSessionId), which a long-lived host still carries from its previous call.
     const harness = detectHarness()
     // Codex and Gemini send harness-native tool names (e.g. `bash`, `read_file`) that never match the canonical names (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }). Normalization is scoped to the two tool-scoped events: normalizePayload() treats a payload with no tool_name as invalid and returns {}, which would silently drop session_id off pre_compact/stop/notification payloads if run unconditionally.
     const payload =
@@ -145,11 +160,19 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
     const event = buildEvent(eventName, payload)
     // VS Code runs every hooks file it discovers, so one event can arrive here two or more times (user scope alongside project scope, or once per workspace folder). Stand down when another copy is already handling this exact event; see vscode_duplicate.ts for which cases are elected here and which the path gate already settles. Fails open by construction.
     if (shouldSuppressDuplicateVscodeHook(event, harness)) return '{}'
-    // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually.
-    if (!process.env['CLAUDE_CODE_SESSION_ID'] && event.sessionId) {
-      process.env['CLAUDE_CODE_SESSION_ID'] = event.sessionId
+    // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually. The pi, opencode and OpenClaw bridges run this in one long-lived host process serving session after session, so a value seeded here follows the wire id: replaced when the next event names another session, removed when one names none. A value relay did not seed is the harness's own (Claude Code sets it) and is never touched.
+    const envSessionId = process.env['CLAUDE_CODE_SESSION_ID']
+    const seededSessionId = relaySeededSessionId()
+    if (!envSessionId || envSessionId === seededSessionId) {
+      if (event.sessionId) {
+        process.env['CLAUDE_CODE_SESSION_ID'] = event.sessionId
+        setRelaySeededSessionId(event.sessionId)
+      } else if (seededSessionId !== undefined) {
+        delete process.env['CLAUDE_CODE_SESSION_ID']
+        setRelaySeededSessionId(undefined)
+      }
     }
-    // Record the transcript path so getContextPressure() can measure real prompt size from it (compact.ts::measurePromptTokens) instead of estimating. Paired with the wire session id, deliberately not the env var seeded just above: that one latches to the first session a process sees, so in a bridge that module-caches this function a second session's event would pair its own transcript with the first session's id and the pairing check would pass on a mismatch. Measured: two relayInProcess calls in one process report session `sess-A` with `sess-B`'s transcript before this line read event.sessionId. See session.ts::setTranscriptPath.
+    // Record the transcript path so getContextPressure() can measure real prompt size from it (compact.ts::measurePromptTokens) instead of estimating. Paired with the wire session id rather than the env var seeded just above, which the harness may have set itself and relay then leaves alone. See session.ts::setTranscriptPath.
     const rawTranscriptPath = event.raw['transcript_path']
     if (typeof rawTranscriptPath === 'string' && rawTranscriptPath !== '') {
       setTranscriptPath(rawTranscriptPath, event.sessionId ?? '')

@@ -15,7 +15,7 @@ import { recordKnownRootThrottled } from './known_roots.js'
 import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
 import { extractExportNames, extractImports, importsExtensionFor } from './import_export_extract.js'
 export { extractExportNames, extractImports, importsExtensionFor }
-import { getDb } from './db.js'
+import { getDb, isReadOnlyDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, checkEmbeddingPreflight, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
@@ -207,6 +207,8 @@ function verifyPin(p: string, pinned: string): void {
 
 /** Pin-aware wrapper around `indexFileSync`, used by every read-command call site that can trigger a mid-request reindex (healStaleIndex's self-heal, and each command's `--force-refresh`). Without this wrapper, `indexFileSync` opens `resolvedPath` with its own independent `fs.readFileSync`, which never consults `activePins` -- an MCP caller's confinement pin, validated once against the path before the read command runs, is silently bypassed the moment a stale-index heal or forced reindex kicks in, so a path swapped (e.g. an in-root symlink repointed) between validation and that reindex is never caught. When a pin exists for `resolvedPath`, this verifies it via the same fstat-identity check `readFileBytes` uses (a ConfinementIdentityError propagates up exactly like every other pinned read), then hands the already-verified bytes straight into `indexFileSync` so it never reopens the path itself. With no active pin (every CLI caller, and every MCP call with confinement disabled), this is byte-for-byte the pre-existing behavior: indexFileSync does its own read. */
 export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
+  // A read-only index cannot take the reparse, whether a heal or `--force-refresh` asked for it; the caller's staleWarning says the rows are old instead.
+  if (isReadOnlyDb(dbPath)) return
   // A heal triggered by a read can be the only thing that ever indexes a project, so register its root here too rather than relying on a later edit or bulk walk. See recordKnownRootThrottled.
   recordKnownRootThrottled(resolvedPath, dataDir(), dbPath)
   const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))
@@ -293,6 +295,9 @@ export function resolveBody(entry: { body: string; filePath: string; lineStart: 
 const STALE_WARNING =
   "⚠ STALE: index is older than the file on disk (worker hasn't reindexed yet — retry shortly, or read the file directly)"
 
+// STALE_WARNING's form for a run that reads the index without writing it (see db.ts's allowReadOnlyIndex): no reindex can land, so retrying would return the same old rows.
+const STALE_READ_ONLY_WARNING = '⚠ STALE: index is older than the file on disk and cannot be updated this run (the index is read-only here), so read the file directly'
+
 // Prepended instead of STALE_WARNING when the file is not on disk at all. fingerprintFile returns null for "deleted" and for "there but unreadable right now" alike, and staleWarning used to treat both as "nothing to say" -- so a read of a deleted file returned its indexed body, byte-identical to a live read, exit 0, with no sign the file was gone. That is the worst shape this tool can take: the caller goes on to edit or quote a file that no longer exists. Only a genuine absence gets this line; a lock or permission error still falls through silently, because that file really is still there and the index really may still match it.
 const DELETED_WARNING =
   '⚠ DELETED: this file is no longer on disk — what follows is what the index last saw of it'
@@ -324,12 +329,14 @@ export function staleWarning(resolvedPath: string): string {
     return fileIsGone(resolvedPath) ? `${DELETED_WARNING}\n` : ''
   }
   if (diskSha === entry.sha) return ''
-  return `${STALE_WARNING}\n`
+  return `${isReadOnlyDb(globalDbPath()) ? STALE_READ_ONLY_WARNING : STALE_WARNING}\n`
 }
 
 /** Self-heals a stale index entry instead of just warning about it: on the same SHA mismatch {@link staleWarning} detects, synchronously reparses `resolvedPath` in-process via {@link indexFileSync} -- the exact entry point the worker's dirty-queue drain (worker.ts's makeIndexer) and `--force-refresh` already use, so this shares `writeParseResult`'s single DELETE+INSERT transaction and db.ts's WAL journal mode + 15s busy_timeout. A background worker racing to reindex the very same file just makes whichever write goes second wait for the held lock instead of corrupting either write; no new concurrency handling is needed here. MUST be called before the caller's own DB query (querySymbols/etc.) so a successful heal is picked up by that query automatically -- this function does not itself return or re-fetch any rows. Every call site keeps its existing trailing `staleWarning(...)` call unchanged: once the heal has landed, that check naturally finds the sha now matches and emits nothing, so the surgical-read command just serves fresh data instead of a warning telling the agent to burn a full-file read. On a genuine reparse failure (syntax error, unsupported file type, I/O error) this fails safe -- the stale rows are left in place and the trailing `staleWarning(...)` call falls back to the original warning text unchanged. Also enqueues the dirty-queue path on a successful heal, mirroring `--force-refresh`'s own indexFileSync + enqueueDirtyPathSafe pairing (see that function's doc): indexFileSync always wipes `files.embed_sha`, so semantic search needs the same re-embed signal here too. Best-effort for ordinary parse/I/O failures (never throws for those); a ConfinementIdentityError from the pinned reindex is the one exception -- that signals a detected between-check-and-use swap, and the pinning contract requires a detected replacement to be refused rather than silently treated as an ordinary heal failure, so it is rethrown rather than swallowed. */
 export function healStaleIndex(resolvedPath: string): void {
   const entry = getFileEntry(resolvedPath)
+  // A read-only index cannot take the reparse (see db.ts's allowReadOnlyIndex), so there is nothing to attempt; the caller's staleWarning still says the rows are old.
+  if (isReadOnlyDb(globalDbPath())) return
   // A sha-less row joins the never-indexed case rather than being accepted as a legacy row: no parse writer has ever left that column empty, so the only rows that reach it came from the read-retry counter files used to carry (removed in 2.9.22), which minted a row for a path it had failed to READ. See indexMatchesDisk in index_freshness.ts for the full history. writeParseResult deletes the file's rows before inserting, so parsing here replaces the stub rather than colliding with its primary key.
   if (entry === null || entry.sha === '') {
     // Never indexed. If the file is actually present on disk, parse it once on demand so symbol/read/skeleton/outline can serve a surgical slice instead of returning "no symbols" and forcing the caller to fall back to a full-file Read/grep -- the exact token cost this tool exists to avoid. This is the common case for a project whose background worker never ran (or hasn't caught up) and for a freshly-created/renamed file: real sessions repeatedly hit "not found -> full Read" here. fingerprintFile doubles as the on-disk probe -- it returns null for a missing/unreadable path, so an absent file (or a bare name that resolves to nothing, as in unit tests) is skipped cleanly with no parse and no dirty-queue enqueue.
@@ -389,9 +396,10 @@ export function warnIfFilesStale(filePaths: readonly string[]): void {
     healStaleIndex(raw)
   }
   if (staleCount > 0) {
-    console.warn(
-      `token-goat: ${countNoun(staleCount, 'file')} behind these results changed on disk since the index last saw ${staleCount === 1 ? 'it' : 'them'} -- a reindex just ran, so a repeat of this command will reflect the current version.`,
-    )
+    const after = isReadOnlyDb(globalDbPath())
+      ? 'the index is read-only this run, so these results are from the older version.'
+      : 'a reindex just ran, so a repeat of this command will reflect the current version.'
+    console.warn(`token-goat: ${countNoun(staleCount, 'file')} behind these results changed on disk since the index last saw ${staleCount === 1 ? 'it' : 'them'} -- ${after}`)
   }
 }
 

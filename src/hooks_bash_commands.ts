@@ -10,6 +10,7 @@ import {
   filterByName,
   hasUnquotedOperator,
   hasBareBackgroundOrNewline,
+  maskQuotedSpans,
   shlexSplit,
   type ToolFilter,
 } from './tool_filters/index.js'
@@ -36,9 +37,22 @@ export function stripCdPrefix(cmd: string): string {
   return stripped.trim() || cmd
 }
 
-/** The command the extractors match: `rawCmd` past its `cd <dir> &&` prefixes and then its leading environment assignments, so `cd src && FOO=1 cat x` is read as `cat x`. Whatever runs, or is suggested to run, is built from `rawCmd`, which keeps both, and a compression opt-out is read from `rawCmd` for the same reason: `TOKEN_GOAT_BASH_COMPRESS=0` is one of the assignments this drops. */
+/** `cmd` inside a subshell group that wraps the whole of it, so `( cat x )` is matched as the `cat x` it runs. Only a group that opens the command and whose own closing paren ends it: `(a) && b`, `( a ); b`, `$( a )` and arithmetic `(( … ))` stay as written. Parens inside quotes do not count toward the balance. */
+export function stripSubshellGroup(cmd: string): string {
+  const t = cmd.trim()
+  if (!t.startsWith('(') || t.startsWith('((') || !t.endsWith(')')) return cmd
+  const masked = maskQuotedSpans(t)
+  let depth = 0
+  for (let i = 0; i < masked.length; i++) {
+    if (masked[i] === '(') depth++
+    else if (masked[i] === ')' && --depth === 0) return i === masked.length - 1 ? t.slice(1, -1).trim() || cmd : cmd
+  }
+  return cmd
+}
+
+/** The command the extractors match: `rawCmd` out of a subshell group wrapping all of it, past its `cd <dir> &&` prefixes and then its leading environment assignments, so `( cd src && FOO=1 cat x )` is read as `cat x`. Whatever runs, or is suggested to run, is built from `rawCmd`, which keeps all three, and a compression opt-out is read from `rawCmd` for the same reason: `TOKEN_GOAT_BASH_COMPRESS=0` is one of the assignments this drops. */
 export function stripCommandPrefix(rawCmd: string): string {
-  return stripLeadingAssignments(stripCdPrefix(rawCmd))
+  return stripLeadingAssignments(stripCdPrefix(stripSubshellGroup(rawCmd)))
 }
 
 export function stripTrailingStderrRedirect(cmd: string): string {
@@ -58,8 +72,8 @@ export function isDirectTestRunnerCommand(cmd: string): boolean {
 
 /** Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the remaining command against the directory the shell would actually land in — not this hook's own cwd — before that path is embedded in a suggested follow-up command. */
 function extractCdPrefixDirs(rawCmd: string): string[] {
-  // Must stay in step with CD_PREFIX_RE: this names the directories that one consumes, and a prefix stripped there but not extracted here resolves the file against the hook's own cwd instead of the directory the shell actually landed in.
-  const prefixMatch = rawCmd.match(CD_PREFIX_RE)
+  // Must stay in step with CD_PREFIX_RE: this names the directories that one consumes, and a prefix stripped there but not extracted here resolves the file against the hook's own cwd instead of the directory the shell actually landed in. A `cd` inside a subshell group wrapping the whole command still moves the directory the rest of the group runs in.
+  const prefixMatch = stripSubshellGroup(rawCmd).match(CD_PREFIX_RE)
   if (prefixMatch === null) return []
   const dirs: string[] = []
   const segmentPattern = /cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))[ \t]*(?:&&|;|\r?\n)/g

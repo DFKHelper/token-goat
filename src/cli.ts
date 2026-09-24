@@ -20,7 +20,7 @@ import { getSessionId } from './session.js'
 import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
-import { getDb } from './db.js'
+import { allowReadOnlyIndex, getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { fingerprintFile } from './fingerprint.js'
@@ -1474,11 +1474,17 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
 
 // --- Program assembly -------------------------------------------------------
 
-/** Build the Commander program. Exported so tests can introspect/parse it. */
-/** Generate a compact grouped help text for the top-level command. */
+/** Commands that only query the index, so they may answer through a read-only connection when the index cannot be written (a read-only sandbox, a write-denied data directory): see db.ts's allowReadOnlyIndex. A command that writes the index as part of its job (index, worker, doctor, note, hook, mcp-serve, ...) must never be listed, because a writer given the read-only handle fails at its first write instead of at the open. */
+const READ_ONLY_INDEX_COMMANDS: ReadonlySet<string> = new Set([
+  'symbol', 'read', 'brief', 'section', 'semantic', 'skeleton', 'outline', 'refs', 'answer', 'ask', 'map',
+  'exports', 'imports', 'find', 'locate', 'callers', 'call-chain', 'impact', 'dead', 'deps', 'types', 'scope',
+  'similar', 'context-for', 'test-for',
+])
+
 /** Commander's own `helpInformation` for the top-level program, captured before `buildProgram` shadows it with the compact grouped index. `help --full` calls this to emit the long per-command listing the compact index replaces; without it the long form is unreachable, since the override is an own property that hides the prototype method for every later caller. */
 let originalHelpInformation: (() => string) | null = null
 
+/** Build the Commander program. Exported so tests can introspect/parse it. */
 export function buildProgram(): Command {
   const program = new Command()
   program
@@ -1491,7 +1497,10 @@ export function buildProgram(): Command {
     .option('--notice <text>', 'print this line to stdout before the command\'s own output')
 
   // Applied via a preAction hook (not inside `guard` below) so --cwd works for every command, not only the ones wrapped in `guard` -- the surgical-read commands (symbol, read, scope, ...) call runExit/runExitText directly and never go through guard, so a chdir living only inside guard silently no-ops for them. This hook fires before any command's action handler, guard-wrapped or not, and before anything resolves the project root or loads config.
-  program.hook('preAction', (thisCommand) => {
+  program.hook('preAction', (thisCommand, actionCommand) => {
+    if (actionCommand.parent === program && READ_ONLY_INDEX_COMMANDS.has(actionCommand.name())) {
+      allowReadOnlyIndex(() => err('token-goat: the index database cannot be written here, so this run reads it without writing: no stats are recorded and changed files are not reindexed.'))
+    }
     const opts = thisCommand.opts<{ cwd?: string; notice?: string }>()
     const cwdOverride = opts.cwd
     if (cwdOverride !== undefined) {
