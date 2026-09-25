@@ -6,21 +6,28 @@ import * as os from 'node:os'
 import { serveOne, swapEnv } from './batch_serve.js'
 import { hookServerEnabled } from './config.js'
 import { configPath, ensureDataDirPrivate } from './constants.js'
+import { isAdapterHarness, noopFor, noopOutputs, runAdapter, type AdapterHarness } from './hook_adapters.js'
 import {
   bundleEntryFiles,
+  challengeMacV2,
   configStamp,
+  doneFrameMac,
   endpointFor,
   ensureServerKey,
+  HARNESS_PROTOCOL_VERSION,
   mac,
   macMatches,
   nonce,
+  outFrameMac,
   PROTOCOL_VERSION,
   readFrames,
   removeMarker,
+  requestMacV2,
   SERVER_SLOTS,
   serverKeyPath,
   touchMarker,
   writeFrame,
+  type HarnessHookRequest,
   type ServerReply,
   type ServerRequest,
   type ServerStatus,
@@ -61,10 +68,10 @@ function stillEnabled(): boolean {
   return enabledMemo.enabled
 }
 
-/** Why this server should stop taking requests, or `undefined` while it should keep serving. */
-function retirementReason(loadedStamp: string): string | undefined {
+/** Why this server should stop taking requests, or `undefined` while it should keep serving. `judgeEnabled` is false while a request is in flight: that request runs under its caller's environment (swapEnv), and a TOKEN_GOAT_HOOK_SERVER there is the caller's, not this server's, so the switch is read again at the next contact between requests. */
+function retirementReason(loadedStamp: string, judgeEnabled: boolean): string | undefined {
   if (bundleStamp() !== loadedStamp) return 'bundle replaced'
-  if (!stillEnabled()) return 'disabled'
+  if (judgeEnabled && !stillEnabled()) return 'disabled'
   return undefined
 }
 
@@ -86,6 +93,65 @@ async function handle(request: WorkRequest, runCli: RunCli, send: (res: ServerRe
     const stdout = await relayInProcess(request.event, payload, request.harnessWaitMs, { elapsedMs: () => request.elapsedMs + (performance.now() - startedAt), afterReply: (work) => afterReply.push(work) })
     // The caller has its answer before the stats row is written and the connections are closed, and both still run under this request's environment and directory. The session state the next call reads was saved before the answer, so nothing a follow-up call depends on is left behind it.
     send({ ok: true, stdout })
+    for (const work of afterReply) work()
+  } finally {
+    restoreEnv()
+    try {
+      process.chdir(cwdBefore)
+    } catch {
+      // the directory it sat in between requests is the temp directory, which outlives it
+    }
+    clearPerRequestCaches()
+  }
+}
+
+/** A v2 request body as sent, or `undefined` when it is not a well-formed hook request naming `harness`. */
+function parseHarnessRequest(body: string, harness: AdapterHarness): HarnessHookRequest | undefined {
+  let r: unknown
+  try {
+    r = JSON.parse(body)
+  } catch {
+    return undefined
+  }
+  if (r === null || typeof r !== 'object') return undefined
+  const q = r as Record<string, unknown>
+  const env = q['env']
+  const wellFormed =
+    q['kind'] === 'hook' &&
+    q['harness'] === harness &&
+    typeof q['event'] === 'string' &&
+    typeof q['input'] === 'string' &&
+    typeof q['cwd'] === 'string' &&
+    typeof q['elapsedMs'] === 'number' &&
+    (q['harnessWaitMs'] === undefined || typeof q['harnessWaitMs'] === 'number') &&
+    (q['scriptDir'] === undefined || typeof q['scriptDir'] === 'string') &&
+    env !== null &&
+    typeof env === 'object' &&
+    !Array.isArray(env) &&
+    Object.values(env).every((v) => typeof v === 'string')
+  return wellFormed ? (q as unknown as HarnessHookRequest) : undefined
+}
+
+/** Serve one v2 request through its harness's adapter (hook_adapters.ts). `early` sends an `out` frame at once; `finish` sends the `done` frame, after which the stats row is written, as {@link handle} does for v1. */
+async function handleHarness(request: HarnessHookRequest, harness: AdapterHarness, early: (data: string) => void, finish: (stdout: string, exit: number) => void): Promise<void> {
+  clearPerRequestCaches()
+  const startedAt = performance.now()
+  const cwdBefore = process.cwd()
+  const restoreEnv = swapEnv(request.env)
+  const afterReply: (() => void)[] = []
+  const elapsedMs = (): number => request.elapsedMs + (performance.now() - startedAt)
+  try {
+    process.chdir(request.cwd)
+    const req = { event: request.event, input: request.input, ...(request.harnessWaitMs === undefined ? {} : { harnessWaitMs: request.harnessWaitMs }), ...(request.scriptDir === undefined ? {} : { scriptDir: request.scriptDir }) }
+    const result = await runAdapter(harness, req, {
+      // An early frame is where the harness stops waiting, so the wait it records is its own clock up to here.
+      early: (data) => {
+        early(data)
+        return elapsedMs()
+      },
+      relay: (event, payload, harnessWaitMs) => relayInProcess(event, payload, harnessWaitMs, { elapsedMs, afterReply: (work) => afterReply.push(work) }),
+    })
+    finish(result.stdout, result.exit)
     for (const work of afterReply) work()
   } finally {
     restoreEnv()
@@ -190,13 +256,22 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
   function serveConnection(socket: net.Socket): void {
     let nc = ''
     let ns = ''
+    // Set by a v2 hello: the harness whose adapter answers this connection.
+    let harness: AdapterHarness | undefined
     socket.setTimeout(HANDSHAKE_IDLE_MS, () => socket.destroy())
     socket.on('error', () => socket.destroy())
     socket.once('close', () => awaitingRequest.delete(socket))
     const onMessage = (msg: Record<string, unknown>): void => {
       if (msg['t'] === 'hello' && nc === '') {
-        if (msg['v'] !== PROTOCOL_VERSION || typeof msg['nc'] !== 'string' || msg['nc'] === '') return void socket.destroy()
-        const reason = retiring ? 'retiring' : retirementReason(loadedStamp)
+        const v2 = msg['v'] === HARNESS_PROTOCOL_VERSION
+        if ((msg['v'] !== PROTOCOL_VERSION && !v2) || typeof msg['nc'] !== 'string' || msg['nc'] === '') return void socket.destroy()
+        if (v2) {
+          if (typeof msg['h'] !== 'string') return void socket.destroy()
+          // A harness this build has no adapter for is one it cannot answer for: the client runs its own fallback, which is the command wired today.
+          if (!isAdapterHarness(msg['h'])) return void endWith(socket, { t: 'refused', reason: 'unknown harness' })
+          harness = msg['h']
+        }
+        const reason = retiring ? 'retiring' : retirementReason(loadedStamp, !busy)
         if (reason !== undefined) {
           if (reason === 'disabled') touchMarker('disabled', configStamp())
           // A newer build is on disk and this server started fine, so nothing argues for making the next call wait out the start throttle before the new build is running: an upgrade within half a minute of this server starting would otherwise leave every call cold until it lapsed.
@@ -208,14 +283,61 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
           return
         }
         // A status or stop request is answered without waiting for the one in flight, so `hook-server stop` reaches a server mid-request.
-        if (busy && msg['ctl'] !== true) {
+        if (busy && (harness !== undefined || msg['ctl'] !== true)) {
           writeFrame(socket, { t: 'busy' })
           return void socket.end()
         }
         nc = msg['nc']
         ns = nonce()
-        writeFrame(socket, { t: 'challenge', v: PROTOCOL_VERSION, ns, mac: mac(key, 'S', nc, ns) })
+        if (harness === undefined) {
+          writeFrame(socket, { t: 'challenge', v: PROTOCOL_VERSION, ns, mac: mac(key, 'S', nc, ns) })
+        } else {
+          const { noop, noops } = noopOutputs(harness)
+          writeFrame(socket, { t: 'challenge', v: HARNESS_PROTOCOL_VERSION, ns, noop, noops, mac: challengeMacV2(key, nc, ns, harness, noop, noops) })
+        }
         awaitingRequest.add(socket)
+        return
+      }
+      if (msg['t'] === 'req' && ns !== '' && harness !== undefined) {
+        const h = harness
+        const body = msg['body']
+        if (typeof body !== 'string' || !macMatches(requestMacV2(key, nc, ns, h, body), msg['mac'])) return void socket.destroy()
+        if (!awaitingRequest.delete(socket)) return
+        const request = parseHarnessRequest(body, h)
+        if (request === undefined) return void socket.destroy()
+        if (busy || retiring) {
+          writeFrame(socket, { t: retiring ? 'stale' : 'busy' })
+          return void socket.end()
+        }
+        busy = true
+        socket.setTimeout(0)
+        // `out` frames are numbered from 0 and `done` says how many there were, so a client verifying the MACs sees any frame dropped, reordered or replayed. Only the first `done` is sent: a failure after it has nothing left to answer.
+        let seq = 0
+        let finished = false
+        const early = (data: string): void => {
+          if (finished) return
+          writeFrame(socket, { t: 'out', seq, data, mac: outFrameMac(key, nc, ns, seq, data) })
+          seq++
+        }
+        const finish = (stdout: string, exit: number): void => {
+          if (finished) return
+          finished = true
+          endWith(socket, { t: 'done', stdout, exit, n: seq, mac: doneFrameMac(key, nc, ns, stdout, exit, seq) })
+        }
+        void (async () => {
+          try {
+            await handleHarness(request, h, early, finish)
+            status.served++
+          } catch {
+            status.errors++
+            // What this harness prints when a request is lost, which is what the v1 path fails open to once the shim has translated it.
+            finish(noopFor(h, request.event), 0)
+          }
+          busy = false
+          status.lastUsedAt = Date.now()
+          if (retiring) stop()
+          else armIdle()
+        })()
         return
       }
       if (msg['t'] === 'req' && ns !== '') {

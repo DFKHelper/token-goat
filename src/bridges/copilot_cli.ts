@@ -5,6 +5,7 @@ import { foldToolName } from '../tool_name_fold.js'
 import { SHIM_TRY_SERVER } from './shim_try_server.js'
 import { MATERIALIZE_SHRUNK_IMAGE_JS } from './shrink_block.js'
 
+// A second copy of this logic lives in src/hook_adapters.ts, which the resident hook server runs for a harness-aware (v2) client; tests/native_hook_adapter_equivalence.test.ts drives this installed shim and a server request with the same payloads and fails unless both print the same bytes and exit code.
 export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Copilot CLI hook shim. Translates Copilot's hook event names and
 // request/response schema to/from token-goat's internal hook protocol.

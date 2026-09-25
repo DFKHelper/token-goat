@@ -762,6 +762,28 @@ describe('retirement', () => {
     expect(fs.existsSync(markerPath('spawn-0', sb.dataDir))).toBe(false)
   })
 
+  // HAND-DERIVED: a request runs under its caller's environment (swapEnv), and a contact arriving meanwhile used to be judged under that environment too. A caller with TOKEN_GOAT_HOOK_SERVER unset (which hook_client.ts serverEnabled treats as on) made a server started with it set read hooks.server = false instead, and retire.
+  it("judges a contact that arrives mid-request by the server's own environment, not the environment of the request in flight", async () => {
+    const sb = sandbox()
+    writeConfig(sb, '[hooks]\nserver = false\n', new Date('2026-03-01T00:00:00Z'))
+    blockAutostart(sb, [1, 2])
+    const server = startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    const callerEnv: Env = { ...sb.env }
+    delete callerEnv['TOKEN_GOAT_HOOK_SERVER']
+    // `compress` runs a child that sleeps, which holds the server inside the request, under callerEnv, while the next contact arrives.
+    const held = rawRequest(distEndpoint(sb, 0), readServerKey(sb.dataDir) as Buffer, { kind: 'cli', argv: ['compress', '--shell', 'native', '-c', 'node -e "setTimeout(function(){},3000)"'], env: callerEnv, cwd: sb.proj })
+    await held.dispatched
+    await sleep(300)
+    expect(cli(sb, ['hook-server', 'status']).stdout).toContain('slot 0: pid')
+    const reply = await held.reply
+    expect('status' in reply ? reply.status : reply).toBe(0)
+    expect(readMarker('disabled', sb.dataDir)).toBeUndefined()
+    expect(await exitsWithin(server.exit, 500)).toBe('still running')
+    expectSameRun(cli(sb, ['section', 'notes.md::Alpha']), cold(sb, ['section', 'notes.md::Alpha']))
+    expect(servedBySlot(sb)).toEqual({ 0: 2 })
+  })
+
   it('records why a start failed in the failed marker, and clears it once a server is listening', async () => {
     const sb = sandbox()
     const bad = cli(sb, ['hook-server', 'run', '--slot', '9'])

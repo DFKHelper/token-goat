@@ -3,6 +3,7 @@
 /** Node source for the Grok hook shim. `eventName` (argv[2]) is validated against a closed set before being passed to `spawnSync`'s args array (never concatenated into a shell string), so a hostile argv can't do anything unexpected even though args-array `spawnSync` has no shell-injection surface to begin with -- kept for defense in depth and consistency with the Codex/Copilot shims' own validation. On any error the shim prints `{}` (or, for `pre_tool_use`, `{"decision":"allow"}`) so a hook failure fails open rather than denying every tool call -- matching every other bridge shim's fail-open convention. */
 import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER } from './shim_common.js'
 
+// A second copy of this logic lives in src/hook_adapters.ts, which the resident hook server runs for a harness-aware (v2) client; tests/native_hook_adapter_equivalence.test.ts drives this installed shim and a server request with the same payloads and fails unless both print the same bytes and exit code.
 export const GROK_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Grok CLI hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then -- for pre_tool_use only -- translates token-goat's {"decision":"block",...} deny shape into Grok's documented {"decision":"deny",...} shape and sets exit code 2.
 'use strict'
