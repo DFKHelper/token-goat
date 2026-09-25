@@ -101,6 +101,13 @@ jobs:
       - name: Warm the embedding model cache
         shell: bash
         run: npm run model:warm
+      # tests/native_hook_conformance.test.ts builds native/tg-hook with cargo and fails, rather than skips, where it cannot. rustup ships on every hosted image; run inside the crate, `rustup toolchain install` with no argument installs the toolchain native/tg-hook/rust-toolchain.toml pins, so the suite builds with that compiler and not the image's default. Explicit, because rustup 1.28 stopped installing it implicitly on first use.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        working-directory: native/tg-hook
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
       # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
@@ -166,6 +173,13 @@ jobs:
       - name: Warm the embedding model cache
         shell: bash
         run: npm run model:warm
+      # tests/native_hook_conformance.test.ts builds native/tg-hook with cargo and fails, rather than skips, where it cannot. rustup ships on every hosted image; run inside the crate, `rustup toolchain install` with no argument installs the toolchain native/tg-hook/rust-toolchain.toml pins, so the suite builds with that compiler and not the image's default. Explicit, because rustup 1.28 stopped installing it implicitly on first use.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        working-directory: native/tg-hook
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
       # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
@@ -230,6 +244,13 @@ jobs:
       - name: Warm the embedding model cache
         shell: bash
         run: npm run model:warm
+      # tests/native_hook_conformance.test.ts builds native/tg-hook with cargo and fails, rather than skips, where it cannot. rustup ships on every hosted image; run inside the crate, `rustup toolchain install` with no argument installs the toolchain native/tg-hook/rust-toolchain.toml pins, so the suite builds with that compiler and not the image's default. Explicit, because rustup 1.28 stopped installing it implicitly on first use.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        working-directory: native/tg-hook
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
       # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0

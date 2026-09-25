@@ -38,9 +38,8 @@ export interface ServerStatus {
   errors: number
 }
 
-/** The directory holding the running bundle. Both ends compute it from this module's own location, which esbuild places in the same dist/ directory for every entry, so a client only ever reaches a server built from the same install. */
-function bundleDir(): string {
-  const dir = path.dirname(fileURLToPath(import.meta.url))
+/** The real path of a bundle directory, or `dir` as given when it cannot be resolved. Exported for the native client's conformance test (tests/native_hook_conformance.test.ts), which holds tg-hook's port of this rule to it. */
+export function resolveBundleDir(dir: string): string {
   try {
     return fs.realpathSync.native(dir)
   } catch {
@@ -48,15 +47,20 @@ function bundleDir(): string {
   }
 }
 
-/** Identity of one install under one data directory: two installs, or one install under two data directories, never share a server. `TOKEN_GOAT_HOME` is not part of it: everything derived from it is read from the environment each request carries. */
-function endpointId(dir: string): string {
-  const fold = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
-  return crypto.createHash('sha256').update(`${fold(dir)}\0${fold(bundleDir())}`).digest('hex').slice(0, 16)
+/** The directory holding the running bundle. Both ends compute it from this module's own location, which esbuild places in the same dist/ directory for every entry, so a client only ever reaches a server built from the same install. */
+function bundleDir(): string {
+  return resolveBundleDir(path.dirname(fileURLToPath(import.meta.url)))
 }
 
-/** The named pipe (Windows) or Unix socket path for server `slot`. Unix socket paths are capped near 104 bytes, so a long data directory falls back to a directory of this user's own under the temp directory. */
-export function endpointFor(slot: number, dir: string = dataDir()): string {
-  const id = `${endpointId(dir)}-${slot}`
+/** Identity of one install under one data directory: two installs, or one install under two data directories, never share a server. `TOKEN_GOAT_HOME` is not part of it: everything derived from it is read from the environment each request carries. */
+function endpointId(dir: string, bundle: string): string {
+  const fold = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
+  return crypto.createHash('sha256').update(`${fold(dir)}\0${fold(bundle)}`).digest('hex').slice(0, 16)
+}
+
+/** The named pipe (Windows) or Unix socket path for server `slot`. Unix socket paths are capped near 104 bytes, so a long data directory falls back to a directory of this user's own under the temp directory. `bundle` defaults to this install's own directory; the native client's conformance test passes others. */
+export function endpointFor(slot: number, dir: string = dataDir(), bundle: string = bundleDir()): string {
+  const id = `${endpointId(dir, bundle)}-${slot}`
   if (process.platform === 'win32') return String.raw`\\.\pipe\token-goat-hooks-` + id
   const inData = path.join(dir, `hooks-${id}.sock`)
   if (Buffer.byteLength(inData) < 100) return inData

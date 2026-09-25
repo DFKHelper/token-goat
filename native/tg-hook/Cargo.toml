@@ -1,0 +1,32 @@
+[package]
+name = "tg-hook"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Native hook client for token-goat: relays a hook call to the resident hook server, or runs the Node command it wraps."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[[bin]]
+name = "tg-hook"
+path = "src/main.rs"
+
+[dependencies]
+# The endpoint id is a SHA-256 of the data and bundle directories, as in src/hook_ipc.ts endpointId.
+sha2 = "0.11"
+# Every handshake frame carries an HMAC-SHA256 (src/hook_ipc.ts mac); a vetted implementation rather than a hand-rolled one.
+hmac = "0.13"
+# Frames are JSON; also parses the --selftest-vectors input.
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+# getuid/geteuid/getgid/getegid for the key-ownership check and the token-goat-<uid> socket directory; std exposes none of them.
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
