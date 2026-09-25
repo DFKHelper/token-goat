@@ -1,34 +1,4 @@
-/**
- * Guard: an `it.each` / `test.each` / `describe.each` table must not be able to be empty.
- *
- * Vitest registers one case per row of the table. Given zero rows it registers zero cases, and the
- * file then reports green with the whole block missing from the run. Verified directly:
- * `it.each(EMPTY)('case %s', ...)` beside one ordinary `it` in the same describe reports
- * `Tests 1 passed (1)` -- no warning, no skip counter movement, nothing in the summary that says a
- * parameterized block produced nothing. That is the same silent-pass shape as a test body that
- * returns before asserting, one level up: there is no body to return from because there is no case.
- *
- * The risk is not hypothetical in a repo whose guards are mostly driven by a filesystem walk or a
- * parse. Several tables here are `workflowFiles()`, `readGzJson(...)`, `Object.entries(...)` -- an
- * enumeration that stops matching (a moved directory, a renamed job key, a drifted filter) empties
- * the table, and every case it would have generated evaporates rather than failing.
- *
- * What counts as safe, checked statically: the table argument resolves to an array literal with at
- * least one element, either directly or by following same-file `const` initializers through
- * `.map`/`.filter`/`.slice`/`as const`/parentheses. A literal list cannot become empty without
- * someone deleting its members in the same diff.
- *
- * Everything else needs an entry in EXEMPT naming where its non-emptiness IS asserted. That is the
- * point of the exemption reason here: it is not "this is fine", it is the pointer to the floor or
- * the exact-equality assertion that would fail first if the source went empty. An entry whose
- * reason cannot name one is an entry that should be a fix instead.
- *
- * What this cannot catch: a table that is non-empty but wrong (every row the same, rows that do not
- * exercise what the title claims), and a cross-file source whose pin lives in another file -- the
- * exemption reason records that pin in prose, and prose is not checked. It also does not evaluate
- * anything, so a same-file literal that is spread from an empty source (`[...maybeEmpty]`) reads as
- * computed, not as safe, which is the conservative direction.
- */
+/** Guard: an `it.each` / `test.each` / `describe.each` table must not be able to be empty. Vitest registers one case per row of the table. Given zero rows it registers zero cases, and the file then reports green with the whole block missing from the run. Verified directly: `it.each(EMPTY)('case %s', ...)` beside one ordinary `it` in the same describe reports `Tests 1 passed (1)` -- no warning, no skip counter movement, nothing in the summary that says a parameterized block produced nothing. That is the same silent-pass shape as a test body that returns before asserting, one level up: there is no body to return from because there is no case. The risk is not hypothetical in a repo whose guards are mostly driven by a filesystem walk or a parse. Several tables here are `workflowFiles()`, `readGzJson(...)`, `Object.entries(...)` -- an enumeration that stops matching (a moved directory, a renamed job key, a drifted filter) empties the table, and every case it would have generated evaporates rather than failing. What counts as safe, checked statically: the table argument resolves to an array literal with at least one element, either directly or by following same-file `const` initializers through `.map`/`.filter`/`.slice`/`as const`/parentheses. A literal list cannot become empty without someone deleting its members in the same diff. Everything else needs an entry in EXEMPT naming where its non-emptiness IS asserted. That is the point of the exemption reason here: it is not "this is fine", it is the pointer to the floor or the exact-equality assertion that would fail first if the source went empty. An entry whose reason cannot name one is an entry that should be a fix instead. What this cannot catch: a table that is non-empty but wrong (every row the same, rows that do not exercise what the title claims), and a cross-file source whose pin lives in another file -- the exemption reason records that pin in prose, and prose is not checked. It also does not evaluate anything, so a same-file literal that is spread from an empty source (`[...maybeEmpty]`) reads as computed, not as safe, which is the conservative direction. */
 import { readdirSync, readFileSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,12 +27,7 @@ const EXEMPT: readonly Exemption[] = [
   {
     file: 'tests/guards/dependabot_coverage.test.ts',
     table: "entries.map((u) => [`${u['package-ecosystem']} ${u.directory}`, u])",
-    reason: 'Parsed out of .github/dependabot.yml. The same file asserts `entries.length` is at least 3, so an unparseable or emptied config fails there first.',
-  },
-  {
-    file: 'tests/guards/dependabot_coverage.test.ts',
-    table: 'entries.map((u) => [u.directory])',
-    reason: 'Same parsed dependabot.yml entries, covered by the same `entries.length` floor of 3 in this file.',
+    reason: 'Parsed out of .github/dependabot.yml. The same file asserts `entries.length` is at least 4, and builds this table twice, so an unparseable or emptied config fails there first.',
   },
   {
     file: 'tests/guards/embed_model_available_where_required.test.ts',

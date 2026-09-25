@@ -1,12 +1,4 @@
-# Actions are pinned to commit SHAs, which is what supply-chain review asks for and also what
-# stops them ever updating on their own. This keeps the pins current: Dependabot opens a PR that
-# moves the SHA and rewrites the version comment beside it.
-#
-# `cooldown` is the supply-chain control here. Without it Dependabot proposes a version the day it
-# is published, which is the window a compromised release is live in: the npm account-takeover
-# pattern is a bad version published, installed by whoever updates first, and yanked hours later.
-# Waiting seven days does not make a package safe, but it moves this repository out of the group
-# that finds out first.
+# Actions are pinned to commit SHAs, which is what supply-chain review asks for and also what stops them ever updating on their own. This keeps the pins current: Dependabot opens a PR that moves the SHA and rewrites the version comment beside it. `cooldown` is the supply-chain control here. Without it Dependabot proposes a version the day it is published, which is the window a compromised release is live in: the npm account-takeover pattern is a bad version published, installed by whoever updates first, and yanked hours later. Waiting seven days does not make a package safe, but it moves this repository out of the group that finds out first.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -16,9 +8,7 @@ updates:
     cooldown:
       default-days: 7
 
-  # The npm tree was not watched at all, so every dependency advisory here waited on someone
-  # noticing. Grouped so a routine week is one pull request rather than twenty, and so the four
-  # gating CI jobs run once over the batch.
+  # The npm tree was not watched at all, so every dependency advisory here waited on someone noticing. Grouped so a routine week is one pull request rather than twenty, and so the four gating CI jobs run once over the batch.
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -29,33 +19,17 @@ updates:
       npm-dependencies:
         patterns:
           - '*'
-    # TypeScript 7 is the native port, and its main entry no longer exports the compiler API:
-    # `require('typescript')` on 7.0.2 yields exactly two symbols, `version` and
-    # `versionMajorMinor`. Everything src/ts_refs.ts and src/dep_docs.ts rely on --
-    # createProgram, createCompilerHost, JSDocParsingMode, readConfigFile, findConfigFile and
-    # the rest -- moved behind `typescript/unstable/*`, which upstream labels unstable. Taking
-    # the major would mean rewriting the type-resolved reference tier against an API that is
-    # not promised to hold still. Minor and patch updates on 6.x still come through.
+    # TypeScript 7 is the native port, and its main entry no longer exports the compiler API: `require('typescript')` on 7.0.2 yields exactly two symbols, `version` and `versionMajorMinor`. Everything src/ts_refs.ts and src/dep_docs.ts rely on -- createProgram, createCompilerHost, JSDocParsingMode, readConfigFile, findConfigFile and the rest -- moved behind `typescript/unstable/*`, which upstream labels unstable. Taking the major would mean rewriting the type-resolved reference tier against an API that is not promised to hold still. Minor and patch updates on 6.x still come through.
     ignore:
       - dependency-name: typescript
         update-types:
           - version-update:semver-major
-      # better-sqlite3 13 dropped the `install` script that earlier majors used
-      # (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to
-      # skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on
-      # Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on
-      # Windows needs a full Visual Studio C++ toolchain, and that failed CI on windows-latest.
-      # This no longer reaches anyone who installs token-goat -- src/sqlite_driver.ts runs on
-      # node:sqlite and better-sqlite3 is a devDependency, kept as the differential oracle in
-      # tests/sqlite_driver.test.ts -- but the same build still has to succeed on windows-latest
-      # for every CI run and on a Windows development machine, so the hold stays for that reason
-      # instead. Minor and patch updates on 12.x still come through.
+      # better-sqlite3 13 dropped the `install` script that earlier majors used (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on Windows needs a full Visual Studio C++ toolchain, and that failed CI on windows-latest. This no longer reaches anyone who installs token-goat -- src/sqlite_driver.ts runs on node:sqlite and better-sqlite3 is a devDependency, kept as the differential oracle in tests/sqlite_driver.test.ts -- but the same build still has to succeed on windows-latest for every CI run and on a Windows development machine, so the hold stays for that reason instead. Minor and patch updates on 12.x still come through.
       - dependency-name: better-sqlite3
         update-types:
           - version-update:semver-major
 
-  # The extension carries its own manifest and lockfile, so it needs its own entry: an update to
-  # the root tree never reaches it.
+  # The extension carries its own manifest and lockfile, so it needs its own entry: an update to the root tree never reaches it.
   - package-ecosystem: npm
     directory: /vscode-extension
     schedule:
@@ -66,34 +40,26 @@ updates:
       npm-dependencies:
         patterns:
           - '*'
-    # TypeScript 7 is the native port, and its main entry no longer exports the compiler API:
-    # `require('typescript')` on 7.0.2 yields exactly two symbols, `version` and
-    # `versionMajorMinor`. Everything src/ts_refs.ts and src/dep_docs.ts rely on --
-    # createProgram, createCompilerHost, JSDocParsingMode, readConfigFile, findConfigFile and
-    # the rest -- moved behind `typescript/unstable/*`, which upstream labels unstable. Taking
-    # the major would mean rewriting the type-resolved reference tier against an API that is
-    # not promised to hold still. Minor and patch updates on 6.x still come through.
+    # TypeScript 7 is the native port, and its main entry no longer exports the compiler API: `require('typescript')` on 7.0.2 yields exactly two symbols, `version` and `versionMajorMinor`. Everything src/ts_refs.ts and src/dep_docs.ts rely on -- createProgram, createCompilerHost, JSDocParsingMode, readConfigFile, findConfigFile and the rest -- moved behind `typescript/unstable/*`, which upstream labels unstable. Taking the major would mean rewriting the type-resolved reference tier against an API that is not promised to hold still. Minor and patch updates on 6.x still come through.
     ignore:
       - dependency-name: typescript
         update-types:
           - version-update:semver-major
-      # better-sqlite3 13 dropped the `install` script that earlier majors used
-      # (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to
-      # skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on
-      # Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on
-      # Windows needs a full Visual Studio C++ toolchain, and that failed CI on windows-latest.
-      # This no longer reaches anyone who installs token-goat -- src/sqlite_driver.ts runs on
-      # node:sqlite and better-sqlite3 is a devDependency, kept as the differential oracle in
-      # tests/sqlite_driver.test.ts -- but the same build still has to succeed on windows-latest
-      # for every CI run and on a Windows development machine, so the hold stays for that reason
-      # instead. Minor and patch updates on 12.x still come through.
+      # better-sqlite3 13 dropped the `install` script that earlier majors used (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on Windows needs a full Visual Studio C++ toolchain, and that failed CI on windows-latest. This no longer reaches anyone who installs token-goat -- src/sqlite_driver.ts runs on node:sqlite and better-sqlite3 is a devDependency, kept as the differential oracle in tests/sqlite_driver.test.ts -- but the same build still has to succeed on windows-latest for every CI run and on a Windows development machine, so the hold stays for that reason instead. Minor and patch updates on 12.x still come through.
       - dependency-name: better-sqlite3
         update-types:
           - version-update:semver-major
-      # @types/vscode must never lead engines.vscode: the typings decide which APIs the extension
-      # compiles against, so a version above the declared engine floor lets it build against APIs
-      # that are missing in the oldest VS Code it claims to support, and the break only shows up on
-      # a user's machine. It was already ahead (1.125 typings against an ^1.101 engine floor) and is
-      # now pinned to the floor exactly. Raising it is a decision about which VS Code versions this
-      # extension still supports, taken together with engines.vscode, not a routine version bump.
+      # @types/vscode must never lead engines.vscode: the typings decide which APIs the extension compiles against, so a version above the declared engine floor lets it build against APIs that are missing in the oldest VS Code it claims to support, and the break only shows up on a user's machine. It was already ahead (1.125 typings against an ^1.101 engine floor) and is now pinned to the floor exactly. Raising it is a decision about which VS Code versions this extension still supports, taken together with engines.vscode, not a routine version bump.
       - dependency-name: '@types/vscode'
+
+  # The native hook client's crates, pinned by native/tg-hook/Cargo.lock, compile into every release binary, so they get the same grouped weekly updates and the same seven-day cooldown as the npm tree.
+  - package-ecosystem: cargo
+    directory: /native/tg-hook
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      cargo-dependencies:
+        patterns:
+          - '*'
