@@ -12,6 +12,7 @@ import { GROK_HOOK_SCRIPT } from '../../src/bridges/grok.js'
 import { KIMI_HOOK_SCRIPT } from '../../src/bridges/kimi.js'
 import { SHIM_TRY_SERVER } from '../../src/bridges/shim_common.js'
 import { HOOK_EVENTS, type HookEventName } from '../../src/types.js'
+import { BUNDLE } from '../helpers/bundle.js'
 
 const tempDirs: string[] = []
 
@@ -206,7 +207,7 @@ describe('the Claude Code shim cannot block a tool call by failing', () => {
   })
 
   it('does the same on stdin that is not JSON at all, rather than throwing on the parse', () => {
-    const { status, out } = runShim(['pre_tool_use'], 'not json at all')
+    const { status, out } = runShim(['pre_tool_use', BUNDLE], 'not json at all')
 
     expect(status).toBe(0)
     expect(out.trim()).toBe('{}')
