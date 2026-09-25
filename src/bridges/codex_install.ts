@@ -8,9 +8,10 @@ import * as path from 'node:path'
 import { parse, stringify } from 'smol-toml'
 
 import { removeCreatedBackups } from './created_configs.js'
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, hookPowershellCommand, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
+import { powershellHookLine } from '../process_util.js'
 import { anchoredMarkerPattern } from '../install.js'
-import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
+import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { buildGuidanceBlock } from './guidance_block.js'
@@ -125,14 +126,13 @@ function anyGroupHasTokenGoat(
 
 // hookCommandFor is shared with copilot_cli_install.ts -- see util.ts.
 
-/** Build the hook command for Codex. On Windows, Codex CLI executes hook commands via PowerShell (`powershell.exe -Command ...`). In PowerShell, adjacent quoted string literals without a call operator fail with a ParserError ("Unexpected token '...' in expression or statement"). Prefixing with `& ` instructs PowerShell to invoke the quoted executable path with the trailing arguments (the identical fix `copilot_cli_install.ts` uses for Copilot CLI's `powershell` hook entry). On Unix (Linux/macOS), Codex executes hooks via POSIX `sh`, where `&` would be an invalid background operator, so the bare quoted command is preserved. */
+/** Build the hook command for Codex. On Windows, Codex CLI executes hook commands via PowerShell (`powershell.exe -Command ...`). In PowerShell, adjacent quoted string literals without a call operator fail with a ParserError ("Unexpected token '...' in expression or statement"). On Windows the command is therefore powershellHookLine over hookPowershellCommand: the call operator, single-quoted paths (a double-quoted one let PowerShell expand a `$` in the path), and the exit suffix that keeps the hook's exit code; the same line `copilot_cli_install.ts` writes for Copilot CLI's `powershell` field and `grok_install.ts` for Grok. On Unix (Linux/macOS), Codex executes hooks via POSIX `sh`, where `&` would be an invalid background operator, so the bare quoted command is preserved. */
 export function codexHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
   // The native client in front, when this install wires it: quoted for PowerShell on Windows (single quotes, so a `$` in a path stays literal) and for the POSIX shell Codex runs hooks with elsewhere. `sync: false` (the installed check) never refreshes the Windows copy.
   const bin = nativeHookBinary(process.argv[1], opts)
   const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'powershell' : 'sh', bin, 'codex', scriptPath, eventArg)
   if (native !== undefined) return native
-  const base = hookCommandFor(scriptPath, eventArg)
-  return process.platform === 'win32' ? `& ${base}` : base
+  return process.platform === 'win32' ? powershellHookLine(hookPowershellCommand(scriptPath, eventArg)) : hookCommandFor(scriptPath, eventArg)
 }
 
 /** Compute the canonical `trusted_hash` string that Codex CLI uses in `[hooks.state]` to track whether a hook definition is trusted. Codex canonicalizes the hook into: { event_name: <snake_case_event>, hooks: [{ async: false, command: <command>, timeout: 600, type: "command" }], matcher?: <matcher> } and hashes the compact JSON representation with SHA-256 (`sha256:<hex>`). */
@@ -376,15 +376,17 @@ export function uninstallCodex(): boolean {
   return removedAny
 }
 
-/** The argv words of every token-goat hook entry in Codex's config.toml, split the way the shell Codex runs it in would (PowerShell on Windows, sh elsewhere). Empty when nothing is wired or the file does not parse. */
-export function wiredCodexHookWords(): string[][] {
+/** Every token-goat hook entry in Codex's config.toml, split the way the shell Codex runs it in would (PowerShell on Windows, sh elsewhere), and whether it is a command this build writes. Empty when nothing is wired or the file does not parse. */
+export function wiredCodexHookWords(): WiredHookEntry[] {
   const hooks = readCodexConfig(codexConfigPath()).hooks ?? {}
-  const out: string[][] = []
+  const scriptPath = codexHookScriptPath()
+  const expected = new Set([...Object.values(CODEX_EVENT_ARG), ...Object.values(CODEX_GLOBAL_EVENT_ARG)].map((arg) => codexHookCommandFor(scriptPath, arg, { sync: false })))
+  const out: WiredHookEntry[] = []
   for (const [event, groups] of Object.entries(hooks)) {
     if (event === 'state' || !Array.isArray(groups)) continue
     for (const g of groups) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
-        if (isCodexTokenGoatCommand(h?.command)) out.push(splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'))
+        if (isCodexTokenGoatCommand(h?.command)) out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command) })
       }
     }
   }

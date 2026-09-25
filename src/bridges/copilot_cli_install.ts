@@ -5,8 +5,9 @@ import * as path from 'node:path'
 
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
+import { powershellHookLine } from '../process_util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
-import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
+import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
@@ -139,9 +140,9 @@ function stripCopilotInstructionsBlock(p: string): boolean {
 //
 // The interpreter is invoked via the absolute path to the Node binary that ran this installer (`process.execPath`, baked in at install time), not a bare `node` relying on PATH resolution -- confirmed live-production root cause of every tool call being denied with "(hook errored)" on Copilot CLI 1.0.68 (github/copilot-cli#4001): Copilot's `command`-type hooks fail closed, so if the environment it spawns them in doesn't resolve `node` on PATH, the hook process never launches, Copilot sees a failed process, and denies unconditionally. Quoted the same way as scriptPath below since the Node install path can also contain spaces (e.g. `C:\Program Files\nodejs\node.exe`). hookCommandFor is shared with codex_install.ts -- see util.ts.
 
-// The hooks reference doc (https://docs.github.com/en/copilot/reference/hooks-reference) confirms 'command' is only a cross-platform *fallback*: it's copied verbatim to 'bash' and 'powershell' when those fields are absent, and Copilot CLI runs 'powershell' by feeding the string directly to PowerShell as a script -- not via cmd.exe. hookCommandFor()'s output (a bare quoted-exe-then-quoted-args string, e.g. `"C:\...\node.exe" "...\shim.js" preToolUse ...`) is valid cmd.exe command-line syntax but is NOT valid PowerShell: two adjacent quoted string literals with no call operator is a parse error in PowerShell ("Unexpected token '"...\token-goat-shim.js"' in expression or statement"), confirmed live via Copilot CLI's own logged ParserError. Relying on 'command' alone meant every Windows install was silently broken -- the hook process never even started, Copilot's preToolUse fails *closed*, and every tool call got denied with "(hook errored)" regardless of PATH/absolute-path correctness (a distinct bug from the PATH-resolution class github/copilot-cli#4001 already fixed). Emitting an explicit 'powershell' entry prefixed with '&' (PowerShell's call operator, required to invoke a quoted path as a command rather than evaluate it as a string expression) fixes this; 'bash' gets the same command text since POSIX shells don't need a call operator for a quoted path. 'command' is kept for older Copilot CLI builds that might not read 'bash'/'powershell'. Single-quoted via hookPowershellCommand rather than reusing hookCommandFor's double-quoted text: PowerShell expands `$name` and `$(...)` inside double quotes, and a dollar sign is legal in a Windows directory name, so an install run from such a directory would have that text evaluated on every hook invocation.
+// The hooks reference doc (https://docs.github.com/en/copilot/reference/hooks-reference) confirms 'command' is only a cross-platform *fallback*: it's copied verbatim to 'bash' and 'powershell' when those fields are absent, and Copilot CLI runs 'powershell' by feeding the string directly to PowerShell as a script -- not via cmd.exe. hookCommandFor()'s output (a bare quoted-exe-then-quoted-args string, e.g. `"C:\...\node.exe" "...\shim.js" preToolUse ...`) is valid cmd.exe command-line syntax but is NOT valid PowerShell: two adjacent quoted string literals with no call operator is a parse error in PowerShell ("Unexpected token '"...\token-goat-shim.js"' in expression or statement"), confirmed live via Copilot CLI's own logged ParserError. Relying on 'command' alone meant every Windows install was silently broken -- the hook process never even started, Copilot's preToolUse fails *closed*, and every tool call got denied with "(hook errored)" regardless of PATH/absolute-path correctness (a distinct bug from the PATH-resolution class github/copilot-cli#4001 already fixed). Emitting an explicit 'powershell' entry built by powershellHookLine, prefixed with '&' (PowerShell's call operator, required to invoke a quoted path as a command rather than evaluate it as a string expression) and ending in the suffix that hands back the hook's own exit code, fixes this; 'bash' gets the same command text since POSIX shells don't need a call operator for a quoted path. 'command' is kept for older Copilot CLI builds that might not read 'bash'/'powershell'. Single-quoted via hookPowershellCommand rather than reusing hookCommandFor's double-quoted text: PowerShell expands `$name` and `$(...)` inside double quotes, and a dollar sign is legal in a Windows directory name, so an install run from such a directory would have that text evaluated on every hook invocation.
 function hookPowershellCommandFor(scriptPath: string, event: CopilotCliHookEvent): string {
-  return `& ${hookPowershellCommand(scriptPath, event)}`
+  return powershellHookLine(hookPowershellCommand(scriptPath, event))
 }
 
 // Copilot's own default (per its hooks reference doc) is 30s, and a killed-on-timeout preToolUse hook fails *open* (proceeds to normal permission flow), not closed -- so this is not itself a fix for the "(hook errored)" deny-all class (that's exclusively hookCommandFor's PATH hardening above). It exists for a narrower reason: a cold first invocation (bundle load + DB open, or a symlinked dev-clone mid `npm install`/`npm run build`) can plausibly exceed a 30s default, and every non-preToolUse event here (unlike preToolUse) has no documented fail-open timeout carve-out -- so a slow cold start on those still risks a "Killed after timeoutSec" error being logged for no real reason. Double Copilot's own default as cheap, harmless headroom.
@@ -166,18 +167,22 @@ export function copilotHookCommandsFor(scriptPath: string, event: CopilotCliHook
   return { command: hookCommandFor(scriptPath, event), bash: hookCommandFor(scriptPath, event), powershell: hookPowershellCommandFor(scriptPath, event) }
 }
 
-/** The argv words of the `command` field of every entry in the Copilot CLI hook config token-goat owns at `opts`'s scope, split the way that platform's default shell would (cmd.exe on Windows, sh elsewhere), since `command` is written for it. Empty when the file is absent or does not parse. */
-export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): string[][] {
+/** Every entry in the Copilot CLI hook config token-goat owns at `opts`'s scope: the argv words of its `command` field, split the way that platform's default shell would (cmd.exe on Windows, sh elsewhere), since `command` is written for it, and whether all three of its command fields are what this build writes for its event. Empty when the file is absent or does not parse. */
+export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredHookEntry[] {
   let config: Partial<CopilotCliConfig>
   try {
     config = JSON.parse(fs.readFileSync(copilotCliConfigPath(opts), 'utf8')) as Partial<CopilotCliConfig>
   } catch {
     return []
   }
-  const out: string[][] = []
-  for (const entries of Object.values(config?.hooks ?? {})) {
+  const scriptPath = copilotCliScriptPath(opts)
+  const out: WiredHookEntry[] = []
+  for (const [event, entries] of Object.entries(config?.hooks ?? {})) {
+    const expected = (COPILOT_CLI_HOOK_EVENTS as readonly string[]).includes(event) ? copilotHookCommandsFor(scriptPath, event as CopilotCliHookEvent, { sync: false }) : undefined
     for (const h of Array.isArray(entries) ? entries : []) {
-      if (typeof h?.command === 'string') out.push(splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'))
+      if (typeof h?.command !== 'string') continue
+      const current = expected !== undefined && h.command === expected.command && h.bash === expected.bash && h.powershell === expected.powershell
+      out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current })
     }
   }
   return out

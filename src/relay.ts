@@ -11,7 +11,7 @@ import { commitPendingContext } from './pending_context.js'
 import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
 import { setTranscriptPath } from './session.js'
-import { recordStat } from './stats.js'
+import { HOOK_PROBE_ENV, recordStat } from './stats.js'
 // Re-exported below: this was defined here until it was split out (see stdin_json.ts's own note).
 import { MAX_STDIN_BYTES, readStdinJson } from './stdin_json.js'
 import { shouldSuppressDuplicateVscodeHook } from './vscode_duplicate.js'
@@ -158,13 +158,14 @@ export function relayInProcess(eventName: string, rawPayload: unknown, harnessWa
   const receivedAt = Date.now()
   // Read now, under the caller's environment: a resident server swaps it in only for the duration of the request.
   const detail = opts.detail ?? nativeFallbackDetail()
-  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply, detail))
+  const probe = process.env[HOOK_PROBE_ENV] === '1'
+  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply, detail, probe))
   relayQueue = run.catch(() => undefined)
   return run
 }
 
 /** One {@link relayInProcess} call, run once every earlier call has settled or {@link RELAY_QUEUE_WAIT_MS} has passed. */
-async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number, elapsedMs: () => number, afterReply?: (work: () => void) => void, detail?: string): Promise<string> {
+async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number, elapsedMs: () => number, afterReply?: (work: () => void) => void, detail?: string, probe = false): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'
   }
@@ -228,7 +229,10 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
   } finally {
     // recordStat() is its own already-open, already-fail-soft synchronous write (the same one every other hook-path stat in this codebase makes), so this adds no new blocking behavior -- including on the async-detach path (shim_common.ts), which prints its early marker before this module ever runs and does not wait for relayInProcess to return either way. duration_ms means one thing everywhere it is read (token-goat stats --hooks, doctor's latency check): what the caller waited on. For an async-detached call that is harnessWaitMs, captured by the shim at the moment it printed the marker and handed in by the caller; for every other call it is this call's own full elapsed time, which is also what the caller waited on since nothing detached early.
     const durationMs = harnessWaitMs ?? elapsedMs()
-    const record = (): void => recordStat(`hook:${eventName}`, 0, 0, undefined, detail, undefined, durationMs)
+    // A diagnostic's own call (HOOK_PROBE_ENV) is not one the harness made, so it leaves no row to be counted as one.
+    const record = (): void => {
+      if (!probe) recordStat(`hook:${eventName}`, 0, 0, undefined, detail, undefined, durationMs)
+    }
     if (afterReply) afterReply(record)
     else record()
   }

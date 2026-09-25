@@ -594,6 +594,9 @@ export function pruneHintEmissions(db: SqliteDatabase, retentionDays: number = S
 /** `hook:*` rows (relay.ts's per-invocation duration_ms) fire on every hook call the running install makes -- an order of magnitude more often than any other kind in this table -- and {@link rollupAndPruneStats}'s day/kind/harness/tg_version rollup keeps only a summed count for whatever it aggregates, throwing away the individual durations hook_latency.ts's hookLatencyBreakdown() needs for a median/p95. A percentile over month-old latencies answers a question nobody asks ("was token-goat slow last quarter"), so raw rows are deleted outright at a much shorter window than {@link STATS_RETENTION_DAYS} rather than carried into the rollup at all. */
 export const HOOK_STATS_RETENTION_DAYS = 7
 
+/** Set to `1` on a hook call a diagnostic makes itself (doctor's Copilot CLI check runs the wired preToolUse command to prove it still launches), so that call leaves no `hook:*` row. Those rows are what doctor reports as the harness's own hook calls, in its latency check and its native hook client counts, and a probe counted among them reports doctor's own call as one the harness made. */
+export const HOOK_PROBE_ENV = 'TOKEN_GOAT_HOOK_PROBE'
+
 /** Delete `hook:*` rows older than `retentionDays` -- see {@link HOOK_STATS_RETENTION_DAYS}'s doc comment for why this runs ahead of the general rollup instead of feeding it. */
 export function pruneHookStats(db: SqliteDatabase, retentionDays: number = HOOK_STATS_RETENTION_DAYS): void {
   try {

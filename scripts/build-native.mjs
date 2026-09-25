@@ -2,6 +2,7 @@
 /** Builds the native hook client (native/tg-hook) for this machine and copies it to dist/native/<platform>-<arch>/tg-hook[.exe], the path the installer will look in. `--locked` makes the committed Cargo.lock what ships, and native/tg-hook/rust-toolchain.toml pins the compiler, which rustup installs on first use. Prints the destination path as the last line of stdout; exits non-zero, saying why, when cargo is missing or the build fails, so a caller never mistakes a stale binary for a fresh one. */
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -14,9 +15,17 @@ function fail(message) {
   process.exit(1)
 }
 
+// rustc writes the absolute source path of every dependency into panic and serde messages, and the MSVC linker the absolute path of the debug file, so without these the binary names the builder's home directory (a username, on a local build) and its bytes change with HOME: a test run that points HOME at a temp directory built a binary that differed from the one install had copied, and doctor reported the copy stale. The later remap wins where two match, so the checkout, which may sit inside the cargo home's parent, is listed last.
+const cargoHome = process.env.CARGO_HOME || path.join(os.homedir(), '.cargo')
+const remap = [`--remap-path-prefix=${cargoHome}=/cargo`, `--remap-path-prefix=${CRATE_DIR}=/tg-hook`]
+if (process.platform === 'win32') remap.push('-Clink-arg=/PDBALTPATH:%_PDB%', '-Clink-arg=/Brepro')
+const inherited = process.env.CARGO_ENCODED_RUSTFLAGS ?? (process.env.RUSTFLAGS ?? '').split(' ').filter(Boolean).join('\x1f')
+const rustflags = [inherited, ...remap].filter(Boolean).join('\x1f')
+
 // The artifact path comes from cargo's own JSON messages rather than an assumed target/release/, so a CARGO_TARGET_DIR set in the environment still finds the binary just built.
 const result = spawnSync('cargo', ['build', '--release', '--locked', '--message-format=json-render-diagnostics'], {
   cwd: CRATE_DIR,
+  env: { ...process.env, CARGO_ENCODED_RUSTFLAGS: rustflags },
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'inherit'],
   maxBuffer: 64 * 1024 * 1024,

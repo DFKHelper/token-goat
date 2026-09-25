@@ -5,10 +5,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.codex/` (mirrors the pattern in project_memory.test.ts /
-// cli_context_stats.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.codex/` (mirrors the pattern in project_memory.test.ts / cli_context_stats.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -57,6 +54,9 @@ function commandsFor(config: CodexConfigShape, event: string): string[] {
 
 let TMP: string
 
+/** A path as the written command quotes it: single quotes in the PowerShell line Codex runs on Windows, double quotes for sh elsewhere (no path here holds a quote or a dollar sign). */
+const quoted = (p: string): string => (process.platform === 'win32' ? `'${p}'` : `"${p}"`)
+
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-codex-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
@@ -74,12 +74,14 @@ describe('codexHookCommandFor', () => {
     Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
   })
 
-  it('prefixes with "& " on Windows (win32) so PowerShell does not throw a ParserError on adjacent string literals', () => {
+  it('writes a PowerShell call on Windows (win32): the call operator (adjacent string literals are a ParserError), single-quoted paths (a double-quoted one expands a $ inside it), and the suffix that exits with the hook\'s own code', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     const cmd = codexHookCommandFor('C:\\path\\to\\shim.js', 'pre_compact')
     expect(cmd.startsWith('& ')).toBe(true)
-    expect(cmd).toContain('pre_compact')
-    expect(cmd).toContain('"C:\\path\\to\\shim.js"')
+    expect(cmd).toContain("'C:\\path\\to\\shim.js' pre_compact")
+    expect(cmd).not.toContain('"')
+    // HAND-DERIVED: typed from what `powershell -Command` needs to exit with a native program's own code (LASTEXITCODE, guarded for a program that never started), not imported from the source.
+    expect(cmd.endsWith('; if (Get-Variable LASTEXITCODE -ErrorAction Ignore) { exit (Get-Variable LASTEXITCODE -ValueOnly) }; exit 1')).toBe(true)
   })
 
   it('does not prefix with "& " on non-Windows (linux/darwin) so POSIX sh does not treat it as a background operator', () => {
@@ -194,19 +196,13 @@ describe('installCodex', () => {
     }
   })
 
-  // Regression coverage for the parity-matrix gap found via feature-queue #307's
-  // static capability audit: codex_install.ts wired PreToolUse/PostToolUse only,
-  // even though Codex's real hooks API (developers.openai.com/codex/hooks) also
-  // supports PreCompact/UserPromptSubmit/SubagentStop -- the same three events
-  // Claude Code (install.ts's HOOK_EVENT_MAP) and Grok (grok_install.ts) already
-  // wire to token-goat's real registered handlers.
+  // Regression coverage for the parity-matrix gap found via feature-queue #307's static capability audit: codex_install.ts wired PreToolUse/PostToolUse only, even though Codex's real hooks API (developers.openai.com/codex/hooks) also supports PreCompact/UserPromptSubmit/SubagentStop -- the same three events Claude Code (install.ts's HOOK_EVENT_MAP) and Grok (grok_install.ts) already wire to token-goat's real registered handlers.
   it('writes matcher-less PreCompact/UserPromptSubmit/SubagentStop hook entries on a fresh install', () => {
     installCodex()
     const config = readConfig()
     for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
       const groups = config.hooks?.[event] ?? []
-      // Fresh install: stripStaleGroupHooks finds nothing to strip, so installCodex pushes
-      // exactly one matcher-less group per global event.
+      // Fresh install: stripStaleGroupHooks finds nothing to strip, so installCodex pushes exactly one matcher-less group per global event.
       expect(groups.length).toBe(1)
       const commands = commandsFor(config, event)
       expect(commands.some((c) => c.includes('token-goat-shim'))).toBe(true)
@@ -293,9 +289,7 @@ describe('installCodex', () => {
     expect(() => installCodex()).toThrow(CodexConfigParseError)
     expect(() => installCodex()).toThrow(/invalid TOML/)
 
-    // installCodex must never reach the config.toml write when the file existed
-    // but failed to parse -- the corrupt-but-recoverable file must be left
-    // exactly as the user left it, not silently clobbered.
+    // installCodex must never reach the config.toml write when the file existed but failed to parse -- the corrupt-but-recoverable file must be left exactly as the user left it, not silently clobbered.
     expect(fs.readFileSync(p, 'utf8')).toBe(corrupt)
   })
 
@@ -306,9 +300,9 @@ describe('installCodex', () => {
     for (const event of ['PreToolUse', 'PostToolUse']) {
       for (const command of commandsFor(config, event)) {
         if (!command.includes('token-goat-shim')) continue
-        expect(command).toContain(`"${process.execPath}"`)
+        expect(command).toContain(quoted(process.execPath))
         expect(command.startsWith('node ')).toBe(false)
-        expect(command).toContain(`"${process.argv[1]}"`)
+        expect(command).toContain(quoted(process.argv[1]!))
       }
     }
   })
@@ -322,8 +316,7 @@ describe('installCodex', () => {
 
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('config.toml.bak.'))
-    // backupFile no-ops when the target doesn't exist yet, so exactly one call above actually
-    // produces a backup file.
+    // backupFile no-ops when the target doesn't exist yet, so exactly one call above actually produces a backup file.
     expect(backups.length).toBe(1)
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(backupContent).toBe('model = "gpt-5"\n')
@@ -332,10 +325,7 @@ describe('installCodex', () => {
   it('refreshes a stale baked entry path on re-install instead of skipping as already installed (regression: the idempotency check only tested for the token-goat-shim marker being present, never compared the actual command text against what hookCommandFor would currently produce, so a deleted-dev-checkout or node-version-switch entry path never got corrected)', () => {
     const p = codexConfigPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    // A marker-shaped entry (contains "token-goat-shim") whose baked node/entry
-    // paths point at a checkout that no longer exists -- exactly what a real
-    // install call would never write today, but exactly what an old install
-    // left behind.
+    // A marker-shaped entry (contains "token-goat-shim") whose baked node/entry paths point at a checkout that no longer exists -- exactly what a real install call would never write today, but exactly what an old install left behind.
     const staleConfig = [
       '[[hooks.PreToolUse]]',
       'matcher = "view_image|Bash|exec|shell|bash"',
@@ -369,7 +359,7 @@ describe('installCodex', () => {
     // The stale entry must be gone entirely -- refreshed in place, not left as a dead duplicate.
     expect(preCommands.some((c) => c.includes('C:/deleted-checkout'))).toBe(false)
     for (const command of preCommands) {
-      expect(command).toContain(`"${process.execPath}"`)
+      expect(command).toContain(quoted(process.execPath))
       expect(command).toContain(result.hookScriptPath)
     }
   })

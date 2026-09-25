@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { _resetDataDirCacheForTesting, dataDir } from '../src/constants.js'
 import { encodeFrame, endpointFor, frameFits, mac, macMatches, MAX_FRAME_BYTES, readFrames, readServerKey, resolveBundleDir, serverKeyPath } from '../src/hook_ipc.js'
+import { buildNative } from './helpers/native_bin.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const WIN = process.platform === 'win32'
@@ -24,11 +25,9 @@ let bin = ''
 let scratch = ''
 
 beforeAll(() => {
-  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-native.mjs')], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-  if (r.status !== 0) throw new Error(`scripts/build-native.mjs failed (exit ${String(r.status)}); the tg-hook conformance suite needs the Rust toolchain pinned in native/tg-hook/rust-toolchain.toml.\n${r.stderr}${r.error?.message ?? ''}`)
-  bin = r.stdout.trim().split(/\r?\n/).pop() ?? ''
+  bin = buildNative()
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-native-conf-'))
-}, 900_000)
+})
 
 afterAll(() => {
   if (scratch !== '') fs.rmSync(scratch, { recursive: true, force: true })

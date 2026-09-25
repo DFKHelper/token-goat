@@ -20,10 +20,15 @@ import { buildNative } from './helpers/native_bin.js'
 
 type Env = Record<string, string>
 const WIN = process.platform === 'win32'
+/** Platforms this build ships a native hook client for (native_hook.ts NATIVE_TARGETS); elsewhere, macOS, every installer writes the Node form, so there is no native form to drive. */
+const NATIVE = WIN || process.platform === 'linux'
 /** Every character class that has broken a generated hook command line in some shell: a space, cmd's `%NAME%`, POSIX and PowerShell `$name`, a single quote, and a non-ASCII letter. `x` and `y` are removed from the environment, so neither expands. */
 const SPECIAL = `tg %x% $y 'q' é`
 /** Grok expands `$VAR` in a hook command itself when it loads the config and refuses to run one naming an unset variable (xai-grok-hooks env_expand.rs `find_unresolved_env_vars`), whatever the quoting, so its sandbox leaves the dollar out. */
 const SPECIAL_NO_DOLLAR = `tg %x% 'q' é`
+/** Kimi Code runs a hook through cmd.exe on Windows, where install refuses a path holding a `%NAME%` pair (cmd expands one before it reads a quote), so its Windows sandbox leaves the percent pair out. */
+const SPECIAL_NO_PERCENT = `tg $y 'q' é`
+const specialFor = (harness: PayloadHarness): string => (harness === 'grok' ? SPECIAL_NO_DOLLAR : harness === 'kimi' && WIN ? SPECIAL_NO_PERCENT : SPECIAL)
 
 interface Entry {
   command: string
@@ -297,7 +302,7 @@ async function driveHarness(sb: Sandbox, harness: PayloadHarness, claudeForm: 'e
     expect(inv, `${way.label}: not the native form: ${cmd}`).toBeDefined()
     expect(inv!.harness).toBe(harness)
     // The paths really do carry the awkward characters, so a pass is not a pass on plain paths.
-    expect(words.some((w) => w.includes(harness === 'grok' ? SPECIAL_NO_DOLLAR : SPECIAL)), words.join(' | ')).toBe(true)
+    expect(words.some((w) => w.includes(specialFor(harness))), words.join(' | ')).toBe(true)
     const ref = await launch({ file: inv!.wrapped[0]!, args: inv!.wrapped.slice(1) }, c, sb, `ref-${harness}-${way.field}`, id)
     expect(ref.stdout.trim() !== '' || ref.exit !== 0, `the reference answered nothing: ${ref.stderr}`).toBe(true)
 
@@ -313,6 +318,22 @@ async function driveHarness(sb: Sandbox, harness: PayloadHarness, claudeForm: 'e
     fallback++
   }
   return { native, fallback }
+}
+
+/** Every way `harness` launches its Node-form command answers exactly what that Node command answers run directly, exit code included: the line parses in the harness's shell (Grok's Windows Node form once did not, in either PowerShell), and a PowerShell line exits with the hook's own code (Grok's deny exits 2). */
+async function driveNodeForm(sb: Sandbox, harness: PayloadHarness): Promise<void> {
+  const c = caseFor(harness)
+  const entries = tokenGoatEntries(CONFIG_FILE[harness](sb))
+  const id: Env = harness === 'claudecode' ? { CLAUDE_CODE_SESSION_ID: 'tg-node-e2e' } : {}
+  for (const way of waysFor(harness, 'exec')) {
+    const { entry, words, cmd } = wiredFor(entries, c, way)
+    expect(parseNativeInvocation(words), `${way.label}: not the Node form: ${cmd}`).toBeUndefined()
+    expect(words.some((w) => w.includes(specialFor(harness))), words.join(' | ')).toBe(true)
+    const ref = await launch({ file: words[0]!, args: words.slice(1) }, c, sb, `noderef-${harness}-${way.field}`, { ...id, TOKEN_GOAT_HOOK_SERVER: '0' })
+    expect(ref.stdout.trim() !== '' || ref.exit !== 0, `the reference answered nothing: ${ref.stderr}`).toBe(true)
+    const run = await launch(way.run(cmd, entry), c, sb, `node-${harness}-${way.field}`, { ...id, TOKEN_GOAT_HOOK_SERVER: '0' })
+    expect({ stdout: run.stdout, exit: run.exit }, `${way.label} (Node form): ${run.stderr}`).toEqual({ stdout: ref.stdout, exit: ref.exit })
+  }
 }
 
 /** `stats.detail` counts over the sandbox's `hook:*` rows. */
@@ -370,12 +391,12 @@ afterAll(async () => {
 
 const SPLIT: Record<PayloadHarness, HookShell> = { claudecode: 'sh', codex: WIN ? 'powershell' : 'sh', grok: WIN ? 'powershell' : 'sh', kimi: WIN ? 'cmd' : 'sh', copilot_cli: WIN ? 'cmd' : 'sh' }
 
-describe.each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const)('%s: native hook commands as installed', (harness) => {
+describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const)('%s: native hook commands as installed', (harness) => {
   let sb: Sandbox
   let expected = { native: 0, fallback: 0 }
 
   beforeAll(async () => {
-    sb = makeSandbox(harness === 'grok' ? SPECIAL_NO_DOLLAR : SPECIAL)
+    sb = makeSandbox(specialFor(harness))
     await startServer(sb)
   }, 120_000)
 
@@ -401,12 +422,13 @@ describe.each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const)('
     expect(counts['node']).toBe(expected.native)
   }, 240_000)
 
-  it('switches every event to the Node form and back on reinstall, and uninstall removes the native entries', () => {
+  it('switches every event to the Node form, which each way the harness runs it answers as the Node command does, and back on reinstall, and uninstall removes the native entries', async () => {
     const file = CONFIG_FILE[harness](sb)
     const before = forms(file, SPLIT[harness])
     const env: Env = harness === 'claudecode' ? { TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS: '1' } : {}
     install(sb, INSTALL_FLAG[harness], { ...env, TOKEN_GOAT_NATIVE_HOOKS: '0' })
     expect(forms(file, SPLIT[harness])).toEqual({ native: 0, node: before.native + before.node })
+    await driveNodeForm(sb, harness)
     install(sb, INSTALL_FLAG[harness], env)
     expect(forms(file, SPLIT[harness])).toEqual({ native: before.native + before.node, node: 0 })
     if (harness === 'codex') {
@@ -456,11 +478,13 @@ describe.each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const)('
     }
     const execEnv: Env = harness === 'claudecode' ? { TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS: '1' } : {}
 
+    const countsBeforeDoctor = detailCounts(sb)
     const live = row(execEnv)
+    expect(detailCounts(sb), 'doctor recorded a hook call of its own').toEqual(countsBeforeDoctor)
     expect(live.status, live.message).toBe('ok')
     expect(live.message).toMatch(/^native, .*tg-hook(\.exe)?, self-test passed; last 7 days: \d+ served natively, \d+ fell back \(server-off \d+\), \d+ through Node$/)
-    // Copilot's own doctor check (checkCopilotCli) runs the wired preToolUse command for real, under this sandbox's TOKEN_GOAT_HOOK_SERVER=0, so that one call falls back and is counted before the native row reads the counts.
-    const fellBack = expected.fallback + (harness === 'copilot_cli' ? 1 : 0)
+    // Copilot's own doctor check (checkCopilotCli) runs the wired preToolUse command for real, and under this sandbox's TOKEN_GOAT_HOOK_SERVER=0 that call falls back to Node; it marks the call as its own (HOOK_PROBE_ENV), so the counts are the harness's calls alone.
+    const fellBack = expected.fallback
     expect(live.message).toContain(`${expected.native} served natively, ${fellBack} fell back (server-off ${fellBack})`)
 
     install(sb, INSTALL_FLAG[harness], { ...execEnv, TOKEN_GOAT_NATIVE_HOOKS: '0' })
@@ -511,7 +535,8 @@ describe.each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const)('
       expect(own.message).toContain(`native hook client binary that no longer exists (${gone})`)
     }
     install(sb, INSTALL_FLAG[harness], execEnv)
-    expect(row(execEnv).status).toBe('ok')
+    const reinstalled = row(execEnv)
+    expect(reinstalled.status, reinstalled.message).toBe('ok')
     if (WIN) {
       // doctor only reads: with the data-dir copy gone it reports the entries broken and leaves the copy for install to write, rather than writing it while it computes what install would write. Moved rather than deleted: an unlink returns at once but leaves the name in place while anything (a scanner, just after the self-test ran it) still holds the file open, and a rename takes effect regardless.
       fs.renameSync(bin, `${bin}.moved`)
@@ -521,11 +546,134 @@ describe.each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const)('
       expect(fs.existsSync(bin)).toBe(false)
       install(sb, INSTALL_FLAG[harness], execEnv)
       expect(fs.existsSync(bin)).toBe(true)
-      expect(row(execEnv).status).toBe('ok')
+      const rewritten = row(execEnv)
+      expect(rewritten.status, rewritten.message).toBe('ok')
     }
 
     const un = cli(sb, ['uninstall', ...INSTALL_FLAG[harness]])
     expect(un.status, un.stderr).toBe(0)
     expect(forms(file, SPLIT[harness]).native).toBe(0)
+  }, 300_000)
+})
+
+describe('install refuses a hook path the harness rewrites before running it', () => {
+  /** Installs with the native client on and off (so both command forms are checked), with `x` and `y` set so either span would really change the path, and expects a refusal that writes no hook config. */
+  function refuses(dirName: string, flag: string, span: string, file: (sb: Sandbox) => string): void {
+    const sb = makeSandbox(dirName)
+    for (const native of ['1', '0']) {
+      const res = cli(sb, ['install', flag], { TOKEN_GOAT_NATIVE_HOOKS: native, x: 'expanded', y: 'expanded' })
+      expect(res.status, `${native}: ${res.stdout}${res.stderr}`).not.toBe(0)
+      expect(res.stderr).toContain(`Move the path that contains "${span}"`)
+      expect(res.stderr).toContain(`then run 'token-goat install ${flag}' again`)
+      // The command it refused is the form that install would have written.
+      expect(res.stderr.includes(WIN ? 'tg-hook.exe' : 'tg-hook')).toBe(native === '1' && NATIVE)
+      expect(fs.existsSync(file(sb)), 'a hook config was written').toBe(false)
+    }
+  }
+
+  // HAND-DERIVED paths. Grok substitutes `$NAME` in a hook command itself, with no escape and whatever the quoting (grok-build xai-grok-hooks env_expand.rs `iter_env_var_references`), and refuses to run one naming an unset variable (runner/command.rs `find_unresolved_env_vars`).
+  it('Grok CLI: a path holding $NAME, in the native and the Node form', () => {
+    refuses('tg $y', '--grok', '$y', CONFIG_FILE.grok)
+  }, 120_000)
+
+  // cmd.exe expands `%NAME%` in its first parsing phase, before it reads a quote, and Kimi Code runs a hook with Node's `spawn(command, { shell: true })`, which is cmd.exe on Windows.
+  it.runIf(WIN)('Kimi Code on Windows: a path holding %NAME%, in the native and the Node form', () => {
+    refuses('tg %x%', '--kimi', '%x%', CONFIG_FILE.kimi)
+  }, 120_000)
+})
+
+describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, broken or absent', () => {
+  /** A binary that starts and exits 1 whatever it is asked, standing in for a native hook client that fails its self-test. CAPTURE: `C:\Windows\System32\where.exe --selftest` prints "INFO: Could not find files for the given pattern(s)." and exits 1 (Windows 11 26200); `/bin/false` exits 1 whatever its arguments (POSIX `false`). */
+  const FAILING_BINARY = WIN ? path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'where.exe') : '/bin/false'
+  const TARGET = `${process.platform}-${process.arch}`
+
+  /** A sandbox whose package is a real copy of the built one (dist and package.json, with node_modules linked back to this repository), so its native binary can be changed without touching the repository's. */
+  function copiedSandbox(dirName: string): Sandbox {
+    const sb = makeSandbox(dirName)
+    if (WIN) fs.rmdirSync(sb.link)
+    else fs.unlinkSync(sb.link)
+    const pkg = path.join(sb.home, 'pkg')
+    fs.mkdirSync(pkg)
+    fs.cpSync(path.join(ROOT, 'dist'), path.join(pkg, 'dist'), { recursive: true })
+    fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(pkg, 'package.json'))
+    sb.link = path.join(pkg, 'node_modules')
+    fs.symlinkSync(path.join(ROOT, 'node_modules'), sb.link, WIN ? 'junction' : 'dir')
+    return sb
+  }
+
+  /** Puts `src`'s bytes at `file`, moving the old file aside first: a rename takes effect even while a scanner still holds the file open after the last self-test ran it. */
+  function replace(file: string, src: string): void {
+    fs.renameSync(file, `${file}.${String(Date.now())}.old`)
+    fs.copyFileSync(src, file)
+  }
+
+  it('reports a stale copy, a binary that fails its self-test and a build without one, and install moves the entries to what it reports', () => {
+    const sb = copiedSandbox('tg native build')
+    const packaged = path.join(sb.home, 'pkg', 'dist', 'native', TARGET, WIN ? 'tg-hook.exe' : 'tg-hook')
+    const good = path.join(sb.root, 'tg-hook.good')
+    fs.copyFileSync(packaged, good)
+    const run = 'token-goat install --codex'
+    const row = (): { status: string; message: string } => {
+      const r = doctorRows(sb).find((x) => x.name === 'Native hooks (Codex)')
+      expect(r, 'no Native hooks (Codex) row').toBeDefined()
+      return r!
+    }
+    const wiredBin = (): string | undefined => parseNativeInvocation(wordsOf(tokenGoatEntries(CONFIG_FILE.codex(sb))[0]!, SPLIT.codex))?.bin
+
+    install(sb, ['--codex'])
+    const bin = wiredBin()
+    expect(bin, 'the native form was not written').toBeDefined()
+    expect(row().status).toBe('ok')
+
+    if (WIN) {
+      // An upgrade ships different bytes, and the entries still run the data-directory copy of the old ones.
+      fs.appendFileSync(packaged, Buffer.from('a later build'))
+      const stale = row()
+      expect(stale.status, stale.message).toBe('warn')
+      expect(stale.message).toContain(`self-test passed, but the copy differs from this build's binary; run '${run}' to refresh it`)
+      install(sb, ['--codex'])
+      expect(fs.readFileSync(bin!).equals(fs.readFileSync(packaged))).toBe(true)
+      expect(row().status).toBe('ok')
+      replace(packaged, good)
+      install(sb, ['--codex'])
+      expect(row().status).toBe('ok')
+    }
+
+    // The binary the entries run fails its self-test.
+    replace(bin!, FAILING_BINARY)
+    const broken = row()
+    expect(broken.status, broken.message).toBe('fail')
+    expect(broken.message).toContain(`the native hook client at ${bin!} fails its self-test (exit code 1); run '${run}' to rewrite the entries as Node commands`)
+
+    // The binary this build ships fails its self-test: install writes the Node form and doctor says why.
+    replace(packaged, FAILING_BINARY)
+    install(sb, ['--codex'])
+    expect(wiredBin()).toBeUndefined()
+    const failing = row()
+    expect(failing.status, failing.message).toBe('warn')
+    expect(failing.message).toMatch(/^Node form; this build's native hook client fails its self-test \(exit code 1\); last 7 days/)
+    replace(packaged, good)
+    install(sb, ['--codex'])
+    expect(wiredBin()).toBe(bin)
+    expect(row().status).toBe('ok')
+
+    // A build that ships no native binary for this machine.
+    const nativeDir = path.dirname(path.dirname(packaged))
+    fs.renameSync(nativeDir, `${nativeDir}.gone`)
+    const absent = row()
+    if (WIN) {
+      // The entries run the data-directory copy, which still works.
+      expect(absent.status, absent.message).toBe('warn')
+      expect(absent.message).toContain(`self-test passed, but this build ships no native hook client for ${TARGET}; run '${run}' to switch to the Node form`)
+    } else {
+      // The entries ran the packaged binary itself, which has gone with it.
+      expect(absent.status, absent.message).toBe('fail')
+      expect(absent.message).toContain('which no longer exists')
+    }
+    install(sb, ['--codex'])
+    expect(wiredBin()).toBeUndefined()
+    const node = row()
+    expect(node.status, node.message).toBe('ok')
+    expect(node.message.startsWith(`Node form; this build ships no native hook client for ${TARGET}; last 7 days`), node.message).toBe(true)
   }, 300_000)
 })
