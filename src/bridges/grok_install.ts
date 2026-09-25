@@ -5,8 +5,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { removeCreatedBackups } from './created_configs.js'
-import { hookCommandFor, writeIfDifferent } from '../util.js'
-import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
+import { hookCommandFor, hookPowershellCommand, writeIfDifferent } from '../util.js'
+import { powershellHookLine } from '../process_util.js'
+import { HookCommandRewriteError, hookCommandRewrittenSpan, nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { GROK_HOOK_SCRIPT } from './grok.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 
@@ -57,26 +58,28 @@ function grokLegacyHookScriptPath(): string {
   return path.join(grokHooksDir(), LEGACY_SHIM_FILE)
 }
 
-/** The hook command for `eventArg`: the native client in front of the Node command when this install wires it, quoted for the shell Grok runs a hook command in (PowerShell, `pwsh` or `powershell.exe -NoProfile -NonInteractive -Command`, on Windows; `sh -c` elsewhere), else the Node command alone. */
+/** The hook command for `eventArg`: the native client in front of the Node command when this install wires it, quoted for the shell Grok runs a hook command in (PowerShell, `pwsh` or `powershell.exe -NoProfile -NonInteractive -Command`, on Windows; `sh -c` elsewhere), else the Node command alone in that same shell's form. The Windows Node form was once cmd-style (`"node" "shim" ...`), which PowerShell rejects as a ParserError before anything runs, so every Grok hook on Windows failed open and did nothing. */
 export function grokHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
   const bin = nativeHookBinary(process.argv[1], opts)
   const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'powershell' : 'sh', bin, 'grok', scriptPath, eventArg)
-  return native ?? hookCommandFor(scriptPath, eventArg)
+  return native ?? (process.platform === 'win32' ? powershellHookLine(hookPowershellCommand(scriptPath, eventArg)) : hookCommandFor(scriptPath, eventArg))
 }
 
-/** The argv words of every hook entry in the Grok config token-goat owns, split the way the shell Grok runs it in would (PowerShell on Windows, sh elsewhere). Empty when the file is absent or does not parse. */
-export function wiredGrokHookWords(): string[][] {
+/** Every hook entry in the Grok config token-goat owns, split the way the shell Grok runs it in would (PowerShell on Windows, sh elsewhere), and whether it is a command this build writes. Empty when the file is absent or does not parse. */
+export function wiredGrokHookWords(): WiredHookEntry[] {
   let config: Partial<GrokHookConfig>
   try {
     config = JSON.parse(fs.readFileSync(grokConfigPath(), 'utf8')) as Partial<GrokHookConfig>
   } catch {
     return []
   }
-  const out: string[][] = []
+  const scriptPath = grokHookScriptPath()
+  const expected = new Set(GROK_HOOK_EVENTS.map((e) => grokHookCommandFor(scriptPath, GROK_EVENT_ARG[e], { sync: false })))
+  const out: WiredHookEntry[] = []
   for (const groups of Object.values(config?.hooks ?? {})) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
-        if (typeof h?.command === 'string') out.push(splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'))
+        if (typeof h?.command === 'string') out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command) })
       }
     }
   }
@@ -105,12 +108,20 @@ export interface GrokInstallResult {
 export function installGrok(): GrokInstallResult {
   const configPath = grokConfigPath()
   const scriptPath = grokHookScriptPath()
+  const config = buildConfig(scriptPath)
+  // Refused before anything is written: Grok substitutes a $NAME in a hook command itself, so a path containing one would run some other path, or no hook at all when the variable is unset.
+  for (const command of Object.values(config.hooks).flatMap((groups) => (groups ?? []).flatMap((g) => g.hooks.map((h) => h.command)))) {
+    const span = hookCommandRewrittenSpan(command, 'grok')
+    if (span !== undefined) {
+      throw new HookCommandRewriteError(`Grok CLI substitutes ${span} in a hook command with the value of that environment variable when it loads the hook, whatever the quoting, and refuses to run the hook when it is unset, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the home directory, token-goat's install directory, or Node's) to one without a $ name, then run 'token-goat install --grok' again.`)
+    }
+  }
 
   // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the hook config itself needs any change (mirrors installCodex/installCopilotCli).
   const forwarderChanged = writeIfDifferent(grokLegacyHookScriptPath(), legacyShimForwarder('{}'))
   const scriptChanged = writeIfDifferent(scriptPath, GROK_HOOK_SCRIPT)
 
-  const desiredText = `${JSON.stringify(buildConfig(scriptPath), null, 2)}\n`
+  const desiredText = `${JSON.stringify(config, null, 2)}\n`
   const configChanged = writeIfDifferent(configPath, desiredText, true)
 
   return { configPath, hookScriptPath: scriptPath, alreadyInstalled: !scriptChanged && !forwarderChanged && !configChanged }

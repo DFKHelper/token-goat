@@ -6,8 +6,9 @@ import * as path from 'node:path'
 
 import { nativeHooksEnabled } from './config.js'
 import { dataDir } from './constants.js'
-import { quotePowershellPath, quotePosixShellWord } from './process_util.js'
+import { powershellHookLine, quotePowershellPath, quotePosixShellWord } from './process_util.js'
 import { registerReset } from './reset.js'
+import { withRetryOnLock } from './util.js'
 
 /** The harnesses whose installers can wire the native client, spelled as tg-hook's `--harness` takes them. */
 export type NativeHarness = 'claudecode' | 'codex' | 'grok' | 'kimi' | 'copilot_cli'
@@ -95,11 +96,12 @@ export function syncNativeCopy(src: string, dest: string): boolean {
     fs.renameSync(staged, dest)
     return true
   } catch {
-    // dest is running
+    // dest is running, or a scanner still holds the file just written
   }
   try {
-    fs.renameSync(dest, `${dest}.${tag}.old`)
-    fs.renameSync(staged, dest)
+    // A running dest can be renamed but not replaced; an absent one (nothing to move aside) leaves only the scanner's hold on the staged file, which the retry outwaits.
+    if (fs.existsSync(dest)) withRetryOnLock(() => fs.renameSync(dest, `${dest}.${tag}.old`))
+    withRetryOnLock(() => fs.renameSync(staged, dest))
     return true
   } catch {
     fs.rmSync(staged, { force: true })
@@ -201,14 +203,11 @@ function quoteFor(shell: HookShell, text: string): string {
   return `"${text}"`
 }
 
-/** What follows the native call in a PowerShell command line. `powershell -Command` exits 1 for any nonzero native exit, which turns a hook's exit 2 (block) into exit 1 (a non-blocking error), so the line exits with the native code itself. Written without a `$` because Grok refuses to run a hook whose command names a variable it cannot resolve at load time; and guarded, because LASTEXITCODE is never set when the binary could not be started, where a bare `exit (Get-Variable LASTEXITCODE -ValueOnly)` exits 0 and a missing binary would pass as a hook that allowed the call. */
-export const POWERSHELL_EXIT_SUFFIX = '; if (Get-Variable LASTEXITCODE -ErrorAction Ignore) { exit (Get-Variable LASTEXITCODE -ValueOnly) }; exit 1'
-
-/** The native command line for a harness that runs hooks through `shell`, or undefined when there is no entry path to name. PowerShell needs the call operator to run a quoted path as a command, and POWERSHELL_EXIT_SUFFIX to hand the hook's exit code back. */
+/** The native command line for a harness that runs hooks through `shell`, or undefined when there is no entry path to name. A PowerShell one is powershellHookLine's, for the call operator and the hook's own exit code. */
 export function nativeHookCommandLine(shell: HookShell, bin: string, harness: NativeHarness, scriptPath: string, event: string, entry: string | undefined = process.argv[1]): string | undefined {
   if (nodeHookArgv(scriptPath, event, entry) === undefined) return undefined
   const line = nativeWords(bin, harness, scriptPath, event, entry!).map((w) => (w.quote ? quoteFor(shell, w.text) : w.text)).join(' ')
-  return shell === 'powershell' ? `& ${line}${POWERSHELL_EXIT_SUFFIX}` : line
+  return shell === 'powershell' ? powershellHookLine(line) : line
 }
 
 /** The native exec-form entry (Claude Code >= 2.1.139): the binary as `command`, everything else as `args`, with no shell in between. */
@@ -259,6 +258,22 @@ export function splitHookCommand(command: string, shell: HookShell): string[] {
   }
   if (inWord) words.push(cur)
   return words
+}
+
+/** Thrown by an installer, before it writes any hook config, when a command it would write contains text the harness rewrites before the command runs, so the hook would run something other than token-goat. */
+export class HookCommandRewriteError extends Error {}
+
+/** The first span of `command` that `reader` replaces before the command runs, or undefined. `cmd`: cmd.exe's `%NAME%`, expanded in its first parsing phase, before it reads a single quote, so no quoting keeps it literal. `grok`: `$NAME` and `${...}`, which Grok CLI substitutes itself when it loads a hook, whatever the quoting and whatever the shell, refusing to run a hook that names an unset variable (grok-build xai-grok-hooks `env_expand.rs` `iter_env_var_references`, which has no escape, and `runner/command.rs` `find_unresolved_env_vars`). */
+export function hookCommandRewrittenSpan(command: string, reader: 'cmd' | 'grok'): string | undefined {
+  return (reader === 'cmd' ? /%[^%\r\n]+%/ : /\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})/).exec(command)?.[0]
+}
+
+/** One token-goat hook entry read back from a harness config. */
+export interface WiredHookEntry {
+  /** Its argv words, split the way the shell the harness runs it in would. */
+  readonly words: string[]
+  /** Whether it is exactly a command this build writes for that harness now; undefined where the reader does not judge it. */
+  readonly current?: boolean
 }
 
 /** A native-form invocation read back from a hook's argv. */

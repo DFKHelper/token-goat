@@ -1,11 +1,9 @@
-/** Builds the native hook client with scripts/build-native.mjs, the same way tests/native_hook_conformance.test.ts does, and returns the path of the binary it installed under dist/native. Fails rather than skips where cargo is missing: CI installs the pinned toolchain on every platform. */
-import { spawnSync } from 'node:child_process'
-import * as path from 'node:path'
-
-import { ROOT } from './bundle.js'
+/** The native hook client the test run built: tests/setup/build-bundle.ts runs scripts/build-native.mjs once, before any test file, under the real home, and passes the binary's path (or why the build failed) to the workers through the environment. Fails rather than skips where the build failed: CI installs the pinned toolchain on every platform. */
+import * as fs from 'node:fs'
 
 export function buildNative(): string {
-  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-native.mjs')], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-  if (r.status !== 0) throw new Error(`scripts/build-native.mjs failed (exit ${String(r.status)}); these tests need the Rust toolchain pinned in native/tg-hook/rust-toolchain.toml.\n${r.stderr}${r.error?.message ?? ''}`)
-  return r.stdout.trim().split(/\r?\n/).pop() ?? ''
+  const bin = process.env['TG_TEST_NATIVE_BIN']
+  if (bin === undefined) throw new Error(process.env['TG_TEST_NATIVE_BUILD_ERROR'] ?? 'no native build outcome: tests/setup/build-bundle.ts (vitest globalSetup) did not run')
+  if (!fs.existsSync(bin)) throw new Error(`the native hook client built for this run is gone: ${bin}`)
+  return bin
 }

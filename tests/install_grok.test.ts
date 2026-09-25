@@ -7,10 +7,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.grok/` (mirrors the pattern in install_copilot_cli.test.ts /
-// install_codex.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.grok/` (mirrors the pattern in install_copilot_cli.test.ts / install_codex.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -85,7 +82,12 @@ describe('installGrok', () => {
     }
     const command = config.hooks['PreToolUse']?.[0]?.hooks?.[0]?.command
     expect(process.argv[1]).toBeDefined()
-    expect(command).toBe(`"${process.execPath}" "${result.hookScriptPath}" pre_tool_use "${process.argv[1]}"`)
+    // HAND-DERIVED: Grok runs a hook through PowerShell on Windows (grok-build xai-grok-config shell.rs `detect_windows_shell`, `-NoProfile -NonInteractive -Command`), which needs the call operator, reads single-quoted paths literally, and exits 1 for any native exit code unless the line exits with LASTEXITCODE itself; `sh -c` elsewhere.
+    expect(command).toBe(
+      process.platform === 'win32'
+        ? `& '${process.execPath}' '${result.hookScriptPath}' pre_tool_use '${process.argv[1]}'; if (Get-Variable LASTEXITCODE -ErrorAction Ignore) { exit (Get-Variable LASTEXITCODE -ValueOnly) }; exit 1`
+        : `"${process.execPath}" "${result.hookScriptPath}" pre_tool_use "${process.argv[1]}"`,
+    )
   })
 
   it('is idempotent: a second install reports alreadyInstalled and does not duplicate or alter entries', () => {
@@ -176,10 +178,7 @@ describe('isGrokInstalled / uninstallGrok', () => {
   })
 })
 
-// --- shim script (GROK_HOOK_SCRIPT) behavior ---
-// Mirrors tests/install_copilot_cli.test.ts's approach: run the embedded script as a
-// standalone Node process exactly as Grok would (argv[2] = internal event arg, stdin
-// = the raw hook payload JSON), and inspect what it writes to stdout / its exit code.
+// --- shim script (GROK_HOOK_SCRIPT) behavior --- Mirrors tests/install_copilot_cli.test.ts's approach: run the embedded script as a standalone Node process exactly as Grok would (argv[2] = internal event arg, stdin = the raw hook payload JSON), and inspect what it writes to stdout / its exit code.
 
 const tempDirs: string[] = []
 
@@ -209,11 +208,7 @@ function runShim(eventArg: string, stdin: string, cwd: string, env?: NodeJS.Proc
   return { stdout: res.stdout ?? '', status: res.status }
 }
 
-/**
- * Writes a fake `token-goat` executable into `cwd` and returns a PATH-prepended env
- * pointing at it, so the shim's internal `spawnSync('token-goat hook <event>', {shell: true})`
- * fallback resolves to `jsonStdout` instead of the real installed binary.
- */
+/** Writes a fake `token-goat` executable into `cwd` and returns a PATH-prepended env pointing at it, so the shim's internal `spawnSync('token-goat hook <event>', {shell: true})` fallback resolves to `jsonStdout` instead of the real installed binary. */
 function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
   if (process.platform === 'win32') {
     fs.writeFileSync(path.join(cwd, 'token-goat.cmd'), `@echo off\r\necho ${jsonStdout}\r\n`, 'utf8')
@@ -225,10 +220,7 @@ function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
   return { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
 }
 
-/**
- * Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary --
- * that records the argv it was invoked with and exits 0 with a caller-supplied JSON body.
- */
+/** Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary -- that records the argv it was invoked with and exits 0 with a caller-supplied JSON body. */
 function writeFakeEntry(cwd: string, jsonStdout = '{}'): { entryPath: string; capturePath: string } {
   const entryPath = path.join(cwd, 'fake-entry.js')
   const capturePath = path.join(cwd, 'captured-argv.json')
@@ -366,8 +358,7 @@ describe('GROK_HOOK_SCRIPT', () => {
     const mapMatch = /VALID_HOOK_EVENTS = new Set\(\[([\s\S]*?)\]\)/.exec(GROK_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()
     const events = [...(mapMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
-    // 7 entries: pre_tool_use, post_tool_use, notification, stop, pre_compact,
-    // user_prompt_submit, subagent_stop.
+    // 7 entries: pre_tool_use, post_tool_use, notification, stop, pre_compact, user_prompt_submit, subagent_stop.
     expect(events.length).toBe(7)
     for (const eventName of events) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)

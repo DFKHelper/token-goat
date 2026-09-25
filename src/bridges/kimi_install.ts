@@ -9,7 +9,7 @@ import { parse, stringify } from 'smol-toml'
 import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
-import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
+import { nativeHookBinary, nativeHookCommandLine, HookCommandRewriteError, hookCommandRewrittenSpan, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { KIMI_HOOK_SCRIPT } from './kimi.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './guidance_block.js'
@@ -165,6 +165,17 @@ export function installKimi(): KimiInstallResult {
   const configPath = kimiConfigPath()
   const agentsPath = kimiAgentsPath()
   const scriptPath = kimiHookScriptPath()
+  const desired: KimiHookEntry[] = KIMI_HOOK_EVENTS.map((event) => ({
+    event,
+    command: kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? ''),
+  }))
+  // Refused before anything is written: a hook whose paths cmd.exe rewrites would run some other path on every call.
+  for (const { command } of process.platform === 'win32' ? desired : []) {
+    const span = hookCommandRewrittenSpan(command, 'cmd')
+    if (span !== undefined) {
+      throw new HookCommandRewriteError(`Kimi Code runs hook commands through cmd.exe, which replaces ${span} with the value of the environment variable of that name whenever one is set, before it reads any quotes, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the Kimi Code home, token-goat's install directory, or Node's) to one without a %...% pair, then run 'token-goat install --kimi' again.`)
+    }
+  }
 
   ensureDirSync(path.dirname(scriptPath))
   atomicWriteText(scriptPath, KIMI_HOOK_SCRIPT)
@@ -173,11 +184,6 @@ export function installKimi(): KimiInstallResult {
   // strict: true -- a config.toml that exists but fails to parse must abort before any write, not silently proceed as if it were empty and get clobbered below.
   const config = readKimiConfig(configPath, { strict: true })
   const existing = Array.isArray(config.hooks) ? config.hooks : []
-
-  const desired: KimiHookEntry[] = KIMI_HOOK_EVENTS.map((event) => ({
-    event,
-    command: kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? ''),
-  }))
 
   // Everything token-goat did not write is preserved as-is; our own entries are rebuilt from scratch so a re-install upgrades a stale baked path in place instead of leaving a dead duplicate next to the current one.
   const foreign = existing.filter((h) => !isKimiTokenGoatCommand(h?.command))
@@ -260,11 +266,13 @@ export function kimiHookCommandFor(scriptPath: string, eventArg: string, opts: {
   return native ?? hookCommandFor(scriptPath, eventArg)
 }
 
-/** The argv words of every token-goat hook entry in Kimi's config.toml, split the way the shell Kimi runs it in would (cmd.exe on Windows, sh elsewhere). Empty when nothing is wired or the file does not parse. */
-export function wiredKimiHookWords(): string[][] {
+/** Every token-goat hook entry in Kimi's config.toml, split the way the shell Kimi runs it in would (cmd.exe on Windows, sh elsewhere), and whether it is a command this build writes. Empty when nothing is wired or the file does not parse. */
+export function wiredKimiHookWords(): WiredHookEntry[] {
   const hooks = readKimiConfig(kimiConfigPath()).hooks
   if (!Array.isArray(hooks)) return []
-  return hooks.filter((h) => isKimiTokenGoatCommand(h?.command)).map((h) => splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'))
+  const scriptPath = kimiHookScriptPath()
+  const expected = new Set(KIMI_HOOK_EVENTS.map((e) => kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[e] ?? '', { sync: false })))
+  return hooks.filter((h) => isKimiTokenGoatCommand(h?.command)).map((h) => ({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current: expected.has(h.command) }))
 }
 
 /** Is the Kimi Code integration currently present and up to date? */

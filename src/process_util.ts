@@ -102,6 +102,14 @@ export function quotePowershellPath(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
 }
 
+/** What follows the program call in every PowerShell hook command line token-goat writes (see {@link powershellHookLine}). `powershell -Command` exits 1 for any nonzero native exit, which turns a hook's exit 2 (block) into exit 1 (a non-blocking error), so the line exits with the native code itself. Written without a `$` because Grok refuses to run a hook whose command names a variable it cannot resolve at load time; and guarded, because LASTEXITCODE is never set when the binary could not be started, where a bare `exit (Get-Variable LASTEXITCODE -ValueOnly)` exits 0 and a missing binary would pass as a hook that allowed the call. */
+export const POWERSHELL_EXIT_SUFFIX = '; if (Get-Variable LASTEXITCODE -ErrorAction Ignore) { exit (Get-Variable LASTEXITCODE -ValueOnly) }; exit 1'
+
+/** A complete PowerShell hook command line for `call`, a program and its arguments each already quoted for PowerShell: the call operator, since PowerShell reads two adjacent quoted strings as a parse error rather than a program and its argument, then POWERSHELL_EXIT_SUFFIX. The one shape of every PowerShell line token-goat writes, the native client's and the Node command's alike. */
+export function powershellHookLine(call: string): string {
+  return `& ${call}${POWERSHELL_EXIT_SUFFIX}`
+}
+
 /** Resolve `label` to an executable **on PATH**, never one sitting in the current directory. */
 export function resolveOnPath(label: string): string | null {
   if (path.isAbsolute(label)) return existsSync(label) ? label : null

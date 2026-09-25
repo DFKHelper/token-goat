@@ -41,7 +41,7 @@ import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
-import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
+import { HOOK_PROBE_ENV, readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
 import { hookLatencyBreakdown } from './hook_latency.js'
 import { checkNativeHooks } from './cli_doctor_native.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
@@ -785,10 +785,11 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     toolName: 'view',
     toolArgs: { path: 'doctor-check.txt' },
   })
-  // preToolUseCommand is config.hooks.preToolUse[0].command: the exact string Copilot CLI runs itself on every tool call. Spawning it here reproduces that, to check it still launches. Anyone able to write that file already has execution through Copilot (for the project scope, only once the ledger check above has passed), so shell: true adds no reach; parsing the string instead would break a hook command a user customised by hand. nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+  // HOOK_PROBE_ENV keeps this call out of the hook stats: it is doctor's own, and the native hook client counts this same run reports would otherwise count it as one of Copilot's. preToolUseCommand is config.hooks.preToolUse[0].command: the exact string Copilot CLI runs itself on every tool call. Spawning it here reproduces that, to check it still launches. Anyone able to write that file already has execution through Copilot (for the project scope, only once the ledger check above has passed), so shell: true adds no reach; parsing the string instead would break a hook command a user customised by hand. nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
   const res = spawnSync(preToolUseCommand, {
     input: synthetic,
     encoding: 'utf-8',
+    env: { ...process.env, [HOOK_PROBE_ENV]: '1' },
     shell: true,
     windowsHide: true,
     timeout: 15000,
