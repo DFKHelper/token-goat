@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **`doctor` no longer reports hook events as missing when an older token-goat command is still delivering them.** Settings written by an earlier build were read as lacking every Claude Code event, followed by "Those events never reach token-goat", while each of those events was still firing. `doctor` now tells the two apart. An event with no working token-goat hook is reported as missing, as before. An event wired to an older command that still runs is reported as wired to an older command, and `token-goat install` rewrites it in both cases. An older command counts as working only if the shim file it names still exists.
+
 ## [2.9.29] - 2026-09-25
 
 Upgrading reparses the index. The data directory fix below is in a file the parser fingerprint covers, so the parser stamp moves for every language and each file is read once more, although nothing a parse extracts has changed. Embeddings are untouched and keep serving throughout.

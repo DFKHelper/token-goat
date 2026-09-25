@@ -6,8 +6,10 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
+import { runDoctor } from '../src/cli_doctor.js'
 import { checkClaudeHookEvents } from '../src/cli_doctor_platforms.js'
-import { claudeHookScriptPath, installHooks, isInstalled, missingHookEvents, settingsPath, uninstallHooks } from '../src/install.js'
+import type { DoctorResult } from '../src/doctor_result.js'
+import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
 import { normalizeDarwinSystemAlias } from '../src/paths.js'
 import { hookCommandFor } from '../src/util.js'
 
@@ -20,6 +22,24 @@ let origExecFormOverride: string | undefined
 /** The exact command installHooks is expected to wire for `eventArg`, derived rather than hard-coded: it bakes in this node binary, this shim path, and this entry path, none of which a literal string in a test can know. */
 function expectedCommand(eventArg: string): string {
   return hookCommandFor(claudeHookScriptPath(), eventArg)
+}
+
+/** Every Claude Code event key this build wires, with its event argument, in install order. */
+const CLAUDE_HOOK_EVENTS: ReadonlyArray<readonly [string, string]> = [
+  ['PreToolUse', 'pre_tool_use'],
+  ['PostToolUse', 'post_tool_use'],
+  ['PostToolUseFailure', 'post_tool_use_failure'],
+  ['PreCompact', 'pre_compact'],
+  ['PostCompact', 'post_compact'],
+  ['UserPromptSubmit', 'user_prompt_submit'],
+  ['SubagentStop', 'subagent_stop'],
+  ['SessionStart', 'session_start'],
+]
+
+/** One event's hook group as an older build wired it, pointing at `shimPath`. */
+function capturedStaleShimGroups(shimPath: string, event: string): Array<{ matcher: string; hooks: Array<{ type: string; command: string; args: string[] }> }> {
+  // CAPTURE: the token-goat entries in this machine's real ~/.claude/settings.json on 2026-09-25, written by an older build that wired token-goat-shim.js (command and args verbatim except the shim path, which the caller relocates into the test home; matchers blanked); these hooks were firing while doctor said the events never reach token-goat.
+  return [{ matcher: '', hooks: [{ type: 'command', command: 'C:\\Program Files\\nodejs\\node.exe', args: [shimPath, event, 'C:\\Projects\\token-goat\\dist\\token-goat.mjs'] }] }]
 }
 
 beforeEach(() => {
@@ -125,24 +145,87 @@ describe('installHooks', () => {
     delete settings.hooks['PostToolUseFailure']
     fs.writeFileSync(p, JSON.stringify(settings))
 
-    expect(missingHookEvents('project')).toEqual(['PostToolUseFailure'])
+    expect(hookEventGaps('project')).toEqual({ missing: ['PostToolUseFailure'], outdated: [] })
     expect(isInstalled('project')).toBe(false)
-    const warn = checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })
+    const warn = checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })
     expect(warn?.status).toBe('warn')
     expect(warn?.message).toContain('project scope lacks PostToolUseFailure; run: token-goat install --project')
     expect(installHooks('project').alreadyInstalled).toBe(false)
-    expect(missingHookEvents('project')).toEqual([])
+    expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [] })
     expect(isInstalled('project')).toBe(true)
-    expect(checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })?.status).toBe('ok')
+    expect(checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })?.status).toBe('ok')
   })
 
-  it('missingHookEvents answers null when token-goat is not installed in that scope at all, and doctor then stays silent', () => {
-    expect(missingHookEvents('project')).toBeNull()
-    expect(checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })).toBeNull()
+  it('hookEventGaps answers null when token-goat is not installed in that scope at all, and doctor then stays silent', () => {
+    expect(hookEventGaps('project')).toBeNull()
+    expect(checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })).toBeNull()
     const p = settingsPath('project')
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'my-own-hook' }] }] } }))
-    expect(missingHookEvents('project')).toBeNull()
+    expect(hookEventGaps('project')).toBeNull()
+  })
+
+  it('doctor reports events wired to the pre-.cjs shim as outdated, not as never reaching token-goat, and an unwired event as missing; install rewrites both', () => {
+    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
+    const events = CLAUDE_HOOK_EVENTS
+    const oldShim = path.join(path.dirname(claudeHookScriptPath()), 'token-goat-shim.js')
+    fs.mkdirSync(path.dirname(oldShim), { recursive: true })
+    fs.writeFileSync(oldShim, '// an older build\n')
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const writeStale = (keys: ReadonlyArray<readonly [string, string]>): void => fs.writeFileSync(p, JSON.stringify({ hooks: Object.fromEntries(keys.map(([key, arg]) => [key, capturedStaleShimGroups(oldShim, arg)])) }))
+    const doctorRow = (): DoctorResult | undefined => runDoctor(TMP, path.join(TMP, 'config.toml'), TMP, []).find((r) => r.name === 'Claude Code hook events')
+
+    writeStale(events)
+    const allStale = doctorRow()
+    expect(allStale?.status).toBe('warn')
+    expect(allStale?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, SubagentStop, SessionStart to an older token-goat hook command; run: token-goat install --project')
+    expect(allStale?.message).not.toContain('lacks')
+    expect(allStale?.message).not.toContain('never reach token-goat')
+
+    writeStale(events.filter(([key]) => key !== 'SessionStart'))
+    const oneMissing = doctorRow()
+    expect(oneMissing?.message).toContain('project scope lacks SessionStart; run: token-goat install --project. Those events never reach token-goat until then')
+    expect(oneMissing?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, SubagentStop to an older token-goat hook command')
+    expect(isInstalled('project')).toBe(false)
+
+    expect(installHooks('project').alreadyInstalled).toBe(false)
+    expect(fs.readFileSync(p, 'utf8')).not.toContain('token-goat-shim.js')
+    expect(isInstalled('project')).toBe(true)
+    expect(doctorRow()?.status).toBe('ok')
+  })
+
+  it('an event wired to a shim file that no longer exists is missing, not outdated, in exec and string form, while the PATH-resolved pre-shim command stays outdated', () => {
+    // HAND-DERIVED: the captured exec-form entry and this build's own string-form command (quoteShellPath quoting), both pointed at a shim path that was never written, so neither can run.
+    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
+    const goneShim = path.join(TMP, 'gone', '.claude', 'hooks', 'token-goat-shim.js')
+    const goneCjs = path.join(TMP, 'gone', '.claude', 'hooks', 'token-goat-shim.cjs')
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({
+      hooks: {
+        PreToolUse: capturedStaleShimGroups(goneShim, 'pre_tool_use'),
+        PostToolUse: [{ matcher: '', hooks: [{ type: 'command', command: hookCommandFor(goneCjs, 'post_tool_use') }] }],
+        SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: 'token-goat hook session_start' }] }],
+      },
+    }))
+    const gaps = hookEventGaps('project')
+    expect(gaps?.missing).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'SubagentStop'])
+    expect(gaps?.outdated).toEqual(['SessionStart'])
+    expect(checkClaudeHookEvents({ user: null, project: gaps })?.message).toContain('project scope lacks PreToolUse, PostToolUse,')
+  })
+
+  it('an entry in string form where this build writes exec form is outdated, not missing, and install rewrites it', () => {
+    // HAND-DERIVED: this build's own string-form install checked by a build expecting exec form, the shape an install from before exec-form hooks leaves behind.
+    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
+    installHooks('project')
+    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
+    const gaps = hookEventGaps('project')
+    expect(gaps?.missing).toEqual([])
+    expect(gaps?.outdated).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart'])
+    expect(isInstalled('project')).toBe(false)
+    expect(installHooks('project').alreadyInstalled).toBe(false)
+    expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [] })
   })
 
   it('replaces legacy-branded and legacy Python-era hook commands with the current install instead of treating them as already installed', () => {
@@ -159,6 +242,7 @@ describe('installHooks', () => {
         },
       }),
     )
+    expect(hookEventGaps('project')).toEqual({ missing: ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart'], outdated: [] })
 
     installHooks('project')
 

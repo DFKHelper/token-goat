@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { claudeHookScriptPath, expectedHookEntryFor, installHooks, isInstalled, missingHookEvents, settingsPath, uninstallHooks } from '../src/install.js'
+import { claudeHookScriptPath, expectedHookEntryFor, installHooks, hookEventGaps, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
 import { hookCommandFor, hookExecPartsFor } from '../src/util.js'
 
 let TMP: string
@@ -195,7 +195,7 @@ describe('a bundle reached through a directory link is the same hook', () => {
       const installed = fs.readFileSync(p, 'utf8')
 
       process.argv[1] = linked
-      expect(missingHookEvents('project')).toEqual([])
+      expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [] })
       expect(isInstalled('project')).toBe(true)
       expect(installHooks('project').alreadyInstalled).toBe(true)
       expect(fs.readFileSync(p, 'utf8')).toBe(installed)
@@ -211,7 +211,7 @@ describe('a bundle reached through a directory link is the same hook', () => {
     installHooks('project')
 
     process.argv[1] = real
-    expect(missingHookEvents('project')).toContain('PreToolUse')
+    expect(hookEventGaps('project')?.outdated).toContain('PreToolUse')
     expect(isInstalled('project')).toBe(false)
   })
 })
