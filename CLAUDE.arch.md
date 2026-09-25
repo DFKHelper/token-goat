@@ -299,6 +299,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
+| [`src/cli_doctor_native.ts`](src/cli_doctor_native.ts) | `doctor`'s native hook client rows: per harness and scope, which form of hook command is wired (the native client in front of the Node command, or the Node command alone), whether |
 | [`src/cli_doctor_platforms.ts`](src/cli_doctor_platforms.ts) | Platform and harness integration diagnostics for token-goat doctor. |
 | [`src/cli_doctor_process.ts`](src/cli_doctor_process.ts) | Process table and MCP process health diagnostics for token-goat doctor. |
 | [`src/cli_doctor_security.ts`](src/cli_doctor_security.ts) | Security posture and configuration override diagnostics for token-goat doctor. |
@@ -449,6 +450,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/mcp_tool_pattern.ts`](src/mcp_tool_pattern.ts) | The `toolPattern` every MCP tool name matches, shared by hooks_mcp.ts's registerHook calls and cli_doctor.ts's unmapped-tools cleanup so the two can never drift into two different |
 | [`src/memory_prune.ts`](src/memory_prune.ts) | Automatic pruning and analysis of Claude Code's native auto-memory store. |
 | [`src/modules.ts`](src/modules.ts) | Module detection over the project's internal import graph. |
+| [`src/native_hook.ts`](src/native_hook.ts) | The native hook client (native/tg-hook) as installers and `doctor` see it: where this install's binary is, whether an install should wire it, the command lines that put it in front |
 | [`src/notebook_compact.ts`](src/notebook_compact.ts) | Strip cell outputs from Jupyter notebooks to reduce token burn. |
 | [`src/notes.ts`](src/notes.ts) | Architecture-notes storage layer. |
 | [`src/ocr_hashes.ts`](src/ocr_hashes.ts) | Exports: `OcrLangSpec`, `ocrLangPath`, `OCR_LANG_HASHES`, `SUPPORTED_OCR_LANGS` |

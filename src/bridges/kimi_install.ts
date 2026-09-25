@@ -9,6 +9,7 @@ import { parse, stringify } from 'smol-toml'
 import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
+import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
 import { KIMI_HOOK_SCRIPT } from './kimi.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './guidance_block.js'
@@ -175,7 +176,7 @@ export function installKimi(): KimiInstallResult {
 
   const desired: KimiHookEntry[] = KIMI_HOOK_EVENTS.map((event) => ({
     event,
-    command: hookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? ''),
+    command: kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? ''),
   }))
 
   // Everything token-goat did not write is preserved as-is; our own entries are rebuilt from scratch so a re-install upgrades a stale baked path in place instead of leaving a dead duplicate next to the current one.
@@ -252,13 +253,27 @@ export function uninstallKimi(): boolean {
   return removed
 }
 
+/** The hook command for `eventArg`: the native client in front of the Node command when this install wires it, quoted for the shell Kimi Code runs a hook in (Node's `spawn(command, { shell: true })`: `cmd.exe /d /s /c` on Windows, `/bin/sh -c` elsewhere), else the Node command alone. */
+export function kimiHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
+  const bin = nativeHookBinary(process.argv[1], opts)
+  const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'cmd' : 'sh', bin, 'kimi', scriptPath, eventArg)
+  return native ?? hookCommandFor(scriptPath, eventArg)
+}
+
+/** The argv words of every token-goat hook entry in Kimi's config.toml, split the way the shell Kimi runs it in would (cmd.exe on Windows, sh elsewhere). Empty when nothing is wired or the file does not parse. */
+export function wiredKimiHookWords(): string[][] {
+  const hooks = readKimiConfig(kimiConfigPath()).hooks
+  if (!Array.isArray(hooks)) return []
+  return hooks.filter((h) => isKimiTokenGoatCommand(h?.command)).map((h) => splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'))
+}
+
 /** Is the Kimi Code integration currently present and up to date? */
 export function isKimiInstalled(): boolean {
   const config = readKimiConfig(kimiConfigPath())
   if (!Array.isArray(config.hooks)) return false
   const scriptPath = kimiHookScriptPath()
   for (const event of KIMI_HOOK_EVENTS) {
-    const expected = hookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? '')
+    const expected = kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? '', { sync: false })
     if (!config.hooks.some((h) => h?.event === event && h?.command === expected)) return false
   }
   return true

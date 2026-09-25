@@ -166,6 +166,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   hooks: {
     latency_budget_ms: 1500,
     server: true,
+    native: 'auto',
   },
   webfetch: {
     allow: [],

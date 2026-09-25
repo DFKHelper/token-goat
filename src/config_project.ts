@@ -47,6 +47,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   // global.db is a machine-wide shared database across every project on the host. A checked-in per-project .token-goat.toml must not be able to lower the size warning threshold or trigger auto-reclaim/purging of embeddings across other repositories sharing the same database.
   'indexing.max_db_size_mb',
   'indexing.auto_reclaim_embeddings',
+  // Which executable every harness runs on every tool call. `install` writes that choice into user-scope harness configs that every project on the machine then runs, so a checked-in `.token-goat.toml` must not be the layer that makes it. The user's global config and TOKEN_GOAT_NATIVE_HOOKS still set it freely.
+  'hooks.native',
 ]
 
 let _lastProjectConfigLockedKeys: string[] = []

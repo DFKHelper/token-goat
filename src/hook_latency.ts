@@ -1,14 +1,4 @@
-/**
- * Read/render side of Batch S's hook wall-clock timing: `token-goat stats --hooks` and `doctor`'s
- * Hook latency check both go through hookLatencyBreakdown().
- *
- * Kept out of stats.ts on purpose. relay.ts's relayInProcess imports recordStat from stats.ts on
- * every hook invocation, which the hook entry bundle's regression-ceiling guard
- * (tests/guards/dist_chunks_deduped.test.ts) therefore loads eagerly for every hook call. This
- * module is CLI/doctor-only -- nothing on the hook path calls it -- so a separate chunk keeps it
- * out of that eager set instead of riding along with stats.ts just because it happens to read the
- * same table.
- */
+/** Read/render side of Batch S's hook wall-clock timing: `token-goat stats --hooks` and `doctor`'s Hook latency check both go through hookLatencyBreakdown(). Kept out of stats.ts on purpose. relay.ts's relayInProcess imports recordStat from stats.ts on every hook invocation, which the hook entry bundle's regression-ceiling guard (tests/guards/dist_chunks_deduped.test.ts) therefore loads eagerly for every hook call. This module is CLI/doctor-only -- nothing on the hook path calls it -- so a separate chunk keeps it out of that eager set instead of riding along with stats.ts just because it happens to read the same table. */
 
 import type { SqliteDatabase } from './sqlite_driver.js'
 import { getGlobalDb, statsHasDurationColumn, statsHasHarnessColumn, HOOK_STATS_RETENTION_DAYS } from './stats.js'
@@ -39,17 +29,7 @@ export interface HookLatencyRow {
   newest_ts: number
 }
 
-/**
- * Per-(event, harness) hook latency breakdown: how many invocations, the median/p95/slowest
- * duration, and how recently one was recorded -- the "how many, median, p95, slowest, how
- * recent" surface Batch S asks for. Reads raw `stats` rows directly rather than through
- * summarize()'s byte/token aggregation, since `duration_ms` is a distribution summarize() has no
- * notion of. Bounded by stats.ts's pruneHookStats retention window, so this never scans more than
- * a few days of hook traffic regardless of how long the install has run. Sorted worst-p95-first
- * so a bad tail is the first thing a reader sees. Returns `[]` on any error (including a database
- * that predates the `duration_ms` column), never throws -- this is a diagnostic view, not a path
- * anything else depends on.
- */
+/** Per-(event, harness) hook latency breakdown: how many invocations, the median/p95/slowest duration, and how recently one was recorded -- the "how many, median, p95, slowest, how recent" surface Batch S asks for. Reads raw `stats` rows directly rather than through summarize()'s byte/token aggregation, since `duration_ms` is a distribution summarize() has no notion of. Bounded by stats.ts's pruneHookStats retention window, so this never scans more than a few days of hook traffic regardless of how long the install has run. Sorted worst-p95-first so a bad tail is the first thing a reader sees. Returns `[]` on any error (including a database that predates the `duration_ms` column), never throws -- this is a diagnostic view, not a path anything else depends on. */
 export function hookLatencyBreakdown(testDb?: SqliteDatabase, homeDir?: string): HookLatencyRow[] {
   try {
     const db = testDb ?? getGlobalDb(homeDir)
@@ -92,12 +72,7 @@ export function hookLatencyBreakdown(testDb?: SqliteDatabase, homeDir?: string):
   }
 }
 
-/**
- * Plain-text hook latency breakdown for `token-goat stats --hooks`, worst p95 first. Always
- * plain, with no rich/box variant to fall back from: an agent piping this must see the same text
- * a human sees at a terminal, which is the plain-output-when-not-a-TTY rule this repo's other
- * renderers gate on -- there is simply nothing to gate here.
- */
+/** Plain-text hook latency breakdown for `token-goat stats --hooks`, worst p95 first. Always plain, with no rich/box variant to fall back from: an agent piping this must see the same text a human sees at a terminal, which is the plain-output-when-not-a-TTY rule this repo's other renderers gate on -- there is simply nothing to gate here. */
 export function renderHookLatencyStats(testDb?: SqliteDatabase, homeDir?: string): void {
   const rows = hookLatencyBreakdown(testDb, homeDir)
   if (rows.length === 0) {
@@ -112,4 +87,38 @@ export function renderHookLatencyStats(testDb?: SqliteDatabase, homeDir?: string
       `  ${r.event.padEnd(22)} ${(r.harness || 'unrecorded').padEnd(12)} n=${String(r.count).padEnd(5)} median ${String(r.median_ms).padStart(5)}ms  p95 ${String(r.p95_ms).padStart(5)}ms  max ${String(r.max_ms).padStart(6)}ms  last seen ${age}`,
     )
   }
+}
+
+/** How one harness's hook calls over the last {@link HOOK_STATS_RETENTION_DAYS} days were answered: `native` served by tg-hook through the hook server, `fallback` run by tg-hook's wrapped Node command after it could not be served (keyed by the reason tg-hook passed down in TOKEN_GOAT_NATIVE_FALLBACK), `node` run by a Node-form entry with no native client in front. */
+export interface NativeHookCounts {
+  native: number
+  fallback: Record<string, number>
+  node: number
+}
+
+/** {@link NativeHookCounts} by the `harness` column of each `hook:*` row, read off the `detail` relay.ts writes: `native`, `native-fallback:<reason>`, or nothing. An empty map on any error, a database without the harness column included, since the rows cannot then be told apart. */
+export function nativeHookCounts(testDb?: SqliteDatabase, homeDir?: string, nowTs: number = Math.floor(Date.now() / 1000)): Map<string, NativeHookCounts> {
+  const out = new Map<string, NativeHookCounts>()
+  try {
+    const db = testDb ?? getGlobalDb(homeDir)
+    if (!statsHasHarnessColumn(db)) return out
+    const rows = db
+      .prepare(`SELECT COALESCE(harness, '') AS harness, detail, COUNT(*) AS n FROM stats WHERE kind LIKE 'hook:%' AND ts >= ? GROUP BY 1, 2`)
+      .all(nowTs - HOOK_STATS_RETENTION_DAYS * 86400) as Array<{ harness: string; detail: string | null; n: number }>
+    for (const row of rows) {
+      let c = out.get(row.harness)
+      if (c === undefined) {
+        c = { native: 0, fallback: {}, node: 0 }
+        out.set(row.harness, c)
+      }
+      if (row.detail === 'native') c.native += row.n
+      else if (row.detail !== null && row.detail.startsWith('native-fallback:')) {
+        const reason = row.detail.slice('native-fallback:'.length)
+        c.fallback[reason] = (c.fallback[reason] ?? 0) + row.n
+      } else c.node += row.n
+    }
+  } catch {
+    out.clear()
+  }
+  return out
 }

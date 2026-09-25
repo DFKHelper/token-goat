@@ -145,13 +145,13 @@ describe('installHooks', () => {
     delete settings.hooks['PostToolUseFailure']
     fs.writeFileSync(p, JSON.stringify(settings))
 
-    expect(hookEventGaps('project')).toEqual({ missing: ['PostToolUseFailure'], outdated: [] })
+    expect(hookEventGaps('project')).toEqual({ missing: ['PostToolUseFailure'], outdated: [], broken: [] })
     expect(isInstalled('project')).toBe(false)
     const warn = checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })
     expect(warn?.status).toBe('warn')
     expect(warn?.message).toContain('project scope lacks PostToolUseFailure; run: token-goat install --project')
     expect(installHooks('project').alreadyInstalled).toBe(false)
-    expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [] })
+    expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [], broken: [] })
     expect(isInstalled('project')).toBe(true)
     expect(checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })?.status).toBe('ok')
   })
@@ -179,14 +179,14 @@ describe('installHooks', () => {
     writeStale(events)
     const allStale = doctorRow()
     expect(allStale?.status).toBe('warn')
-    expect(allStale?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, SubagentStop, SessionStart to an older token-goat hook command; run: token-goat install --project')
+    expect(allStale?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, SubagentStop, SessionStart to a token-goat hook command this build no longer writes; run: token-goat install --project')
     expect(allStale?.message).not.toContain('lacks')
     expect(allStale?.message).not.toContain('never reach token-goat')
 
     writeStale(events.filter(([key]) => key !== 'SessionStart'))
     const oneMissing = doctorRow()
     expect(oneMissing?.message).toContain('project scope lacks SessionStart; run: token-goat install --project. Those events never reach token-goat until then')
-    expect(oneMissing?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, SubagentStop to an older token-goat hook command')
+    expect(oneMissing?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, SubagentStop to a token-goat hook command this build no longer writes')
     expect(isInstalled('project')).toBe(false)
 
     expect(installHooks('project').alreadyInstalled).toBe(false)
@@ -225,7 +225,7 @@ describe('installHooks', () => {
     expect(gaps?.outdated).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart'])
     expect(isInstalled('project')).toBe(false)
     expect(installHooks('project').alreadyInstalled).toBe(false)
-    expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [] })
+    expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [], broken: [] })
   })
 
   it('replaces legacy-branded and legacy Python-era hook commands with the current install instead of treating them as already installed', () => {
@@ -242,7 +242,7 @@ describe('installHooks', () => {
         },
       }),
     )
-    expect(hookEventGaps('project')).toEqual({ missing: ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart'], outdated: [] })
+    expect(hookEventGaps('project')).toEqual({ missing: ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart'], outdated: [], broken: [] })
 
     installHooks('project')
 

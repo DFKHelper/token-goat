@@ -195,7 +195,7 @@ describe('a bundle reached through a directory link is the same hook', () => {
       const installed = fs.readFileSync(p, 'utf8')
 
       process.argv[1] = linked
-      expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [] })
+      expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [], broken: [] })
       expect(isInstalled('project')).toBe(true)
       expect(installHooks('project').alreadyInstalled).toBe(true)
       expect(fs.readFileSync(p, 'utf8')).toBe(installed)

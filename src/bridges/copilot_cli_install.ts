@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
+import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
@@ -155,15 +156,40 @@ const ALLOWED_ENV_VARS = [
   'TOKEN_GOAT_LOG',
 ]
 
+/** The three command fields of one entry. With the native client wired, `bash` is quoted for the POSIX shell Copilot CLI and VS Code run it in off Windows, `powershell` for the PowerShell both run on Windows (VS Code: `powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -Command`), and `command`, the fallback older builds read and the string `doctor` launches with Node's `shell: true`, for that platform's default shell (cmd.exe on Windows), as the Node form's `command` already is. */
+export function copilotHookCommandsFor(scriptPath: string, event: CopilotCliHookEvent, opts: { sync?: boolean } = {}): { command: string; bash: string; powershell: string } {
+  const bin = nativeHookBinary(process.argv[1], opts)
+  const command = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'cmd' : 'sh', bin, 'copilot_cli', scriptPath, event)
+  const sh = bin === undefined ? undefined : nativeHookCommandLine('sh', bin, 'copilot_cli', scriptPath, event)
+  const ps = bin === undefined ? undefined : nativeHookCommandLine('powershell', bin, 'copilot_cli', scriptPath, event)
+  if (command !== undefined && sh !== undefined && ps !== undefined) return { command, bash: sh, powershell: ps }
+  return { command: hookCommandFor(scriptPath, event), bash: hookCommandFor(scriptPath, event), powershell: hookPowershellCommandFor(scriptPath, event) }
+}
+
+/** The argv words of the `command` field of every entry in the Copilot CLI hook config token-goat owns at `opts`'s scope, split the way that platform's default shell would (cmd.exe on Windows, sh elsewhere), since `command` is written for it. Empty when the file is absent or does not parse. */
+export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): string[][] {
+  let config: Partial<CopilotCliConfig>
+  try {
+    config = JSON.parse(fs.readFileSync(copilotCliConfigPath(opts), 'utf8')) as Partial<CopilotCliConfig>
+  } catch {
+    return []
+  }
+  const out: string[][] = []
+  for (const entries of Object.values(config?.hooks ?? {})) {
+    for (const h of Array.isArray(entries) ? entries : []) {
+      if (typeof h?.command === 'string') out.push(splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'))
+    }
+  }
+  return out
+}
+
 function buildConfig(scriptPath: string): CopilotCliConfig {
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
   for (const event of COPILOT_CLI_HOOK_EVENTS) {
     hooks[event] = [
       {
         type: 'command',
-        command: hookCommandFor(scriptPath, event),
-        bash: hookCommandFor(scriptPath, event),
-        powershell: hookPowershellCommandFor(scriptPath, event),
+        ...copilotHookCommandsFor(scriptPath, event),
         timeoutSec: HOOK_TIMEOUT_SEC,
         allowedEnvVars: [...ALLOWED_ENV_VARS],
       },

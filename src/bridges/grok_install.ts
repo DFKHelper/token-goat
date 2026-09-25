@@ -6,6 +6,7 @@ import * as path from 'node:path'
 
 import { removeCreatedBackups } from './created_configs.js'
 import { hookCommandFor, writeIfDifferent } from '../util.js'
+import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
 import { GROK_HOOK_SCRIPT } from './grok.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 
@@ -56,11 +57,37 @@ function grokLegacyHookScriptPath(): string {
   return path.join(grokHooksDir(), LEGACY_SHIM_FILE)
 }
 
+/** The hook command for `eventArg`: the native client in front of the Node command when this install wires it, quoted for the shell Grok runs a hook command in (PowerShell, `pwsh` or `powershell.exe -NoProfile -NonInteractive -Command`, on Windows; `sh -c` elsewhere), else the Node command alone. */
+export function grokHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
+  const bin = nativeHookBinary(process.argv[1], opts)
+  const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'powershell' : 'sh', bin, 'grok', scriptPath, eventArg)
+  return native ?? hookCommandFor(scriptPath, eventArg)
+}
+
+/** The argv words of every hook entry in the Grok config token-goat owns, split the way the shell Grok runs it in would (PowerShell on Windows, sh elsewhere). Empty when the file is absent or does not parse. */
+export function wiredGrokHookWords(): string[][] {
+  let config: Partial<GrokHookConfig>
+  try {
+    config = JSON.parse(fs.readFileSync(grokConfigPath(), 'utf8')) as Partial<GrokHookConfig>
+  } catch {
+    return []
+  }
+  const out: string[][] = []
+  for (const groups of Object.values(config?.hooks ?? {})) {
+    for (const g of Array.isArray(groups) ? groups : []) {
+      for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
+        if (typeof h?.command === 'string') out.push(splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'))
+      }
+    }
+  }
+  return out
+}
+
 function buildConfig(scriptPath: string): GrokHookConfig {
   const hooks: Partial<Record<GrokHookEvent, GrokMatcherGroup[]>> = {}
   for (const event of GROK_HOOK_EVENTS) {
     hooks[event] = [
-      { matcher: '', hooks: [{ type: 'command', command: hookCommandFor(scriptPath, GROK_EVENT_ARG[event]) }] },
+      { matcher: '', hooks: [{ type: 'command', command: grokHookCommandFor(scriptPath, GROK_EVENT_ARG[event]) }] },
     ]
   }
   return { hooks }

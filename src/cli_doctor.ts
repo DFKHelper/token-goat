@@ -25,6 +25,7 @@ import { copilotCliConfigPath, copilotCliScriptPath, LEGACY_HOOKS_SCRIPT_FILE, r
 import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
 import { claudeHookScriptPath, hookEventGaps, isInstalled } from './install.js'
+import { parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
 import { codexHookScriptPath } from './bridges/codex_install.js'
@@ -42,6 +43,7 @@ import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
 import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
 import { hookLatencyBreakdown } from './hook_latency.js'
+import { checkNativeHooks } from './cli_doctor_native.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
@@ -758,9 +760,18 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     }
   }
 
-  // The command string's first quoted segment is the baked process.execPath (see hookCommandFor in copilot_cli_install.ts).
-  const bakedExecPath = /^"([^"]+)"/.exec(preToolUseCommand)?.[1]
-  if (bakedExecPath !== undefined && !fs.existsSync(bakedExecPath)) {
+  // The command's first word is the baked process.execPath (see hookCommandFor in copilot_cli_install.ts), or with the native client wired, that binary, and the baked node path is the first word of the command it wraps.
+  const words = splitHookCommand(preToolUseCommand, process.platform === 'win32' ? 'cmd' : 'sh')
+  const native = parseNativeInvocation(words)
+  if (native !== undefined && !fs.existsSync(native.bin)) {
+    return {
+      name,
+      status: 'fail',
+      message: `hook points at a native hook client binary that no longer exists (${native.bin}), so ${harness} cannot start it. Recovery: run "${install}", then fully restart ${harness}.`,
+    }
+  }
+  const bakedExecPath = (native?.wrapped ?? words)[0]
+  if (bakedExecPath !== undefined && path.isAbsolute(bakedExecPath) && !fs.existsSync(bakedExecPath)) {
     return {
       name,
       status: 'fail',
@@ -1082,6 +1093,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (claudeShimResult) results.push(claudeShimResult)
   const claudeEventsResult = checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })
   if (claudeEventsResult) results.push(claudeEventsResult)
+  for (const result of checkNativeHooks(path.join(actualDataDir, 'global.db'))) results.push(result)
   const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
   if (codexShimResult) results.push(codexShimResult)
   const vscodeHooksResult = checkVscodeClaudeHooks(

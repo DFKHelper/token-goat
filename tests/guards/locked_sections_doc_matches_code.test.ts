@@ -1,21 +1,4 @@
-/**
- * The security doc's list of project-locked config sections must match the code's.
- *
- * This existed as a real drift, not a hypothetical one: `screenshot` was in
- * `PROJECT_LOCKED_SECTIONS` while docs/security.md said "Five whole sections" and named five. A
- * reader auditing what a cloned repository can reconfigure got a shorter list than the truth. That
- * direction is the harmless one; the same sentence going stale the other way -- naming a section
- * that is no longer locked -- tells a reader a protection exists that does not.
- *
- * The count word is checked as well as the names, because the sentence leads with it and a
- * mismatched number is what a reader actually notices.
- *
- * PROVENANCE
- *
- * HAND-DERIVED. The expectation is computed from `PROJECT_LOCKED_SECTIONS` at run time, so it
- * cannot fall behind the code; the number words are an independent lookup table rather than
- * anything the doc or the config module produces.
- */
+/** The security doc's list of project-locked config sections must match the code's. This existed as a real drift, not a hypothetical one: `screenshot` was in `PROJECT_LOCKED_SECTIONS` while docs/security.md said "Five whole sections" and named five. A reader auditing what a cloned repository can reconfigure got a shorter list than the truth. That direction is the harmless one; the same sentence going stale the other way -- naming a section that is no longer locked -- tells a reader a protection exists that does not. The count word is checked as well as the names, because the sentence leads with it and a mismatched number is what a reader actually notices. PROVENANCE HAND-DERIVED. The expectation is computed from `PROJECT_LOCKED_SECTIONS` at run time, so it cannot fall behind the code; the number words are an independent lookup table rather than anything the doc or the config module produces. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -55,6 +38,7 @@ const COUNT_WORDS: Record<number, string> = {
   20: 'twenty',
   21: 'twenty-one',
   22: 'twenty-two',
+  23: 'twenty-three',
 }
 
 describe('the project-locked section list in docs/security.md', () => {
@@ -79,9 +63,7 @@ describe('the project-locked section list in docs/security.md', () => {
     ).toContain(`${expected} whole sections`)
   })
 
-  // The section half of this sentence was guarded from the start and the key half was not, so the
-  // key half is the half that went stale: it still said "plus one individual key" after seven more
-  // had been added, four of them in the same release that added this test.
+  // The section half of this sentence was guarded from the start and the key half was not, so the key half is the half that went stale: it still said "plus one individual key" after seven more had been added, four of them in the same release that added this test.
   it('names every locked key literally, so a reader is not told a shorter list than the code enforces', () => {
     expect(PROJECT_LOCKED_KEYS.length, 'the locked-key list is empty, so this guard checks nothing').toBeGreaterThan(0)
 
@@ -99,9 +81,7 @@ describe('the project-locked section list in docs/security.md', () => {
     ).toContain(`${expected} individual keys`)
   })
 
-  // A different set again: the keys the *environment* can still decide, which is neither the section
-  // list nor the key list but derived from both. `doctor` prints this count at run time, so the doc
-  // and the command disagreeing is something a reader can see for themselves.
+  // A different set again: the keys the *environment* can still decide, which is neither the section list nor the key list but derived from both. `doctor` prints this count at run time, so the doc and the command disagreeing is something a reader can see for themselves.
   it('states the right number of environment-overridable locked keys', () => {
     const n = lockedEnvOverridableKeys().length
     expect(n, 'the env-overridable set is empty, so this guard checks nothing').toBeGreaterThan(0)

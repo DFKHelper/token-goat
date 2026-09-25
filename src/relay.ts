@@ -140,18 +140,31 @@ export interface RelayInProcessOptions {
   elapsedMs?: () => number
   /** Takes this call's own bookkeeping (its latency row in `stats`) instead of running it before the result is returned, so a caller able to answer first can run it after. `duration_ms` is fixed when the call ends either way. */
   afterReply?: (work: () => void) => void
+  /** What this call's latency row records in `stats.detail`: `native` for a call the native hook client (native/tg-hook) had served. Omitted, the row carries {@link nativeFallbackDetail} of the caller's environment. */
+  detail?: string
+}
+
+/** The environment variable native/tg-hook sets on the Node command it falls back to, naming why the server did not answer (tg-hook's fallback.rs `REASON_ENV`). */
+export const NATIVE_FALLBACK_ENV = 'TOKEN_GOAT_NATIVE_FALLBACK'
+
+/** `native-fallback:<reason>` when this call is the Node command the native client fell back to, else undefined (a Node-form hook, or a call no hook made). The reason is checked for shape before it reaches the database, since any process can set the variable. */
+export function nativeFallbackDetail(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const reason = env[NATIVE_FALLBACK_ENV]
+  return reason !== undefined && /^[a-z0-9-]{1,40}$/.test(reason) ? `native-fallback:${reason}` : undefined
 }
 
 export function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number, opts: RelayInProcessOptions = {}): Promise<string> {
   // When this event reached token-goat, before any handler time or wait behind an earlier call: call_streak.ts tells a batched call from a serial one by the gap between events.
   const receivedAt = Date.now()
-  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply))
+  // Read now, under the caller's environment: a resident server swaps it in only for the duration of the request.
+  const detail = opts.detail ?? nativeFallbackDetail()
+  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply, detail))
   relayQueue = run.catch(() => undefined)
   return run
 }
 
 /** One {@link relayInProcess} call, run once every earlier call has settled or {@link RELAY_QUEUE_WAIT_MS} has passed. */
-async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number, elapsedMs: () => number, afterReply?: (work: () => void) => void): Promise<string> {
+async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number, elapsedMs: () => number, afterReply?: (work: () => void) => void, detail?: string): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'
   }
@@ -215,7 +228,7 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
   } finally {
     // recordStat() is its own already-open, already-fail-soft synchronous write (the same one every other hook-path stat in this codebase makes), so this adds no new blocking behavior -- including on the async-detach path (shim_common.ts), which prints its early marker before this module ever runs and does not wait for relayInProcess to return either way. duration_ms means one thing everywhere it is read (token-goat stats --hooks, doctor's latency check): what the caller waited on. For an async-detached call that is harnessWaitMs, captured by the shim at the moment it printed the marker and handed in by the caller; for every other call it is this call's own full elapsed time, which is also what the caller waited on since nothing detached early.
     const durationMs = harnessWaitMs ?? elapsedMs()
-    const record = (): void => recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, durationMs)
+    const record = (): void => recordStat(`hook:${eventName}`, 0, 0, undefined, detail, undefined, durationMs)
     if (afterReply) afterReply(record)
     else record()
   }

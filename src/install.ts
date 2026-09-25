@@ -11,6 +11,7 @@ import { CANONICAL_SKILL_MD } from './canonical_skill.js'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { compareSemver } from './cli_upgrade.js'
 import { loadConfig } from './config.js'
+import { nativeHookBinary, nativeHookCommandLine, nativeHookExecParts, parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath } from './process_util.js'
@@ -107,9 +108,11 @@ export function execFormSupportedForVersionOutput(stdout: string): boolean {
   return compareSemver(m[1]!, CLAUDE_EXEC_FORM_MIN_VERSION) >= 0
 }
 
-/** The hook entry this build wires for `event`: exec-form when {@link claudeExecFormHooksSupported}, string-form otherwise. */
-export function expectedHookEntryFor(scriptPath: string, event: string): { command: string; args?: string[] } {
-  return claudeExecFormHooksSupported() ? hookExecPartsFor(scriptPath, event) : { command: hookCommandFor(scriptPath, event) }
+/** The hook entry this build wires for `event`: exec-form when {@link claudeExecFormHooksSupported}, string-form otherwise, each with the native client in front of the Node command when {@link nativeHookBinary} names one. The native string form is quoted for a POSIX shell on every platform: Claude Code runs a string-form hook through Git Bash on Windows and /bin/sh elsewhere. */
+export function expectedHookEntryFor(scriptPath: string, event: string, opts: { sync?: boolean } = {}): { command: string; args?: string[] } {
+  const bin = nativeHookBinary(process.argv[1], opts)
+  if (claudeExecFormHooksSupported()) return (bin === undefined ? undefined : nativeHookExecParts(bin, 'claudecode', scriptPath, event)) ?? hookExecPartsFor(scriptPath, event)
+  return { command: (bin === undefined ? undefined : nativeHookCommandLine('sh', bin, 'claudecode', scriptPath, event)) ?? hookCommandFor(scriptPath, event) }
 }
 
 /** The real location of an absolute path that exists, else null. Relative words (an event name) and missing paths compare by spelling alone. */
@@ -129,14 +132,9 @@ function sameHookWord(a: string, b: string): boolean {
   return realA !== null && realA === realPathOrNull(b)
 }
 
-/** The words of a string-form hook command, in the quoting {@link hookCommandFor} writes: each path in double quotes (backslash-escaped off Windows), the event bare. */
+/** The words of a string-form hook command, in the quoting token-goat writes: {@link hookCommandFor}'s double quotes (backslash-escaped off Windows) and the native form's POSIX single quotes. */
 function stringFormHookWords(command: string): string[] {
-  const words: string[] = []
-  for (const m of command.matchAll(/"((?:\\.|[^"\\])*)"|(\S+)/g)) {
-    const quoted = m[1]
-    words.push(quoted === undefined ? m[2]! : process.platform === 'win32' ? quoted : quoted.replace(/\\(.)/g, '$1'))
-  }
-  return words
+  return splitHookCommand(command, 'sh')
 }
 
 /** True when `command`/`args` is the hook `expected` describes -- the same words in the same order, never `command` alone: an exec-form entry's `command` is just `"node"`, shared by every event and by a stale entry whose `args` point at a deleted shim. A path word matches another spelling of the same existing file (see {@link sameHookWord}); a string-form entry never matches an exec-form expectation or the reverse, so `install` still upgrades one to the other. */
@@ -244,6 +242,20 @@ function readSettings(p: string, opts: { strict?: boolean } = {}): Settings {
     )
   }
   return {}
+}
+
+/** The argv words of every token-goat hook entry in the `scope` settings file: an exec-form entry's command and args, a string-form entry split the way the POSIX shell Claude Code runs it in would. */
+export function wiredClaudeHookWords(scope: HookScope): string[][] {
+  const out: string[][] = []
+  for (const groups of Object.values(readSettings(settingsPath(scope)).hooks ?? {})) {
+    for (const g of Array.isArray(groups) ? groups : []) {
+      for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
+        if (typeof h?.command !== 'string' || !isTokenGoatHookCommand(h.command, h.args)) continue
+        out.push(Array.isArray(h.args) && h.args.length > 0 ? [h.command, ...h.args] : stringFormHookWords(h.command))
+      }
+    }
+  }
+  return out
 }
 
 /** True when `groups` contains a hook command matching `predicate`. */
@@ -391,15 +403,17 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
   // A wired command whose baked shim path no longer exists on disk cannot fire, so it must read as not-installed and let installHooks regenerate it -- otherwise a user who deleted ~/.claude/hooks would be told they are installed while every hook silently no-ops.
   if (!fs.existsSync(claudeHookScriptPath())) return false
   const gaps = hookEventGaps(scope)
-  return gaps !== null && gaps.missing.length === 0 && gaps.outdated.length === 0
+  return gaps !== null && gaps.missing.length === 0 && gaps.outdated.length === 0 && gaps.broken.length === 0
 }
 
 /** Claude Code event keys in `scope` that lack this build's exact hook entry, split by whether the event still reaches token-goat. */
 export interface HookEventGaps {
   /** No live token-goat hook at all (none, or only a {@link LEGACY_COMMAND_MARKERS} leftover that no longer resolves): the event never reaches token-goat. */
   readonly missing: string[]
-  /** A shim or pre-shim token-goat hook that still runs, just not the entry this build writes (older shim path, string form where exec form is expected, another bundle path). */
+  /** A shim or pre-shim token-goat hook that still runs, just not the entry this build writes (older shim path, string form where exec form is expected, another bundle path, the Node command where this build wires the native client or the other way round). */
   readonly outdated: string[]
+  /** A native-form hook whose tg-hook binary is gone: the harness cannot start it, so the event fails rather than falling back to Node. */
+  readonly broken: string[]
 }
 
 const LIVE_HOOK_MARKER_PATTERNS = [SHIM_COMMAND_MARKER, COMMAND_MARKER].map(anchoredMarkerPattern)
@@ -413,8 +427,18 @@ function isLiveTokenGoatHookCommand(command: string, args?: readonly string[]): 
   const haystack = execForm ? `${command} ${args.join(' ')}` : command
   if (!LIVE_HOOK_MARKER_PATTERNS.some((pattern) => pattern.test(haystack))) return false
   const words = execForm ? [command, ...args] : stringFormHookWords(command)
+  // A native entry runs only if its binary does: with the binary gone the harness cannot start it, and nothing falls back to the Node command it wraps.
+  const native = parseNativeInvocation(words)
+  if (native !== undefined && !fs.existsSync(native.bin)) return false
   const shimFile = words.find((word) => SHIM_FILE_WORD.test(word))
   return shimFile === undefined || fs.existsSync(shimFile)
+}
+
+/** True when `command`/`args` is a native-form token-goat hook whose tg-hook binary no longer exists. */
+function isBrokenNativeHookCommand(command: string, args?: readonly string[]): boolean {
+  const words = args !== undefined && args.length > 0 ? [command, ...args] : stringFormHookWords(command)
+  const native = parseNativeInvocation(words)
+  return native !== undefined && native.wrapped.some((word) => SHIM_FILE_WORD.test(word)) && !fs.existsSync(native.bin)
 }
 
 /** The {@link HookEventGaps} of `scope`, or null when the scope wires no token-goat hook at all, so there is no install there to be partial. A release that adds an event reaches an existing user only when `token-goat install` (or `upgrade`, which re-runs it) tops the key up, and an older build's entry is rewritten by the same run; this is how `doctor` says which of the two applies in the meantime. */
@@ -425,13 +449,16 @@ export function hookEventGaps(scope: HookScope = 'user'): HookEventGaps | null {
   const scriptPath = claudeHookScriptPath()
   const missing: string[] = []
   const outdated: string[] = []
+  const broken: string[] = []
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
-    const expected = expectedHookEntryFor(scriptPath, eventArg)
+    // A read, never a repair: a stale Windows copy of the native binary makes its entries outdated here, and `install` is what refreshes it.
+    const expected = expectedHookEntryFor(scriptPath, eventArg, { sync: false })
     if (groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected))) continue
     if (groupHasTokenGoat(hooks[eventKey], isLiveTokenGoatHookCommand)) outdated.push(eventKey)
+    else if (groupHasTokenGoat(hooks[eventKey], isBrokenNativeHookCommand)) broken.push(eventKey)
     else missing.push(eventKey)
   }
-  return { missing, outdated }
+  return { missing, outdated, broken }
 }
 
 // --- CLAUDE.md delimited-block writer --- README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
