@@ -1,16 +1,4 @@
-/**
- * The Claude Code shim backgrounds a hook whose handler always answers pass, by printing
- * `{"async":true}` as its first stdout line before the in-process/spawn round trip runs. The
- * eligible population is Edit/Write/MultiEdit/NotebookEdit outside the markdown family (see
- * postEditHandlerInner in hooks_edit.ts, which answers with real context only for md/mdx/
- * markdown/rst -- covered directly by tests/hooks_edit.test.ts) and every subagent_stop call
- * (subagentStopHandler in hooks_session.ts returns passOutput() on every branch -- covered
- * directly by tests/hooks_session.test.ts). A Bash post_tool_use call with a result under 200
- * bytes also qualifies: postBashHandler emits something on only 0.18% of such calls measured, and
- * this branch backgrounds rather than skips, since resolvePendingHintsForEvent still needs to run.
- * These tests exercise the shim's own classification, run as a real subprocess exactly as the
- * harness invokes it, not the handlers it defers to.
- */
+/** The Claude Code shim backgrounds a hook whose handler always answers pass, by printing `{"async":true}` as its first stdout line before the in-process/spawn round trip runs. The eligible population is Edit/Write/MultiEdit/NotebookEdit outside the markdown family (see postEditHandlerInner in hooks_edit.ts, which answers with real context only for md/mdx/ markdown/rst -- covered directly by tests/hooks_edit.test.ts) and every subagent_stop call (subagentStopHandler in hooks_session.ts returns passOutput() on every branch -- covered directly by tests/hooks_session.test.ts). A Bash post_tool_use call with a result under 200 bytes also qualifies: postBashHandler emits something on only 0.18% of such calls measured, and this branch backgrounds rather than skips, since resolvePendingHintsForEvent still needs to run. These tests exercise the shim's own classification, run as a real subprocess exactly as the harness invokes it, not the handlers it defers to. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -19,6 +7,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
+import { BUNDLE } from '../helpers/bundle.js'
 
 const tempDirs: string[] = []
 
@@ -35,12 +24,13 @@ afterEach(() => {
   }
 })
 
+// The entry is passed as every installed hook passes it. Without one the shim falls back to whatever `token-goat` is on PATH, so these ran the machine's global install: an older one answered unparseable stdin with its own output and failed them, and a current one passed them for a reason that has nothing to do with this checkout.
 function runShim(eventName: string, stdin: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'tg-shim-async-'))
   tempDirs.push(dir)
   const scriptPath = join(dir, 'shim.js')
   writeFileSync(scriptPath, CLAUDECODE_HOOK_SCRIPT, 'utf8')
-  const res = spawnSync(process.execPath, [scriptPath, eventName], {
+  const res = spawnSync(process.execPath, [scriptPath, eventName, BUNDLE], {
     cwd: dir,
     input: stdin,
     encoding: 'utf8',
