@@ -24,7 +24,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath, LEGACY_HOOKS_SCRIPT_FILE, readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
 import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
-import { claudeHookScriptPath, isInstalled, missingHookEvents } from './install.js'
+import { claudeHookScriptPath, hookEventGaps, isInstalled } from './install.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
 import { codexHookScriptPath } from './bridges/codex_install.js'
@@ -1080,7 +1080,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (copilotProjectResult) results.push(copilotProjectResult)
   const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, isInstalled('user') || !isInstalled('project') ? 'token-goat install' : 'token-goat install --project')
   if (claudeShimResult) results.push(claudeShimResult)
-  const claudeEventsResult = checkClaudeHookEvents({ user: missingHookEvents('user'), project: missingHookEvents('project') })
+  const claudeEventsResult = checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })
   if (claudeEventsResult) results.push(claudeEventsResult)
   const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
   if (codexShimResult) results.push(codexShimResult)

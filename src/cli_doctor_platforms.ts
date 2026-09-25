@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { cursorManagedEntry } from './bridges/cursor_install.js'
-import { findStrayClaudeMdBlocks } from './install.js'
+import { findStrayClaudeMdBlocks, type HookEventGaps } from './install.js'
 import { hasManagedServer, isResidueServersJson } from './bridges/mcp_servers_json.js'
 import { visualStudioManagedEntry } from './bridges/visualstudio_install.js'
 import { zedManagedEntry } from './bridges/zed_install.js'
@@ -117,15 +117,26 @@ export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInsta
   }
 }
 
-/** Name the Claude Code hook events a scope's install lacks, from `missingHookEvents` (install.ts) per scope. Null when neither scope has a token-goat install, so a machine without Claude Code gets no row. An event added by a later release is the usual cause: the existing settings.json keeps the old set until `token-goat install` runs again. */
-export function checkClaudeHookEvents(missing: { readonly user: readonly string[] | null; readonly project: readonly string[] | null }): DoctorResult | null {
+/** Name the Claude Code hook events a scope's install lacks or wires to an older token-goat hook command, from `hookEventGaps` (install.ts) per scope. Null when neither scope has a token-goat install, so a machine without Claude Code gets no row. A missing event is usually one added by a later release: the existing settings.json keeps the old set until `token-goat install` runs again. An outdated event still reaches token-goat, so it must not be reported as one that never does. */
+export function checkClaudeHookEvents(gaps: { readonly user: HookEventGaps | null; readonly project: HookEventGaps | null }): DoctorResult | null {
   const name = 'Claude Code hook events'
-  if (missing.user === null && missing.project === null) return null
-  const gaps: string[] = []
-  if (missing.user !== null && missing.user.length > 0) gaps.push(`user scope lacks ${missing.user.join(', ')}; run: token-goat install`)
-  if (missing.project !== null && missing.project.length > 0) gaps.push(`project scope lacks ${missing.project.join(', ')}; run: token-goat install --project`)
-  if (gaps.length === 0) return { name, status: 'ok', message: 'every event this build handles is wired' }
-  return { name, status: 'warn', message: `${gaps.join('. ')}. Those events never reach token-goat until then; restart any running session afterwards.` }
+  if (gaps.user === null && gaps.project === null) return null
+  const scopes = [
+    { scope: 'user', events: gaps.user, run: 'token-goat install' },
+    { scope: 'project', events: gaps.project, run: 'token-goat install --project' },
+  ] as const
+  const missing: string[] = []
+  const outdated: string[] = []
+  for (const { scope, events, run } of scopes) {
+    if (events === null) continue
+    if (events.missing.length > 0) missing.push(`${scope} scope lacks ${events.missing.join(', ')}; run: ${run}`)
+    if (events.outdated.length > 0) outdated.push(`${scope} scope wires ${events.outdated.join(', ')} to an older token-goat hook command; run: ${run}`)
+  }
+  if (missing.length === 0 && outdated.length === 0) return { name, status: 'ok', message: 'every event this build handles is wired' }
+  const sentences: string[] = []
+  if (missing.length > 0) sentences.push(`${missing.join('. ')}. Those events never reach token-goat until then`)
+  if (outdated.length > 0) sentences.push(`${outdated.join('. ')}. Those events still reach token-goat through the older command until the install rewrites it`)
+  return { name, status: 'warn', message: `${sentences.join('. ')}; restart any running session afterwards.` }
 }
 
 /** `paths` with duplicates removed, comparing on the resolved path. */

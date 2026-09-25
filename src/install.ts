@@ -390,20 +390,48 @@ function uninstallHooksScoped(scope: HookScope): boolean {
 export function isInstalled(scope: HookScope = 'user'): boolean {
   // A wired command whose baked shim path no longer exists on disk cannot fire, so it must read as not-installed and let installHooks regenerate it -- otherwise a user who deleted ~/.claude/hooks would be told they are installed while every hook silently no-ops.
   if (!fs.existsSync(claudeHookScriptPath())) return false
-  const missing = missingHookEvents(scope)
-  return missing !== null && missing.length === 0
+  const gaps = hookEventGaps(scope)
+  return gaps !== null && gaps.missing.length === 0 && gaps.outdated.length === 0
 }
 
-/** Claude Code event keys in `scope` that lack this build's exact hook entry, or null when the scope wires no token-goat hook at all, so there is no install there to be partial. A release that adds an event reaches an existing user only when `token-goat install` (or `upgrade`, which re-runs it) tops the key up; this is how `doctor` says so in the meantime. */
-export function missingHookEvents(scope: HookScope = 'user'): string[] | null {
+/** Claude Code event keys in `scope` that lack this build's exact hook entry, split by whether the event still reaches token-goat. */
+export interface HookEventGaps {
+  /** No live token-goat hook at all (none, or only a {@link LEGACY_COMMAND_MARKERS} leftover that no longer resolves): the event never reaches token-goat. */
+  readonly missing: string[]
+  /** A shim or pre-shim token-goat hook that still runs, just not the entry this build writes (older shim path, string form where exec form is expected, another bundle path). */
+  readonly outdated: string[]
+}
+
+const LIVE_HOOK_MARKER_PATTERNS = [SHIM_COMMAND_MARKER, COMMAND_MARKER].map(anchoredMarkerPattern)
+
+/** A command word naming a shim file, current `.cjs` or pre-rename `.js`, under either path separator. */
+const SHIM_FILE_WORD = /(?:^|[\\/])token-goat-shim\.c?js$/
+
+/** True when `command`/`args` is a token-goat hook of an era that still runs on this build: the shim (any file name or form) whose file is still on disk, or the pre-shim `token-goat hook <event>`, which resolves through PATH; never a legacy alias. */
+function isLiveTokenGoatHookCommand(command: string, args?: readonly string[]): boolean {
+  const execForm = args !== undefined && args.length > 0
+  const haystack = execForm ? `${command} ${args.join(' ')}` : command
+  if (!LIVE_HOOK_MARKER_PATTERNS.some((pattern) => pattern.test(haystack))) return false
+  const words = execForm ? [command, ...args] : stringFormHookWords(command)
+  const shimFile = words.find((word) => SHIM_FILE_WORD.test(word))
+  return shimFile === undefined || fs.existsSync(shimFile)
+}
+
+/** The {@link HookEventGaps} of `scope`, or null when the scope wires no token-goat hook at all, so there is no install there to be partial. A release that adds an event reaches an existing user only when `token-goat install` (or `upgrade`, which re-runs it) tops the key up, and an older build's entry is rewritten by the same run; this is how `doctor` says which of the two applies in the meantime. */
+export function hookEventGaps(scope: HookScope = 'user'): HookEventGaps | null {
   const hooks = readSettings(settingsPath(scope)).hooks
   if (hooks === undefined) return null
   if (!HOOK_EVENT_MAP.some(([eventKey]) => groupHasTokenGoat(hooks[eventKey], isTokenGoatHookCommand))) return null
   const scriptPath = claudeHookScriptPath()
-  return HOOK_EVENT_MAP.filter(([eventKey, eventArg]) => {
+  const missing: string[] = []
+  const outdated: string[] = []
+  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const expected = expectedHookEntryFor(scriptPath, eventArg)
-    return !groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected))
-  }).map(([eventKey]) => eventKey)
+    if (groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected))) continue
+    if (groupHasTokenGoat(hooks[eventKey], isLiveTokenGoatHookCommand)) outdated.push(eventKey)
+    else missing.push(eventKey)
+  }
+  return { missing, outdated }
 }
 
 // --- CLAUDE.md delimited-block writer --- README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
