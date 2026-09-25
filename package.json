@@ -18,6 +18,7 @@
   },
   "scripts": {
     "build": "node esbuild.config.mjs",
+    "build:native": "node scripts/build-native.mjs",
     "sbom": "npm sbom --sbom-format cyclonedx --omit=dev",
     "notices": "node scripts/generate-third-party-notices.mjs",
     "notices:check": "node scripts/generate-third-party-notices.mjs --check",
