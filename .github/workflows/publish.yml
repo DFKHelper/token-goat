@@ -5,7 +5,7 @@ on:
     types: [published]
   workflow_dispatch:
 
-# The default for this workflow is read-only. The publish job below re-declares exactly what it needs (id-token: write, for npm provenance), so nothing else here can inherit that privilege.
+# The default for this workflow is read-only. Each job that needs more re-declares exactly that (id-token: write for npm provenance in the publish job, id-token and attestations for the Linux attestation job), so nothing else here can inherit that privilege.
 permissions:
   contents: read
 
@@ -13,9 +13,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  # Everything that executes dependency code lives here, and nothing here can reach the registry token. `npm ci` installs a tree of ~490 packages and `npm test` runs all of them; the current generation of npm supply-chain attacks installs cleanly and fires from inside a function the host calls during normal operation, so a compromised dependency executes in this job as a matter of course. What it must not also get is a job holding the credential: when build and publish shared one, dependency code ran on the same filesystem as the publish step and could rewrite `dist/`, or add a `prepublishOnly` to package.json that npm would then execute with NODE_AUTH_TOKEN in scope. Splitting the jobs closes both of those.
-  #
-  # It does not make the release untamperable, and nothing here pretends otherwise: `npm run build` *is* esbuild, so dependency code always runs upstream of the artifact this hands over. What the split buys is that the artifact is the only thing that crosses, rather than a whole writable checkout plus a token.
+  # Everything that executes dependency code lives here, and nothing here can reach the registry token. `npm ci` installs a tree of ~490 packages and `npm test` runs all of them; the current generation of npm supply-chain attacks installs cleanly and fires from inside a function the host calls during normal operation, so a compromised dependency executes in this job as a matter of course. What it must not also get is a job holding the credential: when build and publish shared one, dependency code ran on the same filesystem as the publish step and could rewrite `dist/`, or add a `prepublishOnly` to package.json that npm would then execute with NODE_AUTH_TOKEN in scope. Splitting the jobs closes both of those. It does not make the release untamperable, and nothing here pretends otherwise: `npm run build` *is* esbuild, so dependency code always runs upstream of the artifact this hands over. What the split buys is that artifacts are the only thing that crosses, rather than a whole writable checkout plus a token; the publish job replaces this artifact's dist/native with the signed and attested binaries.
   build:
     name: Build and verify
     runs-on: ubuntu-latest
@@ -52,6 +50,13 @@ jobs:
             echo "::error::Release commit $GITHUB_SHA is not an ancestor of origin/main; refusing to publish"
             exit 1
           fi
+      # The suite's globalSetup (tests/setup/build-bundle.ts) builds native/tg-hook once and the native test files fail, rather than skip, where it cannot. Run inside the crate, `rustup toolchain install` with no argument installs the toolchain native/tg-hook/rust-toolchain.toml pins; explicit, because rustup 1.28 stopped installing it implicitly on first use. The glibc binary that build leaves in dist/native is never published: the publish job deletes dist/native and rebuilds it from the native release artifacts.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        working-directory: native/tg-hook
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
       - name: Test
         run: npm test
       - name: Build
@@ -80,10 +85,255 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # One native hook client per shipped target, each built on a runner of its own architecture so it can run its self-test before it is uploaded; win32-arm64 uses the Windows arm64 runner rather than a cross build from x64 for that reason, since a cross-built binary would ship having never executed. Linux targets are musl-static, so one binary serves glibc and musl distributions, and install under the directory name the installer computes (linux-x64, linux-arm64). No `npm ci` here: scripts/build-native.mjs imports only Node builtins, so the only third-party code these jobs run is the crates Cargo.lock pins. The flags that make the build reproducible live in that script, not in this file.
+  native:
+    name: Build tg-hook (${{ matrix.platform-arch }})
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform-arch: win32-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe: tg-hook.exe
+          - platform-arch: win32-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            exe: tg-hook.exe
+          - platform-arch: linux-x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            exe: tg-hook
+          - platform-arch: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            exe: tg-hook
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+      PLATFORM_ARCH: ${{ matrix.platform-arch }}
+      EXE: ${{ matrix.exe }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Install the pinned Rust toolchain and the target
+        shell: bash
+        working-directory: native/tg-hook
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustup show active-toolchain
+      - name: Build
+        shell: bash
+        run: node scripts/build-native.mjs --target "$TARGET"
+      # The self-test reports the platform and architecture the binary was compiled for, so a binary filed under the wrong directory fails here instead of on a user's machine.
+      - name: Self-test on the architecture it ships for
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$("dist/native/$PLATFORM_ARCH/$EXE" --selftest)"
+          echo "$out"
+          reported="$(node -p 'const s = JSON.parse(process.argv[1]); s.ok === true ? `${s.platform}-${s.arch}` : "not ok"' "$out")"
+          if [ "$reported" != "$PLATFORM_ARCH" ]; then
+            echo "::error::tg-hook built for $TARGET reports $reported, expected $PLATFORM_ARCH"
+            exit 1
+          fi
+      - name: Record the sha256
+        shell: bash
+        working-directory: dist/native
+        run: sha256sum "$PLATFORM_ARCH/$EXE" | tee "$PLATFORM_ARCH.sha256"
+      - name: Upload the binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-${{ matrix.platform-arch }}
+          path: |
+            dist/native/${{ matrix.platform-arch }}/${{ matrix.exe }}
+            dist/native/${{ matrix.platform-arch }}.sha256
+          retention-days: 1
+          if-no-files-found: error
+
+  # Authenticode-signs both Windows binaries with a certificate held in a cloud HSM, through jsign, which speaks to either provider: SSL.com eSigner or DigiCert KeyLocker, chosen by the WINDOWS_SIGNING_STORETYPE variable (ESIGNER or DIGICERTONE). The provider's credentials live in the `signing` environment, so a protection rule there can require approval, and no other job in this workflow can read them. This job checks out nothing and installs no npm or Cargo package: it runs jsign and osslsigncode, each downloaded from a pinned URL and checked against a pinned sha256 before use, over the two binaries the native jobs uploaded. Until the certificate and its secrets exist this job fails at its first step, naming what is missing, and the publish job, which needs it, never starts.
+  sign-windows:
+    name: Sign the Windows binaries
+    needs: native
+    # An explicit image rather than ubuntu-latest: the osslsigncode package below is built for Ubuntu 24.04's libraries.
+    runs-on: ubuntu-24.04
+    # Repeated rather than inherited through `needs`, because this job holds the signing credentials and should refuse a non-main ref on its own terms.
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    environment:
+      name: signing
+    permissions:
+      contents: read
+    env:
+      JSIGN_URL: https://github.com/ebourg/jsign/releases/download/7.5/jsign-7.5.jar
+      JSIGN_SHA256: 602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c
+      OSSLSIGNCODE_URL: https://archive.ubuntu.com/ubuntu/pool/universe/o/osslsigncode/osslsigncode_2.8-2_amd64.deb
+      OSSLSIGNCODE_SHA256: 1aee7be603102633e80b4c67cd939bba2e16a62813e4a3035696727783f632b0
+    steps:
+      - name: Require the signing configuration
+        env:
+          WINDOWS_SIGNING_STORETYPE: ${{ vars.WINDOWS_SIGNING_STORETYPE }}
+          WINDOWS_SIGNING_ALIAS: ${{ vars.WINDOWS_SIGNING_ALIAS }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          DIGICERT_API_KEY: ${{ secrets.DIGICERT_API_KEY }}
+          DIGICERT_CLIENT_CERT_P12_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_P12_BASE64 }}
+          DIGICERT_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          case "${WINDOWS_SIGNING_STORETYPE:-}" in
+            ESIGNER) required=(WINDOWS_SIGNING_ALIAS ESIGNER_USERNAME ESIGNER_PASSWORD ESIGNER_TOTP_SECRET) ;;
+            DIGICERTONE) required=(WINDOWS_SIGNING_ALIAS DIGICERT_API_KEY DIGICERT_CLIENT_CERT_P12_BASE64 DIGICERT_CLIENT_CERT_PASSWORD) ;;
+            *)
+              echo "::error::Windows signing is not configured: set the WINDOWS_SIGNING_STORETYPE variable to ESIGNER (SSL.com eSigner) or DIGICERTONE (DigiCert KeyLocker) and add that provider's secrets to the signing environment. No release can publish until then, because the publish job refuses unsigned Windows binaries."
+              exit 1
+              ;;
+          esac
+          missing=()
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Windows signing with $WINDOWS_SIGNING_STORETYPE is missing: ${missing[*]}. Add them to the signing environment (WINDOWS_SIGNING_ALIAS is a variable, the rest are secrets). No release can publish until then, because the publish job refuses unsigned Windows binaries."
+            exit 1
+          fi
+      - name: Download the win32-x64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-win32-x64
+          path: unsigned/
+      - name: Download the win32-arm64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-win32-arm64
+          path: unsigned/
+      # Signs exactly the bytes the build jobs recorded, not whatever reached this job under their names.
+      - name: Check the binaries against the hashes their build recorded
+        working-directory: unsigned
+        run: sha256sum -c win32-x64.sha256 win32-arm64.sha256
+      - name: Install jsign and osslsigncode
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/jsign.jar" "$JSIGN_URL"
+          echo "$JSIGN_SHA256  $RUNNER_TEMP/jsign.jar" | sha256sum -c -
+          curl -sSfL -o "$RUNNER_TEMP/osslsigncode.deb" "$OSSLSIGNCODE_URL"
+          echo "$OSSLSIGNCODE_SHA256  $RUNNER_TEMP/osslsigncode.deb" | sha256sum -c -
+          # Unpacked rather than installed, so no package maintainer script runs.
+          dpkg-deb -x "$RUNNER_TEMP/osslsigncode.deb" "$RUNNER_TEMP/osslsigncode"
+          java -version
+          "$RUNNER_TEMP/osslsigncode/usr/bin/osslsigncode" --version
+      # Every signature carries an RFC 3161 timestamp from the provider's authority, so it stays valid after the certificate expires. Credentials reach jsign through `env:` references rather than its command line. WINDOWS_SIGNING_KEYSTORE is optional and overrides the provider's default endpoint (a regional DigiCert host, for example).
+      - name: Sign
+        env:
+          WINDOWS_SIGNING_STORETYPE: ${{ vars.WINDOWS_SIGNING_STORETYPE }}
+          WINDOWS_SIGNING_ALIAS: ${{ vars.WINDOWS_SIGNING_ALIAS }}
+          WINDOWS_SIGNING_KEYSTORE: ${{ vars.WINDOWS_SIGNING_KEYSTORE }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          DIGICERT_API_KEY: ${{ secrets.DIGICERT_API_KEY }}
+          DIGICERT_CLIENT_CERT_P12_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_P12_BASE64 }}
+          DIGICERT_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          p12="$RUNNER_TEMP/signing-client.p12"
+          trap 'rm -f "$p12"' EXIT
+          extra=()
+          case "$WINDOWS_SIGNING_STORETYPE" in
+            ESIGNER)
+              export JSIGN_STOREPASS="$ESIGNER_USERNAME|$ESIGNER_PASSWORD"
+              export JSIGN_KEYPASS="$ESIGNER_TOTP_SECRET"
+              extra+=(--keypass env:JSIGN_KEYPASS)
+              tsa=http://ts.ssl.com
+              ;;
+            DIGICERTONE)
+              (umask 077 && printf '%s' "$DIGICERT_CLIENT_CERT_P12_BASE64" | base64 -d > "$p12")
+              export JSIGN_STOREPASS="$DIGICERT_API_KEY|$p12|$DIGICERT_CLIENT_CERT_PASSWORD"
+              tsa=http://timestamp.digicert.com
+              ;;
+          esac
+          if [ -n "${WINDOWS_SIGNING_KEYSTORE:-}" ]; then extra+=(--keystore "$WINDOWS_SIGNING_KEYSTORE"); fi
+          for pa in win32-x64 win32-arm64; do
+            mkdir -p "signed/$pa"
+            cp "unsigned/$pa/tg-hook.exe" "signed/$pa/tg-hook.exe"
+            java -jar "$RUNNER_TEMP/jsign.jar" --storetype "$WINDOWS_SIGNING_STORETYPE" --storepass env:JSIGN_STOREPASS "${extra[@]}" --alias "$WINDOWS_SIGNING_ALIAS" --alg SHA-256 --tsaurl "$tsa" --tsmode RFC3161 --tsretries 5 --tsretrywait 15 --name token-goat --url https://www.npmjs.com/package/token-goat "signed/$pa/tg-hook.exe"
+          done
+      # A cryptographic check of what was just signed: the signed digest must match the file, the certificate chain must reach a trusted root, and the timestamp must verify. The runner's CA bundle is the trust store; WINDOWS_SIGNING_ROOT_CA_PEM (a variable, since a root certificate is public) adds the issuing root if the provider's code-signing root is not in that bundle.
+      - name: Verify the signatures
+        env:
+          WINDOWS_SIGNING_ROOT_CA_PEM: ${{ vars.WINDOWS_SIGNING_ROOT_CA_PEM }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/signing-ca.pem"
+          cat /etc/ssl/certs/ca-certificates.crt > "$ca"
+          if [ -n "${WINDOWS_SIGNING_ROOT_CA_PEM:-}" ]; then printf '%s\n' "$WINDOWS_SIGNING_ROOT_CA_PEM" >> "$ca"; fi
+          for pa in win32-x64 win32-arm64; do
+            report="$RUNNER_TEMP/verify-$pa.txt"
+            if ! "$RUNNER_TEMP/osslsigncode/usr/bin/osslsigncode" verify -in "signed/$pa/tg-hook.exe" -CAfile "$ca" -TSA-CAfile "$ca" > "$report" 2>&1; then
+              cat "$report"
+              echo "::error::The $pa signature does not verify. If the certificate chain is the failure, set WINDOWS_SIGNING_ROOT_CA_PEM to the provider's code-signing root."
+              exit 1
+            fi
+            if ! grep -q '^Timestamp Server Signature verification: ok' "$report"; then
+              cat "$report"
+              echo "::error::The $pa signature carries no verified RFC 3161 timestamp"
+              exit 1
+            fi
+            grep -E '^(Signature verification|Timestamp Server Signature verification|Timestamp time)' "$report" || true
+          done
+      - name: Record the signed hashes
+        working-directory: signed
+        run: sha256sum win32-x64/tg-hook.exe win32-arm64/tg-hook.exe | tee SHA256SUMS
+      - name: Upload the signed binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-windows-signed
+          path: signed/
+          retention-days: 1
+          if-no-files-found: error
+
+  # Sigstore build provenance for the two Linux binaries, published to this repository's attestations, so `gh attestation verify` can tie a binary to the workflow run that built it. The only job besides publish granted id-token: write, and the only one granted attestations: write; it runs no repository code.
+  attest-linux:
+    name: Attest the Linux binaries
+    needs: native
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the linux-x64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-x64
+          path: native/
+      - name: Download the linux-arm64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-arm64
+          path: native/
+      - name: Check the binaries against the hashes their build recorded
+        working-directory: native
+        run: sha256sum -c linux-x64.sha256 linux-arm64.sha256
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            native/linux-x64/tg-hook
+            native/linux-arm64/tg-hook
+
   # The only job that can reach the registry. It installs nothing: `npm publish` packs the `files` allowlist and uploads it, which needs the checkout and `dist/` and no dependency tree at all. `--ignore-scripts` then makes "no dependency code runs here" a property of the command rather than of what happens to be on disk, so the lifecycle hooks npm would otherwise fire on publish cannot run either. Held by tests/guards/publish_job_runs_no_dependency_code.test.ts.
   publish:
     name: Publish to npm
-    needs: build
+    needs: [build, native, sign-windows, attest-linux]
     runs-on: ubuntu-latest
     # Repeated from the build job rather than inherited through `needs`, because this is the job that holds the token: it should refuse a non-main ref on its own terms, not because an upstream job happened to be skipped.
     if: github.event_name == 'release' || github.ref == 'refs/heads/main'
@@ -104,6 +354,35 @@ jobs:
         with:
           name: dist
           path: dist/
+      - name: Download the linux-x64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-x64
+          path: ${{ runner.temp }}/native/
+      - name: Download the linux-arm64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-linux-arm64
+          path: ${{ runner.temp }}/native/
+      - name: Download the signed Windows binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-windows-signed
+          path: ${{ runner.temp }}/native-signed/
+      # dist/native is rebuilt from the release artifacts alone. The bundle's copy is deleted first, because the build job's test run builds a glibc binary into dist/native/linux-x64 for its own tests, and that one must never ship. Artifact downloads do not keep the executable bit, so the Linux binaries get it back here.
+      - name: Assemble dist/native from the release artifacts
+        run: |
+          set -euo pipefail
+          rm -rf dist/native
+          mkdir -p dist/native/win32-x64 dist/native/win32-arm64 dist/native/linux-x64 dist/native/linux-arm64
+          cp "$RUNNER_TEMP/native-signed/win32-x64/tg-hook.exe" dist/native/win32-x64/tg-hook.exe
+          cp "$RUNNER_TEMP/native-signed/win32-arm64/tg-hook.exe" dist/native/win32-arm64/tg-hook.exe
+          cp "$RUNNER_TEMP/native/linux-x64/tg-hook" dist/native/linux-x64/tg-hook
+          cp "$RUNNER_TEMP/native/linux-arm64/tg-hook" dist/native/linux-arm64/tg-hook
+          chmod 755 dist/native/linux-x64/tg-hook dist/native/linux-arm64/tg-hook
+      # The publish gate: exactly the four release binaries, each matching the hash the job that produced it recorded, both Windows files signed. scripts/verify-native-dist.mjs imports only Node builtins, so this runs no dependency code beside the token.
+      - name: Refuse unsigned or substituted native binaries
+        run: node scripts/verify-native-dist.mjs dist/native "$RUNNER_TEMP/native-signed/SHA256SUMS" "$RUNNER_TEMP/native/linux-x64.sha256" "$RUNNER_TEMP/native/linux-arm64.sha256"
       - name: Publish
         run: npm publish --provenance --access public --ignore-scripts
         env:

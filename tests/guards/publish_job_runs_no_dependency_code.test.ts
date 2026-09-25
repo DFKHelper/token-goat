@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 
 import { ROOT } from '../helpers/bundle.js'
@@ -14,9 +15,12 @@ interface Job {
   readonly body: string
 }
 
-/** The workflow's jobs, split on column-2 keys under `jobs:`. Each body is every line up to the next job. */
+/** The workflow's jobs, split on column-2 keys under `jobs:`. Each body is every line up to the next job, less comment lines: a comment describing the next job sits above its key, inside the previous job's span, and would otherwise be read as that job's text. */
 function jobs(): Job[] {
-  const lines = fs.readFileSync(workflow, 'utf8').split('\n')
+  const lines = fs
+    .readFileSync(workflow, 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
   const start = lines.findIndex((l) => /^jobs:\s*$/.test(l))
   expect(start, 'publish.yml has no `jobs:` block, so nothing below is reading what it thinks it is').toBeGreaterThanOrEqual(0)
 
@@ -64,13 +68,22 @@ describe('the job that publishes to npm', () => {
     expect(publishingJob().body).toMatch(/npm publish[^\n]*--provenance/)
   })
 
-  it('is the only job granted id-token: write', () => {
-    const granted = jobs().filter((j) => /id-token:\s*write/.test(j.body)).map((j) => j.name)
-    expect(granted, 'provenance signing privilege belongs only to the job that publishes').toEqual([publishingJob().name])
+  it('shares id-token: write only with an attestation job that runs no repository code', () => {
+    // actions/attest-build-provenance mints its Sigstore certificate through the OIDC token, so the job attesting the Linux binaries needs the grant too. It may hold it only while it checks out nothing and runs nothing beyond a hash check, so the privilege never sits beside code from the repository or its dependencies.
+    const granted = jobs().filter((j) => /id-token:\s*write/.test(j.body))
+    expect(granted.map((j) => j.name), 'provenance signing privilege belongs to the job that publishes').toContain(publishingJob().name)
+    for (const job of granted.filter((j) => j.name !== publishingJob().name)) {
+      expect(job.body, `${job.name} holds id-token: write without attesting anything`).toMatch(/uses: actions\/attest-build-provenance@/)
+      expect(job.body, `${job.name} holds id-token: write and checks out the repository`).not.toMatch(/uses: actions\/checkout@/)
+      const runs = [...job.body.matchAll(/^\s+run: (.*)$/gm)].map((m) => m[1]!)
+      expect(runs, `${job.name} holds id-token: write and runs more than a hash check`).toEqual(runs.filter((r) => /^sha256sum -c [\w .-]+$/.test(r)))
+    }
   })
 
   it('cannot run before the build it publishes', () => {
-    expect(publishingJob().body, 'without `needs`, the publish job races the build and uploads whatever is in the artifact store').toMatch(/needs:\s*build/)
+    const doc = yaml.load(fs.readFileSync(workflow, 'utf8')) as { jobs: Record<string, { needs?: string | string[] }> }
+    const needs = doc.jobs[publishingJob().name]!.needs
+    expect([needs ?? []].flat(), 'without `needs`, the publish job races the build and uploads whatever is in the artifact store').toContain('build')
   })
 
   it('refuses a non-main ref on its own terms', () => {
