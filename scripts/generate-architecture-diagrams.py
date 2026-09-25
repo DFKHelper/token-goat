@@ -156,7 +156,7 @@ L2_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 850" width
       <!-- Hook Shim -->
       <g transform="translate(0, 0)">
         <rect width="240" height="130" rx="8" fill="#2563EB" stroke="#1D4ED8"/>
-        <text x="120" y="30" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">🪝 token-goat-shim.js</text>
+        <text x="120" y="30" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">🪝 token-goat-shim.cjs</text>
         <text x="120" y="48" font-size="10" fill="#bfdbfe" text-anchor="middle">[Node.js In-Process Fast Path]</text>
         <text x="15" y="75" font-size="10" fill="#ffffff">• ~/.claude/hooks/ entry point</text>
         <text x="15" y="93" font-size="10" fill="#ffffff">• In-process relay via dynamic import</text>
@@ -408,7 +408,7 @@ L4_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width
 
   <g transform="translate(280, 100)">
     <rect x="0" y="0" width="180" height="40" rx="6" fill="#2563EB"/>
-    <text x="90" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">token-goat-shim.js</text>
+    <text x="90" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">token-goat-shim.cjs</text>
     <line x1="90" y1="40" x2="90" y2="650" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4 4"/>
   </g>
 
@@ -541,7 +541,7 @@ title Container Diagram for Token-Goat (C4 Level 2)
 Person(user, "Developer / Agent Harness")
 
 System_Boundary(tg_boundary, "Token-Goat System") {
-    Container(shim, "Hook Shim", "JavaScript (~/.claude/hooks/token-goat-shim.js)", "Provides in-process fast path relay for Claude Code hooks.")
+    Container(shim, "Hook Shim", "JavaScript (~/.claude/hooks/token-goat-shim.cjs)", "Provides in-process fast path relay for Claude Code hooks.")
     Container(relay, "Hook Relay & Dispatcher", "TypeScript (dist/token-goat-hook.mjs)", "Normalizes multi-harness payloads and runs 158 compression filters.")
     Container(cli, "CLI Application", "TypeScript (dist/token-goat.mjs)", "Exposes 100+ surgical read, outline, pack, and doctor commands.")
     Container(mcp, "MCP stdio Server", "TypeScript (token-goat mcp-serve)", "Serves 18 tools to VS Code Copilot over stdio.")

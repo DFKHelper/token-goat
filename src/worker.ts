@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
+import { assetEmbedSha, disabledStampCount, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
@@ -399,9 +399,9 @@ function bumpAndCheckRetry(dir: string, absPath: string): boolean {
   return true
 }
 
-// Appends `absPath` to the live dirty queue. Mirrors appendDirtyPath's crash-safe append (mkdir + torn-last-line guard) in hooks_index.ts, but is parameterized by `dir` (rather than hardcoding dataDir()) so it targets the same queue processDirtyBatch/drainOnce were given -- including an isolated dir under test. Best-effort: if the write itself fails, the path is lost for this cycle, but the failure is still captured via logTransientReadFailure above.
-function appendToDirtyQueue(dir: string, ...absPaths: string[]): void {
-  if (absPaths.length === 0) return
+// Appends `absPath` to the live dirty queue. Mirrors appendDirtyPath's crash-safe append (mkdir + torn-last-line guard) in hooks_index.ts, but is parameterized by `dir` (rather than hardcoding dataDir()) so it targets the same queue processDirtyBatch/drainOnce were given -- including an isolated dir under test. Best-effort: if the write itself fails, the path is lost for this cycle, but the failure is still captured via logTransientReadFailure above. Returns whether the paths reached the queue, for a caller that can keep them and try again.
+function appendToDirtyQueue(dir: string, ...absPaths: string[]): boolean {
+  if (absPaths.length === 0) return true
   const queuePath = dirtyQueuePathFor(dir)
   try {
     ensureDirSync(path.dirname(queuePath))
@@ -413,8 +413,10 @@ function appendToDirtyQueue(dir: string, ...absPaths: string[]): void {
       // File doesn't exist yet -- nothing to guard against.
     }
     fs.appendFileSync(queuePath, `${leadingNewline}${absPaths.map((p) => `${encodeDirtyQueueLine(p)}\n`).join('')}`)
+    return true
   } catch {
     // best-effort -- see doc comment above.
+    return false
   }
 }
 
@@ -1007,13 +1009,10 @@ const EMBED_BACKLOG_BATCH = 50
 // How many `files` rows one idle cycle reads looking for that batch. Reading a row is an index walk with no file I/O, so a large index with little owed is crossed in a few hundred cheap cycles.
 const EMBED_BACKLOG_SCAN = 1000
 
-/** Put up to {@link EMBED_BACKLOG_BATCH} files whose embedding is not current back on the dirty queue, reading from after `cursor` in path order, and return where the next cycle resumes, or null once the walk is done. Embedding is queued in this process's memory while the drain moves on (see makeIndexer), so a worker that stops with a backlog loses it: a SIGTERM waits five seconds for embeds in flight and no longer, and on Windows, where `worker stop` terminates the process outright, nothing waits at all. Every file it drops keeps a NULL `embed_sha`, which no later drain revisits, because a drain only sees files something touches again. That left 25,840 of one project's 27,051 files out of 'semantic' after a single large reindex. A stamp that the configuration has since overtaken is the same backlog by another route: turning embeddings back on leaves every `disabled:` stamp stale, and raising indexing.large_file_symbol_only_kb leaves every `oversize:` stamp taken under the old value stale, and neither is revisited either. So the test is makeIndexer's own freshness gate, {@link isEmbedFresh} under the current configuration, and each file it rejects takes makeIndexer's ordinary path, where an unchanged file skips the reparse and goes straight to the embed. Nothing is queued while embeddings are off or their dependencies are missing: every file would only be stamped `disabled:` or `unavailable:`, which reads each one for no result, and the stamp it replaces already answers `semantic` the same way. The cursor only moves forward, so a file whose embed fails every time is tried once per worker start rather than on every idle cycle. */
+/** Put up to {@link EMBED_BACKLOG_BATCH} files whose embedding is not current back on the dirty queue, reading from after `cursor` in path order, and return where the next cycle resumes, or null once the walk is done. Embedding is queued in this process's memory while the drain moves on (see makeIndexer), so a worker that stops with a backlog loses it: a SIGTERM waits five seconds for embeds in flight and no longer, and on Windows, where `worker stop` terminates the process outright, nothing waits at all. Every file it drops keeps a NULL `embed_sha`, which no later drain revisits, because a drain only sees files something touches again. That left 25,840 of one project's 27,051 files out of 'semantic' after a single large reindex. A stamp that the configuration has since overtaken is the same backlog by another route: turning embeddings back on leaves every `disabled:` stamp stale, and raising indexing.large_file_symbol_only_kb leaves every `oversize:` stamp taken under the old value stale, and neither is revisited either. So the test is makeIndexer's own freshness gate, {@link isEmbedFresh} under the current configuration, and each file it rejects takes makeIndexer's ordinary path, where an unchanged file skips the reparse and goes straight to the embed. The worker loop does not call it while embeddings are off or their dependencies are missing: every file would only be stamped `disabled:` or `unavailable:`, which reads each one for no result, and the stamp it replaces already answers `semantic` the same way. Switching them back on starts the walk again from the top, because every file indexed in between owes an embed wherever the walk had got to. The cursor only moves forward, so a file whose embed fails every time is tried once per worker start rather than on every idle cycle. */
 function requeueStaleEmbeddings(dir: string, cursor: string): string | null {
-  const dbPath = path.join(dir, 'global.db')
   const indexing = loadConfig().indexing
-  if (!fs.existsSync(dbPath) || indexing?.embeddings_enabled === false) return null
-  const db = getDb(dbPath)
-  if (!embeddingsDepsAvailable(db)) return null
+  const db = getDb(path.join(dir, 'global.db'))
   const symbolOnlyKb = indexing?.large_file_symbol_only_kb ?? 0
   const maxChunks = indexing?.max_chunks_per_file ?? 0
   const rows = db.prepare('SELECT path, sha, embed_sha FROM files WHERE path > ? ORDER BY path LIMIT ?').all(cursor, EMBED_BACKLOG_SCAN) as Array<{ path: string; sha: string; embed_sha: string | null }>
@@ -1022,11 +1021,20 @@ function requeueStaleEmbeddings(dir: string, cursor: string): string | null {
   for (const row of rows) {
     resumeAfter = row.path
     if (isUnderSystemTemp(row.path) || isEmbedFresh(row.embed_sha ?? undefined, row.sha, true, true, symbolOnlyKb, maxChunks)) continue
+    // The drain prunes a queued path that is not on disk, and a file on a drive that is only unmounted is not on disk either; deciding that a root is gone is sweepKnownRoots' job, behind its grace period.
+    if (fileIsAbsent(row.path)) continue
     owed.push(row.path)
     if (owed.length === EMBED_BACKLOG_BATCH) break
   }
-  appendToDirtyQueue(dir, ...owed)
+  // A batch that never reached the queue is read again next cycle rather than stepped past.
+  if (!appendToDirtyQueue(dir, ...owed)) return cursor
   return owed.length === EMBED_BACKLOG_BATCH || rows.length === EMBED_BACKLOG_SCAN ? resumeAfter : null
+}
+
+/** Whether an embed could be written now: the index exists, the configuration has not turned embeddings off, and their dependencies load. Both probes behind the last check are cached, so asking on every idle cycle costs two small config reads. */
+function embeddingsReady(dir: string): boolean {
+  const dbPath = path.join(dir, 'global.db')
+  return fs.existsSync(dbPath) && loadConfig().indexing?.embeddings_enabled !== false && embeddingsDepsAvailable(getDb(dbPath))
 }
 
 export async function runWorkerLoop(
@@ -1042,6 +1050,8 @@ export async function runWorkerLoop(
   let lastIdleVacuumMs = 0
   let lastActiveMs = Date.now()
   let embedBacklogCursor: string | null = ''
+  let embeddingsWereReady = true
+  let disabledStampsSeen = disabledStampCount()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
   let ownedPidFile = false
   while (!shouldStop()) {
@@ -1059,10 +1069,16 @@ export async function runWorkerLoop(
     }
     if (processed > 0) {
       lastActiveMs = Date.now()
-    } else if (embedBacklogCursor !== null && inFlightEmbeddings.size === 0) {
+    } else if (inFlightEmbeddings.size === 0) {
       // Only with the queue drained and every embed settled, so the backlog never competes with an edit. See requeueStaleEmbeddings.
       try {
-        embedBacklogCursor = requeueStaleEmbeddings(dir, embedBacklogCursor)
+        const ready = embeddingsReady(dir)
+        const stamps = disabledStampCount()
+        // Embeddings back on, or their dependencies back: every file indexed in between owes an embed wherever the walk had got to, a walk that already finished included, so it starts again from the top. Only idle cycles look, so a switch off and back on while the queue kept the worker busy shows up only as the `disabled:` markers its drains stamped meanwhile.
+        if (ready && (!embeddingsWereReady || stamps !== disabledStampsSeen)) embedBacklogCursor = ''
+        embeddingsWereReady = ready
+        if (ready) disabledStampsSeen = stamps
+        if (ready && embedBacklogCursor !== null) embedBacklogCursor = requeueStaleEmbeddings(dir, embedBacklogCursor)
       } catch {
         // An unreadable index this cycle: the cursor stays put and the next idle cycle tries again.
       }

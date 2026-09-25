@@ -1,22 +1,8 @@
-// Regression: token-goat hardcoded `~/.claude` at a dozen sites while Claude Code resolves its
-// entire config home through `CLAUDE_CONFIG_DIR`, falling back to `~/.claude`. For any user who
-// exports that variable, the installer WROTE the hooks shim, the settings.json wiring, the
-// CLAUDE.md block and the skill into a tree Claude Code never reads, and the skill cache, agent
-// roster, transcript corpus and CLAUDE.md/MEMORY.md walks all READ from that same dead tree -- a
-// silent no-op install with no error anywhere.
+// Regression: token-goat hardcoded `~/.claude` at a dozen sites while Claude Code resolves its entire config home through `CLAUDE_CONFIG_DIR`, falling back to `~/.claude`. For any user who exports that variable, the installer WROTE the hooks shim, the settings.json wiring, the CLAUDE.md block and the skill into a tree Claude Code never reads, and the skill cache, agent roster, transcript corpus and CLAUDE.md/MEMORY.md walks all READ from that same dead tree -- a silent no-op install with no error anywhere.
 //
-// FIXTURE PROVENANCE: FORMAT-DERIVED from the shipping Claude Code binary at
-// C:/Users/zelys/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe
-// (235,169,440 bytes). Its config-home accessor reads
-// `var ve=Qo(()=>(s()??a(R(),".claude")).normalize("NFC"),s)` with
-// `function s(){return process.env.CLAUDE_CONFIG_DIR}` -- i.e. `CLAUDE_CONFIG_DIR ?? join(homedir(),
-// '.claude')` -- and every config path hangs off `ve()`: skills (11 call sites), CLAUDE.md (4),
-// plugins (4), projects (2), settings.json (1), with ZERO resolving from a bare home directory.
-// The agent-definition frontmatter shape below is reused verbatim from tests/hooks_agent_spawn.test.ts.
+// FIXTURE PROVENANCE: FORMAT-DERIVED from the shipping Claude Code binary at C:/Users/zelys/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe (235,169,440 bytes). Its config-home accessor reads `var ve=Qo(()=>(s()??a(R(),".claude")).normalize("NFC"),s)` with `function s(){return process.env.CLAUDE_CONFIG_DIR}` -- i.e. `CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')` -- and every config path hangs off `ve()`: skills (11 call sites), CLAUDE.md (4), plugins (4), projects (2), settings.json (1), with ZERO resolving from a bare home directory. The agent-definition frontmatter shape below is reused verbatim from tests/hooks_agent_spawn.test.ts.
 //
-// Every case is paired with a calibration case asserting the `~/.claude` fallback still wins while
-// the variable is unset: without that pairing, a test that trivially passes is indistinguishable
-// from one that works.
+// Every case is paired with a calibration case asserting the `~/.claude` fallback still wins while the variable is unset: without that pairing, a test that trivially passes is indistinguishable from one that works.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -88,7 +74,7 @@ describe('installer write targets follow CLAUDE_CONFIG_DIR', () => {
       claudeMd: claudeMdPath(),
       skill: skillDir(),
     }))
-    expect(paths.shim).toBe(path.join(configHome, 'hooks', 'token-goat-shim.js'))
+    expect(paths.shim).toBe(path.join(configHome, 'hooks', 'token-goat-shim.cjs'))
     expect(paths.settings).toBe(path.join(configHome, 'settings.json'))
     expect(paths.claudeMd).toBe(path.join(configHome, 'CLAUDE.md'))
     expect(paths.skill).toBe(path.join(configHome, 'skills', 'token-goat'))
@@ -97,7 +83,7 @@ describe('installer write targets follow CLAUDE_CONFIG_DIR', () => {
   it('keeps every one of those under <home>/.claude when the variable is unset (calibration)', () => {
     delete process.env['CLAUDE_CONFIG_DIR']
     const base = path.join(os.homedir(), '.claude')
-    expect(claudeHookScriptPath()).toBe(path.join(base, 'hooks', 'token-goat-shim.js'))
+    expect(claudeHookScriptPath()).toBe(path.join(base, 'hooks', 'token-goat-shim.cjs'))
     expect(settingsPath('user')).toBe(path.join(base, 'settings.json'))
     expect(claudeMdPath()).toBe(path.join(base, 'CLAUDE.md'))
     expect(skillDir()).toBe(path.join(base, 'skills', 'token-goat'))

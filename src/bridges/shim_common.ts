@@ -1,5 +1,23 @@
 /** Text fragments shared by the generated harness hook shims. Four bridges ship a Node shim that does the same three things before any harness-specific translation: require the same modules, reject an event name outside the closed `HOOK_EVENTS` set, and reach `token-goat hook <event>` through the same three-step ladder (in-process hook lib, then the baked entry via `process.execPath`, then a PATH-based `shell: true` call). Those parts were byte-identical copies in {@link ../claudecode.ts}, {@link ../codex.ts}, {@link ../grok.ts} and {@link ../kimi.ts}, so a fix to the spawn ladder or the event allowlist had to be applied four times or silently diverge. They live here once and are interpolated into each shim template. What is deliberately NOT here: everything downstream of `stdout`. Each harness has its own response contract and its own fail-open shape (`{}` for Claude Code and Codex, `{"decision":"allow"}` for Grok on `pre_tool_use`, empty stdout for Kimi), and forcing those through one template would be worse than the duplication it removed. Grok also keeps its own `VALID_HOOK_EVENTS`: it genuinely has no `session_start` event. These are fragments of generated JavaScript, not TypeScript. They must stay free of backticks and `${` so they interpolate verbatim. */
 
+/** File name the Claude Code, Codex, Grok and Kimi shims are installed under. `.cjs` rather than `.js` because Node picks a `.js` file's module system from the nearest package.json above it: a `{"type":"module"}` anywhere over the harness config, a home directory set up for ES modules being enough, made the shim an ES module where the `require` it opens with is undefined, and every hook failed before it could print `{}`. */
+export const SHIM_FILE = 'token-goat-shim.cjs'
+
+/** The name earlier installs wired. It stays on disk as a {@link legacyShimForwarder} because a harness session started before the upgrade keeps running the hook commands it read at startup. */
+export const LEGACY_SHIM_FILE = 'token-goat-shim.js'
+
+/** Written to {@link LEGACY_SHIM_FILE}. A dynamic `import()` loads the `.cjs` shim from either module system, and when even that fails the catch answers `noOp`, whatever the shim itself prints for "no change" on that harness: `{}` for most, nothing at all for Kimi, which reads a bare `{}` on a prompt hook as text to add to the context. */
+export function legacyShimForwarder(noOp: '{}' | ''): string {
+  const answer = noOp === '' ? '' : `
+  try { process.stdout.write('${noOp}') } catch {}`
+  return `#!/usr/bin/env node
+// Forwards to token-goat-shim.cjs for hook commands wired before the shim was renamed.
+import('./token-goat-shim.cjs').catch(() => {${answer}
+  process.exitCode = 0
+});
+`
+}
+
 /** The three `require`s every shim opens with. */
 export const SHIM_REQUIRES = `const { spawnSync } = require('node:child_process')
 const path = require('node:path')

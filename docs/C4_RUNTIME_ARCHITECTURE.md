@@ -80,7 +80,7 @@ flowchart TB
     end
 
     subgraph TGProcesses ["Token-Goat Runtime Containers"]
-        HookShim["🪝 Hook Shim<br/><small>[~/.claude/hooks/token-goat-shim.js]</small><br/>In-process fast path / Subprocess launcher"]:::shim
+        HookShim["🪝 Hook Shim<br/><small>[~/.claude/hooks/token-goat-shim.cjs]</small><br/>In-process fast path / Subprocess launcher"]:::shim
         HookRelay["⚡ Hook Relay & Normalizer<br/><small>[dist/token-goat-hook.mjs]</small><br/>Normalizes Codex/Gemini/Claude schemas"]:::process
         CLIBinary["💻 CLI Tool & Command Suite<br/><small>[dist/token-goat.mjs]</small><br/>100+ surgical read, outline, pack commands"]:::process
         MCPServer["🔌 MCP stdio Server<br/><small>[token-goat mcp-serve]</small><br/>18 tools: symbol, read, retrieve, section"]:::process
@@ -218,7 +218,7 @@ flowchart TB
 sequenceDiagram
     autonumber
     participant Agent as AI Agent (Claude Code)
-    participant Shim as token-goat-shim.js
+    participant Shim as token-goat-shim.cjs
     participant Relay as relay.ts / hook_registry.ts
     participant Filter as ToolFilter (tool_filters/)
     participant Store as session_store.ts & disk_cache.ts

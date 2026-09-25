@@ -1,24 +1,16 @@
-// The whole premise of tests/helpers/git-repo.ts is that copying an already-built repository is
-// indistinguishable from running init/add/commit again. If that were ever false -- a future git
-// version recording an absolute path during init, say -- every fixture built on it would drift
-// silently, and the tests using those fixtures would not notice, because they assert on hook and
-// indexer behaviour rather than on repository state. So the equivalence itself is pinned here,
-// against a control repo built the long way in this same test.
+// The whole premise of tests/helpers/git-repo.ts is that copying an already-built repository is indistinguishable from running init/add/commit again. If that were ever false -- a future git version recording an absolute path during init, say -- every fixture built on it would drift silently, and the tests using those fixtures would not notice, because they assert on hook and indexer behaviour rather than on repository state. So the equivalence itself is pinned here, against a control repo built the long way in this same test.
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 import { FIXTURE_COMMIT_DATE, gitRepoWithCommit } from './helpers/git-repo.js'
 import { tempDir } from './helpers/temp-config.js'
 
-// Same pinned date the helper uses, so the control commit hashes to the same SHA and the two
-// repositories are comparable file for file. Left to the ambient clock, the control's commit
-// object lands at a different `.git/objects/xx/yyy` path whenever it falls in a different second
-// than the template's, which is a race the file-listing assertion below lost under suite load.
+// Same pinned date the helper uses, so the control commit hashes to the same SHA and the two repositories are comparable file for file. Left to the ambient clock, the control's commit object lands at a different `.git/objects/xx/yyy` path whenever it falls in a different second than the template's, which is a race the file-listing assertion below lost under suite load.
 function git(cwd: string, args: string[]): string {
-  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'maintenance.auto=false', ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, GIT_AUTHOR_DATE: FIXTURE_COMMIT_DATE, GIT_COMMITTER_DATE: FIXTURE_COMMIT_DATE },
@@ -52,25 +44,14 @@ describe('git-repo fixtures are equivalent to building the repo directly', () =>
     expect(git(copied, ['ls-files'])).toBe('a.txt\n')
     expect(fs.readFileSync(path.join(copied, 'a.txt'), 'utf8')).toBe('one\n')
 
-    // The fixture is fully determined -- pinned date, author, message and content -- so its commit
-    // hashes to one fixed value. Pinned as a literal rather than just compared against the control,
-    // because the two agreeing proves nothing on its own: before the date was pinned they agreed
-    // whenever both commits happened to land in the same wall-clock second, which is most of the
-    // time and none of the time under load. Drop the pin and this fails on every run instead.
+    // The fixture is fully determined -- pinned date, author, message and content -- so its commit hashes to one fixed value. Pinned as a literal rather than just compared against the control, because the two agreeing proves nothing on its own: before the date was pinned they agreed whenever both commits happened to land in the same wall-clock second, which is most of the time and none of the time under load. Drop the pin and this fails on every run instead.
     const copiedHead = git(copied, ['rev-parse', 'HEAD']).trim()
     expect(copiedHead).toBe('32ba05faacf1c3dc7aed01ce1e67d38e6e89f51d')
     expect(git(control, ['rev-parse', 'HEAD']).trim()).toBe(copiedHead)
 
-    // Same set of files on disk, .git included: a copy that silently dropped part of .git could
-    // still answer every command above correctly from the parts it did copy.
+    // Same set of files on disk, .git included: a copy that silently dropped part of .git could still answer every command above correctly from the parts it did copy.
     expect(listTree(copied)).toEqual(listTree(control))
-    // 180s, not the 60s global bound. This case runs 15 `git` subprocesses -- three to build the
-    // control, three to build the template, nine to interrogate the two repositories -- in a suite
-    // whose scarcest resource is process creation. Standalone it takes 1.26s; under a full run it
-    // was measured at 63.8s and timed out, a 50x contention factor that no plausible global bound
-    // absorbs without weakening hang detection for the other ~10,000 tests. The bound is sized
-    // above the observed worst rather than tuned to it, and a genuine hang still fails here, just
-    // later. Duplicate spawns were removed alongside this, which is why the count is 15 and not 17.
+    // 180s, not the 60s global bound. This case runs 15 `git` subprocesses -- three to build the control, three to build the template, nine to interrogate the two repositories -- in a suite whose scarcest resource is process creation. Standalone it takes 1.26s; under a full run it was measured at 63.8s and timed out, a 50x contention factor that no plausible global bound absorbs without weakening hang detection for the other ~10,000 tests. The bound is sized above the observed worst rather than tuned to it, and a genuine hang still fails here, just later. Duplicate spawns were removed alongside this, which is why the count is 15 and not 17.
   }, 180000)
 
   it('hands out independent repos, so writing to one never reaches another', () => {
@@ -84,5 +65,26 @@ describe('git-repo fixtures are equivalent to building the repo directly', () =>
     expect(git(second, ['status', '--porcelain'])).toBe('')
     // The template itself must survive being copied from: a third repo is still pristine.
     expect(git(gitRepoWithCommit(), ['status', '--porcelain'])).toBe('')
+  })
+
+  // FORMAT-DERIVED from git's builtin/gc.c (`maintenance_run_tasks` takes `objects/maintenance.lock` and only then calls `daemonize()`) and Documentation/config/maintenance.adoc (`maintenance.autoDetach` defaults to true): a commit leaves a detached child holding that lock after `git commit` has returned, and copying the template inside that window copied the lock too. CI's git 2.55 on Linux did exactly that, and the listing comparison above failed with 43 entries against 42. Windows cannot daemonize, so the child ran in the foreground there and the race never showed locally. The trace2 event stream records every child git starts, so whether the fixture commit spawns maintenance at all is checked here on every platform rather than raced for.
+  it('builds its template without starting background maintenance that could still hold a lock when it is copied', async () => {
+    const trace = path.join(tempDir(), 'trace2.json')
+    const before = process.env.GIT_TRACE2_EVENT
+    process.env.GIT_TRACE2_EVENT = trace
+    try {
+      vi.resetModules()
+      const fresh = await import('./helpers/git-repo.js')
+      fresh.gitRepoWithCommit()
+    } finally {
+      if (before === undefined) delete process.env.GIT_TRACE2_EVENT
+      else process.env.GIT_TRACE2_EVENT = before
+    }
+    const children = fs
+      .readFileSync(trace, 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('"event":"child_start"'))
+      .map((line) => (JSON.parse(line) as { argv: string[] }).argv.join(' '))
+    expect(children.filter((argv) => argv.includes('maintenance'))).toEqual([])
   })
 })

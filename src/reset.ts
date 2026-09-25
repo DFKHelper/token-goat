@@ -3,7 +3,7 @@
 type ResetFn = () => void
 
 const _resets: ResetFn[] = []
-// The subset that holds state belonging to one caller rather than to the process: which harness is calling, whose session is loaded. A process that serves many callers (hook_server.ts) runs these between requests and keeps the rest, which is exactly the warm state (open databases, loaded models, registered hook handlers) it exists to keep.
+// The subset that holds state belonging to one caller rather than to the process: which harness is calling, whose session is loaded. A process that serves many callers (hook_server.ts) runs these between requests and keeps the rest, which is exactly the warm state (loaded modules and models, registered hook handlers) it exists to keep. Open databases are not part of it: db.ts closes them per request, so a server never pins a file that `--purge` or a replacement needs.
 const _perRequestResets: ResetFn[] = []
 
 /** Register a reset callback to run when {@link clearModuleCaches} is called. Call this at module load time (top level), not inside a function, so the callback is registered exactly once per process. */

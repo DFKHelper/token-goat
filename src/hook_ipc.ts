@@ -54,13 +54,33 @@ function endpointId(dir: string): string {
   return crypto.createHash('sha256').update(`${fold(dir)}\0${fold(bundleDir())}`).digest('hex').slice(0, 16)
 }
 
-/** The named pipe (Windows) or Unix socket path for server `slot`. Unix socket paths are capped near 104 bytes, so a long data directory falls back to the temp directory, still keyed by uid. */
+/** The named pipe (Windows) or Unix socket path for server `slot`. Unix socket paths are capped near 104 bytes, so a long data directory falls back to a directory of this user's own under the temp directory. */
 export function endpointFor(slot: number, dir: string = dataDir()): string {
   const id = `${endpointId(dir)}-${slot}`
   if (process.platform === 'win32') return String.raw`\\.\pipe\token-goat-hooks-` + id
   const inData = path.join(dir, `hooks-${id}.sock`)
   if (Buffer.byteLength(inData) < 100) return inData
-  return path.join(os.tmpdir(), `token-goat-${process.getuid?.() ?? 'u'}-${id}.sock`)
+  const own = privateTempDir()
+  // With no such directory the too-long path stands: nothing can listen on it, and every call runs the way it did before the server existed.
+  return own === undefined ? inData : path.join(own, `${id}.sock`)
+}
+
+/** `token-goat-<uid>` under the temp directory, created if absent, or `undefined` when what is there is not a directory only this user can enter. Any user can make a name in the shared temp directory first, and one who owned the socket's directory could replace the socket under a running server. */
+function privateTempDir(): string | undefined {
+  const uid = process.getuid?.()
+  if (uid === undefined) return undefined
+  const own = path.join(os.tmpdir(), `token-goat-${uid}`)
+  try {
+    fs.mkdirSync(own, { mode: 0o700 })
+  } catch {
+    // already there, or the check below says why it cannot be used
+  }
+  try {
+    const st = fs.lstatSync(own)
+    return st.isDirectory() && st.uid === uid && (st.mode & 0o077) === 0 ? own : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export function serverKeyPath(dir: string = dataDir()): string {
@@ -128,10 +148,20 @@ export function macMatches(expected: string, actual: unknown): boolean {
 }
 
 export function writeFrame(socket: net.Socket, message: unknown): void {
+  socket.write(encodeFrame(message))
+}
+
+/** `message` as it goes on the wire: its JSON behind a 4-byte big-endian length. {@link readFrames} refuses one longer than {@link MAX_FRAME_BYTES}, so a sender checks {@link frameFits} before committing to it. */
+export function encodeFrame(message: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(message), 'utf8')
   const header = Buffer.alloc(4)
   header.writeUInt32BE(body.length, 0)
-  socket.write(Buffer.concat([header, body]))
+  return Buffer.concat([header, body])
+}
+
+/** Whether the other end will read `frame` rather than hang up on it. */
+export function frameFits(frame: Buffer): boolean {
+  return frame.length - 4 <= MAX_FRAME_BYTES
 }
 
 /** Calls `onFrame` with each complete JSON frame read from `socket`, and `onError` once on a malformed or oversized frame (after which the socket is destroyed). */

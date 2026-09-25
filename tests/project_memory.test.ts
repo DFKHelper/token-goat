@@ -33,6 +33,8 @@ import {
   buildInjection,
 } from '../src/project_memory.js';
 
+const realWriteFileSync = (await vi.importActual<typeof NodeFs>('node:fs')).writeFileSync;
+
 describe('project_memory', () => {
   // memoryPath() now resolves through constants.ts::dataDir(), which caches DATA_DIR once at module load (see tests/setup/isolate-home.ts), so per-test isolation can no longer be done by swapping XDG_DATA_HOME/LOCALAPPDATA in beforeEach. Instead, wipe the shared `${dataDir()}/projects` directory before/after each test so project-hash fixtures (e.g. 'test') never leak state between tests in this file.
   const projectsDir = path.join(dataDir(), 'projects');
@@ -321,6 +323,29 @@ describe('project_memory', () => {
       setEntry('proj-lock-single', 'k1', 'v1');
       expect(renameMock.mock.calls).toHaveLength(1);
     });
+
+    // HAND-DERIVED: EPERM is what creating a file fails with on Windows while a scanner holds its directory entry, and withFileLock answers any failure other than EEXIST with `undefined`, the same answer it gives for a lock it waited on and never got. Running the update anyway on that answer is the unlocked read-modify-write the lock exists to prevent: a concurrent writer's note is lost to whichever save lands last.
+    it('never runs the update without the lock', () => {
+      setEntry('proj-lock-refused', 'kept', 'v1');
+      const writeMock = fs.writeFileSync as unknown as ReturnType<typeof vi.fn>;
+      const lockAttempts: string[] = [];
+      writeMock.mockImplementation((...args: Parameters<typeof NodeFs.writeFileSync>) => {
+        if (String(args[0]).endsWith('.lock')) {
+          lockAttempts.push(String(args[0]));
+          throw Object.assign(new Error(`EPERM: operation not permitted, open '${String(args[0])}'`), { code: 'EPERM' });
+        }
+        return realWriteFileSync(...args);
+      });
+      try {
+        expect(() => setEntry('proj-lock-refused', 'added', 'v2')).toThrow(/lock/);
+        expect(() => unsetEntry('proj-lock-refused', 'kept')).toThrow(/lock/);
+        expect(() => clearAll('proj-lock-refused')).toThrow(/lock/);
+      } finally {
+        writeMock.mockImplementation((...args: Parameters<typeof NodeFs.writeFileSync>) => realWriteFileSync(...args));
+      }
+      expect(lockAttempts.length, 'calibration: the lock was attempted').toBeGreaterThan(0);
+      expect(loadEntries('proj-lock-refused')).toEqual({ kept: 'v1' });
+    });
   });
 
   // HAND-DERIVED: the errno shape (`code: 'EBUSY'`) is the one util.ts's withRetryOnLock already retries for writes; reads of the same file met none of it, and a read failure was answered as "no notes".
@@ -346,6 +371,18 @@ describe('project_memory', () => {
       expect(() => unsetEntry('stuck', 'kept')).toThrow(/EBUSY/);
       lockedReads.remaining = 0;
       expect(loadEntries('stuck')).toEqual({ kept: 'written before the lock' });
+    });
+
+    // HAND-DERIVED: the middle line is the shape a hand edit leaves when a value is continued onto a second line, which the writer never produces (it escapes every newline) and the parser does not recognise. A read skipped it silently, so an update saved the notes around it and the line was gone.
+    it('refuses to update a notes file with a line it cannot parse, and still shows the rest', () => {
+      const p = memoryPath('hand-edited');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const original = 'first = "one"\nsecond = "two, continued\non the next line"\nthird = "three"\n';
+      fs.writeFileSync(p, original);
+      expect(() => setEntry('hand-edited', 'fourth', 'four')).toThrow(/lines 2, 3 are not/);
+      expect(() => unsetEntry('hand-edited', 'first')).toThrow(/lines 2, 3 are not/);
+      expect(fs.readFileSync(p, 'utf8')).toBe(original);
+      expect(loadEntries('hand-edited')).toEqual({ first: 'one', third: 'three' });
     });
 
     it('still shows the notes when the session-start read meets the lock', () => {

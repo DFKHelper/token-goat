@@ -5,6 +5,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
+import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './bridges/shim_common.js'
 import { buildGuidanceBlock } from './bridges/guidance_block.js'
 import { CANONICAL_SKILL_MD } from './canonical_skill.js'
 import { claudeConfigDir } from './claude_config_dir.js'
@@ -149,12 +150,17 @@ function hookEntryMatches(command: string, args: readonly string[] | undefined, 
 
 /** Absolute path to the generated Claude Code hook shim. Always under the user's home `~/.claude/hooks`, never the project's, even for a project-scope install: the shim is a generated file whose invocation bakes in absolute machine-specific paths (this node binary, this token-goat entry), so a copy inside a repo would be both useless to a teammate and an unexpected generated artifact in their working tree. A project-scope `settings.json` simply points at the home-scoped shim by absolute path. */
 export function claudeHookScriptPath(): string {
-  return path.join(claudeConfigDir(), 'hooks', 'token-goat-shim.js')
+  return path.join(claudeConfigDir(), 'hooks', SHIM_FILE)
 }
 
-/** Does any installed scope still wire a hook command pointing at `scriptPath`? Both scopes share the single home-scoped shim, so uninstalling one must not delete the file the other still depends on. `alreadyStripped` is the in-memory hooks map of the scope currently being uninstalled, passed in because its entries have already been removed there but not yet written to disk -- re-reading that file would see the stale pre-strip content and always report the shim as still needed. */
+/** The shim's pre-`.cjs` path, now a forwarder to it (see {@link LEGACY_SHIM_FILE}). */
+function claudeLegacyHookScriptPath(): string {
+  return path.join(claudeConfigDir(), 'hooks', LEGACY_SHIM_FILE)
+}
+
+/** Does any installed scope still wire a hook command pointing at one of `scriptPaths`, the shim and the forwarder at its old `.js` path, which a scope wired by an earlier install still runs and which needs the shim beside it? Both scopes share the single home-scoped shim, so uninstalling one must not delete the file the other still depends on. `alreadyStripped` is the in-memory hooks map of the scope currently being uninstalled, passed in because its entries have already been removed there but not yet written to disk -- re-reading that file would see the stale pre-strip content and always report the shim as still needed. */
 function anyScopeReferencesShim(
-  scriptPath: string,
+  scriptPaths: readonly string[],
   currentScope: HookScope,
   alreadyStripped: Record<string, HookMatcherGroup[]>,
 ): boolean {
@@ -163,7 +169,7 @@ function anyScopeReferencesShim(
       for (const group of groups) {
         for (const h of group.hooks ?? []) {
           // Exec form carries the shim path in `args`, not `command` (which is just the node binary).
-          if (h.command.includes(scriptPath) || (h.args ?? []).some((a) => a.includes(scriptPath))) return true
+          if (scriptPaths.some((p) => h.command.includes(p) || (h.args ?? []).some((a) => a.includes(p)))) return true
         }
       }
     }
@@ -272,10 +278,12 @@ function installHooksScoped(scope: HookScope): InstallResult {
 
   // The shim is a generated, never-user-edited file: refresh it on every install call so it tracks the running token-goat version, independent of whether the settings.json wiring itself needs any change. Mirrors bridges/codex_install.ts. writeIfDifferent rather than an unconditional atomicWriteText so a genuine no-op install touches nothing on disk, and so a repaired shim (user deleted ~/.claude/hooks, or an older build left stale content) counts as a real change via `scriptChanged` -- reporting "already installed" while having just rewritten the file the hooks depend on would be a lie to anyone running install precisely to repair it.
   const scriptPath = claudeHookScriptPath()
-  // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at `~/.claude/hooks/token-goat-shim.js` (see uninstallHooks' anyScopeReferencesShim) -- so this write is declared user scope explicitly rather than inheriting the project confinement, which would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the user's own directory, and a dotfiles symlink pointing it elsewhere is the setup bridges/project_scope_guard.ts deliberately allows.
+  // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at `~/.claude/hooks/token-goat-shim.cjs` (see uninstallHooks' anyScopeReferencesShim) -- so this write is declared user scope explicitly rather than inheriting the project confinement, which would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the user's own directory, and a dotfiles symlink pointing it elsewhere is the setup bridges/project_scope_guard.ts deliberately allows.
   const scriptChanged = withInstallScope(undefined, () => {
     ensureDirSync(path.dirname(scriptPath))
-    return writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
+    const forwarderChanged = writeIfDifferent(claudeLegacyHookScriptPath(), legacyShimForwarder('{}'))
+    const scriptChanged = writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
+    return scriptChanged || forwarderChanged
   })
 
   let settingsChanged = false
@@ -359,9 +367,9 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   // Remove the generated shim too, mirroring bridges/codex_install.ts -- but ONLY once no scope still points at it. Unlike Codex, which has a single config location, token-goat has two scopes that share one home-scoped shim: deleting it on `uninstall --project` while a user-scope install is still wired would leave every user-scope hook invoking a file that no longer exists, failing silently on every tool call. Checked after the strip above so this scope's own now-removed entries don't count as a reason to keep it.
   const scriptPath = claudeHookScriptPath()
   let removedScript = false
-  if (!anyScopeReferencesShim(scriptPath, scope, hooks)) {
-    // Declared USER scope explicitly, exactly as the matching write in installHooksScoped is: the shim lives at `~/.claude/hooks/token-goat-shim.js` and is shared by both scopes, so under a project-scope uninstall the ambient confinement would refuse to remove it. Removal has to be symmetric with the write or `uninstall --project` leaves the file it installed behind -- which is what the built-bundle matrix caught the first time this was routed through the scope-checked helper without the wrapper. Already-absent is not an error, which is exactly removeFileInScope's contract.
-    removedScript = withInstallScope(undefined, () => removeFileInScope(scriptPath))
+  if (!anyScopeReferencesShim([scriptPath, claudeLegacyHookScriptPath()], scope, hooks)) {
+    // Declared USER scope explicitly, exactly as the matching write in installHooksScoped is: the shim lives at `~/.claude/hooks/token-goat-shim.cjs` and is shared by both scopes, so under a project-scope uninstall the ambient confinement would refuse to remove it. Removal has to be symmetric with the write or `uninstall --project` leaves the file it installed behind -- which is what the built-bundle matrix caught the first time this was routed through the scope-checked helper without the wrapper. Already-absent is not an error, which is exactly removeFileInScope's contract.
+    removedScript = withInstallScope(undefined, () => [scriptPath, claudeLegacyHookScriptPath()].map((p) => removeFileInScope(p)).some(Boolean))
   }
 
   if (!removed) return removedScript

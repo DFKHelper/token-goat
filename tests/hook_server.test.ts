@@ -260,7 +260,7 @@ function distEndpoint(sb: Sandbox, slot: number): string {
   if (process.platform === 'win32') return String.raw`\\.\pipe\token-goat-hooks-` + id
   const inData = path.join(sb.dataDir, `hooks-${id}.sock`)
   if (Buffer.byteLength(inData) < 100) return inData
-  return path.join(os.tmpdir(), `token-goat-${process.getuid?.() ?? 'u'}-${id}.sock`)
+  return path.join(os.tmpdir(), `token-goat-${process.getuid?.() ?? 'u'}`, `${id}.sock`)
 }
 
 /** Speaks the client side of the handshake by hand (FORMAT-DERIVED from src/hook_client.ts attempt) to hold a server busy with a request of the test's choosing. With `stall`, it stops reading once the request is sent, as a caller slow to take its answer would, until `resume` is called. */
@@ -342,6 +342,17 @@ describe('serving hook calls', () => {
 
     expect(relay(sb, 'pre_tool_use', bashDenyPayload('hs-serve-warm'))).toBe(baseline.stdout)
     expect(servedBySlot(sb)).toEqual({ 0: 1 })
+  })
+
+  // HAND-DERIVED: a hook payload past MAX_FRAME_BYTES (64 MiB, src/hook_ipc.ts) was handed over, the server dropped the connection on reading its length, and the client counted that as a lost request and failed it open, so the hook ran nowhere.
+  it('runs a hook whose payload is too large for one frame locally, rather than failing it open', async () => {
+    const sb = sandbox()
+    blockAutostart(sb, [1])
+    startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    const payload = JSON.stringify({ ...(JSON.parse(bashDenyPayload('hs-oversize')) as object), padding: 'x'.repeat(65 * 1024 * 1024) })
+    expect(relay(sb, 'pre_tool_use', payload)).toBeNull()
+    expect(servedBySlot(sb)).toEqual({ 0: 0 })
   })
 
   it('does the same through the CommonJS client a shim loads, which finds the launcher beside its own file', async () => {
@@ -466,6 +477,24 @@ describe('busy servers', () => {
       [0, 1],
       [1, 0],
     ])
+  })
+
+  // HAND-DERIVED: a server mid-request used to answer every handshake with `busy`, which `hook-server status` and `stop` read as no server at all.
+  it('lists and stops a server that is in the middle of a request, which still gets its answer', async () => {
+    const sb = sandbox()
+    blockAutostart(sb, [1])
+    const server = startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    const held = occupy(sb, readServerKey(sb.dataDir) as Buffer)
+    await held.dispatched
+    await sleep(300)
+    const status = cli(sb, ['hook-server', 'status'])
+    expect(status.stdout).toContain('slot 0: pid')
+    const stop = cli(sb, ['hook-server', 'stop'])
+    expect(stop.stdout.trim()).toBe('Stopped 1 hook server.')
+    const reply = await held.reply
+    expect('status' in reply ? reply.status : reply).toBe(0)
+    expect(await exitsWithin(server.exit, 5000)).toBe(0)
   })
 
   it('writes each call stats row after answering it, without losing a row or turning away the next back-to-back call', async () => {
@@ -745,6 +774,56 @@ describe('retirement', () => {
     expect(readMarker('failed', sb.dataDir)).toBeUndefined()
   })
 
+  // A caller that has its challenge but not yet its answer counts its request as handed over the moment it sends it, and a request handed over and never answered fails open to `{}`: the hook's own output is lost rather than run twice. So a server that stops must tell such a caller it is retiring, which the caller reads as "run it yourself", instead of exiting under it. HAND-DERIVED interleaving: a caller that holds its challenge while another asks the server to stop, the order an idle timeout or a `hook-server stop` meets a call in progress.
+  it('tells a caller waiting between its challenge and its request that it is retiring, rather than exiting under it', async () => {
+    const sb = sandbox()
+    const server = startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    const key = readServerKey(sb.dataDir) as Buffer
+    const endpoint = distEndpoint(sb, 0)
+    const held = net.connect(endpoint)
+    const frames: Array<Record<string, unknown>> = []
+    let challenged: () => void = () => undefined
+    const gotChallenge = new Promise<void>((resolve) => (challenged = resolve))
+    const closed = new Promise<void>((resolve) => held.once('close', () => resolve()))
+    held.on('error', () => undefined)
+    held.on('connect', () => writeFrame(held, { t: 'hello', v: PROTOCOL_VERSION, nc: nonce() }))
+    readFrames(
+      held,
+      (msg) => {
+        frames.push(msg)
+        if (msg['t'] === 'challenge') challenged()
+      },
+      () => undefined,
+    )
+    await gotChallenge
+
+    const stopped = rawRequest(endpoint, key, { kind: 'stop' })
+    expect((await stopped.reply).ok).toBe(true)
+    await closed
+
+    expect(frames.map((f) => f['t'])).toEqual(['challenge', 'stale'])
+    expect(await exitsWithin(server.exit, 5000)).toBe(0)
+  })
+
+  // HAND-DERIVED: two servers started past the same dead socket file each remove it and listen, so the first is left listening on a file the second replaced, reachable by nobody, and a Unix socket is unlinked by whichever server closes it: the orphan's eventual close took the live server's socket with it.
+  it.skipIf(process.platform === 'win32')('exits on its own once another server has replaced its socket file, and leaves that file in place', async () => {
+    const sb = sandbox()
+    blockAutostart(sb, [0, 1])
+    const orphan = startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    const endpoint = distEndpoint(sb, 0)
+    fs.rmSync(endpoint)
+    const other = net.createServer()
+    await new Promise<void>((resolve) => other.listen(endpoint, resolve))
+    try {
+      expect(await exitsWithin(orphan.exit, 8000)).toBe(0)
+      expect(fs.existsSync(endpoint)).toBe(true)
+    } finally {
+      other.close()
+    }
+  })
+
   it('uninstall --purge stops every running server before deleting the data directory', async () => {
     const sb = sandbox()
     const server = startServer(sb, 0)
@@ -753,7 +832,7 @@ describe('retirement', () => {
     expect(purge.status, purge.stderr).toBe(0)
     expect(purge.stdout).toContain('Purged')
     expect(fs.existsSync(sb.dataDir)).toBe(false)
-    // Without the stop the server outlives the purge by up to KEY_CHECK_MS (30s), waiting to notice its key file is gone.
+    // Without the stop the server outlives the purge by up to KEY_CHECK_MS (2s), waiting to notice its key file is gone.
     expect(await exitsWithin(server.exit, 5000)).toBe(0)
   })
 })

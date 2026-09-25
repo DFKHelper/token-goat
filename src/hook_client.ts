@@ -6,8 +6,10 @@ import * as net from 'node:net'
 import { envBool } from './env.js'
 import {
   configStamp,
+  encodeFrame,
   endpointFor,
   envSnapshot,
+  frameFits,
   launcherPath,
   mac,
   macMatches,
@@ -31,10 +33,12 @@ const HANDSHAKE_TIMEOUT_MS = 150
 const FIND_BUDGET_MS = 300
 /** A dispatched request that has not answered by now is failed open. Matches the hook relay's own queue wait. */
 const RESPONSE_TIMEOUT_MS = 120_000
+/** How long `status` and `stop` keep asking a slot whose handshake timed out. */
+const CONTROL_WAIT_MS = 10_000
 const SPAWN_RETRY_MS = 30_000
 const DISABLED_MARKER_TTL_MS = 10 * 60_000
 
-type Outcome = { kind: 'served'; reply: ServerReply } | { kind: 'absent' } | { kind: 'busy' } | { kind: 'stale' } | { kind: 'refused' } | { kind: 'lost' }
+type Outcome = { kind: 'served'; reply: ServerReply } | { kind: 'absent' } | { kind: 'busy' } | { kind: 'stale' } | { kind: 'refused' } | { kind: 'oversize' } | { kind: 'lost' }
 
 /** One attempt against one slot. Resolves exactly once. */
 function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs: number, dir?: string): Promise<Outcome> {
@@ -56,7 +60,9 @@ function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs:
       else finish({ kind: e.code === 'ENOENT' || e.code === 'ECONNREFUSED' ? 'absent' : 'refused' })
     })
     socket.on('close', () => finish({ kind: dispatched ? 'lost' : 'refused' }))
-    socket.on('connect', () => writeFrame(socket, { t: 'hello', v: PROTOCOL_VERSION, nc }))
+    // A status or stop request says so up front, so a server in the middle of another caller's request still takes it rather than answering busy.
+    const control = request.kind === 'status' || request.kind === 'stop'
+    socket.on('connect', () => writeFrame(socket, { t: 'hello', v: PROTOCOL_VERSION, nc, ...(control ? { ctl: true } : {}) }))
     let ns = ''
     readFrames(
       socket,
@@ -68,10 +74,13 @@ function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs:
           // The server proves it holds the key before anything about the request leaves this process.
           if (ns === '' || msg['v'] !== PROTOCOL_VERSION || !macMatches(mac(key, 'S', nc, ns), msg['mac'])) return finish({ kind: 'refused' })
           const body = JSON.stringify(request)
+          const frame = encodeFrame({ t: 'req', mac: mac(key, 'C', nc, ns, body), body })
+          // The server hangs up on a frame this long before reading any of it, which after dispatch would read as a lost request and fail it open unrun.
+          if (!frameFits(frame)) return finish({ kind: 'oversize' })
           dispatched = true
           clearTimeout(timer)
           timer = setTimeout(() => finish({ kind: 'lost' }), RESPONSE_TIMEOUT_MS)
-          writeFrame(socket, { t: 'req', mac: mac(key, 'C', nc, ns, body), body })
+          socket.write(frame)
           return
         }
         if (msg['t'] === 'res' && dispatched) {
@@ -127,7 +136,8 @@ export async function callServer(request: ServerRequest, opts: { autostart?: boo
       if (autostart) startServer(slot)
       return undefined
     }
-    if (outcome.kind === 'stale') return undefined
+    // Every slot would refuse it alike.
+    if (outcome.kind === 'stale' || outcome.kind === 'oversize') return undefined
   }
   return undefined
 }
@@ -197,13 +207,15 @@ export async function serverStatuses(dir?: string): Promise<ServerStatus[]> {
   return (await queryServers('status', dir)).flatMap(({ reply }) => (reply.ok && 'info' in reply ? [reply.info] : []))
 }
 
-/** Ask every slot for its status, or tell every slot to stop. Never starts a server. Returns one entry per slot that answered. */
+/** Ask every slot for its status, or tell every slot to stop. Never starts a server. Returns one entry per slot that answered. A server takes these in the middle of another request, and one too deep in synchronous work to answer the handshake is asked again until {@link CONTROL_WAIT_MS} has passed, so a slot is left out only when it is not running or never came free. */
 export async function queryServers(kind: 'status' | 'stop', dir?: string): Promise<Array<{ slot: number; reply: ServerReply }>> {
   const key = readServerKey(dir)
   if (key === undefined) return []
+  const deadline = Date.now() + CONTROL_WAIT_MS
   const answered: Array<{ slot: number; reply: ServerReply }> = []
   for (let slot = 0; slot < SERVER_SLOTS; slot++) {
-    const outcome = await attempt(slot, key, { kind }, 2000, dir)
+    let outcome = await attempt(slot, key, { kind }, 2000, dir)
+    while (outcome.kind === 'busy' && Date.now() < deadline) outcome = await attempt(slot, key, { kind }, 2000, dir)
     if (outcome.kind === 'served') answered.push({ slot, reply: outcome.reply })
   }
   return answered

@@ -1,4 +1,4 @@
-/** Kimi Code CLI (MoonshotAI/kimi-code) install / uninstall writer. `token-goat install --kimi` patches Kimi Code in addition to the base Claude Code install, exactly like `--codex`. This module only ever touches paths under Kimi's own data root, which is `$KIMI_CODE_HOME` when set and `~/.kimi-code` otherwise (`docs/en/configuration/data-locations.md`: "The default data root is `~/.kimi-code/`" and "If you need to move the data directory elsewhere ... set `KIMI_CODE_HOME`"). Four artifacts are installed: - `<root>/hooks/token-goat-shim.js` -- {@link KIMI_HOOK_SCRIPT} written to disk. `<root>/hooks/` is Kimi's own documented location for hook scripts (`docs/en/customization/hooks.md` wires its worked example as `node ~/.kimi-code/hooks/block-dangerous-bash.mjs`). The shim is invoked with the absolute Node binary and a baked token-goat entry path rather than a bare `node`/`token-goat` on PATH, same rationale as the Codex and Copilot CLI bridges. Rewritten unconditionally on every install so an upgraded token-goat's shim logic always reaches disk. - `<root>/config.toml` -- `[[hooks]]` entries, one per wired event. That is Kimi's real hook config shape: an array of tables whose schema accepts exactly `event`, `matcher`, `command`, and `timeout` and rejects anything else (`HookDefSchema` is `.strict()` in `packages/agent-core-v2/src/agent/externalHooks/configSection.ts`), which is why nothing else is written into those tables. `matcher` is omitted so each hook matches every target -- Kimi documents an omitted matcher as "matches all", and token-goat's own handlers already filter by tool name. Parsed and serialized with `smol-toml`, the same library `config.ts` uses for token-goat's own config, so no TOML is hand-rolled. Every other key in the file is preserved verbatim, and a timestamped `.bak` is written before any in-place edit. - `<root>/AGENTS.md` -- the shared routing-guidance block between `<!-- token-goat-kimi-begin -->` / `<!-- token-goat-kimi-end -->` markers. Kimi reads global instructions from `$KIMI_CODE_HOME/AGENTS.md` (`docs/en/customization/agents.md`: "Global Kimi-specific instructions can live at `$KIMI_CODE_HOME/AGENTS.md`"). Content outside the markers is always preserved. - `<root>/skills/token-goat/SKILL.md` -- the same gate body as Claude Code's skill, under frontmatter Kimi actually parses. Kimi loads user skills from `$KIMI_CODE_HOME/skills/` (`docs/en/customization/skills.md`), and a directory-form `SKILL.md` **must** declare both `name` and `description` or parsing fails -- so those two fields are written and nothing else. A corrupt-but-recoverable `config.toml` (exists but fails to parse) is never silently clobbered: {@link installKimi} throws {@link KimiConfigParseError} before any write, mirroring `codex_install.ts`'s strict-mode guard. */
+/** Kimi Code CLI (MoonshotAI/kimi-code) install / uninstall writer. `token-goat install --kimi` patches Kimi Code in addition to the base Claude Code install, exactly like `--codex`. This module only ever touches paths under Kimi's own data root, which is `$KIMI_CODE_HOME` when set and `~/.kimi-code` otherwise (`docs/en/configuration/data-locations.md`: "The default data root is `~/.kimi-code/`" and "If you need to move the data directory elsewhere ... set `KIMI_CODE_HOME`"). Four artifacts are installed: - `<root>/hooks/token-goat-shim.cjs` -- {@link KIMI_HOOK_SCRIPT} written to disk. `<root>/hooks/` is Kimi's own documented location for hook scripts (`docs/en/customization/hooks.md` wires its worked example as `node ~/.kimi-code/hooks/block-dangerous-bash.mjs`). The shim is invoked with the absolute Node binary and a baked token-goat entry path rather than a bare `node`/`token-goat` on PATH, same rationale as the Codex and Copilot CLI bridges. Rewritten unconditionally on every install so an upgraded token-goat's shim logic always reaches disk. - `<root>/config.toml` -- `[[hooks]]` entries, one per wired event. That is Kimi's real hook config shape: an array of tables whose schema accepts exactly `event`, `matcher`, `command`, and `timeout` and rejects anything else (`HookDefSchema` is `.strict()` in `packages/agent-core-v2/src/agent/externalHooks/configSection.ts`), which is why nothing else is written into those tables. `matcher` is omitted so each hook matches every target -- Kimi documents an omitted matcher as "matches all", and token-goat's own handlers already filter by tool name. Parsed and serialized with `smol-toml`, the same library `config.ts` uses for token-goat's own config, so no TOML is hand-rolled. Every other key in the file is preserved verbatim, and a timestamped `.bak` is written before any in-place edit. - `<root>/AGENTS.md` -- the shared routing-guidance block between `<!-- token-goat-kimi-begin -->` / `<!-- token-goat-kimi-end -->` markers. Kimi reads global instructions from `$KIMI_CODE_HOME/AGENTS.md` (`docs/en/customization/agents.md`: "Global Kimi-specific instructions can live at `$KIMI_CODE_HOME/AGENTS.md`"). Content outside the markers is always preserved. - `<root>/skills/token-goat/SKILL.md` -- the same gate body as Claude Code's skill, under frontmatter Kimi actually parses. Kimi loads user skills from `$KIMI_CODE_HOME/skills/` (`docs/en/customization/skills.md`), and a directory-form `SKILL.md` **must** declare both `name` and `description` or parsing fails -- so those two fields are written and nothing else. A corrupt-but-recoverable `config.toml` (exists but fails to parse) is never silently clobbered: {@link installKimi} throws {@link KimiConfigParseError} before any write, mirroring `codex_install.ts`'s strict-mode guard. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -10,6 +10,7 @@ import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { KIMI_HOOK_SCRIPT } from './kimi.js'
+import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 
@@ -62,7 +63,12 @@ export function kimiAgentsPath(): string {
 
 /** Absolute path the Kimi hook shim script is installed to. */
 export function kimiHookScriptPath(): string {
-  return path.join(kimiHome(), 'hooks', 'token-goat-shim.js')
+  return path.join(kimiHome(), 'hooks', SHIM_FILE)
+}
+
+/** The shim's pre-`.cjs` path, now a forwarder to it (see {@link LEGACY_SHIM_FILE}). */
+function kimiLegacyHookScriptPath(): string {
+  return path.join(kimiHome(), 'hooks', LEGACY_SHIM_FILE)
 }
 
 /** Absolute path to the token-goat skill directory Kimi loads. */
@@ -161,6 +167,7 @@ export function installKimi(): KimiInstallResult {
 
   ensureDirSync(path.dirname(scriptPath))
   atomicWriteText(scriptPath, KIMI_HOOK_SCRIPT)
+  atomicWriteText(kimiLegacyHookScriptPath(), legacyShimForwarder(''))
 
   // strict: true -- a config.toml that exists but fails to parse must abort before any write, not silently proceed as if it were empty and get clobbered below.
   const config = readKimiConfig(configPath, { strict: true })
@@ -228,13 +235,15 @@ export function uninstallKimi(): boolean {
     // best-effort: a locked skill directory must not fail the whole uninstall
   }
 
-  try {
-    if (fs.existsSync(kimiHookScriptPath())) {
-      fs.rmSync(kimiHookScriptPath(), { force: true })
-      removed = true
+  for (const p of [kimiHookScriptPath(), kimiLegacyHookScriptPath()]) {
+    try {
+      if (fs.existsSync(p)) {
+        fs.rmSync(p, { force: true })
+        removed = true
+      }
+    } catch {
+      // best-effort, same rationale as the skill directory above
     }
-  } catch {
-    // best-effort, same rationale as the skill directory above
   }
 
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.

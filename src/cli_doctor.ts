@@ -28,6 +28,7 @@ import { claudeHookScriptPath, isInstalled, missingHookEvents } from './install.
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
 import { codexHookScriptPath } from './bridges/codex_install.js'
+import { LEGACY_SHIM_FILE } from './bridges/shim_common.js'
 import { cleanupDeprecatedVscodeProjectMcp, vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
 import { cursorMcpPath } from './bridges/cursor_install.js'
@@ -830,7 +831,15 @@ function staleShimMessage(scriptPath: string, harness: string, reinstall: string
 
 /** Checks one installed hook shim against the script this build would write in its place. Null when the shim is not installed, so a harness nobody uses adds no row. */
 export function checkHookShim(name: string, scriptPath: string, expected: string, reinstall: string): DoctorResult | null {
-  if (!fs.existsSync(scriptPath)) return null
+  if (!fs.existsSync(scriptPath)) {
+    // An install from before the shim was renamed has only the .js one, and its hook commands still run it.
+    if (!fs.existsSync(path.join(path.dirname(scriptPath), LEGACY_SHIM_FILE))) return null
+    return {
+      name,
+      status: 'warn',
+      message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_SHIM_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run "${reinstall}", then restart any running session.`,
+    }
+  }
   if (shimIsCurrent(scriptPath, expected)) return { name, status: 'ok', message: `hook shim at ${scriptPath} matches this build` }
   return { name, status: 'warn', message: staleShimMessage(scriptPath, name, reinstall) + ', then restart any running session.' }
 }

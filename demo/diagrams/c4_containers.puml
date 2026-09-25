@@ -8,7 +8,7 @@ title Container Diagram for Token-Goat (C4 Level 2)
 Person(user, "Developer / Agent Harness")
 
 System_Boundary(tg_boundary, "Token-Goat System") {
-    Container(shim, "Hook Shim", "JavaScript (~/.claude/hooks/token-goat-shim.js)", "Provides in-process fast path relay for Claude Code hooks.")
+    Container(shim, "Hook Shim", "JavaScript (~/.claude/hooks/token-goat-shim.cjs)", "Provides in-process fast path relay for Claude Code hooks.")
     Container(relay, "Hook Relay & Dispatcher", "TypeScript (dist/token-goat-hook.mjs)", "Normalizes multi-harness payloads and runs 158 compression filters.")
     Container(cli, "CLI Application", "TypeScript (dist/token-goat.mjs)", "Exposes 100+ surgical read, outline, pack, and doctor commands.")
     Container(mcp, "MCP stdio Server", "TypeScript (token-goat mcp-serve)", "Serves 18 tools to VS Code Copilot over stdio.")

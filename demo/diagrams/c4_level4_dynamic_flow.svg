@@ -17,7 +17,7 @@
 
   <g transform="translate(280, 100)">
     <rect x="0" y="0" width="180" height="40" rx="6" fill="#2563EB"/>
-    <text x="90" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">token-goat-shim.js</text>
+    <text x="90" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">token-goat-shim.cjs</text>
     <line x1="90" y1="40" x2="90" y2="650" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4 4"/>
   </g>
 

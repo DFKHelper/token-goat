@@ -27,7 +27,7 @@ beforeEach(() => {
   origCwd = process.cwd()
   // Project scope resolves against process.cwd(); chdir into the temp dir so installs write to {TMP}/.claude/settings.json, never the real project.
   process.chdir(TMP)
-  // installHooks now WRITES the generated shim under os.homedir(), and uninstallHooks DELETES it -- so without pinning the home dir this suite would clobber the developer's own installed ~/.claude/hooks/token-goat-shim.js on every run. os.homedir() reads USERPROFILE on Windows and HOME on POSIX at each call, so setting both isolates it in-process.
+  // installHooks now WRITES the generated shim under os.homedir(), and uninstallHooks DELETES it -- so without pinning the home dir this suite would clobber the developer's own installed ~/.claude/hooks/token-goat-shim.cjs on every run. os.homedir() reads USERPROFILE on Windows and HOME on POSIX at each call, so setting both isolates it in-process.
   origHome = process.env['HOME']
   origUserProfile = process.env['USERPROFILE']
   const fakeHome = path.join(TMP, 'home')

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
+import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock, withRetryOnLock } from './util.js'
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSecrets } from './secret_redact.js'
@@ -450,8 +450,25 @@ function capFiles(s: SerializedSession, max: number): SerializedSession {
 /** Read the on-disk JSON for `sessionPath`, coerced; null on miss/corrupt. */
 function readDiskState(p: string): SerializedSession | null {
   try {
-    if (!fs.existsSync(p)) return null
-    return coerce(JSON.parse(fs.readFileSync(p, 'utf8')))
+    return readDiskStateForMerge(p)
+  } catch {
+    return null
+  }
+}
+
+/** {@link readDiskState} for a caller about to write what it merges: null when there is no file or it is corrupt, but a file that exists and cannot be read throws, after a brief lock is retried. Answering null there made saveSessionState write one hook's view over a cache a scanner was holding, and every file earlier hooks recorded for the session was forgotten. */
+function readDiskStateForMerge(p: string): SerializedSession | null {
+  let text = ''
+  try {
+    withRetryOnLock(() => {
+      text = fs.readFileSync(p, 'utf8')
+    })
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return null
+    throw err
+  }
+  try {
+    return coerce(JSON.parse(text))
   } catch {
     return null
   }
@@ -495,7 +512,7 @@ export function loadSessionState(sessionId: string): void {
   importSessionState((p ? readDiskState(p) : null) ?? EMPTY_SESSION)
 }
 
-/** Persist the in-memory session state for `sessionId`, merged with whatever is already on disk (so a concurrent same-session hook process is not clobbered). No-op when the id is empty/unusable. Fail-soft: a disk error is swallowed. */
+/** Persist the in-memory session state for `sessionId`, merged with whatever is already on disk (so a concurrent same-session hook process is not clobbered). No-op when the id is empty/unusable. Fail-soft: a disk error is swallowed, and a cache that exists but cannot be read is left as it is rather than written over. */
 export function saveSessionState(sessionId: string): void {
   const p = sessionPath(sessionId)
   if (!p) return
@@ -505,9 +522,9 @@ export function saveSessionState(sessionId: string): void {
     const mem = exportSessionState()
     // saveSessionState is the actual race: every hook call is a fresh OS process, and two concurrent processes for the same session can each read the pre-update disk state, merge it with their own view, and write -- whichever write lands last silently clobbers the other's update, with no error. A short-lived lockfile around just this read-merge-write section serializes concurrent savers, so each one's disk read reflects every write that already landed.
     const writeMerged = (): true => {
-      const disk = readDiskState(p)
+      const disk = readDiskStateForMerge(p)
       const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
-      // Stamp the cache's creation time exactly once, on the first write that produces no inherited value (disk had none and mem carries none). Every later write inherits it via readDiskState -> coerce -> mergeSessionState, so it represents creation, not last-modification. Unit: seconds, matching compact.ts's `Date.now() / 1000 - created_ts` age computation.
+      // Stamp the cache's creation time exactly once, on the first write that produces no inherited value (disk had none and mem carries none). Every later write inherits it via readDiskStateForMerge -> coerce -> mergeSessionState, so it represents creation, not last-modification. Unit: seconds, matching compact.ts's `Date.now() / 1000 - created_ts` age computation.
       if (merged.created_ts === undefined) merged.created_ts = Date.now() / 1000
       // Defense-in-depth backstop, not the primary control: individual fields (e.g. recordOutstandingAgentSpawn in session.ts) redact at their own write sites, but CLAUDE.arch.md documents that this file is the one place a *new* SerializedSession field does not automatically inherit redaction -- relying on every future field's author to remember a redactSecrets() call is exactly the gap that shipped outstandingAgentSpawns unredacted. Sweeping the fully-serialized JSON here, at the sole place this state ever reaches disk, means a future field is covered whether or not its author remembered. Fail-safe like storeBlob(): if redaction itself throws, skip this write rather than risk persisting unredacted content -- the next successful save still merges from disk.
       let json: string

@@ -31,6 +31,9 @@ export function climbsBetweenRungs(previous: number | undefined, elapsed: number
 const PROBE_TERMINATORS = ['!', 'a', '0', ' ', '￿', '\n', ' '] as const
 const PROBE_BUDGET_MS = 25
 
+/** Any character that can repeat or branch, escaped or not. A pattern containing none of them is accepted without a probe; an escaped one only costs the pattern that shortcut, never its verdict. */
+const LINEAR_BY_CONSTRUCTION_EXCLUDES = /[*+?{|]/
+
 /** How many repetitions a counted quantifier is cut down to, so its gate opens inside the ladder. */
 const MAX_COUNTED_REPEAT = 8
 
@@ -55,6 +58,26 @@ function timeMatch(re: RegExp, input: string): Measurement {
   const restarted = performance.now()
   again.test(input)
   return { ms: Math.min(first, performance.now() - restarted), matched }
+}
+
+/** A timing that is about to refuse a pattern, measured once more and the smaller kept. `timeMatch` already takes the better of two runs, but one descheduling can span both when each is microseconds long, and a refusal is final for the caller. A pattern that really is slow is slow again, so this costs a refused pattern one more measurement and costs an accepted one nothing. */
+function confirmed(re: RegExp, input: string, first: Measurement): Measurement {
+  const again = timeMatch(re, input)
+  return again.ms < first.ms ? { ms: again.ms, matched: first.matched } : first
+}
+
+/** The ladder with the two rungs {@link projectsPastBudget} reads measured again, for the same reason as {@link confirmed}. */
+function remeasuredForProjection(re: RegExp, timings: readonly number[], inputs: readonly string[]): number[] {
+  const hi = timings.length - 1
+  const hiLength = PROBE_LENGTHS[hi]
+  const lo = hiLength === undefined ? -1 : PROBE_LENGTHS.findIndex((l) => l * 2 >= hiLength)
+  const out = [...timings]
+  for (const i of new Set([lo, hi])) {
+    const input = inputs[i]
+    const ms = out[i]
+    if (input !== undefined && ms !== undefined) out[i] = Math.min(ms, timeMatch(re, input).ms)
+  }
+  return out
 }
 
 /** Whether a compiled pattern's running time doubles as its input grows. The pattern is run against short repeated inputs that fail to match at the end -- the condition that forces a backtracking engine to try every split -- and the time at 24 characters is compared with the time at 16. A linear or polynomial pattern grows by a small factor over eight extra characters; an exponential one grows by roughly two hundred and fifty. Safe to run in-process precisely because the inputs are short: `(a+)+` at 24 characters takes well under a tenth of a second, which is the whole point of measuring there rather than at the length real text would supply. `PROBE_BUDGET_MS` is a second floor -- a pattern already slow at 24 characters is refused on that alone, without waiting for a ratio. */
@@ -275,15 +298,24 @@ function climbsPastBudget(re: RegExp): RefusalCause | null {
     // A tail found by sweeping, kept for the rungs above so the sweep is paid for once, and a count of how many rungs have paid for a fruitless one.
     let swept: string | undefined
     const timings: number[] = []
+    const inputs: string[] = []
     let previous: number | undefined
     for (const length of PROBE_LENGTHS) {
       let failing: Measurement | undefined
       let last: Measurement | undefined
+      let failingInput = ''
+      let lastInput = ''
       const attempt = (candidate: string): Measurement | 'over-budget' => {
-        const m = timeMatch(re, body(length) + candidate)
+        const input = body(length) + candidate
+        let m = timeMatch(re, input)
+        if (m.ms > PROBE_BUDGET_MS) m = confirmed(re, input, m)
         last = m
+        lastInput = input
         if (m.ms > PROBE_BUDGET_MS) return 'over-budget'
-        if (!m.matched) failing = m
+        if (!m.matched) {
+          failing = m
+          failingInput = input
+        }
         return m
       }
       for (const candidate of swept === undefined ? candidates : [swept, ...candidates]) {
@@ -305,12 +337,17 @@ function climbsPastBudget(re: RegExp): RefusalCause | null {
       }
       if (failing !== undefined) falsified = true
       // Still nothing this rung can say: the pattern matches everything, so no run backtracked. Recorded as the last timing rather than skipped, because {@link projectsPastBudget} reads the ladder by position and a hole would shift every rung above it.
-      const elapsed = (failing ?? (last as Measurement)).ms
-      if (climbsBetweenRungs(previous, elapsed)) return 'ratio'
+      let elapsed = (failing ?? (last as Measurement)).ms
+      const rungInput = failing !== undefined ? failingInput : lastInput
+      if (climbsBetweenRungs(previous, elapsed)) {
+        elapsed = confirmed(re, rungInput, { ms: elapsed, matched: false }).ms
+        if (climbsBetweenRungs(previous, elapsed)) return 'ratio'
+      }
       previous = elapsed
       timings.push(elapsed)
+      inputs.push(rungInput)
     }
-    if (projectsPastBudget(timings)) return 'projection'
+    if (projectsPastBudget(timings) && projectsPastBudget(remeasuredForProjection(re, timings, inputs))) return 'projection'
   }
   // Nothing the ladder built ever made this pattern fail, so none of its timings measured a backtrack and 0 ms on every rung is not evidence of anything. Certifying on that is how a pattern hides: it only has to match everything the probe can construct. Where the shape says there is a repeated group to be ambiguous about, an unfalsifiable pattern is refused rather than accepted, so running out of ways to ask means unknown rather than safe.
   if (!falsified && QUANTIFIED_GROUP.test(re.source)) return 'unfalsifiable'
@@ -450,6 +487,8 @@ export function compileGuardedRegex(pattern: string, flags = ''): GuardedRegex {
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : 'is not a valid regular expression' }
   }
+  // Nothing to measure: with no repetition and no alternation there is exactly one way to match from each starting position, so the cost is linear by construction. Timing such a pattern anyway was the risk, not the safeguard: a single scheduler stall spanning a probe run and its re-measurement refused `e` and `rogue` on a loaded CI runner. Alternation is excluded even without a quantifier because `^(a|a)(a|a)...$` doubles its paths with every group.
+  if (!LINEAR_BY_CONSTRUCTION_EXCLUDES.test(pattern)) return { ok: true, re }
   // The measurement decides; the shape only explains. Refusing on shape alone rejected patterns that are perfectly fast: `^(?:[a-z]+-)+[a-z]+$` is an ordinary slug matcher whose mandatory `-` makes every group boundary unambiguous, and it matched a 200 KB non-match in 1 ms -- yet the nested-quantifier check condemns it, because by shape it is indistinguishable from `(a+)+`. Losing a search a caller legitimately wanted is a real cost, and this is a denial-of-service bound, not a style rule. So the pattern is run first, and the static check picks the wording when it fires. `secret_redact.ts` keeps its own two-stage form deliberately: there a refusal is reported through `doctor` for a human to rewrite, and the conservative side is different.
   const cause = growsExponentially(re)
   if (cause !== null) {

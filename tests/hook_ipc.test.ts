@@ -248,11 +248,35 @@ describe('endpointFor', () => {
     }
   })
 
-  it.skipIf(process.platform === 'win32')('falls back to the temp directory when the socket path would pass the Unix length cap', () => {
-    const long = path.join(tmp, 'x'.repeat(120))
-    const endpoint = endpointFor(0, long)
-    expect(path.dirname(endpoint)).toBe(os.tmpdir())
-    expect(path.basename(endpoint)).toMatch(/^token-goat-.+-[0-9a-f]{16}-0\.sock$/)
+  describe.skipIf(process.platform === 'win32')('past the Unix socket length cap', () => {
+    const savedTmp = process.env['TMPDIR']
+    beforeEach(() => {
+      process.env['TMPDIR'] = tmp
+    })
+    afterEach(() => {
+      if (savedTmp === undefined) delete process.env['TMPDIR']
+      else process.env['TMPDIR'] = savedTmp
+    })
+
+    // HAND-DERIVED: the shared temp directory lets any user create the fallback name first; a directory only this user can enter leaves nothing to take.
+    it('falls back to a directory under the temp directory that only this user can enter', () => {
+      const endpoint = endpointFor(0, path.join(tmp, 'x'.repeat(120)))
+      const parent = path.dirname(endpoint)
+      expect(path.dirname(parent)).toBe(tmp)
+      expect(path.basename(endpoint)).toMatch(/^[0-9a-f]{16}-0\.sock$/)
+      const st = fs.lstatSync(parent)
+      expect(st.isDirectory()).toBe(true)
+      expect(st.mode & 0o777).toBe(0o700)
+      expect(st.uid).toBe(process.getuid?.())
+    })
+
+    it('never names a socket in that directory once someone else can reach it', () => {
+      const long = path.join(tmp, 'x'.repeat(120))
+      const parent = path.dirname(endpointFor(0, long))
+      fs.chmodSync(parent, 0o777)
+      expect(path.dirname(endpointFor(0, long))).not.toBe(parent)
+      expect(path.dirname(endpointFor(0, long))).not.toBe(tmp)
+    })
   })
 })
 

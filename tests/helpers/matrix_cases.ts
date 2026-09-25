@@ -1929,7 +1929,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const preHook = settings.hooks['PreToolUse']?.[0]?.hooks?.[0]
     const preCommand = preHook?.command ?? ''
     // Exec form (Claude Code >= 2.1.139, gated on the real `claude --version`) carries the shim path in `args`, not the quoted `command` string that string form uses -- whichever the machine running this suite triggers, the shim itself must still be wired and exist on disk.
-    const shimPath = preHook?.args?.find((a) => a.includes('token-goat-shim.js')) ?? preCommand.match(/"([^"]*token-goat-shim\.js)"/)?.[1]
+    const shimPath = preHook?.args?.find((a) => a.includes('token-goat-shim.cjs')) ?? preCommand.match(/"([^"]*token-goat-shim\.cjs)"/)?.[1]
     expect(shimPath, `no shim path wired (string or exec form): command=${preCommand} args=${JSON.stringify(preHook?.args)}`).toBeDefined()
     expect(fs.existsSync(shimPath!)).toBe(true)
 

@@ -1,11 +1,4 @@
-/**
- * Regression coverage for the EPIPE crash: piping a large-output command into a consumer that
- * closes early (`token-goat grep ... | head -2`) killed the CLI with an unhandled 'error' event
- * and a nonzero exit. Piping to `head`/`grep -q`/a pager is one of the most common agent
- * invocation shapes, so this is exercised end-to-end against the real built bundle -- with no
- * shell, by destroying the child's stdout pipe from the parent, which is exactly what an
- * early-closing consumer does.
- */
+/** Regression coverage for the EPIPE crash: piping a large-output command into a consumer that closes early (`token-goat grep ... | head -2`) killed the CLI with an unhandled 'error' event and a nonzero exit. Piping to `head`/`grep -q`/a pager is one of the most common agent invocation shapes, so this is exercised end-to-end against the real built bundle -- with no shell, by destroying the child's stdout pipe from the parent, which is exactly what an early-closing consumer does. */
 import { spawn } from 'node:child_process'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -80,12 +73,12 @@ describe('built bundle piped into an early-closing consumer', () => {
     const r = await runAndCloseStdout(['grep', 'e', 'src', '--max-lines', '50000', '-C', '2'])
     expect(r.stderr).not.toContain('EPIPE')
     expect(r.stderr).not.toContain("Unhandled 'error' event")
-    expect(r.code).toBe(0)
+    expect(r.code, `exit ${r.code}, stderr: ${r.stderr}`).toBe(0)
   }, 60_000)
 
   it('also survives a large --help-style listing being cut off', async () => {
     const r = await runAndCloseStdout(['commands'])
     expect(r.stderr).not.toContain("Unhandled 'error' event")
-    expect(r.code).toBe(0)
+    expect(r.code, `exit ${r.code}, stderr: ${r.stderr}`).toBe(0)
   }, 30_000)
 })

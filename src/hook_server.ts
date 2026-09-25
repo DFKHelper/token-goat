@@ -37,6 +37,8 @@ const KEY_CHECK_MS = 2_000
 const HANDSHAKE_IDLE_MS = 10_000
 
 type RunCli = (argv: string[]) => Promise<void>
+/** A request that does work, one at a time; status and stop are answered as they arrive. */
+type WorkRequest = Extract<ServerRequest, { kind: 'hook' | 'cli' }>
 
 function bundleStamp(): string {
   return bundleEntryFiles()
@@ -67,8 +69,7 @@ function retirementReason(loadedStamp: string): string | undefined {
 }
 
 /** Serve one request. `send` hands the answer to the caller's socket and returns at once: the server is free for the next call as soon as this returns, however long the caller takes to read what it was sent. */
-async function handle(request: ServerRequest, runCli: RunCli, status: ServerStatus, send: (res: ServerReply) => void): Promise<void> {
-  if (request.kind === 'status' || request.kind === 'stop') return send({ ok: true, info: { ...status } })
+async function handle(request: WorkRequest, runCli: RunCli, send: (res: ServerReply) => void): Promise<void> {
   clearPerRequestCaches()
   if (request.kind === 'cli') {
     const res = await serveOne({ id: 0, argv: request.argv, cwd: request.cwd, env: request.env }, runCli, clearPerRequestCaches)
@@ -145,14 +146,40 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
   let idleTimer: NodeJS.Timeout | undefined
   // Answers still draining to callers. Serving the next call never waits on these; exiting does, so an answer already sent is never cut short.
   const flushing = new Set<Promise<void>>()
+  // Callers holding a challenge whose request has not arrived. Such a caller counts its request as handed over once sent, and one never answered fails open to `{}`, so a server that stops tells each of them it is retiring, which they read as "run it yourself", rather than exiting under them.
+  const awaitingRequest = new Set<net.Socket>()
+  /** Send `frame` as the last word on `socket`, held in `flushing` until it has left this process. */
+  const endWith = (socket: net.Socket, frame: Record<string, unknown>): void => {
+    const flushed = new Promise<void>((resolve) => {
+      socket.once('close', () => resolve())
+      writeFrame(socket, frame)
+      socket.end(() => resolve())
+    })
+    flushing.add(flushed)
+    void flushed.then(() => flushing.delete(flushed))
+  }
 
+  // The inode of the socket file this server created. Two servers started past the same dead socket file each remove it and listen, leaving one on a file the other replaced: reachable by nobody, so it exits, and without the close that would unlink the other's socket. Named pipes on Windows have no file to lose.
+  let socketIno: bigint | undefined
+  const ownsEndpoint = (): boolean => {
+    if (socketIno === undefined) return true
+    try {
+      return fs.statSync(endpoint, { bigint: true, throwIfNoEntry: false })?.ino === socketIno
+    } catch {
+      // A path this server cannot even look at is not one to decide it has lost.
+      return true
+    }
+  }
   const server = net.createServer((socket) => serveConnection(socket))
   const exitOnceFlushed = (): void => void Promise.all(flushing).then(() => process.exit(0))
   // Stop accepting at once, and exit as soon as no request is in flight; one that is finishes and exits on its way out.
   const stop = (): void => {
     retiring = true
     if (idleTimer !== undefined) clearTimeout(idleTimer)
-    server.close()
+    // Closing a Unix socket server unlinks its path, which by now may belong to another server; exiting without the close leaves that file alone.
+    if (ownsEndpoint()) server.close()
+    for (const socket of awaitingRequest) endWith(socket, { t: 'stale' })
+    awaitingRequest.clear()
     if (!busy) exitOnceFlushed()
   }
   const armIdle = (): void => {
@@ -165,6 +192,7 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
     let ns = ''
     socket.setTimeout(HANDSHAKE_IDLE_MS, () => socket.destroy())
     socket.on('error', () => socket.destroy())
+    socket.once('close', () => awaitingRequest.delete(socket))
     const onMessage = (msg: Record<string, unknown>): void => {
       if (msg['t'] === 'hello' && nc === '') {
         if (msg['v'] !== PROTOCOL_VERSION || typeof msg['nc'] !== 'string' || msg['nc'] === '') return void socket.destroy()
@@ -179,21 +207,40 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
           })
           return
         }
-        if (busy) {
+        // A status or stop request is answered without waiting for the one in flight, so `hook-server stop` reaches a server mid-request.
+        if (busy && msg['ctl'] !== true) {
           writeFrame(socket, { t: 'busy' })
           return void socket.end()
         }
         nc = msg['nc']
         ns = nonce()
         writeFrame(socket, { t: 'challenge', v: PROTOCOL_VERSION, ns, mac: mac(key, 'S', nc, ns) })
+        awaitingRequest.add(socket)
         return
       }
       if (msg['t'] === 'req' && ns !== '') {
         const body = msg['body']
         if (typeof body !== 'string' || !macMatches(mac(key, 'C', nc, ns, body), msg['mac'])) return void socket.destroy()
-        // Another caller may have been dispatched between this one's challenge and its request.
-        if (busy) {
-          writeFrame(socket, { t: 'busy' })
+        // Already told it is retiring: the request crossed that answer on the wire, and the caller is running it itself.
+        if (!awaitingRequest.delete(socket)) return
+        let request: ServerRequest | undefined
+        let parseError: unknown
+        try {
+          request = JSON.parse(body) as ServerRequest
+        } catch (e) {
+          parseError = e
+        }
+        const kind = (request as { kind?: unknown } | null | undefined)?.kind
+        if (kind === 'status' || kind === 'stop') {
+          const resBody = JSON.stringify({ ok: true, info: { ...status } } satisfies ServerReply)
+          endWith(socket, { t: 'res', mac: mac(key, 'R', nc, ns, resBody), body: resBody })
+          // Exits once the answer has left, or once a request in flight has been answered.
+          if (kind === 'stop' && !retiring) stop()
+          return
+        }
+        // Another caller may have been dispatched between this one's challenge and its request, or asked this server to stop.
+        if (busy || retiring) {
+          writeFrame(socket, { t: retiring ? 'stale' : 'busy' })
           return void socket.end()
         }
         busy = true
@@ -204,20 +251,13 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
           if (replied) return
           replied = true
           const resBody = JSON.stringify(res)
-          const flushed = new Promise<void>((resolve) => {
-            socket.once('close', () => resolve())
-            writeFrame(socket, { t: 'res', mac: mac(key, 'R', nc, ns, resBody), body: resBody })
-            socket.end(() => resolve())
-          })
-          flushing.add(flushed)
-          void flushed.then(() => flushing.delete(flushed))
+          endWith(socket, { t: 'res', mac: mac(key, 'R', nc, ns, resBody), body: resBody })
         }
         void (async () => {
           try {
-            const request = JSON.parse(body) as ServerRequest
-            await handle(request, runCli, status, reply)
-            if (request.kind === 'hook' || request.kind === 'cli') status.served++
-            if (request.kind === 'stop') retiring = true
+            if (request === undefined) throw parseError
+            await handle(request as WorkRequest, runCli, reply)
+            status.served++
           } catch (e) {
             status.errors++
             reply({ ok: false, error: e instanceof Error ? e.message : String(e) })
@@ -235,9 +275,10 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
   }
 
   if (!(await listen(server, endpoint))) return
+  if (process.platform !== 'win32') socketIno = fs.statSync(endpoint, { bigint: true }).ino
   removeMarker('failed')
   setInterval(() => {
-    if (!fs.existsSync(keyPath)) stop()
+    if (!fs.existsSync(keyPath) || !ownsEndpoint()) stop()
   }, KEY_CHECK_MS).unref()
   if (process.platform !== 'win32') {
     try {

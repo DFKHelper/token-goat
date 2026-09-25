@@ -5,7 +5,7 @@ import * as path from 'node:path';
 
 import { dataDir } from './constants.js';
 import { findProject } from './project.js';
-import { atomicWriteText, ensureDirSync, withFileLock, withRetryOnLock } from './util.js';
+import { atomicWriteText, ensureDirSync, LOCK_WAIT_MS_HARDENED, sleepSync, withFileLock, withRetryOnLock } from './util.js';
 
 const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
@@ -31,10 +31,10 @@ function validateKey(key: string): void {
   }
 }
 
-/** Simple TOML parser for key=value format (no nested tables). */
-function parseTOML(content: string): Record<string, string> {
+/** Simple TOML parser for key=value format (no nested tables). The 1-based number of every line that is neither blank, a comment, nor an entry is pushed onto `unparsed`. */
+function parseTOML(content: string, unparsed: number[] = []): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const line of content.split('\n')) {
+  for (const [i, line] of content.split('\n').entries()) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) {
       continue;
@@ -55,13 +55,15 @@ function parseTOML(content: string): Record<string, string> {
         });
         result[key] = unescaped;
       }
+    } else {
+      unparsed.push(i + 1);
     }
   }
   return result;
 }
 
-/** Read and parse the TOML file. An absent file is no entries; a read that fails any other way throws, because setEntry and unsetEntry save what this returns, and answering "no entries" to a scanner briefly holding a just-written file made them replace every note with the one they were changing. That brief lock is retried first. */
-function loadRaw(filePath: string): Record<string, string> {
+/** Read and parse the TOML file. An absent file is no entries; a read that fails any other way throws, because setEntry and unsetEntry save what this returns, and answering "no entries" to a scanner briefly holding a just-written file made them replace every note with the one they were changing. That brief lock is retried first. For the same reason `forUpdate` refuses a file with a line the parser cannot read, such as a value a hand edit continued onto a second line: a read skips it, and a save of what was read would delete it. */
+function loadRaw(filePath: string, forUpdate = false): Record<string, string> {
   let content = '';
   try {
     withRetryOnLock(() => {
@@ -71,11 +73,13 @@ function loadRaw(filePath: string): Record<string, string> {
     if ((err as { code?: unknown }).code === 'ENOENT') return {};
     throw err;
   }
-  try {
-    return parseTOML(content);
-  } catch {
-    return {};
+  const unparsed: number[] = [];
+  const entries = parseTOML(content, unparsed);
+  if (forUpdate && unparsed.length > 0) {
+    const one = unparsed.length === 1;
+    throw new Error(`Not updating ${filePath}: ${one ? 'line' : 'lines'} ${unparsed.join(', ')} ${one ? 'is' : 'are'} not in the key = "value" form, and saving would drop ${one ? 'it' : 'them'}. Fix or remove ${one ? 'it' : 'them'}, then try again.`);
   }
+  return entries;
 }
 
 /** Serialize entries to TOML and write atomically. */
@@ -111,9 +115,9 @@ export function setEntry(projectHash: string, key: string, value: string): void 
   const dir = path.dirname(p);
   ensureDirSync(dir);
 
-  // load-modify-save is a read-modify-write race: two concurrent `token-goat note` calls for the same project could each read the same pre-write state and the second save() would silently clobber the first's entry. Lock the critical section, same as session_store.ts's saveSessionState and config_commands.ts's `config set`; fall back to unprotected on a failed acquire (e.g. missing dir) rather than blocking this low-frequency CLI path forever. withFileLock returns `undefined` both when fn() could not be run (lock unobtainable) and, indistinguishably, when fn() itself legitimately returns undefined -- so fn must return a non-undefined sentinel or a successful run is misread as a failed acquire and re-run a second time (doubling every write). Mirrors session_store.ts's writeMerged: (): true.
+  // load-modify-save is a read-modify-write race: two concurrent `token-goat note` calls for the same project could each read the same pre-write state and the second save() would silently clobber the first's entry. Lock the critical section, same as session_store.ts's saveSessionState and config_commands.ts's `config set`, through {@link underNotesLock}, which refuses rather than run the update unlocked. withFileLock returns `undefined` both when fn() could not be run (lock unobtainable) and, indistinguishably, when fn() itself legitimately returns undefined -- so fn must return a non-undefined sentinel or a successful run is misread as a failed acquire and re-run a second time (doubling every write). Mirrors session_store.ts's writeMerged: (): true.
   const doSet = (): true => {
-    const entries = loadRaw(p);
+    const entries = loadRaw(p, true);
 
     // If this is a new key and we're at capacity, evict alphabetically-last entries to make room. This ensures that newly-added entries are never silently dropped by buildInjection's alphabetical truncation.
     const isNewKey = !(key in entries);
@@ -129,7 +133,20 @@ export function setEntry(projectHash: string, key: string, value: string): void 
     save(p, entries);
     return true;
   };
-  if (withFileLock(`${p}.lock`, doSet) === undefined) doSet();
+  underNotesLock(p, doSet);
+}
+
+/** Run a load-modify-save of the notes file at `p` holding its lock, or throw having changed nothing. withFileLock answers `undefined` both for a lock it waited on and never got and for one it could not create at all, and these updates used to run anyway on that answer: the unlocked read-modify-write the lock exists to prevent, where a concurrent writer's note is lost to whichever save lands last. A lock that could not be created is retried briefly, since a scanner holding the directory entry fails the create for a moment; a lock still held by a live process after the long wait is not, because waiting again would not change the answer. */
+function underNotesLock(p: string, update: () => true): void {
+  const lockPath = `${p}.lock`;
+  // The lock lives beside the file, so a project with no notes yet needs the directory before it can be locked at all.
+  ensureDirSync(path.dirname(p));
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (withFileLock(lockPath, update, { waitMs: LOCK_WAIT_MS_HARDENED }) !== undefined) return;
+    if (fs.existsSync(lockPath)) break;
+    if (attempt < 3) sleepSync(50 * attempt);
+  }
+  throw new Error(`Could not lock ${p} for writing; no note was changed. Another token-goat process may be writing notes: try again.`);
 }
 
 /** Remove key from this project's memory (no-op if absent). */
@@ -137,14 +154,14 @@ export function unsetEntry(projectHash: string, key: string): void {
   validateKey(key);
   const p = memoryPath(projectHash);
   const doUnset = (): true => {
-    const entries = loadRaw(p);
+    const entries = loadRaw(p, true);
     if (key in entries) {
       delete entries[key];
       save(p, entries);
     }
     return true;
   };
-  if (withFileLock(`${p}.lock`, doUnset) === undefined) doUnset();
+  underNotesLock(p, doUnset);
 }
 
 /** Remove all memory entries for project_hash. */
@@ -156,7 +173,7 @@ export function clearAll(projectHash: string): void {
     }
     return true;
   };
-  if (withFileLock(`${p}.lock`, doClear) === undefined) doClear();
+  underNotesLock(p, doClear);
 }
 
 /** Build a compact Markdown block of memory entries for session-start injection. Returns null when no entries stored. */

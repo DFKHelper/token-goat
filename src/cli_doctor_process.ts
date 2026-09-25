@@ -15,10 +15,14 @@ export interface ProcessInfo {
   commandLine: string
 }
 
-/** Why the process list could not be read, in words doctor prints as they are. */
+/** Why the process list could not be read, in words doctor prints as they are. `transient` marks the one failure that running doctor again later can cure: a query that timed out on a loaded machine. */
 export interface ProcessListFailure {
   readonly reason: string
+  readonly transient?: true
 }
+
+/** The process-list query ran past {@link PROCESS_LIST_TIMEOUT_MS}. */
+class ProcessListTimeout extends Error {}
 
 /** How long the process-list query may run. A loaded machine can push Get-CimInstance past it, which is the usual reason the list is missing. */
 const PROCESS_LIST_TIMEOUT_MS = 20_000
@@ -38,10 +42,13 @@ function describeProcess(commandLine: string): string {
 
 export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | ProcessListFailure): DoctorResult {
   if (!Array.isArray(processes)) {
+    const failure = processes as ProcessListFailure
+    const query = `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Select-Object ProcessId,ParentProcessId,CommandLine`
+    const advice = failure.transient === true ? `Run doctor again once the machine is less busy, or list them yourself with: ${query}` : `List them yourself with: ${query}`
     return {
       name: 'MCP process health',
       status: 'warn',
-      message: `could not read the process list (${displaySafeText((processes as ProcessListFailure).reason)}), so duplicate MCP launchers and orphaned Node processes were not checked. Run doctor again once the machine is less busy, or list them yourself with: Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Select-Object ProcessId,ParentProcessId,CommandLine`,
+      message: `could not read the process list (${displaySafeText(failure.reason)}), so duplicate MCP launchers and orphaned Node processes were not checked. ${advice}`,
     }
   }
   const byPid = new Set(processes.map((process) => process.processId))
@@ -88,7 +95,7 @@ function runProcessListCommand(): string {
 export function processListOutput(result: Pick<SpawnSyncReturns<string>, 'error' | 'status' | 'stdout' | 'stderr'>): string {
   if (result.error !== undefined) {
     const code = (result.error as NodeJS.ErrnoException).code
-    if (code === 'ETIMEDOUT') throw new Error(`PowerShell did not finish within ${PROCESS_LIST_TIMEOUT_MS / 1000}s`)
+    if (code === 'ETIMEDOUT') throw new ProcessListTimeout(`PowerShell did not finish within ${PROCESS_LIST_TIMEOUT_MS / 1000}s`)
     if (code === 'ENOENT') throw new Error('powershell.exe was not found')
     throw result.error
   }
@@ -100,7 +107,7 @@ export function processListOutput(result: Pick<SpawnSyncReturns<string>, 'error'
   return stdout
 }
 
-/** `null` when the process list could not be read at all, so a caller can tell that apart from an empty machine. */
+/** A {@link ProcessListFailure} when the process list could not be read at all, so a caller can tell that apart from an empty machine. */
 export function readWindowsProcesses(runCommand: () => string = runProcessListCommand): ProcessInfo[] | ProcessListFailure {
   if (process.platform !== 'win32') return []
   try {
@@ -125,7 +132,8 @@ export function readWindowsProcesses(runCommand: () => string = runProcessListCo
       }]
     })
   } catch (e) {
-    return { reason: e instanceof Error ? e.message : String(e) }
+    const reason = e instanceof Error ? e.message : String(e)
+    return e instanceof ProcessListTimeout ? { reason, transient: true } : { reason }
   }
 }
 

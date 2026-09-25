@@ -450,7 +450,8 @@ beforeAll(() => {
   }
   git(['init'])
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
-  git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
+  // No auto-maintenance: it detaches and can still hold `.git/objects/maintenance.lock` when the seed is copied (see tests/helpers/git-repo.ts).
+  git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', '-c', 'maintenance.auto=false', 'commit', '-m', 'init'])
 })
 
 afterAll(() => {

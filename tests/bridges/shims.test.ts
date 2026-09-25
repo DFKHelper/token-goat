@@ -185,7 +185,7 @@ describe('CODEX_HOOK_SCRIPT hookEventName casing (regression: the shim previousl
 describe('the Claude Code shim cannot block a tool call by failing', () => {
   function runShim(args: string[], stdin: string, env: NodeJS.ProcessEnv = {}): { status: number | null; out: string } {
     const dir = mkdtempSync(join(tmpdir(), 'tg-shim-fail-'))
-    const shim = join(dir, 'token-goat-shim.js')
+    const shim = join(dir, 'token-goat-shim.cjs')
     writeFileSync(shim, CLAUDECODE_HOOK_SCRIPT)
     const result = spawnSync(process.execPath, [shim, ...args], {
       input: stdin,

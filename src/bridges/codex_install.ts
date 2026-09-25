@@ -1,4 +1,4 @@
-/** Codex CLI install / uninstall writer. `token-goat install --codex` patches Codex CLI in addition to the base Claude Code install (see README's "Codex CLI users" section: "The `--codex` flag patches both Claude Code and Codex CLI in one pass"). This module only ever touches paths under `~/.codex/` -- the base Claude Code writer in `../install.ts` is unaffected and is always run separately by the caller. Three artifacts are installed: - `~/.codex/hooks/token-goat-shim.js` -- {@link CODEX_HOOK_SCRIPT} written to disk. Codex's `command` hook field invokes it via `hookCommandFor` below as `"<process.execPath>" "<this path>" <event> "<token-goat entry path>"` -- the absolute Node binary and a baked token-goat entry path, not a bare `node`/`token-goat` depending on PATH resolution (github/copilot-cli#4001 class of failure, fixed here the same way as the Copilot CLI bridge). The shim itself forwards stdin to that baked entry (`token-goat hook <event>`, falling back to a PATH-based lookup when the entry arg is absent) and massages the JSON response to satisfy Codex's strict (`additionalProperties: false`) output schemas. Rewritten unconditionally on every install so an upgraded token-goat version's shim logic always reaches disk, even when the config.toml hooks block itself needed no changes. - `~/.codex/config.toml` -- a `[[hooks.<Event>]]` / `[[hooks.<Event>.hooks]]` array-of-tables block (Codex's real hook config shape; verified against OpenAI's Codex hooks documentation) wiring `PreToolUse`/`PostToolUse` for the three Codex-specific matchers the README documents: `view_image|Bash|exec|shell|bash`, `apply_patch`, `web_search` -- plus three matcher-less global events, `PreCompact`/`UserPromptSubmit`/`SubagentStop`, matching what Claude Code and Grok already wire (see {@link CODEX_GLOBAL_HOOK_EVENTS}'s docstring). Parsed/serialized with `smol-toml`, the same library `config.ts` already uses for token-goat's own config file, so no TOML is hand-rolled. Any other keys/tables in the file are preserved verbatim (mirrors `install.ts`'s treatment of unrelated `settings.json` keys). A timestamped `.bak` is written before any in-place edit. - `~/.codex/AGENTS.md` -- a delimited `<!-- token-goat-codex-begin -->` / `<!-- token-goat-codex-end -->` block with the same routing guidance as Claude Code's `CLAUDE.md` block, adapted for Codex's own tool names (`shell`, `apply_patch`, `view_image`, `web_search` -- see `CODEX_TOOL_NAME_MAP` in `../hooks_cli.ts`). Content outside the markers is always preserved. A corrupt-but-recoverable `config.toml` (exists but fails to parse) must never be silently clobbered -- {@link installCodex} throws {@link CodexConfigParseError} before any write in that case, mirroring the `SettingsParseError` strict-mode guard in `../install.ts`. */
+/** Codex CLI install / uninstall writer. `token-goat install --codex` patches Codex CLI in addition to the base Claude Code install (see README's "Codex CLI users" section: "The `--codex` flag patches both Claude Code and Codex CLI in one pass"). This module only ever touches paths under `~/.codex/` -- the base Claude Code writer in `../install.ts` is unaffected and is always run separately by the caller. Three artifacts are installed: - `~/.codex/hooks/token-goat-shim.cjs` -- {@link CODEX_HOOK_SCRIPT} written to disk. Codex's `command` hook field invokes it via `hookCommandFor` below as `"<process.execPath>" "<this path>" <event> "<token-goat entry path>"` -- the absolute Node binary and a baked token-goat entry path, not a bare `node`/`token-goat` depending on PATH resolution (github/copilot-cli#4001 class of failure, fixed here the same way as the Copilot CLI bridge). The shim itself forwards stdin to that baked entry (`token-goat hook <event>`, falling back to a PATH-based lookup when the entry arg is absent) and massages the JSON response to satisfy Codex's strict (`additionalProperties: false`) output schemas. Rewritten unconditionally on every install so an upgraded token-goat version's shim logic always reaches disk, even when the config.toml hooks block itself needed no changes. - `~/.codex/config.toml` -- a `[[hooks.<Event>]]` / `[[hooks.<Event>.hooks]]` array-of-tables block (Codex's real hook config shape; verified against OpenAI's Codex hooks documentation) wiring `PreToolUse`/`PostToolUse` for the three Codex-specific matchers the README documents: `view_image|Bash|exec|shell|bash`, `apply_patch`, `web_search` -- plus three matcher-less global events, `PreCompact`/`UserPromptSubmit`/`SubagentStop`, matching what Claude Code and Grok already wire (see {@link CODEX_GLOBAL_HOOK_EVENTS}'s docstring). Parsed/serialized with `smol-toml`, the same library `config.ts` already uses for token-goat's own config file, so no TOML is hand-rolled. Any other keys/tables in the file are preserved verbatim (mirrors `install.ts`'s treatment of unrelated `settings.json` keys). A timestamped `.bak` is written before any in-place edit. - `~/.codex/AGENTS.md` -- a delimited `<!-- token-goat-codex-begin -->` / `<!-- token-goat-codex-end -->` block with the same routing guidance as Claude Code's `CLAUDE.md` block, adapted for Codex's own tool names (`shell`, `apply_patch`, `view_image`, `web_search` -- see `CODEX_TOOL_NAME_MAP` in `../hooks_cli.ts`). Content outside the markers is always preserved. A corrupt-but-recoverable `config.toml` (exists but fails to parse) must never be silently clobbered -- {@link installCodex} throws {@link CodexConfigParseError} before any write in that case, mirroring the `SettingsParseError` strict-mode guard in `../install.ts`. */
 
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
@@ -11,6 +11,7 @@ import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
+import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { groupHasTokenGoat, findTokenGoatEntryPosition, findAnyTokenGoatEntryPosition } from './matcher_group.js'
@@ -76,7 +77,12 @@ export function codexAgentsPath(): string {
 
 /** Absolute path the Codex hook shim script is installed to. */
 export function codexHookScriptPath(): string {
-  return path.join(os.homedir(), '.codex', 'hooks', 'token-goat-shim.js')
+  return path.join(os.homedir(), '.codex', 'hooks', SHIM_FILE)
+}
+
+/** The shim's pre-`.cjs` path, now a forwarder to it (see {@link LEGACY_SHIM_FILE}). */
+function codexLegacyHookScriptPath(): string {
+  return path.join(os.homedir(), '.codex', 'hooks', LEGACY_SHIM_FILE)
 }
 
 /** Parse `config.toml` at `p`. A missing file yields `{}` -- the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but fails to parse throws {@link CodexConfigParseError} instead of returning `{}`, so a caller about to overwrite the file can tell "genuinely empty" apart from "corrupt, do not touch." Non-strict (read-only) callers keep the lenient `{}` fallback. */
@@ -167,6 +173,7 @@ export function installCodex(): CodexInstallResult {
   // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the config.toml hooks block itself needs any change.
   ensureDirSync(path.dirname(scriptPath))
   atomicWriteText(scriptPath, CODEX_HOOK_SCRIPT)
+  atomicWriteText(codexLegacyHookScriptPath(), legacyShimForwarder('{}'))
 
   // strict: true -- a config.toml that exists but fails to parse must abort before any write (see CodexConfigParseError), not silently proceed as if it were empty and get clobbered below.
   const config = readCodexConfig(configPath, { strict: true })
@@ -349,11 +356,13 @@ export function uninstallCodex(): boolean {
     removedAny = true
   }
 
-  try {
-    fs.unlinkSync(scriptPath)
-    removedAny = true
-  } catch {
-    // Already absent; nothing to remove.
+  for (const p of [scriptPath, codexLegacyHookScriptPath()]) {
+    try {
+      fs.unlinkSync(p)
+      removedAny = true
+    } catch {
+      // Already absent; nothing to remove.
+    }
   }
 
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.

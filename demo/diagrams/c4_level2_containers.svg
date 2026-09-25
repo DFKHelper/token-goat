@@ -21,7 +21,7 @@
       <!-- Hook Shim -->
       <g transform="translate(0, 0)">
         <rect width="240" height="130" rx="8" fill="#2563EB" stroke="#1D4ED8"/>
-        <text x="120" y="30" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">🪝 token-goat-shim.js</text>
+        <text x="120" y="30" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">🪝 token-goat-shim.cjs</text>
         <text x="120" y="48" font-size="10" fill="#bfdbfe" text-anchor="middle">[Node.js In-Process Fast Path]</text>
         <text x="15" y="75" font-size="10" fill="#ffffff">• ~/.claude/hooks/ entry point</text>
         <text x="15" y="93" font-size="10" fill="#ffffff">• In-process relay via dynamic import</text>

@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { climbsBetweenRungs, compileGuardedRegex, growsExponentially, hasNestedQuantifier, PROBE_GROWTH_FACTOR, PROBE_LENGTHS, probeAlphabets, projectsPastBudget } from '../src/regex_guard.js'
 import { compileGrepMatcher } from '../src/util.js'
@@ -499,5 +499,57 @@ describe('the growth projection', () => {
     timings[PENULTIMATE] = 0.1
     // Adjacent pair: a hundredfold jump across four characters is an exponent of 587, which projects to a number with no physical meaning and refuses a linear pattern.
     expect(projectsPastBudget(timings)).toBe(false)
+  })
+})
+
+/** A clock that loses `stallMs` inside one measured run and again inside its re-measurement, the way a machine does when the scheduler takes the CPU away for a moment: the probe's runs are microseconds long, so one descheduling that spans both reads as a pattern taking tens of milliseconds. `timeMatch` reads the clock at a run's start and end, and re-measures only a run that took over a millisecond, so calls 2k and 2k+1 bound run k while every run is fast, and a stall landing on end-of-run `endCall` and on the end of its re-measurement two calls later is exactly one stall spanning both. */
+function stallTheClock(endCall: number, stallMs: number): { restore: () => void; calls: () => number } {
+  const realNow = performance.now.bind(performance)
+  let calls = 0
+  let offset = 0
+  const spy = vi.spyOn(performance, 'now').mockImplementation(() => {
+    calls++
+    if (calls === endCall || calls === endCall + 2) offset += stallMs
+    return realNow() + offset
+  })
+  return { restore: () => spy.mockRestore(), calls: () => calls }
+}
+
+describe('a stall on the machine running the probe', () => {
+  // CAPTURE: macOS CI, retry reporter, 2026-09-25: `token-goat grep e src` exited 1 once and passed on retry (tests/cli_epipe.test.ts:83, "expected 1 to be +0"), and `pdf-locate body.pdf rogue` printed nothing once and passed on retry (tests/cli_doc_extract_fencing.test.ts:127). Both patterns are plain literals, both reach compileGuardedRegex before anything else can fail, and a refusal is exactly an exit of 1 with nothing on stdout. HAND-DERIVED from timeMatch: a 30 ms stall spanning a run and its re-measurement is over the 25 ms budget.
+  it('accepts a plain literal without timing it, so a stall cannot refuse it', () => {
+    const clock = stallTheClock(20, 30)
+    try {
+      expect(compileGuardedRegex('e').ok).toBe(true)
+      expect(compileGuardedRegex('rogue', 'i').ok).toBe(true)
+      expect(clock.calls()).toBe(0)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('does not refuse an ordinary quantified pattern over one stall', () => {
+    const clock = stallTheClock(20, 30)
+    try {
+      expect(compileGuardedRegex('foo.*bar').ok).toBe(true)
+      expect(clock.calls()).toBeGreaterThan(22)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('does not refuse an ordinary quantified pattern over a stall on a rung that only has to jump past the one below it', () => {
+    const clock = stallTheClock(20, 5)
+    try {
+      expect(compileGuardedRegex('foo.*bar').ok).toBe(true)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('still times an alternation with no quantifier, because each alternative doubles the paths per starting position', () => {
+    // HAND-DERIVED: twenty-four `(a|a)` in a row against twenty-four `a` and a `!` is 2 ** 24 paths from the first position alone.
+    const bomb = `^${'(a|a)'.repeat(24)}$`
+    expect(compileGuardedRegex(bomb).ok).toBe(false)
   })
 })

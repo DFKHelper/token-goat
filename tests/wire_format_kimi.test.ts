@@ -1,19 +1,4 @@
-/**
- * Kimi Code wire-format contract (real bundle, real shim, real handlers).
- *
- * Kimi's stdout parser reads exactly three things (`structuredOutput()` in
- * MoonshotAI/kimi-code `packages/agent-core-v2/src/agent/externalHooks/runner.ts`):
- * a top-level `message`, `hookSpecificOutput.message`, and
- * `hookSpecificOutput.permissionDecision` / `permissionDecisionReason`. It
- * understands none of token-goat's own Claude-Code-shaped fields, so these
- * tests drive the real KIMI_HOOK_SCRIPT against the real built bundle and
- * assert the literal bytes Kimi would actually receive.
- *
- * Every payload here uses Kimi's own key spelling (`tool_input.path`, not
- * `file_path`), which is what makes these tests also cover the kimi branch of
- * normalizePayload: if that rename regressed, the handler would see no path,
- * emit nothing, and the deny/hint assertions below would fail.
- */
+/** Kimi Code wire-format contract (real bundle, real shim, real handlers). Kimi's stdout parser reads exactly three things (`structuredOutput()` in MoonshotAI/kimi-code `packages/agent-core-v2/src/agent/externalHooks/runner.ts`): a top-level `message`, `hookSpecificOutput.message`, and `hookSpecificOutput.permissionDecision` / `permissionDecisionReason`. It understands none of token-goat's own Claude-Code-shaped fields, so these tests drive the real KIMI_HOOK_SCRIPT against the real built bundle and assert the literal bytes Kimi would actually receive. Every payload here uses Kimi's own key spelling (`tool_input.path`, not `file_path`), which is what makes these tests also cover the kimi branch of normalizePayload: if that rename regressed, the handler would see no path, emit nothing, and the deny/hint assertions below would fail. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -34,13 +19,7 @@ function mkIsolated(prefix: string): string {
   return dir
 }
 
-/**
- * Isolated data root shared by every run in this file. The bundle resolves its
- * config from here (dataDir() in src/constants.ts), and these fixtures re-read a
- * file once, immediately: hints.protect_recent_reads defaults to 4, which would
- * exempt exactly that shape from the re-read deny under test. Pinned to 0 for the
- * same reason tests/hook_event_harness_matrix.test.ts pins it.
- */
+/** Isolated data root shared by every run in this file. The bundle resolves its config from here (dataDir() in src/constants.ts), and these fixtures re-read a file once, immediately: hints.protect_recent_reads defaults to 4, which would exempt exactly that shape from the re-read deny under test. Pinned to 0 for the same reason tests/hook_event_harness_matrix.test.ts pins it. */
 let dataBase: string
 
 beforeAll(() => {
@@ -63,13 +42,7 @@ afterAll(() => {
   }
 })
 
-/**
- * Isolated environment for a shim run. Deliberately does NOT set
- * TOKEN_GOAT_HARNESS_OVERRIDE: the shim is supposed to set it itself, because
- * Kimi Code publishes no ambient per-session variable identifying its hook
- * subprocesses. If the shim stopped doing that, the `path` -> `file_path`
- * remap would never run and these tests would fail.
- */
+/** Isolated environment for a shim run. Deliberately does NOT set TOKEN_GOAT_HARNESS_OVERRIDE: the shim is supposed to set it itself, because Kimi Code publishes no ambient per-session variable identifying its hook subprocesses. If the shim stopped doing that, the `path` -> `file_path` remap would never run and these tests would fail. */
 function kimiEnv(base: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -90,7 +63,7 @@ interface RunResult {
 
 /** Runs the real Kimi shim exactly as Kimi Code would: event arg, baked entry path, payload on stdin. */
 function runKimiShim(cwd: string, eventArg: string, payload: unknown, env: NodeJS.ProcessEnv, spawnCwd = cwd): RunResult {
-  const scriptPath = path.join(cwd, 'token-goat-shim.js')
+  const scriptPath = path.join(cwd, 'token-goat-shim.cjs')
   fs.writeFileSync(scriptPath, KIMI_HOOK_SCRIPT, 'utf8')
   const res = spawnSync(process.execPath, [scriptPath, eventArg, BUNDLE], {
     cwd: spawnCwd,
@@ -107,9 +80,7 @@ describe('Kimi wire format: deny', () => {
     const cwd = mkIsolated('tg-kimi-wire-deny-')
     const sessionId = 'kimi-wire-deny'
     const filePath = path.join(cwd, 'large.bin')
-    // >50KB non-source file, denied outright on the second read -- the same fixture
-    // tests/hook_event_harness_matrix.test.ts uses for its deny-shape cases, run with
-    // the repository as the working directory for the same reason it does.
+    // >50KB non-source file, denied outright on the second read -- the same fixture tests/hook_event_harness_matrix.test.ts uses for its deny-shape cases, run with the repository as the working directory for the same reason it does.
     fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
     const payload = { tool_name: 'Read', tool_input: { path: filePath }, session_id: sessionId }
     const env = kimiEnv(cwd)
@@ -172,8 +143,7 @@ describe('Kimi wire format: no-op', () => {
 
     expect(res.status, `stderr: ${res.stderr}`).toBe(0)
     expect(res.stdout).toBe('')
-    // The literal two-character '{}' is the specific regression this guards:
-    // on UserPromptSubmit Kimi would append it verbatim to the conversation.
+    // The literal two-character '{}' is the specific regression this guards: on UserPromptSubmit Kimi would append it verbatim to the conversation.
     expect(res.stdout).not.toContain('{}')
   })
 

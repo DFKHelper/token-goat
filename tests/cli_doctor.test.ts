@@ -1133,7 +1133,7 @@ describe('cli_doctor', () => {
       expect(health, 'runDoctor did not run the MCP process-health check at all').toBeDefined()
       // This process is running right now, so a real gather cannot come back empty; an empty list would have produced the "no duplicate MCP launchers" ok message with nothing behind it.
       //
-      // A null gather is a different outcome from an empty one and is NOT a product defect: it means the PowerShell Get-CimInstance call hit its 20s timeout, which the full suite can provoke under parallel load, and returning null there is the behaviour the next case in this file asserts on purpose. Observed failing exactly once in a full run and passing isolated, whole-file, and in a clean full run. Skipping the null case keeps the real invariant -- a gather that SUCCEEDS must contain this process -- while no longer reporting an environment timeout as a defect. It is not a skip-to-green: a successful gather missing our own pid still fails, which is the bug this case was written for.
+      // A failed gather is a different outcome from an empty one and is NOT a product defect: it means the PowerShell Get-CimInstance call hit its 20s timeout, which the full suite can provoke under parallel load, and returning a failure there is the behaviour the next case in this file asserts on purpose. Observed failing exactly once in a full run and passing isolated, whole-file, and in a clean full run. Skipping the failed case keeps the real invariant -- a gather that SUCCEEDS must contain this process -- while no longer reporting an environment timeout as a defect. It is not a skip-to-green: a successful gather missing our own pid still fails, which is the bug this case was written for.
       const processes = readWindowsProcesses()
       if (Array.isArray(processes)) {
         expect(processes.some((p) => p.processId === process.pid)).toBe(true)
@@ -1148,6 +1148,21 @@ describe('cli_doctor', () => {
       expect(health.message).toContain('could not read the process list (PowerShell did not finish within 20s)')
       expect(health.message).toContain('Get-CimInstance Win32_Process')
       expect(health.message).not.toContain('no duplicate MCP launchers')
+    })
+
+    // HAND-DERIVED reasons, the texts processListOutput throws: waiting helps with a timeout and with nothing else, so a missing powershell.exe must not be told to try again later.
+    it('advises waiting only when the process list timed out', () => {
+      const missing = checkMcpProcessHealth({ reason: 'powershell.exe was not found' })
+      expect(missing.message).not.toContain('less busy')
+      expect(missing.message).toContain('Get-CimInstance Win32_Process')
+      expect(checkMcpProcessHealth({ reason: 'PowerShell did not finish within 20s', transient: true }).message).toContain('less busy')
+    })
+
+    it.runIf(process.platform === 'win32')('marks a timed-out process list as transient, and any other failure as not', () => {
+      const timedOut = readWindowsProcesses(() => processListOutput({ error: Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), { code: 'ETIMEDOUT' }), status: null, stdout: '', stderr: '' }))
+      expect(timedOut).toEqual({ reason: 'PowerShell did not finish within 20s', transient: true })
+      const missing = readWindowsProcesses(() => processListOutput({ error: Object.assign(new Error('spawnSync powershell.exe ENOENT'), { code: 'ENOENT' }), status: null, stdout: '', stderr: '' }))
+      expect(missing).toEqual({ reason: 'powershell.exe was not found' })
     })
 
     it('still reports a genuinely empty process list as ok, not as a failure', () => {
@@ -1438,6 +1453,15 @@ describe('cli_doctor', () => {
       expect(checkHookShim('Codex', path.join(tempDir, 'absent.js'), CODEX_HOOK_SCRIPT, 'token-goat install --codex')).toBeNull()
     })
 
+    // HAND-DERIVED: an install from before the shim became token-goat-shim.cjs holds only token-goat-shim.js, and its hook commands still run that file until install runs again.
+    it('warns about an install that still runs the .js shim instead of saying nothing', () => {
+      fs.writeFileSync(path.join(tempDir, 'token-goat-shim.js'), CODEX_HOOK_SCRIPT)
+      const result = checkHookShim('Codex', path.join(tempDir, 'token-goat-shim.cjs'), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
+      expect(result?.status).toBe('warn')
+      expect(result?.message).toContain('token-goat-shim.js from an older token-goat build')
+      expect(result?.message).toContain('"token-goat install --codex"')
+    })
+
     it('returns ok for the shim this build writes, and warns naming the reinstall command for one it would not', () => {
       const scriptPath = path.join(tempDir, 'token-goat-shim.js')
       fs.writeFileSync(scriptPath, CLAUDECODE_HOOK_SCRIPT)
@@ -1452,7 +1476,7 @@ describe('cli_doctor', () => {
 
     it('reports a stale Codex shim from runDoctor, resolved through the real install path', () => {
       const home = path.join(tempDir, 'home')
-      const shim = path.join(home, '.codex', 'hooks', 'token-goat-shim.js')
+      const shim = path.join(home, '.codex', 'hooks', 'token-goat-shim.cjs')
       fs.mkdirSync(path.dirname(shim), { recursive: true })
       fs.writeFileSync(shim, '// a shim from an older build')
       const saved = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'] }
