@@ -10,8 +10,18 @@ vi.mock('node:fs', async (importOriginal) => {
     ...original,
     renameSync: vi.fn((...args: Parameters<typeof original.renameSync>) => original.renameSync(...args)),
     writeFileSync: vi.fn((...args: Parameters<typeof original.writeFileSync>) => original.writeFileSync(...args)),
+    readFileSync: vi.fn((...args: Parameters<typeof original.readFileSync>) => {
+      if (lockedReads.path !== undefined && args[0] === lockedReads.path && lockedReads.remaining > 0) {
+        lockedReads.remaining--;
+        throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${String(args[0])}'`), { code: 'EBUSY' });
+      }
+      return original.readFileSync(...args);
+    }),
   };
 });
+
+// How many upcoming reads of one path fail the way a Windows scanner holding a freshly written file fails them. Hoisted with the mock above, which reads it.
+const lockedReads = vi.hoisted(() => ({ path: undefined as string | undefined, remaining: 0 }));
 
 import { dataDir } from '../src/constants.js';
 import {
@@ -310,6 +320,39 @@ describe('project_memory', () => {
       renameMock.mockClear();
       setEntry('proj-lock-single', 'k1', 'v1');
       expect(renameMock.mock.calls).toHaveLength(1);
+    });
+  });
+
+  // HAND-DERIVED: the errno shape (`code: 'EBUSY'`) is the one util.ts's withRetryOnLock already retries for writes; reads of the same file met none of it, and a read failure was answered as "no notes".
+  describe('a briefly locked notes file', () => {
+    afterEach(() => {
+      lockedReads.path = undefined;
+      lockedReads.remaining = 0;
+    });
+
+    it('keeps the other notes when setEntry cannot read the file on the first try', () => {
+      setEntry('locked', 'kept', 'written before the lock');
+      lockedReads.path = memoryPath('locked');
+      lockedReads.remaining = 1;
+      setEntry('locked', 'added', 'written during the lock');
+      expect(loadEntries('locked')).toEqual({ kept: 'written before the lock', added: 'written during the lock' });
+    });
+
+    it('refuses to write rather than replace the file with one note when the lock never clears', () => {
+      setEntry('stuck', 'kept', 'written before the lock');
+      lockedReads.path = memoryPath('stuck');
+      lockedReads.remaining = 1000;
+      expect(() => setEntry('stuck', 'added', 'x')).toThrow(/EBUSY/);
+      expect(() => unsetEntry('stuck', 'kept')).toThrow(/EBUSY/);
+      lockedReads.remaining = 0;
+      expect(loadEntries('stuck')).toEqual({ kept: 'written before the lock' });
+    });
+
+    it('still shows the notes when the session-start read meets the lock', () => {
+      setEntry('shown', 'registry', 'two ids, one brand');
+      lockedReads.path = memoryPath('shown');
+      lockedReads.remaining = 1;
+      expect(buildInjection('shown')).toContain('- **registry**: two ids, one brand');
     });
   });
 

@@ -5,7 +5,7 @@ import * as path from 'node:path';
 
 import { dataDir } from './constants.js';
 import { findProject } from './project.js';
-import { atomicWriteText, ensureDirSync, withFileLock } from './util.js';
+import { atomicWriteText, ensureDirSync, withFileLock, withRetryOnLock } from './util.js';
 
 const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
@@ -60,13 +60,18 @@ function parseTOML(content: string): Record<string, string> {
   return result;
 }
 
-/** Read and parse the TOML file; return empty dict on failure. */
+/** Read and parse the TOML file. An absent file is no entries; a read that fails any other way throws, because setEntry and unsetEntry save what this returns, and answering "no entries" to a scanner briefly holding a just-written file made them replace every note with the one they were changing. That brief lock is retried first. */
 function loadRaw(filePath: string): Record<string, string> {
+  let content = '';
   try {
-    if (!fs.existsSync(filePath)) {
-      return {};
-    }
-    const content = fs.readFileSync(filePath, 'utf-8');
+    withRetryOnLock(() => {
+      content = fs.readFileSync(filePath, 'utf-8');
+    });
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return {};
+    throw err;
+  }
+  try {
     return parseTOML(content);
   } catch {
     return {};
@@ -94,7 +99,7 @@ function save(filePath: string, entries: Record<string, string>): void {
   atomicWriteText(filePath, content);
 }
 
-/** Return all memory entries for project_hash, or empty dict. */
+/** Return all memory entries for project_hash: an empty dict when it has none, an error when its file cannot be read, so `note list` never reports "(no notes set)" for notes it could not open. */
 export function loadEntries(projectHash: string): Record<string, string> {
   return loadRaw(memoryPath(projectHash));
 }

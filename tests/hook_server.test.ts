@@ -480,9 +480,17 @@ describe('busy servers', () => {
       [
         "import { pathToFileURL } from 'node:url'",
         'const [clientPath, input, calls] = process.argv.slice(2)',
-        'const { relayViaServer } = await import(pathToFileURL(clientPath).href)',
+        'const { callServer } = await import(pathToFileURL(clientPath).href)',
+        // FORMAT-DERIVED from src/hook_client.ts relayViaServer, which builds this request with the same fields. The handshake allowance is raised from its 150ms default because that default is how long a caller will wait on a slow machine before running locally, a tuning choice this test is not about: with it out of the way, a call turned away here was told busy, which is the defect.
+        'const env = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined))',
         'let served = 0',
-        "for (let i = 0; i < Number(calls); i++) if ((await relayViaServer('pre_tool_use', input)) !== undefined) served++",
+        'const turnedAway = []',
+        'for (let i = 0; i < Number(calls); i++) {',
+        "  const reply = await callServer({ kind: 'hook', event: 'pre_tool_use', input, elapsedMs: performance.now(), env, cwd: process.cwd() }, { handshakeMs: 10000 })",
+        '  if (reply !== undefined) served++',
+        '  else turnedAway.push(i)',
+        '}',
+        "if (turnedAway.length > 0) process.stderr.write('turned away: calls ' + turnedAway.join(', '))",
         'process.stdout.write(String(served))',
         '',
       ].join('\n'),
@@ -491,7 +499,7 @@ describe('busy servers', () => {
     const run = await runNodeAsync(sb, [driver, path.join(path.dirname(sb.bundle), 'token-goat-hook-client.mjs'), input, String(calls)], {})
     expect(run.status, run.stderr).toBe(0)
     // Every call reached slot 0. One told it was busy would have gone to slot 1, found nothing there, and run locally.
-    expect(run.stdout).toBe(String(calls))
+    expect(run.stdout, run.stderr).toBe(String(calls))
     expect(servedBySlot(sb)).toEqual({ 0: calls })
     // The server answers before it writes the row, so a row missing here is one that was deferred and never written.
     const db = new Database(path.join(sb.dataDir, 'global.db'), { readonly: true })
