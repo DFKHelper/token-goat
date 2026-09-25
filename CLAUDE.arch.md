@@ -422,6 +422,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hint_suggestion_guard.ts`](src/hint_suggestion_guard.ts) | Strip shell commands that a path broke out of, from hint and deny text on its way to the model. |
 | [`src/hint_target.ts`](src/hint_target.ts) | Resolves the real name a deny or read hint's suggested command carries -- a heading, symbol, key or table the file actually holds -- so the command it leads with runs as printed, a |
 | [`src/hints.ts`](src/hints.ts) | Session-hint text builder |
+| [`src/hook_adapters.ts`](src/hook_adapters.ts) | What each harness's hook shim decides around a token-goat hook call, in TypeScript, for the resident hook server's harness-aware protocol (HARNESS_PROTOCOL_VERSION in hook_ipc.ts). |
 | [`src/hook_client.ts`](src/hook_client.ts) | Thin client for the resident hook server, and the entry of `dist/token-goat-hook-client.mjs`. |
 | [`src/hook_ipc.ts`](src/hook_ipc.ts) | Wire protocol shared by the resident hook server and its thin client. |
 | [`src/hook_latency.ts`](src/hook_latency.ts) | Read/render side of Batch S's hook wall-clock timing: `token-goat stats --hooks` and `doctor`'s Hook latency check both go through hookLatencyBreakdown(). |

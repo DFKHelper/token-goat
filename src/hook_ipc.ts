@@ -16,6 +16,42 @@ export const SERVER_SLOTS = 3
 export const MAX_FRAME_BYTES = 64 * 1024 * 1024
 const KEY_BYTES = 32
 
+/** The harness-aware protocol, for a client that carries no harness logic of its own (the native hook client). Its hello names the harness, the challenge tells the client what that harness prints when an answer never comes, and the server answers in `out` frames (bytes the harness must see before the handler runs, such as Claude Code's async-detach line) followed by one `done` frame carrying the rest of stdout and the exit code. A {@link PROTOCOL_VERSION} hello is served exactly as before. */
+export const HARNESS_PROTOCOL_VERSION = 2
+
+/** A v2 request. `event` is the event argument the harness command was run with (Copilot CLI's own spelling for Copilot CLI); `scriptDir` is the directory of the hook script that command names, which the Copilot adapter hands VS Code's duplicate-hook guard. */
+export interface HarnessHookRequest {
+  kind: 'hook'
+  harness: string
+  event: string
+  input: string
+  env: Record<string, string>
+  cwd: string
+  elapsedMs: number
+  harnessWaitMs?: number
+  scriptDir?: string
+}
+
+/** The v2 challenge MAC. Binds the harness named in the hello and the no-op outputs the client will print for a request that is never answered, so neither can be swapped on the wire. `noops` lists `[event, stdout]` pairs, sorted by event, for the events whose no-op differs from `noop`. */
+export function challengeMacV2(key: Buffer, nc: string, ns: string, harness: string, noop: string, noops: ReadonlyArray<readonly [string, string]>): string {
+  return mac(key, 'S', nc, ns, harness, noop, ...noops.flat())
+}
+
+/** The v2 request MAC: the harness from the hello is bound alongside the body, and the server also requires the body to name the same harness. */
+export function requestMacV2(key: Buffer, nc: string, ns: string, harness: string, body: string): string {
+  return mac(key, 'C', nc, ns, harness, body)
+}
+
+/** MAC of the `out` frame numbered `seq`. Frames are numbered from 0 on each connection, so a client that requires them in order rejects a reordered or replayed one. */
+export function outFrameMac(key: Buffer, nc: string, ns: string, seq: number, data: string): string {
+  return mac(key, 'O', nc, ns, String(seq), data)
+}
+
+/** MAC of the `done` frame. `n` is how many `out` frames preceded it, so a dropped trailing `out` frame fails the MAC rather than going unnoticed. */
+export function doneFrameMac(key: Buffer, nc: string, ns: string, stdout: string, exit: number, n: number): string {
+  return mac(key, 'D', nc, ns, stdout, String(exit), String(n))
+}
+
 /** A request the server can serve. `env` and `cwd` are the caller's, applied for the duration of the request. */
 export type ServerRequest =
   | { kind: 'hook'; event: string; input: string; harnessWaitMs?: number; elapsedMs: number; env: Record<string, string>; cwd: string }
