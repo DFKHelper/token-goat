@@ -263,12 +263,12 @@ function distEndpoint(sb: Sandbox, slot: number): string {
   return path.join(os.tmpdir(), `token-goat-${process.getuid?.() ?? 'u'}-${id}.sock`)
 }
 
-/** Speaks the client side of the handshake by hand (FORMAT-DERIVED from src/hook_client.ts attempt) to hold a server busy with a request of the test's choosing. */
-function rawRequest(endpoint: string, key: Buffer, request: ServerRequest): { dispatched: Promise<void>; reply: Promise<ServerReply> } {
+/** Speaks the client side of the handshake by hand (FORMAT-DERIVED from src/hook_client.ts attempt) to hold a server busy with a request of the test's choosing. With `stall`, it stops reading once the request is sent, as a caller slow to take its answer would, until `resume` is called. */
+function rawRequest(endpoint: string, key: Buffer, request: ServerRequest, opts: { stall?: boolean } = {}): { dispatched: Promise<void>; reply: Promise<ServerReply>; resume: () => void } {
   let markDispatched: () => void = () => undefined
   const dispatched = new Promise<void>((resolve) => (markDispatched = resolve))
+  const socket = net.connect(endpoint)
   const reply = new Promise<ServerReply>((resolve, reject) => {
-    const socket = net.connect(endpoint)
     const nc = nonce()
     let ns = ''
     socket.on('error', reject)
@@ -281,6 +281,7 @@ function rawRequest(endpoint: string, key: Buffer, request: ServerRequest): { di
           if (!macMatches(mac(key, 'S', nc, ns), msg['mac'])) return reject(new Error('server failed the key challenge'))
           const body = JSON.stringify(request)
           writeFrame(socket, { t: 'req', mac: mac(key, 'C', nc, ns, body), body })
+          if (opts.stall) socket.pause()
           markDispatched()
           return
         }
@@ -295,7 +296,7 @@ function rawRequest(endpoint: string, key: Buffer, request: ServerRequest): { di
       reject,
     )
   })
-  return { dispatched, reply }
+  return { dispatched, reply, resume: () => void socket.resume() }
 }
 
 /** Evaluates `fn` with this process's data directory pointed at the sandbox's, so real exports that read it (configStamp) answer for the sandbox. */
@@ -499,6 +500,49 @@ describe('busy servers', () => {
     } finally {
       db.close()
     }
+  })
+
+  // CI caught the back-to-back test above turning away 3 to 5 of 25 calls on Windows: the server stayed busy until its answer had drained, and a caller that had already read it could reconnect first. A caller that stops reading stretches that window without limit, so it makes the case deterministic.
+  it('serves the next call while an earlier caller is still reading its answer', async () => {
+    const sb = sandbox()
+    startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    blockAutostart(sb, [1, 2])
+    // HAND-DERIVED size: 50,000 keys of about 70 bytes each print as roughly 4 MB, far past what a socket or pipe buffers, so the answer cannot finish leaving the server while its caller is not reading. json-query prints a subtree whole, where section and read cap what they print.
+    const keys = 50_000
+    const big: Record<string, string> = {}
+    for (let i = 0; i < keys; i++) big[`k${i}`] = `${'v'.repeat(60)}${i}`
+    fs.writeFileSync(path.join(sb.proj, 'big.json'), JSON.stringify({ big }))
+    const slow = rawRequest(distEndpoint(sb, 0), readServerKey(sb.dataDir) as Buffer, { kind: 'cli', argv: ['json-query', 'big.json', 'big'], env: sb.env, cwd: sb.proj }, { stall: true })
+    await slow.dispatched
+    const driver = path.join(sb.base, 'until-served.mjs')
+    fs.writeFileSync(
+      driver,
+      [
+        "import { pathToFileURL } from 'node:url'",
+        'const [clientPath, input] = process.argv.slice(2)',
+        'const { relayViaServer } = await import(pathToFileURL(clientPath).href)',
+        // The slow request's command takes a moment to run, and the slot is rightly busy until it has, so the call is retried until it is served or the deadline passes.
+        'const deadline = Date.now() + 20000',
+        'let served = false',
+        'while (!served && Date.now() < deadline) {',
+        "  served = (await relayViaServer('pre_tool_use', input)) !== undefined",
+        '  if (!served) await new Promise((r) => setTimeout(r, 200))',
+        '}',
+        'process.stdout.write(String(served))',
+        '',
+      ].join('\n'),
+    )
+    const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'slow-reader' })
+    const run = await runNodeAsync(sb, [driver, path.join(path.dirname(sb.bundle), 'token-goat-hook-client.mjs'), input], {})
+    expect(run.status, run.stderr).toBe(0)
+    expect(run.stdout).toBe('true')
+    slow.resume()
+    const reply = await slow.reply
+    expect(reply.ok).toBe(true)
+    // The answer drained whole once its caller read it: every key is there.
+    expect('stdout' in reply ? Object.keys(JSON.parse(reply.stdout) as object).length : undefined).toBe(keys)
+    expect(servedBySlot(sb)).toEqual({ 0: 2 })
   })
 })
 

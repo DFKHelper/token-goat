@@ -24,7 +24,7 @@ Upgrading reparses the index. The data directory fix below is in a file the pars
 
 - **A hook call no longer starts a second Node process to hold a lock.** Saving session state takes a file lock, and every hook call saves it. Holding that lock used to start a helper process that kept the lock file's timestamp fresh, so a slow holder was not mistaken for a crashed one and robbed of its lock. The lock now checks whether its holder is still running instead, and keeps it for a live holder for up to 60 seconds. A lock whose holder has exited is taken over as before.
 
-- **Commands and hook calls do less work when they start and when they record stats.** The version and package name are built into the bundle, so no command reads package.json to learn them. The stats database no longer waits for a disk flush after each row: its write-ahead log keeps the file intact through a crash, and a power failure can lose only the last few rows.
+- **Commands and hook calls do less work when they start and when they record stats.** The version and package name are built into the bundle, so no command reads package.json to learn them. The stats database no longer waits for a disk flush after each row: its write-ahead log keeps the file intact through a crash, and a power failure can lose only the last few rows. The hook server sends each answer before it writes the call's stats row, and takes the next call as soon as that row is written, however long the previous caller takes to read its answer.
 
 ### Removed
 

@@ -66,7 +66,8 @@ function retirementReason(loadedStamp: string): string | undefined {
   return undefined
 }
 
-async function handle(request: ServerRequest, runCli: RunCli, status: ServerStatus, send: (res: ServerReply) => Promise<void>): Promise<void> {
+/** Serve one request. `send` hands the answer to the caller's socket and returns at once: the server is free for the next call as soon as this returns, however long the caller takes to read what it was sent. */
+async function handle(request: ServerRequest, runCli: RunCli, status: ServerStatus, send: (res: ServerReply) => void): Promise<void> {
   if (request.kind === 'status' || request.kind === 'stop') return send({ ok: true, info: { ...status } })
   clearPerRequestCaches()
   if (request.kind === 'cli') {
@@ -83,7 +84,7 @@ async function handle(request: ServerRequest, runCli: RunCli, status: ServerStat
     // What the caller waited on is its own time up to sending this request plus the time spent here, not this process's age.
     const stdout = await relayInProcess(request.event, payload, request.harnessWaitMs, { elapsedMs: () => request.elapsedMs + (performance.now() - startedAt), afterReply: (work) => afterReply.push(work) })
     // The caller has its answer before the stats row is written and the connections are closed, and both still run under this request's environment and directory. The session state the next call reads was saved before the answer, so nothing a follow-up call depends on is left behind it.
-    await send({ ok: true, stdout })
+    send({ ok: true, stdout })
     for (const work of afterReply) work()
   } finally {
     restoreEnv()
@@ -142,14 +143,17 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
   let busy = false
   let retiring = false
   let idleTimer: NodeJS.Timeout | undefined
+  // Answers still draining to callers. Serving the next call never waits on these; exiting does, so an answer already sent is never cut short.
+  const flushing = new Set<Promise<void>>()
 
   const server = net.createServer((socket) => serveConnection(socket))
+  const exitOnceFlushed = (): void => void Promise.all(flushing).then(() => process.exit(0))
   // Stop accepting at once, and exit as soon as no request is in flight; one that is finishes and exits on its way out.
   const stop = (): void => {
     retiring = true
     if (idleTimer !== undefined) clearTimeout(idleTimer)
     server.close()
-    if (!busy) process.exit(0)
+    if (!busy) exitOnceFlushed()
   }
   const armIdle = (): void => {
     if (idleTimer !== undefined) clearTimeout(idleTimer)
@@ -194,17 +198,20 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
         }
         busy = true
         socket.setTimeout(0)
-        // Resolves once the reply has left this process (or the caller hung up), so an exit that follows never cuts it short. Only the first reply is sent: a failure after it has nothing left to answer.
+        // Only the first reply is sent: a failure after it has nothing left to answer. The reply drains on this socket alone, so a caller slow to read it holds up nobody but itself; until it has left this process (or the caller hung up) it sits in `flushing`, which an exit waits on.
         let replied = false
-        const reply = (res: ServerReply): Promise<void> =>
-          new Promise((resolve) => {
-            if (replied) return resolve()
-            replied = true
-            const resBody = JSON.stringify(res)
+        const reply = (res: ServerReply): void => {
+          if (replied) return
+          replied = true
+          const resBody = JSON.stringify(res)
+          const flushed = new Promise<void>((resolve) => {
             socket.once('close', () => resolve())
             writeFrame(socket, { t: 'res', mac: mac(key, 'R', nc, ns, resBody), body: resBody })
             socket.end(() => resolve())
           })
+          flushing.add(flushed)
+          void flushed.then(() => flushing.delete(flushed))
+        }
         void (async () => {
           try {
             const request = JSON.parse(body) as ServerRequest
@@ -213,7 +220,7 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
             if (request.kind === 'stop') retiring = true
           } catch (e) {
             status.errors++
-            await reply({ ok: false, error: e instanceof Error ? e.message : String(e) })
+            reply({ ok: false, error: e instanceof Error ? e.message : String(e) })
           }
           busy = false
           status.lastUsedAt = Date.now()

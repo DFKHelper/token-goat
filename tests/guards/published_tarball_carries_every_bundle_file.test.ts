@@ -12,7 +12,9 @@ function packedPaths(): string[] {
   // Constant arguments, so the shell Windows needs to run npm's .cmd wrapper sees nothing a caller controls.
   const res = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', timeout: 60_000 })
   expect(res.status, res.stderr).toBe(0)
-  const [pack] = JSON.parse(res.stdout) as Array<{ files: Array<{ path: string }> }>
+  // CAPTURE (CI on Node 22, and npm 10.9.9 run here): npm 10 still runs `prepare` for a pack despite --ignore-scripts, and its output ("sync hooks: ...") lands on stdout ahead of the JSON; npm 11 skips it. npm's JSON is the array that opens at the start of a line.
+  const json = res.stdout.slice(res.stdout.search(/^\[/m))
+  const [pack] = JSON.parse(json) as Array<{ files: Array<{ path: string }> }>
   return pack!.files.map((f) => f.path.replaceAll('\\', '/'))
 }
 
