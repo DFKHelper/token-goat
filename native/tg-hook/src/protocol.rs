@@ -1,4 +1,4 @@
-//! The wire format of src/hook_ipc.ts: frames of a 4-byte big-endian length plus UTF-8 JSON, capped at `MAX_FRAME_BYTES`, and the length-prefixed HMAC-SHA256 every handshake step carries. The connection logic that uses these belongs to the relay and is not here yet.
+//! The wire format of src/hook_ipc.ts: frames of a 4-byte big-endian length plus UTF-8 JSON, capped at `MAX_FRAME_BYTES`, and the length-prefixed HMAC-SHA256 every handshake step carries. src/client.rs holds the connection logic that uses them.
 
 use hmac::{KeyInit, Mac};
 use serde_json::{Map, Value};
@@ -8,6 +8,8 @@ use crate::jsstr::replace_lone_surrogate_escapes;
 
 /// `PROTOCOL_VERSION`: a peer speaking another version is treated as absent.
 pub const PROTOCOL_VERSION: u32 = 1;
+/// `HARNESS_PROTOCOL_VERSION`: the harness-aware protocol this client speaks. Its hello names the harness, its challenge carries that harness's no-op outputs, and the answer comes as `out` frames and one `done` frame.
+pub const HARNESS_PROTOCOL_VERSION: u32 = 2;
 /// `SERVER_SLOTS`.
 pub const SERVER_SLOTS: u32 = 3;
 /// `MAX_FRAME_BYTES`: the largest frame body either end sends or accepts.
@@ -26,6 +28,31 @@ pub fn mac(key: &[u8], parts: &[&str]) -> String {
         hex.push_str(&format!("{b:02x}"));
     }
     hex
+}
+
+/// `challengeMacV2`: binds the harness named in the hello and the no-op outputs, each `noops` pair flattened in order.
+pub fn challenge_mac_v2(key: &[u8], nc: &str, ns: &str, harness: &str, noop: &str, noops: &[(String, String)]) -> String {
+    let mut parts = vec!["S", nc, ns, harness, noop];
+    for (event, out) in noops {
+        parts.push(event);
+        parts.push(out);
+    }
+    mac(key, &parts)
+}
+
+/// `requestMacV2`.
+pub fn request_mac_v2(key: &[u8], nc: &str, ns: &str, harness: &str, body: &str) -> String {
+    mac(key, &["C", nc, ns, harness, body])
+}
+
+/// `outFrameMac`: `String(seq)` of a non-negative integer is its decimal digits, as `to_string` writes them.
+pub fn out_frame_mac(key: &[u8], nc: &str, ns: &str, seq: u64, data: &str) -> String {
+    mac(key, &["O", nc, ns, &seq.to_string(), data])
+}
+
+/// `doneFrameMac`.
+pub fn done_frame_mac(key: &[u8], nc: &str, ns: &str, stdout: &str, exit: i32, n: u64) -> String {
+    mac(key, &["D", nc, ns, stdout, &exit.to_string(), &n.to_string()])
 }
 
 /// `macMatches(expected, actual)`: equal UTF-16 length first, then a constant-time comparison of the bytes. Where Node's `timingSafeEqual` would throw (same UTF-16 length, different UTF-8 length) this answers false, which is what a thrown check amounts to for a peer.

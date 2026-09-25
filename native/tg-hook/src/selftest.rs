@@ -157,3 +157,9 @@ pub fn run_real(names: &[String]) -> i32 {
     print_ascii(&out);
     0
 }
+
+/// `--selftest-env`: the environment and working directory a request from this process carries, so a test can hold them to `envSnapshot()` and `process.cwd()` in a Node process started the same way.
+pub fn run_env() -> i32 {
+    print_ascii(&json!({ "env": crate::client::env_snapshot(), "cwd": crate::client::node_cwd() }));
+    0
+}
