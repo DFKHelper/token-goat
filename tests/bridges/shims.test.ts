@@ -270,12 +270,12 @@ describe('shim shell fallback does not truncate a large hook response (regressio
   })
 })
 
-// The resident hook server is reached through a sibling dist/token-goat-hook-client.mjs, tried before the in-process hook library (src/bridges/shim_common.ts SHIM_TRY_SERVER / SHIM_TRY_IN_PROCESS). Proven by running each shim against fakes rather than by grepping its text: a shim that carried the fragment but never called it, or called it after the hook library import, would pass a text check and fail these.
+// The resident hook server is reached through a sibling dist/token-goat-hook-client.cjs (or its .mjs build on an older install), tried before the in-process hook library (src/bridges/shim_common.ts SHIM_TRY_SERVER / SHIM_TRY_IN_PROCESS). Proven by running each shim against fakes rather than by grepping its text: a shim that carried the fragment but never called it, or called it after the hook library import, would pass a text check and fail these.
 describe('bridge hook shims try the resident hook server first', () => {
   // HAND-DERIVED stand-ins for the two sibling modules, exporting the functions and signatures each shim calls: relayViaServer(event, input, harnessWaitMs) (src/hook_client.ts) and relayInProcess(event, payload, harnessWaitMs) (src/hook_lib.ts). Each records its call and answers with a block decision whose reason names it, which every harness translation carries through.
-  function fakeModule(fn: string, reason: string, log: string): string {
-    return `import { appendFileSync } from 'node:fs'
-export async function ${fn}(event, input) {
+  function fakeModule(fn: string, reason: string, log: string, format: 'esm' | 'cjs' = 'esm'): string {
+    const head = format === 'esm' ? `import { appendFileSync } from 'node:fs'\nexport async function ${fn}(event, input) {` : `const { appendFileSync } = require('node:fs')\nexports.${fn} = async function (event, input) {`
+    return `${head}
   const payload = typeof input === 'string' ? JSON.parse(input) : input
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ event, payload, harness: process.env.TOKEN_GOAT_HARNESS_OVERRIDE ?? null }) + String.fromCharCode(10))
   if (process.env.FAKE_SERVER_DECLINES === '1' && ${JSON.stringify(fn)} === 'relayViaServer') return undefined
@@ -284,14 +284,16 @@ export async function ${fn}(event, input) {
 `
   }
 
-  function layout(withClient: boolean): { dir: string; entryPath: string; spawnedMarker: string; clientLog: string; hookLibLog: string } {
+  // A current install carries the client twice, as the CommonJS file a shim loads and the ES module the launcher loads (esbuild.config.mjs); an install built before the CommonJS file has only the second, and one older still has neither. Each build's fake names itself in its answer.
+  function layout(client: 'none' | 'mjs' | 'both'): { dir: string; entryPath: string; spawnedMarker: string; clientLog: string; hookLibLog: string } {
     const dir = mkIsolated()
     const spawnedMarker = join(dir, 'SPAWNED.txt')
     const clientLog = join(dir, 'client-calls.log')
     const hookLibLog = join(dir, 'hooklib-calls.log')
     const entryPath = join(dir, 'token-goat.cjs')
     writeFileSync(entryPath, `require('fs').writeFileSync(${JSON.stringify(spawnedMarker)}, 'spawned')\nprocess.stdout.write('{}')\n`, 'utf8')
-    if (withClient) writeFileSync(join(dir, 'token-goat-hook-client.mjs'), fakeModule('relayViaServer', 'FROM-RESIDENT-SERVER', clientLog), 'utf8')
+    if (client !== 'none') writeFileSync(join(dir, 'token-goat-hook-client.mjs'), fakeModule('relayViaServer', 'FROM-RESIDENT-SERVER via mjs', clientLog), 'utf8')
+    if (client === 'both') writeFileSync(join(dir, 'token-goat-hook-client.cjs'), fakeModule('relayViaServer', 'FROM-RESIDENT-SERVER via cjs', clientLog, 'cjs'), 'utf8')
     writeFileSync(join(dir, 'token-goat-hook.mjs'), fakeModule('relayInProcess', 'FROM-HOOK-LIBRARY', hookLibLog), 'utf8')
     return { dir, entryPath, spawnedMarker, clientLog, hookLibLog }
   }
@@ -326,7 +328,7 @@ export async function ${fn}(event, input) {
     })
 
     it('answers from the resident server when it serves the call, and never loads the hook library or spawns the entry', () => {
-      const l = layout(true)
+      const l = layout('both')
       const stdout = run(script, event, payload, l)
       expect(stdout).toContain('FROM-RESIDENT-SERVER')
       const calls = readLog(l.clientLog)
@@ -342,7 +344,7 @@ export async function ${fn}(event, input) {
     })
 
     it('falls back to the in-process hook library, with the same call, when the server dispatched nothing', () => {
-      const l = layout(true)
+      const l = layout('both')
       const stdout = run(script, event, payload, l, { FAKE_SERVER_DECLINES: '1' })
       expect(stdout).toContain('FROM-HOOK-LIBRARY')
       const server = readLog(l.clientLog)
@@ -355,11 +357,25 @@ export async function ${fn}(event, input) {
     })
 
     it('uses the in-process hook library unchanged for an install that predates the client', () => {
-      const l = layout(false)
+      const l = layout('none')
       const stdout = run(script, event, payload, l)
       expect(stdout).toContain('FROM-HOOK-LIBRARY')
       expect(readLog(l.hookLibLog)).toHaveLength(1)
       expect(existsSync(l.spawnedMarker)).toBe(false)
+    })
+
+    it('loads the CommonJS client when the install has one, not the ES module build beside it', () => {
+      const l = layout('both')
+      const stdout = run(script, event, payload, l)
+      expect(stdout).toContain('via cjs')
+      expect(readLog(l.clientLog)).toHaveLength(1)
+    })
+
+    it('still reaches the server through the ES module client on an install built before the CommonJS one', () => {
+      const l = layout('mjs')
+      const stdout = run(script, event, payload, l)
+      expect(stdout).toContain('FROM-RESIDENT-SERVER via mjs')
+      expect(readLog(l.hookLibLog)).toEqual([])
     })
   })
 })

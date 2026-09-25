@@ -1,64 +1,35 @@
-/**
- * Single source of truth for the package version.
- *
- * At build time esbuild replaces `__TG_VERSION__` with the literal version
- * string read from package.json (see esbuild.config.mjs `define`). When the
- * define is absent — e.g. running source directly under tsx/vitest — the value
- * is read from package.json at runtime via `createRequire`.
- */
+/** Single source of truth for the package's own manifest fields: its version, its npm name and where issues go. At build time esbuild replaces `__TG_MANIFEST__` with those fields read from package.json (scripts/build-options.mjs `buildDefines`), so a bundled process never opens the file; reading it cost 2.2ms of every CLI start and of every hook call a resident server answers. When the define is absent, running source under tsx/vitest, the fields are read from package.json at runtime. */
 
 import { createRequire } from 'node:module'
 
-// Injected by esbuild's `define`. Declared so tsc accepts the reference; at runtime under tsx/vitest it is undefined and we fall back below.
-declare const __TG_VERSION__: string | undefined
-
-function resolveVersion(): string {
-  if (typeof __TG_VERSION__ === 'string') {
-    return __TG_VERSION__
-  }
-  // Runtime fallback: resolve package.json relative to this module's URL.
-  const require = createRequire(import.meta.url)
-  const pkg = require('../package.json') as { version?: string }
-  return pkg.version ?? '0.0.0'
+interface Manifest {
+  version?: string
+  name?: string
+  bugs?: { url?: string }
 }
 
-export const VERSION: string = resolveVersion()
+// Injected by esbuild's `define` as the manifest's JSON text: a string define inlines as a literal, where an object one becomes a module esbuild initializes from every lazily loaded module in the bundle. Declared so tsc accepts the reference; at runtime under tsx/vitest it is undefined and we fall back below.
+declare const __TG_MANIFEST__: string | undefined
 
-/**
- * The published npm package name, for any message telling a user how to install this tool.
- *
- * Read from the manifest rather than written as a literal. `doctor`'s broken-install message
- * hardcoded `token-goat-ts`, which is not this package and is an unregistered npm name anyone
- * could claim -- an install instruction pointing at a package that does not exist yet, printed
- * exactly when a user's install is broken, and asking for a global install.
- */
-function resolvePackageName(): string {
-  // Fail-soft, unlike resolveVersion's bare require: this module gets bundled into the in-process hook chunk, which is written to a temp directory with no package.json beside it, so the require throws there and a throw at module load takes the whole hook down. The name is only ever used in an advisory install line, so a literal fallback costs nothing -- and the fallback cannot silently drift, because the test that pins this constant runs from source, where the manifest is found.
+/** Fail-soft: a bundle built without the define, or source run from somewhere with no manifest beside it, must not take down whatever imported this module. Every field has a literal fallback below, and the test that pins each one runs from source, where the manifest is found, so a fallback cannot drift unnoticed. */
+function readManifest(): Manifest {
+  if (typeof __TG_MANIFEST__ === 'string') return JSON.parse(__TG_MANIFEST__) as Manifest
   try {
-    const require = createRequire(import.meta.url)
-    const pkg = require('../package.json') as { name?: string }
-    if (typeof pkg.name === 'string' && pkg.name !== '') return pkg.name
+    return createRequire(import.meta.url)('../package.json') as Manifest
   } catch {
-    /* bundled somewhere with no manifest beside it */
+    return {}
   }
-  return 'token-goat'
 }
 
-export const PACKAGE_NAME: string = resolvePackageName()
+const manifest = readManifest()
 
-/** Where users file an issue, read from the manifest's `bugs.url`; fail-soft like resolvePackageName, for the same bundled-without-a-manifest reason. */
-function resolveIssuesUrl(): string {
-  try {
-    const require = createRequire(import.meta.url)
-    const pkg = require('../package.json') as { bugs?: { url?: string } }
-    if (typeof pkg.bugs?.url === 'string' && pkg.bugs.url !== '') return pkg.bugs.url
-  } catch {
-    /* bundled somewhere with no manifest beside it */
-  }
-  return 'https://github.com/DFKHelper/token-goat/issues'
-}
+export const VERSION: string = manifest.version ?? '0.0.0'
 
-export const ISSUES_URL: string = resolveIssuesUrl()
+/** The published npm package name, for any message telling a user how to install this tool. Read from the manifest rather than written as a literal: `doctor`'s broken-install message once hardcoded `token-goat-ts`, which is not this package and is an unregistered npm name anyone could claim, printed exactly when a user's install is broken and asking for a global install. */
+export const PACKAGE_NAME: string = manifest.name !== undefined && manifest.name !== '' ? manifest.name : 'token-goat'
+
+/** Where users file an issue, read from the manifest's `bugs.url`. */
+export const ISSUES_URL: string = manifest.bugs?.url !== undefined && manifest.bugs.url !== '' ? manifest.bugs.url : 'https://github.com/DFKHelper/token-goat/issues'
 
 /** The contact address README.md publishes for requests that should not go through a public issue. */
 export const SUPPORT_EMAIL = 'token-goat@dfkhelper.com'

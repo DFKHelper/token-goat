@@ -1,14 +1,4 @@
-/**
- * Test-only worker for the withFileLock heartbeat regression test in tests/util.test.ts.
- *
- * Run as a real child OS process so the "holder" genuinely has its own event loop, blocked
- * synchronously by fn() for holdMs -- the exact scenario a heartbeat interval living in the
- * SAME process as fn() cannot detect (a setInterval there would never fire while fn() has the
- * thread pinned). Only a heartbeat running in a separate process (as withFileLock now spawns
- * internally) can keep refreshing the lock file's mtime while this holder is busy.
- *
- * Usage: tsx lock_holder.ts <lockPath> <holdMs> <staleMs>
- */
+/** Test-only worker for the withFileLock live-holder regression test in tests/util.test.ts. Run as a real child OS process so the "holder" genuinely has its own event loop, blocked synchronously by fn() for holdMs, past staleMs. Nothing in this process can refresh the lock file's mtime while fn() has the thread pinned, so a lock that is not stolen here is protected by the holder's pid being alive, which a caller in another process checks. Usage: tsx lock_holder.ts <lockPath> <holdMs> <staleMs> */
 import { withFileLock } from '../../src/util.js'
 
 const [, , lockPath, holdMsArg, staleMsArg] = process.argv
@@ -21,14 +11,9 @@ const staleMs = Number(staleMsArg)
 const result = withFileLock(
   lockPath,
   () => {
-    // Announce acquisition on stderr (stdout stays pure JSON for the caller to parse) BEFORE the
-    // busy-spin pins this thread. The caller waits for this line rather than polling for the lock
-    // file within a fixed window: under a loaded parallel suite, tsx's transpile-and-start cost
-    // alone has exceeded a four-second poll, which failed the test for a reason that has nothing
-    // to do with what it is testing.
+    // Announce acquisition on stderr (stdout stays pure JSON for the caller to parse) BEFORE the busy-spin pins this thread. The caller waits for this line rather than polling for the lock file within a fixed window: under a loaded parallel suite, tsx's transpile-and-start cost alone has exceeded a four-second poll, which failed the test for a reason that has nothing to do with what it is testing.
     process.stderr.write('acquired\n')
-    // Busy-spin: genuinely synchronous, non-yielding work -- never awaits, never lets this
-    // process's own event loop turn -- for holdMs, which is deliberately longer than staleMs.
+    // Busy-spin: genuinely synchronous, non-yielding work -- never awaits, never lets this process's own event loop turn -- for holdMs, which is deliberately longer than staleMs.
     const end = Date.now() + holdMs
     while (Date.now() < end) {
       /* intentionally empty */

@@ -5,7 +5,7 @@ import * as os from 'node:os'
 
 import { serveOne, swapEnv } from './batch_serve.js'
 import { hookServerEnabled } from './config.js'
-import { ensureDataDirPrivate } from './constants.js'
+import { configPath, ensureDataDirPrivate } from './constants.js'
 import {
   bundleEntryFiles,
   configStamp,
@@ -51,29 +51,40 @@ function bundleStamp(): string {
     .join('|')
 }
 
+/** {@link hookServerEnabled} as of the inputs it reads: the environment variable and config.toml, keyed on the file's path and modification time (configStamp, which the client's own autostart check keys on too). Every contact asks, and parsing config.toml each time cost about 1.5ms of a call the server answers. */
+let enabledMemo: { key: string; enabled: boolean } | undefined
+function stillEnabled(): boolean {
+  const key = `${process.env['TOKEN_GOAT_HOOK_SERVER'] ?? ''}|${configPath()}|${configStamp()}`
+  if (enabledMemo?.key !== key) enabledMemo = { key, enabled: hookServerEnabled() }
+  return enabledMemo.enabled
+}
+
 /** Why this server should stop taking requests, or `undefined` while it should keep serving. */
 function retirementReason(loadedStamp: string): string | undefined {
   if (bundleStamp() !== loadedStamp) return 'bundle replaced'
-  if (!hookServerEnabled()) return 'disabled'
+  if (!stillEnabled()) return 'disabled'
   return undefined
 }
 
-async function handle(request: ServerRequest, runCli: RunCli, status: ServerStatus): Promise<ServerReply> {
-  if (request.kind === 'status' || request.kind === 'stop') return { ok: true, info: { ...status } }
+async function handle(request: ServerRequest, runCli: RunCli, status: ServerStatus, send: (res: ServerReply) => Promise<void>): Promise<void> {
+  if (request.kind === 'status' || request.kind === 'stop') return send({ ok: true, info: { ...status } })
   clearPerRequestCaches()
   if (request.kind === 'cli') {
     const res = await serveOne({ id: 0, argv: request.argv, cwd: request.cwd, env: request.env }, runCli, clearPerRequestCaches)
-    return { ok: true, stdout: res.stdout, stderr: res.stderr, status: res.status }
+    return send({ ok: true, stdout: res.stdout, stderr: res.stderr, status: res.status })
   }
   const startedAt = performance.now()
   const cwdBefore = process.cwd()
   const restoreEnv = swapEnv(request.env)
+  const afterReply: (() => void)[] = []
   try {
     process.chdir(request.cwd)
     const payload: unknown = JSON.parse(request.input)
     // What the caller waited on is its own time up to sending this request plus the time spent here, not this process's age.
-    const stdout = await relayInProcess(request.event, payload, request.harnessWaitMs, { elapsedMs: () => request.elapsedMs + (performance.now() - startedAt) })
-    return { ok: true, stdout }
+    const stdout = await relayInProcess(request.event, payload, request.harnessWaitMs, { elapsedMs: () => request.elapsedMs + (performance.now() - startedAt), afterReply: (work) => afterReply.push(work) })
+    // The caller has its answer before the stats row is written and the connections are closed, and both still run under this request's environment and directory. The session state the next call reads was saved before the answer, so nothing a follow-up call depends on is left behind it.
+    await send({ ok: true, stdout })
+    for (const work of afterReply) work()
   } finally {
     restoreEnv()
     try {
@@ -150,70 +161,70 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
     let ns = ''
     socket.setTimeout(HANDSHAKE_IDLE_MS, () => socket.destroy())
     socket.on('error', () => socket.destroy())
-    readFrames(
-      socket,
-      (msg) => {
-        if (msg['t'] === 'hello' && nc === '') {
-          if (msg['v'] !== PROTOCOL_VERSION || typeof msg['nc'] !== 'string' || msg['nc'] === '') return void socket.destroy()
-          const reason = retiring ? 'retiring' : retirementReason(loadedStamp)
-          if (reason !== undefined) {
-            if (reason === 'disabled') touchMarker('disabled', configStamp())
-            writeFrame(socket, { t: 'stale' })
-            socket.end(() => {
-              if (!retiring) stop()
-            })
-            return
-          }
-          if (busy) {
-            writeFrame(socket, { t: 'busy' })
-            return void socket.end()
-          }
-          nc = msg['nc']
-          ns = nonce()
-          writeFrame(socket, { t: 'challenge', v: PROTOCOL_VERSION, ns, mac: mac(key, 'S', nc, ns) })
+    const onMessage = (msg: Record<string, unknown>): void => {
+      if (msg['t'] === 'hello' && nc === '') {
+        if (msg['v'] !== PROTOCOL_VERSION || typeof msg['nc'] !== 'string' || msg['nc'] === '') return void socket.destroy()
+        const reason = retiring ? 'retiring' : retirementReason(loadedStamp)
+        if (reason !== undefined) {
+          if (reason === 'disabled') touchMarker('disabled', configStamp())
+          // A newer build is on disk and this server started fine, so nothing argues for making the next call wait out the start throttle before the new build is running: an upgrade within half a minute of this server starting would otherwise leave every call cold until it lapsed.
+          if (reason === 'bundle replaced') removeMarker(`spawn-${slot}`)
+          writeFrame(socket, { t: 'stale' })
+          socket.end(() => {
+            if (!retiring) stop()
+          })
           return
         }
-        if (msg['t'] === 'req' && ns !== '') {
-          const body = msg['body']
-          if (typeof body !== 'string' || !macMatches(mac(key, 'C', nc, ns, body), msg['mac'])) return void socket.destroy()
-          // Another caller may have been dispatched between this one's challenge and its request.
-          if (busy) {
-            writeFrame(socket, { t: 'busy' })
-            return void socket.end()
-          }
-          busy = true
-          socket.setTimeout(0)
-          // Resolves once the reply has left this process (or the caller hung up), so an exit that follows never cuts it short.
-          const reply = (res: ServerReply): Promise<void> =>
-            new Promise((resolve) => {
-              const resBody = JSON.stringify(res)
-              socket.once('close', () => resolve())
-              writeFrame(socket, { t: 'res', mac: mac(key, 'R', nc, ns, resBody), body: resBody })
-              socket.end(() => resolve())
-            })
-          void (async () => {
-            let res: ServerReply
-            try {
-              const request = JSON.parse(body) as ServerRequest
-              res = await handle(request, runCli, status)
-              if (request.kind === 'hook' || request.kind === 'cli') status.served++
-              if (request.kind === 'stop') retiring = true
-            } catch (e) {
-              status.errors++
-              res = { ok: false, error: e instanceof Error ? e.message : String(e) }
-            }
-            await reply(res)
-            busy = false
-            status.lastUsedAt = Date.now()
-            if (retiring) stop()
-            else armIdle()
-          })()
-          return
+        if (busy) {
+          writeFrame(socket, { t: 'busy' })
+          return void socket.end()
         }
-        socket.destroy()
-      },
-      () => undefined,
-    )
+        nc = msg['nc']
+        ns = nonce()
+        writeFrame(socket, { t: 'challenge', v: PROTOCOL_VERSION, ns, mac: mac(key, 'S', nc, ns) })
+        return
+      }
+      if (msg['t'] === 'req' && ns !== '') {
+        const body = msg['body']
+        if (typeof body !== 'string' || !macMatches(mac(key, 'C', nc, ns, body), msg['mac'])) return void socket.destroy()
+        // Another caller may have been dispatched between this one's challenge and its request.
+        if (busy) {
+          writeFrame(socket, { t: 'busy' })
+          return void socket.end()
+        }
+        busy = true
+        socket.setTimeout(0)
+        // Resolves once the reply has left this process (or the caller hung up), so an exit that follows never cuts it short. Only the first reply is sent: a failure after it has nothing left to answer.
+        let replied = false
+        const reply = (res: ServerReply): Promise<void> =>
+          new Promise((resolve) => {
+            if (replied) return resolve()
+            replied = true
+            const resBody = JSON.stringify(res)
+            socket.once('close', () => resolve())
+            writeFrame(socket, { t: 'res', mac: mac(key, 'R', nc, ns, resBody), body: resBody })
+            socket.end(() => resolve())
+          })
+        void (async () => {
+          try {
+            const request = JSON.parse(body) as ServerRequest
+            await handle(request, runCli, status, reply)
+            if (request.kind === 'hook' || request.kind === 'cli') status.served++
+            if (request.kind === 'stop') retiring = true
+          } catch (e) {
+            status.errors++
+            await reply({ ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+          busy = false
+          status.lastUsedAt = Date.now()
+          if (retiring) stop()
+          else armIdle()
+        })()
+        return
+      }
+      socket.destroy()
+    }
+    readFrames(socket, onMessage, () => undefined)
   }
 
   if (!(await listen(server, endpoint))) return

@@ -1,85 +1,4 @@
-/**
- * Copilot CLI hook shim.
- *
- * GitHub Copilot CLI's hook config (`.github/hooks/*.json` project-scope, or
- * `~/.copilot/hooks/*.json` user-scope -- confirmed against
- * https://docs.github.com/en/copilot/reference/hooks-reference and
- * https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks)
- * points each event at an external command. Unlike Codex, Copilot's own event
- * names (`preToolUse`, `postToolUse`, `preCompact`, `agentStop`,
- * `subagentStop`, `sessionStart`, ...) and response schema
- * (`permissionDecision`/`permissionDecisionReason`/`modifiedArgs` for
- * `preToolUse`; `modifiedResult`/`additionalContext` for `postToolUse`) are
- * genuinely different from Claude Code's `hookSpecificOutput`-nested shape,
- * so this shim does real translation rather than Codex's mostly-pass-through
- * strip-and-relabel.
- *
- * Also unlike Codex, no ambient env var documenting "this subprocess is
- * running under Copilot CLI" turned up in either doc above or in a broader
- * search (`COPILOT_HOME`/`COPILOT_MODEL`/`COPILOT_SUBAGENT_MAX_CONCURRENT`
- * are all user-configurable overrides, not signals Copilot sets
- * automatically) -- see the note in src/bridges/registry.ts. So, exactly
- * like PI_EXTENSION_SCRIPT (src/bridges/pi.ts), this shim sets
- * `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before invoking
- * `token-goat hook`, instead of relying on a guessed detection branch.
- *
- * Copilot's real built-in tool names -- confirmed via `@github/copilot-sdk`
- * type definitions and multiple real GitHub issue payload dumps, superseding
- * an earlier docs-based guess (`shell`/`write`/`read`/`url`) that didn't hold
- * up in practice (`write` in particular was never a real `toolName` value at
- * all, only a Copilot permission-pattern keyword) -- are `view`, `grep`
- * (alias `rg`), `glob`, `bash`, `powershell`, `read_bash`, `stop_bash`,
- * `list_bash` (and the `read_powershell`/`stop_powershell`/`list_powershell`
- * twins the PowerShell shell config uses), `edit`, `create`, `web_fetch`,
- * `task`, `ask_user`, `memory`, and MCP-server tool invocations (named
- * `<server-name>-<tool-name>`). The ones with a clear token-goat equivalent
- * are remapped (bash/powershell->Bash, read_bash/read_powershell->BashOutput,
- * view->Read, create->Write, edit->Edit, web_fetch->WebFetch, grep->Grep,
- * glob->Glob); `task`, `ask_user`, `memory`, the stop/list shell tools, and
- * MCP tool calls are forwarded with their original
- * name unchanged, which is safe because token-goat's dispatch loop simply
- * no-ops for tool names none of its handlers are registered for. The bash
- * tool's `toolArgs` command key is confirmed literally `command` (GitHub's
- * own hooks-reference example: `"toolArgs": "{\"command\":\"rm -rf dist\",
- * \"description\":\"Clean build\"}"`), matching what hooks_bash.ts reads
- * (`event.toolInput['command']`), so no remap is needed there. Other tools'
- * `toolArgs` key names beyond the view/edit/create `path` remap and the
- * read_bash/read_powershell `shellId` remap below were
- * not individually enumerated, so `toolArgs` is otherwise forwarded to
- * token-goat verbatim (no key renaming) and any `modifiedArgs` token-goat
- * returns is likewise passed back verbatim.
- *
- * `postToolUse`'s payload also carries `toolResult`, confirmed (same hooks-reference
- * doc above) as an object -- `{ resultType: 'success', textResultForLlm: string }` --
- * not a bare string. `textResultForLlm` is extracted into `canonical.tool_response` so
- * token-goat's post-read/post-bash stat handlers (which measure `tool_response`) see
- * real content instead of nothing.
- *
- * `view`/`edit`/`create`'s file-path argument arrives under the key `path`, not the
- * `file_path` key every token-goat handler that resolves a path reads (getFilePath in
- * hooks_common.ts; the only handler any of these three tools reach -- postEditHandler
- * for edit/create, preReadHandler/preReadImageHandler for view -- and none of them read
- * any other argument key, so `old_string`/`new_string`/`content`-style remapping is not
- * needed here). Left unremapped, getFilePath() always returns undefined for these three
- * tools and no Read/Edit/Write is ever recorded -- token-goat stats and re-read hints
- * silently never engage for Copilot CLI sessions. This resolves the `toolArgs` key
- * question the block above previously flagged as unconfirmed.
- *
- * Image shrinking rides token-goat's pre_tool_use additionalContext, which reaches the
- * model on this harness (see translate()'s preToolUse branch for the evidence) but must
- * not carry a shrink payload: that payload is a base64 data URL, and forwarding it as
- * text would cost more than the image it replaced. It is
- * delivered here the same way opencode/pi do it: materializeShrunkImage decodes the
- * payload's data URL to a temp file and translate() returns
- * `{modifiedArgs: {...originalArgs, path: <shrunk copy>}}` for a `view` call. Verified
- * against the shipping 1.0.80 bundle that this channel really is honored for any tool:
- * the native hook-response schema string table parses `modifiedArgs`
- * (runtime.node offset 101619638), and app.js applies `s.argMutations` tool-agnostically
- * (offset ~2041790) via ESr (offset 2032225), which REPLACES the tool call's
- * `function.arguments` wholesale with the returned JSON -- which is exactly why the
- * shrink rewrite spreads the full original toolArgs and swaps only `path`, in Copilot's
- * own key, rather than returning a bare path object.
- */
+/** Copilot CLI hook shim. GitHub Copilot CLI's hook config (`.github/hooks/*.json` project-scope, or `~/.copilot/hooks/*.json` user-scope -- confirmed against https://docs.github.com/en/copilot/reference/hooks-reference and https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks) points each event at an external command. Unlike Codex, Copilot's own event names (`preToolUse`, `postToolUse`, `preCompact`, `agentStop`, `subagentStop`, `sessionStart`, ...) and response schema (`permissionDecision`/`permissionDecisionReason`/`modifiedArgs` for `preToolUse`; `modifiedResult`/`additionalContext` for `postToolUse`) are genuinely different from Claude Code's `hookSpecificOutput`-nested shape, so this shim does real translation rather than Codex's mostly-pass-through strip-and-relabel. Also unlike Codex, no ambient env var documenting "this subprocess is running under Copilot CLI" turned up in either doc above or in a broader search (`COPILOT_HOME`/`COPILOT_MODEL`/`COPILOT_SUBAGENT_MAX_CONCURRENT` are all user-configurable overrides, not signals Copilot sets automatically) -- see the note in src/bridges/registry.ts. So, exactly like PI_EXTENSION_SCRIPT (src/bridges/pi.ts), this shim sets `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before invoking `token-goat hook`, instead of relying on a guessed detection branch. Copilot's real built-in tool names -- confirmed via `@github/copilot-sdk` type definitions and multiple real GitHub issue payload dumps, superseding an earlier docs-based guess (`shell`/`write`/`read`/`url`) that didn't hold up in practice (`write` in particular was never a real `toolName` value at all, only a Copilot permission-pattern keyword) -- are `view`, `grep` (alias `rg`), `glob`, `bash`, `powershell`, `read_bash`, `stop_bash`, `list_bash` (and the `read_powershell`/`stop_powershell`/`list_powershell` twins the PowerShell shell config uses), `edit`, `create`, `web_fetch`, `task`, `ask_user`, `memory`, and MCP-server tool invocations (named `<server-name>-<tool-name>`). The ones with a clear token-goat equivalent are remapped (bash/powershell->Bash, read_bash/read_powershell->BashOutput, view->Read, create->Write, edit->Edit, web_fetch->WebFetch, grep->Grep, glob->Glob); `task`, `ask_user`, `memory`, the stop/list shell tools, and MCP tool calls are forwarded with their original name unchanged, which is safe because token-goat's dispatch loop simply no-ops for tool names none of its handlers are registered for. The bash tool's `toolArgs` command key is confirmed literally `command` (GitHub's own hooks-reference example: `"toolArgs": "{\"command\":\"rm -rf dist\", \"description\":\"Clean build\"}"`), matching what hooks_bash.ts reads (`event.toolInput['command']`), so no remap is needed there. Other tools' `toolArgs` key names beyond the view/edit/create `path` remap and the read_bash/read_powershell `shellId` remap below were not individually enumerated, so `toolArgs` is otherwise forwarded to token-goat verbatim (no key renaming) and any `modifiedArgs` token-goat returns is likewise passed back verbatim. `postToolUse`'s payload also carries `toolResult`, confirmed (same hooks-reference doc above) as an object -- `{ resultType: 'success', textResultForLlm: string }` -- not a bare string. `textResultForLlm` is extracted into `canonical.tool_response` so token-goat's post-read/post-bash stat handlers (which measure `tool_response`) see real content instead of nothing. `view`/`edit`/`create`'s file-path argument arrives under the key `path`, not the `file_path` key every token-goat handler that resolves a path reads (getFilePath in hooks_common.ts; the only handler any of these three tools reach -- postEditHandler for edit/create, preReadHandler/preReadImageHandler for view -- and none of them read any other argument key, so `old_string`/`new_string`/`content`-style remapping is not needed here). Left unremapped, getFilePath() always returns undefined for these three tools and no Read/Edit/Write is ever recorded -- token-goat stats and re-read hints silently never engage for Copilot CLI sessions. This resolves the `toolArgs` key question the block above previously flagged as unconfirmed. Image shrinking rides token-goat's pre_tool_use additionalContext, which reaches the model on this harness (see translate()'s preToolUse branch for the evidence) but must not carry a shrink payload: that payload is a base64 data URL, and forwarding it as text would cost more than the image it replaced. It is delivered here the same way opencode/pi do it: materializeShrunkImage decodes the payload's data URL to a temp file and translate() returns `{modifiedArgs: {...originalArgs, path: <shrunk copy>}}` for a `view` call. Verified against the shipping 1.0.80 bundle that this channel really is honored for any tool: the native hook-response schema string table parses `modifiedArgs` (runtime.node offset 101619638), and app.js applies `s.argMutations` tool-agnostically (offset ~2041790) via ESr (offset 2032225), which REPLACES the tool call's `function.arguments` wholesale with the returned JSON -- which is exactly why the shrink rewrite spreads the full original toolArgs and swaps only `path`, in Copilot's own key, rather than returning a bare path object. */
 import { COPILOT_CLI_TOOL_NAME_MAP } from '../copilot_tool_names.js'
 import { ownGet } from '../own_lookup.js'
 import { foldToolName } from '../tool_name_fold.js'
@@ -748,9 +667,7 @@ for (const [k, v] of Object.entries(TOOL_TO_TG_MAPPING)) {
   FOLDED_MAPPING[foldToolName(v)] = v
 }
 
-/**
- * Resolves any case or separator variant of a Copilot CLI tool name to its canonical token-goat name.
- */
+/** Resolves any case or separator variant of a Copilot CLI tool name to its canonical token-goat name. */
 export function resolveCanonicalToolName(name: string): string {
   if (!name || typeof name !== 'string') return name
   const direct = ownGet(TOOL_TO_TG_MAPPING, name)
@@ -759,9 +676,7 @@ export function resolveCanonicalToolName(name: string): string {
   return ownGet(FOLDED_MAPPING, folded) || name
 }
 
-/**
- * Translates a Copilot hook payload into canonical token-goat form for testing / verification.
- */
+/** Translates a Copilot hook payload into canonical token-goat form for testing / verification. */
 export function translateCopilotPayload(raw: { event?: string; tool_name?: string; tool_input?: Record<string, unknown> }): { tool_name: string; tool_input: Record<string, unknown> } {
   const toolName = resolveCanonicalToolName(raw.tool_name || '')
   const input = { ...(raw.tool_input || {}) }

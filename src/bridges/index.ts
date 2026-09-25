@@ -1,10 +1,4 @@
-/**
- * Bridges barrel.
- *
- * Re-exports the harness-detection surface, the shared bridge types, and each
- * harness bridge so callers import from `./bridges/index.js` rather than
- * reaching into individual files.
- */
+/** Bridges barrel. Re-exports the harness-detection surface, the shared bridge types, and each harness bridge so callers import from `./bridges/index.js` rather than reaching into individual files. */
 
 export { detectHarness, getHarnessName } from './registry.js'
 export type { BridgeConfig, HarnessName } from './types.js'

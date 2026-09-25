@@ -7,10 +7,14 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.spyOn cannot patch node:child_process either (same non-configurable-namespace-export issue as node:fs below), so verifying the timeoutMs -> spawnSync `timeout` pass-through needs the same hoisted-mock pattern: every call passes straight through to the real spawnSync, and the mock only exists so its call args are inspectable via vi.mocked(...).
+// vi.spyOn cannot patch node:child_process either (same non-configurable-namespace-export issue as node:fs below), so verifying the timeoutMs -> spawnSync `timeout` pass-through needs the same hoisted-mock pattern: every call passes straight through to the real spawnSync, and the mock only exists so its call args are inspectable via vi.mocked(...). spawn is wrapped the same way so a test can assert withFileLock never starts a process.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof cp>()
-  return { ...actual, spawnSync: vi.fn((...args: Parameters<typeof actual.spawnSync>) => actual.spawnSync(...args)) }
+  return {
+    ...actual,
+    spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => actual.spawn(...args)),
+    spawnSync: vi.fn((...args: Parameters<typeof actual.spawnSync>) => actual.spawnSync(...args)),
+  }
 })
 
 // vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real module untouched; only writeSync is ever intercepted, and only for the one call after the flag is set.
@@ -219,12 +223,66 @@ describe('withFileLock', () => {
     expect(elapsed).toBeLessThan(1000) // stealing is immediate, not bounded by the full waitMs
   })
 
+  // HAND-DERIVED: each token below is built in the `<pid>:<hrtime>` shape withFileLock writes, with a pid whose state (running elsewhere, exited, this process) is arranged by the test itself.
+  describe('an aged lock is judged by whether the pid in its token is still running', () => {
+    const agedLock = (name: string, pid: number, ageMs: number): string => {
+      const lockPath = path.join(dir, name)
+      writeFileSync(lockPath, `${pid}:123456789`, { flag: 'wx' })
+      const old = new Date(Date.now() - ageMs)
+      utimesSync(lockPath, old, old)
+      return lockPath
+    }
+
+    it('keeps a lock whose holder is another process that is still running', () => {
+      const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' })
+      try {
+        expect(holder.pid).toBeGreaterThan(0)
+        const lockPath = agedLock('live.lock', holder.pid!, 10_000)
+        const result = withFileLock(lockPath, () => 'stolen', { waitMs: 300, staleMs: 50 })
+        expect(result).toBeUndefined()
+        expect(readFileSync(lockPath, 'utf8')).toBe(`${holder.pid}:123456789`)
+      } finally {
+        holder.kill()
+      }
+    })
+
+    it('steals a lock whose holder has exited', () => {
+      const gone = childProcess.spawnSync(process.execPath, ['-e', '0'])
+      expect(gone.pid).toBeGreaterThan(0)
+      const lockPath = agedLock('dead.lock', gone.pid!, 10_000)
+      expect(withFileLock(lockPath, () => 'stolen', { waitMs: 2000, staleMs: 50 })).toBe('stolen')
+    })
+
+    it('steals a lock carrying this process own pid, since a synchronous holder here has already released', () => {
+      const lockPath = agedLock('own.lock', process.pid, 10_000)
+      expect(withFileLock(lockPath, () => 'stolen', { waitMs: 2000, staleMs: 50 })).toBe('stolen')
+    })
+
+    it('steals a lock older than the live-holder ceiling even when its pid is running, since a pid can be reused', () => {
+      const lockPath = agedLock('reused.lock', process.ppid, 61_000)
+      expect(withFileLock(lockPath, () => 'stolen', { waitMs: 2000, staleMs: 50 })).toBe('stolen')
+    })
+
+    it('keeps a lock younger than staleMs even when its pid has exited', () => {
+      const gone = childProcess.spawnSync(process.execPath, ['-e', '0'])
+      const lockPath = path.join(dir, 'fresh.lock')
+      writeFileSync(lockPath, `${gone.pid}:1`, { flag: 'wx' })
+      expect(withFileLock(lockPath, () => 'stolen', { waitMs: 200, staleMs: 60_000 })).toBeUndefined()
+    })
+  })
+
+  it('never spawns a process to hold a lock, since a session save on every hook would pay for it', () => {
+    const before = [vi.mocked(childProcess.spawn).mock.calls.length, vi.mocked(childProcess.spawnSync).mock.calls.length]
+    expect(withFileLock(path.join(dir, 'nospawn.lock'), () => 'ran')).toBe('ran')
+    expect([vi.mocked(childProcess.spawn).mock.calls.length, vi.mocked(childProcess.spawnSync).mock.calls.length]).toEqual(before)
+  })
+
   it(
-    'never steals the lock while its real holder is still actively running, thanks to the heartbeat (regression)',
+    'never steals the lock while its real holder is still actively running, because its pid is alive (regression)',
     async () => {
       const lockPath = path.join(dir, 'e.lock')
 
-      // A real child process holds the lock and busy-spins *synchronously* for holdMs (well past staleMs) inside fn() -- this is the one scenario a heartbeat living in the holder's own process cannot detect, because a setInterval there can never fire while fn() has that process's single thread pinned in a non-yielding synchronous loop (verified empirically: a busy-spin starves the holder's own timers completely). Only a heartbeat running in a separate OS process -- which withFileLock now spawns internally -- keeps ticking regardless of what the holder's thread is doing.
+      // A real child process holds the lock and busy-spins *synchronously* for holdMs (well past staleMs) inside fn(). Nothing in that process can refresh the lock file's mtime while its single thread is pinned, so the lock goes stale by age and only the liveness of the pid in its token keeps it from being taken.
       const holdMs = 8000
       const staleMs = 4000
       let signalAcquired: () => void = () => {}
@@ -254,7 +312,7 @@ describe('withFileLock', () => {
         })
       })
 
-      // Wait for the holder to say it has the lock, rather than polling for the lock file within a window chosen in advance. The holder writes that line on stderr as its first act inside fn(). A four-second poll here used to stand in for the signal, and under a loaded parallel full-suite run tsx's own transpile-and-start cost exceeded it, failing this test at its setup for a reason that has nothing to do with the heartbeat it exists to check. There is no window to pick correctly: what is being waited for is another process starting up, and only that process knows when it is ready. Racing the exit promise so a holder that dies before acquiring reports its own error instead of hanging until the test times out.
+      // Wait for the holder to say it has the lock, rather than polling for the lock file within a window chosen in advance. The holder writes that line on stderr as its first act inside fn(). A four-second poll here used to stand in for the signal, and under a loaded parallel full-suite run tsx's own transpile-and-start cost exceeded it, failing this test at its setup for a reason that has nothing to do with the liveness check it exists to cover. There is no window to pick correctly: what is being waited for is another process starting up, and only that process knows when it is ready. Racing the exit promise so a holder that dies before acquiring reports its own error instead of hanging until the test times out.
       await Promise.race([
         holderAcquired,
         holderExit.then(() => {
@@ -262,21 +320,21 @@ describe('withFileLock', () => {
         }),
       ])
       expect(existsSync(lockPath)).toBe(true)
-      // Let the heartbeat tick several times before trying to steal. staleMs is generous here (2000ms, well above production's 5000ms default only in that it's smaller -- the ratio to the heartbeat interval, staleMs/3, is unchanged) specifically so this assertion isn't flaky under real OS scheduling jitter from spawning several node processes in the same test run: a single heartbeat tick landing 100-200ms late must not read as "stale".
+      // Let the lock age past staleMs before trying to steal, so the only thing standing between the stealer and the lock is the holder's pid.
       await new Promise((r) => setTimeout(r, 1500))
 
       const start = Date.now()
       const stolen = withFileLock(lockPath, () => 'stealer-ran', { staleMs, waitMs: 4000 })
       const elapsed = Date.now() - start
 
-      // The holder is still busy-spinning here (holdMs=8000, comfortably longer than the wait above plus waitMs), so this caller must give up -- never steal. Pre-fix (no heartbeat), this same setup steals the lock from the still-running holder well before waitMs elapses (confirmed via git stash: pre-fix code returns 'stealer-ran' here, well under waitMs). staleMs/waitMs are generous here (matching production's real margins) so a single heartbeat tick landing late under a heavily loaded parallel full-suite run still can't false-trigger staleness.
+      // The holder is still busy-spinning here (holdMs=8000, comfortably longer than the wait above plus waitMs), so this caller must give up rather than steal. With the age check alone the lock is stale from the first retry and is taken well before waitMs elapses.
       expect(stolen).toBeUndefined()
       expect(elapsed).toBeGreaterThanOrEqual(3500) // it genuinely waited out waitMs, not an instant steal
 
       const holderStdout = await holderExit
       expect(JSON.parse(holderStdout)).toEqual({ result: 'holder-done' }) // holder ran fn() to completion, unmolested
 
-      // Once the holder has actually released the lock, a fresh acquire must still succeed normally -- the heartbeat must not leave the lock wedged forever either.
+      // Once the holder has actually released the lock, a fresh acquire must still succeed normally: the liveness check must not leave the lock wedged either.
       const after = withFileLock(lockPath, () => 'post-release', { staleMs, waitMs: 1000 })
       expect(after).toBe('post-release')
     },

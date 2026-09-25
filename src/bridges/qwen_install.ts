@@ -1,28 +1,4 @@
-/**
- * Qwen Code (QwenLM/qwen-code, a Gemini CLI fork) hook integration.
- *
- * Unlike Gemini CLI's own custom event/matcher scheme (BeforeTool/AfterTool/
- * PreCompress, per-tool matcher groups -- see gemini_install.ts), Qwen Code's
- * hooks wire format diverged from its Gemini CLI ancestor and now mirrors
- * Claude Code's own natively: event names (PreToolUse/PostToolUse/PreCompact/
- * UserPromptSubmit/SubagentStop), the settings.json `hooks: { <Event>: [{
- * matcher, hooks: [{ type: 'command', command }] }] }` nesting, and snake_case
- * stdin JSON fields -- confirmed against QwenLM/qwen-code's published docs
- * (docs/users/features/hooks.md, docs/users/configuration/settings.md), not
- * live-tested against a running Qwen Code install. Qwen Code's own tool-name
- * taxonomy (`write_file`/`read_file`/`run_shell_command` runtime ids, with
- * `WriteFile`/`ReadFile`-style display names accepted as matcher aliases) is
- * only partially documented, so this integration deliberately uses an empty
- * (catch-all) matcher per event -- exactly the same approach install.ts uses
- * for Claude Code itself -- rather than risk an incomplete per-tool matcher
- * list silently missing tool names Qwen Code has not documented.
- *
- * The generated hook command appends `--harness qwen` (see qwenHookCommand below): unlike
- * pi.ts/copilot_cli.ts (full JS relay scripts that set process.env.TOKEN_GOAT_HARNESS_OVERRIDE
- * directly), this bridge writes a bare command string into settings.json with no ambient env
- * var to identify it, so detectHarness() (src/bridges/registry.ts) needs the override passed
- * as a CLI flag on the `hook` subcommand instead.
- */
+/** Qwen Code (QwenLM/qwen-code, a Gemini CLI fork) hook integration. Unlike Gemini CLI's own custom event/matcher scheme (BeforeTool/AfterTool/ PreCompress, per-tool matcher groups -- see gemini_install.ts), Qwen Code's hooks wire format diverged from its Gemini CLI ancestor and now mirrors Claude Code's own natively: event names (PreToolUse/PostToolUse/PreCompact/ UserPromptSubmit/SubagentStop), the settings.json `hooks: { <Event>: [{ matcher, hooks: [{ type: 'command', command }] }] }` nesting, and snake_case stdin JSON fields -- confirmed against QwenLM/qwen-code's published docs (docs/users/features/hooks.md, docs/users/configuration/settings.md), not live-tested against a running Qwen Code install. Qwen Code's own tool-name taxonomy (`write_file`/`read_file`/`run_shell_command` runtime ids, with `WriteFile`/`ReadFile`-style display names accepted as matcher aliases) is only partially documented, so this integration deliberately uses an empty (catch-all) matcher per event -- exactly the same approach install.ts uses for Claude Code itself -- rather than risk an incomplete per-tool matcher list silently missing tool names Qwen Code has not documented. The generated hook command appends `--harness qwen` (see qwenHookCommand below): unlike pi.ts/copilot_cli.ts (full JS relay scripts that set process.env.TOKEN_GOAT_HARNESS_OVERRIDE directly), this bridge writes a bare command string into settings.json with no ambient env var to identify it, so detectHarness() (src/bridges/registry.ts) needs the override passed as a CLI flag on the `hook` subcommand instead. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -34,13 +10,7 @@ import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGr
 
 import { groupHasTokenGoat } from './matcher_group.js'
 
-// Qwen Code -> token-goat internal HookEventName (src/types.ts's HOOK_EVENTS).
-// Only these five have a token-goat handler; every other real Qwen Code
-// event (Notification, SessionEnd, PostToolUseFailure, StopFailure,
-// SubagentStart, PermissionRequest, TodoCreated, TodoCompleted) is left
-// unimplemented rather than guessed at, since token-goat's own docs source
-// (QwenLM/qwen-code's hooks.md) was not live-tested against a running
-// install to confirm each event's payload shape.
+// Qwen Code -> token-goat internal HookEventName (src/types.ts's HOOK_EVENTS). Only these five have a token-goat handler; every other real Qwen Code event (Notification, SessionEnd, PostToolUseFailure, StopFailure, SubagentStart, PermissionRequest, TodoCreated, TodoCompleted) is left unimplemented rather than guessed at, since token-goat's own docs source (QwenLM/qwen-code's hooks.md) was not live-tested against a running install to confirm each event's payload shape.
 const QWEN_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PreCompact', 'UserPromptSubmit', 'SubagentStop'] as const
 type QwenHookEvent = (typeof QWEN_HOOK_EVENTS)[number]
 
@@ -122,17 +92,7 @@ function isCurrentQwenTokenGoatCommand(command: string, desiredCommand: string):
   return command === desiredCommand
 }
 
-/**
- * Bakes the absolute node/entry-script path, same robustness rationale as gemini_install.ts's
- * geminiHookCommand: no assumption that `token-goat` resolves on Qwen Code's subprocess PATH.
- *
- * The trailing `--harness qwen` flag exists because detectHarness() (src/bridges/registry.ts)
- * has no ambient env var that identifies a real Qwen Code subprocess -- unlike pi.ts and
- * copilot_cli.ts, which are full JS relay scripts loaded in-process by their host tool and can
- * set process.env.TOKEN_GOAT_HARNESS_OVERRIDE directly before invoking token-goat's hook logic,
- * this bridge only writes a bare command string into Qwen Code's settings.json, so there is no
- * JS relay in the middle to set an env var -- the override has to travel as a CLI flag instead.
- */
+/** Bakes the absolute node/entry-script path, same robustness rationale as gemini_install.ts's geminiHookCommand: no assumption that `token-goat` resolves on Qwen Code's subprocess PATH. The trailing `--harness qwen` flag exists because detectHarness() (src/bridges/registry.ts) has no ambient env var that identifies a real Qwen Code subprocess -- unlike pi.ts and copilot_cli.ts, which are full JS relay scripts loaded in-process by their host tool and can set process.env.TOKEN_GOAT_HARNESS_OVERRIDE directly before invoking token-goat's hook logic, this bridge only writes a bare command string into Qwen Code's settings.json, so there is no JS relay in the middle to set an env var -- the override has to travel as a CLI flag instead. */
 function qwenHookCommand(eventArg: string): string {
   const entryPath = process.argv[1]
   if (!entryPath) return `token-goat hook ${eventArg} --harness qwen`

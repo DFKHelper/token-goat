@@ -1,4 +1,5 @@
 *.whl
 *.tar.gz
 *.cjs
+!token-goat-hook-client.cjs
 .gitignore

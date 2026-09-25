@@ -1,58 +1,6 @@
-/**
- * Grok CLI (xAI's "Grok Build") bridge.
- *
- * Grok Build fires hooks from JSON files under `~/.grok/hooks/*.json` (or a
- * project-scoped `<project>/.grok/hooks/*.json`, gated behind folder trust --
- * see `grok_install.ts`'s module doc comment for why this bridge only wires
- * the global scope). Verified against the real hooks doc shipped in the
- * xai-org/grok-build repo (`crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md`,
- * fetched 2026-07-18): event names are Claude Code's own PascalCase spellings
- * (`PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`,
- * ...), and a `matcher` field is a regex tested against the real tool name (an
- * empty/omitted matcher matches everything, same as Claude Code's own
- * `settings.json` -- see `HOOK_EVENT_MAP`/`matcher: ''` in `../install.ts`).
- *
- * Only `PreToolUse` is blocking. Its documented response shape is
- * `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}` -- explicitly
- * `"deny"`, never `"block"`. This differs from Gemini, whose own docs
- * explicitly confirm `"block"` as a documented alias for `"deny"` (see
- * `gemini_install.ts`'s module doc comment) -- nothing in Grok's hooks doc
- * makes the same claim, so relying on an unconfirmed alias for a
- * security-relevant deny path would be a guess, not a verified fact. The shim
- * therefore translates token-goat's own `{"decision":"block","reason":...}`
- * (emitted by every `pre_tool_use` deny via `serializeOutput` in
- * `../hook_registry.ts`, harness-independent) into Grok's `{"decision":"deny","reason":...}`
- * and additionally sets `process.exitCode = 2` (the doc's own "Explicit deny"
- * exit code), belt-and-suspenders alongside the stdout decision the doc says
- * is "honored regardless of exit code".
- *
- * No tool-name or stdin-key remapping is needed here: Grok's own hook runner
- * sends `GROK_SESSION_ID` (among other `GROK_*` env vars) on every hook
- * subprocess it spawns -- confirmed empirically against grok 0.2.93 (see the
- * long comment at the `grok` branch of `detectHarness()` in
- * `./registry.ts`) -- and this shim's inner call inherits that env
- * unchanged, so `detectHarness()` resolves to `'grok'` in the child process
- * and `normalizePayload(..., 'grok')` (`../hooks_cli.ts`) does the real
- * camelCase-wire / tool-name translation there. This shim's only job is the
- * PreToolUse response-shape translation above, plus the same
- * exec-path-hardened invocation (`process.execPath` / baked entry path, never
- * a bare `token-goat` relying on PATH) every other bridge shim uses for the
- * same Windows `.cmd`-shim reason (see `codex.ts`'s module doc comment).
- */
+/** Grok CLI (xAI's "Grok Build") bridge. Grok Build fires hooks from JSON files under `~/.grok/hooks/*.json` (or a project-scoped `<project>/.grok/hooks/*.json`, gated behind folder trust -- see `grok_install.ts`'s module doc comment for why this bridge only wires the global scope). Verified against the real hooks doc shipped in the xai-org/grok-build repo (`crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md`, fetched 2026-07-18): event names are Claude Code's own PascalCase spellings (`PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, ...), and a `matcher` field is a regex tested against the real tool name (an empty/omitted matcher matches everything, same as Claude Code's own `settings.json` -- see `HOOK_EVENT_MAP`/`matcher: ''` in `../install.ts`). Only `PreToolUse` is blocking. Its documented response shape is `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}` -- explicitly `"deny"`, never `"block"`. This differs from Gemini, whose own docs explicitly confirm `"block"` as a documented alias for `"deny"` (see `gemini_install.ts`'s module doc comment) -- nothing in Grok's hooks doc makes the same claim, so relying on an unconfirmed alias for a security-relevant deny path would be a guess, not a verified fact. The shim therefore translates token-goat's own `{"decision":"block","reason":...}` (emitted by every `pre_tool_use` deny via `serializeOutput` in `../hook_registry.ts`, harness-independent) into Grok's `{"decision":"deny","reason":...}` and additionally sets `process.exitCode = 2` (the doc's own "Explicit deny" exit code), belt-and-suspenders alongside the stdout decision the doc says is "honored regardless of exit code". No tool-name or stdin-key remapping is needed here: Grok's own hook runner sends `GROK_SESSION_ID` (among other `GROK_*` env vars) on every hook subprocess it spawns -- confirmed empirically against grok 0.2.93 (see the long comment at the `grok` branch of `detectHarness()` in `./registry.ts`) -- and this shim's inner call inherits that env unchanged, so `detectHarness()` resolves to `'grok'` in the child process and `normalizePayload(..., 'grok')` (`../hooks_cli.ts`) does the real camelCase-wire / tool-name translation there. This shim's only job is the PreToolUse response-shape translation above, plus the same exec-path-hardened invocation (`process.execPath` / baked entry path, never a bare `token-goat` relying on PATH) every other bridge shim uses for the same Windows `.cmd`-shim reason (see `codex.ts`'s module doc comment). */
 
-/**
- * Node source for the Grok hook shim.
- *
- * `eventName` (argv[2]) is validated against a closed set before being passed
- * to `spawnSync`'s args array (never concatenated into a shell string), so a
- * hostile argv can't do anything unexpected even though args-array `spawnSync`
- * has no shell-injection surface to begin with -- kept for defense in depth
- * and consistency with the Codex/Copilot shims' own validation.
- *
- * On any error the shim prints `{}` (or, for `pre_tool_use`, `{"decision":"allow"}`)
- * so a hook failure fails open rather than denying every tool call -- matching
- * every other bridge shim's fail-open convention.
- */
+/** Node source for the Grok hook shim. `eventName` (argv[2]) is validated against a closed set before being passed to `spawnSync`'s args array (never concatenated into a shell string), so a hostile argv can't do anything unexpected even though args-array `spawnSync` has no shell-injection surface to begin with -- kept for defense in depth and consistency with the Codex/Copilot shims' own validation. On any error the shim prints `{}` (or, for `pre_tool_use`, `{"decision":"allow"}`) so a hook failure fails open rather than denying every tool call -- matching every other bridge shim's fail-open convention. */
 import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER } from './shim_common.js'
 
 export const GROK_HOOK_SCRIPT = `#!/usr/bin/env node

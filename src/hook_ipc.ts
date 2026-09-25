@@ -219,10 +219,10 @@ export function removeMarker(name: string, dir: string = dataDir()): void {
   fs.rmSync(markerPath(name, dir), { force: true })
 }
 
-/** The files whose replacement means this server is running superseded code. */
+/** The files whose replacement means this server is running superseded code, or would be answering a client from a newer build: both builds of the client are here, since a shim loads the `.cjs` and the launcher the `.mjs`. */
 export function bundleEntryFiles(): string[] {
   const dir = bundleDir()
-  return ['token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs'].map((f) => path.join(dir, f))
+  return ['token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs', 'token-goat-hook-client.cjs'].map((f) => path.join(dir, f))
 }
 
 /** The CLI launcher beside this bundle, which the client spawns a server through. Absent when running from source. */

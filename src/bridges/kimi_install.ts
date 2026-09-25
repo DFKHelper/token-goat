@@ -1,50 +1,4 @@
-/**
- * Kimi Code CLI (MoonshotAI/kimi-code) install / uninstall writer.
- *
- * `token-goat install --kimi` patches Kimi Code in addition to the base Claude
- * Code install, exactly like `--codex`. This module only ever touches paths
- * under Kimi's own data root, which is `$KIMI_CODE_HOME` when set and
- * `~/.kimi-code` otherwise (`docs/en/configuration/data-locations.md`: "The
- * default data root is `~/.kimi-code/`" and "If you need to move the data
- * directory elsewhere ... set `KIMI_CODE_HOME`").
- *
- * Four artifacts are installed:
- * - `<root>/hooks/token-goat-shim.js` -- {@link KIMI_HOOK_SCRIPT} written to
- *   disk. `<root>/hooks/` is Kimi's own documented location for hook scripts
- *   (`docs/en/customization/hooks.md` wires its worked example as
- *   `node ~/.kimi-code/hooks/block-dangerous-bash.mjs`). The shim is invoked
- *   with the absolute Node binary and a baked token-goat entry path rather
- *   than a bare `node`/`token-goat` on PATH, same rationale as the Codex and
- *   Copilot CLI bridges. Rewritten unconditionally on every install so an
- *   upgraded token-goat's shim logic always reaches disk.
- * - `<root>/config.toml` -- `[[hooks]]` entries, one per wired event. That is
- *   Kimi's real hook config shape: an array of tables whose schema accepts
- *   exactly `event`, `matcher`, `command`, and `timeout` and rejects anything
- *   else (`HookDefSchema` is `.strict()` in
- *   `packages/agent-core-v2/src/agent/externalHooks/configSection.ts`), which
- *   is why nothing else is written into those tables. `matcher` is omitted so
- *   each hook matches every target -- Kimi documents an omitted matcher as
- *   "matches all", and token-goat's own handlers already filter by tool name.
- *   Parsed and serialized with `smol-toml`, the same library `config.ts` uses
- *   for token-goat's own config, so no TOML is hand-rolled. Every other key in
- *   the file is preserved verbatim, and a timestamped `.bak` is written before
- *   any in-place edit.
- * - `<root>/AGENTS.md` -- the shared routing-guidance block between
- *   `<!-- token-goat-kimi-begin -->` / `<!-- token-goat-kimi-end -->` markers.
- *   Kimi reads global instructions from `$KIMI_CODE_HOME/AGENTS.md`
- *   (`docs/en/customization/agents.md`: "Global Kimi-specific instructions can
- *   live at `$KIMI_CODE_HOME/AGENTS.md`"). Content outside the markers is
- *   always preserved.
- * - `<root>/skills/token-goat/SKILL.md` -- the same gate body as Claude Code's
- *   skill, under frontmatter Kimi actually parses. Kimi loads user skills from
- *   `$KIMI_CODE_HOME/skills/` (`docs/en/customization/skills.md`), and a
- *   directory-form `SKILL.md` **must** declare both `name` and `description`
- *   or parsing fails -- so those two fields are written and nothing else.
- *
- * A corrupt-but-recoverable `config.toml` (exists but fails to parse) is never
- * silently clobbered: {@link installKimi} throws {@link KimiConfigParseError}
- * before any write, mirroring `codex_install.ts`'s strict-mode guard.
- */
+/** Kimi Code CLI (MoonshotAI/kimi-code) install / uninstall writer. `token-goat install --kimi` patches Kimi Code in addition to the base Claude Code install, exactly like `--codex`. This module only ever touches paths under Kimi's own data root, which is `$KIMI_CODE_HOME` when set and `~/.kimi-code` otherwise (`docs/en/configuration/data-locations.md`: "The default data root is `~/.kimi-code/`" and "If you need to move the data directory elsewhere ... set `KIMI_CODE_HOME`"). Four artifacts are installed: - `<root>/hooks/token-goat-shim.js` -- {@link KIMI_HOOK_SCRIPT} written to disk. `<root>/hooks/` is Kimi's own documented location for hook scripts (`docs/en/customization/hooks.md` wires its worked example as `node ~/.kimi-code/hooks/block-dangerous-bash.mjs`). The shim is invoked with the absolute Node binary and a baked token-goat entry path rather than a bare `node`/`token-goat` on PATH, same rationale as the Codex and Copilot CLI bridges. Rewritten unconditionally on every install so an upgraded token-goat's shim logic always reaches disk. - `<root>/config.toml` -- `[[hooks]]` entries, one per wired event. That is Kimi's real hook config shape: an array of tables whose schema accepts exactly `event`, `matcher`, `command`, and `timeout` and rejects anything else (`HookDefSchema` is `.strict()` in `packages/agent-core-v2/src/agent/externalHooks/configSection.ts`), which is why nothing else is written into those tables. `matcher` is omitted so each hook matches every target -- Kimi documents an omitted matcher as "matches all", and token-goat's own handlers already filter by tool name. Parsed and serialized with `smol-toml`, the same library `config.ts` uses for token-goat's own config, so no TOML is hand-rolled. Every other key in the file is preserved verbatim, and a timestamped `.bak` is written before any in-place edit. - `<root>/AGENTS.md` -- the shared routing-guidance block between `<!-- token-goat-kimi-begin -->` / `<!-- token-goat-kimi-end -->` markers. Kimi reads global instructions from `$KIMI_CODE_HOME/AGENTS.md` (`docs/en/customization/agents.md`: "Global Kimi-specific instructions can live at `$KIMI_CODE_HOME/AGENTS.md`"). Content outside the markers is always preserved. - `<root>/skills/token-goat/SKILL.md` -- the same gate body as Claude Code's skill, under frontmatter Kimi actually parses. Kimi loads user skills from `$KIMI_CODE_HOME/skills/` (`docs/en/customization/skills.md`), and a directory-form `SKILL.md` **must** declare both `name` and `description` or parsing fails -- so those two fields are written and nothing else. A corrupt-but-recoverable `config.toml` (exists but fails to parse) is never silently clobbered: {@link installKimi} throws {@link KimiConfigParseError} before any write, mirroring `codex_install.ts`'s strict-mode guard. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -59,18 +13,7 @@ import { KIMI_HOOK_SCRIPT } from './kimi.js'
 import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 
-/**
- * Kimi Code event names token-goat wires, mapped to the internal event arg.
- *
- * Every name here is a member of `HOOK_EVENT_TYPES` in
- * `packages/agent-core-v2/src/agent/externalHooks/types.ts`. The remaining
- * real Kimi events (`Notification`, `Stop`, `StopFailure`, `Interrupt`,
- * `PostToolUseFailure`, `PermissionRequest`, `PermissionResult`,
- * `UserPromptQueued`, `TurnStarted`, `TaskStarted`, `SubagentStart`,
- * `SessionEnd`, `SessionHeartbeat`, `PostCompact`) are left unwired: none of
- * them has a token-goat server-side handler to dispatch to, so wiring them
- * would spawn a process per event to do nothing.
- */
+/** Kimi Code event names token-goat wires, mapped to the internal event arg. Every name here is a member of `HOOK_EVENT_TYPES` in `packages/agent-core-v2/src/agent/externalHooks/types.ts`. The remaining real Kimi events (`Notification`, `Stop`, `StopFailure`, `Interrupt`, `PostToolUseFailure`, `PermissionRequest`, `PermissionResult`, `UserPromptQueued`, `TurnStarted`, `TaskStarted`, `SubagentStart`, `SessionEnd`, `SessionHeartbeat`, `PostCompact`) are left unwired: none of them has a token-goat server-side handler to dispatch to, so wiring them would spawn a process per event to do nothing. */
 const KIMI_EVENT_ARG: Readonly<Record<string, string>> = {
   PreToolUse: 'pre_tool_use',
   PostToolUse: 'post_tool_use',
@@ -83,11 +26,7 @@ const KIMI_EVENT_ARG: Readonly<Record<string, string>> = {
 /** Wired Kimi event names, in the order they are written to `config.toml`. */
 export const KIMI_HOOK_EVENTS: readonly string[] = Object.keys(KIMI_EVENT_ARG)
 
-/**
- * One `[[hooks]]` entry as Kimi's `config.toml` stores it. Only the four
- * fields `HookDefSchema` accepts appear here; the schema is `.strict()`, so an
- * extra key makes the whole config file fail to load.
- */
+/** One `[[hooks]]` entry as Kimi's `config.toml` stores it. Only the four fields `HookDefSchema` accepts appear here; the schema is `.strict()`, so an extra key makes the whole config file fail to load. */
 interface KimiHookEntry {
   event: string
   matcher?: string
@@ -104,11 +43,7 @@ interface KimiConfig {
 /** Thrown by {@link installKimi} when `config.toml` exists but isn't parseable as TOML. */
 export class KimiConfigParseError extends Error {}
 
-/**
- * Kimi's data root: `$KIMI_CODE_HOME` when set and non-blank, else
- * `~/.kimi-code`. Resolved on every call rather than cached so tests (and a
- * user switching roots between commands) see the current value.
- */
+/** Kimi's data root: `$KIMI_CODE_HOME` when set and non-blank, else `~/.kimi-code`. Resolved on every call rather than cached so tests (and a user switching roots between commands) see the current value. */
 export function kimiHome(): string {
   const override = process.env['KIMI_CODE_HOME']
   if (override !== undefined && override.trim() !== '') return path.resolve(override)
@@ -190,13 +125,7 @@ function stripKimiAgentsBlock(p: string): boolean {
   return stripDelimitedBlock(p, AGENTS_BEGIN, AGENTS_END)
 }
 
-/**
- * The SKILL.md Kimi loads. Only `name` and `description` are declared: those
- * two are required for a directory-form skill, and every other frontmatter
- * field Kimi documents (`type`, `whenToUse`, `disableModelInvocation`,
- * `arguments`) would change invocation semantics token-goat does not want.
- * Notably there is no `allowed-tools` key in Kimi's schema, so none is written.
- */
+/** The SKILL.md Kimi loads. Only `name` and `description` are declared: those two are required for a directory-form skill, and every other frontmatter field Kimi documents (`type`, `whenToUse`, `disableModelInvocation`, `arguments`) would change invocation semantics token-goat does not want. Notably there is no `allowed-tools` key in Kimi's schema, so none is written. */
 function kimiSkillContent(): string {
   const gdrive = loadConfig().gdrive.enabled
   const frontmatter = [
@@ -209,13 +138,7 @@ function kimiSkillContent(): string {
   return `${frontmatter}\n\n${body}\n`
 }
 
-/**
- * Write (or refresh) the skill, returning false when it was already up to date.
- *
- * `writeIfDifferent` already does the read-compare-mkdir-atomic-write dance,
- * including creating the parent directory, so there is nothing skill-specific
- * left to hand-roll here.
- */
+/** Write (or refresh) the skill, returning false when it was already up to date. `writeIfDifferent` already does the read-compare-mkdir-atomic-write dance, including creating the parent directory, so there is nothing skill-specific left to hand-roll here. */
 function writeKimiSkill(): boolean {
   return writeIfDifferent(kimiSkillPath(), kimiSkillContent(), true)
 }
@@ -248,9 +171,7 @@ export function installKimi(): KimiInstallResult {
     command: hookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? ''),
   }))
 
-  // Everything token-goat did not write is preserved as-is; our own entries are
-  // rebuilt from scratch so a re-install upgrades a stale baked path in place
-  // instead of leaving a dead duplicate next to the current one.
+  // Everything token-goat did not write is preserved as-is; our own entries are rebuilt from scratch so a re-install upgrades a stale baked path in place instead of leaving a dead duplicate next to the current one.
   const foreign = existing.filter((h) => !isKimiTokenGoatCommand(h?.command))
   const ours = existing.filter((h) => isKimiTokenGoatCommand(h?.command))
   const hooksChanged = JSON.stringify(ours) !== JSON.stringify(desired)
@@ -274,11 +195,7 @@ export function installKimi(): KimiInstallResult {
   }
 }
 
-/**
- * Remove the Kimi Code integration: strips only token-goat's own `[[hooks]]`
- * entries, the delimited AGENTS.md block, the skill directory, and the shim
- * script. Returns true when anything was actually removed.
- */
+/** Remove the Kimi Code integration: strips only token-goat's own `[[hooks]]` entries, the delimited AGENTS.md block, the skill directory, and the shim script. Returns true when anything was actually removed. */
 export function uninstallKimi(): boolean {
   const configPath = kimiConfigPath()
   const config = readKimiConfig(configPath)
@@ -302,8 +219,7 @@ export function uninstallKimi(): boolean {
 
   try {
     if (fs.existsSync(kimiSkillDir())) {
-      // The directory removal below takes the skill file's own timestamped backups with it; this
-      // only drops the now-dangling ledger entries for them, mirroring the config cleanup below.
+      // The directory removal below takes the skill file's own timestamped backups with it; this only drops the now-dangling ledger entries for them, mirroring the config cleanup below.
       removeCreatedBackups(kimiSkillPath())
       fs.rmSync(kimiSkillDir(), { recursive: true, force: true })
       removed = true

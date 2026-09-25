@@ -29,7 +29,7 @@ async function staticGraph(entry: string): Promise<Set<string>> {
       'onnxruntime-node',
       'tesseract.js', 'typescript',
     ],
-    define: { 'import.meta.env': '{}', __TG_VERSION__: '"0.0.0-test"' },
+    define: { 'import.meta.env': '{}', __TG_MANIFEST__: JSON.stringify('{"version":"0.0.0-test"}') },
     logLevel: 'silent',
   })
   const inputs = result.metafile.inputs

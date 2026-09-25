@@ -15,6 +15,7 @@ import {
   configStamp,
   mac,
   macMatches,
+  markerAgeMs,
   markerPath,
   nonce,
   PROTOCOL_VERSION,
@@ -342,6 +343,19 @@ describe('serving hook calls', () => {
     expect(servedBySlot(sb)).toEqual({ 0: 1 })
   })
 
+  it('does the same through the CommonJS client a shim loads, which finds the launcher beside its own file', async () => {
+    const sb = sandbox()
+    const baseline = cold(sb, ['hook', 'pre_tool_use'], { input: bashDenyPayload('hs-cjs-cold') })
+    const driver = path.join(sb.base, 'relay-driver.cjs')
+    fs.writeFileSync(driver, "const [clientPath, event] = process.argv.slice(2)\nrequire(clientPath).relayViaServer(event, require('node:fs').readFileSync(0, 'utf8')).then((out) => process.stdout.write(JSON.stringify({ out: out ?? null })))\n")
+    const argv = [driver, path.join(path.dirname(sb.bundle), 'token-goat-hook-client.cjs'), 'pre_tool_use']
+    // The CommonJS build has no import.meta.url; the start it makes here is proof its stand-in named the right directory, since the launcher it spawns is the one beside the client.
+    expect(relayResult(runNode(sb, argv, { input: bashDenyPayload('hs-cjs-first') }))).toBeNull()
+    await waitForSlots(sb, [0])
+    expect(relayResult(runNode(sb, argv, { input: bashDenyPayload('hs-cjs-warm') }))).toBe(baseline.stdout)
+    expect(servedBySlot(sb)).toEqual({ 0: 1 })
+  })
+
   it('runs each request under its caller environment and working directory, so session state lands in each caller own home', async () => {
     const sb = sandbox()
     startServer(sb, 0)
@@ -452,6 +466,40 @@ describe('busy servers', () => {
       [1, 0],
     ])
   })
+
+  it('writes each call stats row after answering it, without losing a row or turning away the next back-to-back call', async () => {
+    const sb = sandbox()
+    startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    blockAutostart(sb, [1, 2])
+    const calls = 25
+    const driver = path.join(sb.base, 'back-to-back.mjs')
+    fs.writeFileSync(
+      driver,
+      [
+        "import { pathToFileURL } from 'node:url'",
+        'const [clientPath, input, calls] = process.argv.slice(2)',
+        'const { relayViaServer } = await import(pathToFileURL(clientPath).href)',
+        'let served = 0',
+        "for (let i = 0; i < Number(calls); i++) if ((await relayViaServer('pre_tool_use', input)) !== undefined) served++",
+        'process.stdout.write(String(served))',
+        '',
+      ].join('\n'),
+    )
+    const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'back-to-back' })
+    const run = await runNodeAsync(sb, [driver, path.join(path.dirname(sb.bundle), 'token-goat-hook-client.mjs'), input, String(calls)], {})
+    expect(run.status, run.stderr).toBe(0)
+    // Every call reached slot 0. One told it was busy would have gone to slot 1, found nothing there, and run locally.
+    expect(run.stdout).toBe(String(calls))
+    expect(servedBySlot(sb)).toEqual({ 0: calls })
+    // The server answers before it writes the row, so a row missing here is one that was deferred and never written.
+    const db = new Database(path.join(sb.dataDir, 'global.db'), { readonly: true })
+    try {
+      expect((db.prepare("SELECT COUNT(*) AS c FROM stats WHERE kind = 'hook:pre_tool_use'").get() as { c: number }).c).toBe(calls)
+    } finally {
+      db.close()
+    }
+  })
 })
 
 describe('authentication', () => {
@@ -530,21 +578,25 @@ describe('authentication', () => {
   })
 })
 
+/** A sandbox running a private copy of dist/, for a test that rewrites one of its files. The copy resolves its native dependencies through a junction to this repo's node_modules, as tests/bridges/inprocess.test.ts's hook fixture does. */
+function sandboxOnDistCopy(): { sb: Sandbox; copy: string } {
+  const copy = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hs-dist-')))
+  const dist = path.join(ROOT, 'dist')
+  for (const f of fs.readdirSync(dist)) if (fs.statSync(path.join(dist, f)).isFile()) fs.copyFileSync(path.join(dist, f), path.join(copy, f))
+  const link = path.join(copy, 'node_modules')
+  fs.symlinkSync(path.join(ROOT, 'node_modules'), link, 'junction')
+  const sb = sandbox({ bundle: path.join(copy, 'token-goat.mjs') })
+  // Registered after the sandbox's own cleanup would run, so the junction is unlinked on its own before anything recursive touches the copy.
+  sb.cleanup.push(() => {
+    fs.unlinkSync(link)
+    fs.rmSync(copy, { recursive: true, force: true })
+  })
+  return { sb, copy }
+}
+
 describe('retirement', () => {
   it('retires on its next contact once a bundle entry file is replaced, and the next call starts a fresh server', async () => {
-    // A private copy of dist/, because this test rewrites one of its files. The copy resolves its native dependencies through a junction to this repo's node_modules, as tests/bridges/inprocess.test.ts's hook fixture does.
-    const copy = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hs-dist-')))
-    const dist = path.join(ROOT, 'dist')
-    for (const f of fs.readdirSync(dist)) if (fs.statSync(path.join(dist, f)).isFile()) fs.copyFileSync(path.join(dist, f), path.join(copy, f))
-    const link = path.join(copy, 'node_modules')
-    fs.symlinkSync(path.join(ROOT, 'node_modules'), link, 'junction')
-    const sb = sandbox({ bundle: path.join(copy, 'token-goat.mjs') })
-    // Registered after the sandbox's own cleanup would run, so the junction is unlinked on its own before anything recursive touches the copy.
-    sb.cleanup.push(() => {
-      fs.unlinkSync(link)
-      fs.rmSync(copy, { recursive: true, force: true })
-    })
-
+    const { sb, copy } = sandboxOnDistCopy()
     const server = startServer(sb, 0)
     const [first] = await waitForSlots(sb, [0])
     expect(first?.pid).toBe(server.child.pid)
@@ -560,6 +612,22 @@ describe('retirement', () => {
     expect(fresh?.pid).not.toBe(first?.pid)
     expectSameRun(cli(sb, ['section', 'notes.md::Alpha']), expected)
     expect(servedBySlot(sb)).toEqual({ 0: 1 })
+  })
+
+  it('starts the new build on the next call even when the retired server was itself started moments before', async () => {
+    const { sb, copy } = sandboxOnDistCopy()
+    const expected = cold(sb, ['section', 'notes.md::Alpha'])
+    // The first call starts slot 0 and records when, which is what throttles the next start.
+    expectSameRun(cli(sb, ['section', 'notes.md::Alpha']), expected)
+    const [first] = await waitForSlots(sb, [0])
+    expect(markerAgeMs('spawn-0', sb.dataDir)).toBeLessThan(30_000)
+    fs.appendFileSync(path.join(copy, 'token-goat-hook-client.mjs'), '\n// replaced by a newer build\n')
+    expect(statuses(sb)).toEqual([])
+    await until('the retired server to exit', () => (first !== undefined && !pidAlive(first.pid) ? true : undefined))
+
+    expectSameRun(cli(sb, ['section', 'notes.md::Alpha']), expected)
+    const [fresh] = await waitForSlots(sb, [0])
+    expect(fresh?.pid).not.toBe(first?.pid)
   })
 
   it('exits at once under TOKEN_GOAT_HOOK_SERVER=0, recording the config it read, and clients stop starting one until the config changes', async () => {

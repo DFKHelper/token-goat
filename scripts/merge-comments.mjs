@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { transformSync } from 'esbuild'
 import { pathToFileURL } from 'node:url'
+import ts from 'typescript'
 
 const BLOCK_OPEN = /^\s*\/\*/
 const BLOCK_CLOSE = /\*\//
@@ -15,13 +16,33 @@ const LINE_COMMENT = /^(\s*)\/\/ ?(.*)$/
 // Comment text a tool reads as an instruction, which must stay on a line of its own. Folded onto the explanation above it, `// eslint-disable-next-line no-control-regex` became prose and the rule fired again; a `///` reference or a `#region` marker stops parsing the same way.
 const DIRECTIVE = /^(?:\/|eslint(?:-disable|-enable)?(?:[-\s]|$)|@ts-|(?:istanbul|c8|v8) ignore|prettier-ignore|biome-ignore|#(?:end)?region)/
 
-/** Fold `/* ... *\/` blocks and runs of `//` lines onto one line each. Purely line-leading lexical analysis, so a `*\/` or `//` appearing inside a string or regex mid-line is never mistaken for a comment delimiter. */
-export function mergeComments(source) {
+/** Character ranges of string and template-literal text in `source`. A line that begins inside one is string content however much it looks like a comment: the shims under src/bridges/ hold generated JavaScript in template literals, and folding the `//` lines of that JavaScript changes what the string says. */
+function literalTextRanges(source, fileName) {
+  const kind = /\.[cm]?jsx?$/.test(fileName) ? ts.ScriptKind.JS : ts.ScriptKind.TS
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, kind)
+  const ranges = []
+  const visit = (node) => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) ranges.push([node.getStart(sf), node.end])
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  return ranges
+}
+
+/** Fold `/* ... *\/` blocks and runs of `//` lines onto one line each. Line-leading lexical analysis, so a `*\/` or `//` appearing inside a string or regex mid-line is never mistaken for a comment delimiter, and a line that begins inside a string or template literal is left as it is. `fileName` only picks the parser's dialect. */
+export function mergeComments(source, fileName = 'source.ts') {
   const nl = source.includes('\r\n') ? '\r\n' : '\n'
   const lines = source.split(nl)
+  const ranges = literalTextRanges(source, fileName)
+  const inLiteral = []
+  for (let i = 0, pos = 0; i < lines.length; pos += lines[i].length + nl.length, i++) inLiteral.push(ranges.some(([start, end]) => start < pos && pos < end))
   const out = []
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
+    if (inLiteral[i]) {
+      out.push(line)
+      continue
+    }
     if (BLOCK_OPEN.test(line) && !BLOCK_CLOSE.test(line)) {
       const indent = line.match(/^\s*/)[0]
       const parts = [line.trim()]
@@ -67,9 +88,9 @@ export function mergeComments(source) {
   return out.join(nl)
 }
 
-/** esbuild's comment-stripped, normalized rendering of `source`. Minified rather than merely transformed, because a plain transform preserves most comments, which would make the identity check below compare the comments it is supposed to be ignoring and refuse every legitimate fold. Throws on a parse error, which is itself the signal that a rewrite broke the file. */
+/** esbuild's comment-stripped, normalized rendering of `source`. Minified rather than merely transformed, because a plain transform preserves most comments, which would make the identity check below compare the comments it is supposed to be ignoring and refuse every legitimate fold. Minifying still keeps a legal comment, one that mentions `@license` or `@preserve` or opens with `/*!`, so those are dropped by name: a doc comment that merely explains a license was refused as if folding it moved code. Throws on a parse error, which is itself the signal that a rewrite broke the file. */
 function codeOnly(source, loader) {
-  return transformSync(source, { loader, minify: true }).code
+  return transformSync(source, { loader, minify: true, legalComments: 'none' }).code
 }
 
 function selfTest() {
@@ -88,6 +109,9 @@ function selfTest() {
     ['// why\n// @ts-expect-error untyped\nconst a = 1\n', '// why\n// @ts-expect-error untyped\nconst a = 1\n', 'a ts directive stays on its own line'],
     ['/// <reference types="node" />\n/// <reference types="vite" />\n', '/// <reference types="node" />\n/// <reference types="vite" />\n', 'triple-slash references stay separate'],
     ['// eslintrc notes\n// more\nconst a = 1\n', '// eslintrc notes more\nconst a = 1\n', 'a word that merely starts with eslint still folds'],
+    ['const s = `\n// a\n// b\n/**\n * c\n */\n`\n', 'const s = `\n// a\n// b\n/**\n * c\n */\n`\n', 'comment-shaped lines inside a template literal are string content'],
+    ['const s = `x${\n  // a\n  // b\n  1}`\n', 'const s = `x${\n  // a b\n  1}`\n', 'a comment inside a template substitution is code and folds'],
+    ['const s = "a\\\n// b\\\n// c"\n', 'const s = "a\\\n// b\\\n// c"\n', 'a line continued inside a string literal is string content'],
   ]
   let failed = 0
   for (const [src, want, name] of cases) {
@@ -97,6 +121,9 @@ function selfTest() {
   // The invariant the ad-hoc version lacked: folding must not move a single token of real code.
   const tricky = 'const re = /\\/\\*/\n/**\n * doc\n */\nexport function f() {\n  // a\n  // b\n  return "*/"\n}\n'
   if (codeOnly(mergeComments(tricky), 'ts') !== codeOnly(tricky, 'ts')) { failed++; console.log('FAIL code-identity invariant on the tricky case') }
+  // HAND-DERIVED from scripts/generate-third-party-notices.mjs, whose header explains esbuild's `legalComments` mode and was refused: the fold changes only a comment, so the identity check has to agree.
+  const legal = '/**\n * keeps only `/*!` and\n * `@license` comments\n */\nconst a = 1\n'
+  if (mergeComments(legal) === legal || codeOnly(mergeComments(legal), 'js') !== codeOnly(legal, 'js')) { failed++; console.log('FAIL code-identity invariant on a comment that mentions @license') }
   for (const [src] of cases) {
     const once = mergeComments(src)
     if (mergeComments(once) !== once) { failed++; console.log('FAIL not idempotent') }
@@ -115,7 +142,7 @@ function main(argv) {
   for (const file of files) {
     const loader = file.endsWith('.ts') || file.endsWith('.mts') ? 'ts' : 'js'
     const raw = readFileSync(file, 'utf8')
-    const next = mergeComments(raw)
+    const next = mergeComments(raw, file)
     if (next === raw) continue
     let before
     let after

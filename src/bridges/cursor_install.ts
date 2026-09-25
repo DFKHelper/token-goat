@@ -1,68 +1,4 @@
-/**
- * Cursor MCP-server installer.
- *
- * Cursor 3.19.7's own `~/.cursor/hooks.json` is a real, first-class local hook
- * file (unlike Zed, which has none at all -- see `./zed_install.ts`'s header).
- * token-goat still never writes to it, deliberately, for two independent
- * reasons confirmed against the installed 3.19.7 bundle
- * (`resources/app/out/vs/workbench/workbench.desktop.main.js`):
- *
- * 1. Cursor already imports Claude Code's hooks by default. `initialize()`
- *    loads both `~/.cursor/hooks.json` and `~/.claude/settings.json`, and
- *    `isClaudeCodeHooksEnabled(){ return this.thirdPartyExtensibilityObservable
- *    .get() ?? !0 }` backed by a stored default of `thirdPartyExtensibilityEnabled:
- *    Hh(!0)` -- i.e. the import is ON by default, no user action needed. Claude's
- *    PascalCase step names are translated to Cursor's camelCase ones by a fixed
- *    table (`K5i` in the same bundle) before the transformed config is stored, so
- *    a hook token-goat has already written into `~/.claude/settings.json` via the
- *    ordinary `token-goat install` (Claude Code) default reaches Cursor with zero
- *    extra work. token-goat writing a *second*, independently-maintained copy
- *    into `~/.cursor/hooks.json` would only add risk: Cursor's own dedupe
- *    (`_getHookKey`) matches on the raw, untransformed command string, so the
- *    moment the two writers' command text differs by so much as a flag or a
- *    trailing space, every hook fires twice. Relying on two producers staying
- *    byte-identical forever is exactly the brittleness Cursor's own dedupe
- *    author left unaddressed; not writing a second copy removes the failure
- *    mode entirely rather than hoping the strings never drift.
- * 2. `~/.cursor/hooks.json` is not always token-goat's file to touch: on this
- *    machine it is a real 6257-byte file already owned and maintained by a
- *    third-party tool (Orca), registering 8 events against its own shim. A
- *    naive install here would destroy real user configuration. Never depending
- *    on write access to this file removes that hazard structurally, rather than
- *    relying on a merge routine to always get it right.
- *
- * So "Cursor support" here means registering token-goat as an MCP server only,
- * in Cursor's own `~/.cursor/mcp.json` (project: `<project-root>/.cursor/mcp.json`,
- * both paths confirmed live in the same bundle: `joinPath(Hs,".cursor","mcp.json")`,
- * ``${e.projectPath}/.cursor/mcp.json``). This file has no relationship at all to
- * Claude Code's hook or MCP config, so it carries none of the double-fire risk
- * above. There is deliberately no `cursor` `HarnessName` (`./types.ts`) and no
- * `BRIDGE_CAPABILITY_MATRIX` row (`../bridges_status.ts`): both track *hook*
- * parity, and token-goat writes zero hook events for Cursor -- the same
- * reasoning `./zed_install.ts`'s header gives for Zed, though for a different
- * underlying reason (Zed has no hooks API at all; Cursor has one but
- * token-goat deliberately never writes to it).
- *
- * Per-entry shape: Cursor's own JSON schema for `mcp.json`, extracted from the
- * same bundle, is `oneOf` two variants with `additionalProperties:!1` on each:
- * the stdio variant lists only `{command, args, env}` -- there is no `type`
- * field in its property list, unlike VS Code/Visual Studio's `servers` entries
- * (`./mcp_servers_json.ts`'s `managedServer()`, which always includes
- * `type: 'stdio'`). Writing that VS Code shape verbatim into a strict
- * `additionalProperties:false` schema risks Cursor rejecting the whole entry, so
- * this file defines its own entry shape (`command` + `args` only) rather than
- * reusing `managedServer()`/`isManagedServer()`, while still reusing every
- * root-key-agnostic helper in `./mcp_servers_json.ts` (`readServersJson`,
- * `serversOf`, `setTokenGoatServer`, `dropEmptyServers`, `hasManagedServer`)
- * with `rootKey: 'mcpServers'`, confirmed as the schema's actual root property
- * name (`properties:{mcpServers:zto}`) rather than VS Code's `servers`.
- *
- * No shim script is needed (unlike `./zed_install.ts`): Cursor's schema takes a
- * `command` string plus a separate `args` array, spawned without a shell (the
- * same argv-style invocation VS Code and Visual Studio already use via
- * `managedServer()`), not a single shell-executed command line the way Zed's
- * `context_servers` entries are.
- */
+/** Cursor MCP-server installer. Cursor 3.19.7's own `~/.cursor/hooks.json` is a real, first-class local hook file (unlike Zed, which has none at all -- see `./zed_install.ts`'s header). token-goat still never writes to it, deliberately, for two independent reasons confirmed against the installed 3.19.7 bundle (`resources/app/out/vs/workbench/workbench.desktop.main.js`): 1. Cursor already imports Claude Code's hooks by default. `initialize()` loads both `~/.cursor/hooks.json` and `~/.claude/settings.json`, and `isClaudeCodeHooksEnabled(){ return this.thirdPartyExtensibilityObservable .get() ?? !0 }` backed by a stored default of `thirdPartyExtensibilityEnabled: Hh(!0)` -- i.e. the import is ON by default, no user action needed. Claude's PascalCase step names are translated to Cursor's camelCase ones by a fixed table (`K5i` in the same bundle) before the transformed config is stored, so a hook token-goat has already written into `~/.claude/settings.json` via the ordinary `token-goat install` (Claude Code) default reaches Cursor with zero extra work. token-goat writing a *second*, independently-maintained copy into `~/.cursor/hooks.json` would only add risk: Cursor's own dedupe (`_getHookKey`) matches on the raw, untransformed command string, so the moment the two writers' command text differs by so much as a flag or a trailing space, every hook fires twice. Relying on two producers staying byte-identical forever is exactly the brittleness Cursor's own dedupe author left unaddressed; not writing a second copy removes the failure mode entirely rather than hoping the strings never drift. 2. `~/.cursor/hooks.json` is not always token-goat's file to touch: on this machine it is a real 6257-byte file already owned and maintained by a third-party tool (Orca), registering 8 events against its own shim. A naive install here would destroy real user configuration. Never depending on write access to this file removes that hazard structurally, rather than relying on a merge routine to always get it right. So "Cursor support" here means registering token-goat as an MCP server only, in Cursor's own `~/.cursor/mcp.json` (project: `<project-root>/.cursor/mcp.json`, both paths confirmed live in the same bundle: `joinPath(Hs,".cursor","mcp.json")`, ``${e.projectPath}/.cursor/mcp.json``). This file has no relationship at all to Claude Code's hook or MCP config, so it carries none of the double-fire risk above. There is deliberately no `cursor` `HarnessName` (`./types.ts`) and no `BRIDGE_CAPABILITY_MATRIX` row (`../bridges_status.ts`): both track *hook* parity, and token-goat writes zero hook events for Cursor -- the same reasoning `./zed_install.ts`'s header gives for Zed, though for a different underlying reason (Zed has no hooks API at all; Cursor has one but token-goat deliberately never writes to it). Per-entry shape: Cursor's own JSON schema for `mcp.json`, extracted from the same bundle, is `oneOf` two variants with `additionalProperties:!1` on each: the stdio variant lists only `{command, args, env}` -- there is no `type` field in its property list, unlike VS Code/Visual Studio's `servers` entries (`./mcp_servers_json.ts`'s `managedServer()`, which always includes `type: 'stdio'`). Writing that VS Code shape verbatim into a strict `additionalProperties:false` schema risks Cursor rejecting the whole entry, so this file defines its own entry shape (`command` + `args` only) rather than reusing `managedServer()`/`isManagedServer()`, while still reusing every root-key-agnostic helper in `./mcp_servers_json.ts` (`readServersJson`, `serversOf`, `setTokenGoatServer`, `dropEmptyServers`, `hasManagedServer`) with `rootKey: 'mcpServers'`, confirmed as the schema's actual root property name (`properties:{mcpServers:zto}`) rather than VS Code's `servers`. No shim script is needed (unlike `./zed_install.ts`): Cursor's schema takes a `command` string plus a separate `args` array, spawned without a shell (the same argv-style invocation VS Code and Visual Studio already use via `managedServer()`), not a single shell-executed command line the way Zed's `context_servers` entries are. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -125,18 +61,7 @@ export interface CursorInstallResult {
   readonly scope: 'project' | 'user'
 }
 
-/**
- * Install the Cursor MCP integration: merges `mcpServers.token-goat` into
- * `mcp.json`, preserving every other key, comment, and formatting choice
- * already there (via `setTokenGoatServer`'s JSONC-preserving edit). Idempotent:
- * a second call reports `alreadyInstalled: true` and does not duplicate the
- * entry. Never touches `hooks.json` -- see this file's header.
- *
- * Throws before any write if `mcp.json` exists but fails to parse, or if it
- * already holds an `mcpServers.token-goat` entry this bridge did not write
- * (mirrors `installZed`'s and `installVscode`'s cross-entry-ownership guard):
- * a real user file that may already have content is never silently clobbered.
- */
+/** Install the Cursor MCP integration: merges `mcpServers.token-goat` into `mcp.json`, preserving every other key, comment, and formatting choice already there (via `setTokenGoatServer`'s JSONC-preserving edit). Idempotent: a second call reports `alreadyInstalled: true` and does not duplicate the entry. Never touches `hooks.json` -- see this file's header. Throws before any write if `mcp.json` exists but fails to parse, or if it already holds an `mcpServers.token-goat` entry this bridge did not write (mirrors `installZed`'s and `installVscode`'s cross-entry-ownership guard): a real user file that may already have content is never silently clobbered. */
 export function installCursor(opts: CursorScopeOptions = {}): CursorInstallResult {
   return withInstallScope(projectScopeRoot(opts), () => installCursorScoped(opts))
 }
@@ -156,11 +81,7 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
   const nextText = setTokenGoatServer(config.text, desired, MCP_SERVERS_KEY)
   const alreadyInstalled = config.text === nextText
   if (!alreadyInstalled) {
-    // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory
-    // symlink a clone checked in, so this step is itself one of the ways an install lands outside
-    // the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw
-    // fs.mkdirSync here is outside the boundary by inspection even while the backupFile below
-    // happens to refuse. See bridges/project_scope_guard.ts.
+    // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory symlink a clone checked in, so this step is itself one of the ways an install lands outside the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw fs.mkdirSync here is outside the boundary by inspection even while the backupFile below happens to refuse. See bridges/project_scope_guard.ts.
     ensureDirSync(path.dirname(mcpPath))
     if (!fileExisted) recordCreatedConfig(mcpPath)
     backupFile(mcpPath)
@@ -170,14 +91,7 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
   return { mcpPath, alreadyInstalled, scope }
 }
 
-/**
- * Remove the Cursor MCP integration: drops `mcpServers.token-goat` (and the
- * now-empty `mcpServers` object, if it was the last entry) from `mcp.json`,
- * deleting `mcp.json` itself only if token-goat created it AND it now holds
- * nothing else (mirrors `../bridges/zed_install.ts`'s `uninstallZed`). Returns
- * true when an entry was present and removed; false when nothing was
- * installed (no write occurs in that case). Never touches `hooks.json`.
- */
+/** Remove the Cursor MCP integration: drops `mcpServers.token-goat` (and the now-empty `mcpServers` object, if it was the last entry) from `mcp.json`, deleting `mcp.json` itself only if token-goat created it AND it now holds nothing else (mirrors `../bridges/zed_install.ts`'s `uninstallZed`). Returns true when an entry was present and removed; false when nothing was installed (no write occurs in that case). Never touches `hooks.json`. */
 export function uninstallCursor(opts: CursorScopeOptions = {}): boolean {
   return withInstallScope(projectScopeRoot(opts), () => uninstallCursorScoped(opts))
 }
@@ -206,12 +120,7 @@ export function isCursorInstalled(opts: CursorScopeOptions = {}): boolean {
   return hasManagedServer(cursorMcpPath(opts), 'Cursor', MCP_SERVERS_KEY, isCursorManagedServer)
 }
 
-/**
- * Reads back the token-goat `mcpServers` entry from `mcpPath`, for
- * `../cli_doctor.ts`'s staleness check -- mirrors `../bridges/zed_install.ts`'s
- * `zedManagedEntry`. Returns `null` when the file is missing, unreadable, or
- * holds no token-goat-managed entry.
- */
+/** Reads back the token-goat `mcpServers` entry from `mcpPath`, for `../cli_doctor.ts`'s staleness check -- mirrors `../bridges/zed_install.ts`'s `zedManagedEntry`. Returns `null` when the file is missing, unreadable, or holds no token-goat-managed entry. */
 export function cursorManagedEntry(mcpPath: string): { command: string } | null {
   if (!fs.existsSync(mcpPath)) return null
   try {

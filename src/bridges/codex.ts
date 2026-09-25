@@ -1,43 +1,7 @@
-/**
- * Codex CLI bridge.
- *
- * Codex fires hooks from `config.toml` much like Claude Code, but its output
- * schemas are stricter: every schema declares `additionalProperties: false`,
- * and every `hookSpecificOutput` shape requires a typed `hookEventName` const.
- * The shim therefore post-processes `token-goat hook` output before relaying
- * it: it drops internal `_tg_*` keys (which would trip `additionalProperties`)
- * and injects `hookEventName` into `hookSpecificOutput` when absent.
- *
- * Wire-format references: Codex 0.137.0+ expects `hookSpecificOutput.hookEventName`
- * in Claude Code's PascalCase spelling (e.g. `PreToolUse`, not the raw `pre_tool_use`
- * argv event name) -- matching CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts, the
- * convention the live/wired `token-goat hook <event>` path already emits.
- */
+/** Codex CLI bridge. Codex fires hooks from `config.toml` much like Claude Code, but its output schemas are stricter: every schema declares `additionalProperties: false`, and every `hookSpecificOutput` shape requires a typed `hookEventName` const. The shim therefore post-processes `token-goat hook` output before relaying it: it drops internal `_tg_*` keys (which would trip `additionalProperties`) and injects `hookEventName` into `hookSpecificOutput` when absent. Wire-format references: Codex 0.137.0+ expects `hookSpecificOutput.hookEventName` in Claude Code's PascalCase spelling (e.g. `PreToolUse`, not the raw `pre_tool_use` argv event name) -- matching CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts, the convention the live/wired `token-goat hook <event>` path already emits. */
 
 
-/**
- * Node source for the Codex hook shim.
- *
- * Behavior matches the Claude Code shim (validate `eventName` against the closed set of known
- * hook events, then stdin → `token-goat hook <event>` → stdout) with two Codex-specific
- * fixups applied to the child's JSON output:
- * 1. strip top-level and nested `_tg_*` keys (additionalProperties: false), and
- * 2. ensure `hookSpecificOutput.hookEventName` is set, defaulting to the
- *    PascalCase-mapped event name (HOOK_EVENT_NAME_MAP below, kept in sync with
- *    CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts) when the handler omitted it --
- *    never the raw snake_case argv event name.
- *
- * `eventName` is concatenated into a shell command string below (`shell: true` is required
- * on Windows to resolve the token-goat `.cmd`/`.bat` shim), so it is validated against
- * `VALID_HOOK_EVENTS` first — a closed set that must be kept in sync with `HOOK_EVENTS` in
- * src/types.ts.
- *
- * On any error the shim prints `{}` so the tool call proceeds unchanged.
- *
- * The shim also injects `TOKEN_GOAT_HARNESS_OVERRIDE=codex` before dispatching, the way kimi.ts and pi.ts do. Codex publishes no ambient per-session env var identifying its own hook subprocesses, so detectHarness() (./registry.ts) could only reach the codex branch through CODEX_SESSION_ID/CODEX_SESSION, which codex-cli 0.155.0 does not set, or through an OPENAI_API_KEY with no ANTHROPIC_API_KEY beside it. Absent would be survivable; the real hazard is the mis-hit. Two branches sit ahead of the codex one and both test variables a parent shell hands down, so a Codex launched from a Claude Code terminal (TERM_PROGRAM=claude-code, or CLAUDE_CODE_VERSION set) resolved 'claudecode', and every harness-scoped decision -- wire-format translation, PRE_COMPACT_CONTEXT_DROPPED -- was then taken for the wrong harness with nothing failing. The override is consulted before any sniffing, so injecting it settles the question rather than biasing it.
- *
- * This comment lives here rather than beside that line because everything inside CODEX_HOOK_SCRIPT is a template string: esbuild strips comments from module source, but shim comments are payload, and the bundle-size guard in tests/guards/dist_chunks_deduped.test.ts measures them.
- */
+/** Node source for the Codex hook shim. Behavior matches the Claude Code shim (validate `eventName` against the closed set of known hook events, then stdin → `token-goat hook <event>` → stdout) with two Codex-specific fixups applied to the child's JSON output: 1. strip top-level and nested `_tg_*` keys (additionalProperties: false), and 2. ensure `hookSpecificOutput.hookEventName` is set, defaulting to the PascalCase-mapped event name (HOOK_EVENT_NAME_MAP below, kept in sync with CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts) when the handler omitted it -- never the raw snake_case argv event name. `eventName` is concatenated into a shell command string below (`shell: true` is required on Windows to resolve the token-goat `.cmd`/`.bat` shim), so it is validated against `VALID_HOOK_EVENTS` first — a closed set that must be kept in sync with `HOOK_EVENTS` in src/types.ts. On any error the shim prints `{}` so the tool call proceeds unchanged. The shim also injects `TOKEN_GOAT_HARNESS_OVERRIDE=codex` before dispatching, the way kimi.ts and pi.ts do. Codex publishes no ambient per-session env var identifying its own hook subprocesses, so detectHarness() (./registry.ts) could only reach the codex branch through CODEX_SESSION_ID/CODEX_SESSION, which codex-cli 0.155.0 does not set, or through an OPENAI_API_KEY with no ANTHROPIC_API_KEY beside it. Absent would be survivable; the real hazard is the mis-hit. Two branches sit ahead of the codex one and both test variables a parent shell hands down, so a Codex launched from a Claude Code terminal (TERM_PROGRAM=claude-code, or CLAUDE_CODE_VERSION set) resolved 'claudecode', and every harness-scoped decision -- wire-format translation, PRE_COMPACT_CONTEXT_DROPPED -- was then taken for the wrong harness with nothing failing. The override is consulted before any sniffing, so injecting it settles the question rather than biasing it. This comment lives here rather than beside that line because everything inside CODEX_HOOK_SCRIPT is a template string: esbuild strips comments from module source, but shim comments are payload, and the bundle-size guard in tests/guards/dist_chunks_deduped.test.ts measures them. */
 import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node

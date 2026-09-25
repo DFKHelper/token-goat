@@ -1,10 +1,4 @@
-/**
- * Project-local VS Code MCP configuration and routing guidance.
- *
- * This intentionally does not install the extension package. VS Code supports
- * the stdio MCP server through `.vscode/mcp.json`; the extension is separately
- * packaged and installed as a VSIX when desired.
- */
+/** Project-local VS Code MCP configuration and routing guidance. This intentionally does not install the extension package. VS Code supports the stdio MCP server through `.vscode/mcp.json`; the extension is separately packaged and installed as a VSIX when desired. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -30,31 +24,11 @@ export interface VscodeScopeOptions {
   project?: boolean
   /** Only meaningful with `project: true`; defaults to `process.cwd()`. */
   projectRoot?: string
-  /**
-   * Keep the `.bak.<ISO>` recovery copies this run creates instead of sweeping them at the end.
-   *
-   * Only `uninstallVscode` reads it, and only the MIGRATION inside `installVscode` sets it. An
-   * uninstall sweeping its own backups is right -- the user asked for token-goat to be gone -- but
-   * the same function run as one step of an install is not an uninstall: it rewrites a user-scope
-   * file nobody asked it to touch, and deleting the recovery copy it made seconds earlier is
-   * precisely where a804e9f9's "every overwritten file has a recovery copy" guarantee failed. This
-   * is an explicit option rather than call-site ordering so the distinction cannot be lost again by
-   * moving a line.
-   */
+  /** Keep the `.bak.<ISO>` recovery copies this run creates instead of sweeping them at the end. Only `uninstallVscode` reads it, and only the MIGRATION inside `installVscode` sets it. An uninstall sweeping its own backups is right -- the user asked for token-goat to be gone -- but the same function run as one step of an install is not an uninstall: it rewrites a user-scope file nobody asked it to touch, and deleting the recovery copy it made seconds earlier is precisely where a804e9f9's "every overwritten file has a recovery copy" guarantee failed. This is an explicit option rather than call-site ordering so the distinction cannot be lost again by moving a line. */
   keepBackups?: boolean
 }
 
-/**
- * VS Code's user-profile config directory, mirroring how VS Code itself resolves it
- * (confirmed against VS Code's own docs, not assumed by analogy with another bridge):
- * `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on
- * macOS, `~/.config/Code/User` on Linux. `mcp.json` lives directly inside it, using
- * the same `servers` root key as the project-local file. Like
- * `opencodeGlobalConfigDir` in `./opencode_install.js`, the Windows branch reads
- * `process.env['APPDATA']` directly (falling back to `~/AppData/Roaming` if unset or
- * blank) rather than hardcoding a path, so tests and dogfooding can isolate it the
- * same way they already isolate `HOME`/`USERPROFILE`/`LOCALAPPDATA`.
- */
+/** VS Code's user-profile config directory, mirroring how VS Code itself resolves it (confirmed against VS Code's own docs, not assumed by analogy with another bridge): `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on macOS, `~/.config/Code/User` on Linux. `mcp.json` lives directly inside it, using the same `servers` root key as the project-local file. Like `opencodeGlobalConfigDir` in `./opencode_install.js`, the Windows branch reads `process.env['APPDATA']` directly (falling back to `~/AppData/Roaming` if unset or blank) rather than hardcoding a path, so tests and dogfooding can isolate it the same way they already isolate `HOME`/`USERPROFILE`/`LOCALAPPDATA`. */
 function vscodeUserConfigDir(): string {
   if (process.platform === 'win32') {
     const appData = process.env['APPDATA']
@@ -85,11 +59,7 @@ function otherScopeMcpPath(opts: VscodeScopeOptions): string {
   return opts.project === true ? vscodeUserMcpPath() : vscodeProjectMcpPath(opts.projectRoot)
 }
 
-/**
- * Where the VS Code routing guidance goes for this scope; user scope never touches the current directory.
- *
- * Project scope is the workspace's `.github/copilot-instructions.md`. User scope is a personal instructions file: VS Code 1.136.0's instructions-location list in workbench.desktop.main.js has `{path:"~/.copilot/instructions",source:"copilot-personal",storage:"user"}`, which the default `chat.instructionsFilesLocations` turns on, and a file there counts as instructions when its name ends in `.instructions.md`. Like the hooks directory, VS Code expands that `~/` against the home directory, not COPILOT_HOME.
- */
+/** Where the VS Code routing guidance goes for this scope; user scope never touches the current directory. Project scope is the workspace's `.github/copilot-instructions.md`. User scope is a personal instructions file: VS Code 1.136.0's instructions-location list in workbench.desktop.main.js has `{path:"~/.copilot/instructions",source:"copilot-personal",storage:"user"}`, which the default `chat.instructionsFilesLocations` turns on, and a file there counts as instructions when its name ends in `.instructions.md`. Like the hooks directory, VS Code expands that `~/` against the home directory, not COPILOT_HOME. */
 export function vscodeInstructionsPath(opts: VscodeScopeOptions = {}): string {
   return opts.project === true
     ? path.join(path.resolve(opts.projectRoot ?? process.cwd()), '.github', 'copilot-instructions.md')
@@ -99,15 +69,7 @@ export function vscodeInstructionsPath(opts: VscodeScopeOptions = {}): string {
 // applyTo '**' is what makes VS Code attach the personal file to every request: its instructions matcher (_matches in workbench.desktop.main.js) treats '**', '**/*' and '*' as matching everything, while a file with no applyTo is only offered for the model to load on demand by its description.
 const USER_INSTRUCTIONS_FRONTMATTER = "---\ndescription: 'token-goat: when to use its MCP tools and CLI instead of reading whole files'\napplyTo: '**'\n---\n"
 
-/**
- * The Copilot-format event keys VS Code maps out of a hooks file; any other key is skipped.
- *
- * Read from the camelCase-to-hook-type table in workbench.desktop.main.js (VS Code 1.136.0, and
- * re-read unchanged in 1.138.0, where the `github-copilot` branch of that table still lists exactly
- * these eight keys and neither compaction key), where
- * `userPromptSubmitted` becomes UserPromptSubmit and `agentStop` becomes Stop. The shared hooks file
- * also carries `preCompact` and `postToolUseFailure` for Copilot CLI; VS Code never runs those two.
- */
+/** The Copilot-format event keys VS Code maps out of a hooks file; any other key is skipped. Read from the camelCase-to-hook-type table in workbench.desktop.main.js (VS Code 1.136.0, and re-read unchanged in 1.138.0, where the `github-copilot` branch of that table still lists exactly these eight keys and neither compaction key), where `userPromptSubmitted` becomes UserPromptSubmit and `agentStop` becomes Stop. The shared hooks file also carries `preCompact` and `postToolUseFailure` for Copilot CLI; VS Code never runs those two. */
 export const VSCODE_HOOK_FILE_EVENT_KEYS: readonly string[] = [
   'sessionStart',
   'sessionEnd',
@@ -119,38 +81,14 @@ export const VSCODE_HOOK_FILE_EVENT_KEYS: readonly string[] = [
   'errorOccurred',
 ]
 
-/**
- * The hooks directory VS Code's agent reads for this scope.
- *
- * Both entries are on VS Code's own hook-source list in workbench.desktop.main.js (1.136.0):
- * `.github/hooks` in the workspace and `~/.copilot/hooks` for the user. VS Code expands that `~/`
- * against the user's home directory, not COPILOT_HOME, so the user scope ignores COPILOT_HOME here
- * even though Copilot CLI honors it; when COPILOT_HOME is unset the two are the same directory and
- * share one hooks file.
- */
+/** The hooks directory VS Code's agent reads for this scope. Both entries are on VS Code's own hook-source list in workbench.desktop.main.js (1.136.0): `.github/hooks` in the workspace and `~/.copilot/hooks` for the user. VS Code expands that `~/` against the user's home directory, not COPILOT_HOME, so the user scope ignores COPILOT_HOME here even though Copilot CLI honors it; when COPILOT_HOME is unset the two are the same directory and share one hooks file. */
 export function vscodeHooksDir(opts: VscodeScopeOptions = {}): string {
   return opts.project === true
     ? path.join(path.resolve(opts.projectRoot ?? process.cwd()), '.github', 'hooks')
     : path.join(os.homedir(), '.copilot', 'hooks')
 }
 
-/**
- * The scope `--vscode` installs into, from the install/uninstall flags.
- *
- * This is the ONE harness that defaults to project scope, and the inversion is deliberate: VS Code
- * resolves a hook's working directory as `getWorkspaceFolder(hookFile.uri) ?? folders[0]`, and a
- * user-scope hooks file (`~/.copilot/hooks`) is inside no workspace folder, so the lookup misses on
- * every invocation and the cwd is always the FIRST folder. Captured live against 1.137.0: in a
- * two-root workspace the user-scope copy fired once, with `cwd` pinned to root A, while a
- * project-scope copy in root B fired with `cwd` = root B. Since `vscode_path_gate.ts` confines
- * every pre-approval hook to that cwd, read hints, image shrinking and edit interception were
- * silently inert for every folder past the first -- no error, just nothing.
- *
- * `--user` is the explicit opt-out and keeps the old single-file, every-project behaviour, with
- * that multi-root limitation. `-p`/`--project` remains accepted and now selects what is already
- * the default. `tests/guards/harness_scope_defaults.test.ts` fails on any harness whose default is
- * not classified there, so a second inversion cannot arrive unnoticed.
- */
+/** The scope `--vscode` installs into, from the install/uninstall flags. This is the ONE harness that defaults to project scope, and the inversion is deliberate: VS Code resolves a hook's working directory as `getWorkspaceFolder(hookFile.uri) ?? folders[0]`, and a user-scope hooks file (`~/.copilot/hooks`) is inside no workspace folder, so the lookup misses on every invocation and the cwd is always the FIRST folder. Captured live against 1.137.0: in a two-root workspace the user-scope copy fired once, with `cwd` pinned to root A, while a project-scope copy in root B fired with `cwd` = root B. Since `vscode_path_gate.ts` confines every pre-approval hook to that cwd, read hints, image shrinking and edit interception were silently inert for every folder past the first -- no error, just nothing. `--user` is the explicit opt-out and keeps the old single-file, every-project behaviour, with that multi-root limitation. `-p`/`--project` remains accepted and now selects what is already the default. `tests/guards/harness_scope_defaults.test.ts` fails on any harness whose default is not classified there, so a second inversion cannot arrive unnoticed. */
 export function vscodeScopeFromFlags(flags: { project?: boolean; user?: boolean }): VscodeScopeOptions {
   return { project: flags.user !== true }
 }
@@ -164,11 +102,7 @@ export function vscodeUserSettingsPath(): string {
   return path.join(vscodeUserConfigDir(), 'settings.json')
 }
 
-/**
- * True when VS Code's user settings turn on `chat.useClaudeHooks`, which makes VS Code also run
- * the hooks in `~/.claude/settings.json`. It defaults to false (its configuration entry in
- * workbench.desktop.main.js, 1.136.0). Read only; an unreadable or malformed file reads as false.
- */
+/** True when VS Code's user settings turn on `chat.useClaudeHooks`, which makes VS Code also run the hooks in `~/.claude/settings.json`. It defaults to false (its configuration entry in workbench.desktop.main.js, 1.136.0). Read only; an unreadable or malformed file reads as false. */
 export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
   let text: string
   try {
@@ -199,19 +133,10 @@ export interface VscodeInstallResult {
   scope: 'project' | 'user'
 }
 
-/**
- * Best-effort check for a token-goat-managed entry already sitting in the *other*
- * scope. Writing this scope on top of that would register token-goat twice --
- * VS Code merges user- and workspace-scope `mcp.json` when both name the same
- * server, duplicating all of its tool schemas into the workspace. A malformed or
- * unreadable other-scope file is not this call's problem to raise (that surfaces,
- * loudly, the moment someone actually installs into that scope), so this swallows
- * read/parse failures and reports "no managed entry found" rather than throwing.
- */
+/** Best-effort check for a token-goat-managed entry already sitting in the *other* scope. Writing this scope on top of that would register token-goat twice -- VS Code merges user- and workspace-scope `mcp.json` when both name the same server, duplicating all of its tool schemas into the workspace. A malformed or unreadable other-scope file is not this call's problem to raise (that surfaces, loudly, the moment someone actually installs into that scope), so this swallows read/parse failures and reports "no managed entry found" rather than throwing. */
 export function otherScopeHasManagedServer(opts: VscodeScopeOptions): boolean {
   const otherPath = otherScopeMcpPath(opts)
-  // In a user-scope run the other scope is the PROJECT one, so this path comes out of the working
-  // tree even though nothing in this run writes to it. See {@link projectPathIsConsultable}.
+  // In a user-scope run the other scope is the PROJECT one, so this path comes out of the working tree even though nothing in this run writes to it. See {@link projectPathIsConsultable}.
   if (opts.project !== true && !projectPathIsConsultable(otherPath, path.resolve(opts.projectRoot ?? process.cwd()))) return false
   if (!fs.existsSync(otherPath)) return false
   try {
@@ -229,21 +154,11 @@ export interface VscodeDecoderStatus {
   checkedPaths: string[]
 }
 
-/**
- * Single source of truth for "is the VS Code decoder set up", shared by the extension's
- * ensureDecoderSetup prompt so it can never drift from what installVscode actually writes.
- * Always checks user scope (the default since 9c220be7); also checks the workspace scope
- * when a projectRoot is given, since that is the only case where `.vscode/mcp.json` is
- * relevant at all -- a user-scope install is workspace-independent, so this deliberately
- * does not require projectRoot to report `configured: true`.
- */
+/** Single source of truth for "is the VS Code decoder set up", shared by the extension's ensureDecoderSetup prompt so it can never drift from what installVscode actually writes. Always checks user scope (the default since 9c220be7); also checks the workspace scope when a projectRoot is given, since that is the only case where `.vscode/mcp.json` is relevant at all -- a user-scope install is workspace-independent, so this deliberately does not require projectRoot to report `configured: true`. */
 export function vscodeDecoderConfigured(opts: { projectRoot?: string } = {}): VscodeDecoderStatus {
   const checkedPaths = [vscodeUserMcpPath()]
   if (opts.projectRoot !== undefined) {
-    // `mcp-status` is the command someone runs inside a repository they have just cloned, so this
-    // is the same repository-controlled path the installer consults, reached without an install.
-    // Left out of `checkedPaths` rather than listed and skipped, because that list is what was
-    // actually checked.
+    // `mcp-status` is the command someone runs inside a repository they have just cloned, so this is the same repository-controlled path the installer consults, reached without an install. Left out of `checkedPaths` rather than listed and skipped, because that list is what was actually checked.
     const projectPath = vscodeProjectMcpPath(opts.projectRoot)
     if (projectPathIsConsultable(projectPath, path.resolve(opts.projectRoot))) checkedPaths.push(projectPath)
   }
@@ -257,8 +172,7 @@ export function vscodeDecoderConfigured(opts: { projectRoot?: string } = {}): Vs
         return { configured: true, checkedPaths }
       }
     } catch {
-      // Malformed file at this path isn't this check's problem -- it surfaces loudly the
-      // moment someone actually installs into that scope. Keep scanning the rest.
+      // Malformed file at this path isn't this check's problem -- it surfaces loudly the moment someone actually installs into that scope. Keep scanning the rest.
     }
   }
   return { configured: false, checkedPaths }
@@ -284,16 +198,7 @@ function writeGuidance(filePath: string, userScope: boolean): boolean {
   return upsertDelimitedBlock(filePath, BEGIN, END, body) || created
 }
 
-/**
- * Refuse every project-scope target that resolves outside the project, before anything is read.
- *
- * Runs first in both entry points below, not next to each individual write: the disclosure this
- * closes happens on the READ (`readConfig`, `upsertDelimitedBlock`) and on `backupFile`'s copy,
- * both of which run before the first write. Checking at the write would be too late.
- *
- * User scope passes everything through -- see project_scope_guard.ts for why a symlinked dotfile
- * there is the user's own business.
- */
+/** Refuse every project-scope target that resolves outside the project, before anything is read. Runs first in both entry points below, not next to each individual write: the disclosure this closes happens on the READ (`readConfig`, `upsertDelimitedBlock`) and on `backupFile`'s copy, both of which run before the first write. Checking at the write would be too late. User scope passes everything through -- see project_scope_guard.ts for why a symlinked dotfile there is the user's own business. */
 function assertProjectTargetsAreInTheProject(opts: VscodeScopeOptions): void {
   if (opts.project !== true) return
   const root = path.resolve(opts.projectRoot ?? process.cwd())
@@ -311,20 +216,10 @@ function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = vscodeMcpPath(opts)
   const instructionsPath = vscodeInstructionsPath(opts)
-  // Migration, not an error, in the user -> project direction only. `install --vscode` defaults to
-  // project scope now, so the FIRST post-upgrade run of the same command every existing user
-  // already types lands here: refusing it would make the new default a wall rather than an
-  // upgrade. Walking the user-scope install back is also what keeps the two from double-firing --
-  // VS Code runs every hooks file it discovers, in both scopes, confirmed live (see
-  // vscode_duplicate.ts's header). uninstallVscode() is the migration: it strips the user-scope
-  // MCP entry and guidance block and releases this install's claim on the shared
-  // `~/.copilot/hooks` files, leaving them in place when `install --copilot` still owns them.
+  // Migration, not an error, in the user -> project direction only. `install --vscode` defaults to project scope now, so the FIRST post-upgrade run of the same command every existing user already types lands here: refusing it would make the new default a wall rather than an upgrade. Walking the user-scope install back is also what keeps the two from double-firing -- VS Code runs every hooks file it discovers, in both scopes, confirmed live (see vscode_duplicate.ts's header). uninstallVscode() is the migration: it strips the user-scope MCP entry and guidance block and releases this install's claim on the shared `~/.copilot/hooks` files, leaving them in place when `install --copilot` still owns them.
   let migratedFromUserScope = false
   if (scope === 'project' && (otherScopeHasManagedServer(opts) || vscodeHooksInstalled())) {
-    // keepBackups: this call is a migration STEP OF AN INSTALL, not an uninstall. It rewrites a
-    // user-scope file the user did not ask it to touch, so the recovery copies it makes on the way
-    // have to survive it -- uninstallVscode's own backup sweep would otherwise delete, seconds
-    // after creating it, the only copy of what that file held before this run.
+    // keepBackups: this call is a migration STEP OF AN INSTALL, not an uninstall. It rewrites a user-scope file the user did not ask it to touch, so the recovery copies it makes on the way have to survive it -- uninstallVscode's own backup sweep would otherwise delete, seconds after creating it, the only copy of what that file held before this run.
     migratedFromUserScope = uninstallVscode({ keepBackups: true })
   } else if (otherScopeHasManagedServer(opts)) {
     const otherPath = otherScopeMcpPath(opts)
@@ -408,11 +303,7 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
   return removed
 }
 
-/**
- * Removes empty deprecated `.vscode/mcp.json` residue if present.
- * Same ownership rule as `uninstall --vscode`: only a file token-goat created (created-config ledger)
- * is deleted, and the write is scope-confined so a symlinked .vscode cannot point the unlink outside the project.
- */
+/** Removes empty deprecated `.vscode/mcp.json` residue if present. Same ownership rule as `uninstall --vscode`: only a file token-goat created (created-config ledger) is deleted, and the write is scope-confined so a symlinked .vscode cannot point the unlink outside the project. */
 export function cleanupDeprecatedVscodeProjectMcp(projectRoot?: string): boolean {
   const root = path.resolve(projectRoot ?? process.cwd())
   return withInstallScope(root, () => {

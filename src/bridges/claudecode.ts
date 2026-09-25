@@ -1,37 +1,7 @@
-/**
- * Claude Code bridge.
- *
- * Claude Code fires hooks by running a command from `settings.json` for each
- * event; that command receives the hook payload as JSON on stdin and must emit
- * the response JSON on stdout. token-goat's installer normally wires this to
- * the `token-goat hook <event>` subcommand directly. {@link CLAUDECODE_HOOK_SCRIPT}
- * is the standalone Node shim form of that wiring — a small script that reads
- * stdin, shells out to `token-goat hook <event>`, and relays the result.
- *
- * The wire format matters: Claude Code reads exactly what the shim prints to
- * stdout, so the shim must pass the child's stdout through verbatim and emit
- * `{}` (a no-op) on any failure rather than crashing the hook.
- */
+/** Claude Code bridge. Claude Code fires hooks by running a command from `settings.json` for each event; that command receives the hook payload as JSON on stdin and must emit the response JSON on stdout. token-goat's installer normally wires this to the `token-goat hook <event>` subcommand directly. {@link CLAUDECODE_HOOK_SCRIPT} is the standalone Node shim form of that wiring — a small script that reads stdin, shells out to `token-goat hook <event>`, and relays the result. The wire format matters: Claude Code reads exactly what the shim prints to stdout, so the shim must pass the child's stdout through verbatim and emit `{}` (a no-op) on any failure rather than crashing the hook. */
 
 
-/**
- * Node source for the Claude Code hook shim.
- *
- * Behavior:
- * 1. Validate `eventName` (argv[2]) against the closed set of known hook events; if it
- *    doesn't match, print `{}` immediately without ever building a shell command from it.
- * 2. Read the full hook payload from stdin (JSON).
- * 3. Spawn `token-goat hook <eventName>`, feeding it that payload on stdin.
- * 4. Print the child's stdout verbatim to this process's stdout.
- * 5. On any error (spawn failure, non-JSON, missing binary) print `{}` so the
- *    tool call proceeds unchanged instead of the hook hard-failing.
- *
- * `eventName` is taken from `process.argv[2]`, mirroring how the installed
- * settings.json command appends the event name as the last argument. It is concatenated
- * into a shell command string below (`shell: true` is required on Windows to resolve the
- * token-goat `.cmd`/`.bat` shim), so it is validated against `VALID_HOOK_EVENTS` first — a
- * closed set that must be kept in sync with `HOOK_EVENTS` in src/types.ts.
- */
+/** Node source for the Claude Code hook shim. Behavior: 1. Validate `eventName` (argv[2]) against the closed set of known hook events; if it doesn't match, print `{}` immediately without ever building a shell command from it. 2. Read the full hook payload from stdin (JSON). 3. Spawn `token-goat hook <eventName>`, feeding it that payload on stdin. 4. Print the child's stdout verbatim to this process's stdout. 5. On any error (spawn failure, non-JSON, missing binary) print `{}` so the tool call proceeds unchanged instead of the hook hard-failing. `eventName` is taken from `process.argv[2]`, mirroring how the installed settings.json command appends the event name as the last argument. It is concatenated into a shell command string below (`shell: true` is required on Windows to resolve the token-goat `.cmd`/`.bat` shim), so it is validated against `VALID_HOOK_EVENTS` first — a closed set that must be kept in sync with `HOOK_EVENTS` in src/types.ts. */
 import { SHIM_ASYNC_DETACH, SHIM_MAX_BUFFER_CONST, SHIM_OWN_COMMAND_BYPASS, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 export const CLAUDECODE_HOOK_SCRIPT = `#!/usr/bin/env node

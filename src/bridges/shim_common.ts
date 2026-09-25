@@ -1,26 +1,4 @@
-/**
- * Text fragments shared by the generated harness hook shims.
- *
- * Four bridges ship a Node shim that does the same three things before any
- * harness-specific translation: require the same modules, reject an event name
- * outside the closed `HOOK_EVENTS` set, and reach `token-goat hook <event>`
- * through the same three-step ladder (in-process hook lib, then the baked entry
- * via `process.execPath`, then a PATH-based `shell: true` call). Those parts
- * were byte-identical copies in {@link ../claudecode.ts}, {@link ../codex.ts},
- * {@link ../grok.ts} and {@link ../kimi.ts}, so a fix to the spawn ladder or the
- * event allowlist had to be applied four times or silently diverge. They live
- * here once and are interpolated into each shim template.
- *
- * What is deliberately NOT here: everything downstream of `stdout`. Each
- * harness has its own response contract and its own fail-open shape (`{}` for
- * Claude Code and Codex, `{"decision":"allow"}` for Grok on `pre_tool_use`,
- * empty stdout for Kimi), and forcing those through one template would be worse
- * than the duplication it removed. Grok also keeps its own `VALID_HOOK_EVENTS`:
- * it genuinely has no `session_start` event.
- *
- * These are fragments of generated JavaScript, not TypeScript. They must stay
- * free of backticks and `${` so they interpolate verbatim.
- */
+/** Text fragments shared by the generated harness hook shims. Four bridges ship a Node shim that does the same three things before any harness-specific translation: require the same modules, reject an event name outside the closed `HOOK_EVENTS` set, and reach `token-goat hook <event>` through the same three-step ladder (in-process hook lib, then the baked entry via `process.execPath`, then a PATH-based `shell: true` call). Those parts were byte-identical copies in {@link ../claudecode.ts}, {@link ../codex.ts}, {@link ../grok.ts} and {@link ../kimi.ts}, so a fix to the spawn ladder or the event allowlist had to be applied four times or silently diverge. They live here once and are interpolated into each shim template. What is deliberately NOT here: everything downstream of `stdout`. Each harness has its own response contract and its own fail-open shape (`{}` for Claude Code and Codex, `{"decision":"allow"}` for Grok on `pre_tool_use`, empty stdout for Kimi), and forcing those through one template would be worse than the duplication it removed. Grok also keeps its own `VALID_HOOK_EVENTS`: it genuinely has no `session_start` event. These are fragments of generated JavaScript, not TypeScript. They must stay free of backticks and `${` so they interpolate verbatim. */
 
 /** The three `require`s every shim opens with. */
 export const SHIM_REQUIRES = `const { spawnSync } = require('node:child_process')

@@ -1,56 +1,4 @@
-/**
- * Zed context-server installer.
- *
- * Zed's first-party agent (Zed AI) has no hooks API at all -- confirmed against
- * zed-industries/zed#52688, which is still open and unresolved. `context_servers`
- * (MCP) is the *only* integration surface Zed offers, so "Zed support" here means
- * registering token-goat as an MCP context server in Zed's own `settings.json`,
- * not installing hooks the way `../install.ts` and every other bridge in this
- * directory do. There is deliberately no `zed` `HarnessName` (`./types.ts`) and no
- * `BRIDGE_CAPABILITY_MATRIX` row (`../bridges_status.ts`): both track hook-event
- * parity, and Zed implements zero hook events, the same reasoning
- * `tests/guards/windsurf_never_writes_cascade_hooks.test.ts` documents for
- * Windsurf -- unlike Windsurf, though, Zed does get a real install writer here,
- * because `context_servers` is a genuine, working integration surface, just not
- * a hooks one.
- *
- * `context_servers` entries are NOT the `servers`/`type`/`command`/`args` shape
- * `./mcp_servers_json.ts` already writes for VS Code and Visual Studio. Live
- * process-tree tracing against installed Zed 1.19.2 on Windows (`Get-CimInstance
- * Win32_Process`, since Zed is a native GPUI app no browser-automation tool can
- * drive) showed Zed shell-executing the configured `command` value through
- * PowerShell then cmd.exe -- `Zed.exe -> pwsh.exe -C <command> -> cmd.exe /c
- * "<command>"` -- rather than an argv[0] `CreateProcess` call, and a real
- * connection producing *zero* log output on success (only a broken command logs:
- * `ERROR [project::context_server_store] ... context server failed to start:
- * Context server request timeout`, reproduced twice with different server names
- * as this file's positive control). A working `.cmd` shim wrapping
- * `node.exe <dist/token-goat.mjs> mcp-serve` and set as a bare `command` string
- * was confirmed live: the traced process tree showed a genuinely connected,
- * long-running `node.exe ... mcp-serve` descendant of the real `Zed.exe`,
- * surviving well past both the reliable 10-second failure-timeout control and
- * the configured 30-second timeout with no error logged. Given that, this
- * bridge only ever relies on two keys per the task's own constraint --
- * `command` (the shim's absolute path) and `timeout` -- and never a nested
- * `args` array, which was never confirmed to exist in Zed's schema.
- *
- * The shim is a generated file living inside Zed's own config directory
- * (mirrors `./grok_install.ts`'s `~/.grok/hooks/token-goat-shim.js`), because
- * embedding a full quoted command line as a single shell-executed string is
- * fragile once a path contains spaces -- a wrapper script sidesteps that the
- * same way it does for every other host in this codebase that shells out a
- * `command`-type field.
- *
- * Zed's settings.json path: `%APPDATA%\Zed\settings.json` on Windows, confirmed
- * live (a loud-channel invalid-JSON probe against that exact path, with a
- * silent calibration control at `%LOCALAPPDATA%\Zed\settings.json` proving the
- * probe method itself is not silently vacuous). The macOS/Linux path
- * (`~/.config/zed/settings.json`, honoring `$XDG_CONFIG_HOME`) is FORMAT-DERIVED
- * from Zed's own published docs (https://zed.dev/docs/configuring-zed -- "the
- * configuration file ... is located at `~/.config/zed/settings.json`", Windows
- * separately documented as `%APPDATA%\Zed\settings.json`), not dogfooded: only
- * Windows Zed was installed and testable here.
- */
+/** Zed context-server installer. Zed's first-party agent (Zed AI) has no hooks API at all -- confirmed against zed-industries/zed#52688, which is still open and unresolved. `context_servers` (MCP) is the *only* integration surface Zed offers, so "Zed support" here means registering token-goat as an MCP context server in Zed's own `settings.json`, not installing hooks the way `../install.ts` and every other bridge in this directory do. There is deliberately no `zed` `HarnessName` (`./types.ts`) and no `BRIDGE_CAPABILITY_MATRIX` row (`../bridges_status.ts`): both track hook-event parity, and Zed implements zero hook events, the same reasoning `tests/guards/windsurf_never_writes_cascade_hooks.test.ts` documents for Windsurf -- unlike Windsurf, though, Zed does get a real install writer here, because `context_servers` is a genuine, working integration surface, just not a hooks one. `context_servers` entries are NOT the `servers`/`type`/`command`/`args` shape `./mcp_servers_json.ts` already writes for VS Code and Visual Studio. Live process-tree tracing against installed Zed 1.19.2 on Windows (`Get-CimInstance Win32_Process`, since Zed is a native GPUI app no browser-automation tool can drive) showed Zed shell-executing the configured `command` value through PowerShell then cmd.exe -- `Zed.exe -> pwsh.exe -C <command> -> cmd.exe /c "<command>"` -- rather than an argv[0] `CreateProcess` call, and a real connection producing *zero* log output on success (only a broken command logs: `ERROR [project::context_server_store] ... context server failed to start: Context server request timeout`, reproduced twice with different server names as this file's positive control). A working `.cmd` shim wrapping `node.exe <dist/token-goat.mjs> mcp-serve` and set as a bare `command` string was confirmed live: the traced process tree showed a genuinely connected, long-running `node.exe ... mcp-serve` descendant of the real `Zed.exe`, surviving well past both the reliable 10-second failure-timeout control and the configured 30-second timeout with no error logged. Given that, this bridge only ever relies on two keys per the task's own constraint -- `command` (the shim's absolute path) and `timeout` -- and never a nested `args` array, which was never confirmed to exist in Zed's schema. The shim is a generated file living inside Zed's own config directory (mirrors `./grok_install.ts`'s `~/.grok/hooks/token-goat-shim.js`), because embedding a full quoted command line as a single shell-executed string is fragile once a path contains spaces -- a wrapper script sidesteps that the same way it does for every other host in this codebase that shells out a `command`-type field. Zed's settings.json path: `%APPDATA%\Zed\settings.json` on Windows, confirmed live (a loud-channel invalid-JSON probe against that exact path, with a silent calibration control at `%LOCALAPPDATA%\Zed\settings.json` proving the probe method itself is not silently vacuous). The macOS/Linux path (`~/.config/zed/settings.json`, honoring `$XDG_CONFIG_HOME`) is FORMAT-DERIVED from Zed's own published docs (https://zed.dev/docs/configuring-zed -- "the configuration file ... is located at `~/.config/zed/settings.json`", Windows separately documented as `%APPDATA%\Zed\settings.json`), not dogfooded: only Windows Zed was installed and testable here. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -65,15 +13,7 @@ const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
 /** How long Zed waits for the context server's `initialize` handshake before logging a timeout and giving up; matches the value dogfooded live above. */
 const ZED_TIMEOUT_MS = 30_000
 
-/**
- * Zed's own config directory, mirroring how `./vscode_install.ts` resolves VS
- * Code's: `%APPDATA%\Zed` on Windows (confirmed live), `~/.config/zed`
- * elsewhere (FORMAT-DERIVED from https://zed.dev/docs/configuring-zed, honoring
- * `$XDG_CONFIG_HOME` when set, same as Zed's own Rust `paths` crate does).
- * Reads `process.env['APPDATA']`/`process.env['XDG_CONFIG_HOME']` directly
- * (not hardcoded) so tests and dogfooding can isolate it the same way every
- * other bridge here isolates `HOME`/`APPDATA`/`LOCALAPPDATA`.
- */
+/** Zed's own config directory, mirroring how `./vscode_install.ts` resolves VS Code's: `%APPDATA%\Zed` on Windows (confirmed live), `~/.config/zed` elsewhere (FORMAT-DERIVED from https://zed.dev/docs/configuring-zed, honoring `$XDG_CONFIG_HOME` when set, same as Zed's own Rust `paths` crate does). Reads `process.env['APPDATA']`/`process.env['XDG_CONFIG_HOME']` directly (not hardcoded) so tests and dogfooding can isolate it the same way every other bridge here isolates `HOME`/`APPDATA`/`LOCALAPPDATA`. */
 function zedConfigDir(): string {
   if (process.platform === 'win32') {
     const appData = process.env['APPDATA']
@@ -125,19 +65,7 @@ export interface ZedInstallResult {
   readonly alreadyInstalled: boolean
 }
 
-/**
- * Install the Zed MCP context-server integration: writes the generated shim
- * script and merges `context_servers.token-goat` into `settings.json`,
- * preserving every other key, comment, and formatting choice already there
- * (via `setTokenGoatServer`'s JSONC-preserving edit). Idempotent: a second
- * call reports `alreadyInstalled: true` and does not duplicate the entry.
- *
- * Throws before any write if `settings.json` exists but fails to parse, or if
- * it already holds a `context_servers.token-goat` entry this bridge did not
- * write (mirrors `installGemini`'s `GeminiSettingsParseError` guard and
- * `installVscode`'s cross-entry-ownership check) -- a real user file that may
- * already have content is never silently clobbered.
- */
+/** Install the Zed MCP context-server integration: writes the generated shim script and merges `context_servers.token-goat` into `settings.json`, preserving every other key, comment, and formatting choice already there (via `setTokenGoatServer`'s JSONC-preserving edit). Idempotent: a second call reports `alreadyInstalled: true` and does not duplicate the entry. Throws before any write if `settings.json` exists but fails to parse, or if it already holds a `context_servers.token-goat` entry this bridge did not write (mirrors `installGemini`'s `GeminiSettingsParseError` guard and `installVscode`'s cross-entry-ownership check) -- a real user file that may already have content is never silently clobbered. */
 export function installZed(): ZedInstallResult {
   const settingsPath = zedSettingsPath()
   const shimPath = zedShimPath()
@@ -164,15 +92,7 @@ export function installZed(): ZedInstallResult {
   return { settingsPath, shimPath, alreadyInstalled }
 }
 
-/**
- * Remove the Zed MCP context-server integration: drops
- * `context_servers.token-goat` (and the now-empty `context_servers` object, if
- * it was the last entry) from `settings.json`, deletes `settings.json` itself
- * only if token-goat created it AND it now holds nothing else, and deletes the
- * generated shim script. Returns true when at least one of the entry or the
- * shim was present and removed; false when nothing was installed (no writes
- * occur in that case).
- */
+/** Remove the Zed MCP context-server integration: drops `context_servers.token-goat` (and the now-empty `context_servers` object, if it was the last entry) from `settings.json`, deletes `settings.json` itself only if token-goat created it AND it now holds nothing else, and deletes the generated shim script. Returns true when at least one of the entry or the shim was present and removed; false when nothing was installed (no writes occur in that case). */
 export function uninstallZed(): boolean {
   const settingsPath = zedSettingsPath()
   const shimPath = zedShimPath()
@@ -205,11 +125,7 @@ export function isZedInstalled(): boolean {
   return hasManagedServer(zedSettingsPath(), 'Zed', CONTEXT_SERVERS_KEY, isZedManagedServer)
 }
 
-/**
- * Reads back the token-goat `context_servers` entry from `settingsPath`, for `../cli_doctor.ts`'s
- * staleness check -- mirrors `../bridges/visualstudio_install.ts`'s `visualStudioManagedEntry`.
- * Returns `null` when the file is missing, unreadable, or holds no token-goat-managed entry.
- */
+/** Reads back the token-goat `context_servers` entry from `settingsPath`, for `../cli_doctor.ts`'s staleness check -- mirrors `../bridges/visualstudio_install.ts`'s `visualStudioManagedEntry`. Returns `null` when the file is missing, unreadable, or holds no token-goat-managed entry. */
 export function zedManagedEntry(settingsPath: string): { command: string } | null {
   if (!fs.existsSync(settingsPath)) return null
   try {

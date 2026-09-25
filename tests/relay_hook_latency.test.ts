@@ -10,12 +10,7 @@ import { relayInProcess } from '../src/relay.js'
 import { getDb, closeAllDbs } from '../src/db.js'
 import * as statsModule from '../src/stats.js'
 
-/**
- * Same LOCALAPPDATA/XDG_DATA_HOME isolation as `content_store.test.ts`: `relayInProcess` records
- * through `recordStat()` -> `getGlobalDb()` -> `dataDir()`, which caches its resolved directory
- * for the process lifetime, so a test-only override must both set the env var the real hook path
- * reads and force that cache to re-resolve.
- */
+/** Same LOCALAPPDATA/XDG_DATA_HOME isolation as `content_store.test.ts`: `relayInProcess` records through `recordStat()` -> `getGlobalDb()` -> `dataDir()`, which caches its resolved directory for the process lifetime, so a test-only override must both set the env var the real hook path reads and force that cache to re-resolve. */
 let home: string
 let previousHome: string | undefined
 let previousLocalAppData: string | undefined
@@ -163,5 +158,24 @@ describe('relayInProcess records what the harness actually waited on, not always
     expect(recordStatSpy).toHaveBeenCalledWith('hook:notification', 0, 0, undefined, undefined, undefined, fakeElapsed)
     const row = latestHookRow()
     expect(row?.duration_ms).toBe(Math.round(fakeElapsed))
+  })
+})
+
+describe('relayInProcess hands its stats row to a caller that answers first', () => {
+  // HAND-DERIVED: the clock is pinned to a value chosen here, so the row's duration can be told apart from the time at which it was written.
+  it('writes nothing until the handed-over work runs, and the row still carries the duration fixed when the call ended', async () => {
+    registerHook('notification', () => ({ hookType: 'pass' }))
+    const deferred: (() => void)[] = []
+    const originalNow = performance.now.bind(performance)
+    performance.now = () => 42
+    try {
+      await relayInProcess('notification', { session_id: 's1' }, undefined, { afterReply: (work) => deferred.push(work) })
+    } finally {
+      performance.now = originalNow
+    }
+    expect(deferred).toHaveLength(1)
+    expect(hookRowCount()).toBe(0)
+    deferred[0]!()
+    expect(latestHookRow()).toEqual({ kind: 'hook:notification', duration_ms: 42 })
   })
 })

@@ -344,10 +344,10 @@ describe('configStamp', () => {
 })
 
 describe('bundle files', () => {
-  it('names the three built entries a server watches for replacement, and the launcher beside them, in one directory', () => {
-    // FORMAT-DERIVED from scripts/build-options.mjs ENTRY_POINTS (token-goat.core, token-goat-hook, token-goat-hook-client) and the launcher esbuild.config.mjs writes as dist/token-goat.mjs.
+  it('names the built entries a server watches for replacement, and the launcher beside them, in one directory', () => {
+    // FORMAT-DERIVED from scripts/build-options.mjs ENTRY_POINTS (token-goat.core, token-goat-hook, token-goat-hook-client), CJS_CLIENT (the client again as a .cjs, the build a shim loads) and the launcher esbuild.config.mjs writes as dist/token-goat.mjs.
     const files = bundleEntryFiles()
-    expect(files.map((f) => path.basename(f))).toEqual(['token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs'])
+    expect(files.map((f) => path.basename(f))).toEqual(['token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs', 'token-goat-hook-client.cjs'])
     expect(new Set(files.map((f) => path.dirname(f))).size).toBe(1)
     expect(path.basename(launcherPath())).toBe('token-goat.mjs')
     expect(path.dirname(launcherPath())).toBe(path.dirname(files[0] as string))

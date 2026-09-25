@@ -1,14 +1,4 @@
-// Shared in-process/spawn hook-relay block used verbatim inside the
-// generated plugin scripts for opencode (opencode.ts) and OpenClaw
-// (openclaw.ts). Both hosts load their generated plugin file as a
-// long-lived module (never a per-invocation subprocess), so this logic --
-// resolving the install-time entry path, relaying hook calls in-process via
-// the sibling token-goat-hook.mjs, and falling back to a spawned "token-goat"
-// subprocess when that's unavailable -- is identical between them. pi.ts has
-// its own typed copy of the same logic and is intentionally NOT wired to
-// this constant (pi's extension host is a real TypeScript compile target,
-// and this block is plain untyped JS meant to be dropped verbatim into a
-// generated file).
+// Shared in-process/spawn hook-relay block used verbatim inside the generated plugin scripts for opencode (opencode.ts) and OpenClaw (openclaw.ts). Both hosts load their generated plugin file as a long-lived module (never a per-invocation subprocess), so this logic -- resolving the install-time entry path, relaying hook calls in-process via the sibling token-goat-hook.mjs, and falling back to a spawned "token-goat" subprocess when that's unavailable -- is identical between them. pi.ts has its own typed copy of the same logic and is intentionally NOT wired to this constant (pi's extension host is a real TypeScript compile target, and this block is plain untyped JS meant to be dropped verbatim into a generated file).
 export const BRIDGE_RELAY_JS = `// resolveEntryPath reads a sidecar JSON file (token-goat-entry.json, written by
 // the install step next to this plugin file) containing the absolute path to
 // the token-goat CLI entry that was running at install time. Unlike

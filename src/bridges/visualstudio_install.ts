@@ -1,14 +1,4 @@
-/**
- * Visual Studio (the full IDE, 2022 17.14+ and 2026) GitHub Copilot agent-mode integration: an MCP server entry and routing guidance, and nothing else.
- *
- * MCP: Visual Studio reads `%USERPROFILE%\.mcp.json`, then `<SOLUTIONDIR>\.vs\mcp.json`, `<SOLUTIONDIR>\.mcp.json`, `<SOLUTIONDIR>\.vscode\mcp.json` and `<SOLUTIONDIR>\.cursor\mcp.json`, each with a `servers` root key holding `{type:"stdio", command, args, env}` entries (https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers). New MCP tools start disabled: the user ticks them in the chat Tools picker.
- * Instructions: `.github/copilot-instructions.md` in the solution, and `%USERPROFILE%\copilot-instructions.md` for the user on Visual Studio 2026, both gated by the Tools > Options checkbox "Enable custom instructions to be loaded from .github/copilot-instructions.md files and added to requests" (https://learn.microsoft.com/en-us/visualstudio/ide/copilot-chat-context).
- * Hooks: GitHub documents agent hooks only for Copilot cloud agent and Copilot CLI (https://docs.github.com/en/copilot/concepts/agents/hooks), so this bridge writes no hooks file. In Visual Studio there is no read dedup, no hint, no image shrink and no output folding.
- *
- * Both `.mcp.json` paths are also Claude Code files: it reads `<dir>\.mcp.json` in every directory from the cwd up to the drive root, validates each with `mcpServers` required, and fails fatally on a file holding only `servers`. So this module edits `servers["token-goat"]`, adds an empty `mcpServers` to any file it writes that lacks one, and leaves an existing `mcpServers` key byte-for-byte as it was; it registers nothing for Claude Code.
- *
- * This module must not import vscode_install.ts or copilot_cli_install.ts: both call syncVisualStudioProjectGuidance, so importing either would close an import cycle.
- */
+/** Visual Studio (the full IDE, 2022 17.14+ and 2026) GitHub Copilot agent-mode integration: an MCP server entry and routing guidance, and nothing else. MCP: Visual Studio reads `%USERPROFILE%\.mcp.json`, then `<SOLUTIONDIR>\.vs\mcp.json`, `<SOLUTIONDIR>\.mcp.json`, `<SOLUTIONDIR>\.vscode\mcp.json` and `<SOLUTIONDIR>\.cursor\mcp.json`, each with a `servers` root key holding `{type:"stdio", command, args, env}` entries (https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers). New MCP tools start disabled: the user ticks them in the chat Tools picker. Instructions: `.github/copilot-instructions.md` in the solution, and `%USERPROFILE%\copilot-instructions.md` for the user on Visual Studio 2026, both gated by the Tools > Options checkbox "Enable custom instructions to be loaded from .github/copilot-instructions.md files and added to requests" (https://learn.microsoft.com/en-us/visualstudio/ide/copilot-chat-context). Hooks: GitHub documents agent hooks only for Copilot cloud agent and Copilot CLI (https://docs.github.com/en/copilot/concepts/agents/hooks), so this bridge writes no hooks file. In Visual Studio there is no read dedup, no hint, no image shrink and no output folding. Both `.mcp.json` paths are also Claude Code files: it reads `<dir>\.mcp.json` in every directory from the cwd up to the drive root, validates each with `mcpServers` required, and fails fatally on a file holding only `servers`. So this module edits `servers["token-goat"]`, adds an empty `mcpServers` to any file it writes that lacks one, and leaves an existing `mcpServers` key byte-for-byte as it was; it registers nothing for Claude Code. This module must not import vscode_install.ts or copilot_cli_install.ts: both call syncVisualStudioProjectGuidance, so importing either would close an import cycle. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -146,11 +136,7 @@ function writeGuidance(filePath: string): boolean {
   return upsertDelimitedBlock(filePath, VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END, buildVisualStudioGuidanceBlock(shares))
 }
 
-/**
- * Re-renders an existing Visual Studio block in `filePath` for the gate blocks now beside it; a no-op when the file has no Visual Studio block.
- *
- * Called after install/uninstall --vscode -p and --copilot --local change the same file, so the gate is never there twice and never missing: removing the other block turns the addendum back into the full gate.
- */
+/** Re-renders an existing Visual Studio block in `filePath` for the gate blocks now beside it; a no-op when the file has no Visual Studio block. Called after install/uninstall --vscode -p and --copilot --local change the same file, so the gate is never there twice and never missing: removing the other block turns the addendum back into the full gate. */
 export function syncVisualStudioProjectGuidance(filePath: string): boolean {
   if (!hasBlock(readText(filePath), VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END)) return false
   return writeGuidance(filePath)
@@ -188,11 +174,7 @@ function installVisualStudioScoped(opts: VisualStudioScopeOptions): VisualStudio
   }
   const next = ensureMcpServersKey(setTokenGoatServer(config.text, managedServer()))
   if (config.text !== next) {
-    // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory
-    // symlink a clone checked in, so this step is itself one of the ways an install lands outside
-    // the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw
-    // fs.mkdirSync here is outside the boundary by inspection even while the backupFile below
-    // happens to refuse. See bridges/project_scope_guard.ts.
+    // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory symlink a clone checked in, so this step is itself one of the ways an install lands outside the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw fs.mkdirSync here is outside the boundary by inspection even while the backupFile below happens to refuse. See bridges/project_scope_guard.ts.
     ensureDirSync(path.dirname(mcpPath))
     backupFile(mcpPath)
     atomicWriteText(mcpPath, next)

@@ -1,10 +1,4 @@
-/**
- * Shared reader and writer for the `servers`-keyed MCP JSON files that VS Code (`mcp.json`) and Visual Studio (`.mcp.json`) both read.
- *
- * Both hosts use the same entry shape under the same `servers` root key (not Claude Code's `mcpServers`), so the managed-entry test, the JSONC-preserving edit and the bundle path live here once. Visual Studio's format: https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers
- *
- * The root-key-agnostic functions below (`serversOf`, `setTokenGoatServer`, `dropEmptyServers`, `hasManagedServer`) take an optional `rootKey` (default `'servers'`) so `./zed_install.ts` can reuse the same JSONC-preserving edit machinery for Zed's `context_servers` root key without duplicating it: Zed's entry *shape* is unrelated (a shell-executed `command` string plus `timeout`, not `type`/`command`/`args`), so `managedServer`/`isManagedServer` stay VS Code/Visual Studio-specific and Zed defines its own pair.
- */
+/** Shared reader and writer for the `servers`-keyed MCP JSON files that VS Code (`mcp.json`) and Visual Studio (`.mcp.json`) both read. Both hosts use the same entry shape under the same `servers` root key (not Claude Code's `mcpServers`), so the managed-entry test, the JSONC-preserving edit and the bundle path live here once. Visual Studio's format: https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers The root-key-agnostic functions below (`serversOf`, `setTokenGoatServer`, `dropEmptyServers`, `hasManagedServer`) take an optional `rootKey` (default `'servers'`) so `./zed_install.ts` can reuse the same JSONC-preserving edit machinery for Zed's `context_servers` root key without duplicating it: Zed's entry *shape* is unrelated (a shell-executed `command` string plus `timeout`, not `type`/`command`/`args`), so `managedServer`/`isManagedServer` stay VS Code/Visual Studio-specific and Zed defines its own pair. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { createRequire } from 'node:module'
@@ -100,15 +94,7 @@ export function setTokenGoatServer(text: string, value: unknown, rootKey = 'serv
 }
 
 /** Drops a `servers` object left empty by a removal, so a file install only added `servers` to reads back exactly as it was. */
-/**
- * True when every key in the parsed config belongs to token-goat: a single server map holding only our own managed entry.
- *
- * This is the one content test uninstall's ownership rule is allowed to make. It is not the
- * "is it empty" reasoning that deleted a user's file, because emptiness is reached by both cases
- * while this shape is reached only by a file token-goat wrote end to end: there is no user data in
- * it to lose. Anything else at all -- a second server, a comment-bearing sibling key, a user's own
- * stub -- fails it, and the file is then never deleted.
- */
+/** True when every key in the parsed config belongs to token-goat: a single server map holding only our own managed entry. This is the one content test uninstall's ownership rule is allowed to make. It is not the "is it empty" reasoning that deleted a user's file, because emptiness is reached by both cases while this shape is reached only by a file token-goat wrote end to end: there is no user data in it to lose. Anything else at all -- a second server, a comment-bearing sibling key, a user's own stub -- fails it, and the file is then never deleted. */
 export function holdsOnlyManagedServer(value: Record<string, unknown>): boolean {
   const keys = Object.keys(value)
   if (keys.length !== 1) return false
@@ -120,14 +106,7 @@ export function holdsOnlyManagedServer(value: Record<string, unknown>): boolean 
   return names.length === 1 && names[0] === 'token-goat' && isManagedServer((servers as Record<string, unknown>)['token-goat'])
 }
 
-/**
- * True when `text` holds no user data at all: blank, or a single empty `rootKey` object.
- *
- * This is the one emptiness test the residue cleanup is allowed to make, and it is shared by
- * every surface that deletes such a file (doctor's check, doctor --repair, and the VS Code
- * uninstall) so they cannot drift apart. A file that holds anything else -- a second key, a
- * comment, a user's own server -- is never empty, no matter how it looks.
- */
+/** True when `text` holds no user data at all: blank, or a single empty `rootKey` object. This is the one emptiness test the residue cleanup is allowed to make, and it is shared by every surface that deletes such a file (doctor's check, doctor --repair, and the VS Code uninstall) so they cannot drift apart. A file that holds anything else -- a second key, a comment, a user's own server -- is never empty, no matter how it looks. */
 export function isResidueServersJson(text: string, rootKey = 'servers'): boolean {
   const trimmed = text.trim()
   if (trimmed === '') return true
@@ -168,11 +147,7 @@ export function dropLoneEmptyMcpServers(text: string): string {
   return editAt(text, ['mcpServers'], undefined)
 }
 
-/**
- * Whether `filePath` holds a token-goat-managed entry under `rootKey`; a missing, unreadable or
- * malformed file reads as false. `isManaged` defaults to VS Code/Visual Studio's `isManagedServer`;
- * `./zed_install.ts` passes its own `isZedManagedServer` for Zed's unrelated entry shape.
- */
+/** Whether `filePath` holds a token-goat-managed entry under `rootKey`; a missing, unreadable or malformed file reads as false. `isManaged` defaults to VS Code/Visual Studio's `isManagedServer`; `./zed_install.ts` passes its own `isZedManagedServer` for Zed's unrelated entry shape. */
 export function hasManagedServer(filePath: string, label: string, rootKey = 'servers', isManaged: (value: unknown) => boolean = isManagedServer): boolean {
   if (!fs.existsSync(filePath)) return false
   try {

@@ -24,3 +24,15 @@ export const EXTERNAL_NATIVE_DEPS = [
   // Not a native addon, but the same "optionalDependencies entry must not get statically inlined" reasoning applies: the full TypeScript compiler (ts_refs.ts's lazily-`require`d type-resolved `refs` tier) is multiple MB of pure JS. Bundling it would both bloat dist/token-goat.mjs for every install and, per the comment above, defeat graceful degradation on installs that skip optional deps.
   'typescript',
 ]
+
+/** The entry built a second time as a standalone CommonJS file, `dist/token-goat-hook-client.cjs`, which is what a hook shim loads first; see esbuild.config.mjs. Its graph is a subset of the ESM build's, so the notices generator has nothing more to find in it. */
+export const CJS_CLIENT = 'token-goat-hook-client'
+
+/** Constants every build of the shipping graph inlines. `__TG_MANIFEST__` carries the package.json fields src/version.ts exports, so a bundled process never opens package.json: that read cost 2.2ms of every CLI start and of every hook call a resident server answers. */
+export function buildDefines(pkg) {
+  return {
+    'import.meta.env': '{}',
+    // A string of JSON rather than an object: esbuild emits an object define as a module and adds a call initializing it to every lazily loaded module in the bundle, 7KB across the hook graph.
+    __TG_MANIFEST__: JSON.stringify(JSON.stringify({ version: pkg.version, name: pkg.name, bugs: { url: pkg.bugs?.url } })),
+  }
+}

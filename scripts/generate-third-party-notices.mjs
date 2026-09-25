@@ -1,40 +1,13 @@
-/**
- * Write THIRD_PARTY_NOTICES.md: the copyright and permission notices of every third-party package
- * the shipping build inlines into dist/.
- *
- * dist/ is not a directory of this project's own code. esbuild's `bundle: true` copies the source
- * of roughly two dozen npm packages into the emitted chunks, and package.json's `files` ships the
- * whole directory. MIT and BSD both require their copyright notice to travel with a binary
- * redistribution, and BlueOak requires the license text or a link, so the tarball owed those
- * notices and carried almost none: esbuild's default `legalComments` mode keeps only `/*!` and
- * `@license` comments, which most of these packages do not have, so only two of them left a trace
- * in dist/ and there was no notices file at all.
- *
- * The package list is read from the build's own metafile rather than from package.json's
- * dependencies. Those are different sets in both directions: `external` keeps several declared
- * dependencies out of the bundle entirely, and a package can arrive as a transitive dependency
- * nobody declared. Only what the bundler actually inlined creates the obligation, and only the
- * metafile knows what that was.
- *
- *   node scripts/generate-third-party-notices.mjs           # write the file
- *   node scripts/generate-third-party-notices.mjs --check   # fail if the file is out of date
- */
+/** Write THIRD_PARTY_NOTICES.md: the copyright and permission notices of every third-party package the shipping build inlines into dist/. dist/ is not a directory of this project's own code. esbuild's `bundle: true` copies the source of roughly two dozen npm packages into the emitted chunks, and package.json's `files` ships the whole directory. MIT and BSD both require their copyright notice to travel with a binary redistribution, and BlueOak requires the license text or a link, so the tarball owed those notices and carried almost none: esbuild's default `legalComments` mode keeps only `/*!` and `@license` comments, which most of these packages do not have, so only two of them left a trace in dist/ and there was no notices file at all. The package list is read from the build's own metafile rather than from package.json's dependencies. Those are different sets in both directions: `external` keeps several declared dependencies out of the bundle entirely, and a package can arrive as a transitive dependency nobody declared. Only what the bundler actually inlined creates the obligation, and only the metafile knows what that was. Run `node scripts/generate-third-party-notices.mjs` to write the file, or add `--check` to fail when it is out of date. */
 import * as esbuild from 'esbuild'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import * as path from 'node:path'
 
-import { ENTRY_POINTS, EXTERNAL_NATIVE_DEPS } from './build-options.mjs'
+import { buildDefines, ENTRY_POINTS, EXTERNAL_NATIVE_DEPS } from './build-options.mjs'
 
 export const NOTICES_FILE = 'THIRD_PARTY_NOTICES.md'
 
-/**
- * Licenses this project accepts in its bundle. Everything here is permissive: it asks for the
- * notice this file exists to give, and nothing more. A copyleft or no-grant package reaching the
- * bundle is not a notices problem to be written up, it is a dependency decision to be made
- * deliberately, so the generator stops rather than quietly documenting it. (The LGPL libvips
- * binaries behind `sharp` are not in this set and never reach here: nothing under `src/` imports
- * `sharp`, so it is a development dependency and no part of it is in the graph this bundles.)
- */
+/** Licenses this project accepts in its bundle. Everything here is permissive: it asks for the notice this file exists to give, and nothing more. A copyleft or no-grant package reaching the bundle is not a notices problem to be written up, it is a dependency decision to be made deliberately, so the generator stops rather than quietly documenting it. (The LGPL libvips binaries behind `sharp` are not in this set and never reach here: nothing under `src/` imports `sharp`, so it is a development dependency and no part of it is in the graph this bundles.) */
 export const PERMISSIVE = new Set([
   '0BSD',
   'Apache-2.0',
@@ -49,16 +22,7 @@ export const PERMISSIVE = new Set([
 
 const LICENSE_FILE_RE = /^(LICENSE|LICENCE|COPYING|NOTICE)/i
 
-/**
- * Line endings, normalized to LF.
- *
- * Some bundled packages ship a CRLF LICENSE file, so the rendered document came out mixed while
- * `.gitattributes` (`* text=auto`) normalizes the committed copy to LF. The two could never match
- * on any platform: a Linux checkout is all-LF against a mixed render, a Windows one all-CRLF
- * against the same mixed render. Normalizing what is written, and both sides of the `--check`
- * comparison, is what makes the check stable. The notice text itself is untouched: a line ending
- * is not part of what reproducing a notice verbatim obliges.
- */
+/** Line endings, normalized to LF. Some bundled packages ship a CRLF LICENSE file, so the rendered document came out mixed while `.gitattributes` (`* text=auto`) normalizes the committed copy to LF. The two could never match on any platform: a Linux checkout is all-LF against a mixed render, a Windows one all-CRLF against the same mixed render. Normalizing what is written, and both sides of the `--check` comparison, is what makes the check stable. The notice text itself is untouched: a line ending is not part of what reproducing a notice verbatim obliges. */
 function toLf(text) {
   return text.replace(/\r\n?/g, '\n')
 }
@@ -71,12 +35,7 @@ function packageOf(input) {
   return parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0]
 }
 
-/**
- * Every third-party package the shipping build inlines, sorted.
- *
- * `write: false` because this only needs the metafile: the generator must never be able to
- * overwrite a real dist/ as a side effect of describing it.
- */
+/** Every third-party package the shipping build inlines, sorted. `write: false` because this only needs the metafile: the generator must never be able to overwrite a real dist/ as a side effect of describing it. */
 export async function bundledPackages(repoRoot = process.cwd()) {
   const pkg = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'))
   const result = await esbuild.build({
@@ -94,7 +53,7 @@ export async function bundledPackages(repoRoot = process.cwd()) {
     chunkNames: 'token-goat-chunk-[hash]',
     outExtension: { '.js': '.mjs' },
     external: EXTERNAL_NATIVE_DEPS,
-    define: { 'import.meta.env': '{}', __TG_VERSION__: JSON.stringify(pkg.version) },
+    define: buildDefines(pkg),
   })
 
   const names = new Set()
@@ -105,14 +64,7 @@ export async function bundledPackages(repoRoot = process.cwd()) {
   return [...names].sort()
 }
 
-/**
- * The notice text for one package: its own LICENSE file when it ships one.
- *
- * A handful of packages carry the notice in the head of their source file instead of in a separate
- * file (`omggif` is the one here). Falling back to that leading comment block keeps the obligation
- * met from the package's own text, rather than from a license template this repository chose on the
- * package's behalf -- which would be this project asserting someone else's copyright line.
- */
+/** The notice text for one package: its own LICENSE file when it ships one. A handful of packages carry the notice in the head of their source file instead of in a separate file (`omggif` is the one here). Falling back to that leading comment block keeps the obligation met from the package's own text, rather than from a license template this repository chose on the package's behalf -- which would be this project asserting someone else's copyright line. */
 function noticeText(dir) {
   const files = readdirSync(dir).filter((f) => LICENSE_FILE_RE.test(f)).sort()
   if (files.length > 0) return readFileSync(path.join(dir, files[0]), 'utf8').trim()

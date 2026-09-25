@@ -1,21 +1,4 @@
-/**
- * Wire-format shaping for VS Code's agent hooks (the built-in Copilot agent, VS Code 1.136+).
- *
- * VS Code reads a subset of the Claude Code response shape, and it is a strict subset: every field
- * below was read out of ChatHookService in resources/app/extensions/copilot/dist/extension.js
- * (VS Code 1.136.0), not assumed from Claude Code's documentation.
- *
- * - PreToolUse reads only `hookSpecificOutput`: `permissionDecision` (allow/ask/deny) with
- *   `permissionDecisionReason`, `updatedInput`, and `additionalContext`. A top-level
- *   `decision: "block"` is ignored there, so a Claude-shaped deny would let the call run.
- *   `updatedInput` is applied on its own (no decision needed) after a schema check against the
- *   tool's input schema, so it must use the tool's own key names.
- * - PostToolUse reads `hookSpecificOutput.additionalContext` and a top-level `decision: "block"`.
- *   It has no field that replaces the tool result: `updatedToolOutput` is never read.
- * - Stop and SubagentStop read `decision`/`reason` from inside `hookSpecificOutput`.
- * - SessionStart and UserPromptSubmit read `hookSpecificOutput.additionalContext`.
- * - A `hookSpecificOutput` whose `hookEventName` names a different event is dropped.
- */
+/** Wire-format shaping for VS Code's agent hooks (the built-in Copilot agent, VS Code 1.136+). VS Code reads a subset of the Claude Code response shape, and it is a strict subset: every field below was read out of ChatHookService in resources/app/extensions/copilot/dist/extension.js (VS Code 1.136.0), not assumed from Claude Code's documentation. - PreToolUse reads only `hookSpecificOutput`: `permissionDecision` (allow/ask/deny) with `permissionDecisionReason`, `updatedInput`, and `additionalContext`. A top-level `decision: "block"` is ignored there, so a Claude-shaped deny would let the call run. `updatedInput` is applied on its own (no decision needed) after a schema check against the tool's input schema, so it must use the tool's own key names. - PostToolUse reads `hookSpecificOutput.additionalContext` and a top-level `decision: "block"`. It has no field that replaces the tool result: `updatedToolOutput` is never read. - Stop and SubagentStop read `decision`/`reason` from inside `hookSpecificOutput`. - SessionStart and UserPromptSubmit read `hookSpecificOutput.additionalContext`. - A `hookSpecificOutput` whose `hookEventName` names a different event is dropped. */
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -53,13 +36,7 @@ function pruneMaterialized(): void {
   }
 }
 
-/**
- * Write the shrunk image in an image-shrink context ("<summary>\ndata:image/<fmt>;base64,<data>") to a temp file.
- *
- * Typed twin of materializeShrunkImage in shrink_block.ts. The file name comes from pid, time and a
- * random UUID, never from the source image's name, and the suffix's character class admits no path
- * separator. Returns undefined when the context is not a shrink payload or the write fails.
- */
+/** Write the shrunk image in an image-shrink context ("<summary>\ndata:image/<fmt>;base64,<data>") to a temp file. Typed twin of materializeShrunkImage in shrink_block.ts. The file name comes from pid, time and a random UUID, never from the source image's name, and the suffix's character class admits no path separator. Returns undefined when the context is not a shrink payload or the write fails. */
 export function materializeShrunkImageFile(context: string): string | undefined {
   const idx = context.indexOf('data:image/')
   if (idx === -1) return undefined
@@ -79,13 +56,7 @@ export function materializeShrunkImageFile(context: string): string | undefined 
 /** Events whose decision fields VS Code reads from inside `hookSpecificOutput` rather than the top level. */
 const NESTED_DECISION_EVENTS = new Set<HookEventName>(['stop', 'subagent_stop'])
 
-/**
- * Serialize a token-goat hook result into the response VS Code's agent reads.
- *
- * `hookEventName` is the PascalCase event name VS Code expects to see echoed back (the same names
- * Claude Code uses). Anything VS Code has no channel for becomes `{}` rather than a field it would
- * silently ignore: a result rewrite, a stop-event context note, or a base64 image payload.
- */
+/** Serialize a token-goat hook result into the response VS Code's agent reads. `hookEventName` is the PascalCase event name VS Code expects to see echoed back (the same names Claude Code uses). Anything VS Code has no channel for becomes `{}` rather than a field it would silently ignore: a result rewrite, a stop-event context note, or a base64 image payload. */
 export function serializeVscodeOutput(
   output: HookOutput,
   eventName: HookEventName,

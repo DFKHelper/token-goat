@@ -10,14 +10,14 @@ import { pinnedPopulation } from './population.js'
 
 const distDir = path.join(ROOT, 'dist')
 
-/** Every emitted `.mjs` in `dist/`, as source text. */
+/** Every emitted `.mjs` in `dist/`, and the one `.cjs` (the hook client every shim loads first; see esbuild.config.mjs), as source text. Both ship, so a package either one resolves is one the installed tool can load. */
 export function distSources(): string[] {
   // Pinned on the filenames rather than the contents this returns: the contents are what the guards search, so anchoring on them would be circular. Counting the files that produced them is the independent check -- an empty dist yields an empty source list and a vacuous pass.
   const files = pinnedPopulation({
-    what: 'dist/*.mjs bundle files',
-    items: fs.readdirSync(distDir).filter((f) => f.endsWith('.mjs')),
+    what: 'dist/*.mjs and *.cjs bundle files',
+    items: fs.readdirSync(distDir).filter((f) => f.endsWith('.mjs') || f.endsWith('.cjs')),
     floor: 8,
-    mustInclude: ['token-goat.mjs'],
+    mustInclude: ['token-goat.mjs', 'token-goat-hook-client.cjs'],
   })
   return files.map((f) => fs.readFileSync(path.join(distDir, f), 'utf8'))
 }

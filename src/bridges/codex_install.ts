@@ -1,50 +1,4 @@
-/**
- * Codex CLI install / uninstall writer.
- *
- * `token-goat install --codex` patches Codex CLI in addition to the base
- * Claude Code install (see README's "Codex CLI users" section: "The `--codex`
- * flag patches both Claude Code and Codex CLI in one pass"). This module only
- * ever touches paths under `~/.codex/` -- the base Claude Code writer in
- * `../install.ts` is unaffected and is always run separately by the caller.
- *
- * Three artifacts are installed:
- * - `~/.codex/hooks/token-goat-shim.js` -- {@link CODEX_HOOK_SCRIPT} written to
- *   disk. Codex's `command` hook field invokes it via `hookCommandFor` below as
- *   `"<process.execPath>" "<this path>" <event> "<token-goat entry path>"` --
- *   the absolute Node binary and a baked token-goat entry path, not a bare
- *   `node`/`token-goat` depending on PATH resolution (github/copilot-cli#4001
- *   class of failure, fixed here the same way as the Copilot CLI bridge). The
- *   shim itself forwards stdin to that baked entry (`token-goat hook <event>`,
- *   falling back to a PATH-based lookup when the entry arg is absent) and
- *   massages the JSON response to satisfy Codex's strict
- *   (`additionalProperties: false`) output schemas. Rewritten unconditionally
- *   on every install so an upgraded token-goat version's shim logic always
- *   reaches disk, even when the config.toml hooks block itself needed no
- *   changes.
- * - `~/.codex/config.toml` -- a `[[hooks.<Event>]]` / `[[hooks.<Event>.hooks]]`
- *   array-of-tables block (Codex's real hook config shape; verified against
- *   OpenAI's Codex hooks documentation) wiring `PreToolUse`/`PostToolUse` for
- *   the three Codex-specific matchers the README documents: `view_image|Bash|exec|shell|bash`,
- *   `apply_patch`, `web_search` -- plus three matcher-less global events,
- *   `PreCompact`/`UserPromptSubmit`/`SubagentStop`, matching what Claude Code
- *   and Grok already wire (see {@link CODEX_GLOBAL_HOOK_EVENTS}'s docstring).
- *   Parsed/serialized with `smol-toml`, the same
- *   library `config.ts` already uses for token-goat's own config file, so no
- *   TOML is hand-rolled. Any other keys/tables in the file are preserved
- *   verbatim (mirrors `install.ts`'s treatment of unrelated `settings.json`
- *   keys). A timestamped `.bak` is written before any in-place edit.
- * - `~/.codex/AGENTS.md` -- a delimited `<!-- token-goat-codex-begin -->` /
- *   `<!-- token-goat-codex-end -->` block with the same routing guidance as
- *   Claude Code's `CLAUDE.md` block, adapted for Codex's own tool names
- *   (`shell`, `apply_patch`, `view_image`, `web_search` -- see
- *   `CODEX_TOOL_NAME_MAP` in `../hooks_cli.ts`). Content outside the markers is
- *   always preserved.
- *
- * A corrupt-but-recoverable `config.toml` (exists but fails to parse) must
- * never be silently clobbered -- {@link installCodex} throws
- * {@link CodexConfigParseError} before any write in that case, mirroring the
- * `SettingsParseError` strict-mode guard in `../install.ts`.
- */
+/** Codex CLI install / uninstall writer. `token-goat install --codex` patches Codex CLI in addition to the base Claude Code install (see README's "Codex CLI users" section: "The `--codex` flag patches both Claude Code and Codex CLI in one pass"). This module only ever touches paths under `~/.codex/` -- the base Claude Code writer in `../install.ts` is unaffected and is always run separately by the caller. Three artifacts are installed: - `~/.codex/hooks/token-goat-shim.js` -- {@link CODEX_HOOK_SCRIPT} written to disk. Codex's `command` hook field invokes it via `hookCommandFor` below as `"<process.execPath>" "<this path>" <event> "<token-goat entry path>"` -- the absolute Node binary and a baked token-goat entry path, not a bare `node`/`token-goat` depending on PATH resolution (github/copilot-cli#4001 class of failure, fixed here the same way as the Copilot CLI bridge). The shim itself forwards stdin to that baked entry (`token-goat hook <event>`, falling back to a PATH-based lookup when the entry arg is absent) and massages the JSON response to satisfy Codex's strict (`additionalProperties: false`) output schemas. Rewritten unconditionally on every install so an upgraded token-goat version's shim logic always reaches disk, even when the config.toml hooks block itself needed no changes. - `~/.codex/config.toml` -- a `[[hooks.<Event>]]` / `[[hooks.<Event>.hooks]]` array-of-tables block (Codex's real hook config shape; verified against OpenAI's Codex hooks documentation) wiring `PreToolUse`/`PostToolUse` for the three Codex-specific matchers the README documents: `view_image|Bash|exec|shell|bash`, `apply_patch`, `web_search` -- plus three matcher-less global events, `PreCompact`/`UserPromptSubmit`/`SubagentStop`, matching what Claude Code and Grok already wire (see {@link CODEX_GLOBAL_HOOK_EVENTS}'s docstring). Parsed/serialized with `smol-toml`, the same library `config.ts` already uses for token-goat's own config file, so no TOML is hand-rolled. Any other keys/tables in the file are preserved verbatim (mirrors `install.ts`'s treatment of unrelated `settings.json` keys). A timestamped `.bak` is written before any in-place edit. - `~/.codex/AGENTS.md` -- a delimited `<!-- token-goat-codex-begin -->` / `<!-- token-goat-codex-end -->` block with the same routing guidance as Claude Code's `CLAUDE.md` block, adapted for Codex's own tool names (`shell`, `apply_patch`, `view_image`, `web_search` -- see `CODEX_TOOL_NAME_MAP` in `../hooks_cli.ts`). Content outside the markers is always preserved. A corrupt-but-recoverable `config.toml` (exists but fails to parse) must never be silently clobbered -- {@link installCodex} throws {@link CodexConfigParseError} before any write in that case, mirroring the `SettingsParseError` strict-mode guard in `../install.ts`. */
 
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
@@ -64,15 +18,7 @@ import { groupHasTokenGoat, findTokenGoatEntryPosition, findAnyTokenGoatEntryPos
 /** Marker substring identifying a token-goat-authored Codex hook command. */
 const CODEX_COMMAND_MARKER = 'token-goat-shim'
 
-/**
- * The Codex-specific tool-name matchers token-goat wires (README "What gets installed?" -> "With `--codex`"). Codex's matcher string is matched against its own native tool names, not token-goat's internal ones, so this alternation covers image reads and shell execution together (mirroring Claude Code's combined Read/Grep/Bash pre-read handling); `apply_patch` covers file edits and `web_search` covers Codex's web-fetch equivalent.
- *
- * Codex's matcher is tested against the tool name it puts on the hook wire, and 0.155.0 does not use one vocabulary for that. CAPTURE, 2026-09-22, read out of the hook payload itself rather than off the rollout: a shell command arrives as `tool_name: "Bash"` -- Codex normalizes its own `exec` tool into Claude Code's PascalCase naming before matching -- while the patch tool arrives under its native `apply_patch`. So `Bash` is what covers shell execution here, and the rollout's `custom_tool_call` name (`exec`) is the internal spelling, which never reaches the matcher.
- *
- * Reaching that took a calibrated test rather than a guess. With `view_image|exec|shell|bash` installed, a real run's isolated ledger held `hook:pre_compact|8` and `hook:user_prompt_submit|1` and no `hook:pre_tool_use` or `hook:post_tool_use` row at all -- every tool-scoped hook silently dead, which also stranded the pre-compact manifest, since it queues on PreCompact and drains on the next PostToolUse (eight queued across that run, none delivered). A null that shape has two causes: a matcher that does not match, or a `[hooks.state]` trusted_hash Codex rejects. Substituting `.*` with a recomputed hash made both rows appear immediately, which separates them: the hash was always right and the matcher was always wrong.
- *
- * The broken names were not wrong by accident, and one of them was a regression. An older version wired `view_image|Bash`, which matched; it was changed to `view_image|shell|bash` on the strength of this file's own `buildAgentsBlock` text naming "Codex's native `shell`, `apply_patch`, and `view_image` tools" -- a fixture read off the producer sitting beside it rather than off a run, so it agreed with the mistake by construction and every test kept passing. Lowercase `bash`, `shell` and `exec` are kept as alternatives because an older Codex or a fork may still send them and an unmatched alternative costs nothing. `view_image` and `web_search` carry no capture: neither was invoked in the runs above, so they stay unverified rather than confirmed.
- */
+/** The Codex-specific tool-name matchers token-goat wires (README "What gets installed?" -> "With `--codex`"). Codex's matcher string is matched against its own native tool names, not token-goat's internal ones, so this alternation covers image reads and shell execution together (mirroring Claude Code's combined Read/Grep/Bash pre-read handling); `apply_patch` covers file edits and `web_search` covers Codex's web-fetch equivalent. Codex's matcher is tested against the tool name it puts on the hook wire, and 0.155.0 does not use one vocabulary for that. CAPTURE, 2026-09-22, read out of the hook payload itself rather than off the rollout: a shell command arrives as `tool_name: "Bash"` -- Codex normalizes its own `exec` tool into Claude Code's PascalCase naming before matching -- while the patch tool arrives under its native `apply_patch`. So `Bash` is what covers shell execution here, and the rollout's `custom_tool_call` name (`exec`) is the internal spelling, which never reaches the matcher. Reaching that took a calibrated test rather than a guess. With `view_image|exec|shell|bash` installed, a real run's isolated ledger held `hook:pre_compact|8` and `hook:user_prompt_submit|1` and no `hook:pre_tool_use` or `hook:post_tool_use` row at all -- every tool-scoped hook silently dead, which also stranded the pre-compact manifest, since it queues on PreCompact and drains on the next PostToolUse (eight queued across that run, none delivered). A null that shape has two causes: a matcher that does not match, or a `[hooks.state]` trusted_hash Codex rejects. Substituting `.*` with a recomputed hash made both rows appear immediately, which separates them: the hash was always right and the matcher was always wrong. The broken names were not wrong by accident, and one of them was a regression. An older version wired `view_image|Bash`, which matched; it was changed to `view_image|shell|bash` on the strength of this file's own `buildAgentsBlock` text naming "Codex's native `shell`, `apply_patch`, and `view_image` tools" -- a fixture read off the producer sitting beside it rather than off a run, so it agreed with the mistake by construction and every test kept passing. Lowercase `bash`, `shell` and `exec` are kept as alternatives because an older Codex or a fork may still send them and an unmatched alternative costs nothing. `view_image` and `web_search` carry no capture: neither was invoked in the runs above, so they stay unverified rather than confirmed. */
 const CODEX_MATCHERS = ['view_image|Bash|exec|shell|bash', 'apply_patch', 'web_search'] as const
 
 /** Event keys wired for each matcher: pre- and post- tool-call interception. */
@@ -85,21 +31,7 @@ const CODEX_EVENT_ARG: Record<CodexHookEvent, string> = {
   PostToolUse: 'post_tool_use',
 }
 
-/**
- * Codex hook events that are turn-scoped but not tool-specific, so they need
- * no `matcher` (Codex's docs: omit `matcher` entirely to match every
- * occurrence of a supported event). Confirmed against Codex's real hooks
- * documentation (developers.openai.com/codex/hooks, "Configuration
- * Reference"/"Hooks" pages, checked 2026-07-18): `PreCompact`,
- * `UserPromptSubmit`, and `SubagentStop` are real Codex hook events using the
- * identical `[[hooks.<Event>]]` config.toml shape already used for
- * `PreToolUse`/`PostToolUse` above -- token-goat just wasn't wiring them.
- * Claude Code (`../install.ts`'s `HOOK_EVENT_MAP`) and Grok
- * (`grok_install.ts`'s `GROK_HOOK_EVENTS`) already wire the equivalent three
- * events to the same server-side handlers (`preCompactHandler`/
- * `preCompactIndexHandler`, `userPromptSubmitHandler`, `subagentStopHandler`
- * in src/hooks_compact.ts, src/hooks_index.ts, src/hooks_session.ts).
- */
+/** Codex hook events that are turn-scoped but not tool-specific, so they need no `matcher` (Codex's docs: omit `matcher` entirely to match every occurrence of a supported event). Confirmed against Codex's real hooks documentation (developers.openai.com/codex/hooks, "Configuration Reference"/"Hooks" pages, checked 2026-07-18): `PreCompact`, `UserPromptSubmit`, and `SubagentStop` are real Codex hook events using the identical `[[hooks.<Event>]]` config.toml shape already used for `PreToolUse`/`PostToolUse` above -- token-goat just wasn't wiring them. Claude Code (`../install.ts`'s `HOOK_EVENT_MAP`) and Grok (`grok_install.ts`'s `GROK_HOOK_EVENTS`) already wire the equivalent three events to the same server-side handlers (`preCompactHandler`/ `preCompactIndexHandler`, `userPromptSubmitHandler`, `subagentStopHandler` in src/hooks_compact.ts, src/hooks_index.ts, src/hooks_session.ts). */
 const CODEX_GLOBAL_HOOK_EVENTS = ['PreCompact', 'UserPromptSubmit', 'SubagentStop'] as const
 type CodexGlobalHookEvent = (typeof CODEX_GLOBAL_HOOK_EVENTS)[number]
 
@@ -129,12 +61,7 @@ interface CodexConfig {
   [key: string]: unknown
 }
 
-/**
- * Thrown by {@link installCodex} when `config.toml` exists but isn't parseable
- * TOML. A caller about to overwrite the file must let this propagate rather
- * than silently proceeding as if the file were empty -- otherwise a single
- * TOML typo in the user's config gets clobbered on write.
- */
+/** Thrown by {@link installCodex} when `config.toml` exists but isn't parseable TOML. A caller about to overwrite the file must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single TOML typo in the user's config gets clobbered on write. */
 export class CodexConfigParseError extends Error {}
 
 /** Absolute path to `~/.codex/config.toml`. */
@@ -152,15 +79,7 @@ export function codexHookScriptPath(): string {
   return path.join(os.homedir(), '.codex', 'hooks', 'token-goat-shim.js')
 }
 
-/**
- * Parse `config.toml` at `p`.
- *
- * A missing file yields `{}` -- the legitimate "nothing installed yet" case.
- * When `opts.strict` is true, a file that *exists* but fails to parse throws
- * {@link CodexConfigParseError} instead of returning `{}`, so a caller about to
- * overwrite the file can tell "genuinely empty" apart from "corrupt, do not
- * touch." Non-strict (read-only) callers keep the lenient `{}` fallback.
- */
+/** Parse `config.toml` at `p`. A missing file yields `{}` -- the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but fails to parse throws {@link CodexConfigParseError} instead of returning `{}`, so a caller about to overwrite the file can tell "genuinely empty" apart from "corrupt, do not touch." Non-strict (read-only) callers keep the lenient `{}` fallback. */
 function readCodexConfig(p: string, opts: { strict?: boolean } = {}): CodexConfig {
   let raw: string
   try {
@@ -189,13 +108,7 @@ function isCodexTokenGoatCommand(command: string): boolean {
   return typeof command === 'string' && CODEX_MARKER_PATTERN.test(command)
 }
 
-/**
- * True when `groups` (a matcher-less/global event's `[[hooks.<Event>]]` array)
- * already has an entry matching `predicate`, regardless of `matcher` value.
- * Mirrors {@link groupHasTokenGoat} but without the exact-matcher requirement,
- * since {@link CODEX_GLOBAL_HOOK_EVENTS} entries are written with no `matcher`
- * field at all.
- */
+/** True when `groups` (a matcher-less/global event's `[[hooks.<Event>]]` array) already has an entry matching `predicate`, regardless of `matcher` value. Mirrors {@link groupHasTokenGoat} but without the exact-matcher requirement, since {@link CODEX_GLOBAL_HOOK_EVENTS} entries are written with no `matcher` field at all. */
 function anyGroupHasTokenGoat(
   groups: CodexMatcherGroup[] | undefined,
   predicate: (command: string) => boolean = isCodexTokenGoatCommand,
@@ -205,34 +118,13 @@ function anyGroupHasTokenGoat(
 
 // hookCommandFor is shared with copilot_cli_install.ts -- see util.ts.
 
-/**
- * Build the hook command for Codex.
- *
- * On Windows, Codex CLI executes hook commands via PowerShell (`powershell.exe -Command ...`).
- * In PowerShell, adjacent quoted string literals without a call operator fail with a ParserError
- * ("Unexpected token '...' in expression or statement"). Prefixing with `& ` instructs PowerShell
- * to invoke the quoted executable path with the trailing arguments (the identical fix
- * `copilot_cli_install.ts` uses for Copilot CLI's `powershell` hook entry).
- * On Unix (Linux/macOS), Codex executes hooks via POSIX `sh`, where `&` would be an invalid
- * background operator, so the bare quoted command is preserved.
- */
+/** Build the hook command for Codex. On Windows, Codex CLI executes hook commands via PowerShell (`powershell.exe -Command ...`). In PowerShell, adjacent quoted string literals without a call operator fail with a ParserError ("Unexpected token '...' in expression or statement"). Prefixing with `& ` instructs PowerShell to invoke the quoted executable path with the trailing arguments (the identical fix `copilot_cli_install.ts` uses for Copilot CLI's `powershell` hook entry). On Unix (Linux/macOS), Codex executes hooks via POSIX `sh`, where `&` would be an invalid background operator, so the bare quoted command is preserved. */
 export function codexHookCommandFor(scriptPath: string, eventArg: string): string {
   const base = hookCommandFor(scriptPath, eventArg)
   return process.platform === 'win32' ? `& ${base}` : base
 }
 
-/**
- * Compute the canonical `trusted_hash` string that Codex CLI uses in `[hooks.state]`
- * to track whether a hook definition is trusted.
- *
- * Codex canonicalizes the hook into:
- *   {
- *     event_name: <snake_case_event>,
- *     hooks: [{ async: false, command: <command>, timeout: 600, type: "command" }],
- *     matcher?: <matcher>
- *   }
- * and hashes the compact JSON representation with SHA-256 (`sha256:<hex>`).
- */
+/** Compute the canonical `trusted_hash` string that Codex CLI uses in `[hooks.state]` to track whether a hook definition is trusted. Codex canonicalizes the hook into: { event_name: <snake_case_event>, hooks: [{ async: false, command: <command>, timeout: 600, type: "command" }], matcher?: <matcher> } and hashes the compact JSON representation with SHA-256 (`sha256:<hex>`). */
 export function computeCodexHookHash(
   eventArg: string,
   command: string,
@@ -266,29 +158,17 @@ export interface CodexInstallResult {
   readonly alreadyInstalled: boolean
 }
 
-/**
- * Install the Codex CLI integration.
- *
- * Always additive: never touches Claude Code's `~/.claude/settings.json`
- * (the caller is responsible for also running the base install per README's
- * "patches both Claude Code and Codex CLI in one pass"). Idempotent -- a
- * second call reports `alreadyInstalled: true` and does not duplicate any
- * hook entry or AGENTS.md block.
- */
+/** Install the Codex CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install per README's "patches both Claude Code and Codex CLI in one pass"). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any hook entry or AGENTS.md block. */
 export function installCodex(): CodexInstallResult {
   const configPath = codexConfigPath()
   const agentsPath = codexAgentsPath()
   const scriptPath = codexHookScriptPath()
 
-  // The shim is a generated, never-user-edited file: keep it in sync with the
-  // running token-goat version on every install call, independent of whether
-  // the config.toml hooks block itself needs any change.
+  // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the config.toml hooks block itself needs any change.
   ensureDirSync(path.dirname(scriptPath))
   atomicWriteText(scriptPath, CODEX_HOOK_SCRIPT)
 
-  // strict: true -- a config.toml that exists but fails to parse must abort
-  // before any write (see CodexConfigParseError), not silently proceed as if
-  // it were empty and get clobbered below.
+  // strict: true -- a config.toml that exists but fails to parse must abort before any write (see CodexConfigParseError), not silently proceed as if it were empty and get clobbered below.
   const config = readCodexConfig(configPath, { strict: true })
   const hooks: NonNullable<CodexConfig['hooks']> = config.hooks ?? {}
 
@@ -300,8 +180,7 @@ export function installCodex(): CodexInstallResult {
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     // A hand-edited or foreign-tool-written config.toml can hold a scalar (e.g. a bare string) under a key that Codex CLI's own hooks schema requires to be an array of matcher-group tables; spreading a scalar here would silently split a string into single-character garbage entries, so treat any non-array shape as absent rather than corrupting the write.
     const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
-    // Migrate a group left behind by a previous token-goat version whose matcher string has since changed (e.g. CODEX_MATCHERS[0] widening from "view_image|Bash" to "view_image|shell|bash" to "view_image|Bash|exec|shell|bash"): stripStaleGroupHooks below only ever compares against the *current* matcher being installed, so a group under an old, no-longer-current matcher would otherwise survive untouched forever and permanently desync every later group's array position from what isCodexInstalled expects.
-    // A state key records the position the *existing* config wrote it under, so it has to be built from the group's original index; `idx` alone is the live-array index, which every splice below shifts down, which would record a key one slot short and leave the real orphan behind while transiently deleting a live entry's key.
+    // Migrate a group left behind by a previous token-goat version whose matcher string has since changed (e.g. CODEX_MATCHERS[0] widening from "view_image|Bash" to "view_image|shell|bash" to "view_image|Bash|exec|shell|bash"): stripStaleGroupHooks below only ever compares against the *current* matcher being installed, so a group under an old, no-longer-current matcher would otherwise survive untouched forever and permanently desync every later group's array position from what isCodexInstalled expects. A state key records the position the *existing* config wrote it under, so it has to be built from the group's original index; `idx` alone is the live-array index, which every splice below shifts down, which would record a key one slot short and leave the real orphan behind while transiently deleting a live entry's key.
     let removedGroups = 0
     for (let idx = 0; idx < groups.length; idx++) {
       const g = groups[idx]!
@@ -325,11 +204,7 @@ export function installCodex(): CodexInstallResult {
     for (const matcher of CODEX_MATCHERS) {
       if (groupHasTokenGoat(groups, matcher, (c) => c === expectedCommand)) continue
 
-      // A marker-matched entry whose baked command text is no longer current
-      // (stale execPath/entry path from a deleted dev checkout or a node
-      // version switch) is not "already installed" -- strip it before writing
-      // the current command, so a re-install upgrades in place instead of
-      // leaving a dead, unreachable entry next to nothing.
+      // A marker-matched entry whose baked command text is no longer current (stale execPath/entry path from a deleted dev checkout or a node version switch) is not "already installed" -- strip it before writing the current command, so a re-install upgrades in place instead of leaving a dead, unreachable entry next to nothing.
       const nextGroups = stripStaleGroupHooks(groups, isCodexTokenGoatCommand, { matcher })
       groups.length = 0
       groups.push(...nextGroups)
@@ -351,8 +226,7 @@ export function installCodex(): CodexInstallResult {
       continue
     }
 
-    // Same stale-entry handling as the matcher loop above: strip any
-    // outdated token-goat entry before writing the current command.
+    // Same stale-entry handling as the matcher loop above: strip any outdated token-goat entry before writing the current command.
     const nextGroups = stripStaleGroupHooks(groups, isCodexTokenGoatCommand)
     nextGroups.push({ hooks: [{ type: 'command', command: expectedCommand }] })
     hooks[event] = nextGroups
@@ -361,8 +235,7 @@ export function installCodex(): CodexInstallResult {
 
   const agentsChanged = writeAgentsBlock(agentsPath)
 
-  // Ensure [hooks.state] in config.toml carries the valid trusted_hash for each
-  // installed token-goat hook so Codex CLI never prompts or silently skips the hooks as untrusted.
+  // Ensure [hooks.state] in config.toml carries the valid trusted_hash for each installed token-goat hook so Codex CLI never prompts or silently skips the hooks as untrusted.
   const hooksState = (hooks['state'] as Record<string, { trusted_hash?: string }> | undefined) ?? {}
   // Drop the trust hashes of exactly the entries the migration cleanup above stripped, so a stale group's old array position never leaves an orphaned key behind for a later, unrelated group to collide with.
   for (const key of staleStateKeysToRemove) {
@@ -433,13 +306,7 @@ export function installCodex(): CodexInstallResult {
   }
 }
 
-/**
- * Remove the Codex CLI integration: strips only token-goat's own hook entries
- * from `config.toml` (preserving any other hooks/keys), strips the delimited
- * block from `AGENTS.md` (preserving any other content), and removes the hook
- * shim script. Returns true when at least one of the three was present and
- * removed; false when nothing was installed (no writes occur in that case).
- */
+/** Remove the Codex CLI integration: strips only token-goat's own hook entries from `config.toml` (preserving any other hooks/keys), strips the delimited block from `AGENTS.md` (preserving any other content), and removes the hook shim script. Returns true when at least one of the three was present and removed; false when nothing was installed (no writes occur in that case). */
 export function uninstallCodex(): boolean {
   const configPath = codexConfigPath()
   const agentsPath = codexAgentsPath()
@@ -495,16 +362,7 @@ export function uninstallCodex(): boolean {
   return removedAny
 }
 
-/**
- * Is the Codex CLI integration currently present?
- *
- * True only when every (event, matcher) pair carries a token-goat hook entry,
- * the shim script exists on disk, the AGENTS.md delimited block is present,
- * and every hook entry has its trusted_hash recorded under [hooks.state].
- * A partial install (e.g. config.toml wired but the shim script deleted by
- * hand, or an untrusted/stale hash in hooks.state) reads as not installed, so
- * {@link installCodex} will top up what's missing.
- */
+/** Is the Codex CLI integration currently present? True only when every (event, matcher) pair carries a token-goat hook entry, the shim script exists on disk, the AGENTS.md delimited block is present, and every hook entry has its trusted_hash recorded under [hooks.state]. A partial install (e.g. config.toml wired but the shim script deleted by hand, or an untrusted/stale hash in hooks.state) reads as not installed, so {@link installCodex} will top up what's missing. */
 export function isCodexInstalled(): boolean {
   const configPath = codexConfigPath()
   const config = readCodexConfig(configPath)
@@ -564,11 +422,7 @@ function buildAgentsBlock(): string {
   })
 }
 
-/**
- * Write the delimited block into `p`, preserving everything outside the
- * markers. Returns false (no write) when the file already contains this exact
- * block -- the idempotent re-install case.
- */
+/** Write the delimited block into `p`, preserving everything outside the markers. Returns false (no write) when the file already contains this exact block -- the idempotent re-install case. */
 function writeAgentsBlock(p: string): boolean {
   return upsertDelimitedBlock(p, AGENTS_BEGIN, AGENTS_END, buildAgentsBlock())
 }
