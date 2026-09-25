@@ -1,4 +1,4 @@
-/** Holds the harness adapters in src/hook_adapters.ts and the per-harness Node shims (src/bridges/{claudecode,codex,grok,kimi,copilot_cli}.ts) to one behaviour. Every harness is installed into a sandbox by the BUILT bundle, and every event its installer wires is driven two ways with the same payload: (a) the installed shim, run exactly as the harness config names it (`node <shim> <event> <entry>`, payload on stdin), and (b) a harness-aware (v2) request to a real `hook-server run` process from the same bundle, through the verifying client in tests/helpers/hook_v2_client.ts. The two must print the same bytes and exit with the same code, and a v2 response must send the async-detach line as an early frame exactly when the shim prints it first. Payloads come from tests/fixtures/harness_hook_payloads.ts, each with its provenance. */
+/** Holds the harness adapters in src/hook_adapters.ts and the per-harness Node shims (src/bridges/{claudecode,codex,grok,kimi,copilot_cli}.ts) to one behaviour. Every harness is installed into a sandbox by the BUILT bundle, and every event its installer wires is driven two ways with the same payload: (a) the installed shim, run exactly as the harness config names it (`node <shim> <event> <entry>`, payload on stdin), and (b) a harness-aware (v2) request to a real `hook-server run` process from the same bundle, through the verifying client in tests/helpers/hook_v2_client.ts, and (c) the built native client (native/tg-hook) run with the flags an installer puts in front of that Node command. All three must print the same bytes and exit with the same code, a v2 response must send the async-detach line as an early frame exactly when the shim prints it first, and every native call must be served by the server, which its per-slot served counter shows: a client that computed the wrong endpoint would fall back to the same Node command and print the same bytes. Payloads come from tests/fixtures/harness_hook_payloads.ts, each with its provenance. */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
@@ -14,7 +14,9 @@ import { HOOK_EVENTS, type HookOutput } from '../src/types.js'
 import { HARNESS_HOOK_PAYLOADS, type HookPayloadCase, type PayloadHarness } from './fixtures/harness_hook_payloads.js'
 import { BUNDLE } from './helpers/bundle.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
+import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
 import { callV2, verifyResponseFrames, type Frame, type V2Served } from './helpers/hook_v2_client.js'
+import { buildNative } from './helpers/native_bin.js'
 
 type Env = Record<string, string>
 
@@ -130,8 +132,10 @@ async function startServer(): Promise<Buffer> {
 
 let key: Buffer
 let endpoint: string
+let bin = ''
 
 beforeAll(async () => {
+  bin = buildNative()
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v2eq-')))
   const dataDir = dataDirForHome(base)
   const proj = path.join(base, 'proj')
@@ -148,7 +152,7 @@ beforeAll(async () => {
   }
   key = await startServer()
   endpoint = endpointFor(0, dataDir, fs.realpathSync.native(path.dirname(BUNDLE)))
-}, 240_000)
+}, 900_000)
 
 afterAll(async () => {
   try {
@@ -209,6 +213,29 @@ async function runV2(c: HookPayloadCase, sid: string): Promise<{ out: string[]; 
   return outcome
 }
 
+/** A command after `--` that must never run: the served path leaves it alone, so reaching it means the native client fell back. */
+const TRIPWIRE = [process.execPath, '-e', 'process.stdout.write("TRIPWIRE");process.exit(99)']
+
+/** The native client in front of `tail`, with the flags an installer writes from the same wiring the shim runs with: the harness, the event argument, the bundle entry, and the shim's directory. */
+function runNative(c: HookPayloadCase, sid: string, tail: readonly string[]): Promise<{ stdout: string; exit: number | null; stderr: string }> {
+  const { shim, entry } = wiringFor(c)
+  const flags = ['--harness', c.harness, '--event', c.event, '--entry', entry, '--script-dir', path.dirname(shim)]
+  return new Promise((resolve, reject) => {
+    // sb.env turns the server off for the cold shim runs; the native client honours that switch as the Node client does, so it is turned back on here.
+    const child = spawn(bin, [...flags, '--', ...tail], { cwd: sb.proj, env: { ...caseEnv(c, sid), TOKEN_GOAT_HOOK_SERVER: '1' }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const out: Buffer[] = []
+    let stderr = ''
+    child.stdout.on('data', (d: Buffer) => out.push(d))
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
+    child.on('error', reject)
+    child.on('close', (exit) => resolve({ stdout: Buffer.concat(out).toString('utf8'), exit, stderr }))
+    child.stdin.end(caseInput(c, sid))
+  })
+}
+
+/** Where the shim's stderr and the native client's differ, by case, which the last test in the suite requires to be none. */
+const stderrDiffs: Array<{ id: string; shim: string; native: string }> = []
+
 /** What the shim itself must answer for the cases that carry each adapter's distinctive behaviour, so the equality above cannot pass by both sides collapsing to the same no-op. HAND-DERIVED from each shim's documented contract (the comments in src/bridges/*.ts), not from either run's output. */
 const ANCHORS: Record<string, { stdout: string | RegExp; exit?: number }> = {
   'claudecode|Bash command token-goat redirects (block)': { stdout: /^\{"decision":"block","reason":"\[tg\] / },
@@ -261,9 +288,26 @@ describe('a v2 request answers exactly as the installed shim', () => {
       let shim = { stdout: '', exit: null as number | null, stderr: '' }
       for (let call = 1; call <= (c.repeat ?? 1); call++) {
         shim = await runShim(c, `ref-${c.harness}-${id}`)
+        await waitIdle(endpoint)
         const v2 = await runV2(c, `v2-${c.harness}-${id}`)
         expect({ call, stdout: v2.out.join('') + v2.stdout, exit: v2.exit }, shim.stderr).toEqual({ call, stdout: shim.stdout, exit: shim.exit })
         expect(v2.out).toEqual(shim.stdout.startsWith(ASYNC_LINE) ? [ASYNC_LINE] : [])
+        // Behind the tripwire a fallback cannot pass for a served call; behind the wired Node command is the exact command line an installer writes.
+        const tails: Array<[string, readonly string[]]> = [
+          ['tripwire', TRIPWIRE],
+          ['wired', [process.execPath, wiringFor(c).shim, c.event, wiringFor(c).entry]],
+        ]
+        for (const [label, tail] of tails) {
+          // A server finishes a request's after-reply work once the caller has its answer, and a caller arriving meanwhile is told busy.
+          await waitIdle(endpoint)
+          const before = (await slotStatus(endpoint, key))?.served
+          const native = await runNative(c, `nat-${label}-${c.harness}-${id}`, tail)
+          await waitIdle(endpoint)
+          const after = (await slotStatus(endpoint, key))?.served
+          expect({ label, call, stdout: native.stdout, exit: native.exit }, native.stderr).toEqual({ label, call, stdout: shim.stdout, exit: shim.exit })
+          expect(after, `${label}: the native call was not served`).toBe((before ?? NaN) + 1)
+          if (native.stderr !== shim.stderr) stderrDiffs.push({ id: `${c.harness}|${c.name}|${label}|${call}`, shim: shim.stderr, native: native.stderr })
+        }
       }
       const anchor = ANCHORS[`${c.harness}|${c.name}`]
       if (anchor !== undefined) {
@@ -277,6 +321,11 @@ describe('a v2 request answers exactly as the installed shim', () => {
   it('every anchor names a payload that exists', () => {
     const names = new Set(HARNESS_HOOK_PAYLOADS.map((c) => `${c.harness}|${c.name}`))
     for (const k of Object.keys(ANCHORS)) expect(names.has(k), k).toBe(true)
+  })
+
+  // Neither client relays a handler's stderr from the server, and no case differs today, so a difference is a regression rather than a known divergence to list.
+  it('the native client writes the same stderr as the shim for every case', () => {
+    expect(stderrDiffs).toEqual([])
   })
 })
 

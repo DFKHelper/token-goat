@@ -20,8 +20,22 @@ hmac = "0.13"
 serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
-# getuid/geteuid/getgid/getegid for the key-ownership check and the token-goat-<uid> socket directory; std exposes none of them.
+# getuid/geteuid/getgid/getegid for the key-ownership check and the token-goat-<uid> socket directory, getrandom for the handshake nonce, prctl so a fallback child dies with this process; std exposes none of them.
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# std has no named-pipe client with a timeout: the pipe is opened overlapped so every read and write can be abandoned at its deadline (CreateFileW, WaitNamedPipeW, ReadFile/WriteFile, CancelIoEx). Also the process creation time (GetProcessTimes) for elapsedMs, the OS random source for the nonce (ProcessPrng, which std itself uses), and a job object so a fallback child dies with this process. Declarations only: windows-link binds each function to its system DLL, with no import library crate.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 opt-level = 3
