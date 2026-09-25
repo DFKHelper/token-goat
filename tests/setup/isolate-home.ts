@@ -100,6 +100,10 @@ if (!process.env['TOKEN_GOAT_HARNESS_OVERRIDE']) {
 if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
   process.env['TOKEN_GOAT_HOOK_SERVER'] = '0'
 }
+// An install run by a spawned bundle would otherwise wire the native hook client whenever dist/native holds a binary, so the hook commands a test sees would depend on whether `npm run build:native` has run. Tests of the native form delete this and so run the shipping default.
+if (!process.env['TOKEN_GOAT_NATIVE_HOOKS']) {
+  process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '0'
+}
 if (!process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB']) {
   process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB'] = '99999'
 }

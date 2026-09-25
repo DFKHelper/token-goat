@@ -12,14 +12,17 @@ pub enum Input {
     Read { bytes: Vec<u8>, more: bool },
 }
 
-/// Runs `argv` and returns the exit code to leave with.
-pub fn run(argv: &[OsString], input: Input) -> i32 {
+/// Names, on the wrapped command's environment, why this call was not served. The Node hook path records it with the call's latency row (`stats.detail`, as `native-fallback:<reason>`), which is how `doctor` counts served and fallen-back calls per harness; the answer on stdout is untouched.
+pub const REASON_ENV: &str = "TOKEN_GOAT_NATIVE_FALLBACK";
+
+/// Runs `argv` with `reason` in its environment as [`REASON_ENV`] and returns the exit code to leave with.
+pub fn run(argv: &[OsString], input: Input, reason: &str) -> i32 {
     let Some((program, args)) = argv.split_first() else {
         eprintln!("tg-hook: no command after --");
         return 2;
     };
     let mut cmd = Command::new(program);
-    cmd.args(args).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    cmd.args(args).env(REASON_ENV, reason).stdout(Stdio::inherit()).stderr(Stdio::inherit());
     cmd.stdin(if matches!(input, Input::Untouched) { Stdio::inherit() } else { Stdio::piped() });
     crate::sys::guard_child(&mut cmd);
     crate::sys::stop_stdio_inheritance();

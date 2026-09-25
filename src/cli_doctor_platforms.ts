@@ -117,7 +117,7 @@ export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInsta
   }
 }
 
-/** Name the Claude Code hook events a scope's install lacks or wires to an older token-goat hook command, from `hookEventGaps` (install.ts) per scope. Null when neither scope has a token-goat install, so a machine without Claude Code gets no row. A missing event is usually one added by a later release: the existing settings.json keeps the old set until `token-goat install` runs again. An outdated event still reaches token-goat, so it must not be reported as one that never does. */
+/** Name the Claude Code hook events a scope's install lacks or wires to a token-goat hook command this build no longer writes, or to a native hook client binary that is gone, from `hookEventGaps` (install.ts) per scope. Null when neither scope has a token-goat install, so a machine without Claude Code gets no row. A missing event is usually one added by a later release: the existing settings.json keeps the old set until `token-goat install` runs again. An outdated event still reaches token-goat, so it must not be reported as one that never does. */
 export function checkClaudeHookEvents(gaps: { readonly user: HookEventGaps | null; readonly project: HookEventGaps | null }): DoctorResult | null {
   const name = 'Claude Code hook events'
   if (gaps.user === null && gaps.project === null) return null
@@ -127,16 +127,19 @@ export function checkClaudeHookEvents(gaps: { readonly user: HookEventGaps | nul
   ] as const
   const missing: string[] = []
   const outdated: string[] = []
+  const broken: string[] = []
   for (const { scope, events, run } of scopes) {
     if (events === null) continue
+    if (events.broken.length > 0) broken.push(`${scope} scope wires ${events.broken.join(', ')} to a native hook client binary that no longer exists; run: ${run}`)
     if (events.missing.length > 0) missing.push(`${scope} scope lacks ${events.missing.join(', ')}; run: ${run}`)
-    if (events.outdated.length > 0) outdated.push(`${scope} scope wires ${events.outdated.join(', ')} to an older token-goat hook command; run: ${run}`)
+    if (events.outdated.length > 0) outdated.push(`${scope} scope wires ${events.outdated.join(', ')} to a token-goat hook command this build no longer writes; run: ${run}`)
   }
-  if (missing.length === 0 && outdated.length === 0) return { name, status: 'ok', message: 'every event this build handles is wired' }
+  if (broken.length === 0 && missing.length === 0 && outdated.length === 0) return { name, status: 'ok', message: 'every event this build handles is wired' }
   const sentences: string[] = []
+  if (broken.length > 0) sentences.push(`${broken.join('. ')}. Claude Code cannot start those hooks, so each of those events reports a hook error until then`)
   if (missing.length > 0) sentences.push(`${missing.join('. ')}. Those events never reach token-goat until then`)
   if (outdated.length > 0) sentences.push(`${outdated.join('. ')}. Those events still reach token-goat through the older command until the install rewrites it`)
-  return { name, status: 'warn', message: `${sentences.join('. ')}; restart any running session afterwards.` }
+  return { name, status: broken.length > 0 ? 'fail' : 'warn', message: `${sentences.join('. ')}; restart any running session afterwards.` }
 }
 
 /** `paths` with duplicates removed, comparing on the resolved path. */

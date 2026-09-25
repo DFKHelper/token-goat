@@ -149,7 +149,8 @@ async function handleHarness(request: HarnessHookRequest, harness: AdapterHarnes
         early(data)
         return elapsedMs()
       },
-      relay: (event, payload, harnessWaitMs) => relayInProcess(event, payload, harnessWaitMs, { elapsedMs, afterReply: (work) => afterReply.push(work) }),
+      // Only native/tg-hook speaks this protocol, so every call served here is one the native client had served.
+      relay: (event, payload, harnessWaitMs) => relayInProcess(event, payload, harnessWaitMs, { elapsedMs, afterReply: (work) => afterReply.push(work), detail: 'native' }),
     })
     finish(result.stdout, result.exit)
     for (const work of afterReply) work()

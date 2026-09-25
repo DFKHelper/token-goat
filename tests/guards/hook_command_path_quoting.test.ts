@@ -1,20 +1,4 @@
-/**
- * Structural guard on the hook-install command-line boundary: a function that builds the shell
- * command line an external harness (Claude Code, Grok, Kimi, Gemini CLI, Qwen Code) writes into
- * its own config and later parses through its own shell must wrap every embedded path through the
- * shared escaping helper rather than interpolating it into a bare double-quoted segment. A double
- * quote is a legal character in a macOS or Linux filename, so an unescaped one can break out of
- * the quoted argument once the downstream harness's shell parses the generated line; Windows
- * filenames cannot contain that character at all, so the same double-quote interpolation is
- * harmless there. Windows is NOT exempt from the class, though, which an earlier version of this
- * comment implied: PowerShell expands `$name` and `$(...)` inside double quotes, and a dollar sign
- * is perfectly legal in a Windows directory name, so a double-quoted command line generated from
- * such a path is evaluated on every hook invocation. That is the second half of this guard, below.
- * The real defect this guard exists for: enterprise security loop 10 found the escaping missing
- * on util.ts's `hookCommandFor`, and the exact same unescaped shape independently duplicated in
- * two sibling bridges (`geminiHookCommand`, `qwenHookCommand`) that build the same kind of command
- * line without routing through that function at all.
- */
+/** Structural guard on the hook-install command-line boundary: a function that builds the shell command line an external harness (Claude Code, Grok, Kimi, Gemini CLI, Qwen Code) writes into its own config and later parses through its own shell must wrap every embedded path through the shared escaping helper rather than interpolating it into a bare double-quoted segment. A double quote is a legal character in a macOS or Linux filename, so an unescaped one can break out of the quoted argument once the downstream harness's shell parses the generated line; Windows filenames cannot contain that character at all, so the same double-quote interpolation is harmless there. Windows is NOT exempt from the class, though, which an earlier version of this comment implied: PowerShell expands `$name` and `$(...)` inside double quotes, and a dollar sign is perfectly legal in a Windows directory name, so a double-quoted command line generated from such a path is evaluated on every hook invocation. That is the second half of this guard, below. The real defect this guard exists for: enterprise security loop 10 found the escaping missing on util.ts's `hookCommandFor`, and the exact same unescaped shape independently duplicated in two sibling bridges (`geminiHookCommand`, `qwenHookCommand`) that build the same kind of command line without routing through that function at all. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { quotePowershellPath } from '../../src/util.js'
+import { quotePosixShellWord } from '../../src/process_util.js'
 import { pinnedPopulation } from './population.js'
 import { calleeNames, functionMap, parseTopLevelFunctions, type FnInfo } from './reachability.js'
 
@@ -55,11 +40,7 @@ function siteExists(site: Site): boolean {
   return fns.some((f) => f.name === site.fn)
 }
 
-// Deliberately not the shared `reaches()` helper from reachability.ts: that one runs every body
-// through `codeOnly()` before testing the predicate, which blanks template literals -- and every
-// site here calls quoteShellPath from inside a template-literal interpolation, so codeOnly would
-// erase the very call this guard exists to find and the guard would pass with an empty population
-// of evidence rather than a real one. This walks the raw, unstripped body text instead.
+// Deliberately not the shared `reaches()` helper from reachability.ts: that one runs every body through `codeOnly()` before testing the predicate, which blanks template literals -- and every site here calls quoteShellPath from inside a template-literal interpolation, so codeOnly would erase the very call this guard exists to find and the guard would pass with an empty population of evidence rather than a real one. This walks the raw, unstripped body text instead.
 function reachesRaw(fn: FnInfo, byName: Map<string, string>, predicate: (body: string) => boolean): boolean {
   const visited = new Set<string>()
   const stack: string[] = [fn.name]
@@ -87,8 +68,7 @@ describe('every function that embeds a path in a generated hook command line rea
       mustInclude: ['util.ts::hookCommandFor'],
     })
 
-    // Symmetric stale-key check: every named site must still exist, so an exemption (or, here, a
-    // pinned site) can't silently outlive the function it names.
+    // Symmetric stale-key check: every named site must still exist, so an exemption (or, here, a pinned site) can't silently outlive the function it names.
     const stale = QUOTING_SITES.filter((s) => !siteExists(s)).map((s) => `${s.file}::${s.fn}`)
     expect(stale, `QUOTING_SITES names a function that no longer exists:\n  ${stale.join('\n  ')}`).toEqual([])
   })
@@ -116,19 +96,13 @@ describe('every function that embeds a path in a generated hook command line rea
   })
 })
 
-// The structural half above asks whether a function reaches the escaping helper. It cannot see
-// whether the helper is the RIGHT one for the shell that parses the result, which is the defect
-// this half exists for: the PowerShell entry was being built from double-quoted text.
-// Provenance: HAND-DERIVED. The quoting rules are PowerShell's own (a single-quoted string is
-// literal, and a literal single quote inside one is written by doubling it); the paths below are
-// written for this test.
+// The structural half above asks whether a function reaches the escaping helper. It cannot see whether the helper is the RIGHT one for the shell that parses the result, which is the defect this half exists for: the PowerShell entry was being built from double-quoted text. Provenance: HAND-DERIVED. The quoting rules are PowerShell's own (a single-quoted string is literal, and a literal single quote inside one is written by doubling it); the paths below are written for this test.
 describe('the PowerShell hook command line is single-quoted, so nothing in a path is expanded', () => {
   it('leaves a dollar sign in a path literal rather than letting PowerShell expand it', () => {
     const quoted = quotePowershellPath('C:\\Users\\$env:USERNAME\\token-goat\\hook.mjs')
     expect(quoted.startsWith("'")).toBe(true)
     expect(quoted.endsWith("'")).toBe(true)
-    // Survival anchor: the path is still fully present, so this cannot pass by the helper stripping
-    // the dangerous text out rather than quoting it.
+    // Survival anchor: the path is still fully present, so this cannot pass by the helper stripping the dangerous text out rather than quoting it.
     expect(quoted).toContain('token-goat\\hook.mjs')
     expect(quoted).toContain('$env:USERNAME')
     expect(quoted).not.toContain('"')
@@ -136,5 +110,29 @@ describe('the PowerShell hook command line is single-quoted, so nothing in a pat
 
   it('doubles an embedded single quote so it cannot close the quoted argument', () => {
     expect(quotePowershellPath("C:\\it's\\hook.mjs")).toBe("'C:\\it''s\\hook.mjs'")
+  })
+})
+
+// The native hook client's command lines (src/native_hook.ts) are built for three shells, one quoting rule each: POSIX single quotes for sh and Git Bash, PowerShell single quotes for PowerShell, and double quotes for cmd.exe, which only Windows installs write and where a path cannot hold a double quote. Every installer's native command line goes through nativeHookCommandLine, so that one builder must reach the two single-quote helpers; a path interpolated through anything else is the defect above again. Provenance: HAND-DERIVED. The rules are the shells' own (POSIX: nothing is special inside single quotes, and a single quote is written as '\''); the paths are written for this test.
+describe('the native hook command line quotes every path for the shell that runs it', () => {
+  const NATIVE_SITE: Site = { file: 'native_hook.ts', fn: 'nativeHookCommandLine' }
+
+  it('reaches both single-quote helpers from the one builder every installer uses', () => {
+    expect(siteExists(NATIVE_SITE), `${NATIVE_SITE.file}::${NATIVE_SITE.fn} no longer exists`).toBe(true)
+    const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, NATIVE_SITE.file), 'utf8'))
+    const byName = functionMap(fns)
+    const fn = fns.find((f) => f.name === NATIVE_SITE.fn)!
+    for (const terminal of ['quotePosixShellWord(', 'quotePowershellPath(']) {
+      expect(reachesRaw(fn, byName, (body) => body.includes(terminal)), terminal).toBe(true)
+    }
+  })
+
+  it('leaves $, backquote, double quote and backslash literal inside POSIX single quotes', () => {
+    const quoted = quotePosixShellWord('/home/a b/$HOME/`x`/"q"/c\\d')
+    expect(quoted).toBe(String.raw`'/home/a b/$HOME/` + '`x`' + String.raw`/"q"/c\d'`)
+  })
+
+  it("closes, escapes and reopens around an embedded single quote", () => {
+    expect(quotePosixShellWord("/it's/hook.cjs")).toBe(String.raw`'/it'\''s/hook.cjs'`)
   })
 })

@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { dataDirForHome } from '../src/constants.js'
 import { endpointFor, mac, macMatches, nonce, PROTOCOL_VERSION, readFrames, readServerKey, writeFrame, type HarnessHookRequest, type ServerStatus } from '../src/hook_ipc.js'
 import { serializeOutput } from '../src/hook_registry.js'
+import { nativeHookExecParts, nativeHookFlags } from '../src/native_hook.js'
 import { HOOK_EVENTS, type HookOutput } from '../src/types.js'
 import { HARNESS_HOOK_PAYLOADS, type HookPayloadCase, type PayloadHarness } from './fixtures/harness_hook_payloads.js'
 import { BUNDLE } from './helpers/bundle.js'
@@ -216,13 +217,19 @@ async function runV2(c: HookPayloadCase, sid: string): Promise<{ out: string[]; 
 /** A command after `--` that must never run: the served path leaves it alone, so reaching it means the native client fell back. */
 const TRIPWIRE = [process.execPath, '-e', 'process.stdout.write("TRIPWIRE");process.exit(99)']
 
-/** The native client in front of `tail`, with the flags an installer writes from the same wiring the shim runs with: the harness, the event argument, the bundle entry, and the shim's directory. */
-function runNative(c: HookPayloadCase, sid: string, tail: readonly string[]): Promise<{ stdout: string; exit: number | null; stderr: string }> {
+/** The native client's argv for the case, built by the installers' own builders in src/native_hook.ts from the same wiring the shim runs with: `wired` is the whole command line an installer writes (nativeHookExecParts), `tripwire` the same flags (nativeHookFlags) in front of {@link TRIPWIRE}. */
+function nativeArgs(c: HookPayloadCase, tail: 'wired' | 'tripwire'): string[] {
   const { shim, entry } = wiringFor(c)
-  const flags = ['--harness', c.harness, '--event', c.event, '--entry', entry, '--script-dir', path.dirname(shim)]
+  if (tail === 'tripwire') return [...nativeHookFlags(c.harness, c.event, entry, shim), '--', ...TRIPWIRE]
+  const parts = nativeHookExecParts(bin, c.harness, shim, c.event, entry)
+  if (parts === undefined) throw new Error('nativeHookExecParts returned nothing')
+  return parts.args
+}
+
+function runNative(c: HookPayloadCase, sid: string, args: readonly string[]): Promise<{ stdout: string; exit: number | null; stderr: string }> {
   return new Promise((resolve, reject) => {
     // sb.env turns the server off for the cold shim runs; the native client honours that switch as the Node client does, so it is turned back on here.
-    const child = spawn(bin, [...flags, '--', ...tail], { cwd: sb.proj, env: { ...caseEnv(c, sid), TOKEN_GOAT_HOOK_SERVER: '1' }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(bin, args, { cwd: sb.proj, env: { ...caseEnv(c, sid), TOKEN_GOAT_HOOK_SERVER: '1' }, stdio: ['pipe', 'pipe', 'pipe'] })
     const out: Buffer[] = []
     let stderr = ''
     child.stdout.on('data', (d: Buffer) => out.push(d))
@@ -293,15 +300,11 @@ describe('a v2 request answers exactly as the installed shim', () => {
         expect({ call, stdout: v2.out.join('') + v2.stdout, exit: v2.exit }, shim.stderr).toEqual({ call, stdout: shim.stdout, exit: shim.exit })
         expect(v2.out).toEqual(shim.stdout.startsWith(ASYNC_LINE) ? [ASYNC_LINE] : [])
         // Behind the tripwire a fallback cannot pass for a served call; behind the wired Node command is the exact command line an installer writes.
-        const tails: Array<[string, readonly string[]]> = [
-          ['tripwire', TRIPWIRE],
-          ['wired', [process.execPath, wiringFor(c).shim, c.event, wiringFor(c).entry]],
-        ]
-        for (const [label, tail] of tails) {
+        for (const label of ['tripwire', 'wired'] as const) {
           // A server finishes a request's after-reply work once the caller has its answer, and a caller arriving meanwhile is told busy.
           await waitIdle(endpoint)
           const before = (await slotStatus(endpoint, key))?.served
-          const native = await runNative(c, `nat-${label}-${c.harness}-${id}`, tail)
+          const native = await runNative(c, `nat-${label}-${c.harness}-${id}`, nativeArgs(c, label))
           await waitIdle(endpoint)
           const after = (await slotStatus(endpoint, key))?.served
           expect({ label, call, stdout: native.stdout, exit: native.exit }, native.stderr).toEqual({ label, call, stdout: shim.stdout, exit: shim.exit })

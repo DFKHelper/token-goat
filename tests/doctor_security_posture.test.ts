@@ -1,9 +1,4 @@
-/**
- * `token-goat doctor` is the first command an evaluation runs, and it said nothing about what the
- * tool is allowed to reach or who else can read what it stored: the answers were spread across the
- * config file, the README, and a directory mode nobody looks at. These pin the reporting rules --
- * a default install stays quiet, and every protection that ships on warns when it is switched off.
- */
+/** `token-goat doctor` is the first command an evaluation runs, and it said nothing about what the tool is allowed to reach or who else can read what it stored: the answers were spread across the config file, the README, and a directory mode nobody looks at. These pin the reporting rules -- a default install stays quiet, and every protection that ships on warns when it is switched off. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -28,14 +23,20 @@ import type { Config } from '../src/config.js'
 import type { DoctorResult } from '../src/doctor_result.js'
 
 let root: string
+let savedNativeHooks: string | undefined
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-doctor-sec-'))
+  // tests/setup/isolate-home.ts sets this for the whole suite, and a default install sets nothing, which is what these assert about.
+  savedNativeHooks = process.env['TOKEN_GOAT_NATIVE_HOOKS']
+  delete process.env['TOKEN_GOAT_NATIVE_HOOKS']
   invalidateConfigCache()
 })
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true })
+  if (savedNativeHooks === undefined) delete process.env['TOKEN_GOAT_NATIVE_HOOKS']
+  else process.env['TOKEN_GOAT_NATIVE_HOOKS'] = savedNativeHooks
   invalidateConfigCache()
 })
 
@@ -159,9 +160,7 @@ describe('checkSecurityPosture', () => {
     expect(line.message).toContain('Drive')
   })
 
-  // Google Drive ships on. Warning about the shipped default would make the section noise, so the
-  // rule is that it reports both ways and never warns; both directions are pinned so a later edit
-  // cannot quietly turn it into a nag or drop the state from the message.
+  // Google Drive ships on. Warning about the shipped default would make the section noise, so the rule is that it reports both ways and never warns; both directions are pinned so a later edit cannot quietly turn it into a nag or drop the state from the message.
   it.each([
     [true, 'enabled'],
     [false, 'disabled'],
@@ -200,8 +199,7 @@ describe('checkSecurityPosture', () => {
     expect(line.message).toContain('unknown')
   })
 
-  // Windows has no POSIX mode to read, so the line says what does govern access there rather than
-  // reporting a mode it made up or staying silent about the directory altogether.
+  // Windows has no POSIX mode to read, so the line says what does govern access there rather than reporting a mode it made up or staying silent about the directory altogether.
   it.skipIf(process.platform !== 'win32')('says the directory follows the parent ACL on Windows', () => {
     const line = find(checkSecurityPosture(baseConfig(), root), 'Security data dir')
 
@@ -210,9 +208,7 @@ describe('checkSecurityPosture', () => {
   })
 })
 
-// The helper above is only half of it. A posture report the doctor command never calls is a stub,
-// so this drives the real entrypoint and then the shipped bundle: the section has to survive both
-// the wiring and the build.
+// The helper above is only half of it. A posture report the doctor command never calls is a stub, so this drives the real entrypoint and then the shipped bundle: the section has to survive both the wiring and the build.
 describe('the doctor command reports the posture', () => {
   it('includes the security lines in runDoctor output', () => {
     const names = runDoctor(root, path.join(root, 'config.toml'), root, []).map((r) => r.name)
@@ -232,36 +228,9 @@ describe('the doctor command reports the posture', () => {
   })
 })
 
-/**
- * The environment can reopen a setting a project config is forbidden to touch.
- *
- * PROVENANCE
- *
- * FORMAT-DERIVED. The setting names are read from `PROJECT_LOCKED_SECTIONS` in `src/config.ts`
- * (the sections a checked-in `.token-goat.toml` cannot write), and each variable name from the
- * `CONFIG_KEY_ENV_OVERRIDES` entry for that key in the same file. The pairing is restated here on
- * purpose rather than imported: a test that built its expectations from the same table the
- * implementation reads would agree with a renamed variable instead of catching it.
- */
+/** The environment can reopen a setting a project config is forbidden to touch. PROVENANCE FORMAT-DERIVED. The setting names are read from `PROJECT_LOCKED_SECTIONS` in `src/config.ts` (the sections a checked-in `.token-goat.toml` cannot write), and each variable name from the `CONFIG_KEY_ENV_OVERRIDES` entry for that key in the same file. The pairing is restated here on purpose rather than imported: a test that built its expectations from the same table the implementation reads would agree with a renamed variable instead of catching it. */
 describe('an environment variable that reopens a project-locked security setting', () => {
-  /**
-   * Every project-locked setting an environment variable can override, and a value that changes it.
-   *
-   * `weakened` settings are booleans with a safe side; the value listed turns the protection off.
-   * `replaced` settings hold a list or a number, where there is no safe side to compare against and
-   * the fact worth reporting is that the environment, not the file, decided the value.
-   *
-   * FORMAT-DERIVED. Each setting name is read from `PROJECT_LOCKED_SECTIONS` and
-   * `PROJECT_LOCKED_KEYS` in `src/config.ts`, and each variable name from that key's
-   * `CONFIG_KEY_ENV_OVERRIDES` entry in the same file. The pairing is restated here rather than
-   * imported: a table built from the same source the implementation reads would agree with a
-   * renamed variable instead of catching it.
-   *
-   * The first version of this held six of the fifteen. It was hand-written, it looked complete, and
-   * the nine it omitted were reported as a clean posture. The implementation now derives its key set
-   * from config, and the coverage assertion below fails if the two ever disagree in either
-   * direction.
-   */
+  /** Every project-locked setting an environment variable can override, and a value that changes it. `weakened` settings are booleans with a safe side; the value listed turns the protection off. `replaced` settings hold a list or a number, where there is no safe side to compare against and the fact worth reporting is that the environment, not the file, decided the value. FORMAT-DERIVED. Each setting name is read from `PROJECT_LOCKED_SECTIONS` and `PROJECT_LOCKED_KEYS` in `src/config.ts`, and each variable name from that key's `CONFIG_KEY_ENV_OVERRIDES` entry in the same file. The pairing is restated here rather than imported: a table built from the same source the implementation reads would agree with a renamed variable instead of catching it. The first version of this held six of the fifteen. It was hand-written, it looked complete, and the nine it omitted were reported as a clean posture. The implementation now derives its key set from config, and the coverage assertion below fails if the two ever disagree in either direction. */
   const LOCKED_AND_OVERRIDABLE: ReadonlyArray<
     [setting: string, envVar: string, value: string, kind: 'weakened' | 'replaced']
   > = [
@@ -291,6 +260,8 @@ describe('an environment variable that reopens a project-locked security setting
     ['image_shrink.max_image_pixels', 'TOKEN_GOAT_MAX_IMAGE_PIXELS', '999999999', 'replaced'],
     ['indexing.max_db_size_mb', 'TOKEN_GOAT_INDEXING_MAX_DB_SIZE_MB', '2000', 'replaced'],
     ['indexing.auto_reclaim_embeddings', 'TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS', 'true', 'replaced'],
+    // Neither form of hook command is the weaker one (both run the same shipped code, and the native binary's copy lives in the user's own data directory), so this is reported whenever it is set, like the folds above.
+    ['hooks.native', 'TOKEN_GOAT_NATIVE_HOOKS', '0', 'replaced'],
   ]
 
   const saved = new Map<string, string | undefined>()
@@ -324,15 +295,12 @@ describe('an environment variable that reopens a project-locked security setting
     expect(envOverriddenSecuritySettings()).toContainEqual({ setting, envVar, kind })
   })
 
-  // The defect this closes was an omission rather than a mistake, and an omission leaves no trace in
-  // the output. Comparing the table against the derived set in both directions is the only
-  // assertion here that fails when a locked setting gains an override upstream.
+  // The defect this closes was an omission rather than a mistake, and an omission leaves no trace in the output. Comparing the table against the derived set in both directions is the only assertion here that fails when a locked setting gains an override upstream.
   it('covers every project-locked setting the environment can override', () => {
     expect(LOCKED_AND_OVERRIDABLE.map(([setting]) => setting).sort()).toEqual(lockedEnvOverridableKeys())
   })
 
-  // `0`, `no` and `off` all switch a protection off in `_buildConfig`, so a check that only looked
-  // for the literal `false` would miss three of the four spellings and report a clean posture.
+  // `0`, `no` and `off` all switch a protection off in `_buildConfig`, so a check that only looked for the literal `false` would miss three of the four spellings and report a clean posture.
   it.each(['0', 'no', 'off', 'FALSE', ' false '])('recognises %j as off', (spelling) => {
     process.env['TOKEN_GOAT_INJECTION_ENABLED'] = spelling
     const line = find(checkSecurityPosture(baseConfig(), root), 'Security config overrides')
@@ -344,8 +312,7 @@ describe('an environment variable that reopens a project-locked security setting
     expect(line.status).toBe('ok')
   })
 
-  // Reporting a variable that tightens a setting would train the reader to skim this line, which is
-  // the one outcome that makes the real warning useless.
+  // Reporting a variable that tightens a setting would train the reader to skim this line, which is the one outcome that makes the real warning useless.
   it('says nothing when the environment makes a setting safer, not weaker', () => {
     process.env['TOKEN_GOAT_GDRIVE_ENABLED'] = 'false'
     process.env['TOKEN_GOAT_REDACTION_STRICT'] = 'true'
@@ -354,8 +321,7 @@ describe('an environment variable that reopens a project-locked security setting
     expect(line.status, `a tightening override was reported: ${line.message}`).toBe('ok')
   })
 
-  // A variable set to blank decides nothing: `envStrList` falls back to the configured value for
-  // one. Reporting it would put a line in front of an operator with nothing behind it.
+  // A variable set to blank decides nothing: `envStrList` falls back to the configured value for one. Reporting it would put a line in front of an operator with nothing behind it.
   it('says nothing when a list variable is set to an empty string', () => {
     process.env['TOKEN_GOAT_WEBFETCH_ALLOW'] = '   '
     const line = find(checkSecurityPosture(baseConfig(), root), 'Security config overrides')
@@ -371,8 +337,7 @@ describe('an environment variable that reopens a project-locked security setting
     expect(line.message, 'the second weakened setting was dropped').toContain('redaction.strict')
   })
 
-  // A weakened boolean and a replaced list are described in different words, because "held open" is
-  // wrong for a value with no safe side. Both have to survive the same message.
+  // A weakened boolean and a replaced list are described in different words, because "held open" is wrong for a value with no safe side. Both have to survive the same message.
   it('describes a weakened setting and a replaced one in the same message', () => {
     process.env['TOKEN_GOAT_OFFLINE'] = 'false'
     process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = '/'
@@ -384,10 +349,7 @@ describe('an environment variable that reopens a project-locked security setting
     expect(line.message).toContain('set from the environment')
   })
 
-  // The two lists this check straddles -- the settings a project config cannot write, and the
-  // variables that override them -- live in `src/config.ts`. If a variable is renamed there and the
-  // doctor's table is not updated, the lookup returns nothing and the check reports a clean posture
-  // forever. Assert the join is non-empty rather than trusting that it resolved.
+  // The two lists this check straddles -- the settings a project config cannot write, and the variables that override them -- live in `src/config.ts`. If a variable is renamed there and the doctor's table is not updated, the lookup returns nothing and the check reports a clean posture forever. Assert the join is non-empty rather than trusting that it resolved.
   it('resolves a variable name for every setting it claims to cover', () => {
     for (const [setting, envVar] of LOCKED_AND_OVERRIDABLE) {
       expect(CONFIG_KEY_ENV_OVERRIDES[setting], `${setting} has no env-override entry`).toContain(envVar)

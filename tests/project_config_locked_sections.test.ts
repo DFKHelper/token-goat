@@ -11,17 +11,11 @@ import {
   stripLockedProjectKeys,
 } from '../src/config.js'
 
-// A per-project .token-goat.toml arrives with the repository, so it is attacker-controlled the
-// moment anyone clones an untrusted project. Before this, a checked-in three-line file turned off
-// prompt-injection fencing for every session opened in that directory, silently. Confirmed live
-// against the built binary before the fix.
+// A per-project .token-goat.toml arrives with the repository, so it is attacker-controlled the moment anyone clones an untrusted project. Before this, a checked-in three-line file turned off prompt-injection fencing for every session opened in that directory, silently. Confirmed live against the built binary before the fix.
 
 describe('stripLockedProjectKeys', () => {
 
-  // Every other assertion here iterates the two lists, so it can only ever check that the
-  // entries present behave correctly -- deleting one deletes its own test along with it and
-  // the file still passes. `worker.blocked_roots` was missing from the list for exactly that
-  // reason. These literals are the half that fails when an entry goes away.
+  // Every other assertion here iterates the two lists, so it can only ever check that the entries present behave correctly -- deleting one deletes its own test along with it and the file still passes. `worker.blocked_roots` was missing from the list for exactly that reason. These literals are the half that fails when an entry goes away.
   it('names every locked entry literally, so removing one fails here rather than vanishing quietly', () => {
     expect([...PROJECT_LOCKED_SECTIONS].sort()).toEqual([
       'gdrive',
@@ -39,6 +33,7 @@ describe('stripLockedProjectKeys', () => {
       'hints.fold_prose_paragraphs',
       'hints.outline_large_documents',
       'hints.skeleton_large_sources',
+      'hooks.native',
       'image_shrink.max_image_pixels',
       'indexing.auto_reclaim_embeddings',
       'indexing.cross_project_symbols',
@@ -53,9 +48,7 @@ describe('stripLockedProjectKeys', () => {
     ])
   })
 
-  // The list entry is only half the protection; this is the behaviour it buys. An empty array
-  // is a real value that replaces rather than merges, so a repository's own file could hand
-  // back a folder the user had excluded from the index with `token-goat project exclude`.
+  // The list entry is only half the protection; this is the behaviour it buys. An empty array is a real value that replaces rather than merges, so a repository's own file could hand back a folder the user had excluded from the index with `token-goat project exclude`.
   it('drops worker.blocked_roots while leaving the rest of the worker section overridable', () => {
     const { cleaned, dropped } = stripLockedProjectKeys({
       worker: { blocked_roots: [], poll_ms: 500 },
@@ -112,6 +105,7 @@ describe('stripLockedProjectKeys', () => {
       compact_assist: { summary_budget_chars: 1 },
       // 0.05 is the floor's own minimum, which is the attack value here: it admits only a near-exact vector match, so the repository's code stops matching in `semantic` while keyword search answers on as though nothing were withheld.
       semantic: { max_distance: 0.05 },
+      hooks: { native: 'off' },
     })
 
     expect(dropped.sort()).toEqual([...PROJECT_LOCKED_SECTIONS, ...PROJECT_LOCKED_KEYS].sort())
@@ -132,9 +126,7 @@ describe('stripLockedProjectKeys', () => {
   })
 })
 
-// The helper above is only half the fix: a stripper that is never called is a stub. This drives
-// loadConfig() against a real .token-goat.toml on disk, the path a cloned repository actually
-// takes.
+// The helper above is only half the fix: a stripper that is never called is a stub. This drives loadConfig() against a real .token-goat.toml on disk, the path a cloned repository actually takes.
 describe('loadConfig with a per-project override on disk', () => {
   let root: string
 
@@ -180,9 +172,7 @@ describe('loadConfig with a per-project override on disk', () => {
     ])
   })
 
-  // `chrome_path` is handed straight to `puppeteer.launch` as `executablePath` after nothing but
-  // an existence check, so a repository that ships a binary and points this at it gets that
-  // binary run as the developer the next time they take a screenshot for any reason.
+  // `chrome_path` is handed straight to `puppeteer.launch` as `executablePath` after nothing but an existence check, so a repository that ships a binary and points this at it gets that binary run as the developer the next time they take a screenshot for any reason.
   it('ignores a project file that tries to choose the browser executable', () => {
     fs.writeFileSync(path.join(root, '.token-goat.toml'), '[screenshot]\nchrome_path = "/tmp/evil"\n')
 
@@ -190,8 +180,7 @@ describe('loadConfig with a per-project override on disk', () => {
     expect(lastProjectConfigLockedKeys()).toEqual(['screenshot'])
   })
 
-  // Turning this off skips both the private-address refusal and the resolve-then-pin step that
-  // closes DNS rebinding, so the navigation can reach loopback, RFC1918 and 169.254.169.254.
+  // Turning this off skips both the private-address refusal and the resolve-then-pin step that closes DNS rebinding, so the navigation can reach loopback, RFC1918 and 169.254.169.254.
   it('ignores a project file that tries to unblock private screenshot targets', () => {
     fs.writeFileSync(path.join(root, '.token-goat.toml'), '[screenshot]\nblock_private_targets = false\n')
 
@@ -199,8 +188,7 @@ describe('loadConfig with a per-project override on disk', () => {
     expect(lastProjectConfigLockedKeys()).toEqual(['screenshot'])
   })
 
-  // 0 is a legal value meaning "no cap", which turns sharp's decompression-bomb guard off
-  // entirely: a small file that decodes to billions of pixels then OOMs an ordinary image read.
+  // 0 is a legal value meaning "no cap", which turns sharp's decompression-bomb guard off entirely: a small file that decodes to billions of pixels then OOMs an ordinary image read.
   it('ignores a project file that tries to uncap image decoding', () => {
     fs.writeFileSync(path.join(root, '.token-goat.toml'), '[image_shrink]\nmax_image_pixels = 0\njpeg_quality = 40\n')
 

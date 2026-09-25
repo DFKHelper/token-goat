@@ -1,21 +1,11 @@
-/**
- * Process and OS execution utilities.
- *
- * Extracted from src/util.ts as part of modular decomposition.
- */
+/** Process and OS execution utilities. Extracted from src/util.ts as part of modular decomposition. */
 
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { foldPath } from './path_containment.js'
 
-/**
- * Block the calling thread for `ms` milliseconds without spawning a process.
- *
- * Uses `Atomics.wait` on a throwaway SharedArrayBuffer: the wait never resolves
- * (no other thread writes to it), so it always times out after `ms`. This is a
- * true synchronous sleep, unlike a busy-loop, and burns no CPU.
- */
+/** Block the calling thread for `ms` milliseconds without spawning a process. Uses `Atomics.wait` on a throwaway SharedArrayBuffer: the wait never resolves (no other thread writes to it), so it always times out after `ms`. This is a true synchronous sleep, unlike a busy-loop, and burns no CPU. */
 export function sleepSync(ms: number): void {
   if (ms <= 0) return
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -31,9 +21,7 @@ export function noWindowCreationFlags(): number {
   return isWindows() ? 0x08000000 : 0
 }
 
-/**
- * Encode an argument safely for Windows cmd.exe invocations.
- */
+/** Encode an argument safely for Windows cmd.exe invocations. */
 export function windowsCmdQuoteArg(arg: string): string {
   if (arg === '') return '""'
   if (arg[0] === '"' && arg[arg.length - 1] === '"') {
@@ -104,14 +92,17 @@ export function quoteShellPath(value: string): string {
   return `"${value.replace(/[\\$`"]/g, '\\$&')}"`
 }
 
+/** Wraps a word in single quotes for a POSIX shell, on every platform (Claude Code runs Windows hooks through Git Bash): nothing inside them is special, and a single quote is written as `'\''`. */
+export function quotePosixShellWord(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
 /** Wraps a path in single quotes for embedding in a generated PowerShell command. */
 export function quotePowershellPath(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
 }
 
-/**
- * Resolve `label` to an executable **on PATH**, never one sitting in the current directory.
- */
+/** Resolve `label` to an executable **on PATH**, never one sitting in the current directory. */
 export function resolveOnPath(label: string): string | null {
   if (path.isAbsolute(label)) return existsSync(label) ? label : null
   if (label.includes('/') || label.includes('\\')) return null

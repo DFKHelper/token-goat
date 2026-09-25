@@ -10,6 +10,7 @@ import { parse, stringify } from 'smol-toml'
 import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
+import { nativeHookBinary, nativeHookCommandLine, splitHookCommand } from '../native_hook.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { buildGuidanceBlock } from './guidance_block.js'
@@ -125,7 +126,11 @@ function anyGroupHasTokenGoat(
 // hookCommandFor is shared with copilot_cli_install.ts -- see util.ts.
 
 /** Build the hook command for Codex. On Windows, Codex CLI executes hook commands via PowerShell (`powershell.exe -Command ...`). In PowerShell, adjacent quoted string literals without a call operator fail with a ParserError ("Unexpected token '...' in expression or statement"). Prefixing with `& ` instructs PowerShell to invoke the quoted executable path with the trailing arguments (the identical fix `copilot_cli_install.ts` uses for Copilot CLI's `powershell` hook entry). On Unix (Linux/macOS), Codex executes hooks via POSIX `sh`, where `&` would be an invalid background operator, so the bare quoted command is preserved. */
-export function codexHookCommandFor(scriptPath: string, eventArg: string): string {
+export function codexHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
+  // The native client in front, when this install wires it: quoted for PowerShell on Windows (single quotes, so a `$` in a path stays literal) and for the POSIX shell Codex runs hooks with elsewhere. `sync: false` (the installed check) never refreshes the Windows copy.
+  const bin = nativeHookBinary(process.argv[1], opts)
+  const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'powershell' : 'sh', bin, 'codex', scriptPath, eventArg)
+  if (native !== undefined) return native
   const base = hookCommandFor(scriptPath, eventArg)
   return process.platform === 'win32' ? `& ${base}` : base
 }
@@ -371,6 +376,21 @@ export function uninstallCodex(): boolean {
   return removedAny
 }
 
+/** The argv words of every token-goat hook entry in Codex's config.toml, split the way the shell Codex runs it in would (PowerShell on Windows, sh elsewhere). Empty when nothing is wired or the file does not parse. */
+export function wiredCodexHookWords(): string[][] {
+  const hooks = readCodexConfig(codexConfigPath()).hooks ?? {}
+  const out: string[][] = []
+  for (const [event, groups] of Object.entries(hooks)) {
+    if (event === 'state' || !Array.isArray(groups)) continue
+    for (const g of groups) {
+      for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
+        if (isCodexTokenGoatCommand(h?.command)) out.push(splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'))
+      }
+    }
+  }
+  return out
+}
+
 /** Is the Codex CLI integration currently present? True only when every (event, matcher) pair carries a token-goat hook entry, the shim script exists on disk, the AGENTS.md delimited block is present, and every hook entry has its trusted_hash recorded under [hooks.state]. A partial install (e.g. config.toml wired but the shim script deleted by hand, or an untrusted/stale hash in hooks.state) reads as not installed, so {@link installCodex} will top up what's missing. */
 export function isCodexInstalled(): boolean {
   const configPath = codexConfigPath()
@@ -382,7 +402,7 @@ export function isCodexInstalled(): boolean {
 
   for (const event of CODEX_HOOK_EVENTS) {
     const eventArg = CODEX_EVENT_ARG[event]
-    const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
+    const expectedCommand = codexHookCommandFor(scriptPath, eventArg, { sync: false })
     const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
     for (const matcher of CODEX_MATCHERS) {
       // Locate the entry's real position rather than assuming it sits at CODEX_MATCHERS's own index: a foreign or previous-version group ahead of ours in the array shifts every position, and a state key built from the wrong index never matches what installCodex actually wrote.
@@ -395,7 +415,7 @@ export function isCodexInstalled(): boolean {
   }
   for (const event of CODEX_GLOBAL_HOOK_EVENTS) {
     const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
-    const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
+    const expectedCommand = codexHookCommandFor(scriptPath, eventArg, { sync: false })
     const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
     // Same real-position lookup as above, but matcher-blind: a global (matcher-less) event can have a foreign group ahead of ours, so the hardcoded ":0:0" state key was wrong under the same conditions, and both write sides (anyGroupHasTokenGoat and the [hooks.state] loop below it) scan every group regardless of `matcher`, so demanding a matcher-less group here would report not-installed forever for an entry install itself writes and trusts.
     const position = findAnyTokenGoatEntryPosition(groups, (c) => c === expectedCommand)

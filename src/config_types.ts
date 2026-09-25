@@ -69,6 +69,9 @@ export interface SkillPreservationConfig {
 /** The resolution tier of the model that will be shown an image, which decides what its pixels cost. Anthropic runs two and they bill the same image very differently; see `image_shrink.ts::visionTokens`. */
 export type VisionTier = 'standard' | 'high'
 
+/** Whether installers wire the native hook client (native/tg-hook) in front of the Node hook command: `auto` wires it wherever this platform has a binary that passes its self-test, `off` always writes the Node command. */
+export type NativeHooksMode = 'auto' | 'off'
+
 export interface ImageShrinkConfig {
   enabled: boolean
   jpeg_quality: number
@@ -153,6 +156,8 @@ export interface HooksConfig {
   latency_budget_ms: number
   // Whether hook shims and read-only CLI calls are answered by a resident server process (hook_server.ts) instead of each starting Node and loading the hook graph. Defaults true; false makes every call run in its own process, as before the server existed.
   server: boolean
+  // Whether `install` wires the native hook client (native/tg-hook) in front of each hook's Node command, on the platforms that ship one (Windows and Linux, x64 and arm64). `auto` (the default) wires it when this install's binary passes its self-test; `off` writes the Node command alone. Read from the global config only, like `server`; `TOKEN_GOAT_NATIVE_HOOKS` overrides it. Re-run `install` after changing it: the wiring is what harnesses read, not this setting.
+  native: NativeHooksMode
 }
 
 export interface WebFetchConfig {

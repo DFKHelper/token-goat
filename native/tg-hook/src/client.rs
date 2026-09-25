@@ -33,8 +33,8 @@ pub struct Call {
 pub enum Ending {
     /// The server answered: whatever it streamed is on stdout already, and this is the code to exit with.
     Served(i32),
-    /// Nothing was dispatched: run the wrapped command.
-    Fallback,
+    /// Nothing was dispatched: run the wrapped command. The reason is what the Node side records for the call (see `fallback::REASON_ENV`).
+    Fallback(&'static str),
 }
 
 /// How one attempt on one slot ended, as `attempt` in src/hook_client.ts classifies it.
@@ -211,14 +211,14 @@ fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str) -> Outcome {
 /// `relayViaServer` for `call` with `input`, the whole of stdin. Prints what the server answers; `Fallback` means nothing was printed and nothing dispatched.
 pub fn relay(call: &Call, input: &str, main_start: Instant) -> Ending {
     if !server_enabled() {
-        return Ending::Fallback;
+        return Ending::Fallback("server-off");
     }
-    let Some(data_dir) = paths::data_dir() else { return Ending::Fallback };
+    let Some(data_dir) = paths::data_dir() else { return Ending::Fallback("no-data-dir") };
     if recently_disabled(&data_dir) {
-        return Ending::Fallback;
+        return Ending::Fallback("server-disabled");
     }
-    let Some(key) = paths::read_server_key(&data_dir) else { return Ending::Fallback };
-    let Some(cwd) = node_cwd() else { return Ending::Fallback };
+    let Some(key) = paths::read_server_key(&data_dir) else { return Ending::Fallback("no-key") };
+    let Some(cwd) = node_cwd() else { return Ending::Fallback("no-cwd") };
     let bundle_dir = paths::bundle_dir_for_entry(&call.entry);
     let mut request = json!({
         "kind": "hook",
@@ -249,9 +249,11 @@ pub fn relay(call: &Call, input: &str, main_start: Instant) -> Ending {
                 return Ending::Served(0);
             }
             // No server on this slot: the Node command starts one in the background, so the next call is served.
-            Outcome::Absent | Outcome::Stale | Outcome::NoSlotWill => return Ending::Fallback,
+            Outcome::Absent => return Ending::Fallback("absent"),
+            Outcome::Stale => return Ending::Fallback("stale"),
+            Outcome::NoSlotWill => return Ending::Fallback("refused"),
             Outcome::Busy | Outcome::Refused => {}
         }
     }
-    Ending::Fallback
+    Ending::Fallback("busy")
 }

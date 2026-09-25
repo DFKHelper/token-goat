@@ -83,17 +83,20 @@ fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
         eprintln!("tg-hook: no command after --\n{USAGE}");
         return 2;
     }
-    let Some(call) = hook.call else { return fallback::run(&hook.fallback, fallback::Input::Untouched) };
+    let Some(call) = hook.call else { return fallback::run(&hook.fallback, fallback::Input::Untouched, "bad-flags") };
     let input = fallback::read_stdin(protocol::MAX_FRAME_BYTES);
-    let fallback::Input::Read { bytes, more: false } = input else { return fallback::run(&hook.fallback, input) };
+    let fallback::Input::Read { bytes, more: false } = input else {
+        let reason = if matches!(input, fallback::Input::Untouched) { "stdin-error" } else { "stdin-too-large" };
+        return fallback::run(&hook.fallback, input, reason);
+    };
     // Node would decode invalid UTF-8 with replacement characters; the command it wraps still gets the bytes exactly as they came.
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
-        Err(e) => return fallback::run(&hook.fallback, fallback::Input::Read { bytes: e.into_bytes(), more: false }),
+        Err(e) => return fallback::run(&hook.fallback, fallback::Input::Read { bytes: e.into_bytes(), more: false }, "stdin-not-utf8"),
     };
     match client::relay(&call, &text, main_start) {
         client::Ending::Served(code) => code,
-        client::Ending::Fallback => fallback::run(&hook.fallback, fallback::Input::Read { bytes: text.into_bytes(), more: false }),
+        client::Ending::Fallback(reason) => fallback::run(&hook.fallback, fallback::Input::Read { bytes: text.into_bytes(), more: false }, reason),
     }
 }
 

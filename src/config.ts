@@ -17,6 +17,7 @@ export * from './config_project.js'
 import type {
   Config,
   VisionTier,
+  NativeHooksMode,
   ProjectConfigInfo,
   ConfigKeyLayer,
   CompactAssistConfig,
@@ -81,6 +82,24 @@ function validatedFloat(raw: unknown, def: number, min: number, max: number): nu
 /** Accept only the two tier names. An unknown string is a typo or a stale config, and silently pricing every image on the wrong tier is worse than ignoring the key, so this falls back to the default rather than guessing which one was meant. */
 function validatedVisionTier(raw: unknown, def: VisionTier): VisionTier {
   return raw === 'standard' || raw === 'high' ? raw : def
+}
+
+/** Accept only the two modes, falling back to the default for anything else, as {@link validatedVisionTier} does. */
+function validatedNativeHooksMode(raw: unknown, def: NativeHooksMode): NativeHooksMode {
+  return raw === 'auto' || raw === 'off' ? raw : def
+}
+
+/** The mode TOKEN_GOAT_NATIVE_HOOKS sets: its value is a boolean spelling (env.ts), a false one meaning `off` and a true one `auto`; anything else, empty included, sets nothing. The one reading of the variable, shared by the loader, {@link nativeHooksEnabled} and `config validate` (through ENV_VALUE_COERCERS), so none of them can disagree about what a value means. */
+function nativeHooksModeFromEnv(raw: string | undefined): NativeHooksMode | undefined {
+  const norm = raw?.trim().toLowerCase() ?? ''
+  if (TRUTHY_ENV_VALUES.has(norm)) return 'auto'
+  if (FALSY_ENV_VALUES.has(norm)) return 'off'
+  return undefined
+}
+
+/** Keys whose environment variable is not spelled like the value it sets, with the reading that turns one into the other. resolveConfigKeyLayer asks here before its type-based coercion, which would compare the raw `0` against `off` and call a working variable unusable. */
+const ENV_VALUE_COERCERS: Readonly<Record<string, (raw: string) => unknown>> = {
+  'hooks.native': nativeHooksModeFromEnv,
 }
 
 function validatedOcrLang(raw: unknown, def: string): string {
@@ -225,6 +244,7 @@ const ENUM_FIELD_VALUES: Record<string, string[]> = {
   'image_shrink.ocr_lang': [...SUPPORTED_OCR_LANG_CODES],
   // Deliberately has no entry above `normal`. This table is what `config set` checks; a hand-edited TOML bypasses it, which is why resolveWorkerPriority (process_priority.ts) maps an unrecognized value back to the default rather than trusting whatever the file said.
   'worker.priority': ['below_normal', 'low', 'normal'],
+  'hooks.native': ['auto', 'off'],
 }
 
 /** Validate a single enum-valued string config field against its fixed set of allowed values. Used by config set to reject unrecognized values without rebuilding the entire config tree. Returns undefined if the field isn't enum-constrained (any string is fine) or the value is valid; returns the allowed-value list if the value is invalid. */
@@ -410,7 +430,9 @@ export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg:
   if (envVar !== undefined) {
     // Being set is not the same as being in effect -- the exact distinction this resolver exists to draw for the project layer, and the env layer needs it for the identical reason: an env var holding an out-of-range value is clamped, and reporting a bare "from $VAR" tells a reader who set 99999999 that 99999999 is what they got.
     const rawStr = process.env[envVar] ?? ''
-    const judged = coerceEnvLike(rawStr, effectiveValue)
+    const coerce = ownGet(ENV_VALUE_COERCERS, key)
+    const special = coerce === undefined ? undefined : coerce(rawStr)
+    const judged = coerce === undefined ? coerceEnvLike(rawStr, effectiveValue) : special === undefined ? 'unusable' : { parsed: special }
     // Type this function cannot coerce faithfully (today: the one number[] field). Claiming either "in effect" or "rejected" would be a guess, so report the layer and stop -- same policy as rejectionReason returning null rather than inventing a cause.
     if (judged === null) return { layer: 'env', envVar }
     if (judged === 'unusable') {
@@ -527,6 +549,11 @@ export function loadPersistedConfig(): Config {
 /** Whether the resident hook server is on: `TOKEN_GOAT_HOOK_SERVER`, else `hooks.server` in the user's global config. Never a project's `.token-goat.toml`, whatever directory this runs in: one server answers every project on the machine, so one repository's file must not switch it for the others. */
 export function hookServerEnabled(): boolean {
   return envBool('TOKEN_GOAT_HOOK_SERVER', loadPersistedConfig().hooks.server)
+}
+
+/** Whether `install` may wire the native hook client: `TOKEN_GOAT_NATIVE_HOOKS` (false spellings turn it off, true ones restore `auto`), else `hooks.native` in the user's global config, else `auto`. Never a project's `.token-goat.toml` (the key is also in PROJECT_LOCKED_KEYS): the wiring it decides is written into user-scope harness configs that every project on the machine runs. */
+export function nativeHooksEnabled(): boolean {
+  return (nativeHooksModeFromEnv(process.env['TOKEN_GOAT_NATIVE_HOOKS']) ?? loadPersistedConfig().hooks.native) !== 'off'
 }
 
 function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, unknown> = {}): Config {
@@ -749,6 +776,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hk.latency_budget_ms = envInt('TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS', hk.latency_budget_ms, ...boundsOf('hooks.latency_budget_ms'))
   hk.server = validatedBool(hk_raw['server'], hk.server)
   hk.server = envBool('TOKEN_GOAT_HOOK_SERVER', hk.server)
+  hk.native = validatedNativeHooksMode(hk_raw['native'], hk.native)
+  hk.native = nativeHooksModeFromEnv(process.env['TOKEN_GOAT_NATIVE_HOOKS']) ?? hk.native
 
   const wf_raw = section(raw, 'webfetch')
   const wf = getDefaultConfig('webfetch') as WebFetchConfig
@@ -941,6 +970,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.quiet_hours': ['TOKEN_GOAT_QUIET_HOURS'],
   'hooks.latency_budget_ms': ['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS'],
   'hooks.server': ['TOKEN_GOAT_HOOK_SERVER'],
+  'hooks.native': ['TOKEN_GOAT_NATIVE_HOOKS'],
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
@@ -1094,6 +1124,7 @@ export function saveConfig(config: Config): void {
     hooks: {
       latency_budget_ms: config.hooks.latency_budget_ms,
       server: config.hooks.server,
+      native: config.hooks.native,
     },
     webfetch: {
       allow: config.webfetch.allow,
