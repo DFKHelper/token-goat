@@ -4,10 +4,7 @@ import * as os from 'node:os'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted — this redirects configPath()/projectConfigPath() to per-test temp files.
-// projectConfigPath() ignores its projectRoot argument entirely (same zero-arg-equivalent
-// convention as configPath()), so tests don't need to control loadConfig()'s real cwd-based
-// project-root resolution to exercise the per-project override layer.
+// vi.mock is hoisted — this redirects configPath()/projectConfigPath() to per-test temp files. projectConfigPath() ignores its projectRoot argument entirely (same zero-arg-equivalent convention as configPath()), so tests don't need to control loadConfig()'s real cwd-based project-root resolution to exercise the per-project override layer.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -35,9 +32,7 @@ import { ENV_KEYS } from '../src/constants.js'
 import { checkConfigValid } from '../src/cli_doctor.js'
 import { cmdConfig } from '../src/config_commands.js'
 
-// ---------------------------------------------------------------------------
-// Cleanup
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Cleanup ---------------------------------------------------------------------------
 
 afterAll(() => {
   try {
@@ -52,9 +47,7 @@ afterAll(() => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// loadConfig suite
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- loadConfig suite ---------------------------------------------------------------------------
 
 describe('loadConfig', () => {
   beforeEach(() => {
@@ -73,9 +66,7 @@ describe('loadConfig', () => {
     invalidateConfigCache()
     expect(loadConfig().image_shrink.vision_tier).toBe('high')
 
-    // A typo or a stale name must not silently price every image on a tier nobody chose. There are
-    // only two valid values and no sensible way to guess which was meant, so an unknown one falls
-    // back to the default rather than being accepted or throwing.
+    // A typo or a stale name must not silently price every image on a tier nobody chose. There are only two valid values and no sensible way to guess which was meant, so an unknown one falls back to the default rather than being accepted or throwing.
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "ultra"' + '\n', 'utf8')
     invalidateConfigCache()
     expect(loadConfig().image_shrink.vision_tier).toBe('standard')
@@ -138,10 +129,7 @@ describe('loadConfig', () => {
     }
   })
 
-  // Regression: overflow_guard.enabled/max_tokens and hints.json_sidecar/large_read_redirect_bytes
-  // were validated from TOML in _buildConfig but never given an envBool/envInt call afterward,
-  // unlike every sibling field -- so their documented env vars (present in CHANGELOG.md since
-  // v1.0.0-v1.6.0) silently had zero effect on the loaded config.
+  // Regression: overflow_guard.enabled/max_tokens and hints.json_sidecar/large_read_redirect_bytes were validated from TOML in _buildConfig but never given an envBool/envInt call afterward, unlike every sibling field -- so their documented env vars (present in CHANGELOG.md since v1.0.0-v1.6.0) silently had zero effect on the loaded config.
   it('applies env var override for TOKEN_GOAT_OVERFLOW_GUARD', () => {
     const orig = process.env['TOKEN_GOAT_OVERFLOW_GUARD']
     try {
@@ -232,11 +220,7 @@ describe('loadConfig', () => {
     }
   })
 
-  // Regression: envInt() applied an env-var override AFTER the file-value min/max clamp with
-  // no reclamp, so an out-of-range env var silently overwrote an already-validated value with
-  // anything outside its documented range. Each case below sets the env var to a value clearly
-  // outside the field's documented range and asserts loadConfig() clamps it back in, instead of
-  // passing the raw out-of-range value through.
+  // Regression: envInt() applied an env-var override AFTER the file-value min/max clamp with no reclamp, so an out-of-range env var silently overwrote an already-validated value with anything outside its documented range. Each case below sets the env var to a value clearly outside the field's documented range and asserts loadConfig() clamps it back in, instead of passing the raw out-of-range value through.
   it('clamps an out-of-range env var override for TOKEN_GOAT_MCP_DEDUP_TTL_SECS to the documented max (1-3600s)', () => {
     const orig = process.env['TOKEN_GOAT_MCP_DEDUP_TTL_SECS']
     try {
@@ -267,17 +251,18 @@ describe('loadConfig', () => {
     }
   })
 
-  it('clamps a below-range env var override for TOKEN_GOAT_HOOK_WATCHDOG_MS to the documented min (100ms)', () => {
-    const orig = process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS']
+  // HAND-DERIVED: the 600000 ceiling is the hooks.latency_budget_ms row of the bounds table in src/config.ts.
+  it('clamps an above-range env var override for TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS to the documented max (600000ms)', () => {
+    const orig = process.env['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS']
     try {
-      process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS'] = '1'
+      process.env['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS'] = '999999999'
       const cfg = loadConfig()
-      expect(cfg.hooks.watchdog_ms).toBe(100)
+      expect(cfg.hooks.latency_budget_ms).toBe(600000)
     } finally {
       if (orig === undefined) {
-        delete process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS']
+        delete process.env['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS']
       } else {
-        process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS'] = orig
+        process.env['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS'] = orig
       }
     }
   })
@@ -313,11 +298,7 @@ describe('loadConfig', () => {
     }
   })
 
-  // The bounds and lock guards check that these keys are classified and reachable; neither looks at
-  // the value. The value is the entire point: a default that drifts up to the core count restores
-  // the behaviour the key was added to stop, and nothing would fail, because indexing still works
-  // -- it just takes the machine again. Stated against os.cpus() rather than a bare number so this
-  // keeps meaning "a small share of the host" on whatever CI runs it.
+  // The bounds and lock guards check that these keys are classified and reachable; neither looks at the value. The value is the entire point: a default that drifts up to the core count restores the behaviour the key was added to stop, and nothing would fail, because indexing still works -- it just takes the machine again. Stated against os.cpus() rather than a bare number so this keeps meaning "a small share of the host" on whatever CI runs it.
   it('defaults to a small fixed share of the host, not a host-sized thread pool', () => {
     const threads = defaultConfig().worker.embed_threads
     expect(threads).toBeGreaterThanOrEqual(1)
@@ -328,11 +309,7 @@ describe('loadConfig', () => {
     ).toBeLessThanOrEqual(4)
   })
 
-  // Not a restatement of the bounds guard. The measurement behind the thread default is that
-  // below_normal is what keeps the foreground responsive, not the thread count: the same foreground
-  // probe that cannot tell 2, 4 or 6 threads apart from an idle machine reads -69% throughput and a
-  // 292 ms stall at 4 threads on 2 cores the moment the priority is normal. Flipping this default
-  // breaks nothing, fails no test, and indexing still works -- it just takes the machine again.
+  // Not a restatement of the bounds guard. The measurement behind the thread default is that below_normal is what keeps the foreground responsive, not the thread count: the same foreground probe that cannot tell 2, 4 or 6 threads apart from an idle machine reads -69% throughput and a 292 ms stall at 4 threads on 2 cores the moment the priority is normal. Flipping this default breaks nothing, fails no test, and indexing still works -- it just takes the machine again.
   it('defaults to a priority below normal, so indexing yields to the user', () => {
     expect(defaultConfig().worker.priority).toBe('below_normal')
   })
@@ -373,9 +350,7 @@ describe('loadConfig', () => {
   })
 
   it('content-hash cache: a second write landing on the same mtime is still picked up (regression: the old mtime-only cache key silently served the first write forever once two writes shared an mtime tick)', () => {
-    // Pin both writes to the exact same mtime (down to the same millisecond -- the resolution
-    // utimesSync can actually set) so this reproduces the collision deterministically instead
-    // of racing real filesystem timing.
+    // Pin both writes to the exact same mtime (down to the same millisecond -- the resolution utimesSync can actually set) so this reproduces the collision deterministically instead of racing real filesystem timing.
     const pinnedMtime = new Date('2026-01-01T00:00:00.000Z')
 
     fs.writeFileSync(_testConfigPath, '[compact_assist]\nmax_manifest_chars = 4\n', 'utf8')
@@ -471,9 +446,7 @@ describe('loadConfig', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// saveConfig omits an untouched auto_trigger_multiplier (#323 regression)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- saveConfig omits an untouched auto_trigger_multiplier (#323 regression) ---------------------------------------------------------------------------
 
 describe('saveConfig and auto_trigger_multiplier explicitness (#323 regression)', () => {
   beforeEach(() => {
@@ -529,9 +502,7 @@ describe('saveConfig and auto_trigger_multiplier explicitness (#323 regression)'
   })
 })
 
-// ---------------------------------------------------------------------------
-// Corrupt config.toml handling (#249 regression)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Corrupt config.toml handling (#249 regression) ---------------------------------------------------------------------------
 
 describe('loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression)', () => {
   beforeEach(() => {
@@ -614,9 +585,7 @@ describe('loadConfig / loadPersistedConfig distinguish a parse failure from a mi
   })
 })
 
-// ---------------------------------------------------------------------------
-// Default field spot-checks
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Default field spot-checks ---------------------------------------------------------------------------
 
 describe('defaultConfig field spot-checks', () => {
   it('CompactAssistConfig defaults', () => {
@@ -664,16 +633,12 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.image_shrink.screenshot_redirect).toBe(true)
     expect(cfg.image_shrink.ocr_enabled).toBe(true)
     expect(cfg.image_shrink.ocr_min_confidence).toBe(65)
-    // The floor of the two billing tiers, on purpose. Reporting a saving against the cheaper of the
-    // two bills can never credit one that was not there; the other direction is the over-credit
-    // class this repository has shipped repeatedly.
+    // The floor of the two billing tiers, on purpose. Reporting a saving against the cheaper of the two bills can never credit one that was not there; the other direction is the over-credit class this repository has shipped repeatedly.
     expect(cfg.image_shrink.vision_tier).toBe('standard')
   })
 })
 
-// ---------------------------------------------------------------------------
-// Cross-field config invariants
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Cross-field config invariants ---------------------------------------------------------------------------
 
 describe('cross-field config clamping', () => {
   beforeEach(() => {
@@ -938,9 +903,7 @@ describe('ENV_KEYS registry (constants.ts)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Per-project .token-goat.toml override (#306)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Per-project .token-goat.toml override (#306) ---------------------------------------------------------------------------
 
 describe('per-project .token-goat.toml override', () => {
   beforeEach(() => {
@@ -1064,11 +1027,7 @@ describe('per-project .token-goat.toml override', () => {
   })
 })
 
-// A config file carries whatever byte-order mark the editor that wrote it left behind. These
-// files were read as raw UTF-8, so the mark became part of the first key name and the whole file
-// failed to parse -- every setting in it silently ignored, with an error naming a key nobody
-// wrote. "UTF-8 with BOM" is an ordinary editor setting, and UTF-16 with a mark is what Windows
-// PowerShell 5.1 writes for a plain `>` redirect, which is this program's main platform.
+// A config file carries whatever byte-order mark the editor that wrote it left behind. These files were read as raw UTF-8, so the mark became part of the first key name and the whole file failed to parse -- every setting in it silently ignored, with an error naming a key nobody wrote. "UTF-8 with BOM" is an ordinary editor setting, and UTF-16 with a mark is what Windows PowerShell 5.1 writes for a plain `>` redirect, which is this program's main platform.
 describe('a config file written with a byte-order mark', () => {
   beforeEach(() => {
     invalidateConfigCache()
@@ -1110,12 +1069,7 @@ describe('a config file written with a byte-order mark', () => {
     expect(getLastProjectConfigParseError()).toBeNull()
   })
 
-  // `doctor` and `config validate` each opened the file with a raw 'utf8' read of their own
-  // rather than the loader's decoder, so a BOM'd config produced two answers in one process: the
-  // loader applied every setting in it while doctor printed "[FAIL] Config: config invalid" and
-  // validate told the user to go fix a file that was working. That inversion is worse than the
-  // original defect -- it sends someone editing a healthy file. Whatever reads a config must
-  // reach the loader's verdict about it.
+  // `doctor` and `config validate` each opened the file with a raw 'utf8' read of their own rather than the loader's decoder, so a BOM'd config produced two answers in one process: the loader applied every setting in it while doctor printed "[FAIL] Config: config invalid" and validate told the user to go fix a file that was working. That inversion is worse than the original defect -- it sends someone editing a healthy file. Whatever reads a config must reach the loader's verdict about it.
   it.each([
     ['UTF-8 with a mark', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(TOML, 'utf8')])],
     ['UTF-16LE with a mark', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(TOML, 'utf16le')])],
@@ -1133,8 +1087,7 @@ describe('a config file written with a byte-order mark', () => {
     ['UTF-16LE with a mark', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(TOML, 'utf16le')])],
     ['UTF-8 with no mark', Buffer.from(TOML, 'utf8')],
   ])('has config validate agree with the loader about a config written as %s', (_label, bytes) => {
-    // The same defect lived at two sites; covering only one of them would repeat exactly the
-    // "fixed here, missed there" mistake that produced it.
+    // The same defect lived at two sites; covering only one of them would repeat exactly the "fixed here, missed there" mistake that produced it.
     fs.writeFileSync(_testConfigPath, bytes)
     expect(loadConfig().hints.mcp_dedup_ttl_secs).toBe(77)
 

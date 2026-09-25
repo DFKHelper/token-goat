@@ -59,6 +59,8 @@ const TOKEN_GOAT_RETRY_RE = /token-goat (\w[\w-]*) "([^"]+)"/g
 const MCP_MAX_LIMIT = 1000
 const MCP_MAX_CONTEXT_LINES = 50
 const MCP_MAX_OUTPUT_LINES = 10_000
+// minLines only filters, so its bound need only exceed any real symbol's length; left unbounded, an integer field advertises plus and minus 2^53 in its schema.
+const MCP_MAX_MIN_LINES = 100_000
 
 /** cmd -> the MCP tool param name that literal retry command's quoted argument maps to. */
 const RETRY_PARAM_BY_COMMAND: Record<string, string> = {
@@ -401,15 +403,8 @@ export async function createMcpServer(): Promise<McpServer> {
     }, 0).unref()
   }
 
-  const makeProjectRootField = (verb: string) =>
-    z
-      .string()
-      .optional()
-      .describe(
-        `absolute path to the workspace root to scope this ${verb} to; defaults to the MCP server process's cwd, ` +
-          'which is not always the actual workspace root for MCP clients -- pass this explicitly when it might differ',
-      )
-  const projectRootField = makeProjectRootField('lookup')
+  // One wording for every tool: it is repeated in each schema of every tools/list, which a client puts in the model's context on each turn.
+  const projectRootField = z.string().optional().describe("absolute workspace root; defaults to the server's cwd, which may not be the workspace, so pass it when unsure")
 
   server.registerTool(
     'symbol',
@@ -455,10 +450,9 @@ export async function createMcpServer(): Promise<McpServer> {
     'read',
     {
       description:
-        "Read one symbol's full body, given a spec of the form file::symbol, or a line range file@N-M / file@N, or a bare file path. " +
-        'Pass a comma-separated spec (file::a,b) to fetch several symbols\' bodies from one file in a single call.',
+        "Read a symbol's full body (file::symbol), several from one file (file::a,b), a line range (file@N-M, file@N), or a file.",
       inputSchema: {
-        spec: z.string().describe('file::symbol, file@N-M, file@N, a bare file path, or comma-separated file::a,b for a merged multi-symbol view'),
+        spec: z.string().describe('file::symbol, file::a,b, file@N-M, file@N, or a file path'),
         json: z.boolean().optional().describe('output as JSON'),
         forceRefresh: z.boolean().optional().describe('reparse file from disk before querying (ignore stale index)'),
         stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
@@ -521,7 +515,7 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         file: z.string().describe('file path'),
         json: z.boolean().optional().describe('output as JSON'),
-        minLines: z.number().int().optional().describe('only show symbols at least N lines long'),
+        minLines: z.number().int().nonnegative().max(MCP_MAX_MIN_LINES).optional().describe('only show symbols at least N lines long'),
         forceRefresh: z.boolean().optional().describe('reparse file from disk before querying (ignore stale index)'),
         stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
         projectRoot: projectRootField,
@@ -555,7 +549,7 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         file: z.string().describe('file path'),
         json: z.boolean().optional().describe('output as JSON'),
-        minLines: z.number().int().optional().describe('only show symbols at least N lines long'),
+        minLines: z.number().int().nonnegative().max(MCP_MAX_MIN_LINES).optional().describe('only show symbols at least N lines long'),
         forceRefresh: z.boolean().optional().describe('reparse file from disk before querying (ignore stale index)'),
         stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
         projectRoot: projectRootField,
@@ -586,18 +580,16 @@ export async function createMcpServer(): Promise<McpServer> {
     'semantic',
     {
       description:
-        'Semantic search over the indexed project (falls back to full-text search when no embedding index is available). ' +
-        'Scoped to projectRoot if given, else the MCP server process\'s own cwd -- which may not be the actual workspace ' +
-        'root for a client that launched the server from elsewhere, so pass projectRoot explicitly when in doubt.',
+        'Semantic search over the indexed project; falls back to full-text search without an embedding index.',
       inputSchema: {
         query: z.string().describe('natural-language search query'),
         limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max results (default: 20)'),
-        grep: z.string().optional().describe('filter to hits whose file path matches this regex (literal substring if it does not compile as regex); matched against the path as rendered, same convention as refs --grep'),
-        excludeTests: z.boolean().optional().describe('hide hits whose file is a test file (opt-in; default output is unchanged)'),
-        preflight: z.boolean().optional().describe('run semantic embedding preflight check and return status'),
-        warm: z.boolean().optional().describe('warm up the embedding model session in memory before query execution'),
+        grep: z.string().optional().describe('only hits whose file path matches this regex (a literal substring if it is not valid regex)'),
+        excludeTests: z.boolean().optional().describe('hide hits in test files'),
+        preflight: z.boolean().optional().describe('report whether embeddings are ready, instead of searching'),
+        warm: z.boolean().optional().describe('load the embedding model before the query'),
         json: z.boolean().optional().describe('output as JSON'),
-        projectRoot: makeProjectRootField('search'),
+        projectRoot: projectRootField,
       },
       // openWorldHint stays false although a first call on a machine with no cached model downloads one over the network: what this tool interacts with is the local index, and the download provisions the tool rather than being the tool reaching out. A client reading `true` here would take it as "this searches the internet", which is the wrong warning.
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -623,14 +615,11 @@ export async function createMcpServer(): Promise<McpServer> {
     'index_status',
     {
       description:
-        'Report whether the index for a project can be trusted right now: whether it has ever been indexed at all, ' +
-        'current file/symbol counts, dirty-reindex-queue depth, whether the background worker is alive, and whether ' +
-        'embeddings are available (semantic silently degrades to full-text search without them). Call this after an ' +
-        'unexpectedly empty result from another token-goat tool (symbol/read/semantic/refs/brief/...) to tell apart ' +
-        '"no match" from "the index is not ready yet" -- an MCP-only client has no hook layer to warn about this on ' +
-        'its own, so an empty tool result and a stale/unindexed project look identical without this check.',
+        'Whether the project index can be trusted now: indexed at all, file and symbol counts, reindex queue depth, worker alive, ' +
+        'and embeddings available (without them semantic falls back to full-text search). Call it when another token-goat tool ' +
+        'returns nothing, to tell "no match" from "index not ready".',
       inputSchema: {
-        projectRoot: makeProjectRootField('check'),
+        projectRoot: projectRootField,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -696,11 +685,9 @@ export async function createMcpServer(): Promise<McpServer> {
     'refs',
     {
       description:
-        'Find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view). ' +
-        'For an unambiguous TypeScript symbol, automatically type-resolves candidates via the TypeScript compiler API to drop same-named-different-symbol ' +
-        'false positives; falls back to name-based matching when that is not possible.',
+        'Find references to symbols. An unambiguous TypeScript symbol is type-resolved, dropping same-named symbols; anything else matches by name.',
       inputSchema: {
-        spec: z.string().describe('file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view'),
+        spec: z.string().describe('file::symbol, symbol, a,b,c, or file::a,b'),
         callers: z.boolean().optional().describe('group references by their enclosing caller symbol'),
         limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max results'),
         top: z
@@ -710,7 +697,7 @@ export async function createMcpServer(): Promise<McpServer> {
           .max(MCP_MAX_LIMIT)
           .optional()
           .describe(
-            'for a high-fanout symbol, group references by file (count only) and show only the top N files by reference count instead of a per-line dump',
+            'list only the top N files by reference count, instead of every reference',
           ),
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: projectRootField,
@@ -741,21 +728,18 @@ export async function createMcpServer(): Promise<McpServer> {
     'brief',
     {
       description:
-        'One-shot symbol orientation: signature, location, token count, body, callers, and containing doc section, in a single call ' +
-        '(spec: file::symbol; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported -- ' +
-        'unlike refs, a bare symbol name with no file is not accepted). ' +
-        'Prefer this over separate read + refs calls when the goal is to understand a symbol, not just fetch its source: it folds the ' +
-        'work of read (body) and refs --callers (call sites) into one result, at a fraction of the combined round-trip cost.',
+        'Understand a symbol in one call: signature, location, token count, body, callers and containing doc section. ' +
+        'Prefer it to read plus refs. Spec file::symbol, file::a,b or a.ts::x,b.ts::y; a bare name without a file is not accepted.',
       inputSchema: {
         spec: z
           .string()
-          .describe('file::symbol; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported'),
+          .describe('file::symbol, file::a,b, or a.ts::x,b.ts::y'),
         limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max callers to show (default: 20)'),
         json: z.boolean().optional().describe('output as JSON'),
-        context: z.number().int().nonnegative().max(MCP_MAX_CONTEXT_LINES).optional().describe('lines of call-site source to show before and after each caller (default 0)'),
-        excludeTests: z.boolean().optional().describe('hide callers whose call site lives in a test file (opt-in; default output is unchanged)'),
-        grep: z.string().optional().describe('only show callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex)'),
-        projectRoot: makeProjectRootField('orient'),
+        context: z.number().int().nonnegative().max(MCP_MAX_CONTEXT_LINES).optional().describe('call-site lines to show around each caller (default 0)'),
+        excludeTests: z.boolean().optional().describe('hide callers in test files'),
+        grep: z.string().optional().describe('only callers whose enclosing symbol matches this regex (a literal substring if it is not valid regex)'),
+        projectRoot: projectRootField,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -786,7 +770,7 @@ export async function createMcpServer(): Promise<McpServer> {
       description: 'Project overview: file count, languages, headline symbols, and recently modified files.',
       inputSchema: {
         compact: z.boolean().optional().describe('compact, low-token summary'),
-        projectRoot: makeProjectRootField('overview'),
+        projectRoot: projectRootField,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -838,7 +822,7 @@ export async function createMcpServer(): Promise<McpServer> {
         recursive: z.boolean().optional().describe('descend into subdirectories (default: true)'),
         context: z.number().int().nonnegative().max(MCP_MAX_CONTEXT_LINES).optional().describe('lines of context to show before and after each match'),
         // runGrep takes no projectRoot of its own (its `path` array is its scope), so this field only names the root the confinement check is made against -- without it, a search rooted anywhere but the server process's cwd is refused.
-        projectRoot: makeProjectRootField('search'),
+        projectRoot: projectRootField,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -950,7 +934,7 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         name: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).describe('handoff name'),
         text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('handoff text'),
-        projectRoot: makeProjectRootField('scope'),
+        projectRoot: projectRootField,
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -968,7 +952,7 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         name: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).describe('handoff name'),
         full: z.boolean().optional().describe('return full text instead of a compact payload'),
-        projectRoot: makeProjectRootField('scope'),
+        projectRoot: projectRootField,
       },
       // Reads like a read, and is not one: resolving compactly runs the handoff text back through compressText, which stores the compact payload so the recovery id it hands back can be redeemed. A measurement, not a reading of this code -- the guard hashes the store's bytes around every tool call, and this is the tool it caught.
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },

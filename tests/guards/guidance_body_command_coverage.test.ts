@@ -1,34 +1,4 @@
-/**
- * Guard against the "command exists but the gate never learned about it" class.
- *
- * `buildGuidanceBody` in `../../src/bridges/guidance_block.ts` is the single source of the
- * routing gate written unprompted into CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md`
- * and the installed SKILL.md — the only description of token-goat a model gets without asking
- * for one. Three real bugs shipped from the same root cause: a CLI command existed and worked,
- * but nobody updated this prose to mention it, so an agent never learned it existed and fell
- * back to a full-file read every time (fixed in c6df9746, c8369b51/a2a76dc7, 04d0abe9). Nothing
- * previously stopped a fourth instance of the same class.
- *
- * Coverage choice: this guard checks the `Commands:` reference line only, not the failure-shape
- * rows. The two are deliberately NOT the same bar. The `Commands:` line is a flat, mechanical
- * inventory — every command judged gate-worthy belongs there, and "is `name` a substring of this
- * one line" is a fact a test can check. A failure-shape row is a *prose judgment call*: which
- * misuse pattern a command replaces, phrased so an agent recognizes its own behavior ("a shell
- * text search with context flags", "paging one function with view/view_range"). That phrasing
- * can't be derived mechanically from a command's name or Commander description, and forcing one
- * to exist per command would either produce meaningless one-line paraphrases of the description
- * (defeating the point of curated failure shapes) or block this guard on a judgment call it can't
- * make. Instead: every command that reaches the gate is machine-verified present in `Commands:`;
- * whether it *also* deserves a failure-shape row remains a human decision made at the same time
- * the command is added to the gate (as happened for json-query, mcp-output, and brief below).
- *
- * Commands that legitimately never belong in the gate — operator/lifecycle commands, session/cache
- * introspection, derived-analysis tools, single-format extractors already covered by a generic
- * failure shape, write/mutation commands, and read-adjacent navigation utilities outside the gate's
- * four core failure shapes — are named in OMISSIONS below, each with a one-line reason. A command
- * that is neither in the guidance body's `Commands:` line nor in OMISSIONS fails this test: that is
- * exactly the "nobody decided" state that let the three historical bugs ship.
- */
+/** Guard against the "command exists but the gate never learned about it" class. `buildGuidanceBody` in `../../src/bridges/guidance_block.ts` is the single source of the routing gate written unprompted into CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md` and the installed SKILL.md — the only description of token-goat a model gets without asking for one. Three real bugs shipped from the same root cause: a CLI command existed and worked, but nobody updated this prose to mention it, so an agent never learned it existed and fell back to a full-file read every time (fixed in c6df9746, c8369b51/a2a76dc7, 04d0abe9). Nothing previously stopped a fourth instance of the same class. Coverage choice: this guard checks the `Commands:` reference line only, not the failure-shape rows. The two are deliberately NOT the same bar. The `Commands:` line is a flat, mechanical inventory — every command judged gate-worthy belongs there, and "is `name` a substring of this one line" is a fact a test can check. A failure-shape row is a *prose judgment call*: which misuse pattern a command replaces, phrased so an agent recognizes its own behavior ("a shell text search with context flags", "paging one function with view/view_range"). That phrasing can't be derived mechanically from a command's name or Commander description, and forcing one to exist per command would either produce meaningless one-line paraphrases of the description (defeating the point of curated failure shapes) or block this guard on a judgment call it can't make. Instead: every command that reaches the gate is machine-verified present in `Commands:`; whether it *also* deserves a failure-shape row remains a human decision made at the same time the command is added to the gate (as happened for json-query, mcp-output, and brief below). Commands that legitimately never belong in the gate — operator/lifecycle commands, session/cache introspection, derived-analysis tools, single-format extractors already covered by a generic failure shape, write/mutation commands, and read-adjacent navigation utilities outside the gate's four core failure shapes — are named in OMISSIONS below, each with a one-line reason. A command that is neither in the guidance body's `Commands:` line nor in OMISSIONS fails this test: that is exactly the "nobody decided" state that let the three historical bugs ship. */
 
 import { describe, expect, it } from 'vitest'
 
@@ -56,6 +26,10 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'worker start', reason: LIFECYCLE_REASON },
   { command: 'worker stop', reason: LIFECYCLE_REASON },
   { command: 'worker status', reason: LIFECYCLE_REASON },
+  { command: 'hook-server', reason: LIFECYCLE_REASON },
+  { command: 'hook-server run', reason: LIFECYCLE_REASON },
+  { command: 'hook-server status', reason: LIFECYCLE_REASON },
+  { command: 'hook-server stop', reason: LIFECYCLE_REASON },
   { command: 'hook', reason: LIFECYCLE_REASON },
   { command: 'index', reason: LIFECYCLE_REASON },
   { command: 'doctor', reason: LIFECYCLE_REASON },
@@ -180,16 +154,11 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'history', reason: NAV_REASON },
   { command: 'compact-doc', reason: NAV_REASON },
 
-  // `affected` answers a question about a change set rather than about a file's contents: it is
-  // reached for when narrowing a test run, never instead of reading something. Naming it in the
-  // gate would spend bytes on every session start to advertise a command no read can be routed to.
+  // `affected` answers a question about a change set rather than about a file's contents: it is reached for when narrowing a test run, never instead of reading something. Naming it in the gate would spend bytes on every session start to advertise a command no read can be routed to.
   { command: 'affected', reason: ANALYSIS_REASON },
-  // `reconcile` reads nothing on the agent's behalf -- it repairs the index the gate's own
-  // commands query, and its ordinary trigger is the session-start hook rather than a decision made
-  // mid-task.
+  // `reconcile` reads nothing on the agent's behalf -- it repairs the index the gate's own commands query, and its ordinary trigger is the session-start hook rather than a decision made mid-task.
   { command: 'reconcile', reason: LIFECYCLE_REASON },
-  // `bench` scores the shell-output compressors against a fixed fixture corpus. It answers "did
-  // this change help?" for someone editing token-goat, and no agent read can be routed to it.
+  // `bench` scores the shell-output compressors against a fixed fixture corpus. It answers "did this change help?" for someone editing token-goat, and no agent read can be routed to it.
   { command: 'bench', reason: "measures token-goat's own compression against a fixture corpus -- a development instrument, never an alternative to reading a file" },
 ]
 

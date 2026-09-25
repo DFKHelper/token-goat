@@ -83,6 +83,7 @@
 import { COPILOT_CLI_TOOL_NAME_MAP } from '../copilot_tool_names.js'
 import { ownGet } from '../own_lookup.js'
 import { foldToolName } from '../tool_name_fold.js'
+import { SHIM_TRY_SERVER } from './shim_try_server.js'
 import { MATERIALIZE_SHRUNK_IMAGE_JS } from './shrink_block.js'
 
 export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
@@ -334,7 +335,9 @@ function remapToolInput(copilotToolName, input) {
   return out
 }
 
-// Attempts the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of
+${SHIM_TRY_SERVER}
+
+// Attempts the resident server (tryServer above), then the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of
 // the baked token-goat entry path, built with zero load-time side effects -- unlike
 // the CLI entry, which runs the full argv-parsing CLI as a side effect of being
 // loaded) and calls its exported relayInProcess() directly, avoiding a second node
@@ -344,14 +347,17 @@ function remapToolInput(copilotToolName, input) {
 async function tryInProcess(entryPath, tgEvent, canonical, harness) {
   if (!entryPath) return undefined
   try {
-    const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
-    if (!require('node:fs').existsSync(hookLibPath)) return undefined
-    const mod = await import(pathToFileURL(hookLibPath).href)
+    // Set before either path: the resident server runs the call under this process's environment.
     process.env.TOKEN_GOAT_HARNESS_OVERRIDE = harness
     // Which hooks directory VS Code loaded this shim from is the only thing separating a
     // user-scope copy from a project-scope one -- the two files are byte-identical and so are
     // their payloads. vscode_duplicate.ts needs it to stand the redundant copy down.
     if (harness === 'vscode') process.env.TOKEN_GOAT_VSCODE_HOOKS_DIR = __dirname
+    const served = await tryServer(entryPath, tgEvent, canonical)
+    if (served !== undefined) return served
+    const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
+    if (!require('node:fs').existsSync(hookLibPath)) return undefined
+    const mod = await import(pathToFileURL(hookLibPath).href)
     return await mod.relayInProcess(tgEvent, canonical)
   } catch {
     return undefined

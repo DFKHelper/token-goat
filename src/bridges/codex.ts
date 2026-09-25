@@ -38,7 +38,7 @@
  *
  * This comment lives here rather than beside that line because everything inside CODEX_HOOK_SCRIPT is a template string: esbuild strips comments from module source, but shim comments are payload, and the bundle-size guard in tests/guards/dist_chunks_deduped.test.ts measures them.
  */
-import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Codex hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then strips _tg_* keys and injects hookEventName so the response satisfies Codex's strict (additionalProperties:false) schema.
@@ -79,6 +79,8 @@ function stripTg(value) {
   }
   return value
 }
+
+${SHIM_TRY_SERVER}
 
 ${SHIM_TRY_IN_PROCESS}
 

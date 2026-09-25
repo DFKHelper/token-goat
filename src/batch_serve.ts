@@ -1,32 +1,4 @@
-/**
- * `--batch-serve`: run many CLI invocations inside one already-started process.
- *
- * Every one of the suite's built-bundle tests spawns `node dist/token-goat.mjs <args>` and asserts
- * on the real output, deliberately, so that no injected seam can hide a broken shipping path. The
- * problem is what that costs. Measured on this repo: a bundle spawn that does nothing at all
- * (`--version`) takes 259ms, and one that does real work (`todo .`) takes 258ms. The command is
- * free; ~228ms of every such test is Node starting up and evaluating a 3.3 MB bundle. Across the
- * ~534 tests in that shape it is about 122 seconds of the suite's 452 seconds of test time.
- *
- * So this serves invocations from a process that has already paid that cost once. What it
- * deliberately does NOT change is anything the tests are actually asserting about: it is the real
- * built artifact, the real `run(argv)` entrypoint, the real commander parse, and the real command
- * implementations. Only the process boundary is amortised.
- *
- * What a shared process does change is state, and that is the whole risk. Between requests this
- * restores the working directory, restores the environment key by key, resets `process.exitCode`,
- * and calls `clearModuleCaches()` (the same reset registry the in-process tests already rely on).
- * A module-level cache that no reset covers would make a batched run disagree with a spawned one
- * -- which is why tests/batch_serve_equivalence.test.ts runs a sample of commands both ways and
- * compares stdout, stderr and exit status byte for byte. Batching is only as trustworthy as that
- * guard, so the guard is not optional.
- *
- * Protocol, newline-delimited JSON over stdin, replies on stdout prefixed with a caller-supplied
- * random token: `<token> {"id":N,...}`. The token exists because a command's own output is
- * captured in-process but a stray async write is not, and a reply stream that a test's own output
- * could be mistaken for would be worse than no speedup at all. The caller generates the token, so
- * nothing in a fixture can predict it.
- */
+/** `--batch-serve`: run many CLI invocations inside one already-started process. Every one of the suite's built-bundle tests spawns `node dist/token-goat.mjs <args>` and asserts on the real output, deliberately, so that no injected seam can hide a broken shipping path. The problem is what that costs. Measured on this repo: a bundle spawn that does nothing at all (`--version`) takes 259ms, and one that does real work (`todo .`) takes 258ms. The command is free; ~228ms of every such test is Node starting up and evaluating a 3.3 MB bundle. Across the ~534 tests in that shape it is about 122 seconds of the suite's 452 seconds of test time. So this serves invocations from a process that has already paid that cost once. What it deliberately does NOT change is anything the tests are actually asserting about: it is the real built artifact, the real `run(argv)` entrypoint, the real commander parse, and the real command implementations. Only the process boundary is amortised. What a shared process does change is state, and that is the whole risk. Between requests this restores the working directory, restores the environment key by key, resets `process.exitCode`, and calls `clearModuleCaches()` (the same reset registry the in-process tests already rely on). A module-level cache that no reset covers would make a batched run disagree with a spawned one -- which is why tests/batch_serve_equivalence.test.ts runs a sample of commands both ways and compares stdout, stderr and exit status byte for byte. Batching is only as trustworthy as that guard, so the guard is not optional. Protocol, newline-delimited JSON over stdin, replies on stdout prefixed with a caller-supplied random token: `<token> {"id":N,...}`. The token exists because a command's own output is captured in-process but a stray async write is not, and a reply stream that a test's own output could be mistaken for would be worse than no speedup at all. The caller generates the token, so nothing in a fixture can predict it. */
 import { clearModuleCaches } from './reset.js'
 
 export interface BatchRequest {
@@ -44,7 +16,7 @@ export interface BatchResponse {
 }
 
 /** Apply `next` as the whole environment, returning a restore function. Applied key by key rather than by replacing `process.env`, which Node does not fully honour. */
-function swapEnv(next: Record<string, string>): () => void {
+export function swapEnv(next: Record<string, string>): () => void {
   const before = { ...process.env } as Record<string, string>
   for (const key of Object.keys(process.env)) if (!(key in next)) delete process.env[key]
   for (const [key, value] of Object.entries(next)) process.env[key] = value
@@ -79,19 +51,14 @@ function captureOutput(): { stdout: () => string; stderr: () => string; restore:
   }
 }
 
-/** Run one request against the real entrypoint, isolating it from the last one and from the next. */
+/** Run one request against the real entrypoint, isolating it from the last one and from the next. `reset` runs after the request; the default clears every module cache, which a process that must keep its hook handlers registered (hook_server.ts) narrows to the per-request ones. */
 export async function serveOne(
   req: BatchRequest,
   runFn: (argv: string[]) => Promise<void>,
+  reset: () => void = clearModuleCaches,
 ): Promise<BatchResponse> {
   const cwdBefore = process.cwd()
-  // Snapshot even when the request brings no environment of its own. A request that omits `env`
-  // still runs commands that write to process.env -- `--harness` sets TOKEN_GOAT_HARNESS_OVERRIDE
-  // (cli.ts) and the config layer sets keys the same way -- and with no snapshot taken there was
-  // nothing to undo them, so the override survived into every later request in this process. A
-  // separate CLI process would have dropped it on exit, and byte-identical equivalence with that
-  // is the whole contract of this mode. Passing the current environment back to swapEnv makes it
-  // a pure save-and-restore.
+  // Snapshot even when the request brings no environment of its own. A request that omits `env` still runs commands that write to process.env -- `--harness` sets TOKEN_GOAT_HARNESS_OVERRIDE (cli.ts) and the config layer sets keys the same way -- and with no snapshot taken there was nothing to undo them, so the override survived into every later request in this process. A separate CLI process would have dropped it on exit, and byte-identical equivalence with that is the whole contract of this mode. Passing the current environment back to swapEnv makes it a pure save-and-restore.
   const restoreEnv = swapEnv(req.env ?? ({ ...process.env } as Record<string, string>))
   const cap = captureOutput()
   let status: number
@@ -101,8 +68,7 @@ export async function serveOne(
     await runFn([process.execPath, 'token-goat', ...req.argv])
     status = typeof process.exitCode === 'number' ? process.exitCode : 0
   } catch (e) {
-    // A throw that escapes run() would kill a real CLI process with a nonzero status, so report
-    // that rather than a clean exit; the message goes to stderr exactly as an uncaught error does.
+    // A throw that escapes run() would kill a real CLI process with a nonzero status, so report that rather than a clean exit; the message goes to stderr exactly as an uncaught error does.
     cap.restore()
     process.stderr.write('')
     status = 1
@@ -114,7 +80,7 @@ export async function serveOne(
     } catch {
       // the directory a request chdir'd into may have been removed by the request itself
     }
-    clearModuleCaches()
+    reset()
     return { id: req.id, status, stdout: captured.out, stderr: captured.err }
   }
   cap.restore()
@@ -127,15 +93,11 @@ export async function serveOne(
   } catch {
     // as above: the request may have deleted the directory it ran in
   }
-  clearModuleCaches()
+  reset()
   return { id: req.id, status, stdout, stderr }
 }
 
-/**
- * Read requests from stdin until it closes, replying to each on stdout. Requests are handled
- * strictly one at a time: two commands sharing this process concurrently would share its cwd and
- * environment too, which is precisely the isolation the per-request restore exists to provide.
- */
+/** Read requests from stdin until it closes, replying to each on stdout. Requests are handled strictly one at a time: two commands sharing this process concurrently would share its cwd and environment too, which is precisely the isolation the per-request restore exists to provide. */
 export function serveBatch(token: string, runFn: (argv: string[]) => Promise<void>): void {
   let buffered = ''
   let chain: Promise<void> = Promise.resolve()
@@ -151,8 +113,7 @@ export function serveBatch(token: string, runFn: (argv: string[]) => Promise<voi
       const req = JSON.parse(line) as BatchRequest
       chain = chain.then(async () => {
         const res = await serveOne(req, runFn)
-        // Written straight to the descriptor: process.stdout.write is swapped out during a
-        // request, and a reply must never end up in the buffer of the command being served.
+        // Written straight to the descriptor: process.stdout.write is swapped out during a request, and a reply must never end up in the buffer of the command being served.
         process.stdout.write(`${token} ${JSON.stringify(res)}\n`)
       })
     }

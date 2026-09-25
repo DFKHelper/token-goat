@@ -1,6 +1,4 @@
-/**
- * Compact CLI help generation.
- */
+/** Compact CLI help generation. */
 
 export function generateCompactHelp(): string {
   const lines = [
@@ -42,7 +40,7 @@ export function generateCompactHelp(): string {
     '  compress, recall, bash-output, web-output, mcp-output, bench',
     '',
     'Config & Integration: install, uninstall, upgrade, mcp-serve, mcp-status, hook,',
-    '  bridges-status, worker, statusline, version, config, config-get,',
+    '  bridges-status, worker, hook-server, statusline, version, config, config-get,',
     '  capabilities, help',
     '',
     'Data: note, note-add, note-get, note-list, describe, sqlite-query,',

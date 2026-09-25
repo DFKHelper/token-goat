@@ -166,6 +166,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bridges/registry.ts`](src/bridges/registry.ts) | `detectHarness()` / `getHarnessName()` — env-variable-based harness detection |
 | [`src/bridges/relay_block.ts`](src/bridges/relay_block.ts) | Harness bridge integration and hook configuration for relay_block |
 | [`src/bridges/shim_common.ts`](src/bridges/shim_common.ts) | Text fragments shared by the generated harness hook shims. |
+| [`src/bridges/shim_try_server.ts`](src/bridges/shim_try_server.ts) | The shim fragment that hands a hook call to the resident hook server. |
 | [`src/bridges/shrink_block.ts`](src/bridges/shrink_block.ts) | Harness bridge integration and hook configuration for shrink_block |
 | [`src/bridges/types.ts`](src/bridges/types.ts) | `HarnessName` (`claudecode` \ |
 | [`src/bridges/visualstudio_install.ts`](src/bridges/visualstudio_install.ts) | `install --visualstudio`: Visual Studio's `servers` entry in `.mcp.json` plus a guidance block, no hooks; its block shrinks to an addendum while a VS Code or Copilot CLI gate shares `.github/copilot-instructions.md` (`syncVisualStudioProjectGuidance`) |
@@ -362,6 +363,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/cli_diagnostics.ts`](src/cli_diagnostics.ts) | Diagnostic, inspection, packaging, and budgeting command handlers. |
 | [`src/cli_file_ops.ts`](src/cli_file_ops.ts) | Exports: `cmdNoteAdd`, `cmdWriteFile`, `cmdReplace`, `cmdInsertSection` |
 | [`src/cli_hint_stats.ts`](src/cli_hint_stats.ts) | CLI handler for `token-goat hint-stats`. |
+| [`src/cli_hook_server.ts`](src/cli_hook_server.ts) | `token-goat hook-server`: start, inspect and stop the resident hook servers in `hook_server.ts`. |
 | [`src/cli_mcp_audit.ts`](src/cli_mcp_audit.ts) | CLI handler for `token-goat mcp-audit`. |
 | [`src/cli_memory.ts`](src/cli_memory.ts) | CLI handler for `token-goat memory --analyze` / `--fix`. |
 | [`src/cli_office.ts`](src/cli_office.ts) | Exports: `fenceFileText`, `fenceFileFieldIfMatched`, `fileSizeOrZero`, `recordDocStat` |
@@ -416,8 +418,11 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hint_suggestion_guard.ts`](src/hint_suggestion_guard.ts) | Strip shell commands that a path broke out of, from hint and deny text on its way to the model. |
 | [`src/hint_target.ts`](src/hint_target.ts) | Resolves the real name a deny or read hint's suggested command carries -- a heading, symbol, key or table the file actually holds -- so the command it leads with runs as printed, a |
 | [`src/hints.ts`](src/hints.ts) | Session-hint text builder |
+| [`src/hook_client.ts`](src/hook_client.ts) | Thin client for the resident hook server, and the entry of `dist/token-goat-hook-client.mjs`. |
+| [`src/hook_ipc.ts`](src/hook_ipc.ts) | Wire protocol shared by the resident hook server and its thin client. |
 | [`src/hook_latency.ts`](src/hook_latency.ts) | Read/render side of Batch S's hook wall-clock timing: `token-goat stats --hooks` and `doctor`'s Hook latency check both go through hookLatencyBreakdown(). |
 | [`src/hook_lib.ts`](src/hook_lib.ts) | In-process hook library entry point. |
+| [`src/hook_server.ts`](src/hook_server.ts) | Resident hook server: one long-lived process that answers hook calls and read-only CLI calls from an already-loaded module graph. |
 | [`src/html_query.ts`](src/html_query.ts) | HTML structure inspection, querying, and structural linting for token-goat. |
 | [`src/import_export_extract.ts`](src/import_export_extract.ts) | Language-specific import and export extractors. |
 | [`src/import_graph.ts`](src/import_graph.ts) | The project's internal import graph, built once and shared by every command that needs it. |

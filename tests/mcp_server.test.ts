@@ -33,12 +33,7 @@ const TOOL_NAMES = [
   'handoff_resolve',
 ]
 
-/**
- * Captures everything written to `process.stdout`/`process.stderr` during `fn()`, mirroring
- * `mcp_server.ts`'s own `captureOutput` -- used to get the "expected" text out of the `run*`
- * handlers (`runRefs`/`runChanged`/`runGrep`/`runImports`/`runExports`) that print their own
- * output and return only an exit code, the same way the MCP tool wrappers under test do.
- */
+/** Captures everything written to `process.stdout`/`process.stderr` during `fn()`, mirroring `mcp_server.ts`'s own `captureOutput` -- used to get the "expected" text out of the `run*` handlers (`runRefs`/`runChanged`/`runGrep`/`runImports`/`runExports`) that print their own output and return only an exit code, the same way the MCP tool wrappers under test do. */
 function captureStdout(fn: () => number): { code: number; text: string } {
   const chunks: string[] = []
   const record = (chunk: unknown): boolean => {
@@ -68,11 +63,7 @@ function initRepo(dir: string): void {
   runGit(['commit', '-m', 'initial commit'], { cwd: dir })
 }
 
-/**
- * Connects a real MCP Client to a real McpServer via the SDK's own in-memory transport pair —
- * this drives the actual protocol layer (JSON-RPC framing, schema validation, request routing),
- * not a bare function call to a tool handler.
- */
+/** Connects a real MCP Client to a real McpServer via the SDK's own in-memory transport pair — this drives the actual protocol layer (JSON-RPC framing, schema validation, request routing), not a bare function call to a tool handler. */
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
   const server = await createMcpServer()
   const client = new Client({ name: 'test-client', version: '0.0.1' })
@@ -102,6 +93,26 @@ describe('mcp_server', () => {
     const { tools } = await client.listTools()
     const names = tools.map((t) => t.name).sort()
     expect(names).toEqual([...TOOL_NAMES].sort())
+  })
+
+  // HAND-DERIVED: a client puts the whole tools/list into the model's context on every turn, so its size is a per-turn cost. It was 17,314 bytes before the schemas dropped `$schema`, the integer fields gained real bounds, and the descriptions were cut to what a model acts on; 13,029 after. The ceiling leaves room for a small addition and fails on a regression of any of the three.
+  it('keeps tools/list compact: no $schema, no unbounded integer, and under the size ceiling', async () => {
+    const { client, close } = await connectedClient()
+    cleanup = close
+    const { tools } = await client.listTools()
+    const wire = JSON.stringify(tools)
+    expect(wire).not.toContain('"$schema"')
+    expect(wire).not.toContain(String(Number.MAX_SAFE_INTEGER))
+    expect(wire.length).toBeLessThan(13_500)
+  })
+
+  it.each([-1, 100_001])('rejects minLines: %i on the skeleton tool as a schema validation error', async (minLines) => {
+    const { client, close } = await connectedClient()
+    cleanup = close
+    const result = await client.callTool({ name: 'skeleton', arguments: { file: 'anything.ts', minLines } })
+    expect(result.isError).toBe(true)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result.content as any[])[0].text).toContain('validation error')
   })
 
   it('calls the read tool against a real fixture file and matches runRead()\'s own output', async () => {
@@ -139,9 +150,7 @@ describe('mcp_server', () => {
     expect(block.text).toBe(expected.text)
   })
 
-  // `LIMIT 0` in SQL always returns zero rows -- a symbol that genuinely exists would otherwise
-  // be reported as "no matches" instead of surfacing the caller's mistake. `limit: 0` must be
-  // rejected as invalid input at the schema layer, not silently queried against.
+  // `LIMIT 0` in SQL always returns zero rows -- a symbol that genuinely exists would otherwise be reported as "no matches" instead of surfacing the caller's mistake. `limit: 0` must be rejected as invalid input at the schema layer, not silently queried against.
   it('rejects limit: 0 on the symbol tool as a schema validation error instead of a false "no matches"', async () => {
     const { client, close } = await connectedClient()
     cleanup = close
@@ -271,10 +280,7 @@ describe('mcp_server', () => {
     fs.rmSync(neverIndexedDir, { recursive: true, force: true })
   })
 
-  // The section/skeleton/outline tools had zero successful-call coverage before this: only
-  // 'read' and 'symbol' were ever actually invoked (plus a limit:0 rejection for 'symbol' and
-  // 'semantic'). A broken handler wiring for any of these three -- a typo'd run* call, a
-  // dropped required param mapping -- would have shipped with every existing test green.
+  // The section/skeleton/outline tools had zero successful-call coverage before this: only 'read' and 'symbol' were ever actually invoked (plus a limit:0 rejection for 'symbol' and 'semantic'). A broken handler wiring for any of these three -- a typo'd run* call, a dropped required param mapping -- would have shipped with every existing test green.
   it('calls the section tool against a real markdown fixture and matches runSection()\'s own output', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-section-'))
     const fixture = path.join(tempDir, 'doc.md')
@@ -306,8 +312,7 @@ describe('mcp_server', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    // forceRefresh: true so the fresh fixture is indexed synchronously before querying --
-    // otherwise a file never touched by the worker daemon has no indexed symbols at all.
+    // forceRefresh: true so the fresh fixture is indexed synchronously before querying -- otherwise a file never touched by the worker daemon has no indexed symbols at all.
     const result = await client.callTool({ name: 'skeleton', arguments: { file: fixture, forceRefresh: true, projectRoot: tempDir } })
     const expected = runSkeleton({ file: fixture })
     expect(result.isError).toBe(false)
@@ -317,8 +322,7 @@ describe('mcp_server', () => {
     expect(block.text).toContain('short')
     expect(block.text).toContain('longer')
 
-    // minLines must reach runSkeleton and actually filter -- confirms the param is wired, not
-    // just accepted and silently dropped. Index is already warm from the call above.
+    // minLines must reach runSkeleton and actually filter -- confirms the param is wired, not just accepted and silently dropped. Index is already warm from the call above.
     const filtered = await client.callTool({ name: 'skeleton', arguments: { file: fixture, minLines: 4, projectRoot: tempDir } })
     const expectedFiltered = runSkeleton({ file: fixture, minLines: 4 })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -352,8 +356,7 @@ describe('mcp_server', () => {
     const fixture = path.join(tempDir, 'fixture.ts')
     fs.writeFileSync(fixture, 'const target = 1\nfunction target() {\n  return 2\n}\n')
 
-    // The symbol tool's schema has no forceRefresh param, so index the fixture via a direct
-    // runSkeleton({ forceRefresh: true }) call first -- same effect as a warm worker daemon.
+    // The symbol tool's schema has no forceRefresh param, so index the fixture via a direct runSkeleton({ forceRefresh: true }) call first -- same effect as a warm worker daemon.
     runSkeleton({ file: fixture, forceRefresh: true })
 
     const { client, close } = await connectedClient()
@@ -372,14 +375,7 @@ describe('mcp_server', () => {
     expect(block.text).not.toContain('(variable)')
   })
 
-  // refs/changed/grep/imports/exports wrap run* handlers that print their own output and return
-  // only an exit code (unlike the { text, code }-returning handlers above) -- the MCP server must
-  // capture those writes rather than let them hit the real process.stdout an MCP stdio transport
-  // also uses for JSON-RPC framing. These tests confirm the captured text matches what the same
-  // handler prints when called directly, proving the capture-and-adapt wiring is correct end to
-  // end (a broken capture would either lose the text or, worse, still leak it to real stdout,
-  // which command_matrix_e2e.*.test.ts's real-process `mcp-serve` smoke test would catch as a
-  // corrupted JSON-RPC stream).
+  // refs/changed/grep/imports/exports wrap run* handlers that print their own output and return only an exit code (unlike the { text, code }-returning handlers above) -- the MCP server must capture those writes rather than let them hit the real process.stdout an MCP stdio transport also uses for JSON-RPC framing. These tests confirm the captured text matches what the same handler prints when called directly, proving the capture-and-adapt wiring is correct end to end (a broken capture would either lose the text or, worse, still leak it to real stdout, which command_matrix_e2e.*.test.ts's real-process `mcp-serve` smoke test would catch as a corrupted JSON-RPC stream).
   it('calls the refs tool against a real fixture file and matches runRefs()\'s own captured output', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-refs-'))
     const fixture = path.join(tempDir, 'fixture.ts')
@@ -390,10 +386,7 @@ describe('mcp_server', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    // projectRoot: tempDir -- refs is now root-confined like every other MCP tool (see
-    // mcp_server_root_divergence.test.ts), and the fixture lives outside this repo's own
-    // workspace root, so without it the server's default root (its own cwd) would scope the
-    // query away from the fixture entirely.
+    // projectRoot: tempDir -- refs is now root-confined like every other MCP tool (see mcp_server_root_divergence.test.ts), and the fixture lives outside this repo's own workspace root, so without it the server's default root (its own cwd) would scope the query away from the fixture entirely.
     const result = await client.callTool({ name: 'refs', arguments: { spec: 'helper', projectRoot: tempDir } })
     const expected = captureStdout(() => runRefs({ spec: 'helper', projectRoot: tempDir }))
 
@@ -401,8 +394,7 @@ describe('mcp_server', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const block = (result.content as any[])[0]
     expect(block.text).toBe(expected.text)
-    // ref.context is the enclosing symbol's name, not the raw source line, so the reference
-    // line reads "fixture.ts:<n>: caller" rather than literally containing "helper".
+    // ref.context is the enclosing symbol's name, not the raw source line, so the reference line reads "fixture.ts:<n>: caller" rather than literally containing "helper".
     expect(block.text).toContain('fixture.ts')
     expect(block.text).toContain('caller')
   })

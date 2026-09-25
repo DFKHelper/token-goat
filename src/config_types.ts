@@ -1,14 +1,8 @@
-/**
- * Configuration types and interfaces for token-goat.
- */
+/** Configuration types and interfaces for token-goat. */
 
-// ---------------------------------------------------------------------------
-// Section interfaces
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Section interfaces ---------------------------------------------------------------------------
 
-/**
- * Every key here is read by shipping code. Nine others -- `triggers`, `min_events`, `max_manifest_tokens`, `compact_skip_ttl_secs`, `noise_floor_tokens`, `edited_dir_group_threshold`, `max_section_lines`, `wide_session_threshold`, `orchestrator_commit_threshold` -- were carried over from the Python predecessor's manifest builder, parsed and validated and printed by `config export`, and read by nothing. A key that configures nothing is worse than a missing key: it reads as a decision the tool made, so a user who set `max_manifest_tokens` believed they had bounded the manifest when the only bound was `max_manifest_chars`. They are gone rather than wired, because the behaviors they named were decided the other way -- `min_events` in particular would suppress the manifest on a short session, and the PreCompact hook deliberately emits one even for an empty session so its counts can confirm nothing was dropped.
- */
+/** Every key here is read by shipping code. Nine others -- `triggers`, `min_events`, `max_manifest_tokens`, `compact_skip_ttl_secs`, `noise_floor_tokens`, `edited_dir_group_threshold`, `max_section_lines`, `wide_session_threshold`, `orchestrator_commit_threshold` -- were carried over from the Python predecessor's manifest builder, parsed and validated and printed by `config export`, and read by nothing. A key that configures nothing is worse than a missing key: it reads as a decision the tool made, so a user who set `max_manifest_tokens` believed they had bounded the manifest when the only bound was `max_manifest_chars`. They are gone rather than wired, because the behaviors they named were decided the other way -- `min_events` in particular would suppress the manifest on a short session, and the PreCompact hook deliberately emits one even for an empty session so its counts can confirm nothing was dropped. */
 export interface CompactAssistConfig {
   enabled: boolean
   auto_trigger_multiplier: number
@@ -49,14 +43,7 @@ export interface SeverityLogConfig {
   score_threshold: number
 }
 
-/**
- * Gates the post-read structural-navigation hint in `postReadHandler` (hooks_read.ts):
- * once a just-read source file has at least `min_lines` lines, the hook nudges toward
- * `token-goat skeleton`/`outline` for bodies-elided navigation instead of a future full
- * re-read. Historically gated an actual regex-based code compressor (removed as dead code
- * -- see code_compress.ts in git history); the config key is kept unchanged to avoid a
- * config-schema break for existing users.
- */
+/** Gates the post-read structural-navigation hint in `postReadHandler` (hooks_read.ts): once a just-read source file has at least `min_lines` lines, the hook nudges toward `token-goat skeleton`/`outline` for bodies-elided navigation instead of a future full re-read. Historically gated an actual regex-based code compressor (removed as dead code -- see code_compress.ts in git history); the config key is kept unchanged to avoid a config-schema break for existing users. */
 export interface CodeCompressConfig {
   min_lines: number
 }
@@ -95,10 +82,7 @@ export interface ImageShrinkConfig {
 
 export interface ScreenshotConfig {
   chrome_path: string
-  // When true (default), takeScreenshot rejects non-http(s) schemes and literal
-  // loopback/link-local/RFC1918 hosts before navigating, so injected content can't aim the
-  // headless browser at cloud metadata (169.254.169.254) or a localhost-only service. Set
-  // false to opt out for users who legitimately screenshot internal/private targets.
+  // When true (default), takeScreenshot rejects non-http(s) schemes and literal loopback/link-local/RFC1918 hosts before navigating, so injected content can't aim the headless browser at cloud metadata (169.254.169.254) or a localhost-only service. Set false to opt out for users who legitimately screenshot internal/private targets.
   block_private_targets: boolean
 }
 
@@ -136,11 +120,7 @@ export interface HintsConfig {
   elide_served_lines: boolean
   /** Hard-deny a subagent's first, un-ranged Read of a >=30KB markdown file with >=3 headings, serving the heading tree instead. Off by default: the outcome rates for a first-read deny of this shape have never been measured, only borrowed from the re-read census. */
   subagent_markdown_first_read_deny: boolean
-  // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a
-  // suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal
-  // can lift it back above hint_stats.suppress_threshold_pct -- see that module's "Probe
-  // recovery" doc-comment section. `[]` means no probes: suppression is permanent until a
-  // manual `token-goat hint-stats --reset`.
+  // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal can lift it back above hint_stats.suppress_threshold_pct -- see that module's "Probe recovery" doc-comment section. `[]` means no probes: suppression is permanent until a manual `token-goat hint-stats --reset`.
   backoff_thresholds: number[]
   git_hint_max_ms: number
   min_session_hint_savings_bytes: number
@@ -164,18 +144,15 @@ export interface HintsConfig {
   cross_session_read_dedup: boolean
   cross_session_read_dedup_ttl_secs: number
   mcp_dedup_ttl_secs: number
-  // Whether the SessionStart hook (hooks_session_start.ts) injects a short command-routing
-  // reminder as additionalContext at session start/resume/compact-restart. The one-time static
-  // CLAUDE.md block install.ts writes only reaches the model once per install, with zero
-  // reinforcement across a long session -- this re-injects a short reminder every time a
-  // SessionStart fires. Defaults true; set false to silence it entirely.
+  // Whether the SessionStart hook (hooks_session_start.ts) injects a short command-routing reminder as additionalContext at session start/resume/compact-restart. The one-time static CLAUDE.md block install.ts writes only reaches the model once per install, with zero reinforcement across a long session -- this re-injects a short reminder every time a SessionStart fires. Defaults true; set false to silence it entirely.
   session_start_reminder: boolean
 }
 
 export interface HooksConfig {
-  watchdog_ms: number
   // p95 hook duration, in milliseconds, above which `token-goat doctor`'s "Hook latency" check reports a warn instead of an ok. A ceiling meant to catch a genuine regression, not a tight bound on the normal range -- see cli_doctor.ts's checkHookLatency for the measured populations this default sits above.
   latency_budget_ms: number
+  // Whether hook shims and read-only CLI calls are answered by a resident server process (hook_server.ts) instead of each starting Node and loading the hook graph. Defaults true; false makes every call run in its own process, as before the server existed.
+  server: boolean
 }
 
 export interface WebFetchConfig {
@@ -190,52 +167,23 @@ export interface WebFetchConfig {
 export interface WorkerConfig {
   blocked_roots: string[]
   max_pool_workers: number
-  // How many OS threads ONNX Runtime may use for one embedding inference. Left unset, ORT sizes
-  // its intra-op pool to the machine: measured on a 26-logical-core host, creating the session
-  // took the process from 13 threads to 30, and every embed call then fanned out across all of
-  // them. That is a background daemon taking most of a workstation for as long as an index run
-  // lasts. A session created with an explicit count added no threads at all in the same
-  // measurement, so this is the lever. Small on purpose: indexing is never the user's foreground
-  // task, and a slower index that leaves the machine usable beats a fast one that does not.
+  // How many OS threads ONNX Runtime may use for one embedding inference. Left unset, ORT sizes its intra-op pool to the machine: measured on a 26-logical-core host, creating the session took the process from 13 threads to 30, and every embed call then fanned out across all of them. That is a background daemon taking most of a workstation for as long as an index run lasts. A session created with an explicit count added no threads at all in the same measurement, so this is the lever. Small on purpose: indexing is never the user's foreground task, and a slower index that leaves the machine usable beats a fast one that does not.
   embed_threads: number
-  // Scheduling priority the indexing processes ask the OS for. `below_normal` costs nothing on an
-  // idle machine (the scheduler only demotes under contention) and is what keeps a long walk from
-  // competing with the desktop. `low` is more aggressive and can starve the daemon on a
-  // permanently busy host; `normal` restores the old behaviour. Nothing above normal is offered:
-  // a config file must not be able to raise a background process over the user's own work.
+  // Scheduling priority the indexing processes ask the OS for. `below_normal` costs nothing on an idle machine (the scheduler only demotes under contention) and is what keeps a long walk from competing with the desktop. `low` is more aggressive and can starve the daemon on a permanently busy host; `normal` restores the old behaviour. Nothing above normal is offered: a config file must not be able to raise a background process over the user's own work.
   priority: string
 }
 
 export interface IndexingConfig {
   large_file_symbol_only_kb: number
   large_file_skip_kb: number
-  // Most chunks one file may contribute to the semantic index before it is indexed for symbols
-  // only, the same outcome large_file_symbol_only_kb produces but measured on the axis that
-  // actually distinguishes generated data from source. Byte size does not: chunk cuts snap to
-  // structure, so a generated JSON snapshot with thousands of one-line keys turns a few hundred
-  // kilobytes into thousands of near-identical chunks while a source file of the same size makes a
-  // few hundred meaningful ones. See maxChunksEmbedSha in parser.ts.
+  // Most chunks one file may contribute to the semantic index before it is indexed for symbols only, the same outcome large_file_symbol_only_kb produces but measured on the axis that actually distinguishes generated data from source. Byte size does not: chunk cuts snap to structure, so a generated JSON snapshot with thousands of one-line keys turns a few hundred kilobytes into thousands of near-identical chunks while a source file of the same size makes a few hundred meaningful ones. See maxChunksEmbedSha in parser.ts.
   max_chunks_per_file: number
   skip_dirs: string[]
-  // Basenames (not paths) excluded from the syntactic parse regardless of directory depth --
-  // e.g. generated coverage reports. Defaults to the previously-hardcoded coverage.json /
-  // coverage-final.json so existing behavior is unchanged; users can add their own generated
-  // artifacts (lcov.json, stats.json, ...) or override this list to re-include a legitimately
-  // named file. See isParseSkipEligible in parser.ts.
+  // Basenames (not paths) excluded from the syntactic parse regardless of directory depth -- e.g. generated coverage reports. Defaults to the previously-hardcoded coverage.json / coverage-final.json so existing behavior is unchanged; users can add their own generated artifacts (lcov.json, stats.json, ...) or override this list to re-include a legitimately named file. See isParseSkipEligible in parser.ts.
   skip_files: string[]
-  // Whether a bare-name `symbol` lookup searches the machine-wide index (every project ever
-  // indexed on this machine) or only the project it is run from. True keeps the documented
-  // cross-project default. Set false to confine it: `symbol` then scopes to the current
-  // project root and refuses a --project or --file that points outside it, so an agent working
-  // in one repository cannot read source out of another through the shared index.
+  // Whether a bare-name `symbol` lookup searches the machine-wide index (every project ever indexed on this machine) or only the project it is run from. True keeps the documented cross-project default. Set false to confine it: `symbol` then scopes to the current project root and refuses a --project or --file that points outside it, so an agent working in one repository cannot read source out of another through the shared index.
   cross_project_symbols: boolean
-  // Whether indexing (token-goat index and the worker's incremental drain) also chunks and
-  // embeds file content for `token-goat semantic`, in addition to the always-on syntactic
-  // symbols/refs parse. Defaults to true to match the feature's advertised behavior; set
-  // false to skip the (meaningfully slower, model-inference-backed) embeddings step and keep
-  // indexing purely syntactic. Independently gated at the point of use on whether
-  // onnxruntime-node and sqlite-vec are actually installed - this flag only controls
-  // whether embeddings are attempted at all.
+  // Whether indexing (token-goat index and the worker's incremental drain) also chunks and embeds file content for `token-goat semantic`, in addition to the always-on syntactic symbols/refs parse. Defaults to true to match the feature's advertised behavior; set false to skip the (meaningfully slower, model-inference-backed) embeddings step and keep indexing purely syntactic. Independently gated at the point of use on whether onnxruntime-node and sqlite-vec are actually installed - this flag only controls whether embeddings are attempted at all.
   embeddings_enabled: boolean
   // Maximum global.db size in megabytes before token-goat doctor flags a warning (default 1500 MB).
   max_db_size_mb: number
@@ -257,11 +205,7 @@ export interface GdriveConfig {
   enabled: boolean
 }
 
-/**
- * Config for redaction: what counts as a secret before anything is written to disk or handed back
- * to the model. The built-in patterns (see `src/secret_redact.ts`) cover the credential shapes with
- * a recognisable prefix. These two settings exist for the credentials that do not have one.
- */
+/** Config for redaction: what counts as a secret before anything is written to disk or handed back to the model. The built-in patterns (see `src/secret_redact.ts`) cover the credential shapes with a recognisable prefix. These two settings exist for the credentials that do not have one. */
 export interface RedactionConfig {
   /** Extra regular expressions redacted alongside the built-in patterns, as `[REDACTED:custom]`. For an in-house credential or identifier format no public tool knows the shape of -- an employee number, an internal account id, a bespoke token prefix. JavaScript regular-expression syntax, matched case-sensitively and globally. An entry that does not compile is reported by `token-goat doctor` and skipped, rather than silently ignored or fatal. */
   custom_patterns: string[]
@@ -286,13 +230,7 @@ export interface McpConfig {
   allowed_roots: string[]
 }
 
-/**
- * Config for `token-goat hint-stats` (hint_stats.ts): the suppression gate that stops emitting
- * a hint category for the rest of a session once its measured efficacy (acted-on / emitted)
- * falls below `suppress_threshold_pct`, but only once at least `min_sample_size` emissions have
- * been observed -- guards against suppressing a category on a single unlucky (or un-actable,
- * e.g. no correlator extracted) data point.
- */
+/** Config for `token-goat hint-stats` (hint_stats.ts): the suppression gate that stops emitting a hint category for the rest of a session once its measured efficacy (acted-on / emitted) falls below `suppress_threshold_pct`, but only once at least `min_sample_size` emissions have been observed -- guards against suppressing a category on a single unlucky (or un-actable, e.g. no correlator extracted) data point. */
 export interface HintStatsConfig {
   suppress_threshold_pct: number
   // The ceiling a SUPPRESSION category is judged against instead of `suppress_threshold_pct` (see hint_stats.ts's SUPPRESSION_HINT_CATEGORIES). Those categories ask for an absence, so their emissions are booked compliance-first -- `acted_on = 0` is written only when a re-read of the named path is actually observed -- which makes `100 - efficacy` their measured defiance rate. Suppress once that rate exceeds this. Defaults to 85, the exact complement of `suppress_threshold_pct`'s 15, so every verdict is unchanged until the two are deliberately set apart; they are separate knobs because a defiance rate and an uptake rate have different natural base rates and there is no reason one number should serve both.
@@ -300,15 +238,7 @@ export interface HintStatsConfig {
   min_sample_size: number
 }
 
-/**
- * Config for semantic search's path-priority reranking (rerankHits in embeddings.ts): a
- * multiplier applied to a hit's distance so live source wins ties/near-ties against stale or
- * archival prose (a design doc in docs/, an old plan under plans/, an archive/ folder, a
- * CHANGELOG entry, a *.bak file), which otherwise frequently outranks the actual implementing
- * code purely on vector similarity. Multiplier only, never a hard filter -- a genuinely much
- * better archival match can still surface. Set a weight to 1.0 to disable its penalty entirely,
- * e.g. for a project with a genuinely live `plans/` directory.
- */
+/** Config for semantic search's path-priority reranking (rerankHits in embeddings.ts): a multiplier applied to a hit's distance so live source wins ties/near-ties against stale or archival prose (a design doc in docs/, an old plan under plans/, an archive/ folder, a CHANGELOG entry, a *.bak file), which otherwise frequently outranks the actual implementing code purely on vector similarity. Multiplier only, never a hard filter -- a genuinely much better archival match can still surface. Set a weight to 1.0 to disable its penalty entirely, e.g. for a project with a genuinely live `plans/` directory. */
 export interface SemanticConfig {
   archive_weight: number
   docs_weight: number
@@ -354,12 +284,7 @@ export interface ProjectConfigInfo {
   parseError: string | null
 }
 
-/**
- * Which configuration layer produced the effective value of one key. A closed union: adding a
- * member makes every `switch` over it fail to compile until each consumer handles it, which is
- * the point — `config get`, `config list`, and `config set`'s shadow warning all render from
- * this one result rather than each re-deciding attribution (see resolveConfigKeyLayer).
- */
+/** Which configuration layer produced the effective value of one key. A closed union: adding a member makes every `switch` over it fail to compile until each consumer handles it, which is the point — `config get`, `config list`, and `config set`'s shadow warning all render from this one result rather than each re-deciding attribution (see resolveConfigKeyLayer). */
 export type ConfigKeyLayer =
   | { layer: 'global' }
   | { layer: 'env'; envVar: string }

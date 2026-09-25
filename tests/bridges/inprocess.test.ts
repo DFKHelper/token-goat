@@ -143,6 +143,18 @@ function latestHookDurationMs(kindLike: string): number | null | undefined {
   return row?.duration_ms
 }
 
+/** Runs one hook call from this long-lived test process and asserts the duration_ms it recorded is that call's own wall time, not this process's age. HAND-DERIVED: a call cannot have taken longer than the wall time measured around it, and the process is first aged past two seconds so the process-age clock the plugin hosts used to fall back to lands far above any real call. */
+async function expectRecordsOwnDuration(call: () => Promise<unknown>): Promise<void> {
+  const minAgeMs = 2000
+  if (performance.now() < minAgeMs) await new Promise((resolve) => setTimeout(resolve, minAgeMs - performance.now()))
+  const start = performance.now()
+  await call()
+  const wallMs = performance.now() - start
+  const recorded = latestHookDurationMs('hook:pre_tool_use')
+  expect(recorded).not.toBeNull()
+  expect(recorded!).toBeLessThanOrEqual(Math.ceil(wallMs) + 1)
+}
+
 describe('Claude Code shim: async-detach makes duration_ms report what the harness waited on, not the full handler lifetime (Batch V)', () => {
   it('records a far smaller duration_ms for an async-detached post_tool_use Write than for a synchronous post_tool_use Edit in the same run', () => {
     // Both calls run the real shim against the real hook lib, so any gap between a spawned child's own performance.now() and this test's Date.now()-wrapped spawnSync (V8 bootstrap, OS process creation) applies equally to both and cancels out of the async/sync comparison below -- an absolute duration_ms-vs-totalWallMs ratio does not cancel that gap and was measured to pass even against the unfixed code (102ms of 147ms totalWallMs, a 0.69 ratio already under a naive 0.85 bound), which is why this asserts the relative relationship between the two calls instead.
@@ -220,6 +232,21 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     ).rejects.toThrow(/already read/)
 
     expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('records each call\'s own duration, not the age of the host process it runs in', async () => {
+    const cwd = mkIsolated()
+    const { entryPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+    const envPath = makeEnvFixture(cwd)
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+    const sessionID = 'inprocess-duration-' + Math.random().toString(36).slice(2)
+    await expectRecordsOwnDuration(() => hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, { args: { filePath: envPath }, output: '' }))
   })
 
   // The plugin lives in opencode's server process and relays every session's calls through one hook library, so a session with nothing on disk yet used to start from the previous session's in-memory state and was refused files it had never read.
@@ -547,6 +574,23 @@ describe('pi extension: in-process hook call replaces the second node spawn', ()
     expect(second?.reason).toContain('already read')
 
     expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('records each call\'s own duration, not the age of the host process it runs in', async () => {
+    const cwd = mkIsolated()
+    const { entryPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const { code } = transformSync(PI_EXTENSION_SCRIPT, { loader: 'ts', format: 'esm' })
+    const extensionPath = join(cwd, 'extension.mjs')
+    writeFileSync(extensionPath, code, 'utf8')
+    const mod = (await import(pathToFileURL(extensionPath).href)) as {
+      default: (pi: { on: (event: string, handler: (...args: unknown[]) => unknown) => void; sendMessage: () => void }) => void
+    }
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    mod.default({ on(event, handler) { handlers[event] = handler }, sendMessage() {} })
+    handlers['session_start']!({}, { cwd, sessionManager: undefined })
+    const envPath = makeEnvFixture(cwd)
+    await expectRecordsOwnDuration(async () => handlers['tool_call']!({ toolName: 'read', input: { path: envPath } }, {}))
   })
 
   it('routes pi\'s powershell tool through the Bash hooks (previously unmapped: every shell command in a powershell-tool pi session bypassed them)', async () => {

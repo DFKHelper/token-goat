@@ -1403,6 +1403,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['capabilities'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Can send data off this machine:')
+    expect(r.stdout).toContain('Listens for other processes on this machine:')
 
     const json = run(['capabilities', '--json'])
     expect(json.status, json.stderr).toBe(0)
@@ -1414,6 +1415,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(parsed.capabilities.map((c) => c.id).sort()).toEqual([
       'at_rest.command_output_cache',
       'at_rest.symbol_index',
+      'ipc.hook_server',
       'network.embedding_model_download',
       'network.google_drive',
       'network.http_fetch',
@@ -1422,7 +1424,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       'network.upgrade_check',
     ])
     for (const c of parsed.capabilities) {
-      expect(['egress', 'at-rest']).toContain(c.kind)
+      expect(['egress', 'at-rest', 'local-ipc']).toContain(c.kind)
       expect(typeof c.enabled).toBe('boolean')
       // `enforcedAt` is the whole point: a reviewer opens it. An empty string would render a confident-looking report that points nowhere.
       expect(c.enforcedAt.length).toBeGreaterThan(0)
@@ -2001,6 +2003,40 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toMatch(/Worker started \(pid \d+\)\.|Worker already running\./)
     // Stop the detached worker so it does not outlive the test.
     run(['worker', 'stop'], { env })
+  },
+  'hook-server': () => {
+    // Parent command with subcommands and no own action; `run` is hidden, so usage lists status and stop.
+    const r = run(['hook-server', '--help'])
+    expect(r.stdout + r.stderr).toMatch(/status[\s\S]*?stop/)
+  },
+  'hook-server status': () => {
+    // A fresh data dir has no key, so nothing answers; the serving path itself is covered end to end in tests/hook_server.test.ts.
+    const env = { ...tgEnv(mkIsolated('tg-matrix-hsstatus-')), TOKEN_GOAT_HOOK_SERVER: '1' }
+    const r = run(['hook-server', 'status'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toBe('No hook server is running. The next hook call starts one.\n')
+    const json = run(['hook-server', 'status', '--json'], { env })
+    expect(json.status, json.stderr).toBe(0)
+    expect(JSON.parse(json.stdout)).toEqual([])
+  },
+  'hook-server stop': () => {
+    const env = { ...tgEnv(mkIsolated('tg-matrix-hsstop-')), TOKEN_GOAT_HOOK_SERVER: '1' }
+    const r = run(['hook-server', 'stop'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toBe('No hook server is running.\n')
+  },
+  'hook-server run': () => {
+    // Only the two paths that end on their own can run under spawnSync: turned off (exits at once, leaving the disabled marker clients read) and a bad slot (fails, leaving the failed marker doctor reads). A listening server is exercised in tests/hook_server.test.ts.
+    const base = mkIsolated('tg-matrix-hsrun-')
+    const env = tgEnv(base)
+    const dataDir = process.platform === 'win32' ? path.join(base, 'dfk-helper', 'token-goat') : path.join(base, 'token-goat')
+    const off = run(['hook-server', 'run', '--slot', '0'], { env: { ...env, TOKEN_GOAT_HOOK_SERVER: '0' } })
+    expect(off.status, off.stderr).toBe(0)
+    expect(fs.readFileSync(path.join(dataDir, 'hook-server.disabled'), 'utf8')).toBe('absent')
+    const bad = run(['hook-server', 'run', '--slot', '5'], { env: { ...env, TOKEN_GOAT_HOOK_SERVER: '1' } })
+    expect(bad.status).toBe(1)
+    expect(bad.stderr).toContain('--slot must be an integer from 0 to 2')
+    expect(fs.readFileSync(path.join(dataDir, 'hook-server.failed'), 'utf8')).toBe('slot 5: --slot must be an integer from 0 to 2')
   },
   'skill-list': () => {
     const r = run(['skill-list'])

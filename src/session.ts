@@ -739,4 +739,4 @@ registerReset(() => {
   _compactedAt = 0
   _sessionId = null
   _transcriptPath = null
-})
+}, { perRequest: true })

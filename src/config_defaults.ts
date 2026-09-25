@@ -1,6 +1,4 @@
-/**
- * Default configuration values and factory functions for token-goat.
- */
+/** Default configuration values and factory functions for token-goat. */
 
 import { DEFAULT_OCR_LANG } from './ocr_languages.js'
 import type {
@@ -48,18 +46,12 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     max_lines: 1000,
     max_bytes: 64 * 1024,
     timeout_seconds: 600,
-    // Matches the hardcoded MIN_CACHE_BYTES floor hooks_bash.ts used before this
-    // knob was wired to a real consumer, so untouched-config installs see no
-    // behavior change now that hooks_bash.ts reads this value instead.
+    // Matches the hardcoded MIN_CACHE_BYTES floor hooks_bash.ts used before this knob was wired to a real consumer, so untouched-config installs see no behavior change now that hooks_bash.ts reads this value instead.
     cache_min_bytes: 512,
     cache_max_file_count: 4096,
     cache_max_bytes: 16 * 1024 * 1024,
     cache_max_bytes_per_output: 50 * 1024 * 1024,
-    // Measured against the filter test-fixture corpus (424 apply() calls, 298 with
-    // bytesSaved > 0): net-of-marker savings (bytesSaved - ~70-79B marker cost) is
-    // <= 0 for 130/298 (44%) of "compressed" results and <= 100 for 170/298 (57%),
-    // while the real-win half sits at p75=393B / p90=952B net. 100 kills the
-    // marker-doesn't-even-pay-for-itself tier without touching genuine wins.
+    // Measured against the filter test-fixture corpus (424 apply() calls, 298 with bytesSaved > 0): net-of-marker savings (bytesSaved - ~70-79B marker cost) is <= 0 for 130/298 (44%) of "compressed" results and <= 100 for 170/298 (57%), while the real-win half sits at p75=393B / p90=952B net. 100 kills the marker-doesn't-even-pay-for-itself tier without touching genuine wins.
     min_net_savings_bytes: 100,
     // Extends the per-file already-served elision (which only reaches cat/head/tail/sed/awk-shaped reads) to every other Bash command's output -- npm test, git, rg, build runs -- matched against a session-wide served-output list instead of a per-file one. On by default: it goes through the same isRewriteWorthwhile net-benefit gate as every other rewrite here, so it never ships a notice that costs more than the lines it withholds.
     elide_served_shell_output: true,
@@ -103,20 +95,10 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     max_image_pixels: 64_000_000,
     screenshot_redirect: true,
     ocr_enabled: true,
-    // Confidence is Tesseract's own 0-100 mean-word-confidence score. 65 is a deliberately
-    // conservative floor: a real screenshot of terminal/code/prose text routinely scores
-    // 85+, while a photo with an incidental sign or logo in frame scores much lower and
-    // noisier -- padding the threshold below the terminal/code norm still comfortably
-    // excludes photographic false positives without needing a second heuristic.
+    // Confidence is Tesseract's own 0-100 mean-word-confidence score. 65 is a deliberately conservative floor: a real screenshot of terminal/code/prose text routinely scores 85+, while a photo with an incidental sign or logo in frame scores much lower and noisier -- padding the threshold below the terminal/code norm still comfortably excludes photographic false positives without needing a second heuristic.
     ocr_min_confidence: 65,
     ocr_lang: DEFAULT_OCR_LANG,
-    // Which resolution tier the model being shown the image is on, which decides what its pixels
-    // cost. 'standard' (1568px long edge, 1568 visual tokens) is every model before Claude 4.7;
-    // 'high' (2576px, 4784 tokens) is 4.7 and later, and bills the same large image up to roughly
-    // three times higher. Only the saving *reported* by `token-goat stats` depends on this -- no
-    // image is encoded differently -- and 'standard' is the default because it is the floor: it
-    // caps the counterfactual at the smaller of the two bills and so can never credit a saving
-    // that was not there. Set it to 'high' on a Claude 4.7+ model to see the larger real figure.
+    // Which resolution tier the model being shown the image is on, which decides what its pixels cost. 'standard' (1568px long edge, 1568 visual tokens) is every model before Claude 4.7; 'high' (2576px, 4784 tokens) is 4.7 and later, and bills the same large image up to roughly three times higher. Only the saving *reported* by `token-goat stats` depends on this -- no image is encoded differently -- and 'standard' is the default because it is the floor: it caps the counterfactual at the smaller of the two bills and so can never credit a saving that was not there. Set it to 'high' on a Claude 4.7+ model to see the larger real figure.
     vision_tier: 'standard',
   },
   screenshot: {
@@ -142,14 +124,9 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     web_dedup_min_bytes: 200,
     grep_dedup_min_matches: 5,
     glob_dedup_min_matches: 5,
-    // Existing on-disk file must have at least this many lines before a Write rewrite is even
-    // considered -- rewriting a small file whole is fine, so hooks_write.ts's detector skips
-    // comparison entirely below this floor rather than firing on trivial files.
+    // Existing on-disk file must have at least this many lines before a Write rewrite is even considered -- rewriting a small file whole is fine, so hooks_write.ts's detector skips comparison entirely below this floor rather than firing on trivial files.
     write_rewrite_min_lines: 40,
-    // Minimum percentage of the existing file's lines that must survive unchanged (by LCS) in
-    // the incoming Write content for hooks_write.ts to advise Edit instead. High by design: this
-    // is only meant to catch the "mostly untouched, a few lines changed" case, not a genuine
-    // rewrite that happens to share some boilerplate.
+    // Minimum percentage of the existing file's lines that must survive unchanged (by LCS) in the incoming Write content for hooks_write.ts to advise Edit instead. High by design: this is only meant to catch the "mostly untouched, a few lines changed" case, not a genuine rewrite that happens to share some boilerplate.
     write_rewrite_unchanged_pct: 75,
     serve_diff_on_reread: true,
     elide_served_lines: true,
@@ -160,15 +137,10 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     pre_skill_advisory: true,
     context_threshold_advisory: true,
     diff_hint_min_tokens_saved: 1000,
-    // Base for the pressure-scaled first-read deny gate in hooks_read.ts (large file, never read
-    // before). Matches that gate's long-tuned 500KB threshold at 'cool' context pressure; warm/hot/
-    // critical scale it down from there so the same read gets redirected to a surgical read sooner
-    // once the context window is nearly full.
+    // Base for the pressure-scaled first-read deny gate in hooks_read.ts (large file, never read before). Matches that gate's long-tuned 500KB threshold at 'cool' context pressure; warm/hot/ critical scale it down from there so the same read gets redirected to a surgical read sooner once the context window is nearly full.
     large_read_redirect_bytes: 512_000,
     reread_deny: true,
-    // Matches hooks_read.ts's previously-hardcoded REREAD_DENY_BYTES (50 * 1024) so wiring this
-    // key up as the real gate for that logic does not silently change default behavior for
-    // existing users -- see the reread_deny/reread_deny_min_bytes fix's commit message.
+    // Matches hooks_read.ts's previously-hardcoded REREAD_DENY_BYTES (50 * 1024) so wiring this key up as the real gate for that logic does not silently change default behavior for existing users -- see the reread_deny/reread_deny_min_bytes fix's commit message.
     reread_deny_min_bytes: 51_200,
     stable_doc_compacts: true,
     // On. It has now run. The gate that finds the spans answered only from the index, and the index carried the shipping parser stamp on 46 of 17,952 files, so the lever was very nearly dead in practice: a disk parse of the delivered file is now the fallback, worth +3.0 points of withheld bytes on shell reads with no index at all. The cost side is the one this comment used to call unobservable, and it is observable: joining folds to later reads of the folded symbol scores 62.3% recovery, but the same window measured backwards scores 55.8% and a shuffled pairing scores 24.3%, so the excess attributable to the fold is 6.6 points rather than 62. Unlike every re-read mechanism beside it this rewrites a FIRST look, where the reader has no prior copy to notice an omission against, which is why the notice names the symbol and the command that returns it verbatim.
@@ -192,8 +164,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     session_start_reminder: true,
   },
   hooks: {
-    watchdog_ms: 700,
     latency_budget_ms: 1500,
+    server: true,
   },
   webfetch: {
     allow: [],
@@ -206,15 +178,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   worker: {
     blocked_roots: [],
     max_pool_workers: 4,
-    // 4, not 2. Measured on a 26-core Windows host with a foreground CPU probe: at `priority`
-    // below_normal, 2, 4 and 6 threads are all indistinguishable from an idle machine, including
-    // when the indexer and the probe are pinned to the same 4 cores, and including 4 threads pinned
-    // to 2 cores, which is genuine oversubscription. The same probe reads -10% at 16 threads and
-    // -69% with a 292 ms stall at 4 threads on 2 cores once the priority is normal instead. So the
-    // priority below is what keeps the foreground responsive, not this number, and 4 buys a
-    // measured 1.77x on indexing for no foreground cost. It stays a cap rather than tracking the
-    // core count, because where the platform refuses the priority change (some hardened Linux
-    // setups, sandboxes) this is the only thing left holding indexing back.
+    // 4, not 2. Measured on a 26-core Windows host with a foreground CPU probe: at `priority` below_normal, 2, 4 and 6 threads are all indistinguishable from an idle machine, including when the indexer and the probe are pinned to the same 4 cores, and including 4 threads pinned to 2 cores, which is genuine oversubscription. The same probe reads -10% at 16 threads and -69% with a 292 ms stall at 4 threads on 2 cores once the priority is normal instead. So the priority below is what keeps the foreground responsive, not this number, and 4 buys a measured 1.77x on indexing for no foreground cost. It stays a cap rather than tracking the core count, because where the platform refuses the priority change (some hardened Linux setups, sandboxes) this is the only thing left holding indexing back.
     embed_threads: 4,
     priority: 'below_normal',
   },

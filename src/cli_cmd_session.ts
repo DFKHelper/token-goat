@@ -96,7 +96,7 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
 
   program
     .command('capabilities')
-    .description('report every capability that can send data off this machine, and its current state')
+    .description('report every capability that can send data off this machine, leave data on it, or listen for other processes on it, and its current state')
     .option('-j, --json', 'emit as JSON, for asserting on in a pipeline')
     .action(
       guard((opts: { json?: boolean }) => {

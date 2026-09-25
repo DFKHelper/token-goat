@@ -1,22 +1,4 @@
-/**
- * Regression guard for the `{items, truncated, totalCount}` --json envelope convention.
- *
- * Two halves, deliberately kept separate because they fail for different reasons:
- *
- * 1. **Shape** — every row-list `--json` command emits the envelope unconditionally, whether or
- *    not truncation occurred, so a script consuming `--json` never has to branch on shape.
- *    Each assertion is paired with a negative control on a row-level field (`kind`, `caller`,
- *    `testFile`, ...) so a payload that grew the wrapper but lost its rows still fails here.
- *
- * 2. **Classification** — the CLI has ~96 `--json`-capable commands and only nine of them are
- *    row-list commands; the rest legitimately emit bespoke object payloads (`doctor` →
- *    `{status, message}`, `tokens` → `{total_tokens}`, `deps` → `{file, internal, external}`).
- *    Blanket-asserting the envelope across all 96 would be a wrong-oracle test, so the guard is
- *    narrowed explicitly: two hand-maintained lists whose union must equal the command
- *    registry's own `--json`-capable set. A newly added `--json` command therefore fails this
- *    test until someone classifies it into one list or the other — which is the tripwire, not
- *    the list itself.
- */
+/** Regression guard for the `{items, truncated, totalCount}` --json envelope convention. Two halves, deliberately kept separate because they fail for different reasons: 1. **Shape** — every row-list `--json` command emits the envelope unconditionally, whether or not truncation occurred, so a script consuming `--json` never has to branch on shape. Each assertion is paired with a negative control on a row-level field (`kind`, `caller`, `testFile`, ...) so a payload that grew the wrapper but lost its rows still fails here. 2. **Classification** — the CLI has ~96 `--json`-capable commands and only nine of them are row-list commands; the rest legitimately emit bespoke object payloads (`doctor` → `{status, message}`, `tokens` → `{total_tokens}`, `deps` → `{file, internal, external}`). Blanket-asserting the envelope across all 96 would be a wrong-oracle test, so the guard is narrowed explicitly: two hand-maintained lists whose union must equal the command registry's own `--json`-capable set. A newly added `--json` command therefore fails this test until someone classifies it into one list or the other — which is the tripwire, not the list itself. */
 
 import { resolve } from 'node:path'
 
@@ -45,11 +27,7 @@ const ENVELOPE_COMMANDS = [
   'locate',
 ] as const
 
-/**
- * Commands that support `--json` but legitimately emit a non-row-list payload (a scalar report,
- * a keyed object, a per-file map). Listed by name rather than detected, because "is this payload
- * conceptually a list of rows?" is a design decision, not something derivable from the manifest.
- */
+/** Commands that support `--json` but legitimately emit a non-row-list payload (a scalar report, a keyed object, a per-file map). Listed by name rather than detected, because "is this payload conceptually a list of rows?" is a design decision, not something derivable from the manifest. */
 const NON_ENVELOPE_JSON_COMMANDS = [
   'read', 'brief', 'section', 'map', 'bridges-status', 'commands', 'stats', 'doctor',
   'context-stats', 'bootstrap-audit', 'waste', 'audit', 'session-outline', 'session-slice', 'session-audit', 'mcp-audit',
@@ -66,6 +44,7 @@ const NON_ENVELOPE_JSON_COMMANDS = [
   'json-outline', 'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'html-outline', 'html-query', 'html-lint', 'openapi-outline', 'openapi-op',
   'zip-list', 'zip-read', 'pr-slice', 'sqlite-tables', 'sqlite-schema', 'sqlite-query', 'coverage-report-gaps',
   'conflicts', 'note-get', 'note-list', 'capabilities', 'bench', 'upgrade', 'describe', 'mcp-output', 'session-schema',
+  'hook-server status',
 ] as const
 
 /** Every `--json`-capable command name in the built Commander tree, subcommands included. */
@@ -99,12 +78,7 @@ function expectEnvelope(raw: string, label: string): unknown[] {
   return obj.items as unknown[]
 }
 
-// Same precondition (and same reason) as tests/graph_commands.test.ts: these cases query the
-// ambient global.db, which is an isolated per-run temp DB under tests/setup/isolate-home.ts, so
-// it is empty until something seeds it. Seed the repo's own src tree plus one test file, so
-// `test-for` has a referencing test file to find rather than depending on ambient index state.
-// The walk, and the per-hook timeout it needs, live in tests/helpers/index-src-tree.ts, shared with
-// graph_commands.test.ts.
+// Same precondition (and same reason) as tests/graph_commands.test.ts: these cases query the ambient global.db, which is an isolated per-run temp DB under tests/setup/isolate-home.ts, so it is empty until something seeds it. Seed the repo's own src tree plus one test file, so `test-for` has a referencing test file to find rather than depending on ambient index state. The walk, and the per-hook timeout it needs, live in tests/helpers/index-src-tree.ts, shared with graph_commands.test.ts.
 beforeAll(() => {
   indexSrcTree()
   indexFileSync(normalizePath(resolve('tests', 'graph_commands.test.ts')))
@@ -173,11 +147,7 @@ describe('--json envelope shape', () => {
     expect(Array.isArray(row.testFunctions)).toBe(true)
   })
 
-  // A --grep that matches nothing is the "filtered store renders as populated" trap's JSON twin:
-  // the text-mode branch emits a prose notice naming the filter, which is right for humans and
-  // is NOT valid JSON for a caller that passed --json. Exit code is 0 in both cases (the store
-  // is non-empty, the filter just matched none of it), so a consumer gets a success status and
-  // an unparseable body.
+  // A --grep that matches nothing is the "filtered store renders as populated" trap's JSON twin: the text-mode branch emits a prose notice naming the filter, which is right for humans and is NOT valid JSON for a caller that passed --json. Exit code is 0 in both cases (the store is non-empty, the filter just matched none of it), so a consumer gets a success status and an unparseable body.
   it('types --grep matching nothing still emits a well-formed empty envelope', () => {
     const out = captureStdout(() => { expect(runTypes({ json: true, grep: 'zzzNoSuchTypeXyz' })).toBe(0) })
     expect(expectEnvelope(out, 'types --grep')).toEqual([])
@@ -196,10 +166,7 @@ describe('--json envelope shape', () => {
     expect((JSON.parse(out) as { totalCount: number }).totalCount).toBe(0)
   })
 
-  // A filtered-to-empty --json payload was well-formed but still ambiguous: `items: []` with
-  // `totalCount: 0` (or `chains: []`, or two empty dependency arrays) reads identically whether
-  // --grep matched none of an existing set or the set was genuinely empty. Each command now
-  // carries `hiddenByGrep`, brief --json's existing convention, omitted entirely when zero.
+  // A filtered-to-empty --json payload was well-formed but still ambiguous: `items: []` with `totalCount: 0` (or `chains: []`, or two empty dependency arrays) reads identically whether --grep matched none of an existing set or the set was genuinely empty. Each command now carries `hiddenByGrep`, brief --json's existing convention, omitted entirely when zero.
   it('types --grep matching nothing names how many declarations the filter hid', () => {
     const out = captureStdout(() => { expect(runTypes({ json: true, grep: 'zzzNoSuchTypeXyz' })).toBe(0) })
     expect((JSON.parse(out) as { hiddenByGrep?: number }).hiddenByGrep).toBeGreaterThan(0)
@@ -235,8 +202,7 @@ describe('--json envelope shape', () => {
     expect(payload.hiddenByGrep).toBeGreaterThan(0)
   })
 
-  // Negative control for all six above: the field must be absent, not 0, when no filter ran --
-  // otherwise "omitted when zero" is untested and every default payload silently grew a key.
+  // Negative control for all six above: the field must be absent, not 0, when no filter ran -- otherwise "omitted when zero" is untested and every default payload silently grew a key.
   it('omits hiddenByGrep entirely when no --grep filter was applied', () => {
     for (const out of [
       captureStdout(() => { runTypes({ json: true }) }),
@@ -263,8 +229,7 @@ describe('--json envelope classification is exhaustive', () => {
   it('every --json-capable command is classified as envelope or explicitly exempt', () => {
     const registry = jsonCapableCommandNames().sort()
     const classified = [...ENVELOPE_COMMANDS, ...NON_ENVELOPE_JSON_COMMANDS].sort()
-    // Equality (not superset) in both directions: a new --json command fails here until it is
-    // classified, and a removed one fails until it is dropped from the list it lived in.
+    // Equality (not superset) in both directions: a new --json command fails here until it is classified, and a removed one fails until it is dropped from the list it lived in.
     expect(classified).toEqual(registry)
     // Guards the lists against silently collapsing to empty if the manifest walk ever breaks.
     expect(registry.length).toBeGreaterThan(50)

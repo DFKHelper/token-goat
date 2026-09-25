@@ -96,6 +96,10 @@ if (!process.env['TOKEN_GOAT_NO_WORKER_SPAWN']) {
 if (!process.env['TOKEN_GOAT_HARNESS_OVERRIDE']) {
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
 }
+// A resident hook server started from a test would outlive the test file that started it. Tests that exercise one set this themselves.
+if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
+  process.env['TOKEN_GOAT_HOOK_SERVER'] = '0'
+}
 if (!process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB']) {
   process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB'] = '99999'
 }

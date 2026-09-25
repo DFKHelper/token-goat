@@ -738,7 +738,8 @@ export function closeAllDbs(): void {
   }
 }
 
-registerReset(closeAllDbs)
+// Per request too: a resident hook server that kept a handle open would pin the file against `--purge` and, on Windows, against deletion, and would keep writing to a database replaced underneath it.
+registerReset(closeAllDbs, { perRequest: true })
 registerReset(() => {
   _readOnlyFallback = undefined
-})
+}, { perRequest: true })

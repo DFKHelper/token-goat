@@ -32,7 +32,7 @@
  * token-goat `.cmd`/`.bat` shim), so it is validated against `VALID_HOOK_EVENTS` first — a
  * closed set that must be kept in sync with `HOOK_EVENTS` in src/types.ts.
  */
-import { SHIM_ASYNC_DETACH, SHIM_MAX_BUFFER_CONST, SHIM_OWN_COMMAND_BYPASS, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+import { SHIM_ASYNC_DETACH, SHIM_MAX_BUFFER_CONST, SHIM_OWN_COMMAND_BYPASS, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 export const CLAUDECODE_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Claude Code hook shim. Reads the hook payload on stdin, forwards it to \`token-goat hook <event>\`, and relays the response on stdout.
@@ -56,6 +56,8 @@ try { require('node:module').enableCompileCache() } catch { /* older Node, or an
 ${SHIM_REQUIRES}
 
 ${SHIM_VALID_HOOK_EVENTS}
+
+${SHIM_TRY_SERVER}
 
 ${SHIM_TRY_IN_PROCESS}
 

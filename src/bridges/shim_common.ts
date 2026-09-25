@@ -44,7 +44,9 @@ const VALID_HOOK_EVENTS = new Set([
   'post_tool_use_failure',
 ])`
 
-/** `tryInProcess()`: the in-process `dist/token-goat-hook.mjs` fast path. */
+export { SHIM_TRY_SERVER } from './shim_try_server.js'
+
+/** `tryInProcess()`: the resident server, then the in-process `dist/token-goat-hook.mjs` fast path. Requires {@link SHIM_TRY_SERVER} alongside it. */
 export const SHIM_TRY_IN_PROCESS = `// Attempts the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of
 // the baked token-goat entry path, built with zero load-time side effects -- unlike
 // the CLI entry, which runs the full argv-parsing CLI as a side effect of being
@@ -58,10 +60,12 @@ export const SHIM_TRY_IN_PROCESS = `// Attempts the in-process hook call: import
 async function tryInProcess(entryPath, eventName, input, harnessWaitMs) {
   if (!entryPath) return undefined
   try {
+    const payload = JSON.parse(input)
+    const served = await tryServer(entryPath, eventName, input, harnessWaitMs)
+    if (served !== undefined) return served
     const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
     if (!require('node:fs').existsSync(hookLibPath)) return undefined
     const mod = await import(pathToFileURL(hookLibPath).href)
-    const payload = JSON.parse(input)
     return await mod.relayInProcess(eventName, payload, harnessWaitMs)
   } catch {
     return undefined

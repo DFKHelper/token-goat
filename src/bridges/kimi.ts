@@ -70,7 +70,7 @@
  * shell parser. On any error the shim writes nothing and exits 0, which Kimi
  * treats as "allow" (its fail-open design, `docs/en/customization/hooks.md`).
  */
-import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 export const KIMI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Kimi Code hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then rewrites the response into Kimi's own contract: permissionDecision "deny" for a block, top-level "message" for a hint, empty stdout for a no-op.
@@ -111,6 +111,8 @@ function toKimi(parsed) {
   if (hint) return JSON.stringify({ message: hint })
   return ''
 }
+
+${SHIM_TRY_SERVER}
 
 ${SHIM_TRY_IN_PROCESS}
 

@@ -405,7 +405,8 @@ CREATE TABLE IF NOT EXISTS unmapped_tools (
 `
 
 const _globalSchemaApplied = new Set<string>()
-registerReset(() => _globalSchemaApplied.clear())
+// Per request too: a `global.db` deleted between two requests to a resident server comes back empty, and would otherwise never get its tables.
+registerReset(() => _globalSchemaApplied.clear(), { perRequest: true })
 
 /** Bring an already-created `global.db` up to the shape {@link GLOBAL_SCHEMA_SQL} describes. `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already exists, so adding a column to the DDL above reaches brand-new databases only. Every database created by an earlier release keeps the old shape, and an INSERT naming the new column then fails on it -- which {@link recordStat} swallows by design, so the visible symptom would be every existing user's telemetry silently stopping. Hence an explicit column add here, and the independent capability check in {@link statsHasHarnessColumn} so a database this function never touched (a caller's injected `_testDb`) degrades to "harness not recorded" instead of "nothing recorded". Unlike the per-project database there is no schema-version stamp on `global.db` to key migrations off, so each step must be individually idempotent: swallow exactly a duplicate-column failure -- the column already being present from the CREATE TABLE on a fresh database -- and rethrow anything else, so a genuine failure is never lost. */
 function migrateGlobalSchema(db: SqliteDatabase): void {

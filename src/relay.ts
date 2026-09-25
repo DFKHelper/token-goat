@@ -135,16 +135,21 @@ function afterPredecessor(previous: Promise<unknown>): Promise<void> {
 }
 
 /** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. Calls within one process run one at a time, in arrival order: each loads its session's state into module-level maps, awaits the handlers, then saves, so a concurrent call's load (opencode, OpenClaw and pi can run tool calls concurrently in one host process) used to replace the maps mid-call and save one session's reads under another's key. A call waits at most {@link RELAY_QUEUE_WAIT_MS} for the one before it, so one that never settles cannot stall the process's later calls; it still resolves to its own result whenever that arrives. */
-export function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number): Promise<string> {
+/** Options for {@link relayInProcess}. `elapsedMs` replaces the default clock for the duration this call records: `performance.now()` measures this process from its own start, which is what a caller waited on only when this process was started for the call. A resident server (hook_server.ts) serves calls from a process started long before, so it passes the caller's own elapsed time plus its handling time instead. */
+export interface RelayInProcessOptions {
+  elapsedMs?: () => number
+}
+
+export function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number, opts: RelayInProcessOptions = {}): Promise<string> {
   // When this event reached token-goat, before any handler time or wait behind an earlier call: call_streak.ts tells a batched call from a serial one by the gap between events.
   const receivedAt = Date.now()
-  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt))
+  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now())))
   relayQueue = run.catch(() => undefined)
   return run
 }
 
 /** One {@link relayInProcess} call, run once every earlier call has settled or {@link RELAY_QUEUE_WAIT_MS} has passed. */
-async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number): Promise<string> {
+async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number, elapsedMs: () => number): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'
   }
@@ -207,7 +212,7 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
     return '{}'
   } finally {
     // recordStat() is its own already-open, already-fail-soft synchronous write (the same one every other hook-path stat in this codebase makes), so this adds no new blocking behavior -- including on the async-detach path (shim_common.ts), which prints its early marker before this module ever runs and does not wait for relayInProcess to return either way. duration_ms means one thing everywhere it is read (token-goat stats --hooks, doctor's latency check): what the caller waited on. For an async-detached call that is harnessWaitMs, captured by the shim at the moment it printed the marker and handed in by the caller; for every other call it is this call's own full elapsed time, which is also what the caller waited on since nothing detached early.
-    recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, harnessWaitMs ?? performance.now())
+    recordStat(`hook:${eventName}`, 0, 0, undefined, undefined, undefined, harnessWaitMs ?? elapsedMs())
   }
 }
 

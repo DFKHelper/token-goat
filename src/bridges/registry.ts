@@ -104,4 +104,4 @@ function resetHarnessCache(): void {
   _cached = null
 }
 
-registerReset(resetHarnessCache)
+registerReset(resetHarnessCache, { perRequest: true })

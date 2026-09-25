@@ -129,7 +129,7 @@ function resolveEntryPath(): string | undefined {
 // undefined (triggering the spawnSync fallback below) when entryPath is absent, the
 // sibling file doesn't exist (an install predating this file), or anything else goes
 // wrong -- this must never throw.
-type RelayInProcessFn = (event: string, payload: unknown) => Promise<string>;
+type RelayInProcessFn = (event: string, payload: unknown, harnessWaitMs?: number, opts?: { elapsedMs?: () => number }) => Promise<string>;
 let cachedRelayInProcess: RelayInProcessFn | undefined;
 async function resolveRelayInProcess(): Promise<RelayInProcessFn | undefined> {
   if (cachedRelayInProcess) return cachedRelayInProcess;
@@ -197,11 +197,13 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
 // its own fail-open null rather than being force-killed by pi's own hook timeout
 // budget, ~5000ms) when the in-process path is unavailable or throws.
 async function callHook(event: string, payload: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  // Timed from here, not from process start: this host lives far longer than one call, so the hook library's default clock (process age) would record the host's uptime as this call's duration.
+  const start = performance.now();
   const relay = await resolveRelayInProcess();
   if (relay) {
     try {
       process.env.TOKEN_GOAT_HARNESS_OVERRIDE = "pi";
-      const out = await relay(event, payload);
+      const out = await relay(event, payload, undefined, { elapsedMs: () => performance.now() - start });
       const trimmed = out?.trim();
       if (!trimmed) return null;
       return JSON.parse(trimmed) as Record<string, unknown>;

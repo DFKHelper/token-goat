@@ -1,28 +1,4 @@
-/**
- * Differential test for token-goat's in-house MCP server against `@modelcontextprotocol/sdk`.
- *
- * src/mcp_jsonrpc.ts replaced the SDK on the shipping path to drop 91 packages from every install
- * (see that file's header for the full reasoning). The SDK stays as a devDependency precisely so it
- * can serve as the oracle here: it is a genuinely independent implementation of the same protocol,
- * not a mock of the code under test, which is the distinction CLAUDE.md's injected-seam warning
- * turns on. Two things are checked against it, and the second is the one that matters:
- *
- * 1. A hand-written shape table, covering every zod construct mcp_server.ts actually registers.
- * 2. **The real production registrations.** `createMcpServer()` is run twice -- once normally, and
- *    once with src/mcp_jsonrpc.js substituted for a shim that forwards every `registerTool` call
- *    into the SDK's own `McpServer`. Both are then driven by the SDK's reference `Client` over its
- *    `InMemoryTransport`, and their `tools/list` results must be byte-identical. So all 18 tools,
- *    with their real descriptions and their real schemas, are compared as they actually ship. A
- *    table-only test would pass forever after someone registered a nineteenth tool using a zod
- *    construct neither implementation agrees on.
- *
- * The `$schema` identifier, the `execution.taskSupport` field and the `MCP error -32602: ` prefix
- * on tool errors are all matched to the SDK on purpose, and this test is what holds them there.
- *
- * The single deliberate divergence -- `capabilities.tools`, where the SDK claims `listChanged: true`
- * and we send `{}` -- is asserted on BOTH sides, so if the SDK ever stops claiming it, the test
- * fails and the stale comment gets found, rather than the divergence quietly disappearing.
- */
+/** Differential test for token-goat's in-house MCP server against `@modelcontextprotocol/sdk`. src/mcp_jsonrpc.ts replaced the SDK on the shipping path to drop 91 packages from every install (see that file's header for the full reasoning). The SDK stays as a devDependency precisely so it can serve as the oracle here: it is a genuinely independent implementation of the same protocol, not a mock of the code under test, which is the distinction CLAUDE.md's injected-seam warning turns on. Two things are checked against it, and the second is the one that matters: 1. A hand-written shape table, covering every zod construct mcp_server.ts actually registers. 2. **The real production registrations.** `createMcpServer()` is run twice -- once normally, and once with src/mcp_jsonrpc.js substituted for a shim that forwards every `registerTool` call into the SDK's own `McpServer`. Both are then driven by the SDK's reference `Client` over its `InMemoryTransport`, and their `tools/list` results must be byte-identical. So all 18 tools, with their real descriptions and their real schemas, are compared as they actually ship. A table-only test would pass forever after someone registered a nineteenth tool using a zod construct neither implementation agrees on. The `execution.taskSupport` field and the `MCP error -32602: ` prefix on tool errors are matched to the SDK on purpose, and this test is what holds them there. The two deliberate divergences -- `capabilities.tools`, where the SDK claims `listChanged: true` and we send `{}`, and `inputSchema.$schema`, which the SDK sends as draft-07 and we leave out -- are each asserted on BOTH sides, so if the SDK ever changes either, the test fails and the stale comment gets found, rather than the divergence quietly disappearing. */
 import { describe, expect, it, vi } from 'vitest'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -51,6 +27,24 @@ const SHAPE = {
   tags: z.array(z.string()).optional().describe('tags to filter by'),
   handoff: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).describe('handoff name'),
   bare: z.string(),
+}
+
+const SDK_SCHEMA_ID = 'http://json-schema.org/draft-07/schema#'
+
+/** The SDK's `tools/list` with the one field this server deliberately leaves out: every `inputSchema.$schema`. Asserts the SDK still sends draft-07's identifier on every tool that has arguments, and that ours sends none, so the divergence is held from both sides and cannot vanish unnoticed. */
+function withoutSchemaIds(ours: { tools: any[] }, ref: { tools: any[] }): { tools: any[] } {
+  for (const t of ours.tools) expect(t.inputSchema.$schema, `${t.name} advertises a $schema`).toBeUndefined()
+  const withArgs = ref.tools.filter((t) => Object.keys(t.inputSchema.properties ?? {}).length > 0)
+  expect(withArgs.length, 'no SDK tool has arguments, so this compares no schema').toBeGreaterThan(0)
+  for (const t of withArgs) expect(t.inputSchema.$schema, `the SDK stopped sending draft-07 for ${t.name}`).toBe(SDK_SCHEMA_ID)
+  // Spread first and replace after, so `inputSchema` keeps its key position and the byte comparison still holds.
+  return {
+    ...ref,
+    tools: ref.tools.map((t) => {
+      const { $schema: _dialect, ...schema } = t.inputSchema
+      return { ...t, inputSchema: schema }
+    }),
+  }
 }
 
 function textResult(text: string): CallToolResult {
@@ -97,7 +91,7 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
     const b = await connect(theirs)
     try {
       const ours = await a.client.listTools()
-      const ref = await b.client.listTools()
+      const ref = withoutSchemaIds(ours, await b.client.listTools())
       expect(JSON.stringify(ours, null, 2), 'tools/list diverged from the MCP SDK for the shape table').toBe(
         JSON.stringify(ref, null, 2),
       )
@@ -195,7 +189,7 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
       const shimmed = await createViaSdk()
       const b = await connect(shimmed as any)
       try {
-        const refList = await b.client.listTools()
+        const refList = withoutSchemaIds(ourList, await b.client.listTools())
         expect(
           JSON.stringify(ourList, null, 2),
           'tools/list for the real production tools diverged from the MCP SDK building the same registrations',

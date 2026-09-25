@@ -1,36 +1,9 @@
-/**
- * The other direction of the `.token-goat.toml` lock.
- *
- * `tests/project_config_locked_sections.test.ts` proves that everything named in
- * `PROJECT_LOCKED_SECTIONS` / `PROJECT_LOCKED_KEYS` is actually stripped, and that removing an
- * entry fails rather than vanishing quietly. What it cannot see is a setting that was never
- * added to either list: every assertion there starts from the lists themselves, so a
- * security-relevant key introduced somewhere in the config schema is invisible to it by
- * construction. That is how `screenshot.chrome_path` (the executable `puppeteer.launch` is
- * handed), `screenshot.block_private_targets` (the private-address refusal and the DNS-rebinding
- * pin) and `image_shrink.max_image_pixels` (sharp's decompression-bomb cap, where `0` means "no
- * cap") all stayed settable from a checked-in file long after the lock existed. Confirmed live
- * against the built binary before the fix: `config get screenshot.chrome_path` reported the
- * repository's value while `config get injection.enabled` correctly reported the locked one.
- *
- * So this file starts from the schema instead. Every `section.key` in `defaultConfig()` must be
- * either locked or named in `REVIEWED_OVERRIDABLE` below, and a key in neither fails. Adding a
- * config setting therefore forces one explicit decision about whether a repository may set it,
- * at the moment it is added, instead of relying on someone remembering this invariant later.
- */
+/** The other direction of the `.token-goat.toml` lock. `tests/project_config_locked_sections.test.ts` proves that everything named in `PROJECT_LOCKED_SECTIONS` / `PROJECT_LOCKED_KEYS` is actually stripped, and that removing an entry fails rather than vanishing quietly. What it cannot see is a setting that was never added to either list: every assertion there starts from the lists themselves, so a security-relevant key introduced somewhere in the config schema is invisible to it by construction. That is how `screenshot.chrome_path` (the executable `puppeteer.launch` is handed), `screenshot.block_private_targets` (the private-address refusal and the DNS-rebinding pin) and `image_shrink.max_image_pixels` (sharp's decompression-bomb cap, where `0` means "no cap") all stayed settable from a checked-in file long after the lock existed. Confirmed live against the built binary before the fix: `config get screenshot.chrome_path` reported the repository's value while `config get injection.enabled` correctly reported the locked one. So this file starts from the schema instead. Every `section.key` in `defaultConfig()` must be either locked or named in `REVIEWED_OVERRIDABLE` below, and a key in neither fails. Adding a config setting therefore forces one explicit decision about whether a repository may set it, at the moment it is added, instead of relying on someone remembering this invariant later. */
 import { describe, expect, it } from 'vitest'
 
 import { PROJECT_LOCKED_KEYS, PROJECT_LOCKED_SECTIONS, defaultConfig } from '../../src/config.js'
 
-/**
- * Every `section.key` deliberately left settable by a per-project `.token-goat.toml`.
- *
- * The bar is the one stated in CLAUDE.arch.md's Security Boundaries: a setting belongs in a lock
- * list when it turns a protection off, narrows an allowlist, or widens a confinement. Everything
- * here fails that bar -- it is formatting, a token-cost threshold, a cache size, or a tuning
- * knob whose worst case is a worse-compressed or slower answer, never a capability a repository
- * would not otherwise have on the machine.
- */
+/** Every `section.key` deliberately left settable by a per-project `.token-goat.toml`. The bar is the one stated in CLAUDE.arch.md's Security Boundaries: a setting belongs in a lock list when it turns a protection off, narrows an allowlist, or widens a confinement. Everything here fails that bar -- it is formatting, a token-cost threshold, a cache size, or a tuning knob whose worst case is a worse-compressed or slower answer, never a capability a repository would not otherwise have on the machine. */
 const REVIEWED_OVERRIDABLE: readonly string[] = [
   'agent_report.fence_collapse_keep_lines',
   'agent_report.fence_collapse_min_lines',
@@ -90,17 +63,15 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.write_rewrite_min_lines',
   'hints.write_rewrite_unchanged_pct',
   'hooks.latency_budget_ms',
-  'hooks.watchdog_ms',
+  // Not locked, and not read from a project file either: config.ts's hookServerEnabled() reads only the global config and TOKEN_GOAT_HOOK_SERVER, since one resident server answers every project.
+  'hooks.server',
   'image_shrink.enabled',
   'image_shrink.jpeg_quality',
   'image_shrink.ocr_enabled',
   'image_shrink.ocr_lang',
   'image_shrink.ocr_min_confidence',
   'image_shrink.screenshot_redirect',
-  // Overridable rather than locked: it changes no image and no protection, only which tier's
-  // price token-goat reports an already-taken shrink at. A repository choosing it can flatter
-  // that project's savings figure, which is a reason to keep the default at the honest floor
-  // (it is) rather than a reason to stop a repository from stating which models it is read on.
+  // Overridable rather than locked: it changes no image and no protection, only which tier's price token-goat reports an already-taken shrink at. A repository choosing it can flatter that project's savings figure, which is a reason to keep the default at the honest floor (it is) rather than a reason to stop a repository from stating which models it is read on.
   'image_shrink.vision_tier',
   // indexing.skip_dirs, indexing.skip_files, large_file_skip_kb and large_file_symbol_only_kb used to sit here with no reason written beside them. They are locked now: each one lets a checked-in file remove its own source from the index, and an unindexed file is reported in exactly the words an absent one is. A repository that genuinely wants a generated directory skipped can say so in .gitignore, which the walker already honours.
   'indexing.embeddings_enabled',
@@ -124,10 +95,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'skill_preservation.pre_skill_enabled',
   'skill_preservation.truncation_budget_tokens',
   'stats.record_zero_savings',
-  // Both fail the lock bar the same way `max_pool_workers` does: their worst case is a slower or
-  // a less considerate index, never a capability the repository would not otherwise have. The
-  // priority enum deliberately offers nothing above `normal`, so a checked-in file cannot use it
-  // to raise a background process over the user's own work.
+  // Both fail the lock bar the same way `max_pool_workers` does: their worst case is a slower or a less considerate index, never a capability the repository would not otherwise have. The priority enum deliberately offers nothing above `normal`, so a checked-in file cannot use it to raise a background process over the user's own work.
   'worker.embed_threads',
   'worker.max_pool_workers',
   'worker.priority',
@@ -161,9 +129,7 @@ describe('every config setting is classified as locked or deliberately project-o
     ).toEqual([])
   })
 
-  // The reverse staleness check. Without it, a key that is later locked (or renamed away) leaves
-  // a dead entry behind in the allowlist, and the next reader has no way to tell a reviewed
-  // decision from a leftover.
+  // The reverse staleness check. Without it, a key that is later locked (or renamed away) leaves a dead entry behind in the allowlist, and the next reader has no way to tell a reviewed decision from a leftover.
   it('has no allowlist entry that is locked or no longer exists', () => {
     const known = new Set(everyConfigKey())
     const stale = REVIEWED_OVERRIDABLE.filter((dotted) => {
@@ -174,16 +140,13 @@ describe('every config setting is classified as locked or deliberately project-o
     expect(stale, 'these allowlist entries no longer name a live, unlocked setting').toEqual([])
   })
 
-  // Guards the guard: if `defaultConfig()` ever returned an empty tree (a refactor, a mocked
-  // module), both assertions above would pass by finding nothing to check.
+  // Guards the guard: if `defaultConfig()` ever returned an empty tree (a refactor, a mocked module), both assertions above would pass by finding nothing to check.
   it('reads a populated schema, so the checks above cannot pass vacuously', () => {
     expect(everyConfigKey().length).toBeGreaterThan(100)
   })
 })
 
-// The three settings the coverage check above was written for, asserted by name and by the
-// capability each one hands a repository. A rename that quietly drops one from the schema is
-// caught by the staleness check above; this is what proves the lock is the right verdict for it.
+// The three settings the coverage check above was written for, asserted by name and by the capability each one hands a repository. A rename that quietly drops one from the schema is caught by the staleness check above; this is what proves the lock is the right verdict for it.
 describe('the settings that decide browser launch and image decode are not repository-settable', () => {
   it.each([
     ['screenshot.chrome_path', 'names the executable puppeteer.launch is handed'],

@@ -1,19 +1,5 @@
-/**
- * A machine-readable statement of every capability token-goat has that can send data off the
- * machine or leave data on it, with its effective state and the place that state is enforced.
- *
- * This exists because "the control is present" and "the control is enforced" are different
- * claims, and only the second one is worth anything to somebody reviewing this tool before
- * letting it near their source code. A configuration file can say `offline = true`; that says
- * nothing about whether any code reads the value. So each entry below carries `enforcedAt`, a
- * file and symbol a reviewer can open, and `tests/guards/capabilities_cover_every_egress.test.ts`
- * fails the build if a module that can open a socket is not named by one of them.
- *
- * The intended use is `token-goat capabilities --json` in the reviewer's own pipeline, asserting
- * on the states they require, so the answer comes from the installed binary on their machine
- * rather than from documentation.
- */
-import { loadConfig, type Config } from './config.js'
+/** A machine-readable statement of every capability token-goat has that can send data off the machine or leave data on it, with its effective state and the place that state is enforced. This exists because "the control is present" and "the control is enforced" are different claims, and only the second one is worth anything to somebody reviewing this tool before letting it near their source code. A configuration file can say `offline = true`; that says nothing about whether any code reads the value. So each entry below carries `enforcedAt`, a file and symbol a reviewer can open, and `tests/guards/capabilities_cover_every_egress.test.ts` fails the build if a module that can open a socket is not named by one of them. The intended use is `token-goat capabilities --json` in the reviewer's own pipeline, asserting on the states they require, so the answer comes from the installed binary on their machine rather than from documentation. */
+import { hookServerEnabled, loadConfig, type Config } from './config.js'
 import { displaySafeText } from './paths.js'
 
 /** What a capability can do with data, which is what a reviewer is actually deciding about. */
@@ -22,6 +8,8 @@ export type CapabilityKind =
   | 'egress'
   /** Can write bytes to disk that outlive the process. */
   | 'at-rest'
+  /** Accepts requests from other processes on this machine, never from the network. */
+  | 'local-ipc'
 
 export interface Capability {
   /** Stable identifier, safe to assert on in a pipeline. Never renamed without a major version. */
@@ -33,21 +21,15 @@ export interface Capability {
   readonly enabled: boolean
   /** The configuration key that decides `enabled`, in `section.key` form. */
   readonly controlledBy: string
-  /**
-   * Where the decision is actually made, as `file::symbol`. A reviewer can open exactly this and
-   * see the check. Kept honest by the guard test named in this file's header.
-   */
+  /** Where the decision is actually made, as `file::symbol`. A reviewer can open exactly this and see the check. Kept honest by the guard test named in this file's header. */
   readonly enforcedAt: string
 }
 
-/**
- * Every module in `src/` that can open a network socket, by design.
- *
- * The guard test derives the same set from the source tree and fails if the two disagree, so a
- * new feature that reaches the network cannot ship without being classified here first. That is
- * the difference between an inventory and a list somebody remembered to update.
- */
+/** Every module in `src/` that can open a network socket, by design. The guard test derives the same set from the source tree and fails if the two disagree, so a new feature that reaches the network cannot ship without being classified here first. That is the difference between an inventory and a list somebody remembered to update. */
 export const EGRESS_MODULES: readonly string[] = ['webfetch.ts', 'embed_model.ts', 'image_ocr.ts', 'screenshot.ts', 'cli_upgrade.ts']
+
+/** Every module in `src/` that opens a socket only to a named pipe or Unix socket on this machine. The same guard test holds each to endpoints `hook_ipc.ts::endpointFor` names, which is what keeps it out of {@link EGRESS_MODULES}. */
+export const LOCAL_IPC_MODULES: readonly string[] = ['hook_client.ts', 'hook_server.ts']
 
 export function collectCapabilities(config: Config = loadConfig()): Capability[] {
   const online = !config.network.offline
@@ -105,8 +87,7 @@ export function collectCapabilities(config: Config = loadConfig()): Capability[]
       id: 'at_rest.symbol_index',
       kind: 'at-rest',
       what: 'Stores the text of indexed source files in a local database, so a symbol can be returned without re-reading the file.',
-      // Always on: it is the product. Reported anyway, because a reviewer deciding about data at
-      // rest needs the always-on items more than the optional ones.
+      // Always on: it is the product. Reported anyway, because a reviewer deciding about data at rest needs the always-on items more than the optional ones.
       enabled: true,
       controlledBy: 'always on (this is what the tool does)',
       enforcedAt: 'src/db.ts',
@@ -119,16 +100,25 @@ export function collectCapabilities(config: Config = loadConfig()): Capability[]
       controlledBy: 'always on, 24-hour expiry',
       enforcedAt: 'src/disk_cache.ts',
     },
+    {
+      id: 'ipc.hook_server',
+      kind: 'local-ipc',
+      what: 'Keeps up to three hook servers running between hook calls, each on a named pipe (Windows) or Unix socket (elsewhere) that answers only a caller holding the key file in the data directory.',
+      // Read the way the server reads it, which a project's config cannot change.
+      enabled: hookServerEnabled(),
+      controlledBy: 'hooks.server (global config only), TOKEN_GOAT_HOOK_SERVER',
+      enforcedAt: 'src/hook_server.ts::runHookServer',
+    },
   ]
 }
 
 /** Human-readable form of {@link collectCapabilities}, grouped so egress is read first. */
 export function renderCapabilities(caps: readonly Capability[]): string {
   const lines: string[] = []
-  for (const kind of ['egress', 'at-rest'] as const) {
+  for (const [kind, heading] of [['egress', 'Can send data off this machine:'], ['at-rest', 'Leaves data on this machine:'], ['local-ipc', 'Listens for other processes on this machine:']] as const) {
     const group = caps.filter((c) => c.kind === kind)
     if (group.length === 0) continue
-    lines.push(kind === 'egress' ? 'Can send data off this machine:' : 'Leaves data on this machine:')
+    lines.push(heading)
     for (const c of group) {
       lines.push(`  [${c.enabled ? 'ON ' : 'OFF'}] ${displaySafeText(c.id)}`)
       lines.push(`         ${c.what}`)

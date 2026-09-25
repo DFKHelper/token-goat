@@ -7,33 +7,7 @@ import { findProject } from './project.js'
 import { registerReset } from './reset.js'
 import type { ProjectConfigInfo } from './config_types.js'
 
-/**
- * Config sections a per-project `.token-goat.toml` may not set.
- *
- * The per-project file is not the user's own configuration: it arrives with a repository, so it
- * is attacker-controlled the moment anyone clones an untrusted project. It merges over the
- * global config, which meant a checked-in three-line file could turn off prompt-injection
- * fencing, empty the fetch allow/deny lists, switch the Google Drive integration back on, or
- * widen the MCP root allowlist, silently, for every session opened in that directory.
- *
- * These sections are the security controls an administrator sets once and expects to hold.
- * They now come from the global config and the environment only. The environment is left alone
- * deliberately: a repository cannot set it, and the developer who exports a variable is
- * configuring their own machine.
- *
- * `screenshot` is locked as a whole section rather than key by key because both of its settings
- * decide how and where a browser process is launched, which makes the whole surface a security
- * one: `chrome_path` names the executable `takeScreenshot` hands to `puppeteer.launch`, so a
- * checked-in value pointed at a binary the repository also ships is arbitrary local code
- * execution the next time the developer runs `token-goat screenshot` for any reason; and
- * `block_private_targets = false` turns off both the private-address refusal and the
- * resolve-then-pin step that closes DNS rebinding, letting that navigation reach loopback,
- * RFC1918 and cloud-metadata addresses. A future key in this section will be about launching a
- * browser too, so it inherits the lock instead of needing to be remembered.
- *
- * Everything else -- hints, formatting, compression thresholds, worker tuning -- stays
- * project-overridable, which is what the per-project file exists for.
- */
+/** Config sections a per-project `.token-goat.toml` may not set. The per-project file is not the user's own configuration: it arrives with a repository, so it is attacker-controlled the moment anyone clones an untrusted project. It merges over the global config, which meant a checked-in three-line file could turn off prompt-injection fencing, empty the fetch allow/deny lists, switch the Google Drive integration back on, or widen the MCP root allowlist, silently, for every session opened in that directory. These sections are the security controls an administrator sets once and expects to hold. They now come from the global config and the environment only. The environment is left alone deliberately: a repository cannot set it, and the developer who exports a variable is configuring their own machine. `screenshot` is locked as a whole section rather than key by key because both of its settings decide how and where a browser process is launched, which makes the whole surface a security one: `chrome_path` names the executable `takeScreenshot` hands to `puppeteer.launch`, so a checked-in value pointed at a binary the repository also ships is arbitrary local code execution the next time the developer runs `token-goat screenshot` for any reason; and `block_private_targets = false` turns off both the private-address refusal and the resolve-then-pin step that closes DNS rebinding, letting that navigation reach loopback, RFC1918 and cloud-metadata addresses. A future key in this section will be about launching a browser too, so it inherits the lock instead of needing to be remembered. Everything else -- hints, formatting, compression thresholds, worker tuning -- stays project-overridable, which is what the per-project file exists for. */
 export const PROJECT_LOCKED_SECTIONS: readonly string[] = [
   'injection',
   'webfetch',
@@ -44,31 +18,7 @@ export const PROJECT_LOCKED_SECTIONS: readonly string[] = [
   'screenshot',
 ]
 
-/**
- * Individual `section.key` entries locked without locking their whole section.
- *
- * `worker.blocked_roots` is the exclusion list a user builds with `token-goat project exclude`,
- * and `cmdIndex` / `processDirtyBatch` consult it to keep a path out of the index entirely --
- * symbols, bodies and embeddings. The rest of the `worker` section is ordinary tuning, so the
- * whole section stays project-overridable, but an empty list here is a real value that replaces
- * rather than merges: three lines in a repository's own `.token-goat.toml` were enough to put a
- * folder the user had deliberately excluded back into the index, where `symbol`, `read` and
- * `semantic` then served it. That is a protection being switched off by a checked-in file, which
- * is exactly what this list exists to prevent.
- *
- * `image_shrink.max_image_pixels` is the decompression-bomb cap: `0` means "no cap" and the schema
- * accepts it, so a repository that sets it to zero and ships a small file that decodes to billions
- * of pixels turns an ordinary `Read` of that image into an out-of-memory kill. The rest of that
- * section (quality, the OCR thresholds, the redirect switch) is ordinary tuning a repository has a
- * legitimate reason to set, so only this one key is locked rather than the whole section.
- *
- * It used to be sharp's `limitInputPixels`, which libvips enforced inside the decode. It is now a
- * check on the dimensions in the file's header, run before token-goat's own decoders in
- * `image_engine.ts`, which is a weaker position: it sees `width * height` and nothing else, so it
- * says nothing about an animation's frame count or how far a compressed stream expands. Those are
- * bounded separately by `MAX_DECODED_BYTES` in that file, which is not configurable and is not
- * meant to be -- setting this key to `0` does not lift it.
- */
+/** Individual `section.key` entries locked without locking their whole section. `worker.blocked_roots` is the exclusion list a user builds with `token-goat project exclude`, and `cmdIndex` / `processDirtyBatch` consult it to keep a path out of the index entirely -- symbols, bodies and embeddings. The rest of the `worker` section is ordinary tuning, so the whole section stays project-overridable, but an empty list here is a real value that replaces rather than merges: three lines in a repository's own `.token-goat.toml` were enough to put a folder the user had deliberately excluded back into the index, where `symbol`, `read` and `semantic` then served it. That is a protection being switched off by a checked-in file, which is exactly what this list exists to prevent. `image_shrink.max_image_pixels` is the decompression-bomb cap: `0` means "no cap" and the schema accepts it, so a repository that sets it to zero and ships a small file that decodes to billions of pixels turns an ordinary `Read` of that image into an out-of-memory kill. The rest of that section (quality, the OCR thresholds, the redirect switch) is ordinary tuning a repository has a legitimate reason to set, so only this one key is locked rather than the whole section. It used to be sharp's `limitInputPixels`, which libvips enforced inside the decode. It is now a check on the dimensions in the file's header, run before token-goat's own decoders in `image_engine.ts`, which is a weaker position: it sees `width * height` and nothing else, so it says nothing about an animation's frame count or how far a compressed stream expands. Those are bounded separately by `MAX_DECODED_BYTES` in that file, which is not configurable and is not meant to be -- setting this key to `0` does not lift it. */
 export const PROJECT_LOCKED_KEYS: readonly string[] = [
   // A repository must not be able to decide how much of its own source an agent gets to see. Turning this on folds function bodies out of every Read of this project's files, so a checked-in `.token-goat.toml` setting it true would shrink what a reviewing agent is shown of the very code it came to review -- and the fold is silent about intent, so it reads as normal output. The user's own global config and TOKEN_GOAT_FOLD_CODE_BODIES still set it freely; only the project-supplied layer is refused.
   'hints.fold_code_bodies',
@@ -94,20 +44,14 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   // The same blast radius as the indexing keys above, applied to retrieval rather than to what gets indexed: `semantic` drops a dense hit whose distance exceeds this, so a checked-in `.token-goat.toml` setting it near the floor removes this repository's own code from the vector half of every search a reviewing agent runs, and the command then answers "no matches" in the words it uses for a name that genuinely is not there. The keyword pass would still answer, which makes it worse rather than better -- the result looks like a working search. The user's own global config still sets it freely; only the project-supplied layer is refused.
   'semantic.max_distance',
   'worker.blocked_roots',
-  // global.db is a machine-wide shared database across every project on the host. A checked-in
-  // per-project .token-goat.toml must not be able to lower the size warning threshold or trigger
-  // auto-reclaim/purging of embeddings across other repositories sharing the same database.
+  // global.db is a machine-wide shared database across every project on the host. A checked-in per-project .token-goat.toml must not be able to lower the size warning threshold or trigger auto-reclaim/purging of embeddings across other repositories sharing the same database.
   'indexing.max_db_size_mb',
   'indexing.auto_reclaim_embeddings',
 ]
 
 let _lastProjectConfigLockedKeys: string[] = []
 
-/**
- * Dotted names the most recent {@link loadConfig} ignored because a per-project `.token-goat.toml`
- * tried to set a locked security setting, or `[]` if it did not. Intended for a CLI entry point to
- * surface, the same way {@link getLastProjectConfigParseError} is.
- */
+/** Dotted names the most recent {@link loadConfig} ignored because a per-project `.token-goat.toml` tried to set a locked security setting, or `[]` if it did not. Intended for a CLI entry point to surface, the same way {@link getLastProjectConfigParseError} is. */
 export function lastProjectConfigLockedKeys(): readonly string[] {
   return _lastProjectConfigLockedKeys
 }
@@ -120,15 +64,7 @@ export function resetLastProjectConfigLockedKeys(): void {
   _lastProjectConfigLockedKeys = []
 }
 
-/**
- * Drop every locked entry from a parsed per-project config, returning the cleaned tree and the
- * dotted names that were dropped.
- *
- * Dropping, not rejecting: an unreadable or hostile project file must never stop token-goat from
- * running, exactly as a malformed one does not. The dropped names are recorded so a CLI entry
- * point can say what was ignored rather than leaving the author wondering why a setting had no
- * effect.
- */
+/** Drop every locked entry from a parsed per-project config, returning the cleaned tree and the dotted names that were dropped. Dropping, not rejecting: an unreadable or hostile project file must never stop token-goat from running, exactly as a malformed one does not. The dropped names are recorded so a CLI entry point can say what was ignored rather than leaving the author wondering why a setting had no effect. */
 export function stripLockedProjectKeys(projectRaw: Record<string, unknown>): {
   cleaned: Record<string, unknown>
   dropped: string[]
@@ -189,11 +125,7 @@ export function readConfigSource(p: string): string {
   return decodeSource(fs.readFileSync(p))
 }
 
-/**
- * Read and parse `p` as TOML, distinguishing "file does not exist" (not an error — returns
- * `{}` with no message) from a genuine parse/read failure (returns `{}` with the error
- * message).
- */
+/** Read and parse `p` as TOML, distinguishing "file does not exist" (not an error — returns `{}` with no message) from a genuine parse/read failure (returns `{}` with the error message). */
 export function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: string | null } {
   try {
     return { raw: parse(readConfigSource(p)) as Record<string, unknown>, parseError: null }
@@ -204,11 +136,7 @@ export function readConfigToml(p: string): { raw: Record<string, unknown>; parse
   }
 }
 
-/**
- * Read `p` as UTF-8 text for cache-fingerprinting purposes, distinguishing "file does not
- * exist" from a genuine read error (e.g. permission denied). Returns `null` text on any
- * failure, with `readError` populated on non-ENOENT failures so loadConfig can surface it.
- */
+/** Read `p` as UTF-8 text for cache-fingerprinting purposes, distinguishing "file does not exist" from a genuine read error (e.g. permission denied). Returns `null` text on any failure, with `readError` populated on non-ENOENT failures so loadConfig can surface it. */
 export function readConfigText(p: string): { text: string | null; readError: string | null } {
   try {
     return { text: readConfigSource(p), readError: null }
@@ -219,14 +147,7 @@ export function readConfigText(p: string): { text: string | null; readError: str
   }
 }
 
-/**
- * Layer a per-project `.token-goat.toml` override on top of the global config.toml's raw TOML
- * tree.
- *
- * Merges one level deep: keys inside a section in `override` replace or add to the matching
- * section in `base`, rather than wiping the whole section back to defaults. Unmentioned
- * sections and unmentioned keys inside mentioned sections retain their base values.
- */
+/** Layer a per-project `.token-goat.toml` override on top of the global config.toml's raw TOML tree. Merges one level deep: keys inside a section in `override` replace or add to the matching section in `base`, rather than wiping the whole section back to defaults. Unmentioned sections and unmentioned keys inside mentioned sections retain their base values. */
 export function mergeRawConfig(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...base }
   for (const [key, overrideVal] of Object.entries(override)) {
@@ -248,16 +169,7 @@ export function mergeRawConfig(base: Record<string, unknown>, override: Record<s
 
 let _projectRootCache: { cwd: string; root: string } | null = null
 
-/**
- * Resolve the project root to check for a per-project `.token-goat.toml` override, for callers
- * of {@link loadConfig} that don't pass one explicitly — almost every hook and CLI command.
- * Deliberately uses the cheap, subprocess-free `findProject()` marker walk rather than
- * `resolveProjectRoot()`'s `git rev-parse` step: loadConfig() is called from the hot hook path
- * (every Read/Grep/Bash/... hook invocation), where hooks already avoid spawning git for this
- * exact reason (see hooks_read.ts's own findProject() usage). Memoized per `process.cwd()`,
- * matching constants.ts's DATA_DIR memoization rationale — cwd does not change within a hook or
- * CLI process's lifetime.
- */
+/** Resolve the project root to check for a per-project `.token-goat.toml` override, for callers of {@link loadConfig} that don't pass one explicitly — almost every hook and CLI command. Deliberately uses the cheap, subprocess-free `findProject()` marker walk rather than `resolveProjectRoot()`'s `git rev-parse` step: loadConfig() is called from the hot hook path (every Read/Grep/Bash/... hook invocation), where hooks already avoid spawning git for this exact reason (see hooks_read.ts's own findProject() usage). Memoized per `process.cwd()`, matching constants.ts's DATA_DIR memoization rationale — cwd does not change within a hook or CLI process's lifetime. */
 export function resolveConfigProjectRoot(): string {
   const cwd = process.cwd()
   if (_projectRootCache !== null && _projectRootCache.cwd === cwd) return _projectRootCache.root
@@ -267,23 +179,12 @@ export function resolveConfigProjectRoot(): string {
   return root
 }
 
-// Registered so batch_serve, which runs many requests in one process and calls clearModuleCaches()
-// after each, does not hand a later request a root cached by an earlier one. The memoization note
-// above is accurate for the CLI but not for that mode, which is neither one-shot nor fixed-cwd:
-// keying on cwd covers a request that runs somewhere else, not a project root at a fixed path
-// changing shape between two requests.
+// Registered so batch_serve, which runs many requests in one process and calls clearModuleCaches() after each, does not hand a later request a root cached by an earlier one. The memoization note above is accurate for the CLI but not for that mode, which is neither one-shot nor fixed-cwd: keying on cwd covers a request that runs somewhere else, not a project root at a fixed path changing shape between two requests.
 registerReset(() => {
   _projectRootCache = null
-})
+}, { perRequest: true })
 
-/**
- * Report what (if anything) a project's `.token-goat.toml` override file contributes, for
- * `token-goat config list`'s "what's actually in effect and why" display (see cmdConfig in
- * config_commands.ts). Returns `null` if no such file exists at the resolved project root.
- * A malformed or unreadable file returns an empty `keys` list with `parseError` set — matching
- * loadConfig()'s fail-open handling of the same file — so the caller can still show the
- * effective (global-only) config alongside a note that the override itself is broken.
- */
+/** Report what (if anything) a project's `.token-goat.toml` override file contributes, for `token-goat config list`'s "what's actually in effect and why" display (see cmdConfig in config_commands.ts). Returns `null` if no such file exists at the resolved project root. A malformed or unreadable file returns an empty `keys` list with `parseError` set — matching loadConfig()'s fail-open handling of the same file — so the caller can still show the effective (global-only) config alongside a note that the override itself is broken. */
 export function getProjectConfigInfo(projectRoot?: string): ProjectConfigInfo | null {
   const root = projectRoot ?? resolveConfigProjectRoot()
   const p = projectConfigPath(root)
@@ -293,15 +194,7 @@ export function getProjectConfigInfo(projectRoot?: string): ProjectConfigInfo | 
   return { path: p, keys: flattenRawKeys(raw), values: flattenRawValues(raw), parseError }
 }
 
-/**
- * Whether the user has explicitly set `compact_assist.auto_trigger_multiplier` in their raw
- * config.toml (or per-project .token-goat.toml), as opposed to it merely holding the
- * (indistinguishable) default value. loadConfig()'s merged Config object can't tell these two
- * cases apart, so this reads and parses the raw file text directly to check for the key's real
- * presence. Checks both the global config.toml and any per-project override (mirroring
- * loadConfig()'s own two-file layering), since a project that sets the field solely via
- * .token-goat.toml would otherwise be misread as still holding the default.
- */
+/** Whether the user has explicitly set `compact_assist.auto_trigger_multiplier` in their raw config.toml (or per-project .token-goat.toml), as opposed to it merely holding the (indistinguishable) default value. loadConfig()'s merged Config object can't tell these two cases apart, so this reads and parses the raw file text directly to check for the key's real presence. Checks both the global config.toml and any per-project override (mirroring loadConfig()'s own two-file layering), since a project that sets the field solely via .token-goat.toml would otherwise be misread as still holding the default. */
 export function isAutoTriggerMultiplierExplicit(): boolean {
   const setsMultiplier = (text: string): boolean => {
     const raw = parse(text) as Record<string, unknown>

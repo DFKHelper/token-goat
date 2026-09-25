@@ -99,6 +99,8 @@ import { generateCompactHelp } from './cli_help.js'
 import { registerFormatCommands } from './cli_cmd_formats.js'
 import { registerAnalysisCommands } from './cli_cmd_analysis.js'
 import { registerSessionCommands } from './cli_cmd_session.js'
+import { cmdHookServerRun, cmdHookServerStatus, cmdHookServerStop } from './cli_hook_server.js'
+import { queryServers } from './hook_client.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus, installVerificationNotice } from './bridges_status.js'
 import type { HarnessName } from './bridges/types.js'
@@ -111,7 +113,7 @@ import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
-import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
+import { runDoctorAndExit, runDoctorChecks } from './cli_doctor.js'
 import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
 import { runBenchCommand } from './cli_bench.js'
 import { expandGlobs } from './cli_diagnostics.js'
@@ -794,7 +796,7 @@ function cmdMcpStatus(opts: { vscode?: boolean; visualstudio?: boolean; project?
   out(displaySafeJson(opts.vscode === true ? vscodeDecoderConfigured(scope) : visualStudioMcpStatus(scope), 0))
 }
 
-function cmdUninstall(opts: {
+async function cmdUninstall(opts: {
   project?: boolean
   codex?: boolean
   gemini?: boolean
@@ -813,7 +815,7 @@ function cmdUninstall(opts: {
   local?: boolean
   user?: boolean
   purge?: boolean
-}): void {
+}): Promise<void> {
   if (opts.project === true && opts.user === true) {
     throw new Error('uninstall takes either -p/--project or --user, not both.')
   }
@@ -879,10 +881,9 @@ function cmdUninstall(opts: {
     out('No separate Hermes integration to remove (it shares the Claude Code hook entries).')
   }
 
-  if (opts.purge === true) runPurge()
+  if (opts.purge === true) await runPurge()
 }
 
-/** The destructive half of uninstall, opt-in behind --purge. Refuses while the worker is alive: it would rewrite the pid file and re-open the database under the directory being deleted, so the purge would report success over a directory that grows back. */
 /** An integration still on disk whose removal flag the caller did not pass, so uninstall can name it rather than leave it wired in silence. */
 interface LeftoverIntegration {
   flag: string
@@ -946,7 +947,10 @@ export function leftoverIntegrations(opts: {
   return found
 }
 
-function runPurge(): void {
+/** The destructive half of uninstall, opt-in behind --purge. Refuses while the worker is alive: it would rewrite the pid file and re-open the database under the directory being deleted, so the purge would report success over a directory that grows back. */
+async function runPurge(): Promise<void> {
+  // A resident hook server holds nothing open between requests, but one mid-request would recreate what this deletes.
+  await queryServers('stop')
   if (isWorkerRunning()) {
     err('token-goat: the background worker is running, so --purge would delete files it is about to rewrite. Run "token-goat worker stop" first.')
     return
@@ -1015,8 +1019,8 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
     doctorOpts.rootDir = project.root
   }
   if (opts.json === true) {
-    // --json bypasses printDoctorResults' prose entirely (no `[WARN]`-prefixed lines) and emits the same DoctorResult[] runDoctor() already computes, one entry per check with its ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify convention (no envelope) rather than inventing a new shape.
-    const results = runDoctor(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir)
+    // --json bypasses printDoctorResults' prose entirely (no `[WARN]`-prefixed lines) and emits the same DoctorResult[] runDoctorChecks() computes, one entry per check with its ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify convention (no envelope) rather than inventing a new shape.
+    const results = await runDoctorChecks(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir)
     out(displaySafeJson(results, 0))
     if (results.some((r) => r.status === 'fail')) {
       throw new CliError('doctor checks failed')
@@ -1862,45 +1866,45 @@ export function buildProgram(): Command {
 
   program
     .command('install')
-    .description('install hooks into Claude Code settings')
+    .description('install hooks into Claude Code settings, or with harness flags into those harnesses instead')
     .option('-p, --project', 'install into project scope instead of user scope')
     .option('--user', 'with --vscode, install into user scope instead of this project (every project at once, but nothing past the first folder of a multi-root workspace)')
-    .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
-    .option('--gemini', 'also patch Gemini CLI (~/.gemini/settings.json)')
-    .option('--qwen', 'also patch Qwen Code (~/.qwen/settings.json)')
-    .option('--kimi', 'also register a Kimi Code hook config, shim, instructions block and skill ($KIMI_CODE_HOME or ~/.kimi-code: config.toml, hooks/token-goat-shim.js, AGENTS.md, skills/token-goat/SKILL.md)')
-    .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
-    .option('--opencode', 'also drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
+    .option('--codex', 'patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
+    .option('--gemini', 'patch Gemini CLI (~/.gemini/settings.json)')
+    .option('--qwen', 'patch Qwen Code (~/.qwen/settings.json)')
+    .option('--kimi', 'register a Kimi Code hook config, shim, instructions block and skill ($KIMI_CODE_HOME or ~/.kimi-code: config.toml, hooks/token-goat-shim.js, AGENTS.md, skills/token-goat/SKILL.md)')
+    .option('--pi', 'drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
+    .option('--opencode', 'drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
     .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
-    .option('--openclaw', 'also register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
-    .option('--copilot', 'also register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.cjs, ~/.copilot/copilot-instructions.md; with --local, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.cjs, <project>/.github/copilot-instructions.md)')
-    .option('--grok', 'also register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
-    .option('--vscode', 'also configure a VS Code MCP server (the workspace .vscode/mcp.json by default; --user for the user-profile mcp.json) and Copilot routing guidance')
-    .option('--visualstudio', 'also configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
-    .option('--zed', 'also register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
-    .option('--cursor', 'also register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks "token-goat install" writes to ~/.claude/settings.json')
+    .option('--openclaw', 'register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
+    .option('--copilot', 'register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.cjs, ~/.copilot/copilot-instructions.md; with --local, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.cjs, <project>/.github/copilot-instructions.md)')
+    .option('--grok', 'register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
+    .option('--vscode', 'configure a VS Code MCP server (the workspace .vscode/mcp.json by default; --user for the user-profile mcp.json) and Copilot routing guidance')
+    .option('--visualstudio', 'configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
+    .option('--zed', 'register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
+    .option('--cursor', 'register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks "token-goat install" writes to ~/.claude/settings.json')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
   program
     .command('uninstall')
-    .description('remove token-goat hooks from Claude Code settings')
+    .description('remove token-goat hooks from Claude Code settings, or with harness flags from those harnesses instead')
     .option('-p, --project', 'uninstall from project scope instead of user scope')
     .option('--user', 'with --vscode, remove the user-scope install instead of this project one')
-    .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
-    .option('--gemini', 'also strip the Gemini CLI integration (~/.gemini/settings.json)')
-    .option('--qwen', 'also strip the Qwen Code integration (~/.qwen/settings.json)')
-    .option('--kimi', 'also strip the Kimi Code integration (config.toml hooks, hooks/token-goat-shim.js, the AGENTS.md block and skills/token-goat under $KIMI_CODE_HOME or ~/.kimi-code)')
-    .option('--pi', 'also remove the pi (pi-coding-agent) extension')
-    .option('--opencode', 'also remove the opencode plugin')
+    .option('--codex', 'strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
+    .option('--gemini', 'strip the Gemini CLI integration (~/.gemini/settings.json)')
+    .option('--qwen', 'strip the Qwen Code integration (~/.qwen/settings.json)')
+    .option('--kimi', 'strip the Kimi Code integration (config.toml hooks, hooks/token-goat-shim.js, the AGENTS.md block and skills/token-goat under $KIMI_CODE_HOME or ~/.kimi-code)')
+    .option('--pi', 'remove the pi (pi-coding-agent) extension')
+    .option('--opencode', 'remove the opencode plugin')
     .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')
-    .option('--openclaw', 'also remove the OpenClaw plugin and config entry')
-    .option('--copilot', 'also remove the Copilot CLI hook config and shim script, and strip the token-goat block from ~/.copilot/copilot-instructions.md (or <project>/.github/copilot-instructions.md with --local)')
-    .option('--grok', 'also remove the Grok CLI hook config and shim script')
-    .option('--vscode', 'also remove the VS Code MCP server (project scope by default; --user for the user-profile one) and routing guidance')
-    .option('--visualstudio', 'also remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
-    .option('--zed', 'also remove the Zed MCP context server entry and its generated shim script')
-    .option('--cursor', 'also remove the Cursor MCP server entry (user scope by default; -p/--project for the project one)')
+    .option('--openclaw', 'remove the OpenClaw plugin and config entry')
+    .option('--copilot', 'remove the Copilot CLI hook config and shim script, and strip the token-goat block from ~/.copilot/copilot-instructions.md (or <project>/.github/copilot-instructions.md with --local)')
+    .option('--grok', 'remove the Grok CLI hook config and shim script')
+    .option('--vscode', 'remove the VS Code MCP server (project scope by default; --user for the user-profile one) and routing guidance')
+    .option('--visualstudio', 'remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
+    .option('--zed', 'remove the Zed MCP context server entry and its generated shim script')
+    .option('--cursor', 'remove the Cursor MCP server entry (user scope by default; -p/--project for the project one)')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .option('--purge', 'also delete the data directories (index, caches, session state, logs); refuses while the worker is running')
     .action(guard(cmdUninstall))
@@ -1917,6 +1921,11 @@ export function buildProgram(): Command {
   worker.command('start').description('start the background indexer').action(guard(cmdWorkerStart))
   worker.command('stop').description('stop the background indexer').action(guard(cmdWorkerStop))
   worker.command('status').description('check if the indexer is running').action(guard(cmdWorkerStatus))
+
+  const hookServer = program.command('hook-server').description('resident processes that answer hook calls and read-only commands without starting Node for each one')
+  hookServer.command('run', { hidden: true }).description('serve one slot (started automatically by the first hook call)').option('--slot <n>', 'which slot to serve', '0').action(guard(cmdHookServerRun))
+  hookServer.command('status').description('list the running hook servers').option('-j, --json', 'output as JSON').action(guard(cmdHookServerStatus))
+  hookServer.command('stop').description('stop every running hook server (the next hook call starts a fresh one)').action(guard(cmdHookServerStop))
 
   program
     .command('stats')

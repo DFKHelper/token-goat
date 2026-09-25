@@ -163,6 +163,20 @@ describe('scoped install/uninstall never silently touches the Claude Code base',
     }
   })
 
+  // The help is what a user reads before running the command. Every harness flag's description began "also patch", "also register" or "also strip", so `install --codex --copilot` read as Claude Code plus two more and left a stale Claude Code shim in place. HAND-DERIVED from the gate above: a harness flag replaces the base, so its help must not say it adds to it.
+  it.each(['install', 'uninstall'])('%s --help never describes a harness flag as added to the Claude Code base', (name) => {
+    const raw = fs.readFileSync(CLI_PATH, 'utf8')
+    const start = raw.indexOf(`.command('${name}')`)
+    expect(start, `.command('${name}') not found in src/cli.ts`).toBeGreaterThan(-1)
+    const registration = raw.slice(start, raw.indexOf('.action(', start))
+    for (const flag of scopes) {
+      const desc = new RegExp(String.raw`\.option\('--${flag}', '([^']*)`).exec(registration)?.[1]
+      expect(desc, `${name} registers no --${flag} option`).toBeDefined()
+      expect(desc, `${name} --${flag} says it adds to the Claude Code install, which wantsClaudeCodeBase skips`).not.toMatch(/^also\b/)
+    }
+    expect(registration, `${name}'s own description must say a harness flag replaces the Claude Code target`).toMatch(/with harness flags/)
+  })
+
   it('positive control: --hermes is the documented exception, and forces wantsClaudeCodeBase true', () => {
     const fnBody = code.slice(code.indexOf('function wantsClaudeCodeBase('), installDeclIdx)
     expect(fnBody, 'wantsClaudeCodeBase must force the base install when --hermes is passed (it genuinely depends on it)').toMatch(/opts\.hermes === true/)

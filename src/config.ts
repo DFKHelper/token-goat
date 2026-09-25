@@ -59,9 +59,7 @@ import {
   isAutoTriggerMultiplierExplicit,
 } from './config_project.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function validatedBool(raw: unknown, def: boolean): boolean {
   if (typeof raw === 'boolean') return raw
@@ -106,14 +104,7 @@ function validatedIntList(raw: unknown, def: number[]): number[] {
   return raw.filter((x): x is number => typeof x === 'number' && Number.isFinite(x)).map(Math.trunc)
 }
 
-/**
- * Like {@link validatedInt}, but a persisted value exactly equal to `sentinel` is treated as
- * the stale pre-rewire default (see the three "Legacy-sentinel guard" call sites below) and
- * falls through to `def` instead of being trusted, since a `config set` on any unrelated key
- * used to resave every field including then-inert defaults that a later change wired up as a
- * real gate. Any other persisted value, including one that happens to equal a *current*
- * default, is validated and respected as-is.
- */
+/** Like {@link validatedInt}, but a persisted value exactly equal to `sentinel` is treated as the stale pre-rewire default (see the three "Legacy-sentinel guard" call sites below) and falls through to `def` instead of being trusted, since a `config set` on any unrelated key used to resave every field including then-inert defaults that a later change wired up as a real gate. Any other persisted value, including one that happens to equal a *current* default, is validated and respected as-is. */
 function validatedIntWithLegacySentinel(raw: unknown, def: number, sentinel: number, min: number, max: number): number {
   return raw === sentinel ? def : validatedInt(raw, def, min, max)
 }
@@ -171,7 +162,6 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hints.protect_recent_reads': {min: 0, max: 100},
   'hints.cross_session_read_dedup_ttl_secs': {min: 1, max: 86400},
   'hints.mcp_dedup_ttl_secs': {min: 1, max: 3600},
-  'hooks.watchdog_ms': {min: 100, max: 30000},
   'hooks.latency_budget_ms': {min: 1, max: 600000},
   'webfetch.max_file_count': {min: 0, max: 10_000_000},
   'webfetch.max_bytes': {min: 0, max: 100 * 1024 * 1024 * 1024},
@@ -192,20 +182,14 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'semantic.max_distance': {min: 0.05, max: 1.2},
 }
 
-/** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/
- *  validatedFloat/envInt -- _buildConfig's single source of truth for bounds, instead of
- *  restating each field's min/max a second time at its build-time validation call site. */
+/** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/ validatedFloat/envInt -- _buildConfig's single source of truth for bounds, instead of restating each field's min/max a second time at its build-time validation call site. */
 function boundsOf(key: string): [number, number] {
   const b = ownGet(NUMERIC_FIELD_BOUNDS, key)
   if (!b) throw new Error(`token-goat: no NUMERIC_FIELD_BOUNDS entry for '${key}'`)
   return [b.min, b.max]
 }
 
-/**
- * Validate a single numeric config field against its documented bounds and cross-field constraints.
- * Used by config set to reject out-of-range values without rebuilding the entire config tree.
- * Returns the clamped value if validation passes, or undefined if the field is not numeric/known.
- */
+/** Validate a single numeric config field against its documented bounds and cross-field constraints. Used by config set to reject out-of-range values without rebuilding the entire config tree. Returns the clamped value if validation passes, or undefined if the field is not numeric/known. */
 function walkGetNumeric(obj: Record<string, unknown>, parts: string[]): number | undefined {
   let cur: unknown = obj
   for (const part of parts) {
@@ -234,26 +218,16 @@ export function validateNumericField(fieldKey: string, value: number, cfg: Recor
   return clamped
 }
 
-// String-valued config fields whose value must come from a fixed set. Extracted from
-// _buildConfig / dispatch.ts's PROFILE_CAPS and bridges/registry.ts's harness names, so a typo
-// (e.g. `agressive` instead of `aggressive`) is rejected by `config set` instead of silently
-// falling back to a default at runtime with no signal to the user.
+// String-valued config fields whose value must come from a fixed set. Extracted from _buildConfig / dispatch.ts's PROFILE_CAPS and bridges/registry.ts's harness names, so a typo (e.g. `agressive` instead of `aggressive`) is rejected by `config set` instead of silently falling back to a default at runtime with no signal to the user.
 const ENUM_FIELD_VALUES: Record<string, string[]> = {
   'compression.profile': ['auto', 'aggressive', 'balanced', 'minimal'],
   'compact_assist.harness': ['auto', ...KNOWN_HARNESS_NAMES],
   'image_shrink.ocr_lang': [...SUPPORTED_OCR_LANG_CODES],
-  // Deliberately has no entry above `normal`. This table is what `config set` checks; a
-  // hand-edited TOML bypasses it, which is why resolveWorkerPriority (process_priority.ts) maps an
-  // unrecognized value back to the default rather than trusting whatever the file said.
+  // Deliberately has no entry above `normal`. This table is what `config set` checks; a hand-edited TOML bypasses it, which is why resolveWorkerPriority (process_priority.ts) maps an unrecognized value back to the default rather than trusting whatever the file said.
   'worker.priority': ['below_normal', 'low', 'normal'],
 }
 
-/**
- * Validate a single enum-valued string config field against its fixed set of allowed values.
- * Used by config set to reject unrecognized values without rebuilding the entire config tree.
- * Returns undefined if the field isn't enum-constrained (any string is fine) or the value is
- * valid; returns the allowed-value list if the value is invalid.
- */
+/** Validate a single enum-valued string config field against its fixed set of allowed values. Used by config set to reject unrecognized values without rebuilding the entire config tree. Returns undefined if the field isn't enum-constrained (any string is fine) or the value is valid; returns the allowed-value list if the value is invalid. */
 export function validateEnumField(fieldKey: string, value: string): string[] | undefined {
   if (fieldKey === 'image_shrink.ocr_lang') {
     const tokens = value.split(/[+,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean)
@@ -265,9 +239,7 @@ export function validateEnumField(fieldKey: string, value: string): string[] | u
   return allowed.includes(value) ? undefined : allowed
 }
 
-// ---------------------------------------------------------------------------
-// Env fingerprint + mtime cache
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Env fingerprint + mtime cache ---------------------------------------------------------------------------
 
 const ENV_KEYS = [
   'TOKEN_GOAT_COMPACT_ASSIST',
@@ -284,7 +256,6 @@ const ENV_KEYS = [
   'TOKEN_GOAT_HINT_JSON_SIDECAR',
   'TOKEN_GOAT_LARGE_READ_BYTES',
   'TOKEN_GOAT_HINT_BUDGET',
-  'TOKEN_GOAT_HOOK_WATCHDOG_MS',
   'TOKEN_GOAT_WEB_COMPRESS',
   'TOKEN_GOAT_WORKER_WATCHDOG',
   'TOKEN_GOAT_WORKER_MAX_POOL',
@@ -319,13 +290,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS',
 ]
 
-// Every env var actually consulted by _buildConfig's envInt/envBool/envStr calls is registered
-// in CONFIG_KEY_ENV_OVERRIDES (below) as the per-field canonical source of truth. Fold those in
-// here rather than relying solely on the hand-maintained ENV_KEYS list above: a var added only
-// to CONFIG_KEY_ENV_OVERRIDES (as happened for TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES and
-// TOKEN_GOAT_OCR_ENABLED, both consumed in _buildConfig but omitted from ENV_KEYS) would
-// otherwise silently drop out of the fingerprint, letting loadConfig()'s cache serve a stale
-// config across a change to that var with no cache-invalidation signal at all.
+// Every env var actually consulted by _buildConfig's envInt/envBool/envStr calls is registered in CONFIG_KEY_ENV_OVERRIDES (below) as the per-field canonical source of truth. Fold those in here rather than relying solely on the hand-maintained ENV_KEYS list above: a var added only to CONFIG_KEY_ENV_OVERRIDES (as happened for TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES and TOKEN_GOAT_OCR_ENABLED, both consumed in _buildConfig but omitted from ENV_KEYS) would otherwise silently drop out of the fingerprint, letting loadConfig()'s cache serve a stale config across a change to that var with no cache-invalidation signal at all.
 function allEnvKeys(): string[] {
   return [...new Set([...ENV_KEYS, ...Object.values(CONFIG_KEY_ENV_OVERRIDES).flat()])]
 }
@@ -348,13 +313,7 @@ interface CacheEntry {
 
 let _cached: CacheEntry | null = null
 
-// Recursively freezes a config tree before it enters the cache. loadConfig() intentionally
-// returns the SAME cached object reference on every hit within one mtime/env fingerprint
-// window (see the "second call with unchanged file returns same object reference" test) --
-// without this, a caller that does `loadConfig().hints.foo = x` instead of reading it would
-// silently corrupt that shared singleton for every other caller until the next cache
-// invalidation. Object.freeze() throws on such a write in strict mode (ESM is always strict)
-// instead of corrupting shared state, while leaving the returned reference itself unchanged.
+// Recursively freezes a config tree before it enters the cache. loadConfig() intentionally returns the SAME cached object reference on every hit within one mtime/env fingerprint window (see the "second call with unchanged file returns same object reference" test) -- without this, a caller that does `loadConfig().hints.foo = x` instead of reading it would silently corrupt that shared singleton for every other caller until the next cache invalidation. Object.freeze() throws on such a write in strict mode (ESM is always strict) instead of corrupting shared state, while leaving the returned reference itself unchanged.
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value)
@@ -365,33 +324,18 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-// Set by loadConfig()/loadPersistedConfig() whenever the on-disk config.toml exists but fails
-// to parse (as opposed to being simply absent, which is not an error). Both loaders otherwise
-// treat a parse failure identically to a missing file — silently falling back to defaults with
-// no signal — so callers that need to warn the user (the CLI entry point, `config set`) check
-// this after loading instead of duplicating TOML-read/error-classification logic themselves.
+// Set by loadConfig()/loadPersistedConfig() whenever the on-disk config.toml exists but fails to parse (as opposed to being simply absent, which is not an error). Both loaders otherwise treat a parse failure identically to a missing file — silently falling back to defaults with no signal — so callers that need to warn the user (the CLI entry point, `config set`) check this after loading instead of duplicating TOML-read/error-classification logic themselves.
 let _lastConfigParseError: string | null = null
 
-/**
- * The error message from the most recent config.toml parse failure, or `null` if the most
- * recent load either succeeded or found no file at all. See {@link _lastConfigParseError}.
- */
+/** The error message from the most recent config.toml parse failure, or `null` if the most recent load either succeeded or found no file at all. See {@link _lastConfigParseError}. */
 export function getLastConfigParseError(): string | null {
   return _lastConfigParseError
 }
 
-// Mirrors _lastConfigParseError, but for the per-project .token-goat.toml override read by
-// loadConfig(). Set on every loadConfig() call; null when the file is absent or parsed cleanly.
+// Mirrors _lastConfigParseError, but for the per-project .token-goat.toml override read by loadConfig(). Set on every loadConfig() call; null when the file is absent or parsed cleanly.
 let _lastProjectConfigParseError: string | null = null
 
-/**
- * The error message from the most recent `.token-goat.toml` parse/read failure, or `null` if
- * the most recent {@link loadConfig} call found no per-project override file, or found one that
- * parsed cleanly. Unlike {@link getLastConfigParseError}, a non-null result here never blocks
- * config loading — the per-project layer fails open and loadConfig() always returns a valid
- * global-only config in that case. Intended for a CLI entry point to optionally surface a
- * warning, the same way {@link getLastConfigParseError} is surfaced for the global config.toml.
- */
+/** The error message from the most recent `.token-goat.toml` parse/read failure, or `null` if the most recent {@link loadConfig} call found no per-project override file, or found one that parsed cleanly. Unlike {@link getLastConfigParseError}, a non-null result here never blocks config loading — the per-project layer fails open and loadConfig() always returns a valid global-only config in that case. Intended for a CLI entry point to optionally surface a warning, the same way {@link getLastConfigParseError} is surfaced for the global config.toml. */
 export function getLastProjectConfigParseError(): string | null {
   return _lastProjectConfigParseError
 }
@@ -440,25 +384,7 @@ function rejectionReason(key: string, rawValue: unknown, effectiveValue: unknown
   return null
 }
 
-/**
- * What an env var's string would become under the same coercion `_buildConfig` applies to it,
- * BEFORE any bounds clamping — so the caller can compare what was asked for against what took
- * effect and tell "clamped" from "in effect".
- *
- * Mirrors env.ts's envInt/envBool/envStr deliberately rather than calling them, because those
- * return the fallback on a value they cannot use, which is indistinguishable from that value
- * having been accepted. The three outcomes here keep that distinction:
- *   - `null`      — this field's type has no env coercion this function can reproduce faithfully;
- *                   the caller must not claim anything about whether the value took effect.
- *   - `'unusable'` — the helper would reject the string outright and fall back, so the variable
- *                   contributes nothing at all despite being set.
- *   - `{ parsed }` — the pre-clamp value the helper would derive.
- *
- * Numeric fields assume the integer parse (envInt), which holds because every numeric key in
- * CONFIG_KEY_ENV_OVERRIDES is integer-bounded; tests/guards/env_numeric_fields_are_integer.test.ts
- * fails if a float-bounded field ever gains an env override, rather than letting this silently
- * start calling valid floats unusable.
- */
+/** What an env var's string would become under the same coercion `_buildConfig` applies to it, BEFORE any bounds clamping — so the caller can compare what was asked for against what took effect and tell "clamped" from "in effect". Mirrors env.ts's envInt/envBool/envStr deliberately rather than calling them, because those return the fallback on a value they cannot use, which is indistinguishable from that value having been accepted. The three outcomes here keep that distinction: - `null`      — this field's type has no env coercion this function can reproduce faithfully; the caller must not claim anything about whether the value took effect. - `'unusable'` — the helper would reject the string outright and fall back, so the variable contributes nothing at all despite being set. - `{ parsed }` — the pre-clamp value the helper would derive. Numeric fields assume the integer parse (envInt), which holds because every numeric key in CONFIG_KEY_ENV_OVERRIDES is integer-bounded; tests/guards/env_numeric_fields_are_integer.test.ts fails if a float-bounded field ever gains an env override, rather than letting this silently start calling valid floats unusable. */
 function coerceEnvLike(rawStr: string, effectiveValue: unknown): { parsed: unknown } | 'unusable' | null {
   const norm = rawStr.trim()
   if (typeof effectiveValue === 'number') {
@@ -478,23 +404,7 @@ function coerceEnvLike(rawStr: string, effectiveValue: unknown): { parsed: unkno
   return null
 }
 
-/**
- * Resolve which layer the effective value of `key` came from.
- *
- * Precedence mirrors the real load order (defaults -> config.toml -> .token-goat.toml -> env),
- * highest-priority layer first, so the reported layer is the one that actually decided the
- * value. Two consequences worth stating, because both were mis-modelled by the naive
- * "project file lists the key, therefore the value came from it" rule this replaces:
- *
- * - An env var that is *set* wins outright, and is reported instead of the project file. Merely
- *   being registered in CONFIG_KEY_ENV_OVERRIDES is not being set — testing registration is the
- *   exact trap that made `config set` blame unset variables.
- * - `project-invalid` is NOT "the global value won". _buildConfig merges the project raw tree
- *   over the global one and validates the merged result, so a project value that gets clamped or
- *   coerced still displaces the global file's value entirely; the effective value is whatever
- *   validation produced from the project's value. The project layer is still in force, which is
- *   why `config set` must keep warning about this state.
- */
+/** Resolve which layer the effective value of `key` came from. Precedence mirrors the real load order (defaults -> config.toml -> .token-goat.toml -> env), highest-priority layer first, so the reported layer is the one that actually decided the value. Two consequences worth stating, because both were mis-modelled by the naive "project file lists the key, therefore the value came from it" rule this replaces: - An env var that is *set* wins outright, and is reported instead of the project file. Merely being registered in CONFIG_KEY_ENV_OVERRIDES is not being set — testing registration is the exact trap that made `config set` blame unset variables. - `project-invalid` is NOT "the global value won". _buildConfig merges the project raw tree over the global one and validates the merged result, so a project value that gets clamped or coerced still displaces the global file's value entirely; the effective value is whatever validation produced from the project's value. The project layer is still in force, which is why `config set` must keep warning about this state. */
 export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg: Record<string, unknown>, projectInfo: ProjectConfigInfo | null): ConfigKeyLayer {
   const envVar = (CONFIG_KEY_ENV_OVERRIDES[key] ?? []).find((name) => process.env[name] !== undefined)
   if (envVar !== undefined) {
@@ -518,28 +428,18 @@ export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg:
   return { layer: 'project-invalid', path: projectInfo.path, rawValue, effectiveValue, reason: rejectionReason(key, rawValue, effectiveValue, cfg) }
 }
 
-// ---------------------------------------------------------------------------
-// load / save
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- load / save ---------------------------------------------------------------------------
 
 export function loadConfig(projectRoot?: string): Config {
   const p = configPath()
   const root = projectRoot ?? resolveConfigProjectRoot()
   const projPath = projectConfigPath(root)
 
-  // Content hash, not mtime: a `config set` immediately followed by another `config set`
-  // (or a concurrent writer) can land two different writes within the same mtime tick on
-  // some filesystems, which made the old mtime-only cache key silently keep serving the
-  // first write's config after the second landed. Reading the whole file is cheap (config.toml
-  // is always tiny) and this also skips the actual cost we care about avoiding on a hit --
-  // re-parsing the TOML.
+  // Content hash, not mtime: a `config set` immediately followed by another `config set` (or a concurrent writer) can land two different writes within the same mtime tick on some filesystems, which made the old mtime-only cache key silently keep serving the first write's config after the second landed. Reading the whole file is cheap (config.toml is always tiny) and this also skips the actual cost we care about avoiding on a hit -- re-parsing the TOML.
   const { text, readError } = readConfigText(p)
   const contentFp = text !== null ? shortFingerprint(text) : ''
 
-  // Same content-hash-not-mtime reasoning applies to the per-project override file, plus the
-  // resolved project root itself is part of the cache key -- an explicit projectRoot argument
-  // (or a cwd change between calls) can change which .token-goat.toml is in play even when
-  // neither the global file nor env vars changed.
+  // Same content-hash-not-mtime reasoning applies to the per-project override file, plus the resolved project root itself is part of the cache key -- an explicit projectRoot argument (or a cwd change between calls) can change which .token-goat.toml is in play even when neither the global file nor env vars changed.
   const { text: projText, readError: projReadError } = readConfigText(projPath)
   const projectContentFp = projText !== null ? shortFingerprint(projText) : ''
 
@@ -566,10 +466,7 @@ export function loadConfig(projectRoot?: string): Config {
     _lastConfigParseError = readError
   }
 
-  // A malformed or unreadable .token-goat.toml fails open, exactly like a malformed global
-  // config.toml does above: the parse/read error is recorded for a CLI entry point to
-  // optionally surface (see getLastProjectConfigParseError()'s doc comment), but loadConfig()
-  // itself never throws and always falls through to the global-only config on failure.
+  // A malformed or unreadable .token-goat.toml fails open, exactly like a malformed global config.toml does above: the parse/read error is recorded for a CLI entry point to optionally surface (see getLastProjectConfigParseError()'s doc comment), but loadConfig() itself never throws and always falls through to the global-only config on failure.
   let projectRaw: Record<string, unknown> = {}
   if (projText !== null) {
     try {
@@ -595,16 +492,7 @@ export function invalidateConfigCache(): void {
 
 registerReset(invalidateConfigCache)
 
-/**
- * Run `fn` with every config-affecting env var (the {@link allEnvKeys} registry, not just the
- * hand-maintained {@link ENV_KEYS} list) temporarily cleared, then restore the original values.
- * Safe because `_buildConfig` is fully synchronous — no other code can observe the env vars
- * while they are unset. Using only ENV_KEYS here previously let a var missing from that list
- * (e.g. TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES, TOKEN_GOAT_OCR_ENABLED) survive the clear and leak
- * into buildPersistedConfig()'s output, defeating this function's whole purpose for that var:
- * a transient env override would get permanently written to config.toml by `config set` on any
- * unrelated key instead of staying scoped to the current invocation.
- */
+/** Run `fn` with every config-affecting env var (the {@link allEnvKeys} registry, not just the hand-maintained {@link ENV_KEYS} list) temporarily cleared, then restore the original values. Safe because `_buildConfig` is fully synchronous — no other code can observe the env vars while they are unset. Using only ENV_KEYS here previously let a var missing from that list (e.g. TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES, TOKEN_GOAT_OCR_ENABLED) survive the clear and leak into buildPersistedConfig()'s output, defeating this function's whole purpose for that var: a transient env override would get permanently written to config.toml by `config set` on any unrelated key instead of staying scoped to the current invocation. */
 function withoutConfigEnv<T>(fn: () => T): T {
   const keys = allEnvKeys()
   const saved: Record<string, string | undefined> = {}
@@ -623,22 +511,12 @@ function withoutConfigEnv<T>(fn: () => T): T {
   }
 }
 
-/**
- * Build a {@link Config} from `raw` TOML-shaped data with no env-var overlay — exactly what
- * is (or would be) persisted to disk. Used by {@link loadPersistedConfig} and by `config set`'s
- * write-time range check, so a transient TOKEN_GOAT_* env override active for one invocation
- * never gets baked permanently into config.toml by a mutate-then-save command.
- */
+/** Build a {@link Config} from `raw` TOML-shaped data with no env-var overlay — exactly what is (or would be) persisted to disk. Used by {@link loadPersistedConfig} and by `config set`'s write-time range check, so a transient TOKEN_GOAT_* env override active for one invocation never gets baked permanently into config.toml by a mutate-then-save command. */
 export function buildPersistedConfig(raw: Record<string, unknown>): Config {
   return withoutConfigEnv(() => _buildConfig(raw))
 }
 
-/**
- * Like {@link loadConfig} but without env-var overlay — the config exactly as it exists on
- * disk. `config set` / `project exclude` / `project prune` must load through this (not
- * loadConfig()) before mutating and saving, or a TOKEN_GOAT_* env override active only for
- * the current invocation would get written to config.toml permanently.
- */
+/** Like {@link loadConfig} but without env-var overlay — the config exactly as it exists on disk. `config set` / `project exclude` / `project prune` must load through this (not loadConfig()) before mutating and saving, or a TOKEN_GOAT_* env override active only for the current invocation would get written to config.toml permanently. */
 export function loadPersistedConfig(): Config {
   const p = configPath()
   const { raw, parseError } = readConfigToml(p)
@@ -646,12 +524,13 @@ export function loadPersistedConfig(): Config {
   return buildPersistedConfig(raw)
 }
 
+/** Whether the resident hook server is on: `TOKEN_GOAT_HOOK_SERVER`, else `hooks.server` in the user's global config. Never a project's `.token-goat.toml`, whatever directory this runs in: one server answers every project on the machine, so one repository's file must not switch it for the others. */
+export function hookServerEnabled(): boolean {
+  return envBool('TOKEN_GOAT_HOOK_SERVER', loadPersistedConfig().hooks.server)
+}
+
 function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, unknown> = {}): Config {
-  // Layer the per-project override (if any) on top of the global raw data before any field is
-  // read below, so every validatedInt/validatedBool/bounds-checked field, the legacy-sentinel
-  // guards, and the cross-field clamps all see one already-merged raw tree — the exact same
-  // validation path the global-only config always went through, with no divergent logic for
-  // the project layer.
+  // Layer the per-project override (if any) on top of the global raw data before any field is read below, so every validatedInt/validatedBool/bounds-checked field, the legacy-sentinel guards, and the cross-field clamps all see one already-merged raw tree — the exact same validation path the global-only config always went through, with no divergent logic for the project layer.
   const { cleaned: safeProjectRaw, dropped: lockedKeys } = stripLockedProjectKeys(projectRaw)
   setLastProjectConfigLockedKeys(lockedKeys)
   if (Object.keys(safeProjectRaw).length > 0) {
@@ -675,17 +554,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   bc.max_lines = validatedInt(bc_raw['max_lines'], bc.max_lines, ...boundsOf('bash_compress.max_lines'))
   bc.max_bytes = validatedInt(bc_raw['max_bytes'], bc.max_bytes, ...boundsOf('bash_compress.max_bytes'))
   bc.timeout_seconds = validatedInt(bc_raw['timeout_seconds'], bc.timeout_seconds, ...boundsOf('bash_compress.timeout_seconds'))
-  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
-  // round trip (see saveConfig), so any pre-687758ae user who ran `config set` for an unrelated
-  // key got the then-in-memory default cache_min_bytes (0) permanently persisted, even though
-  // the field had zero consumers at the time and nobody could have deliberately chosen it.
-  // 687758ae wired this key up as the real cache minimum-size gate and bumped the in-code
-  // default to 512 -- but those stale 0s now load back in and silently disable caching.
-  // Treat an exactly-persisted 0 as that stale default and fall through to the current default
-  // instead of trusting it; any other persisted value (including a deliberate 0 set after
-  // upgrading) is respected as-is. Note: 0 is a more plausible value someone might
-  // deliberately choose post-upgrade (cache everything with no minimum size) than the other
-  // sentinel values were, so callers who really want 0 can work around this by setting 1 instead.
+  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-687758ae user who ran `config set` for an unrelated key got the then-in-memory default cache_min_bytes (0) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. 687758ae wired this key up as the real cache minimum-size gate and bumped the in-code default to 512 -- but those stale 0s now load back in and silently disable caching. Treat an exactly-persisted 0 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 0 set after upgrading) is respected as-is. Note: 0 is a more plausible value someone might deliberately choose post-upgrade (cache everything with no minimum size) than the other sentinel values were, so callers who really want 0 can work around this by setting 1 instead.
   bc.cache_min_bytes = validatedIntWithLegacySentinel(bc_raw['cache_min_bytes'], bc.cache_min_bytes, 0, ...boundsOf('bash_compress.cache_min_bytes'))
   bc.cache_max_file_count = validatedInt(bc_raw['cache_max_file_count'], bc.cache_max_file_count, ...boundsOf('bash_compress.cache_max_file_count'))
   bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
@@ -698,10 +567,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   bc.cache_max_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES', bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
   bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output, ...boundsOf('bash_compress.cache_max_bytes_per_output'))
   bc.min_net_savings_bytes = envInt('TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES', bc.min_net_savings_bytes, ...boundsOf('bash_compress.min_net_savings_bytes'))
-  // A per-item cap larger than the total-directory budget is nonsensical: pruneBlobs()
-  // would otherwise evict a freshly-written item (and everything else) in the same
-  // storeBlob() call that just wrote it. Clamp it so the per-item cap can never
-  // exceed the total budget.
+  // A per-item cap larger than the total-directory budget is nonsensical: pruneBlobs() would otherwise evict a freshly-written item (and everything else) in the same storeBlob() call that just wrote it. Clamp it so the per-item cap can never exceed the total budget.
   bc.cache_max_bytes_per_output = Math.min(bc.cache_max_bytes_per_output, bc.cache_max_bytes)
 
   const ar_raw = section(raw, 'agent_report')
@@ -817,26 +683,10 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.pre_skill_advisory = validatedBool(hi_raw['pre_skill_advisory'], hi.pre_skill_advisory)
   hi.context_threshold_advisory = validatedBool(hi_raw['context_threshold_advisory'], hi.context_threshold_advisory)
   hi.diff_hint_min_tokens_saved = validatedInt(hi_raw['diff_hint_min_tokens_saved'], hi.diff_hint_min_tokens_saved, ...boundsOf('hints.diff_hint_min_tokens_saved'))
-  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
-  // round trip (see saveConfig), so any pre-4b6f30dc user who ran `config set` for an unrelated
-  // key got the then-in-memory default large_read_redirect_bytes (45_000) permanently persisted,
-  // even though the field had zero consumers at the time and nobody could have deliberately chosen it.
-  // 4b6f30dc wired this key up as the real pressure-scaled first-read deny gate and bumped the
-  // in-code default to 512_000 -- but those stale 45_000s now load back in and silently make the
-  // gate ~11.4x more aggressive than intended. Treat an exactly-persisted 45_000 as that stale
-  // default and fall through to the current default instead of trusting it; any other persisted
-  // value (including a deliberate 45_000 set after upgrading) is respected as-is.
+  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-4b6f30dc user who ran `config set` for an unrelated key got the then-in-memory default large_read_redirect_bytes (45_000) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. 4b6f30dc wired this key up as the real pressure-scaled first-read deny gate and bumped the in-code default to 512_000 -- but those stale 45_000s now load back in and silently make the gate ~11.4x more aggressive than intended. Treat an exactly-persisted 45_000 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 45_000 set after upgrading) is respected as-is.
   hi.large_read_redirect_bytes = validatedIntWithLegacySentinel(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 45_000, ...boundsOf('hints.large_read_redirect_bytes'))
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
-  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
-  // round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated
-  // key got the then-in-memory default reread_deny_min_bytes (2048) permanently persisted, even
-  // though the field had zero consumers at the time and nobody could have deliberately chosen it.
-  // a1fad4c6 wired this key up as the real re-read-deny gate and bumped the in-code default to
-  // 51_200 -- but those stale 2048s now load back in and silently make the gate 25x more
-  // aggressive than intended. Treat an exactly-persisted 2048 as that stale default and fall
-  // through to the current default instead of trusting it; any other persisted value (including a
-  // deliberate 2048 set after upgrading) is respected as-is.
+  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated key got the then-in-memory default reread_deny_min_bytes (2048) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. a1fad4c6 wired this key up as the real re-read-deny gate and bumped the in-code default to 51_200 -- but those stale 2048s now load back in and silently make the gate 25x more aggressive than intended. Treat an exactly-persisted 2048 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 2048 set after upgrading) is respected as-is.
   hi.reread_deny_min_bytes = validatedIntWithLegacySentinel(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 2048, ...boundsOf('hints.reread_deny_min_bytes'))
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.fold_code_bodies = validatedBool(hi_raw['fold_code_bodies'], hi.fold_code_bodies)
@@ -895,19 +745,16 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
 
   const hk_raw = section(raw, 'hooks')
   const hk = getDefaultConfig('hooks') as HooksConfig
-  hk.watchdog_ms = validatedInt(hk_raw['watchdog_ms'], hk.watchdog_ms, ...boundsOf('hooks.watchdog_ms'))
-  hk.watchdog_ms = envInt('TOKEN_GOAT_HOOK_WATCHDOG_MS', hk.watchdog_ms, ...boundsOf('hooks.watchdog_ms'))
   hk.latency_budget_ms = validatedInt(hk_raw['latency_budget_ms'], hk.latency_budget_ms, ...boundsOf('hooks.latency_budget_ms'))
   hk.latency_budget_ms = envInt('TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS', hk.latency_budget_ms, ...boundsOf('hooks.latency_budget_ms'))
+  hk.server = validatedBool(hk_raw['server'], hk.server)
+  hk.server = envBool('TOKEN_GOAT_HOOK_SERVER', hk.server)
 
   const wf_raw = section(raw, 'webfetch')
   const wf = getDefaultConfig('webfetch') as WebFetchConfig
   wf.allow = validatedStrList(wf_raw['allow'], wf.allow)
   wf.deny = validatedStrList(wf_raw['deny'], wf.deny)
-  // Comma-separated rather than path.delimiter: these are URL patterns, and on Windows the path
-  // delimiter is ';', which is a legal character in a URL. Every other list-valued setting gets an
-  // env override so a container or CI job can set policy without shipping a TOML, and an egress
-  // policy is the one an operator is most likely to want to pin that way.
+  // Comma-separated rather than path.delimiter: these are URL patterns, and on Windows the path delimiter is ';', which is a legal character in a URL. Every other list-valued setting gets an env override so a container or CI job can set policy without shipping a TOML, and an egress policy is the one an operator is most likely to want to pin that way.
   wf.allow = envStrList('TOKEN_GOAT_WEBFETCH_ALLOW', wf.allow, ',')
   wf.deny = envStrList('TOKEN_GOAT_WEBFETCH_DENY', wf.deny, ',')
   wf.max_file_count = validatedInt(wf_raw['max_file_count'], wf.max_file_count, ...boundsOf('webfetch.max_file_count'))
@@ -932,9 +779,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const ix = getDefaultConfig('indexing') as IndexingConfig
   ix.large_file_symbol_only_kb = validatedInt(ix_raw['large_file_symbol_only_kb'], ix.large_file_symbol_only_kb, ...boundsOf('indexing.large_file_symbol_only_kb'))
   ix.large_file_skip_kb = validatedInt(ix_raw['large_file_skip_kb'], ix.large_file_skip_kb, ...boundsOf('indexing.large_file_skip_kb'))
-  // A symbol-only threshold larger than the skip threshold is nonsensical: files would be
-  // skipped entirely before the symbol-only tier's condition could ever apply. Clamp
-  // symbol_only_kb so it never exceeds skip_kb.
+  // A symbol-only threshold larger than the skip threshold is nonsensical: files would be skipped entirely before the symbol-only tier's condition could ever apply. Clamp symbol_only_kb so it never exceeds skip_kb.
   ix.large_file_symbol_only_kb = Math.min(ix.large_file_symbol_only_kb, ix.large_file_skip_kb)
   ix.max_chunks_per_file = validatedInt(ix_raw['max_chunks_per_file'], ix.max_chunks_per_file, ...boundsOf('indexing.max_chunks_per_file'))
   ix.skip_dirs = validatedStrList(ix_raw['skip_dirs'], ix.skip_dirs)
@@ -971,10 +816,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const red_raw = section(raw, 'redaction')
   const red = getDefaultConfig('redaction') as RedactionConfig
   red.custom_patterns = validatedStrList(red_raw['custom_patterns'], red.custom_patterns)
-  // Newline-separated, not comma-separated: a comma is how a regex writes a quantifier range, so
-  // splitting on it turned `EMP-[0-9]{4,8}` into `EMP-[0-9]{4` and `8}`. Both halves compile --
-  // the braces degrade to literals -- so nothing failed and nothing was reported, and the
-  // operator's rule silently matched nothing. Found by an adversarial review.
+  // Newline-separated, not comma-separated: a comma is how a regex writes a quantifier range, so splitting on it turned `EMP-[0-9]{4,8}` into `EMP-[0-9]{4` and `8}`. Both halves compile -- the braces degrade to literals -- so nothing failed and nothing was reported, and the operator's rule silently matched nothing. Found by an adversarial review.
   red.custom_patterns = envStrList('TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', red.custom_patterns, '\n')
   red.strict = validatedBool(red_raw['strict'], red.strict)
   red.strict = envBool('TOKEN_GOAT_REDACTION_STRICT', red.strict)
@@ -1037,13 +879,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   }
 }
 
-/**
- * Maps each dotted config key that has an env-var override in {@link _buildConfig} to the
- * TOKEN_GOAT_* env var name(s) that can override it, highest-precedence first. Used by
- * `config set` (see cmdConfig in config_commands.ts) to warn when a value just written to
- * config.toml is shadowed by an active env var. Keep in sync with the env-override
- * assignments in _buildConfig.
- */
+/** Maps each dotted config key that has an env-var override in {@link _buildConfig} to the TOKEN_GOAT_* env var name(s) that can override it, highest-precedence first. Used by `config set` (see cmdConfig in config_commands.ts) to warn when a value just written to config.toml is shadowed by an active env var. Keep in sync with the env-override assignments in _buildConfig. */
 export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]>> = {
   'compact_assist.enabled': ['TOKEN_GOAT_COMPACT_ASSIST', 'TOKENWISE_COMPACT_ASSIST'],
   'bash_compress.enabled': ['TOKEN_GOAT_BASH_COMPRESS'],
@@ -1103,8 +939,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.context_threshold_advisory': ['TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY'],
   'hints.pre_skill_advisory': ['TOKEN_GOAT_PRE_SKILL_ADVISORY'],
   'hints.quiet_hours': ['TOKEN_GOAT_QUIET_HOURS'],
-  'hooks.watchdog_ms': ['TOKEN_GOAT_HOOK_WATCHDOG_MS'],
   'hooks.latency_budget_ms': ['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS'],
+  'hooks.server': ['TOKEN_GOAT_HOOK_SERVER'],
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
@@ -1135,12 +971,7 @@ export function saveConfig(config: Config): void {
   const sp = config.skill_preservation
   const is_cfg = config.image_shrink
 
-  // auto_trigger_multiplier is the one field isAutoTriggerMultiplierExplicit() needs to tell
-  // "user explicitly set this" apart from "still holding the compiled default" by checking
-  // whether the raw TOML literally has the key. Writing it unconditionally below (like every
-  // other field) would bake it into config.toml on every save -- including a save that never
-  // touched this field -- permanently defeating that check. Check explicitness BEFORE this
-  // write lands, and omit the key entirely when it's still an untouched default.
+  // auto_trigger_multiplier is the one field isAutoTriggerMultiplierExplicit() needs to tell "user explicitly set this" apart from "still holding the compiled default" by checking whether the raw TOML literally has the key. Writing it unconditionally below (like every other field) would bake it into config.toml on every save -- including a save that never touched this field -- permanently defeating that check. Check explicitness BEFORE this write lands, and omit the key entirely when it's still an untouched default.
   const wasExplicit = isAutoTriggerMultiplierExplicit()
   const defaultMultiplier = (getDefaultConfig('compact_assist') as CompactAssistConfig).auto_trigger_multiplier
   const keepsMultiplierDefault = !wasExplicit && ca.auto_trigger_multiplier === defaultMultiplier
@@ -1261,8 +1092,8 @@ export function saveConfig(config: Config): void {
       session_start_reminder: config.hints.session_start_reminder,
     },
     hooks: {
-      watchdog_ms: config.hooks.watchdog_ms,
       latency_budget_ms: config.hooks.latency_budget_ms,
+      server: config.hooks.server,
     },
     webfetch: {
       allow: config.webfetch.allow,

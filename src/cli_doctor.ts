@@ -11,10 +11,12 @@ import { isUnderSystemTemp } from './project.js'
 import { projectScopeClause } from './sql_path.js'
 import { PACKAGE_NAME } from './version.js'
 import { compareSemver } from './cli_upgrade.js'
+import { serverStatuses } from './hook_client.js'
+import { readMarker, type ServerStatus } from './hook_ipc.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS, dataDirWriteRefusal } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
-import { loadConfig, readConfigSource, saveConfig, invalidateConfigCache } from './config.js'
+import { hookServerEnabled, loadConfig, readConfigSource, saveConfig, invalidateConfigCache } from './config.js'
 import type { Config } from './config.js'
 import { ensureModelFiles, modelFilesPresent } from './embed_model.js'
 import { runContextStats } from './cli_context_stats.js'
@@ -1010,6 +1012,24 @@ export function checkWorker(dir: string): DoctorResult {
   return { name: 'Worker', status: 'warn', message: 'not running' }
 }
 
+/** The Hook server line. A server that is not running is normal (the next hook call starts one); one whose last background start failed is worth a warning, because nothing else ever shows that error. */
+export function checkHookServer(state: { enabled: boolean; statuses: readonly ServerStatus[]; failure?: string | undefined }): DoctorResult {
+  const name = 'Hook server'
+  if (!state.enabled) return { name, status: 'ok', message: 'off (hooks.server or TOKEN_GOAT_HOOK_SERVER); every hook call starts its own process' }
+  if (state.statuses.length > 0) return { name, status: 'ok', message: `${state.statuses.length} running (${state.statuses.map((s) => `slot ${s.slot}, pid ${s.pid}, ${s.served} served`).join('; ')})` }
+  if (state.failure !== undefined) return { name, status: 'warn', message: `not running, and the last start failed: ${state.failure}. Run 'token-goat hook-server run' to see it in the foreground` }
+  return { name, status: 'ok', message: 'not running; the next hook call starts one' }
+}
+
+/** {@link runDoctor} plus the checks that have to ask a running process, which the synchronous checks cannot. */
+export async function runDoctorChecks(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): Promise<DoctorResult[]> {
+  const results = runDoctor(dataDir, configPath, rootDir, processes)
+  const enabled = hookServerEnabled()
+  const dir = dataDir || defaultDataDir()
+  results.push(checkHookServer({ enabled, statuses: enabled ? await serverStatuses(dir) : [], failure: readMarker('failed', dir) }))
+  return results
+}
+
 export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
@@ -1328,7 +1348,7 @@ export async function runDoctorAndExit(opts?: string | {
     }
   }
 
-  const results = runDoctor(options.dataDir, options.configPath, options.rootDir, options.processes)
+  const results = await runDoctorChecks(options.dataDir, options.configPath, options.rootDir, options.processes)
   printDoctorResults(results)
 
   if (options.context === true) {

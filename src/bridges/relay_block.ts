@@ -108,10 +108,12 @@ function callHookViaSpawn(event, payload) {
 // its own fail-open null rather than being force-killed by the host's own hook timeout
 // budget, ~5000ms) when the in-process path is unavailable or throws.
 async function callHook(event, payload) {
+  // Timed from here, not from process start: this host lives far longer than one call, so the hook library's default clock (process age) would record the host's uptime as this call's duration.
+  const start = performance.now();
   const relay = await resolveRelayInProcess();
   if (relay) {
     try {
-      const out = await relay(event, payload);
+      const out = await relay(event, payload, undefined, { elapsedMs: () => performance.now() - start });
       const trimmed = out ? out.trim() : "";
       if (!trimmed) return null;
       return JSON.parse(trimmed);
