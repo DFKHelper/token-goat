@@ -178,6 +178,13 @@ describe('mac / macMatches', () => {
     expect(macMatches(good, good.slice(1))).toBe(false)
     expect(macMatches(good, `${good}0`)).toBe(false)
   })
+
+  it('rejects a candidate as long as the MAC in characters but not in bytes without throwing', () => {
+    // HAND-DERIVED: 'é' is one UTF-16 code unit and two UTF-8 bytes, so this candidate passes a character-length check and reaches crypto.timingSafeEqual as 65 bytes against 64, which throws ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH rather than answering.
+    const good = mac(key, 'S', 'a', 'b')
+    expect(macMatches(good, `é${good.slice(1)}`)).toBe(false)
+    expect(macMatches(`é${good.slice(1)}`, good)).toBe(false)
+  })
 })
 
 describe('server key', () => {
