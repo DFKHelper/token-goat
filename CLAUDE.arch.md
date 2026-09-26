@@ -127,6 +127,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/read_meta.ts`](src/read_meta.ts) | Surgical read implementation for meta |
 | [`src/read_outline.ts`](src/read_outline.ts) | Outline and skeleton command handlers. |
 | [`src/read_section.ts`](src/read_section.ts) | Surgical read implementation for section |
+| [`src/read_semantic.ts`](src/read_semantic.ts) | The `semantic` command: a dense embedding search fused with a BM25 keyword pass by reciprocal rank, each hit tagged with the symbol that encloses it. |
 | [`src/read_spec.ts`](src/read_spec.ts) | Surgical read implementation for spec |
 | [`src/read_structured_data.ts`](src/read_structured_data.ts) | Surgical read implementation for structured_data |
 | [`src/read_suggest.ts`](src/read_suggest.ts) | Surgical read implementation for suggest |

@@ -1,23 +1,4 @@
-/**
- * Structural guard for the "answers from a stale row with no warning" defect class (C5).
- *
- * `symbol`/`read`/`skeleton`/`outline` always ran `staleWarning`/`healStaleIndex` before answering,
- * so an on-disk edit that bypassed the dirty queue self-corrected before the answer went out. Four
- * other commands that also answer straight from indexed rows -- `refs`, `ask`, `semantic`, and
- * `trace --bodies` -- had no staleness check of their own at all, and silently served pre-edit rows
- * with no warning and no self-heal until that was fixed by adding `warnIfFilesStale` and wiring it
- * into `runRefsSingle`, `runAsk`, `runSemantic`, and `cmdTrace`.
- *
- * A per-path regression test (tests/stale_index_warns_on_multi_file_answers.test.ts) pins those four
- * fixed sites against a real, unmocked index. It says nothing about the next command someone adds
- * that queries the index (`queryRefs`/`searchSymbolsFts`) and renders matched-file body content
- * without going through the same staleness check -- so this guard enumerates every exported command
- * function in `src/graph_commands.ts` and `src/read_commands.ts` whose body calls `queryRefs(` or
- * `searchSymbolsFts(` and classifies each one as COVERED (calls `warnIfFilesStale`/`staleWarning`
- * itself) or EXEMPT (its output never carries verbatim/synthesized body content from the matched
- * files -- only file/symbol/line metadata -- so a stale row cannot leak stale *content*, only a
- * stale line number a fresh reindex will correct on the next drain).
- */
+/** Structural guard for the "answers from a stale row with no warning" defect class (C5). `symbol`/`read`/`skeleton`/`outline` always ran `staleWarning`/`healStaleIndex` before answering, so an on-disk edit that bypassed the dirty queue self-corrected before the answer went out. Four other commands that also answer straight from indexed rows -- `refs`, `ask`, `semantic`, and `trace --bodies` -- had no staleness check of their own at all, and silently served pre-edit rows with no warning and no self-heal until that was fixed by adding `warnIfFilesStale` and wiring it into `runRefsSingle`, `runAsk`, `runSemantic`, and `cmdTrace`. A per-path regression test (tests/stale_index_warns_on_multi_file_answers.test.ts) pins those four fixed sites against a real, unmocked index. It says nothing about the next command someone adds that queries the index (`queryRefs`/`searchSymbolsFts`) and renders matched-file body content without going through the same staleness check -- so this guard enumerates every exported command function in `src/graph_commands.ts` and `src/read_commands.ts` whose body calls `queryRefs(` or `searchSymbolsFts(` and classifies each one as COVERED (calls `warnIfFilesStale`/`staleWarning` itself) or EXEMPT (its output never carries verbatim/synthesized body content from the matched files -- only file/symbol/line metadata -- so a stale row cannot leak stale *content*, only a stale line number a fresh reindex will correct on the next drain). */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,6 +16,7 @@ const SCAN_FILES = [
   'graph_inspection.ts',
   'graph_analysis.ts',
   'read_commands.ts',
+  'read_semantic.ts',
   'text_commands.ts',
 ]
 
@@ -44,10 +26,7 @@ interface CommandSite {
   readonly body: string
 }
 
-/** Every top-level function in the scanned files whose body queries the index directly via
- * queryRefs( or searchSymbolsFts(. Nested helpers that only forward to one of these (rather than
- * calling it themselves) are not picked up -- this guard targets the command entry points that
- * decide what to render, not every intermediate query wrapper. */
+/** Every top-level function in the scanned files whose body queries the index directly via queryRefs( or searchSymbolsFts(. Nested helpers that only forward to one of these (rather than calling it themselves) are not picked up -- this guard targets the command entry points that decide what to render, not every intermediate query wrapper. */
 function commandSites(): readonly CommandSite[] {
   const out: CommandSite[] = []
   for (const name of SCAN_FILES) {
@@ -69,10 +48,7 @@ function key(site: CommandSite): string {
 
 type Bucket = 'checks-staleness-itself' | 'metadata-only-output-no-body-content-rendered'
 
-/**
- * Classification for every command site this guard has found. A site missing here, or whose
- * bucket no longer matches its real behavior, fails one of the tests below.
- */
+/** Classification for every command site this guard has found. A site missing here, or whose bucket no longer matches its real behavior, fails one of the tests below. */
 const CLASSIFICATION: ReadonlyMap<string, { bucket: Bucket; reason: string }> = new Map([
   [
     'read_commands.ts::runRefsSingle',
@@ -82,7 +58,7 @@ const CLASSIFICATION: ReadonlyMap<string, { bucket: Bucket; reason: string }> = 
     },
   ],
   [
-    'read_commands.ts::runSemantic',
+    'read_semantic.ts::runSemantic',
     {
       bucket: 'checks-staleness-itself',
       reason: 'calls warnIfFilesStale(hits.map(h => h.filePath)) before rendering hit bodies (C5 fix).',
@@ -215,10 +191,7 @@ describe('every index-answering command checks staleness or is proven metadata-o
   })
 
   it('a metadata-only site that starts rendering .body/resolveBody output without also gaining a staleness check is caught', () => {
-    // Belt-and-braces: for every metadata-only site, if its body text renders a `.body`/`resolveBody(`
-    // value into anything that looks like emitted output (a template literal, a pushed object field,
-    // a console.log/JSON.stringify argument) rather than only using it for a numeric/boolean decision
-    // (token counting, truthiness), it must also call warnIfFilesStale/staleWarning.
+    // Belt-and-braces: for every metadata-only site, if its body text renders a `.body`/`resolveBody(` value into anything that looks like emitted output (a template literal, a pushed object field, a console.log/JSON.stringify argument) rather than only using it for a numeric/boolean decision (token counting, truthiness), it must also call warnIfFilesStale/staleWarning.
     const sites = new Map(commandSites().map((s) => [key(s), s]))
     const offenders: string[] = []
     for (const [k, { bucket }] of CLASSIFICATION) {
