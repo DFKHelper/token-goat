@@ -75,42 +75,14 @@ vi.mock('../src/screenshot.js', () => ({
   takeScreenshot: vi.fn(async () => ({ path: '/tmp/out.png', originalBytes: 100, finalBytes: 50 })),
 }))
 
-import {
-  runSymbol,
-  runRead,
-  runSection,
-  runSkeleton,
-  runOutline,
-  runFind,
-  runLocate,
-  runListSections,
-  runGrep,
-  runConfigGet,
-  runCsvProfile,
-  runCsvQuery,
-  runJsonOutline,
-  runJsonQuery,
-  runYamlOutline,
-  runYamlQuery,
-  runSqliteSchema,
-  runSqliteQuery,
-  withPinnedReads,
-
-  runExports,
-  runImports,
-  runChanged,
-  runDiff,
-  runLog,
-  runBrief,
-  extractImports,
-  importsExtensionFor,
-  extractExportNames,
-  extractTranscriptText,
-  parseDiffHunks,
-  runScreenshot,
-  runZipRead,
-  runZipList,
-} from '../src/read_commands.js'
+import { runSymbol, runRead, runGrep, withPinnedReads, runScreenshot } from '../src/read_commands.js'
+import { runSection } from '../src/read_section.js'
+import { runSkeleton, runOutline } from '../src/read_outline.js'
+import { runFind, runLocate, runListSections, runConfigGet, runSqliteSchema, runSqliteQuery, runExports, runImports, extractTranscriptText, runZipRead, runZipList } from '../src/read_inspect.js'
+import { runCsvProfile, runCsvQuery, runJsonOutline, runJsonQuery, runYamlOutline, runYamlQuery } from '../src/read_structured_data.js'
+import { runChanged, runDiff, runLog, parseDiffHunks } from '../src/read_git.js'
+import { runBrief } from '../src/read_brief.js'
+import { extractImports, importsExtensionFor, extractExportNames } from '../src/import_export_extract.js'
 import { runRefs } from '../src/read_refs.js'
 import { querySymbols, countSymbols, queryRefs, countRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
@@ -7046,8 +7018,8 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
     expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'x' }, { name: 'y' }, { name: 'z' }])
     const symbolCalls = mockQuerySymbols.mock.calls as [{ name: string; filePath?: string }][]
     const zSymbolCall = symbolCalls.find((c) => c[0].name === 'z')?.[0]
-    // The load-bearing assertion: `z` (a bare segment) must resolve against src/b.ts (the file to its left), not src/a.ts -- proving the spec actually crossed a file boundary. A spec like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all.
-    expect(zSymbolCall?.filePath).toBe('src/b.ts')
+    // The load-bearing assertion: `z` (a bare segment) must resolve against src/b.ts (the file to its left), not src/a.ts -- proving the spec actually crossed a file boundary. A spec like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all. The hint arrives as the absolute path the index stores, the same resolution the single-symbol form applies.
+    expect(zSymbolCall?.filePath).toBe(resolveIndexPath('src/b.ts'))
     expect(stdout).toContain('src/callerZ.ts:3: z()')
   })
 

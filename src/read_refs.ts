@@ -123,6 +123,55 @@ interface RefsTarget {
   key: string
 }
 
+/** One name's references as every `refs` renderer receives them, with the counts each needs for an honest total (see {@link refsTotal}). */
+interface CollectedRefs {
+  queryOpts: Parameters<typeof queryRefs>[0]
+  defFileHint: string | undefined
+  results: RefEntry[]
+  preScanCount: number
+  scanLimit: number
+  suppressed: number
+  preGrepCount: number
+  clientFiltered: boolean
+  filteredTotal: number | undefined
+}
+
+/** Query and filter one name's references the same way for every spec form -- single symbol, same-file multi-symbol, cross-file pairs: the query window, the typed tier, `--exclude-tests`, `--grep`, then the requested-limit slice when a client-side filter ran. These steps were written out twice, once in runRefsSingle and once in the multi-target loop, and the copies had drifted: only the single form resolved the defining file before the typed tier looked it up. */
+function collectRefs(symName: string, defFile: string | undefined, opts: RefsOptions): CollectedRefs {
+  const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
+  // `defFile` (the `file` in `file::symbol`) names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only. Resolved to the absolute path the index stores, since a relative spelling matches no definition and silently skips the typed tier.
+  const defFileHint = defFile !== undefined ? resolveIndexPath(defFile, opts.projectRoot ?? process.cwd()) : undefined
+  // --grep needs the same full-headroom query as --exclude-tests, since it also filters the resolved set client-side (on filePath) AFTER the query -- slicing to the requested limit before it runs would silently under-return by letting non-matching refs occupy slots ahead of the cutoff.
+  if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
+  else if (opts.limit !== undefined) queryOpts.limit = opts.limit
+  else if (opts.top !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
+  const rootDir = refsRootDir(opts)
+  if (rootDir !== undefined) queryOpts.rootDir = rootDir
+
+  const scanned = queryRefs(queryOpts)
+  // How full the query window came back, and how big that window was, so a client-side filter drawn from a window that filled can report its count as a floor rather than as a total. See {@link refsTotal}.
+  const preScanCount = scanned.length
+  const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT
+  let results = applyTypedRefsTier(symName, defFileHint, scanned)
+  // Whether the type-based tier filter itself dropped anything, not merely whether it ran: a query where it dropped nothing is still entitled to the exact-total form. Measured before --exclude-tests/--grep can drop further rows of their own, so this reflects only the typed filter's own effect on the scanned window.
+  const typedFilterDropped = results.length < scanned.length
+  let suppressed = 0
+  if (opts.excludeTests === true) {
+    const f = applyExcludeTestsFilter(results)
+    suppressed = f.suppressed
+    results = f.refs
+  }
+  // --grep narrows by the reference's call-site FILE PATH (the field each row is keyed on: `file:line: symbol`), and runs BEFORE the requested-limit slice below so it selects from the whole (test-filtered) set rather than from an already-capped page. It tests the path as refsDisplayPath renders it, so an anchored pattern matches what the caller sees.
+  const preGrepCount = results.length
+  const matchesGrep = refGrepFilter(opts.grep)
+  if (matchesGrep !== undefined) results = results.filter(matchesGrep)
+  // The typed-tier filter is a client-side filter over the same window as --exclude-tests/--grep, so a query where it alone dropped rows reports a floor whenever that window was finite: see refsTotal's doc comment.
+  const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
+  const filteredTotal = clientFiltered ? results.length : undefined
+  if (clientFiltered && opts.top === undefined) results = results.slice(0, opts.limit ?? 100)
+  return { queryOpts, defFileHint, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal }
+}
+
 /** The honest reference total for a page of `refs` output. `countRefs` reruns the SQL filters with no LIMIT, which is exact. The client-side filters (`--exclude-tests`, `--grep`, and the typed-refs tier) have no SQL equivalent, so their total is the post-filter count of the window the rows came from: exact only while that window had room to spare, a floor once it filled. `scanLimit` is the window the rows were actually fetched under, which is NOT one fixed number. `--exclude-tests`/`--grep`/`--top` scan unbounded (`UNBOUNDED_QUERY_LIMIT`, negative), an explicit `--limit` sets it, and a query with none of those gets queryRefs' own DEFAULT_QUERY_LIMIT. A negative window never fills, so the client-side filters on those routes saw every matching row and their post-filter count is the exact total rather than a floor -- which is why the sign is tested rather than the count compared against a constant that no longer exists. No CLI path reaches that wrong branch today, and the fix is deliberately not sold as one: {@link truncationNotice} prints nothing unless `shown >= limit` and `count > shown`, and on every route that leaves this window narrow the window IS the display limit, so the post-filter count cannot exceed what was shown. That is a coincidence held together three call frames apart, and it is the whole reason to compare against the window actually used instead: widening a default here, or slicing to something other than the query limit there, silently turns a floor into a claimed total with no test able to see it happen. */
 function refsTotal(clientFiltered: boolean, filteredTotal: number | undefined, shown: number, countExact: () => number, preScanCount: number, scanLimit: number): TruncationTotal {
   if (!clientFiltered) return { count: countExact(), exact: true }
@@ -154,41 +203,12 @@ function renderRefsTargets(
   const lines: string[] = []
   const refRows: RefEntry[] = []
   for (const { file, symbol, key } of targets) {
-    const queryOpts: Parameters<typeof queryRefs>[0] = { name: symbol }
-    // The `file` in `file::symbol` names where the symbol is DEFINED, only used to disambiguate a same-named symbol elsewhere in the index via applyTypedRefsTier below. It must never be passed to queryRefs/countRefs -- refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only. --grep needs the same full-headroom query as --exclude-tests -- see runRefsSingle's sibling comment.
-    if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
-    else if (opts.limit !== undefined) queryOpts.limit = opts.limit
-    else if (opts.top !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
-    const rootDir = refsRootDir(opts)
-    if (rootDir !== undefined) queryOpts.rootDir = rootDir
-    const scanned = queryRefs(queryOpts)
-    const preScanCount = scanned.length
-    const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT
-    let results = applyTypedRefsTier(symbol, file, scanned)
-    // Whether the type-based tier filter itself dropped anything, not merely whether it ran: a query where it dropped nothing is still entitled to the exact-total form. Measured before --exclude-tests/--grep can drop further rows of their own, so this reflects only the typed filter's own effect on the scanned window.
-    const typedFilterDropped = results.length < scanned.length
-    let suppressed = 0
-    if (opts.excludeTests === true) {
-      const f = applyExcludeTestsFilter(results)
-      suppressed = f.suppressed
-      results = f.refs
-    }
-    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment. It tests the path as refsDisplayPath renders it, the same spelling the rows below show.
-    const preGrepCount = results.length
-    const matchesGrep = refGrepFilter(opts.grep)
-    if (matchesGrep !== undefined) results = results.filter(matchesGrep)
-    // The typed-tier filter is a client-side filter over the same window as --exclude-tests/--grep, so a query where it alone dropped rows reports a floor whenever that window was finite: see refsTotal's doc comment.
-    const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
-    let filteredTotal: number | undefined
-    if (clientFiltered) filteredTotal = results.length
-    if (clientFiltered && opts.top === undefined) {
-      results = results.slice(0, opts.limit ?? 100)
-    }
+    const { queryOpts, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal } = collectRefs(symbol, file, opts)
     if (results.length > 0) anyFound = true
     refRows.push(...results)
     if (opts.json === true) {
       // Same omit-when-zero `hiddenByGrep` the single-spec JSON path emits, per target here: a symbol whose entry is `items: []` because --grep matched none of its references must not be indistinguishable from one that genuinely has none.
-      const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
+      const hiddenByGrep = opts.grep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
       const withHidden = <T extends object>(payload: T): T => ({ ...payload, ...(annotateHiddenByGrep && hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
       if (opts.top !== undefined) {
         jsonOut[key] = withHidden(topFilesJsonPayload(results, opts.top))
@@ -202,7 +222,7 @@ function renderRefsTargets(
     }
     if (results.length === 0) {
       // Distinguish "--grep matched none of the N references that do exist" for this target from a genuine absence -- same trap already fixed for dead/deps/types, and checked first so it takes priority over the --exclude-tests message below.
-      if (matchesGrep !== undefined && preGrepCount > 0) {
+      if (opts.grep !== undefined && preGrepCount > 0) {
         lines.push(`${key}: ${grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'reference', 'references').trim()}`)
         continue
       }
@@ -312,45 +332,12 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
 function runRefsSingle(opts: RefsOptions): number {
   const { file, symbol } = parseReadSpec(opts.spec)
   const symName = symbol ?? file
-
-  const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
-  // `file` in `file::symbol` names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call below, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result to same-file references only.
-  const defFileHint = symbol !== undefined ? resolveIndexPath(file, opts.projectRoot ?? process.cwd()) : undefined
-  // --grep needs the same full-headroom query as --exclude-tests, since it also filters the resolved set client-side (on filePath) AFTER the query -- slicing to the requested limit before it runs would silently under-return by letting non-matching refs occupy slots ahead of the cutoff.
-  if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
-  else if (opts.limit !== undefined) queryOpts.limit = opts.limit
-  else if (opts.top !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
-  const rootDir = refsRootDir(opts)
-  if (rootDir !== undefined) queryOpts.rootDir = rootDir
-
-  const scanned = queryRefs(queryOpts)
-  // How full the query window came back, and how big that window was, so a client-side filter drawn from a window that filled can report its count as a floor rather than as a total. See {@link refsTotal}.
-  const preScanCount = scanned.length
-  const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT
-  let results = applyTypedRefsTier(symName, defFileHint, scanned)
-  // Whether the type-based tier filter itself dropped anything, not merely whether it ran: a query where it dropped nothing is still entitled to the exact-total form. Measured before --exclude-tests/--grep can drop further rows of their own, so this reflects only the typed filter's own effect on the scanned window.
-  const typedFilterDropped = results.length < scanned.length
-  let suppressed = 0
-  if (opts.excludeTests === true) {
-    const f = applyExcludeTestsFilter(results)
-    suppressed = f.suppressed
-    results = f.refs
-  }
-  // --grep narrows by the reference's call-site FILE PATH (the field each row is keyed on: `file:line: symbol`), and runs BEFORE the requested-limit slice below so it selects from the whole (test-filtered) set rather than from an already-capped page. It tests the path as refsDisplayPath renders it, so an anchored pattern matches what the caller sees.
-  const preGrepCount = results.length
-  const matchesGrep = refGrepFilter(opts.grep)
-  if (matchesGrep !== undefined) results = results.filter(matchesGrep)
-  // The typed-tier filter is a client-side filter over the same window as --exclude-tests/--grep, so a query where it alone dropped rows reports a floor whenever that window was finite: see refsTotal's doc comment.
-  const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
-  let filteredTotal: number | undefined
-  if (clientFiltered) filteredTotal = results.length
-  if (clientFiltered && opts.top === undefined) {
-    results = results.slice(0, opts.limit ?? 100)
-  }
+  // A bare-name spec parses as a file with no symbol, and names no defining file at all.
+  const { queryOpts, defFileHint, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal } = collectRefs(symName, symbol !== undefined ? file : undefined, opts)
 
   if (results.length === 0) {
     // Distinguish "--grep matched none of the N references that do exist" from a symbol that genuinely has no references (or none outside tests) -- same "filtered store renders as populated" trap already fixed for dead/deps/types. Checked first so it takes priority over the --exclude-tests message below when both filters are active and --grep is what zeroed the remaining set.
-    if (matchesGrep !== undefined && preGrepCount > 0) {
+    if (opts.grep !== undefined && preGrepCount > 0) {
       // Exits 0, so under --json a prose notice would pair a success status with an unparseable body. Same `{items, truncated, totalCount}` envelope the populated branch emits, with the post-filter count; text mode keeps the human notice.
       if (opts.json === true) {
         // `hiddenByGrep` (brief --json's own convention) is what tells the consumer this empty envelope is a filtered view rather than a symbol with no references -- `totalCount: 0` alone reads identically for both.
@@ -413,7 +400,7 @@ function runRefsSingle(opts: RefsOptions): number {
       payload = { items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     }
     // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially filtered page carries the count too rather than only the fully emptied one. Spread onto the emitted object rather than into `payload` so both `--top` and per-reference envelopes get it without either shape's interface growing an optional field the other never sets.
-    const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
+    const hiddenByGrep = opts.grep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
     const text = displaySafeJson({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
     emit(text)
     recordReadStat('symbol_read', fullSourceBytes, text, symName)
