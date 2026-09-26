@@ -764,8 +764,3 @@ export const BUILD_FILTERS: ToolFilter[] = [
   turboFilter,
   webpackFilter,
 ]
-
-// tests/tool_filters_build.test.ts imports every build filter class from this module, the ones the ecosystem siblings define included.
-export { AntFilter, GradleFilter, JavacFilter, MavenFilter, SbtFilter } from './build_jvm.js'
-export { DotnetFilter, MSBuildFilter } from './build_dotnet.js'
-export { LernaFilter, NxFilter, TurboFilter, WebpackFilter } from './build_js.js'

@@ -4,29 +4,19 @@ import { describe, expect, it } from 'vitest'
 import {
   MakeFilter,
   CmakeFilter,
-  GradleFilter,
-  MavenFilter,
-  AntFilter,
   BazelFilter,
   MesonFilter,
-  MSBuildFilter,
-  DotnetFilter,
-  SbtFilter,
-  JavacFilter,
   CargoFilter,
   GoFilter,
-  NxFilter,
-  LernaFilter,
-  TurboFilter,
-  WebpackFilter,
   BUILD_FILTERS,
 } from '../src/tool_filters/build.js'
+import { GradleFilter, MavenFilter, AntFilter, SbtFilter, JavacFilter } from '../src/tool_filters/build_jvm.js'
+import { MSBuildFilter, DotnetFilter } from '../src/tool_filters/build_dotnet.js'
+import { NxFilter, LernaFilter, TurboFilter, WebpackFilter } from '../src/tool_filters/build_js.js'
 import { selectFilter } from '../src/tool_filters/dispatch.js'
 import type { ToolFilter } from '../src/tool_filters/base.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function apply(
   filter: ToolFilter,
@@ -38,9 +28,7 @@ function apply(
   return filter.apply(stdout, stderr, exitCode, argv).text
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch ordering
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Dispatch ordering ---------------------------------------------------------------------------
 
 describe('BUILD_FILTERS dispatch ordering', () => {
   it('goTestFilter (Batch A) still wins for go test', () => {
@@ -65,9 +53,7 @@ describe('BUILD_FILTERS dispatch ordering', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// MakeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- MakeFilter ---------------------------------------------------------------------------
 
 describe('MakeFilter', () => {
   const f = new MakeFilter()
@@ -114,9 +100,7 @@ describe('MakeFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CmakeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CmakeFilter ---------------------------------------------------------------------------
 
 describe('CmakeFilter', () => {
   const f = new CmakeFilter()
@@ -157,9 +141,7 @@ describe('CmakeFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GradleFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GradleFilter ---------------------------------------------------------------------------
 
 describe('GradleFilter', () => {
   const f = new GradleFilter()
@@ -236,9 +218,7 @@ describe('GradleFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// MavenFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- MavenFilter ---------------------------------------------------------------------------
 
 describe('MavenFilter', () => {
   const f = new MavenFilter()
@@ -267,9 +247,7 @@ describe('MavenFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// AntFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AntFilter ---------------------------------------------------------------------------
 
 describe('AntFilter', () => {
   const f = new AntFilter()
@@ -293,9 +271,7 @@ describe('AntFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BazelFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BazelFilter ---------------------------------------------------------------------------
 
 describe('BazelFilter', () => {
   const f = new BazelFilter()
@@ -320,9 +296,7 @@ describe('BazelFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// MesonFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- MesonFilter ---------------------------------------------------------------------------
 
 describe('MesonFilter', () => {
   const f = new MesonFilter()
@@ -375,9 +349,7 @@ describe('MesonFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// MSBuildFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- MSBuildFilter ---------------------------------------------------------------------------
 
 describe('MSBuildFilter', () => {
   const f = new MSBuildFilter()
@@ -403,9 +375,7 @@ describe('MSBuildFilter', () => {
     expect(result).toContain('collapsed 4 duplicate warning')
   })
 
-  // Regression: the dedup key was file path + code only, omitting the line number, so distinct
-  // warnings of the same code on different lines of the same file were wrongly collapsed even
-  // though the code's own comment states "same code in different files/lines is distinct".
+  // Regression: the dedup key was file path + code only, omitting the line number, so distinct warnings of the same code on different lines of the same file were wrongly collapsed even though the code's own comment states "same code in different files/lines is distinct".
   it('preserves the same warning code on distinct lines of the same file', () => {
     const lines = Array.from({ length: 5 }, (_, i) => `foo.cs(${i},1): warning CS0649: field unused`)
     const out = lines.join('\n') + '\n'
@@ -438,10 +408,7 @@ describe('MSBuildFilter', () => {
     expect(warningMatches.length).toBe(3)
   })
 
-  // Regression: the dedup key was file path + line + code, omitting the column, so two
-  // genuinely distinct warnings sharing a file, line, and code (e.g. two unused-parameter
-  // warnings on the same declaration line) were wrongly collapsed into one, silently dropping
-  // a real diagnostic.
+  // Regression: the dedup key was file path + line + code, omitting the column, so two genuinely distinct warnings sharing a file, line, and code (e.g. two unused-parameter warnings on the same declaration line) were wrongly collapsed into one, silently dropping a real diagnostic.
   it('preserves the same warning code+line but distinct columns', () => {
     const out = [
       'Foo.cs(10,5): warning CS0168: The variable \'x\' is declared but never used',
@@ -457,9 +424,7 @@ describe('MSBuildFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DotnetFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DotnetFilter ---------------------------------------------------------------------------
 
 describe('DotnetFilter', () => {
   const f = new DotnetFilter()
@@ -496,9 +461,7 @@ describe('DotnetFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// SbtFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SbtFilter ---------------------------------------------------------------------------
 
 describe('SbtFilter', () => {
   const f = new SbtFilter()
@@ -536,9 +499,7 @@ describe('SbtFilter', () => {
     expect(result).toContain('collapsed')
   })
 
-  // Regression: the dedup key was truncated to the first 60 characters of each
-  // [warn] line, so distinct warnings sharing a long common file-path prefix
-  // collided and one was silently dropped as a false "repeat".
+  // Regression: the dedup key was truncated to the first 60 characters of each [warn] line, so distinct warnings sharing a long common file-path prefix collided and one was silently dropped as a false "repeat".
   it('does not drop a distinct [warn] line that shares its first 60 characters with another', () => {
     const longPrefix = '/home/ci/workspace/very-long-monorepo-name-example/backend-service/src/main/scala/com/example/app/service/OrderService.scala'
     const lines = Array.from({ length: 6 }, (_, i) => `[warn] ${longPrefix}:${100 + i}:5: distinct warning message number ${i}`)
@@ -550,9 +511,7 @@ describe('SbtFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// JavacFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- JavacFilter ---------------------------------------------------------------------------
 
 describe('JavacFilter', () => {
   const f = new JavacFilter()
@@ -583,9 +542,7 @@ describe('JavacFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CargoFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CargoFilter ---------------------------------------------------------------------------
 
 describe('CargoFilter', () => {
   const f = new CargoFilter()
@@ -637,10 +594,7 @@ describe('CargoFilter', () => {
     expect(result).not.toContain('test bar::test1 ... ok')
   })
 
-  // Regression: the [N tests passed] summary was only flushed on a new "running N tests"
-  // header or at the very end of the loop, never before a FAILED/test-result line -- so passes
-  // that happened chronologically before a failure were reported AFTER it in the compressed
-  // output, misleadingly reading as if more tests passed after the run already reported FAILED.
+  // Regression: the [N tests passed] summary was only flushed on a new "running N tests" header or at the very end of the loop, never before a FAILED/test-result line -- so passes that happened chronologically before a failure were reported AFTER it in the compressed output, misleadingly reading as if more tests passed after the run already reported FAILED.
   it('cargo test: flushes the pass-count summary before a FAILED line, not after', () => {
     const stdout = [
       'running 4 tests',
@@ -657,12 +611,7 @@ describe('CargoFilter', () => {
     expect(passIdx).toBeLessThan(failIdx)
   })
 
-  // Regression: _compressBench used `runnerHeaderCount > 1` to decide whether to keep a
-  // "running N tests" header line, which drops the *first* occurrence (the common case: a
-  // single bench binary emits exactly one such header) and only keeps repeats -- the inverse
-  // of the "keep first occurrence, drop dupes" idiom used elsewhere in this file (e.g.
-  // MSBUILD_BUILD_STARTED_RE's `buildStartedCount === 0`). The header is useful context (how
-  // many benchmarks ran) and must not be silently dropped for the single-binary case.
+  // Regression: _compressBench used `runnerHeaderCount > 1` to decide whether to keep a "running N tests" header line, which drops the *first* occurrence (the common case: a single bench binary emits exactly one such header) and only keeps repeats -- the inverse of the "keep first occurrence, drop dupes" idiom used elsewhere in this file (e.g. MSBUILD_BUILD_STARTED_RE's `buildStartedCount === 0`). The header is useful context (how many benchmarks ran) and must not be silently dropped for the single-binary case.
   it('cargo bench: keeps the running-N-tests header for a single bench binary', () => {
     const stdout = 'running 3 tests\ntest bench_add ... bench:  12 ns/iter (+/- 3)\ntest bench_sub ... bench:  10 ns/iter (+/- 2)\ntest result: ok. 0 passed; 0 failed; 3 measured\n'
     const result = apply(f, stdout, '', 0, ['cargo', 'bench'])
@@ -681,9 +630,7 @@ describe('CargoFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GoFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GoFilter ---------------------------------------------------------------------------
 
 describe('GoFilter', () => {
   const f = new GoFilter()
@@ -715,9 +662,7 @@ describe('GoFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// NxFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NxFilter ---------------------------------------------------------------------------
 
 describe('NxFilter', () => {
   const f = new NxFilter()
@@ -762,9 +707,7 @@ describe('NxFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// LernaFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- LernaFilter ---------------------------------------------------------------------------
 
 describe('LernaFilter', () => {
   const f = new LernaFilter()
@@ -791,9 +734,7 @@ describe('LernaFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// TurboFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TurboFilter ---------------------------------------------------------------------------
 
 describe('TurboFilter', () => {
   const f = new TurboFilter()
@@ -816,11 +757,34 @@ describe('TurboFilter', () => {
     expect(result).toContain('Packages in scope')
     expect(result).toContain('Tasks:    2 successful')
   })
+
+  // PROVENANCE: FORMAT-DERIVED. The third run in vercel/turborepo v2.3.0 turborepo-tests/integration/tests/run-logging/log-prefix.t, with prysk's two-space indent removed and its `Time:\s*[\.0-9]+m?s` line instantiated; ExecutionSummary::print (crates/turborepo-lib/src/run/summary/execution.rs at v2.0.0, crates/turborepo-run-summary/src/execution.rs at v2.11.4) pads each label to the longest one.
+  it('keeps the right-aligned run summary that follows a replayed cache hit', () => {
+    const out = [
+      '• Packages in scope: app-a',
+      '• Running build in 1 packages',
+      '• Remote caching disabled',
+      'app-a:build: cache hit, replaying logs 612027951a2848ce',
+      'app-a:build: ',
+      'app-a:build: > build',
+      'app-a:build: > echo build-app-a',
+      'app-a:build: ',
+      'app-a:build: build-app-a',
+      '',
+      ' Tasks:    1 successful, 1 total',
+      'Cached:    1 cached, 1 total',
+      '  Time:    41ms >>> FULL TURBO',
+      '',
+    ].join('\n')
+    const lines = apply(f, out, '', 0, ['turbo', 'run', 'build']).split('\n')
+    expect(lines).not.toContain('app-a:build: build-app-a')
+    for (const mustKeep of [' Tasks:    1 successful, 1 total', 'Cached:    1 cached, 1 total', '  Time:    41ms >>> FULL TURBO']) {
+      expect(lines).toContain(mustKeep)
+    }
+  })
 })
 
-// ---------------------------------------------------------------------------
-// WebpackFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WebpackFilter ---------------------------------------------------------------------------
 
 describe('WebpackFilter', () => {
   const f = new WebpackFilter()
@@ -849,9 +813,7 @@ describe('WebpackFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BUILD_FILTERS completeness
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BUILD_FILTERS completeness ---------------------------------------------------------------------------
 
 describe('BUILD_FILTERS registry', () => {
   it('has 17 entries', () => {
