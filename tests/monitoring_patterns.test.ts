@@ -2,12 +2,29 @@ import { describe, expect, it } from 'vitest'
 
 import {
   getMonitoringRecallHint,
+  isTestRunnerCommand,
   MONITORING_COMMAND_PATTERNS,
 } from '../src/hints/lang_patterns.js'
 
 describe('MONITORING_COMMAND_PATTERNS', () => {
   it('exports a non-empty array', () => {
     expect(MONITORING_COMMAND_PATTERNS.length).toBeGreaterThan(0)
+  })
+})
+
+describe('monitoring recall and the test-runner fingerprint agree on jest and vitest', () => {
+  // A monitoring command's output is cached and offered for recall until its stored fingerprints move (isBashEntryStale in bash_output_cache.ts), and a jest or vitest command gets its git fingerprint only through isTestRunnerCommand, so a command the monitoring list admits and that predicate rejects is recalled as fresh forever, whatever changed since it ran.
+  it.each([
+    // PROVENANCE: CAPTURE, Bash commands from this machine's Claude Code transcripts, where every one of 2,913 distinct jest/vitest commands runs through npx.
+    'npx jest 2>&1 | tail -8',
+    'npx jest tests/unit 2>&1 | tail -8',
+    'npx vitest run tests/xml_query.test.ts 2>&1 | tail -40',
+    // PROVENANCE: FORMAT-DERIVED, the `bin` entries of the npm packages jest-codemods 0.35.0, jest-preview 0.3.3 and vitest-preview 0.0.3 (`npm view <pkg> bin`): other tools whose names begin with a runner's.
+    'jest-codemods',
+    'npx jest-preview',
+    'vitest-preview',
+  ])('%s', (cmd) => {
+    expect(getMonitoringRecallHint(cmd) !== null).toBe(isTestRunnerCommand(cmd))
   })
 })
 

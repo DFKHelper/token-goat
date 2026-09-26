@@ -1,19 +1,8 @@
 import { hasUnquotedOperator } from '../tool_filters/helpers.js'
 
-/**
- * Language-agnostic pattern table for read suppression and recall hints.
- *
- * Centralises the file-type knowledge used by the pre_read and pre_bash hooks
- * to block wasteful reads of lock files, build artifacts, and generated output,
- * and to suggest surgical alternatives.
- */
+/** Language-agnostic pattern table for read suppression and recall hints. Centralises the file-type knowledge used by the pre_read and pre_bash hooks to block wasteful reads of lock files, build artifacts, and generated output, and to suggest surgical alternatives. */
 
-/**
- * Lock file basenames (lowercased for case-insensitive comparison).
- *
- * These files are machine-generated and rarely useful to read in full.
- * pre_read denies them and suggests `token-goat section` instead.
- */
+/** Lock file basenames (lowercased for case-insensitive comparison). These files are machine-generated and rarely useful to read in full. pre_read denies them and suggests `token-goat section` instead. */
 const LOCK_FILE_NAMES: ReadonlySet<string> = new Set([
   'package-lock.json',
   'yarn.lock',
@@ -30,12 +19,7 @@ const LOCK_FILE_NAMES: ReadonlySet<string> = new Set([
   'package.resolved',
 ])
 
-/**
- * Manifest / config file basenames (lowercased).
- *
- * On re-read, pre_read emits a hint suggesting `token-goat section` or
- * `token-goat config-get` to extract a specific field.
- */
+/** Manifest / config file basenames (lowercased). On re-read, pre_read emits a hint suggesting `token-goat section` or `token-goat config-get` to extract a specific field. */
 const MANIFEST_FILE_NAMES: ReadonlySet<string> = new Set([
   'package.json',
   'pyproject.toml',
@@ -69,29 +53,17 @@ const MANIFEST_FILE_NAMES: ReadonlySet<string> = new Set([
   'nuxt.config.ts',
 ])
 
-/**
- * Glob suffixes that identify manifest files by extension (lowercased).
- * Used in addition to MANIFEST_FILE_NAMES for *.cabal files.
- */
+/** Glob suffixes that identify manifest files by extension (lowercased). Used in addition to MANIFEST_FILE_NAMES for *.cabal files. */
 const MANIFEST_EXTENSIONS: ReadonlySet<string> = new Set([
   '.cabal',
 ])
 
-/**
- * Regex patterns for manifest files that cannot be expressed as exact
- * basename matches (e.g. `tsconfig.*.json`).
- */
+/** Regex patterns for manifest files that cannot be expressed as exact basename matches (e.g. `tsconfig.*.json`). */
 const MANIFEST_BASENAME_PATTERNS: ReadonlyArray<RegExp> = [
   /^tsconfig(\..+)?\.json$/i,
 ]
 
-/**
- * Build output directory segment names (lowercased).
- *
- * pre_read denies any path whose segments contain one of these names.
- * node_modules is already handled in hooks_read.ts — excluded here to
- * avoid a duplicate deny with a different message.
- */
+/** Build output directory segment names (lowercased). pre_read denies any path whose segments contain one of these names. node_modules is already handled in hooks_read.ts — excluded here to avoid a duplicate deny with a different message. */
 const BUILD_DIR_NAMES: ReadonlySet<string> = new Set([
   'dist',
   'target',
@@ -108,13 +80,7 @@ const BUILD_DIR_NAMES: ReadonlySet<string> = new Set([
   'obj',
 ])
 
-/**
- * Extensions that are always generated and never useful to read.
- *
- * Note: .map (source maps) and .d.ts (type declarations) are only generated
- * inside build/dist dirs; they are handled by isGeneratedFile() rather than
- * by an unconditional extension check.
- */
+/** Extensions that are always generated and never useful to read. Note: .map (source maps) and .d.ts (type declarations) are only generated inside build/dist dirs; they are handled by isGeneratedFile() rather than by an unconditional extension check. */
 const ALWAYS_GENERATED_EXTS: ReadonlySet<string> = new Set([
   '.pyc',
   '.pyo',
@@ -128,21 +94,13 @@ const ALWAYS_GENERATED_EXTS: ReadonlySet<string> = new Set([
   '.tsbuildinfo',
 ])
 
-/**
- * Extensions that are generated only when inside a build/dist directory.
- */
+/** Extensions that are generated only when inside a build/dist directory. */
 const CONDITIONALLY_GENERATED_EXTS: ReadonlySet<string> = new Set([
   '.map',
   '.d.ts',
 ])
 
-/**
- * Regex patterns for build tool bash commands whose output is worth caching.
- *
- * When a command matching one of these was already run and its output is
- * cached, the pre_bash hook injects a recall hint instead of letting the
- * command run again.
- */
+/** Regex patterns for build tool bash commands whose output is worth caching. When a command matching one of these was already run and its output is cached, the pre_bash hook injects a recall hint instead of letting the command run again. */
 export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   // Rust / Cargo
   /^\s*cargo\s+(build|test|run|check|clippy)\b/i,
@@ -191,33 +149,21 @@ export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^\s*turbo\s+(build|dev)\b/i,
 ]
 
-// ---------------------------------------------------------------------------
-// Count exports — keep these in sync with their source arrays above. Dynamic sizes are computed from the live Sets/Arrays so they update automatically when entries are added.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Count exports — keep these in sync with their source arrays above. Dynamic sizes are computed from the live Sets/Arrays so they update automatically when entries are added. ---------------------------------------------------------------------------
 
 export const LOCK_FILE_COUNT = LOCK_FILE_NAMES.size
 export const MANIFEST_FILE_COUNT = MANIFEST_FILE_NAMES.size + MANIFEST_EXTENSIONS.size + MANIFEST_BASENAME_PATTERNS.length
 export const BUILD_DIR_COUNT = BUILD_DIR_NAMES.size
 export const GENERATED_EXT_COUNT = ALWAYS_GENERATED_EXTS.size + CONDITIONALLY_GENERATED_EXTS.size
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helper functions ---------------------------------------------------------------------------
 
-/**
- * True when `basename` (case-insensitive) is a known lock file.
- *
- * @param basename - The filename only, no directory prefix.
- */
+/** True when `basename` (case-insensitive) is a known lock file. @param basename - The filename only, no directory prefix. */
 export function isLockFile(basename: string): boolean {
   return LOCK_FILE_NAMES.has(basename.toLowerCase())
 }
 
-/**
- * True when `basename` (case-insensitive) is a known manifest / config file.
- *
- * @param basename - The filename only, no directory prefix.
- */
+/** True when `basename` (case-insensitive) is a known manifest / config file. @param basename - The filename only, no directory prefix. */
 export function isManifestFile(basename: string): boolean {
   const lower = basename.toLowerCase()
   if (MANIFEST_FILE_NAMES.has(lower)) return true
@@ -227,23 +173,12 @@ export function isManifestFile(basename: string): boolean {
   return false
 }
 
-/**
- * Split a normalized path into its individual segments for directory matching.
- * Handles both forward and backward slashes.
- */
+/** Split a normalized path into its individual segments for directory matching. Handles both forward and backward slashes. */
 function pathSegments(filePath: string): string[] {
   return filePath.split(/[/\\]/).filter((s) => s.length > 0)
 }
 
-/**
- * True when `filePath` is inside a known build output directory.
- *
- * Checks every segment of the path (not just the first), so nested structures
- * like `packages/core/dist/index.js` are caught.
- *
- * node_modules is intentionally excluded — hooks_read.ts handles it separately
- * with its own deny message.
- */
+/** True when `filePath` is inside a known build output directory. Checks every segment of the path (not just the first), so nested structures like `packages/core/dist/index.js` are caught. node_modules is intentionally excluded — hooks_read.ts handles it separately with its own deny message. */
 export function isInBuildDir(filePath: string): boolean {
   const segments = pathSegments(filePath)
   // Check all segments except the last (filename).
@@ -254,15 +189,7 @@ export function isInBuildDir(filePath: string): boolean {
   return false
 }
 
-/**
- * True when `filePath` is a generated / compiled artifact that should not be
- * read directly.
- *
- * Covers:
- *  - Always-generated extensions (`.pyc`, `.class`, `.o`, `.dll`, etc.)
- *  - Conditionally-generated extensions (`.map`, `.d.ts`) only when the path
- *    is inside a build / dist directory.
- */
+/** True when `filePath` is a generated / compiled artifact that should not be read directly. Covers: - Always-generated extensions (`.pyc`, `.class`, `.o`, `.dll`, etc.) - Conditionally-generated extensions (`.map`, `.d.ts`) only when the path is inside a build / dist directory. */
 export function isGeneratedFile(filePath: string): boolean {
   const lower = filePath.toLowerCase()
   // Check always-generated extensions.
@@ -276,24 +203,12 @@ export function isGeneratedFile(filePath: string): boolean {
   return false
 }
 
-/**
- * True when `cmd` matches a known build tool command whose output is worth
- * caching for re-inspection via `token-goat bash-output`.
- *
- * @param cmd - The full bash command string.
- */
+/** True when `cmd` matches a known build tool command whose output is worth caching for re-inspection via `token-goat bash-output`. @param cmd - The full bash command string. */
 export function isBuildCommand(cmd: string): boolean {
   return BUILD_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }
 
-/**
- * Regex patterns for test-runner bash commands whose failing output is worth extracting
- * via `token-goat failures` instead of the caller scrolling the raw dump.
- *
- * Kept separate from BUILD_COMMAND_PATTERNS / MONITORING_COMMAND_PATTERNS because it also
- * needs to match the bare `npm test` / `yarn test` / `pnpm test` spellings that those two
- * lists deliberately exclude as too generic to cache on every green run.
- */
+/** Regex patterns for test-runner bash commands whose failing output is worth extracting via `token-goat failures` instead of the caller scrolling the raw dump. Kept separate from BUILD_COMMAND_PATTERNS / MONITORING_COMMAND_PATTERNS because it also needs to match the bare `npm test` / `yarn test` / `pnpm test` spellings that those two lists deliberately exclude as too generic to cache on every green run. */
 export const TEST_RUNNER_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   // pytest (Python)
   /^pytest(?:\s|$)/i,
@@ -310,23 +225,12 @@ export const TEST_RUNNER_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^(?:yarn|pnpm)(?:\s+run)? test(?:\s|$)/i,
 ]
 
-/**
- * True when `cmd` invokes a test runner covered by `token-goat failures`
- * (pytest, jest, vitest, go test, cargo test, or an npm/yarn/pnpm wrapper around one).
- *
- * @param cmd - The full bash command string.
- */
+/** True when `cmd` invokes a test runner covered by `token-goat failures` (pytest, jest, vitest, go test, cargo test, or an npm/yarn/pnpm wrapper around one). @param cmd - The full bash command string. */
 export function isTestRunnerCommand(cmd: string): boolean {
   return TEST_RUNNER_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }
 
-/**
- * Monitoring command patterns — long-running or repeatedly-run commands whose
- * output is always worth recalling from cache rather than re-running.
- *
- * Each entry carries a `recallHint` string with --grep / --tail flags to pass
- * to `token-goat bash-output` for surgical inspection.
- */
+/** Monitoring command patterns — long-running or repeatedly-run commands whose output is always worth recalling from cache rather than re-running. Each entry carries a `recallHint` string with --grep / --tail flags to pass to `token-goat bash-output` for surgical inspection. */
 export const MONITORING_COMMAND_PATTERNS: Array<{
   pattern: RegExp
   recallHint: string
@@ -348,9 +252,9 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^(?:npx\s+)?remix dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
   { pattern: /^(?:npx\s+)?astro dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
 
-  // Test watchers
-  { pattern: /^(?:npx\s+)?vitest(?:\s+run|\s+watch)?/, recallHint: '--grep "FAIL|PASS|Error|✓|✗"' },
-  { pattern: /^(?:npx\s+)?jest(?:\s+--watch)?/, recallHint: '--grep "FAIL|PASS|Error|Tests:"' },
+  // Test watchers. jest and vitest must be followed by whitespace or the end of the command, as in TEST_RUNNER_COMMAND_PATTERNS, not merely by a word boundary: a cached run goes stale only through the git fingerprint isTestRunnerCommand grants, and a longer name (jest-codemods, vitest-preview) is another tool that predicate rejects.
+  { pattern: /^(?:npx\s+)?vitest(?:\s|$)/, recallHint: '--grep "FAIL|PASS|Error|✓|✗"' },
+  { pattern: /^(?:npx\s+)?jest(?:\s|$)/, recallHint: '--grep "FAIL|PASS|Error|Tests:"' },
   { pattern: /^pytest(?:\s|$)/, recallHint: '--grep "FAILED|PASSED|ERROR|passed|failed"' },
   { pattern: /^(?:cargo\s+test|cargo\s+watch)/, recallHint: '--grep "FAILED|ok|error\\["' },
   { pattern: /^go test/, recallHint: '--grep "FAIL|ok|---"' },
@@ -405,18 +309,7 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^(?:token-goat|tg)\s+symbol\s+\S+/, recallHint: '' },
 ]
 
-/**
- * Returns true when a PowerShell -Command block is a multiline read-only system diagnostic
- * (contains Get-CimInstance/Get-Process/etc. with no destructive cmdlets like Remove-/Set-/Stop-Process).
- *
- * The existing single-line pattern handles `-Command "Get-*"` where Get-* is the first token.
- * This covers the multiline form:
- *   powershell -Command "
- *   # Disk usage
- *   Get-PSDrive C | ...
- *   $os = Get-CimInstance Win32_OperatingSystem
- *   ..."
- */
+/** Returns true when a PowerShell -Command block is a multiline read-only system diagnostic (contains Get-CimInstance/Get-Process/etc. with no destructive cmdlets like Remove-/Set-/Stop-Process). The existing single-line pattern handles `-Command "Get-*"` where Get-* is the first token. This covers the multiline form: powershell -Command " # Disk usage Get-PSDrive C | ... $os = Get-CimInstance Win32_OperatingSystem ..." */
 function isPsMultilineSystemQuery(cmd: string): boolean {
   if (!/^(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+/i.test(cmd)) return false
   const cmdIdx = cmd.search(/-Command\b/i)
@@ -432,10 +325,7 @@ function isPsMultilineSystemQuery(cmd: string): boolean {
   return true
 }
 
-/**
- * Returns the recall hint string for `cmd` if it matches a known monitoring
- * command pattern, otherwise returns `null`.
- */
+/** Returns the recall hint string for `cmd` if it matches a known monitoring command pattern, otherwise returns `null`. */
 export function getMonitoringRecallHint(cmd: string): string | null {
   const trimmed = cmd.trim()
   if (hasUnquotedOperator(trimmed, ['&&', '||', ';'])) return null
