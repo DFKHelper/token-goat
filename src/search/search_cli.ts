@@ -44,16 +44,23 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
     };
   }
 
+  let degradationNotice = '';
+  if (summary.degradedChannels && summary.degradedChannels.length > 0) {
+    degradationNotice = '\n' + summary.degradedChannels
+      .map((d) => `(note: ${d.channel} channel degraded: ${displaySafeText(d.reason)})`)
+      .join('\n');
+  }
+
   if (summary.totalHits === 0) {
     return {
-      text: `No results found across active channels [${summary.activeChannels.join(', ')}] for: "${displaySafeText(summary.query)}" (${summary.durationMs}ms)`,
+      text: `No results found across active channels [${summary.activeChannels.join(', ')}] for: "${displaySafeText(summary.query)}" (${summary.durationMs}ms)${degradationNotice}`,
       code: 0,
     };
   }
 
   const header = `Parallel Multi-Angle Search: "${displaySafeText(summary.query)}"\n` +
     `Found ${summary.totalHits} consensus results in ${summary.durationMs}ms ` +
-    `[channels: ${Object.entries(summary.channelCounts).map(([c, n]) => `${c}:${n}`).join(', ')}]`;
+    `[channels: ${Object.entries(summary.channelCounts).map(([c, n]) => `${c}:${n}`).join(', ')}]${degradationNotice}`;
 
   const items = summary.results.map((hit, idx) => formatTerminalHit(hit, idx + 1)).join('\n\n');
 

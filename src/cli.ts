@@ -59,7 +59,7 @@ import { installJetbrains, isJetbrainsInstalled, uninstallJetbrains } from './br
 import { installNeovim, isNeovimInstalled, uninstallNeovim } from './bridges/neovim_install.js'
 import { detectEcosystems } from './bridges/detect_ecosystems.js'
 import { runParallelSearch } from './search/search_cli.js'
-import type { SearchChannel } from './search/types.js'
+import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor.js'
 import {
   isWorkerRunning,
@@ -262,10 +262,25 @@ async function cmdSearch(
     projectRoot = resolveProjectRoot({ project: opts.project })
   }
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
-  const channels = opts.channels
-    ? (opts.channels.split(',').map((c) => c.trim().toLowerCase()) as SearchChannel[])
-    : undefined
-  const minScore = opts.minScore !== undefined ? parseFloat(opts.minScore) : undefined
+  let channels: SearchChannel[] | undefined
+  if (opts.channels) {
+    const rawList = opts.channels.split(',').map((c) => c.trim().toLowerCase()).filter(Boolean)
+    for (const c of rawList) {
+      if (!ALL_CHANNELS.includes(c as SearchChannel)) {
+        throw new CliError(`Unknown search channel '${c}'. Supported channels: ${ALL_CHANNELS.join(', ')}`)
+      }
+    }
+    channels = Array.from(new Set(rawList)) as SearchChannel[]
+  }
+  let minScore: number | undefined
+  if (opts.minScore !== undefined) {
+    const rawVal = opts.minScore.trim()
+    const parsed = Number(rawVal)
+    if (rawVal === '' || !Number.isFinite(parsed) || parsed < 0) {
+      throw new CliError(`Invalid --min-score: '${opts.minScore}' (must be a non-negative number)`)
+    }
+    minScore = parsed
+  }
 
   const { text, code } = await runParallelSearch({
     query: fullQuery,
@@ -542,6 +557,9 @@ export function visualStudioManualSteps(scope: 'project' | 'user'): string[] {
 
 /** Whether an `install`/`uninstall` invocation should touch the base Claude Code integration: the `~/.claude/settings.json` (or project `.claude/settings.json`) hooks, the user's own `~/.claude/CLAUDE.md` routing block, and `~/.claude/skills/token-goat`. A bare `install`/`uninstall` with no other harness flag always means Claude Code, so it runs. Any *other* harness flag (`--vscode`, `--codex`, `--gemini`, ...) asks for that harness's own scope only -- none of them read or write anything under `~/.claude/`, confirmed by reading each bridge's install writer (e.g. `installVscode` writes only its own `mcp.json`, an instructions file, and the shared `~/.copilot/hooks` file). Wanting both is what running the command twice, or passing both flags in one invocation, is for -- not a silent side effect of asking for one. `--hermes` is the one exception: its CLI delegates to `claude -p`, which loads these same Claude Code hooks, so its branches below genuinely depend on this base having run. */
 function wantsClaudeCodeBase(opts: {
+  all?: boolean
+  auto?: boolean
+  claudecode?: boolean
   codex?: boolean
   gemini?: boolean
   qwen?: boolean
@@ -561,6 +579,8 @@ function wantsClaudeCodeBase(opts: {
   hermes?: boolean
 }): boolean {
   if (opts.detect === true) return false
+  if (opts.all === true || opts.claudecode === true) return true
+  if (opts.auto === true) return false
   const otherHarnessRequested = [
     opts.codex,
     opts.gemini,
@@ -602,6 +622,7 @@ async function cmdInstall(opts: {
   detect?: boolean
   auto?: boolean
   all?: boolean
+  claudecode?: boolean
   local?: boolean
   user?: boolean
 }): Promise<void> {
@@ -630,8 +651,10 @@ async function cmdInstall(opts: {
 
   if (opts.auto === true) {
     const detected = detectEcosystems({ projectRoot: process.cwd() })
+    let anyDetected = false
     for (const item of detected.items) {
       if (item.detected) {
+        anyDetected = true
         if (item.id === 'vscode') opts.vscode = true
         if (item.id === 'visualstudio') opts.visualstudio = true
         if (item.id === 'copilot') opts.copilot = true
@@ -642,7 +665,25 @@ async function cmdInstall(opts: {
         if (item.id === 'zed') opts.zed = true
         if (item.id === 'opencode') opts.opencode = true
         if (item.id === 'gemini') opts.gemini = true
+        if (item.id === 'claudecode' || item.id === 'claude') opts.claudecode = true
       }
+    }
+    const hasExplicitHarness =
+      opts.all === true ||
+      opts.vscode === true ||
+      opts.visualstudio === true ||
+      opts.copilot === true ||
+      opts.jetbrains === true ||
+      opts.neovim === true ||
+      opts.cursor === true ||
+      opts.codex === true ||
+      opts.zed === true ||
+      opts.opencode === true ||
+      opts.gemini === true ||
+      opts.claudecode === true
+    if (!anyDetected && !hasExplicitHarness) {
+      out('No developer ecosystems detected in current workspace.')
+      return
     }
   }
 
@@ -655,6 +696,14 @@ async function cmdInstall(opts: {
     opts.cursor = true
     opts.codex = true
     opts.zed = true
+    opts.opencode = true
+    opts.gemini = true
+    opts.qwen = true
+    opts.kimi = true
+    opts.pi = true
+    opts.openclaw = true
+    opts.grok = true
+    opts.claudecode = true
   }
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever two hook modules cli.ts happens to import for unrelated commands (hooks_index.ts, hooks_read.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
   await import('./relay.js')
@@ -937,6 +986,7 @@ async function cmdUninstall(opts: {
   jetbrains?: boolean
   neovim?: boolean
   all?: boolean
+  claudecode?: boolean
   local?: boolean
   user?: boolean
   purge?: boolean
@@ -960,6 +1010,7 @@ async function cmdUninstall(opts: {
     opts.cursor = true
     opts.jetbrains = true
     opts.neovim = true
+    opts.claudecode = true
   }
   const scope: HookScope = opts.project === true ? 'project' : 'user'
 

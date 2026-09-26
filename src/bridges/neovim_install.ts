@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js';
-import { withInstallScope } from './project_scope_guard.js';
+import { assertProjectScopeTarget, withInstallScope } from './project_scope_guard.js';
 
 export const NEOVIM_GUIDANCE_BEGIN = '-- [[ TOKEN_GOAT_NEOVIM_BEGIN ]]';
 export const NEOVIM_GUIDANCE_END = '-- [[ TOKEN_GOAT_NEOVIM_END ]]';
@@ -92,6 +92,10 @@ function installNeovimScoped(options: NeovimScopeOptions = {}): NeovimInstallRes
   const root = options.projectRoot ?? process.cwd();
   const cfgPath = scope === 'project' ? neovimProjectConfigPath(root) : neovimUserConfigPath();
 
+  if (scope === 'project') {
+    assertProjectScopeTarget(cfgPath, root);
+  }
+
   const cfgDir = path.dirname(cfgPath);
   ensureDirSync(cfgDir);
 
@@ -123,18 +127,35 @@ export function installNeovim(options: NeovimScopeOptions = {}): NeovimInstallRe
   return installNeovimScoped(options);
 }
 
-export function uninstallNeovim(options: NeovimScopeOptions = {}): boolean {
+function uninstallNeovimScoped(options: NeovimScopeOptions = {}): boolean {
   const scope = resolveScope(options);
   const root = options.projectRoot ?? process.cwd();
   const cfgPath = scope === 'project' ? neovimProjectConfigPath(root) : neovimUserConfigPath();
 
+  if (scope === 'project') {
+    assertProjectScopeTarget(cfgPath, root);
+  }
+
   if (!fs.existsSync(cfgPath)) return false;
 
   try {
+    const raw = fs.readFileSync(cfgPath, 'utf8');
+    if (!raw.includes(NEOVIM_GUIDANCE_BEGIN)) {
+      return false; // Not a token-goat managed file
+    }
     backupFile(cfgPath);
     removeFileInScope(cfgPath);
     return true;
   } catch {
     return false;
   }
+}
+
+export function uninstallNeovim(options: NeovimScopeOptions = {}): boolean {
+  const scope = resolveScope(options);
+  if (scope === 'project') {
+    const root = options.projectRoot ?? process.cwd();
+    return withInstallScope(root, () => uninstallNeovimScoped(options));
+  }
+  return uninstallNeovimScoped(options);
 }

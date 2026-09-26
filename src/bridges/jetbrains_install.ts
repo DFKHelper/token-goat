@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js';
 import { writeJsonSettings } from '../util_config.js';
-import { withInstallScope } from './project_scope_guard.js';
+import { assertProjectScopeTarget, withInstallScope } from './project_scope_guard.js';
+import { bundledCliPath } from './mcp_servers_json.js';
 
 export const JETBRAINS_GUIDANCE_BEGIN = '<!-- TOKEN_GOAT_JETBRAINS_BEGIN -->';
 export const JETBRAINS_GUIDANCE_END = '<!-- TOKEN_GOAT_JETBRAINS_END -->';
@@ -76,6 +77,11 @@ function installJetbrainsScoped(options: JetbrainsScopeOptions = {}): JetbrainsI
   const mcpPath = scope === 'project' ? jetbrainsProjectMcpPath(root) : jetbrainsUserMcpPath();
   const instrPath = jetbrainsInstructionsPath(scope, root);
 
+  if (scope === 'project') {
+    assertProjectScopeTarget(mcpPath, root);
+    assertProjectScopeTarget(instrPath, root);
+  }
+
   const mcpDir = path.dirname(mcpPath);
   ensureDirSync(mcpDir);
 
@@ -83,15 +89,30 @@ function installJetbrainsScoped(options: JetbrainsScopeOptions = {}): JetbrainsI
   let currentConfig: Record<string, unknown> = {};
 
   if (fs.existsSync(mcpPath)) {
+    let raw: string;
     try {
-      const raw = fs.readFileSync(mcpPath, 'utf8');
-      currentConfig = JSON.parse(raw);
-      const existingServers = currentConfig['mcpServers'] as Record<string, unknown> | undefined;
-      if (existingServers?.['token-goat']) {
+      raw = fs.readFileSync(mcpPath, 'utf8');
+    } catch (err: unknown) {
+      throw new Error(`Failed to read JetBrains MCP configuration at ${mcpPath}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err: unknown) {
+      throw new Error(`Cannot modify JetBrains MCP configuration at ${mcpPath}: file contains invalid JSON. Please fix or remove the file manually.`, { cause: err });
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error(`Cannot modify JetBrains MCP configuration at ${mcpPath}: root JSON must be an object.`);
+    }
+    currentConfig = parsed as Record<string, unknown>;
+    const existingServers = currentConfig['mcpServers'];
+    if (existingServers !== undefined) {
+      if (typeof existingServers !== 'object' || existingServers === null || Array.isArray(existingServers)) {
+        throw new Error(`Cannot modify JetBrains MCP configuration at ${mcpPath}: 'mcpServers' must be a JSON object.`);
+      }
+      if ((existingServers as Record<string, unknown>)['token-goat']) {
         alreadyInstalled = true;
       }
-    } catch {
-      currentConfig = {};
     }
   }
 
@@ -99,7 +120,7 @@ function installJetbrainsScoped(options: JetbrainsScopeOptions = {}): JetbrainsI
   const mcpServers = (currentConfig['mcpServers'] as Record<string, unknown> | undefined) ?? {};
   mcpServers['token-goat'] = {
     command: process.execPath,
-    args: ['mcp-serve'],
+    args: [bundledCliPath(), 'mcp-serve'],
     env: {
       TOKEN_GOAT_HARNESS_OVERRIDE: 'jetbrains',
     },
@@ -144,26 +165,34 @@ export function installJetbrains(options: JetbrainsScopeOptions = {}): Jetbrains
   return installJetbrainsScoped(options);
 }
 
-export function uninstallJetbrains(options: JetbrainsScopeOptions = {}): boolean {
+function uninstallJetbrainsScoped(options: JetbrainsScopeOptions = {}): boolean {
   const scope = resolveScope(options);
   const root = options.projectRoot ?? process.cwd();
   const mcpPath = scope === 'project' ? jetbrainsProjectMcpPath(root) : jetbrainsUserMcpPath();
   const instrPath = jetbrainsInstructionsPath(scope, root);
+
+  if (scope === 'project') {
+    assertProjectScopeTarget(mcpPath, root);
+    assertProjectScopeTarget(instrPath, root);
+  }
 
   let uninstalled = false;
 
   if (fs.existsSync(mcpPath)) {
     try {
       const raw = fs.readFileSync(mcpPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed.mcpServers?.['token-goat']) {
-        delete parsed.mcpServers['token-goat'];
-        backupFile(mcpPath);
-        writeJsonSettings(mcpPath, parsed);
-        uninstalled = true;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        const servers = parsed['mcpServers'] as Record<string, unknown> | undefined;
+        if (servers && typeof servers === 'object' && !Array.isArray(servers) && servers['token-goat']) {
+          delete servers['token-goat'];
+          backupFile(mcpPath);
+          writeJsonSettings(mcpPath, parsed);
+          uninstalled = true;
+        }
       }
     } catch {
-      // Ignore parse errors
+      // Ignore parse errors on uninstall
     }
   }
 
@@ -187,4 +216,13 @@ export function uninstallJetbrains(options: JetbrainsScopeOptions = {}): boolean
   }
 
   return uninstalled;
+}
+
+export function uninstallJetbrains(options: JetbrainsScopeOptions = {}): boolean {
+  const scope = resolveScope(options);
+  if (scope === 'project') {
+    const root = options.projectRoot ?? process.cwd();
+    return withInstallScope(root, () => uninstallJetbrainsScoped(options));
+  }
+  return uninstallJetbrainsScoped(options);
 }

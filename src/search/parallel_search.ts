@@ -2,7 +2,9 @@ import * as fs from 'node:fs';
 import { getDb } from '../db.js';
 import { globalDbPath } from '../constants.js';
 import { searchSemantic, mergeNearbyHits, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD } from '../embeddings.js';
+import { checkEmbeddingPreflight } from '../embed_model.js';
 import { searchSymbolsFts, getProjectFileEntries } from '../index_reader.js';
+import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
 import { fuseChannelHits } from './rrf.js';
 import type { ChannelHit, SearchChannel, SearchExecutionSummary, SearchOptions } from './types.js';
 
@@ -11,13 +13,11 @@ const ALL_CHANNELS: ReadonlyArray<SearchChannel> = ['symbol', 'heading', 'text',
 /**
  * Searches symbols via Full-Text Search and symbol queries.
  */
-async function searchSymbolChannel(query: string, limit: number, rootDir?: string): Promise<ChannelHit[]> {
+async function searchSymbolChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
-    const hits = searchSymbolsFts(query, limit * 2, globalDbPath(), rootDir);
-    return hits
-      .filter((s) => s.kind !== 'heading')
-      .slice(0, limit)
-      .map((sym, idx) => ({
+    const hits = searchSymbolsFts(query, limit, globalDbPath(), rootDir, { notEquals: 'heading' });
+    return {
+      hits: hits.slice(0, limit).map((sym, idx) => ({
         channel: 'symbol' as SearchChannel,
         filePath: sym.filePath,
         name: sym.name,
@@ -26,22 +26,22 @@ async function searchSymbolChannel(query: string, limit: number, rootDir?: strin
         lineEnd: sym.lineEnd,
         preview: sym.docstring || (sym.body ? sym.body.slice(0, 140).trim() : `Symbol: ${sym.name}`),
         rank: idx + 1,
-      }));
-  } catch {
-    return [];
+      })),
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { hits: [], degradedReason: msg };
   }
 }
 
 /**
  * Searches document and code section headings.
  */
-async function searchHeadingChannel(query: string, limit: number, rootDir?: string): Promise<ChannelHit[]> {
+async function searchHeadingChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
-    const hits = searchSymbolsFts(query, limit * 2, globalDbPath(), rootDir);
-    return hits
-      .filter((s) => s.kind === 'heading')
-      .slice(0, limit)
-      .map((sym, idx) => ({
+    const hits = searchSymbolsFts(query, limit, globalDbPath(), rootDir, { equals: 'heading' });
+    return {
+      hits: hits.slice(0, limit).map((sym, idx) => ({
         channel: 'heading' as SearchChannel,
         filePath: sym.filePath,
         name: sym.name,
@@ -50,61 +50,97 @@ async function searchHeadingChannel(query: string, limit: number, rootDir?: stri
         lineEnd: sym.lineEnd,
         preview: sym.name,
         rank: idx + 1,
-      }));
-  } catch {
-    return [];
+      })),
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { hits: [], degradedReason: msg };
   }
 }
 
 /**
- * Searches textual file contents in parallel.
+ * Searches textual file contents in parallel with resource bounding.
  */
-async function searchTextChannel(query: string, limit: number, rootDir?: string): Promise<ChannelHit[]> {
+async function searchTextChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
+  await Promise.resolve();
   try {
     const fileEntries = getProjectFileEntries(rootDir ?? process.cwd());
     const hits: ChannelHit[] = [];
     const lowerQuery = query.toLowerCase();
+    let totalBytesScanned = 0;
+    let filesScanned = 0;
+    let unreadableCount = 0;
+    const MAX_FILES = 300;
+    const MAX_BYTES = 5 * 1024 * 1024;
 
     for (const file of fileEntries.values()) {
-      if (hits.length >= limit) break;
+      if (hits.length >= limit || filesScanned >= MAX_FILES || totalBytesScanned >= MAX_BYTES) break;
+      filesScanned++;
+      if (filesScanned % 50 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
       const fullPath = file.filePath;
-      if (!fs.existsSync(fullPath)) continue;
-      const stat = fs.statSync(fullPath);
-      if (stat.size > 200_000) continue;
+      try {
+        if (!projectPathIsConsultable(fullPath, rootDir ?? process.cwd())) continue;
+        if (!fs.existsSync(fullPath)) continue;
+        const stat = fs.statSync(fullPath);
+        if (stat.size > 200_000) continue;
+        totalBytesScanned += stat.size;
 
-      const content = fs.readFileSync(fullPath, 'utf8');
-      const lines = content.split(/\r?\n/);
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line && line.toLowerCase().includes(lowerQuery)) {
-          hits.push({
-            channel: 'text' as SearchChannel,
-            filePath: fullPath,
-            lineStart: i + 1,
-            lineEnd: i + 1,
-            preview: line.slice(0, 140).trim(),
-            rank: hits.length + 1,
-          });
-          if (hits.length >= limit) break;
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const lines = content.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (line && line.toLowerCase().includes(lowerQuery)) {
+            hits.push({
+              channel: 'text' as SearchChannel,
+              filePath: fullPath,
+              lineStart: i + 1,
+              lineEnd: i + 1,
+              preview: line.slice(0, 140).trim(),
+              rank: hits.length + 1,
+            });
+            if (hits.length >= limit) break;
+          }
         }
+      } catch {
+        unreadableCount++;
       }
     }
-    return hits;
-  } catch {
-    return [];
+
+    const capped = filesScanned >= MAX_FILES || totalBytesScanned >= MAX_BYTES;
+    const degradedParts: string[] = [];
+    if (capped) {
+      degradedParts.push(`Scanned ${filesScanned} files (${Math.round(totalBytesScanned / 1024)} KB, capped)`);
+    }
+    if (unreadableCount > 0) {
+      degradedParts.push(`${unreadableCount} files skipped due to read errors`);
+    }
+
+    return {
+      hits,
+      ...(degradedParts.length > 0 ? { degradedReason: degradedParts.join('; ') } : {}),
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { hits: [], degradedReason: msg };
   }
 }
 
 /**
  * Searches dense embeddings and semantic vectors.
  */
-async function searchSemanticChannel(query: string, limit: number, rootDir?: string): Promise<ChannelHit[]> {
+async function searchSemanticChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
+    const preflight = await checkEmbeddingPreflight(rootDir !== undefined ? { projectRoot: rootDir } : undefined);
+    if (preflight.status !== 'ready') {
+      return { hits: [], degradedReason: `Semantic indexing not ready: ${preflight.summary}` };
+    }
     const db = getDb(globalDbPath());
     const rawHits = await searchSemantic(db, query, limit * 2, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD, rootDir);
     const merged = mergeNearbyHits(rawHits);
 
-    return merged.slice(0, limit).map((hit, idx) => ({
+    const hits = merged.slice(0, limit).map((hit, idx) => ({
       channel: 'semantic' as SearchChannel,
       filePath: hit.filePath,
       kind: hit.kind,
@@ -114,9 +150,10 @@ async function searchSemanticChannel(query: string, limit: number, rootDir?: str
       rawScore: hit.distance,
       rank: idx + 1,
     }));
-  } catch {
-    // Semantic search degrades gracefully if embeddings model or db is unavailable
-    return [];
+    return { hits };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { hits: [], degradedReason: msg };
   }
 }
 
@@ -125,22 +162,68 @@ async function searchSemanticChannel(query: string, limit: number, rootDir?: str
  */
 export async function executeParallelSearch(options: SearchOptions): Promise<SearchExecutionSummary> {
   const startTime = Date.now();
-  const query = options.query.trim();
+  const query = options.query.trim().slice(0, 500);
   const limit = options.limit ?? 15;
   const projectRoot = options.projectRoot ?? process.cwd();
-  const requestedChannels = options.channels && options.channels.length > 0 ? options.channels : ALL_CHANNELS;
 
-  const channelPromises: Array<Promise<{ channel: SearchChannel; hits: ChannelHit[] }>> = [];
+  if (options.limit === 0) {
+    return {
+      query,
+      durationMs: 0,
+      totalHits: 0,
+      activeChannels: [],
+      channelCounts: { symbol: 0, heading: 0, text: 0, semantic: 0 },
+      results: [],
+    };
+  }
+
+  const requestedChannels = options.channels && options.channels.length > 0
+    ? options.channels.filter((ch) => ALL_CHANNELS.includes(ch))
+    : ALL_CHANNELS;
+
+  const channelPromises: Array<Promise<{ channel: SearchChannel; hits: ChannelHit[]; degradedReason?: string }>> = [];
 
   for (const ch of requestedChannels) {
     if (ch === 'symbol') {
-      channelPromises.push(searchSymbolChannel(query, limit, projectRoot).then((hits) => ({ channel: ch, hits })));
+      channelPromises.push(
+        searchSymbolChannel(query, limit, projectRoot)
+          .then((res) => ({
+            channel: ch,
+            hits: res.hits,
+            ...(res.degradedReason !== undefined ? { degradedReason: res.degradedReason } : {}),
+          }))
+          .catch((err: unknown) => ({ channel: ch, hits: [], degradedReason: String(err) })),
+      );
     } else if (ch === 'heading') {
-      channelPromises.push(searchHeadingChannel(query, limit, projectRoot).then((hits) => ({ channel: ch, hits })));
+      channelPromises.push(
+        searchHeadingChannel(query, limit, projectRoot)
+          .then((res) => ({
+            channel: ch,
+            hits: res.hits,
+            ...(res.degradedReason !== undefined ? { degradedReason: res.degradedReason } : {}),
+          }))
+          .catch((err: unknown) => ({ channel: ch, hits: [], degradedReason: String(err) })),
+      );
     } else if (ch === 'text') {
-      channelPromises.push(searchTextChannel(query, limit, projectRoot).then((hits) => ({ channel: ch, hits })));
+      channelPromises.push(
+        searchTextChannel(query, limit, projectRoot)
+          .then((res) => ({
+            channel: ch,
+            hits: res.hits,
+            ...(res.degradedReason !== undefined ? { degradedReason: res.degradedReason } : {}),
+          }))
+          .catch((err: unknown) => ({ channel: ch, hits: [], degradedReason: String(err) })),
+      );
     } else if (ch === 'semantic') {
-      channelPromises.push(searchSemanticChannel(query, limit, projectRoot).then((hits) => ({ channel: ch, hits })));
+      channelPromises.push(
+        searchSemanticChannel(query, limit, projectRoot)
+          .then((res) => ({
+            channel: ch,
+            hits: res.hits,
+            ...(res.degradedReason !== undefined ? { degradedReason: res.degradedReason } : {}),
+          }))
+          .catch((err: unknown) => ({ channel: ch, hits: [], degradedReason: String(err) })),
+      );
     }
   }
 
@@ -152,12 +235,16 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
     text: 0,
     semantic: 0,
   };
+  const degradedChannels: Array<{ channel: SearchChannel; reason: string }> = [];
 
   for (const res of settled) {
     if (res.status === 'fulfilled') {
-      const { channel, hits } = res.value;
+      const { channel, hits, degradedReason } = res.value;
       channelHitsMap.set(channel, hits);
       channelCounts[channel] = hits.length;
+      if (degradedReason) {
+        degradedChannels.push({ channel, reason: degradedReason });
+      }
     }
   }
 
@@ -174,6 +261,7 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
     totalHits: fusedResults.length,
     activeChannels: requestedChannels,
     channelCounts,
+    ...(degradedChannels.length > 0 ? { degradedChannels } : {}),
     results: fusedResults,
   };
 }

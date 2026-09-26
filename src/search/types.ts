@@ -3,6 +3,7 @@
  */
 
 export type SearchChannel = 'symbol' | 'heading' | 'text' | 'semantic';
+export const ALL_CHANNELS: ReadonlyArray<SearchChannel> = ['symbol', 'heading', 'text', 'semantic'];
 
 export interface SearchOptions {
   readonly query: string;
@@ -43,5 +44,6 @@ export interface SearchExecutionSummary {
   readonly totalHits: number;
   readonly activeChannels: ReadonlyArray<SearchChannel>;
   readonly channelCounts: Record<SearchChannel, number>;
+  readonly degradedChannels?: ReadonlyArray<{ readonly channel: SearchChannel; readonly reason: string }> | undefined;
   readonly results: ReadonlyArray<FusedSearchResult>;
 }

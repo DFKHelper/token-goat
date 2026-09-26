@@ -54,8 +54,9 @@ export function detectEcosystems(options: DetectOptions = {}): DetectedEcosystem
   // 2. Copilot CLI
   const copilotReasons: string[] = [];
   if (exists(path.join(projectRoot, '.github', 'hooks'))) copilotReasons.push('Workspace contains .github/hooks');
+  if (exists(path.join(projectRoot, '.github', 'copilot-instructions.md'))) copilotReasons.push('Workspace contains .github/copilot-instructions.md');
   if (resolveOnPath('copilot')) copilotReasons.push('copilot CLI binary found on PATH');
-  if (resolveOnPath('gh')) copilotReasons.push('GitHub CLI found on PATH');
+  if (env['GITHUB_COPILOT_CLI'] || env['COPILOT_CLI']) copilotReasons.push('Running inside Copilot CLI session');
   items.push({
     id: 'copilot',
     name: 'GitHub Copilot CLI',
