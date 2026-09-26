@@ -16,8 +16,8 @@ const ALLOWED_RAW_READ_FUNCTIONS = new Set([
   'runImageText',
 ])
 
-// read_semantic.ts was split out of read_commands.ts and serves the MCP `semantic` tool, so a raw read added to it bypasses the same pin.
-const SCANNED_FILES = ['read_commands.ts', 'read_semantic.ts']
+// read_semantic.ts and read_refs.ts were split out of read_commands.ts and serve the MCP `semantic` and `refs` tools, so a raw read added to either bypasses the same pin.
+const SCANNED_FILES = ['read_commands.ts', 'read_refs.ts', 'read_semantic.ts']
 
 /** Scans each of {@link SCANNED_FILES} top-to-bottom, tracking which top-level function each line falls inside via its `function name(` / `async function name(` declaration line, and returns every `fs.readFileSync(` / bare `indexFileSync(` call site whose enclosing function is not in `ALLOWED_RAW_READ_FUNCTIONS`. Top-level-only tracking is enough here: every offending call in this file (pre- and post-fix) sits directly in a top-level function body, not nested inside a further closure with its own name. */
 function findRawReaders(): Map<string, string[]> {
@@ -51,7 +51,7 @@ describe('read_commands.ts confinement-reachable reads go through the pin-aware 
       offenders,
       offenders.length === 0
         ? ''
-        : 'A function in src/read_commands.ts or src/read_semantic.ts reads a file (or reindexes one) directly instead of ' +
+        : 'A function in src/read_commands.ts, src/read_refs.ts or src/read_semantic.ts reads a file (or reindexes one) directly instead of ' +
           'going through readFileText/readFileBytes or indexFileSyncPinned. Those helpers consult ' +
           'the MCP confinement gate\'s identity pin (activePins); a direct fs.readFileSync or ' +
           'indexFileSync call bypasses it entirely -- the exact shape behind three real ' +

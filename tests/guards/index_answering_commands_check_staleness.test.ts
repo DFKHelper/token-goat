@@ -16,6 +16,7 @@ const SCAN_FILES = [
   'graph_inspection.ts',
   'graph_analysis.ts',
   'read_commands.ts',
+  'read_refs.ts',
   'read_semantic.ts',
   'text_commands.ts',
 ]
@@ -51,7 +52,7 @@ type Bucket = 'checks-staleness-itself' | 'metadata-only-output-no-body-content-
 /** Classification for every command site this guard has found. A site missing here, or whose bucket no longer matches its real behavior, fails one of the tests below. */
 const CLASSIFICATION: ReadonlyMap<string, { bucket: Bucket; reason: string }> = new Map([
   [
-    'read_commands.ts::runRefsSingle',
+    'read_refs.ts::runRefsSingle',
     {
       bucket: 'checks-staleness-itself',
       reason: 'calls warnIfFilesStale(results.map(r => r.filePath)) before rendering (C5 fix).',
@@ -135,7 +136,7 @@ const CLASSIFICATION: ReadonlyMap<string, { bucket: Bucket; reason: string }> = 
     },
   ],
   [
-    'read_commands.ts::renderRefsTargets',
+    'read_refs.ts::renderRefsTargets',
     {
       bucket: 'checks-staleness-itself',
       reason: 'calls warnIfFilesStale(refRows.map(r => r.filePath)) after the per-target loop, before rendering -- covers the multi-symbol and cross-file refs spec forms the same way runRefsSingle covers the single-symbol form.',

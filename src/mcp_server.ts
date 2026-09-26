@@ -18,7 +18,6 @@ import {
   runSkeleton,
   runOutline,
   runSemantic,
-  runRefs,
   runBrief,
   runChanged,
   runGrep,
@@ -33,6 +32,7 @@ import {
   pinKey,
   withPinnedReads,
 } from './read_commands.js'
+import { runRefs } from './read_refs.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import {
   compressText,

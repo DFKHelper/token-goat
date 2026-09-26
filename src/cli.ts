@@ -79,7 +79,6 @@ import {
   runBrief,
   runSection,
   runListSections,
-  runRefs,
   runSkeleton,
   runOutline,
   type SkeletonOptions,
@@ -90,6 +89,7 @@ import {
   runSemanticMulti,
   guardJsonRows,
 } from './read_commands.js'
+import { runRefs } from './read_refs.js'
 import { queryJson } from './json_query.js'
 import {
   runExit,

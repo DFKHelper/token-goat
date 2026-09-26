@@ -8,7 +8,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
 import { buildProjectMap, formatProjectMap } from '../src/baseline.js'
 import { createMcpServer } from '../src/mcp_server.js'
-import { runOutline, runRead, runSection, runSkeleton, runRefs, runBrief, runChanged, runGrep, runImports, runExports, runSemantic } from '../src/read_commands.js'
+import { runOutline, runRead, runSection, runSkeleton, runBrief, runChanged, runGrep, runImports, runExports, runSemantic } from '../src/read_commands.js'
+import { runRefs } from '../src/read_refs.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { runGit } from '../src/util.js'
 

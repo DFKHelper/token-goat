@@ -1,17 +1,4 @@
-/**
- * `symbol` is the one read command that queries the machine-wide `global.db` by default, so from
- * any indexed directory `symbol <name>` (and `symbol --grep .`) returns rows -- bodies included --
- * from every project ever indexed on the host. That is documented behavior and useful on a
- * personal machine; on a shared or agent-driven one it is a disclosure channel that a directory
- * sandbox around the agent does not close, because the answer comes from the index rather than
- * from the filesystem.
- *
- * `indexing.cross_project_symbols = false` confines the command to the project it runs from.
- * These tests pin both halves: the default still reaches across projects (the documented
- * behavior, mirrored in read_cross_project_relative_spec.test.ts), and with the setting off the
- * other project's symbol is unreachable -- including via the two arguments that would otherwise
- * re-open the channel from inside the confined process, `--project` and an absolute `--file`.
- */
+/** `symbol` is the one read command that queries the machine-wide `global.db` by default, so from any indexed directory `symbol <name>` (and `symbol --grep .`) returns rows -- bodies included -- from every project ever indexed on the host. That is documented behavior and useful on a personal machine; on a shared or agent-driven one it is a disclosure channel that a directory sandbox around the agent does not close, because the answer comes from the index rather than from the filesystem. `indexing.cross_project_symbols = false` confines the command to the project it runs from. These tests pin both halves: the default still reaches across projects (the documented behavior, mirrored in read_cross_project_relative_spec.test.ts), and with the setting off the other project's symbol is unreachable -- including via the two arguments that would otherwise re-open the channel from inside the confined process, `--project` and an absolute `--file`. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -24,7 +11,8 @@ import { closeAllDbs } from '../src/db.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { runScope } from '../src/graph_commands.js'
-import { runBrief, runExports, runOutline, runRead, runRefs, runSkeleton, runSymbol } from '../src/read_commands.js'
+import { runBrief, runExports, runOutline, runRead, runSkeleton, runSymbol } from '../src/read_commands.js'
+import { runRefs } from '../src/read_refs.js'
 
 import { captureStdout } from './helpers/capture-stdout.js'
 
@@ -66,12 +54,7 @@ afterEach(() => {
 })
 
 
-/**
- * Runs an emitting command, returning its exit code alongside everything it wrote to stdout AND
- * stderr. Both streams matter here: a refusal goes to stderr via emitErr, while the content a
- * leak would disclose goes to stdout -- asserting on only one of them would let a test pass
- * either by missing the refusal or by missing the leak.
- */
+/** Runs an emitting command, returning its exit code alongside everything it wrote to stdout AND stderr. Both streams matter here: a refusal goes to stderr via emitErr, while the content a leak would disclose goes to stdout -- asserting on only one of them would let a test pass either by missing the refusal or by missing the leak. */
 function captureStdoutCode(fn: () => number): { code: number; text: string } {
   let code = 0
   let err = ''
@@ -151,9 +134,7 @@ describe('symbol with indexing.cross_project_symbols = false', () => {
     expect(text).toContain('AAA-FROM-PROJECT-A')
   })
 
-  // A sibling directory whose path merely starts with the confining root's string is a different
-  // project: without the trailing-separator guard in isInsideRoot, `<rootA>-evil` would read as
-  // inside `<rootA>` and the refusal would not fire.
+  // A sibling directory whose path merely starts with the confining root's string is a different project: without the trailing-separator guard in isInsideRoot, `<rootA>-evil` would read as inside `<rootA>` and the refusal would not fire.
   it('refuses a sibling root that shares the confining root as a string prefix', () => {
     confine()
     const sibling = `${rootA}-evil`
@@ -168,13 +149,7 @@ describe('symbol with indexing.cross_project_symbols = false', () => {
   })
 })
 
-/**
- * `symbol` was the only command enforcing the confinement, but it is not the only one that
- * answers out of the shared index: `read`, `brief`, `skeleton`, `outline` and `exports` all take
- * a caller-supplied path and serve whatever the index holds for it. Proven by deleting the other
- * project from disk first -- anything still returned cannot have come from the filesystem, which
- * is exactly the channel a directory sandbox cannot close and the setting exists to close.
- */
+/** `symbol` was the only command enforcing the confinement, but it is not the only one that answers out of the shared index: `read`, `brief`, `skeleton`, `outline` and `exports` all take a caller-supplied path and serve whatever the index holds for it. Proven by deleting the other project from disk first -- anything still returned cannot have come from the filesystem, which is exactly the channel a directory sandbox cannot close and the setting exists to close. */
 describe('the other index-backed read commands with cross_project_symbols = false', () => {
   let bFile: string
 
@@ -239,8 +214,7 @@ describe('the other index-backed read commands still serve their own project', (
     expect(outline.text).toContain('alphaOwnSymbol')
   })
 
-  // The confinement is opt-in: with the setting left at its default these commands must still
-  // reach the other project, the same documented behavior the `symbol` cases above pin.
+  // The confinement is opt-in: with the setting left at its default these commands must still reach the other project, the same documented behavior the `symbol` cases above pin.
   it('read still reaches the other project when the setting is left at its default', () => {
     const { text, code } = runRead({ spec: `${path.join(rootB, 'src', 'thing.ts')}::betaSecretForecast` })
     expect(code, text).toBe(0)
@@ -248,13 +222,7 @@ describe('the other index-backed read commands still serve their own project', (
   })
 })
 
-/**
- * `scope` and `refs` answer out of the same index but were missed by the first sweep because
- * neither takes a `file::symbol` spec through the shared resolver: `scope` takes `file:line` and
- * renders the enclosing symbol's full body under `--json`, and `refs` searches the whole index by
- * symbol NAME, so an unscoped query returns reference sites -- path, line, and the surrounding
- * source context -- from every project on the machine.
- */
+/** `scope` and `refs` answer out of the same index but were missed by the first sweep because neither takes a `file::symbol` spec through the shared resolver: `scope` takes `file:line` and renders the enclosing symbol's full body under `--json`, and `refs` searches the whole index by symbol NAME, so an unscoped query returns reference sites -- path, line, and the surrounding source context -- from every project on the machine. */
 describe('scope and refs with cross_project_symbols = false', () => {
   it('scope refuses a file:line in the other project instead of rendering its body', () => {
     confine()
@@ -287,8 +255,7 @@ describe('scope and refs with cross_project_symbols = false', () => {
     expect(text).not.toContain('betaSecretForecastCaller')
   })
 
-  // The bare-name form names no file at all, so it cannot be gated by a path: it is confined by
-  // scoping the query to the confining root, the same way `symbol`'s bare-name path is.
+  // The bare-name form names no file at all, so it cannot be gated by a path: it is confined by scoping the query to the confining root, the same way `symbol`'s bare-name path is.
   it('refs by bare name no longer reaches the other project, and still finds its own', () => {
     confine()
     const other = captureStdoutCode(() => runRefs({ spec: 'betaSecretForecast' }))
