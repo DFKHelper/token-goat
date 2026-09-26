@@ -622,6 +622,7 @@ export function runImports(opts: ImportsExportsOptions): number {
   return 0
 }
 
+/** Collect assistant text in order from a Claude Code / subagent JSONL transcript. Each line is one JSON record; keep `type:"assistant"` records and pull their `message.content[]` text blocks (or a plain-string `content`), joined in order. Malformed lines, non-assistant records, and non-text blocks (thinking, tool_use, tool_result) are skipped. Returns the joined text, or '' when nothing matches, which keeps `--transcript` harmless on a file that is not a transcript. */
 export function extractTranscriptText(jsonl: string): string {
   const collected: string[] = []
   for (const rawLine of jsonl.split(/\r?\n/)) {

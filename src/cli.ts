@@ -216,7 +216,7 @@ export { requireInt, requireNonNegativeInt, requirePositiveInt }
 
 // --- Command handlers -------------------------------------------------------
 
-// Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
+// Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_semantic.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
 async function cmdSemantic(query: string | undefined, more: string[], opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean }): Promise<void> {
   if (!query && !opts.preflight && !opts.warm) {
     throw new CliError('missing required argument: query')
