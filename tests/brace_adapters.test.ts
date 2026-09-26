@@ -1,6 +1,4 @@
-/**
- * Unit tests for the Objective-C, Groovy, Perl, Solidity, Thrift and shader (GLSL, HLSL, WGSL, Metal) adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m`, `.h`, `.pl` or `.t` changes language. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget.
- */
+/** Unit tests for the Objective-C, Groovy, Perl, Solidity, Thrift and shader (GLSL, HLSL, WGSL, Metal) adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m`, `.h`, `.pl` or `.t` changes language. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -16,7 +14,7 @@ import { extractThrift } from '../src/languages/thrift.js'
 import { expectFast, LINE_50K } from './helpers/pathological_scan.js'
 import { parseFile, parseSourceSymbolsTreeSitterOnly } from '../src/parser.js'
 import { detectLanguage, detectLanguageOfFile, refineLanguageByContent, type SymbolEntry } from '../src/parser_types.js'
-import { extractImports } from '../src/read_commands.js'
+import { extractImports } from '../src/import_export_extract.js'
 
 const FIXTURES = path.join(process.cwd(), 'tests', 'fixtures', 'language_adapter_symbols')
 
@@ -248,15 +246,9 @@ describe('Groovy adapter', () => {
     expect(shape(extractGroovy(src, 'build.gradle'))).toEqual(['task hello 1-5', 'task tasksAll 6-8', 'task myCopy 9-9'])
   })
 
-  // HAND-DERIVED from https://groovy-lang.org/syntax.html, sections "Slashy string" and "Dollar
-  // slashy string": a slashy string `/.../` needs no escaping of a quote, and a dollar-slashy
-  // string `$/.../$` needs no escaping of a forward slash either. The expected spans below are
-  // read off the braces the Groovy source actually writes, not off this repo's masker.
+  // HAND-DERIVED from https://groovy-lang.org/syntax.html, sections "Slashy string" and "Dollar slashy string": a slashy string `/.../` needs no escaping of a quote, and a dollar-slashy string `$/.../$` needs no escaping of a forward slash either. The expected spans below are read off the braces the Groovy source actually writes, not off this repo's masker.
   //
-  // Regression: the masker knew only `"` and `'` quoting, so a `'` inside a slashy string opened
-  // a single-quote span that blanked the real `{` after it, and a `//` or `/*` inside a
-  // dollar-slashy string was read as a comment opener. Either way the brace counter popped the
-  // wrong frame: `after` was reported at the top level with no parent, or swallowed entirely.
+  // Regression: the masker knew only `"` and `'` quoting, so a `'` inside a slashy string opened a single-quote span that blanked the real `{` after it, and a `//` or `/*` inside a dollar-slashy string was read as a comment opener. Either way the brace counter popped the wrong frame: `after` was reported at the top level with no parent, or swallowed entirely.
   it('reads a slashy string as a string, so an apostrophe in one does not blank the brace after it', () => {
     const src = ['class A {', '  def m() {', "    if (s ==~ /it's ok/) {", '      println 1', '    }', '  }', '  def after() { return 1 }', '}'].join('\n')
     expect(shape(extractGroovy(src, 'A.groovy'))).toEqual(['class A 1-8', 'method m 2-6 A', 'method after 7-7 A'])

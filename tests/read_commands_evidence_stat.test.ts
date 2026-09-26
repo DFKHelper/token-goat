@@ -14,7 +14,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 import { recordEvidence } from '../src/evidence_cache.js'
 import { setPipelineFnForTesting } from '../src/embeddings.js'
-import { runSemantic } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_semantic.js'
 import { summarize } from '../src/stats.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES, CLAUDE_CODE_PERSISTED_PREVIEW_BYTES } from '../src/delivery_cap.js'

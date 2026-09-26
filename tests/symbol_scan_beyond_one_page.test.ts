@@ -1,24 +1,4 @@
-/**
- * Regression: `find` and `locate` match symbol names with a JavaScript substring test, but used to
- * fetch their candidate rows as a single `querySymbols({ limit: FIND_SCAN_LIMIT })` page -- a cap
- * applied by SQLite, ahead of the predicate. A symbol that sorted past that cap was therefore
- * invisible to both commands, and because both fall back to near-name ranking when nothing
- * matched, the miss did not surface as "not found": it surfaced as a confident list of unrelated
- * files for a symbol that is in the index.
- *
- * The cap was 20,000 and read as "effectively unbounded". It is not: measured against the real
- * machine-wide index this was found on, three indexed projects exceeded it and one held 234,675
- * symbols, so `find` answered from the alphabetically first 8.5% of that project. `forEachSymbol`
- * (src/symbol_scan.ts) now pages the whole scope instead.
- *
- * Fixture provenance: HAND-DERIVED. Rows are written straight into the `symbols` table with the
- * same INSERT tests/find_project_scope.test.ts uses, and the filler file names are chosen to sort
- * ahead of the target under querySymbols's own `ORDER BY file_path, line_start, rowid` -- that
- * ordering is read from the query in src/index_reader.ts, and it is the only property of the
- * production code this fixture depends on. The count is deliberately above the retired 20,000 cap
- * as well as above the paging page size, so the test fails against the shipped code it replaces
- * and against any future regression that stops after one page.
- */
+/** Regression: `find` and `locate` match symbol names with a JavaScript substring test, but used to fetch their candidate rows as a single `querySymbols({ limit: FIND_SCAN_LIMIT })` page -- a cap applied by SQLite, ahead of the predicate. A symbol that sorted past that cap was therefore invisible to both commands, and because both fall back to near-name ranking when nothing matched, the miss did not surface as "not found": it surfaced as a confident list of unrelated files for a symbol that is in the index. The cap was 20,000 and read as "effectively unbounded". It is not: measured against the real machine-wide index this was found on, three indexed projects exceeded it and one held 234,675 symbols, so `find` answered from the alphabetically first 8.5% of that project. `forEachSymbol` (src/symbol_scan.ts) now pages the whole scope instead. Fixture provenance: HAND-DERIVED. Rows are written straight into the `symbols` table with the same INSERT tests/find_project_scope.test.ts uses, and the filler file names are chosen to sort ahead of the target under querySymbols's own `ORDER BY file_path, line_start, rowid` -- that ordering is read from the query in src/index_reader.ts, and it is the only property of the production code this fixture depends on. The count is deliberately above the retired 20,000 cap as well as above the paging page size, so the test fails against the shipped code it replaces and against any future regression that stops after one page. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -28,8 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
-import { runFind } from '../src/read_commands.js'
-import { runLocate } from '../src/read_inspect.js'
+import { runLocate, runFind } from '../src/read_inspect.js'
 
 /** Above the retired 20,000-row cap, so a single-page scan cannot reach the target below. */
 const FILLER_ROWS = 20_001

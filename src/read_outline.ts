@@ -1,9 +1,4 @@
-/**
- * Outline and skeleton command handlers.
- *
- * Implements token-goat skeleton and token-goat outline, extracting symbol maps
- * without loading full bodies, with multi-file support and filtering.
- */
+/** Outline and skeleton command handlers. Implements token-goat skeleton and token-goat outline, extracting symbol maps without loading full bodies, with multi-file support and filtering. */
 
 import type { SymbolEntry } from './parser_types.js'
 import { resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
@@ -14,23 +9,10 @@ import { resolveProjectRoot, getDisplayRoot } from './project.js'
 import { isVirtualIndexedPath, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
-import {
-  indexFileSyncPinned,
-  healStaleIndex,
-  staleWarning,
-  guardText,
-  noSymbolsMessage,
-  formatStatsSuffix,
-  firstBodyLine,
-  fileIsGone,
-  recordReadStat,
-  parseMultiFileSpec,
-  hasRealDocstring,
-  guardJsonRows,
-  sumFileSizes,
-  confinementRefusal,
-  confinedProjectRoot,
-} from './read_commands.js'
+import { indexFileSyncPinned, healStaleIndex, staleWarning, guardText, fileIsGone, recordReadStat, guardJsonRows, sumFileSizes } from './read_commands.js'
+import { noSymbolsMessage, formatStatsSuffix, hasRealDocstring } from './read_meta.js'
+import { firstBodyLine } from './read_suggest.js'
+import { parseMultiFileSpec, confinementRefusal, confinedProjectRoot } from './read_spec.js'
 
 export interface SkeletonOptions {
   file: string
@@ -42,20 +24,13 @@ export interface SkeletonOptions {
   includeFilePath?: boolean
   forceRefresh?: boolean
   stats?: boolean
-  /**
-   * Project root `file` resolves against when relative. Defaults to `process.cwd()`; same
-   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
-   * server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve
-   * to the wrong absolute index key and silently match nothing.
-   */
+  /** Project root `file` resolves against when relative. Defaults to `process.cwd()`; same field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve to the wrong absolute index key and silently match nothing. */
   projectRoot?: string
 }
 
 export type OutlineOptions = SkeletonOptions
 
-/**
- * Character cap for the per-symbol doc annotation in `outline`'s text mode.
- */
+/** Character cap for the per-symbol doc annotation in `outline`'s text mode. */
 const DOC_SUMMARY_MAX_CHARS = 140
 
 /** Shortest prefix of a doc line that is a complete sentence, or `null` when it has no usable sentence end. */

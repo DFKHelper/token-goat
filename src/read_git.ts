@@ -7,18 +7,10 @@ import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } fro
 import { formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import {
-  emit,
-  emitErr,
-  emitGuarded,
-  guardJsonRows,
-  guardText,
-  readFileText,
-  recordReadStat,
-  resolveSymbolSpecOrEmitError,
-  sumFileSizes,
-  trimBlankLines,
-} from './read_commands.js'
+import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
+import { emit, emitErr } from './emit.js'
+import { resolveSymbolSpecOrEmitError } from './read_spec.js'
+import { trimBlankLines } from './read_suggest.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
   compileGrepMatcher,

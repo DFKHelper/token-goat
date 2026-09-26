@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { ensureModelFiles } from '../src/embed_model.js'
-import { runSemantic } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_semantic.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

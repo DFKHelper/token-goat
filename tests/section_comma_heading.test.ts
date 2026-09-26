@@ -1,23 +1,11 @@
-/**
- * Regression: `section "file::A, B"` treated every comma in the heading as the multi-heading
- * grammar, so a heading whose real text contains a comma could never be read.
- *
- * With `## Setup`, `## Teardown` and `## Setup, Teardown` all present, asking for the combined
- * heading split into two sub-lookups and returned the two unrelated single sections with exit 0.
- * The requested section's body never appeared and nothing in the output said so.
- *
- * Why didn't a test catch this: the multi-heading tests in tests/read_commands.test.ts mock
- * section_reader entirely (`readSection` is an exact key lookup into the test's own map, and
- * `listSections` returns []), so no fixture there has ever had a comma inside a heading and the
- * split could never resolve to something wrong. This file drives the real files-on-disk pipeline.
- */
+/** Regression: `section "file::A, B"` treated every comma in the heading as the multi-heading grammar, so a heading whose real text contains a comma could never be read. With `## Setup`, `## Teardown` and `## Setup, Teardown` all present, asking for the combined heading split into two sub-lookups and returned the two unrelated single sections with exit 0. The requested section's body never appeared and nothing in the output said so. Why didn't a test catch this: the multi-heading tests in tests/read_commands.test.ts mock section_reader entirely (`readSection` is an exact key lookup into the test's own map, and `listSections` returns []), so no fixture there has ever had a comma inside a heading and the split could never resolve to something wrong. This file drives the real files-on-disk pipeline. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { runSection } from '../src/read_commands.js'
+import { runSection } from '../src/read_section.js'
 
 let tmpDir: string
 let mdFile: string

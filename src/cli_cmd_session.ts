@@ -61,10 +61,7 @@ import {
   cmdCost,
   cmdBaseline,
 } from './cache_session_commands.js'
-import {
-  runNoteGet,
-  runNoteList,
-} from './read_commands.js'
+import { runNoteGet, runNoteList } from './read_inspect.js'
 import {
   cmdSessionSchema,
   cmdDescribe,

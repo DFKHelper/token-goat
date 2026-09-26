@@ -5,7 +5,8 @@ import {
   serializeXmlNode,
   tryDecodeEmbeddedXml,
 } from '../src/xml_query.js'
-import { runXmlOutline, runXmlQuery, runRead } from '../src/read_commands.js'
+import { runRead } from '../src/read_commands.js'
+import { runXmlOutline, runXmlQuery } from '../src/read_structured_data.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

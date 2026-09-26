@@ -10,17 +10,8 @@ import { resolveLineRegions, type LineRegion } from './line_regions.js'
 export { resolveLineRegions, type LineRegion } from './line_regions.js'
 import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
-import {
-  emitErr,
-  findSpecSeparator,
-  guardText,
-  healStaleIndex,
-  indexFileSyncPinned,
-  readFileText,
-  resolveAgainstProjectRoot,
-  staleWarning,
-  type ReadOptions,
-} from './read_commands.js'
+import { findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, readFileText, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
+import { emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
   didYouMean,

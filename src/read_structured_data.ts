@@ -20,17 +20,9 @@ import {
   operationLabel,
   parseOpenApiSpec,
 } from './openapi_query.js'
-import {
-  didYouMean,
-  emit,
-  emitErr,
-  emitGuarded,
-  guardJsonRows,
-  rankSimilarNames,
-  readFileText,
-  recordReadStat,
-  sumFileSizes,
-} from './read_commands.js'
+import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
+import { didYouMean, rankSimilarNames } from './read_suggest.js'
+import { emit, emitErr } from './emit.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { extractErrorMessage, requireNonNegativeStrictInt } from './util.js'
 import {

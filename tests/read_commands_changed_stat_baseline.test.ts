@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 
 import { describe, expect, it } from 'vitest'
 
-import { runChanged } from '../src/read_commands.js'
+import { runChanged } from '../src/read_git.js'
 import { summarize } from '../src/stats.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'

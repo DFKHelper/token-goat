@@ -1,12 +1,4 @@
-/**
- * End-to-end regression for `token-goat log "file::symbol" [ref]`: drives the REAL,
- * unmocked pipeline -- a real git repo (execFileSync git, no mocked runGit), a real
- * indexFileSync seed against the real (test-isolated, see tests/setup/isolate-home.ts) global.db,
- * and the real runLog command function -- so the `git log -L` line-range-tracking behavior
- * (a symbol's history surviving earlier commits that shift its lines up/down) is proven
- * against real git output, not a hand-authored stand-in for its format. Mirrors the real-DB,
- * real-git pattern already used by tests/read_commands_diff_e2e.test.ts.
- */
+/** End-to-end regression for `token-goat log "file::symbol" [ref]`: drives the REAL, unmocked pipeline -- a real git repo (execFileSync git, no mocked runGit), a real indexFileSync seed against the real (test-isolated, see tests/setup/isolate-home.ts) global.db, and the real runLog command function -- so the `git log -L` line-range-tracking behavior (a symbol's history surviving earlier commits that shift its lines up/down) is proven against real git output, not a hand-authored stand-in for its format. Mirrors the real-DB, real-git pattern already used by tests/read_commands_diff_e2e.test.ts. */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -16,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runLog } from '../src/read_commands.js'
+import { runLog } from '../src/read_git.js'
 
 /** Capture stdout/stderr for a function call, same pattern as read_commands.test.ts. */
 function capture(fn: () => void): { stdout: string; stderr: string } {
@@ -110,9 +102,7 @@ describe('runLog (real git repo + real index, no injected callbacks)', () => {
       git(['add', 'b.ts'], root)
       git(['commit', '-m', 'add trackedFn'], root)
 
-      // Insert an unrelated function above trackedFn, shifting its line range down. A naive
-      // fixed-line-range history (not git's own -L tracking) would lose trackedFn's earlier
-      // history once its line numbers move.
+      // Insert an unrelated function above trackedFn, shifting its line range down. A naive fixed-line-range history (not git's own -L tracking) would lose trackedFn's earlier history once its line numbers move.
       writeFileSync(
         file,
         [
@@ -277,8 +267,7 @@ describe('runLog (real git repo + real index, no injected callbacks)', () => {
 
       indexFileSync(normalizePath(file))
 
-      // --max-count=0 asks git for zero commits, exercising the empty-stdout branch without
-      // relying on a symbol that has literally never been committed (which wouldn't resolve).
+      // --max-count=0 asks git for zero commits, exercising the empty-stdout branch without relying on a symbol that has literally never been committed (which wouldn't resolve).
       const { stdout, stderr } = capture(() => {
         expect(runLog({ spec: `${file}::onceFn`, projectRoot: root, maxCount: 0 })).toBe(0)
       })

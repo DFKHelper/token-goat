@@ -11,27 +11,14 @@ import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseli
 import { claudeConfigDir } from './claude_config_dir.js'
 import { ENV_KEYS, VERSION, dataDir, globalDbPath } from './constants.js'
 import { envStrList } from './env.js'
-import {
-  runSymbol,
-  runRead,
-  runSection,
-  runSkeleton,
-  runOutline,
-  runSemantic,
-  runBrief,
-  runChanged,
-  runGrep,
-  runImports,
-  runExports,
-  findSpecSeparator,
-  parseColonLineSpec,
-  parseLineRange,
-  ABSENT_PIN,
-  ConfinementIdentityError,
-  fileIdentity,
-  pinKey,
-  withPinnedReads,
-} from './read_commands.js'
+import { runSymbol, runRead, runGrep, findSpecSeparator, ABSENT_PIN, ConfinementIdentityError, fileIdentity, pinKey, withPinnedReads } from './read_commands.js'
+import { runSection } from './read_section.js'
+import { runSkeleton, runOutline } from './read_outline.js'
+import { runSemantic } from './read_semantic.js'
+import { runBrief } from './read_brief.js'
+import { runChanged } from './read_git.js'
+import { runImports, runExports } from './read_inspect.js'
+import { parseColonLineSpec, parseLineRange } from './read_spec.js'
 import { runRefs } from './read_refs.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import {

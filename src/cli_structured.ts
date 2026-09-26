@@ -1,21 +1,6 @@
 import { requireNonNegativeInt } from './cli.js'
-import {
-  runCsvProfile,
-  runCsvQuery,
-  runHtmlLint,
-  runHtmlOutline,
-  runHtmlQuery,
-  runJsonOutline,
-  runJsonQuery,
-  runOpenApiOp,
-  runOpenApiOutline,
-  runXmlOutline,
-  runXmlQuery,
-  runYamlOutline,
-  runYamlQuery,
-  runZipList,
-  runZipRead,
-} from './read_commands.js'
+import { runCsvProfile, runCsvQuery, runHtmlLint, runHtmlOutline, runHtmlQuery, runJsonOutline, runJsonQuery, runOpenApiOp, runOpenApiOutline, runXmlOutline, runXmlQuery, runYamlOutline, runYamlQuery } from './read_structured_data.js'
+import { runZipList, runZipRead } from './read_inspect.js'
 
 export function cmdCsvQuery(
   file: string,

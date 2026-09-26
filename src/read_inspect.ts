@@ -19,23 +19,10 @@ import { getNote, isNoteStale, listNotes, WHOLE_FILE_NOTE_SYMBOL } from './notes
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import {
-  didYouMean,
-  emit,
-  emitErr,
-  emitGuarded,
-  fileConfinementRefusal,
-  guardJsonRows,
-  healStaleIndex,
-  isValidUtf8,
-  rankSimilarNames,
-  readFileBytes,
-  readFileText,
-  recordReadStat,
-  resolveAgainstProjectRoot,
-  sumFileSizes,
-  healStaleResultFiles,
-} from './read_commands.js'
+import { emitGuarded, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes, healStaleResultFiles } from './read_commands.js'
+import { didYouMean, rankSimilarNames } from './read_suggest.js'
+import { emit, emitErr } from './emit.js'
+import { fileConfinementRefusal } from './read_spec.js'
 import { listSections } from './section_reader.js'
 import { forEachSymbol } from './symbol_scan.js'
 import {

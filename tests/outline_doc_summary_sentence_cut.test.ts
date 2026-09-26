@@ -2,24 +2,11 @@ import { describe, it, expect, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { runOutline } from '../src/read_commands.js'
+import { runOutline } from '../src/read_outline.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 
-/**
- * `outline`'s per-symbol doc annotation is cut at the end of its first sentence.
- *
- * Fixture provenance: HAND-DERIVED. Every docstring below is written for this test and the expected
- * cut is computed from the input by reading it, not by running the clip and recording what it said.
- * That matters here more than usual: the previous cap carried a comment claiming it "keeps roughly
- * the first sentence", and a fixture built from the code's own output would have agreed with that
- * claim rather than testing it. Measured against this project's real source instead, over 448
- * docstrings across seven files, cutting at the cap alone left 297 of them ending mid-clause.
- *
- * The size claim is deliberately not asserted as a ratio. A ratio floor is satisfied by cutting
- * more, and cutting more is the failure mode here: an annotation trimmed to nothing scores well and
- * sends the reader back for a full read. The assertions below name the text that must survive.
- */
+/** `outline`'s per-symbol doc annotation is cut at the end of its first sentence. Fixture provenance: HAND-DERIVED. Every docstring below is written for this test and the expected cut is computed from the input by reading it, not by running the clip and recording what it said. That matters here more than usual: the previous cap carried a comment claiming it "keeps roughly the first sentence", and a fixture built from the code's own output would have agreed with that claim rather than testing it. Measured against this project's real source instead, over 448 docstrings across seven files, cutting at the cap alone left 297 of them ending mid-clause. The size claim is deliberately not asserted as a ratio. A ratio floor is satisfied by cutting more, and cutting more is the failure mode here: an annotation trimmed to nothing scores well and sends the reader back for a full read. The assertions below name the text that must survive. */
 describe('outline doc summary cuts at the first sentence', () => {
   const tmp: string[] = []
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import * as path from 'node:path'
-import { runConfigGet } from '../src/read_commands.js'
+import { runConfigGet } from '../src/read_inspect.js'
 
 describe('configGet section scoping bug', () => {
   const tmpDirs: string[] = []
@@ -118,9 +118,7 @@ describe('configGet section scoping bug', () => {
     const f = tmpFile('pyproject.toml', content)
     const oldWrite = process.stdout.write
 
-    // A legitimate trailing apostrophe with no matching leading quote must survive intact --
-    // the old independent-single-end regex stripped the trailing "'" even though the leading
-    // character isn't a quote at all.
+    // A legitimate trailing apostrophe with no matching leading quote must survive intact -- the old independent-single-end regex stripped the trailing "'" even though the leading character isn't a quote at all.
     let stdout = ''
     process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
     runConfigGet({ file: f, key: 'project.plural' })

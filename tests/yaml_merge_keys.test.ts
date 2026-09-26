@@ -1,12 +1,7 @@
-/**
- * `yaml-query` did not expand YAML merge keys. js-yaml 4 leaves `<<: *anchor` as a literal `<<`
- * key holding the anchor's mapping, rather than folding those keys into the parent, so a query for
- * an inherited key returned nothing. `parseYamlDocument` now applies the merge-key spec after
- * parsing: own keys win over merged keys, and among a list of merge sources the earlier ones win.
- */
+/** `yaml-query` did not expand YAML merge keys. js-yaml 4 leaves `<<: *anchor` as a literal `<<` key holding the anchor's mapping, rather than folding those keys into the parent, so a query for an inherited key returned nothing. `parseYamlDocument` now applies the merge-key spec after parsing: own keys win over merged keys, and among a list of merge sources the earlier ones win. */
 import { describe, it, expect } from 'vitest'
 
-import { parseYamlDocument } from '../src/read_commands.js'
+import { parseYamlDocument } from '../src/read_structured_data.js'
 
 describe('YAML merge keys', () => {
   it('folds a single anchor into the parent and drops the literal << key', () => {
@@ -43,8 +38,7 @@ describe('YAML merge keys', () => {
   it('does not mutate the shared anchor target when merging it in two places', () => {
     const yaml = ['base: &b', '  x: 1', 'one:', '  <<: *b', '  x: 10', 'two:', '  <<: *b', '  y: 20'].join('\n')
     const doc = parseYamlDocument(yaml) as Record<string, Record<string, unknown>>
-    // `two` overrode nothing on x, so it must still see the anchor's original x:1 -- proof that
-    // `one` overriding x to 10 did not write through the shared anchor object.
+    // `two` overrode nothing on x, so it must still see the anchor's original x:1 -- proof that `one` overriding x to 10 did not write through the shared anchor object.
     expect(doc['two']).toEqual({ x: 1, y: 20 })
     expect(doc['base']).toEqual({ x: 1 })
   })

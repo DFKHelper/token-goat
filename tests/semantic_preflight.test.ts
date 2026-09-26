@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { checkEmbeddingPreflight } from '../src/embed_model.js'
-import { runSemantic } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_semantic.js'
 
 describe('checkEmbeddingPreflight', () => {
   const originalEnv = process.env.TOKEN_GOAT_EMBEDDINGS_ENABLED

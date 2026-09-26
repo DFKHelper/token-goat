@@ -12,6 +12,7 @@ import { supportRequestLine } from './version.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
+/** Why an existing file has no symbol rows when the cause is token-goat rather than the file: no extractor for its type (a named entry in {@link unsupportedLanguageName}, or an unrecognized extension), or a tree-sitter language whose grammar did not load, so only the coarse regex fallback ran. `undefined` otherwise, where "no symbols" is the honest answer. */
 export function symbolExtractorGap(displayPath: string, resolvedPath: string): string | undefined {
   const ext = path.extname(resolvedPath).toLowerCase()
   const named = unsupportedLanguageName(resolvedPath)

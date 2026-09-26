@@ -1,9 +1,4 @@
-/**
- * Unit tests for the Assembly (GAS, NASM and IBM HLASM), Windows batch and Erlang adapters: every declaration form each one
- * reads, exact spans and parents, nothing out of a string or a comment, the imports each one emits, and the content routing
- * that decides when an `.asm` file is HLASM rather than NASM. Every adapter also gets a pathological 50 KB line that must
- * scan inside the shared pathological-scan budget.
- */
+/** Unit tests for the Assembly (GAS, NASM and IBM HLASM), Windows batch and Erlang adapters: every declaration form each one reads, exact spans and parents, nothing out of a string or a comment, the imports each one emits, and the content routing that decides when an `.asm` file is HLASM rather than NASM. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -16,7 +11,7 @@ import { extractBatch } from '../src/languages/batch.js'
 import { extractErlang } from '../src/languages/erlang.js'
 import { parseFile } from '../src/parser.js'
 import { detectLanguage, detectLanguageOfFile, type SymbolEntry } from '../src/parser_types.js'
-import { extractImports } from '../src/read_commands.js'
+import { extractImports } from '../src/import_export_extract.js'
 
 const FIXTURES = path.join(process.cwd(), 'tests', 'fixtures', 'language_adapter_symbols')
 

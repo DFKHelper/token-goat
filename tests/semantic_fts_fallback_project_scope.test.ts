@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSemantic } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_semantic.js'
 
 describe('runSemantic FTS fallback project scoping', () => {
   it('does not surface a symbol from a different project sharing a search term', async () => {

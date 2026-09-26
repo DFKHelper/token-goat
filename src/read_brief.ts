@@ -22,36 +22,16 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { findContainingSection, type SectionResult } from './section_reader.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
-import {
-  emit,
-  emitErr,
-  fileIsGone,
-  findSpecSeparator,
-  formatAmbiguity,
-  formatBareNameSpecError,
-  guardText,
-  parseCrossFileMultiSpec,
-  parseReadSpec,
-  readFileText,
-  recordReadStat,
-  resolveBody,
-  resolveSymbolSpec,
-  staleWarning,
-  sumFileSizes,
-  trimBlankLines,
-} from './read_commands.js'
+import { fileIsGone, findSpecSeparator, guardText, readFileText, recordReadStat, resolveBody, staleWarning, sumFileSizes } from './read_commands.js'
+import { emit, emitErr } from './emit.js'
+import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec } from './read_spec.js'
+import { formatBareNameSpecError, trimBlankLines } from './read_suggest.js'
 
 export interface BriefOptions {
   spec: string
   limit?: number
   json?: boolean
-  /**
-   * Project root to scope symbol resolution and relative-path resolution to. Defaults to
-   * `process.cwd()`; same field name as {@link ReadOptions.projectRoot}. Callers whose cwd is not
-   * the workspace root (e.g. an MCP server launched from an opaque directory) should pass the
-   * actual workspace root explicitly -- otherwise a relative file spec resolves against the wrong
-   * project, and the display paths in the rendered output name a root the caller never asked for.
-   */
+  /** Project root to scope symbol resolution and relative-path resolution to. Defaults to `process.cwd()`; same field name as {@link ReadOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g. an MCP server launched from an opaque directory) should pass the actual workspace root explicitly -- otherwise a relative file spec resolves against the wrong project, and the display paths in the rendered output name a root the caller never asked for. */
   projectRoot?: string
   /** `-C, --context <n>`: lines of real call-site source around each entry of the caller block, in `grep -C`'s framing. Defaults to 0 (output unchanged). */
   context?: number
@@ -95,16 +75,11 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
     }
   }
   if (resolution.kind === 'none') {
-    // A bare name (no `::` at all) is a spec-format mistake, not evidence the symbol is
-    // missing -- see formatBareNameSpecError. A proper `file::symbol` spec that genuinely
-    // resolves to nothing keeps the original wording below, untouched.
+    // A bare name (no `::` at all) is a spec-format mistake, not evidence the symbol is missing -- see formatBareNameSpecError. A proper `file::symbol` spec that genuinely resolves to nothing keeps the original wording below, untouched.
     if (findSpecSeparator(opts.spec) === -1) {
       return { text: formatBareNameSpecError('brief', opts.spec, opts.projectRoot), code: 1 }
     }
-    // Only paid after the query already came back empty, and only in text mode -- this branch's
-    // text is emitted verbatim via emitErr regardless of --json (no separate opts.json check
-    // exists in runBrief's caller for this path), so there's no JSON envelope to protect either
-    // way.
+    // Only paid after the query already came back empty, and only in text mode -- this branch's text is emitted verbatim via emitErr regardless of --json (no separate opts.json check exists in runBrief's caller for this path), so there's no JSON envelope to protect either way.
     if (opts.json !== true) {
       const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
       if (isIndexEmptyForProject(globalDbPath(), rootDir)) {
@@ -118,14 +93,11 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
   // resolveCallers(name) with no explicit limit still applies its own internal default cap (500, in graph_commands.ts's queryRefs call) -- so a capped callers.length is not the true count once more than 500 references exist. The earlier fix for that took the total from a separate COUNT(*) query (queryRefCounts), but queryRefCounts keys by symbol NAME project-wide while resolveCallers additionally scopes to THIS definition site (filterRefsForSymbol drops refs living in a file that defines its own same-named symbol), so for a name defined in two files brief printed the other definition's callers into its own "Callers (N)" header and invented an "...(N more elided)" tail for rows that were never going to be listed. The scoped scan is the only thing that knows the real total, so it always runs unbounded here and its post-filter length is the total.
   const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
   const excludeTests = opts.excludeTests === true
-  // The unbounded scan also covers --grep and --exclude-tests, which both filter client-side below -- otherwise a high-fanout symbol's grep match could hide inside the callers that fell past resolveCallers' 500-row default page before the filter ever ran.
-  // resolveCallers' last argument makes it scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value.
+  // The unbounded scan also covers --grep and --exclude-tests, which both filter client-side below -- otherwise a high-fanout symbol's grep match could hide inside the callers that fell past resolveCallers' 500-row default page before the filter ever ran. resolveCallers' last argument makes it scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value.
   const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, true)
   const testFiltered = excludeTests ? allCallers.filter((c) => !isTestFile(c.file)) : allCallers
   const hiddenByExcludeTests = excludeTests ? allCallers.length - testFiltered.length : 0
-  // --grep narrows by the caller's enclosing symbol NAME, same field/convention as
-  // runCallers'/call-chain's own --grep -- runs after the exclude-tests drop so both filters
-  // compose (grep sees the already test-filtered set, matching runCallers' ordering).
+  // --grep narrows by the caller's enclosing symbol NAME, same field/convention as runCallers'/call-chain's own --grep -- runs after the exclude-tests drop so both filters compose (grep sees the already test-filtered set, matching runCallers' ordering).
   const preGrepCount = testFiltered.length
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const callers = matchesGrep !== undefined ? testFiltered.filter((c) => matchesGrep(c.caller)) : testFiltered
@@ -136,13 +108,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
   const limit = opts.limit ?? 20
   const shown = callers.slice(0, limit)
   const truncated = totalCallers > shown.length
-  // brief carries a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry (brief_view),
-  // but nothing here ever called recordStat -- the brief bucket in `token-goat stats --full`
-  // stayed permanently zero regardless of real usage, the same class of registry/producer
-  // desync previously fixed for map_lookup/changed_lookup/csv_query (see
-  // project_runchanged_missing_stat memory). "Full source" is the on-disk size of the file the
-  // resolved symbol lives in, mirroring recordReadStat's fullSourceBytes convention elsewhere in
-  // this file -- brief folds a symbol read + callers lookup + section lookup into that one file.
+  // brief carries a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry (brief_view), but nothing here ever called recordStat -- the brief bucket in `token-goat stats --full` stayed permanently zero regardless of real usage, the same class of registry/producer desync previously fixed for map_lookup/changed_lookup/csv_query (see project_runchanged_missing_stat memory). "Full source" is the on-disk size of the file the resolved symbol lives in, mirroring recordReadStat's fullSourceBytes convention elsewhere in this file -- brief folds a symbol read + callers lookup + section lookup into that one file.
   const fullSourceBytes = sumFileSizes([match.filePath])
 
   if (opts.json === true) {
@@ -182,10 +148,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
   // An empty caller block reads as "nothing calls this", which for a symbol exercised only by tests is the opposite of the truth and invites deleting live code -- so when the filter is what emptied it, say so instead of showing a bare zero.
   const hiddenNote = excludeTests && hiddenByExcludeTests > 0 ? ` (${excludeTestsHiddenNote(hiddenByExcludeTests)})` : ''
   if (callers.length === 0 && matchesGrep !== undefined && preGrepCount > 0) {
-    // Distinguishes "--grep matched none of the N callers that do exist" from a genuinely
-    // caller-less symbol -- same "filtered store renders as populated" trap already fixed for
-    // refs/callers/dead/types/deps. preGrepCount already reflects --exclude-tests (if both are
-    // set), so this fires only once the grep filter is what zeroed the remaining set.
+    // Distinguishes "--grep matched none of the N callers that do exist" from a genuinely caller-less symbol -- same "filtered store renders as populated" trap already fixed for refs/callers/dead/types/deps. preGrepCount already reflects --exclude-tests (if both are set), so this fires only once the grep filter is what zeroed the remaining set.
     lines.push(`Callers (0): ${grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'caller', 'callers').trim()}`)
   } else {
     lines.push(callers.length === 0 && hiddenNote !== ''
@@ -195,8 +158,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
   for (const c of shown) {
     const callerDisplayPath = toDisplayPath(rootDir, c.file)
     lines.push(`  ${c.caller}\t${callerDisplayPath}:${c.line}`)
-    // brief's caller block is its OWN rendering site, not a call into runCallers -- `-C` has to be
-    // threaded here separately or the flag would silently do nothing for `brief`.
+    // brief's caller block is its OWN rendering site, not a call into runCallers -- `-C` has to be threaded here separately or the flag would silently do nothing for `brief`.
     const window = buildContextWindow(c.file, c.line, opts.context ?? 0)
     if (window !== null) lines.push(...renderContextWindow(callerDisplayPath, c.line, window, '', '    '))
   }

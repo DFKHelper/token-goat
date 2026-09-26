@@ -1,16 +1,4 @@
-/**
- * Regression: a caller-supplied git ref lands in argv where git expects a revision, but git still
- * reads a leading `-` as an option. `--output=<path>` turns `git diff` and `git log` into an
- * arbitrary-file-write primitive: the ref `--output=victim.txt` truncated a real 20-byte file to
- * 0 bytes, and `--output=<outside-the-project>` wrote 1754 bytes of real commit history outside
- * the project root -- both at exit 0, with the command reporting success.
- *
- * `runChanged` already refused such a ref, but nothing anywhere tested that guard (`rg "Refusing a
- * git ref" tests/` had no hits), and `diff` and `log` were each written without it. The guard is
- * now one shared pair of helpers called by all three, and it runs as the FIRST statement in `diff`
- * and `log` -- before the symbol is resolved -- so a hostile ref is refused even when the symbol
- * does not exist, rather than being reached only on the happy path.
- */
+/** Regression: a caller-supplied git ref lands in argv where git expects a revision, but git still reads a leading `-` as an option. `--output=<path>` turns `git diff` and `git log` into an arbitrary-file-write primitive: the ref `--output=victim.txt` truncated a real 20-byte file to 0 bytes, and `--output=<outside-the-project>` wrote 1754 bytes of real commit history outside the project root -- both at exit 0, with the command reporting success. `runChanged` already refused such a ref, but nothing anywhere tested that guard (`rg "Refusing a git ref" tests/` had no hits), and `diff` and `log` were each written without it. The guard is now one shared pair of helpers called by all three, and it runs as the FIRST statement in `diff` and `log` -- before the symbol is resolved -- so a hostile ref is refused even when the symbol does not exist, rather than being reached only on the happy path. */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -20,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runChanged, runDiff, runLog } from '../src/read_commands.js'
+import { runChanged, runDiff, runLog } from '../src/read_git.js'
 
 function capture(fn: () => number): { stdout: string; stderr: string; code: number } {
   let stdout = ''
@@ -98,8 +86,7 @@ describe('git ref guard: a ref starting with "-" is refused, not handed to git',
     expect(statSync(victim).size).toBeGreaterThan(0)
   })
 
-  // The guard has to run before the symbol lookup: a hostile ref with a symbol that does not
-  // resolve must still be refused as a hostile ref, not merely fail later for another reason.
+  // The guard has to run before the symbol lookup: a hostile ref with a symbol that does not resolve must still be refused as a hostile ref, not merely fail later for another reason.
   it.each([
     ['diff', (root: string) => runDiff({ spec: 'a.ts::nosuchsymbol', projectRoot: root, ref: HOSTILE })],
     ['log', (root: string) => runLog({ spec: 'a.ts::nosuchsymbol', projectRoot: root, ref: HOSTILE })],
@@ -121,8 +108,7 @@ describe('git ref guard: a ref starting with "-" is refused, not handed to git',
     expect(code).toBe(0)
   })
 
-  // A bare `-` is not an option to git, but it is also not a revision, and allowing it would mean
-  // the guard tested only the prefix of a longer string.
+  // A bare `-` is not an option to git, but it is also not a revision, and allowing it would mean the guard tested only the prefix of a longer string.
   it('refuses a bare dash', () => {
     const { root } = makeRepo()
     const { stderr, code } = capture(() => runLog({ spec: 'a.ts::target', projectRoot: root, ref: '-' }))

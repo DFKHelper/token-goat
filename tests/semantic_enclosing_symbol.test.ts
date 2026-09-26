@@ -25,7 +25,7 @@ vi.mock('../src/embeddings.js', async (importOriginal) => {
   }
 })
 
-const { runSemantic } = await import('../src/read_commands.js')
+const { runSemantic } = await import('../src/read_semantic.js')
 
 let TMP: string
 let fixtureFile: string
