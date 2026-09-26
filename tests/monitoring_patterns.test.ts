@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   getMonitoringRecallHint,
+  isBuildCommand,
   isTestRunnerCommand,
   MONITORING_COMMAND_PATTERNS,
 } from '../src/hints/lang_patterns.js'
@@ -25,6 +26,24 @@ describe('monitoring recall and the test-runner fingerprint agree on jest and vi
     'vitest-preview',
   ])('%s', (cmd) => {
     expect(getMonitoringRecallHint(cmd) !== null).toBe(isTestRunnerCommand(cmd))
+  })
+})
+
+describe('monitoring recall and the build fingerprint agree on vite, nuxt and clippy', () => {
+  // A vite, nuxt or clippy run gets its git fingerprint only through isBuildCommand, so a longer command name the monitoring list admits and that predicate rejects is recalled as fresh forever.
+  it.each([
+    // PROVENANCE: FORMAT-DERIVED, the `vite build` command in vitejs/vite docs/guide/cli.md and the `cargo clippy` usage in rust-lang/rust-clippy's README.
+    'vite build',
+    'cargo clippy',
+    // PROVENANCE: CAPTURE, a Bash command an agent ran on this machine (~/.claude/projects/C--Projects-token-goat/2ab49bbf-9914-4011-81d8-e30ccde5b635.jsonl); `npm view vite-node bin` names the binary vite-node, a separate package from vite.
+    `npx vite-node -e "import('./vitest.config.ts').then(m=>console.log('resolved maxWorkers =', m.default.test.maxWorkers))" 2>&1 | tail -3`,
+    // PROVENANCE: FORMAT-DERIVED, rust-lang/rust-clippy's Cargo.toml ships the binaries cargo-clippy and clippy-driver, and its README's "Using clippy-driver" section runs this command.
+    'clippy-driver --edition 2018 -Cpanic=abort foo.rs',
+    // PROVENANCE: FORMAT-DERIVED, nuxt/cli packages/nuxt-cli/src/commands/dev.ts and devtools.ts (a `devtools` command taking `enable` or `disable`), with packages/nuxt-cli/package.json mapping the `nuxt` binary to the same entry as `nuxi`.
+    'nuxt dev',
+    'nuxt devtools enable',
+  ])('%s', (cmd) => {
+    expect(getMonitoringRecallHint(cmd) !== null).toBe(isBuildCommand(cmd))
   })
 })
 
