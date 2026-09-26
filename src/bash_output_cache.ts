@@ -7,7 +7,7 @@ import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
-import { isBuildCommand } from './hints/lang_patterns.js'
+import { isBuildCommand, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { indexRecallEntry } from './recall_index.js'
 import { redactSecrets } from './secret_redact.js'
 
@@ -48,7 +48,6 @@ const COMMAND_PATTERNS: Record<string, RegExp> = {
   envProbe: /^\s*(?:node\s+(?:-v|--version)|npm\s+(?:-v|--version)|python3?\s+(?:(?:-V)\b|--?version)|git\s+--version|uv\s+--version|go\s+version|rustc\s+--version|cargo\s+--version|java\s+--version|ruby\s+--version|gem\s+--version|php\s+--version|which\b|where\b)/i,
   npx: /^(?!.*\b(?:install|add|remove|uninstall|i|rm|update|upgrade|set|get|publish|link|ci|audit|shrinkwrap|dedupe|prune|rebuild)\b)\s*npx\s+(?:--?yes\s+)?/i,
   gitPush: /^\s*git\s+push\b/i,
-  testRunner: /^\s*(?:npx\s+)?(?:pytest|vitest|jest|go\s+test)\b/i,
   lintCommand: /^\s*(?:(?:npx\s+)?eslint|(?:uv\s+run\s+)?ruff)\b/i,
   npmRunScript: /^\s*npm\s+run(?:-script)?\b/i,
   catCommand: /^\s*cat\b/i,
@@ -81,7 +80,6 @@ export const isNpmAuditCommand = (cmd: string) => isCommandOfType(cmd, 'npmAudit
 export const isNpmOutdatedCommand = (cmd: string) => isCommandOfType(cmd, 'npmOutdated')
 export const isNpxCommand = (cmd: string) => isCommandOfType(cmd, 'npx')
 export const isGitPushCommand = (cmd: string) => isCommandOfType(cmd, 'gitPush')
-export const isTestRunnerCommand = (cmd: string) => isCommandOfType(cmd, 'testRunner')
 export const isLintCommand = (cmd: string) => isCommandOfType(cmd, 'lintCommand')
 export const isNpmRunScriptCommand = (cmd: string) => isCommandOfType(cmd, 'npmRunScript')
 export const isCatCommand = (cmd: string) => isCommandOfType(cmd, 'catCommand')
@@ -263,7 +261,7 @@ export function bashOutputIdSync(command: string, output: string, cwd: string | 
   return shortFingerprint(`${commandHashSync(command, cwd)}\x00${output}`)
 }
 
-/** Compute current git/dir/lockfile/file state fingerprints for `command` run in `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`) and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached entry whose underlying source state has since changed is not served as if it were still fresh. - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and any command whose output depends on the whole working tree -- test runners (pytest/vitest/jest/go test), linters (eslint/ruff), and `npm run <script>` -- since {@link gitStateFingerprintSync} already captures staged/unstaged/untracked changes anywhere in the tree. - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing. - `lockfile`: dependency-list/install/audit/outdated commands, scoped to the resolved lockfile's content. - `file`: `cat <file>`, scoped to that one file's mtime + size. */
+/** Compute current git/dir/lockfile/file state fingerprints for `command` run in `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`) and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached entry whose underlying source state has since changed is not served as if it were still fresh. - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and any command whose output depends on the whole working tree -- test runners (the {@link isTestRunnerCommand} the failing-test advisory in hooks_bash.ts stores a run under, bare `npm test`/`yarn test`/`pnpm test` included), linters (eslint/ruff), and `npm run <script>` -- since {@link gitStateFingerprintSync} already captures staged/unstaged/untracked changes anywhere in the tree. - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing. - `lockfile`: dependency-list/install/audit/outdated commands, scoped to the resolved lockfile's content. - `file`: `cat <file>`, scoped to that one file's mtime + size. */
 export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
   const fingerprints: { git?: string; dir?: string; lockfile?: string; file?: string } = {}
 
