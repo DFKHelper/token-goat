@@ -1,16 +1,6 @@
-// resolveEnclosingSymbol's fusion key in runSemantic (src/read_commands.ts) was `${filePath}::${name}`
-// -- the enclosing symbol's NAME alone, with no line/position component. Two distinct symbols that
-// happen to share a name in the same file (e.g. a same-named method on two different classes) resolve
-// to the identical key, so a dense-pass hit inside the second symbol silently overwrites the Map entry
-// already holding the first symbol's hit (the dense forEach does an unconditional `fused.set`, no
-// existing-key check) -- one of the two real, distinct results vanishes from the output with no error,
-// no warning, and no indication anything was dropped.
+// resolveEnclosingSymbol's fusion key in runSemantic (src/read_semantic.ts) was `${filePath}::${name}` -- the enclosing symbol's NAME alone, with no line/position component. Two distinct symbols that happen to share a name in the same file (e.g. a same-named method on two different classes) resolve to the identical key, so a dense-pass hit inside the second symbol silently overwrites the Map entry already holding the first symbol's hit (the dense forEach does an unconditional `fused.set`, no existing-key check) -- one of the two real, distinct results vanishes from the output with no error, no warning, and no indication anything was dropped.
 //
-// This constructs the exact collision: a fixture with two classes, Alpha and Beta, each defining a
-// method named `render` at different, non-overlapping line ranges. Two independent dense hits (one
-// per method) are fed to runSemantic via the mocked searchSemantic, exactly as
-// tests/semantic_enclosing_symbol.test.ts already does for the non-colliding case. Both hits must
-// survive fusion as two separate rows; pre-fix, only the later-inserted one (Beta.render) does.
+// This constructs the exact collision: a fixture with two classes, Alpha and Beta, each defining a method named `render` at different, non-overlapping line ranges. Two independent dense hits (one per method) are fed to runSemantic via the mocked searchSemantic, exactly as tests/semantic_enclosing_symbol.test.ts already does for the non-colliding case. Both hits must survive fusion as two separate rows; pre-fix, only the later-inserted one (Beta.render) does.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -40,10 +30,7 @@ const { runSemantic } = await import('../src/read_commands.js')
 let TMP: string
 let fixtureFile: string
 
-// FORMAT-DERIVED: mirrors the class/method shape tests/semantic_enclosing_symbol.test.ts already
-// uses for real indexFileSync fixtures, just with the method name repeated across two classes, far
-// enough apart (embeddings.ts's mergeNearbyHits default proximity is 20 lines) that the two dense
-// hits stay two separate SearchHit windows instead of being legitimately merged into one first.
+// FORMAT-DERIVED: mirrors the class/method shape tests/semantic_enclosing_symbol.test.ts already uses for real indexFileSync fixtures, just with the method name repeated across two classes, far enough apart (embeddings.ts's mergeNearbyHits default proximity is 20 lines) that the two dense hits stay two separate SearchHit windows instead of being legitimately merged into one first.
 const PADDING = Array.from({ length: 25 }, (_, i) => `// filler line ${i}`)
 const FIXTURE_SOURCE = [
   'export class Alpha {',
@@ -63,9 +50,7 @@ const FIXTURE_SOURCE = [
 let prevEmbedEnv: string | undefined
 
 beforeEach(() => {
-  // This file's assertions are about RRF fusion key collisions over mocked dense hits, not about
-  // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
-  // otherwise stop runSemantic from ever reaching searchSemanticMock.
+  // This file's assertions are about RRF fusion key collisions over mocked dense hits, not about indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would otherwise stop runSemantic from ever reaching searchSemanticMock.
   prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-semantic-samename-'))

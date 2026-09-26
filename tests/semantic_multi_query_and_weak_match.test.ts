@@ -2,7 +2,7 @@
 //
 // searchSemantic is mocked (same pattern as tests/cli_semantic_merge_composition.test.ts) so each query's dense distance is exact, and the real cli.ts is driven through run() so the argument wiring is what is tested.
 //
-// PROVENANCE: HAND-DERIVED for the hits and distances (0.300 is inside, 0.950 outside, the weak band chosen in read_commands.ts from a capture of this repo's index: real questions 0.565-0.800, nonsense 0.863-1.043). FORMAT-DERIVED for the single-query block pinned below, read off runSemantic's dense-row render line (`# N. path:start-end (distance D.DDD)` then the preview) in src/read_commands.ts at HEAD 55796265.
+// PROVENANCE: HAND-DERIVED for the hits and distances (0.300 is inside, 0.950 outside, the weak band chosen in read_semantic.ts from a capture of this repo's index: real questions 0.565-0.800, nonsense 0.863-1.043). FORMAT-DERIVED for the single-query block pinned below, read off runSemantic's dense-row render line (`# N. path:start-end (distance D.DDD)` then the preview) in src/read_commands.ts at HEAD 55796265, since moved unchanged to src/read_semantic.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'

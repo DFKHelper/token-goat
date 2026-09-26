@@ -1,14 +1,6 @@
-// runSemantic's --json and text output hardcoded name/kind to null for every hit even though
-// the enclosing symbol is a join over data the indexer already stores (symbols.line_start/
-// line_end). This proves the fix resolves the real enclosing symbol from an indexed fixture,
-// with three cases that matter most:
-//   - a hit whose line range falls inside a known function/method reports that exact name/kind
-//   - a top-of-file hit (before any symbol starts) reports null/null, not the symbol below it
-//   - a hit inside a method nested in a class resolves to the method (innermost), not the class
+// runSemantic's --json and text output hardcoded name/kind to null for every hit even though the enclosing symbol is a join over data the indexer already stores (symbols.line_start/ line_end). This proves the fix resolves the real enclosing symbol from an indexed fixture, with three cases that matter most: - a hit whose line range falls inside a known function/method reports that exact name/kind - a top-of-file hit (before any symbol starts) reports null/null, not the symbol below it - a hit inside a method nested in a class resolves to the method (innermost), not the class
 //
-// searchSemantic is mocked (same pattern as tests/semantic_json_embeddings_source.test.ts) so
-// the hit's line ranges are exact and deterministic; the fixture file is indexed for real via
-// indexFileSync so the symbols table backing resolveEnclosingSymbol is genuine, not stubbed.
+// searchSemantic is mocked (same pattern as tests/semantic_json_embeddings_source.test.ts) so the hit's line ranges are exact and deterministic; the fixture file is indexed for real via indexFileSync so the symbols table backing resolveEnclosingSymbol is genuine, not stubbed.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -56,9 +48,7 @@ const FIXTURE_SOURCE = [
 let prevEmbedEnv: string | undefined
 
 beforeEach(() => {
-  // These assertions are about enclosing-symbol resolution over mocked dense hits, not about
-  // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
-  // otherwise stop runSemantic from ever reaching searchSemanticMock.
+  // These assertions are about enclosing-symbol resolution over mocked dense hits, not about indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would otherwise stop runSemantic from ever reaching searchSemanticMock.
   prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-semantic-enclosing-'))
@@ -132,9 +122,7 @@ describe('runSemantic enclosing-symbol resolution', () => {
   })
 
   it('reports name:null, kind:null for a top-of-file hit (import line, before any symbol) -- NOT the symbol below it', async () => {
-    // Line 1 is the import statement, strictly above every symbol's line_start in the fixture.
-    // A "nearest symbol by start line" shortcut would wrongly attribute this to Foo or baz;
-    // the correct containment check must report null here.
+    // Line 1 is the import statement, strictly above every symbol's line_start in the fixture. A "nearest symbol by start line" shortcut would wrongly attribute this to Foo or baz; the correct containment check must report null here.
     const hits: SearchHit[] = [
       { filePath: fixtureFile, startLine: 1, endLine: 1, kind: 'window', distance: 0.2, text: "import { helper } from './helper.js'" },
     ]
@@ -150,7 +138,7 @@ describe('runSemantic enclosing-symbol resolution', () => {
     expect(textResult.text).not.toContain('— inside')
   })
 
-  // resolveEnclosingSymbol (read_commands.ts) queries querySymbols({filePath, limit}) with no other predicate, ordered by (file_path, line_start): a finite cap on that bare-filePath query silently drops every symbol past the cutoff, so a dense hit landing in the dropped tail resolves to "no enclosing symbol" instead of the real one. HAND-DERIVED fixture: 100,051 symbol rows inserted directly (not parsed) for speed, since only the row count and line ordering matter, not real TypeScript syntax.
+  // resolveEnclosingSymbol (read_semantic.ts) queries querySymbols({filePath, limit}) with no other predicate, ordered by (file_path, line_start): a finite cap on that bare-filePath query silently drops every symbol past the cutoff, so a dense hit landing in the dropped tail resolves to "no enclosing symbol" instead of the real one. HAND-DERIVED fixture: 100,051 symbol rows inserted directly (not parsed) for speed, since only the row count and line ordering matter, not real TypeScript syntax.
   it('resolves the enclosing symbol for a hit past a 100,000-symbol single-file scan cap, not null', async () => {
     const hugeFile = path.join(TMP, 'huge.ts')
     fs.writeFileSync(hugeFile, '// generated fixture, content unused by this test\n', 'utf8')
