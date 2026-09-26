@@ -250,6 +250,7 @@ describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops
     let cycles = 0
     let stage: 'first walk' | 'edited while off' | 'back on' = 'first walk'
     let editedSha: string | null = null
+    let callsSinceEdit = 0
     await runWorkerLoop(TMP, 10, () => {
       cycles += 1
       if (stage === 'first walk' && cycles % 5 === 0 && chunkCount() > 0 && embedSha() === sha) {
@@ -258,11 +259,16 @@ describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops
         fs.appendFileSync(SRC, 'export const editedWhileOff = 1\n')
         fs.writeFileSync(path.join(TMP, 'queue', 'dirty.txt'), `${SRC}\n`)
       } else if (stage === 'edited while off') {
-        // The cycle that ran since is the drain, so no idle cycle has run with embeddings off.
-        stage = 'back on'
-        editedSha = db.prepare('SELECT sha FROM files').pluck().get() as string
-        process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
-        expect(embedSha(), 'calibration: the drain stamped the edit as indexed while embeddings were off').toBe(disabledEmbedSha(editedSha))
+        callsSinceEdit += 1
+        // runWorkerLoop asks before and after each cycle's drain, so the call after an edit queued at the after-check comes before its drain: wait for the reindexed row, which the call right after the draining cycle sees, one or two calls on.
+        expect(callsSinceEdit, 'calibration: the cycle right after the edit drained it, so no idle cycle ran with embeddings off').toBeLessThanOrEqual(2)
+        const current = db.prepare('SELECT sha FROM files').pluck().get() as string
+        if (current !== sha) {
+          stage = 'back on'
+          editedSha = current
+          process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+          expect(embedSha(), 'calibration: the drain stamped the edit as indexed while embeddings were off').toBe(disabledEmbedSha(editedSha))
+        }
       }
       return cycles > 400 || (stage === 'back on' && cycles % 5 === 0 && embedSha() === editedSha)
     })
