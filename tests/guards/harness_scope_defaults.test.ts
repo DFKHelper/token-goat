@@ -41,6 +41,8 @@ const EXPECTED: Readonly<Record<string, ScopeDefault>> = {
   // The one inversion. See vscodeScopeFromFlags in src/bridges/vscode_install.ts for why.
   Vscode: 'project-default',
   VisualStudio: 'user-default',
+  Jetbrains: 'user-default',
+  Neovim: 'user-default',
   Cursor: 'user-default',
   CopilotCli: 'user-default',
   Pi: 'user-default',

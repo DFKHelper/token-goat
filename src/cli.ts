@@ -55,6 +55,11 @@ import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecod
 import { installCursor, isCursorInstalled, uninstallCursor } from './bridges/cursor_install.js'
 import { installZed, isZedInstalled, uninstallZed } from './bridges/zed_install.js'
 import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioDuplicateNote, visualStudioMcpStatus, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
+import { installJetbrains, isJetbrainsInstalled, uninstallJetbrains } from './bridges/jetbrains_install.js'
+import { installNeovim, isNeovimInstalled, uninstallNeovim } from './bridges/neovim_install.js'
+import { detectEcosystems } from './bridges/detect_ecosystems.js'
+import { runParallelSearch } from './search/search_cli.js'
+import type { SearchChannel } from './search/types.js'
 import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor.js'
 import {
   isWorkerRunning,
@@ -231,6 +236,45 @@ async function cmdSemantic(query: string | undefined, more: string[], opts: { li
   }
   const { text, code } = more.length > 0 ? await runSemanticMulti([query ?? '', ...more], semanticOpts) : await runSemantic(query ?? '', semanticOpts)
   // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
+  ;(opts.json === true || code === 0 ? out : err)(text)
+  process.exitCode = code
+}
+
+async function cmdSearch(
+  query: string | undefined,
+  more: string[],
+  opts: {
+    limit?: string
+    channels?: string
+    project?: string | boolean
+    json?: boolean
+    minScore?: string
+  },
+): Promise<void> {
+  const fullQuery = [query, ...more].filter(Boolean).join(' ').trim()
+  if (!fullQuery) {
+    throw new CliError('missing required argument: query')
+  }
+  let projectRoot: string | undefined
+  if (opts.project === true) {
+    projectRoot = resolveProjectRoot({ project: process.cwd() })
+  } else if (typeof opts.project === 'string') {
+    projectRoot = resolveProjectRoot({ project: opts.project })
+  }
+  const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
+  const channels = opts.channels
+    ? (opts.channels.split(',').map((c) => c.trim().toLowerCase()) as SearchChannel[])
+    : undefined
+  const minScore = opts.minScore !== undefined ? parseFloat(opts.minScore) : undefined
+
+  const { text, code } = await runParallelSearch({
+    query: fullQuery,
+    channels,
+    limit,
+    projectRoot,
+    json: opts.json === true,
+    minScore,
+  })
   ;(opts.json === true || code === 0 ? out : err)(text)
   process.exitCode = code
 }
@@ -511,8 +555,12 @@ function wantsClaudeCodeBase(opts: {
   visualstudio?: boolean
   zed?: boolean
   cursor?: boolean
+  jetbrains?: boolean
+  neovim?: boolean
+  detect?: boolean
   hermes?: boolean
 }): boolean {
+  if (opts.detect === true) return false
   const otherHarnessRequested = [
     opts.codex,
     opts.gemini,
@@ -527,6 +575,8 @@ function wantsClaudeCodeBase(opts: {
     opts.visualstudio,
     opts.zed,
     opts.cursor,
+    opts.jetbrains,
+    opts.neovim,
   ].some((v) => v === true)
   return !otherHarnessRequested || opts.hermes === true
 }
@@ -547,12 +597,64 @@ async function cmdInstall(opts: {
   visualstudio?: boolean
   zed?: boolean
   cursor?: boolean
+  jetbrains?: boolean
+  neovim?: boolean
+  detect?: boolean
+  auto?: boolean
+  all?: boolean
   local?: boolean
   user?: boolean
 }): Promise<void> {
   // --user is the opt-out from the one harness whose scope default is inverted (see vscodeScopeFromFlags). Passing both scope flags is a contradiction, not a precedence puzzle.
   if (opts.project === true && opts.user === true) {
     throw new Error('install takes either -p/--project or --user, not both.')
+  }
+
+  if (opts.detect === true) {
+    const ecosystems = detectEcosystems({ projectRoot: process.cwd() })
+    out('Detected Developer Ecosystems in current workspace:')
+    for (const item of ecosystems.items) {
+      const status = item.detected ? '✅ DETECTED' : '⚪ Not detected'
+      out(`  ${displaySafeText(item.name)} (${displaySafeText(item.flag)}): ${status}`)
+      if (item.reasons.length > 0) {
+        for (const r of item.reasons) {
+          out(`    • ${displaySafeText(r)}`)
+        }
+      }
+    }
+    if (ecosystems.detectedFlags.length > 0) {
+      out('\nRun "token-goat install --auto" to automatically install token-goat across all detected environments.')
+    }
+    if (opts.auto !== true) return
+  }
+
+  if (opts.auto === true) {
+    const detected = detectEcosystems({ projectRoot: process.cwd() })
+    for (const item of detected.items) {
+      if (item.detected) {
+        if (item.id === 'vscode') opts.vscode = true
+        if (item.id === 'visualstudio') opts.visualstudio = true
+        if (item.id === 'copilot') opts.copilot = true
+        if (item.id === 'jetbrains') opts.jetbrains = true
+        if (item.id === 'neovim') opts.neovim = true
+        if (item.id === 'cursor') opts.cursor = true
+        if (item.id === 'codex') opts.codex = true
+        if (item.id === 'zed') opts.zed = true
+        if (item.id === 'opencode') opts.opencode = true
+        if (item.id === 'gemini') opts.gemini = true
+      }
+    }
+  }
+
+  if (opts.all === true) {
+    opts.vscode = true
+    opts.visualstudio = true
+    opts.copilot = true
+    opts.jetbrains = true
+    opts.neovim = true
+    opts.cursor = true
+    opts.codex = true
+    opts.zed = true
   }
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever two hook modules cli.ts happens to import for unrelated commands (hooks_index.ts, hooks_read.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
   await import('./relay.js')
@@ -736,6 +838,26 @@ async function cmdInstall(opts: {
     if (cursorResult.scope === 'project') out(projectHooksCommitNote([cursorResult.mcpPath]))
   }
 
+  if (opts.jetbrains === true) {
+    const jbResult = installJetbrains({ project: opts.project === true })
+    out(
+      jbResult.alreadyInstalled
+        ? `JetBrains MCP integration (${jbResult.scope} scope) already installed → ${displaySafePath(jbResult.mcpPath)}`
+        : `Installed token-goat JetBrains MCP integration (${jbResult.scope} scope) → ${displaySafePath(jbResult.mcpPath)}, ${displaySafePath(jbResult.instructionsPath)}`,
+    )
+    if (jbResult.scope === 'project') out(projectHooksCommitNote([jbResult.mcpPath]))
+  }
+
+  if (opts.neovim === true) {
+    const nvimResult = installNeovim({ project: opts.project === true })
+    out(
+      nvimResult.alreadyInstalled
+        ? `Neovim Lua integration (${nvimResult.scope} scope) already installed → ${displaySafePath(nvimResult.configPath)}`
+        : `Installed token-goat Neovim Lua integration (${nvimResult.scope} scope) → ${displaySafePath(nvimResult.configPath)}`,
+    )
+    if (nvimResult.scope === 'project') out(projectHooksCommitNote([nvimResult.configPath]))
+  }
+
   // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so project-scope installs for the two hosts overlap there. --vscode is project scope unless --user says otherwise, so it reaches this overlap without -p now; --visualstudio still needs -p.
   if (((opts.vscode === true && opts.user !== true) || (opts.visualstudio === true && opts.project === true))) {
     const duplicateNote = visualStudioDuplicateNote()
@@ -812,12 +934,32 @@ async function cmdUninstall(opts: {
   visualstudio?: boolean
   zed?: boolean
   cursor?: boolean
+  jetbrains?: boolean
+  neovim?: boolean
+  all?: boolean
   local?: boolean
   user?: boolean
   purge?: boolean
 }): Promise<void> {
   if (opts.project === true && opts.user === true) {
     throw new Error('uninstall takes either -p/--project or --user, not both.')
+  }
+  if (opts.all === true) {
+    opts.codex = true
+    opts.gemini = true
+    opts.qwen = true
+    opts.kimi = true
+    opts.pi = true
+    opts.openclaw = true
+    opts.copilot = true
+    opts.opencode = true
+    opts.grok = true
+    opts.vscode = true
+    opts.visualstudio = true
+    opts.zed = true
+    opts.cursor = true
+    opts.jetbrains = true
+    opts.neovim = true
   }
   const scope: HookScope = opts.project === true ? 'project' : 'user'
 
@@ -853,6 +995,8 @@ async function cmdUninstall(opts: {
     { flag: opts.visualstudio === true, run: () => uninstallVisualStudio({ project: opts.project === true }), label: 'Visual Studio MCP integration' },
     { flag: opts.zed === true, run: uninstallZed, label: 'Zed MCP context-server integration' },
     { flag: opts.cursor === true, run: () => uninstallCursor({ project: opts.project === true }), label: 'Cursor MCP integration' },
+    { flag: opts.jetbrains === true, run: () => uninstallJetbrains({ project: opts.project === true }), label: 'JetBrains MCP integration' },
+    { flag: opts.neovim === true, run: () => uninstallNeovim({ project: opts.project === true }), label: 'Neovim Lua integration' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -904,6 +1048,8 @@ export function leftoverIntegrations(opts: {
   visualstudio?: boolean
   zed?: boolean
   cursor?: boolean
+  jetbrains?: boolean
+  neovim?: boolean
 }): LeftoverIntegration[] {
   const candidates: Array<{ skipped: boolean; present: () => boolean; flag: string; label: string }> = [
     { skipped: opts.codex !== true, present: isCodexInstalled, flag: '--codex', label: 'Codex CLI integration' },
@@ -932,6 +1078,18 @@ export function leftoverIntegrations(opts: {
       present: () => isCursorInstalled() || isCursorInstalled({ project: true }),
       flag: '--cursor',
       label: 'Cursor MCP integration',
+    },
+    {
+      skipped: opts.jetbrains !== true,
+      present: () => isJetbrainsInstalled() || isJetbrainsInstalled({ project: true }),
+      flag: '--jetbrains',
+      label: 'JetBrains MCP integration',
+    },
+    {
+      skipped: opts.neovim !== true,
+      present: () => isNeovimInstalled() || isNeovimInstalled({ project: true }),
+      flag: '--neovim',
+      label: 'Neovim Lua integration',
     },
   ]
   const found: LeftoverIntegration[] = []
@@ -1492,7 +1650,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
 
 /** Commands that only query the index, so they may answer through a read-only connection when the index cannot be written (a read-only sandbox, a write-denied data directory): see db.ts's allowReadOnlyIndex. A command that writes the index as part of its job (index, worker, doctor, note, hook, mcp-serve, ...) must never be listed, because a writer given the read-only handle fails at its first write instead of at the open. */
 const READ_ONLY_INDEX_COMMANDS: ReadonlySet<string> = new Set([
-  'symbol', 'read', 'brief', 'section', 'semantic', 'skeleton', 'outline', 'refs', 'answer', 'ask', 'map',
+  'symbol', 'read', 'brief', 'section', 'semantic', 'search', 'skeleton', 'outline', 'refs', 'answer', 'ask', 'map',
   'exports', 'imports', 'find', 'locate', 'callers', 'call-chain', 'impact', 'dead', 'deps', 'types', 'scope',
   'similar', 'context-for', 'test-for',
 ])
@@ -1706,6 +1864,16 @@ export function buildProgram(): Command {
     .option('--warm', 'warm up the embedding model session in memory')
     .action(guard(cmdSemantic))
 
+  program
+    .command('search [query] [more...]')
+    .description('parallel multi-angle search fusing symbol, heading, text, and semantic channels concurrently via reciprocal rank fusion')
+    .option('-l, --limit <n>', 'max results (default: 20)')
+    .option('-c, --channels <list>', 'comma-separated channels to query (symbol,heading,text,semantic)')
+    .option('-p, --project [path]', 'scope search to one project root instead of the global index (defaults to cwd)')
+    .option('-j, --json', 'output as JSON')
+    .option('--min-score <score>', 'minimum reciprocal rank fusion score threshold')
+    .action(guard(cmdSearch))
+
   // `skeleton` and `outline` are the same command over the same options (see OutlineOptions, which is an alias of SkeletonOptions) and differ only in which renderer they hand the file to. They were registered by two blocks identical line for line apart from the name, description and callee, so a flag added to one silently did not exist on the other. Registered in the original order, so `--help` still lists skeleton before outline.
   const registerSymbolListing = (
     name: string,
@@ -1883,6 +2051,11 @@ export function buildProgram(): Command {
     .option('--visualstudio', 'configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
     .option('--zed', 'register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
     .option('--cursor', 'register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks "token-goat install" writes to ~/.claude/settings.json')
+    .option('--jetbrains', 'configure a JetBrains Suite (WebStorm, IntelliJ, PyCharm, Rider) MCP server and Copilot routing guidance')
+    .option('--neovim', 'install Neovim Lua integration module (<project>/.nvim/token-goat.lua, or user plugin dir)')
+    .option('--detect', 'inspect the current workspace and detect all IDEs and coding agent ecosystems')
+    .option('--auto', 'automatically install token-goat across all detected developer ecosystems')
+    .option('--all', 'install token-goat across all supported IDE and coding agent environments')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -1905,6 +2078,9 @@ export function buildProgram(): Command {
     .option('--visualstudio', 'remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
     .option('--zed', 'remove the Zed MCP context server entry and its generated shim script')
     .option('--cursor', 'remove the Cursor MCP server entry (user scope by default; -p/--project for the project one)')
+    .option('--jetbrains', 'remove the JetBrains MCP server entry and Copilot routing guidance')
+    .option('--neovim', 'remove the Neovim Lua integration module')
+    .option('--all', 'uninstall token-goat across all supported environments')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .option('--purge', 'also delete the data directories (index, caches, session state, logs); refuses while the worker is running')
     .action(guard(cmdUninstall))

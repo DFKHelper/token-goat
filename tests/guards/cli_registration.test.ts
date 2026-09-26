@@ -55,7 +55,7 @@ describe('CLI command registration', () => {
   it('registers every command intended for users', () => {
     const names = registeredCommandNames()
     const required = [
-      'symbol', 'read', 'section', 'semantic', 'skeleton', 'outline', 'refs',
+      'symbol', 'read', 'section', 'semantic', 'search', 'skeleton', 'outline', 'refs',
       'index', 'map', 'hook', 'install', 'uninstall', 'stats', 'doctor',
       'bash-output', 'web-output', 'mcp-output', 'mcp-history', 'skill-body', 'skill-compact', 'skill-list',
       'skill-size', 'skill-history', 'skill-diff', 'skill-section', 'changed', 'config-get', 'write-file', 'replace', 'gdrive-sections',

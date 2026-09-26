@@ -323,6 +323,25 @@ export const cases: Record<string, () => void | Promise<void>> = {
       expect(path.isAbsolute(item.filePath)).toBe(false)
     }
   },
+  search: () => {
+    const r = run(['search', 'alphaSym'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Parallel Multi-Angle Search')
+    expect(r.stdout).toContain('alphaSym')
+
+    const jsonRes = run(['search', 'alphaSym', '--json'])
+    expect(jsonRes.status, jsonRes.stderr).toBe(0)
+    const payload = JSON.parse(jsonRes.stdout) as {
+      query: string
+      totalHits: number
+      results: Array<{ filePath: string; name?: string }>
+      channelCounts: Record<string, number>
+    }
+    expect(payload.query).toBe('alphaSym')
+    expect(typeof payload.totalHits).toBe('number')
+    expect(Array.isArray(payload.results)).toBe(true)
+    expect(payload.results.length).toBeGreaterThan(0)
+  },
   skeleton: () => {
     expectRead(['skeleton', 'src/mod.ts'], 'alphaSym')
     const r = run(['skeleton', 'src/mod.ts', '--stats'])

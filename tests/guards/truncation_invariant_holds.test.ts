@@ -195,6 +195,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['html-query', 'needs an HTML fixture; the same query envelope is covered through csv-query and json-query'],
   ['pdf-extract', 'needs a binary PDF fixture; text extraction, not a row list'],
   ['docx-text', 'needs a binary .docx fixture; text extraction, not a row list'],
+  ['search', 'multi-channel fusion ranking with RRF consensus across symbol, heading, text, and semantic channels; its output header discloses the consensus count and channel breakdown (e.g. "Found N consensus results in Xms [channels: ...]"), and per-channel retrieval caps are passed directly into candidate extractors before fusion'],
   ['logfold', 'its cap is on INPUT LINES while the payload is folded rows -- different units, so "the pre-cap count of the rows being capped" is not a quantity that exists here. It does disclose, in-band and on stderr; driven by its own case in tests/logfold_tail_discloses.test.ts'],
   ['section', '--max-lines limits LINES of text, not rows of a list, so "the pre-cap count of the rows being capped" is not a quantity that exists here. Line elision is disclosed inline and covered by tests/read_section_max_lines.test.ts'],
 ])

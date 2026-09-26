@@ -25,7 +25,7 @@ export function generateCompactHelp(): string {
     '  pptx-notes',
     '',
     'Index & Search: index, map, reconcile, doctor, commands, ask, answer, pack, tokens,',
-    '  budget, failures, todo, trace, logfold, lockdeps, dep-docs, recent, hot,',
+    '  search, budget, failures, todo, trace, logfold, lockdeps, dep-docs, recent, hot,',
     '  baseline, cost, coverage-report-gaps, clean-cache,',
     '  cache-audit, reclaim-index, project',
     '',

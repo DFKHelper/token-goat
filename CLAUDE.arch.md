@@ -18,6 +18,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/cli.ts`](src/cli.ts) | Commander CLI; `buildProgram()` registers every subcommand and wires it to a `cmd*` handler via `guard()`; `run()` is the exported entry point |
 | [`src/main.ts`](src/main.ts) | Package executable shim — calls `run()` from `cli.ts`; lets the event loop drain (no `process.exit`) so buffered stdout flushes cleanly on Windows pipes |
 | [`src/mcp_server.ts`](src/mcp_server.ts) | `createMcpServer()`: MCP stdio server for `token-goat mcp-serve`, registering all 18 tools by calling the same `read_commands.ts`/`content_store.ts` handlers the CLI uses; does not connect a transport |
+| [`src/search/types.ts`](src/search/types.ts) | Types and interfaces for token-goat parallel multi-angle search. |
 | [`src/types.ts`](src/types.ts) | Wire-shape leaf: `HookOutput` union, `HOOK_EVENTS`, `CANONICAL_TOOLS`, `GitResult` — no local imports, safe for any layer to depend on |
 
 **Indexer and Worker (Critical Path)**
@@ -146,15 +147,18 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bridges/copilot_cli.ts`](src/bridges/copilot_cli.ts) | Copilot CLI hook shim. |
 | [`src/bridges/created_configs.ts`](src/bridges/created_configs.ts) | A record of the config files token-goat itself created, so uninstall can delete one it created and never one that was already the user's. |
 | [`src/bridges/cursor_install.ts`](src/bridges/cursor_install.ts) | Cursor MCP-server installer. |
+| [`src/bridges/detect_ecosystems.ts`](src/bridges/detect_ecosystems.ts) | Harness bridge integration and hook configuration for detect_ecosystems |
 | [`src/bridges/gemini_install.ts`](src/bridges/gemini_install.ts) | Gemini CLI install / uninstall writer. |
 | [`src/bridges/grok_install.ts`](src/bridges/grok_install.ts) | Grok CLI (xAI's "Grok Build") install / uninstall writer. |
 | [`src/bridges/grok.ts`](src/bridges/grok.ts) | Grok CLI (xAI's "Grok Build") bridge. |
 | [`src/bridges/guidance_block.ts`](src/bridges/guidance_block.ts) | Shared guidance-block builder for every harness that gets a token-goat routing block written into its instructions file (Claude Code's CLAUDE.md, Codex's AGENTS.md, Copilot CLI's c |
 | [`src/bridges/index.ts`](src/bridges/index.ts) | Bridges barrel. |
+| [`src/bridges/jetbrains_install.ts`](src/bridges/jetbrains_install.ts) | Harness bridge integration and hook configuration for jetbrains_install |
 | [`src/bridges/kimi_install.ts`](src/bridges/kimi_install.ts) | Kimi Code CLI (MoonshotAI/kimi-code) install / uninstall writer. |
 | [`src/bridges/kimi.ts`](src/bridges/kimi.ts) | Kimi Code CLI bridge (MoonshotAI/kimi-code). |
 | [`src/bridges/matcher_group.ts`](src/bridges/matcher_group.ts) | Shared shape for a `[[hooks.<Event>]]`-style matcher group: an optional `matcher` string plus a list of hook entries, each carrying at least a `command` string. |
 | [`src/bridges/mcp_servers_json.ts`](src/bridges/mcp_servers_json.ts) | The `servers`-keyed MCP JSON reader/writer VS Code and Visual Studio share; edits `servers["token-goat"]` without re-indenting the user's other entries |
+| [`src/bridges/neovim_install.ts`](src/bridges/neovim_install.ts) | Harness bridge integration and hook configuration for neovim_install |
 | [`src/bridges/openclaw_install.ts`](src/bridges/openclaw_install.ts) | OpenClaw install / uninstall writer. |
 | [`src/bridges/openclaw.ts`](src/bridges/openclaw.ts) | OpenClaw bridge plugin. |
 | [`src/bridges/opencode_install.ts`](src/bridges/opencode_install.ts) | opencode install / uninstall writer. |
@@ -465,6 +469,9 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/regex_guard.ts`](src/regex_guard.ts) | Refusing a regular expression that can stall the process that runs it. |
 | [`src/resident_context.ts`](src/resident_context.ts) | Accounting for the context the harness injects and token-goat's hooks never see. |
 | [`src/screenshot.ts`](src/screenshot.ts) | Local screenshot capture for `token-goat screenshot`, so a page render can reach the model as a small shrunk image instead of round-tripping through a separate browser-automation M |
+| [`src/search/parallel_search.ts`](src/search/parallel_search.ts) | Exports: `executeParallelSearch` |
+| [`src/search/rrf.ts`](src/search/rrf.ts) | Exports: `DEFAULT_RRF_K`, `fuseChannelHits` |
+| [`src/search/search_cli.ts`](src/search/search_cli.ts) | Exports: `runParallelSearch` |
 | [`src/secret_redact.ts`](src/secret_redact.ts) | Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. |
 | [`src/served_lines.ts`](src/served_lines.ts) | Finding the stretches of a delivered file window that this session has already served. |
 | [`src/sessions_dir.ts`](src/sessions_dir.ts) | Where per-session state blobs live on disk, and nothing else. |

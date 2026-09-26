@@ -40,6 +40,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`',
     '- reading one heading of a large doc → `section "file::Heading"`',
     "- searching for a symbol's callers → `refs file::symbol --callers`",
+    '- searching across symbols, headings, text, and concepts concurrently → `search "<query>"`',
     '- searching for a *concept* rather than a literal string → `semantic "description"`',
     '- re-reading output you already captured → `bash-output`/`web-output`/`mcp-output` by ID',
     '- a directory listing or recursive wildcard walk to orient in an unfamiliar repo → `map --compact`',
@@ -48,7 +49,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- opening a screenshot, diagram, or scan to read the text in it → `image-text file`',
     '- opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF `pdf-meta`/`pdf-outline` then `pdf-locate` to find the pages and `pdf-extract` only those; Word `docx-outline` then `docx-tables`/`docx-text`; PowerPoint `pptx-outline` then `pptx-slide`/`pptx-notes`; Excel `xlsx-sheets` then `xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`',
     '',
-    'Commands: `answer "<question>"`, `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, ' +
+    'Commands: `search "<query>"`, `answer "<question>"`, `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, ' +
       (gdrive ? '`gdrive-sections <file-id>`, ' : '') +
       '`image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`.',
     '',
