@@ -6,14 +6,13 @@ import { checkEmbeddingPreflight } from '../embed_model.js';
 import { getProjectFileEntries } from '../index_reader.js';
 import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
+import { readFileText } from '../read_commands.js';
 import { fuseChannelHits } from './rrf.js';
 import type { ChannelHit, SearchChannel, SearchExecutionSummary, SearchOptions } from './types.js';
 
 const ALL_CHANNELS: ReadonlyArray<SearchChannel> = ['symbol', 'heading', 'text', 'semantic'];
 
-/**
- * Searches symbols via Full-Text Search and symbol queries.
- */
+/** Searches symbols via Full-Text Search and symbol queries. */
 async function searchSymbolChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
     const hits = searchSymbolsFtsByKind(query, limit, globalDbPath(), rootDir, { notEquals: 'heading' });
@@ -35,9 +34,7 @@ async function searchSymbolChannel(query: string, limit: number, rootDir?: strin
   }
 }
 
-/**
- * Searches document and code section headings.
- */
+/** Searches document and code section headings. */
 async function searchHeadingChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
     const hits = searchSymbolsFtsByKind(query, limit, globalDbPath(), rootDir, { equals: 'heading' });
@@ -59,9 +56,7 @@ async function searchHeadingChannel(query: string, limit: number, rootDir?: stri
   }
 }
 
-/**
- * Searches textual file contents in parallel with resource bounding.
- */
+/** Searches textual file contents in parallel with resource bounding. */
 async function searchTextChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   await Promise.resolve();
   try {
@@ -88,7 +83,12 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
         if (stat.size > 200_000) continue;
         totalBytesScanned += stat.size;
 
-        const content = fs.readFileSync(fullPath, 'utf8');
+        // Through the reader seam, not a plain utf-8 read: the matching line is printed as the preview, so a dotenv value has to come back masked the way `read` shows it, and a UTF-16 file has to be decoded before a query can match it.
+        const content = readFileText(fullPath);
+        if (content === null) {
+          unreadableCount++;
+          continue;
+        }
         const lines = content.split(/\r?\n/);
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
@@ -128,9 +128,7 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
   }
 }
 
-/**
- * Searches dense embeddings and semantic vectors.
- */
+/** Searches dense embeddings and semantic vectors. */
 async function searchSemanticChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
     const preflight = await checkEmbeddingPreflight(rootDir !== undefined ? { projectRoot: rootDir } : undefined);
@@ -158,9 +156,7 @@ async function searchSemanticChannel(query: string, limit: number, rootDir?: str
   }
 }
 
-/**
- * Executes multi-angle searches concurrently across all requested channels.
- */
+/** Executes multi-angle searches concurrently across all requested channels. */
 export async function executeParallelSearch(options: SearchOptions): Promise<SearchExecutionSummary> {
   const startTime = Date.now();
   const query = options.query.trim().slice(0, 500);
