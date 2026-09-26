@@ -20,7 +20,7 @@ afterEach(() => {
 })
 
 function project(): string {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-search-kind-')))
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-search-kind-')))
   dirs.push(dir)
   const headings = Array.from({ length: 8 }, (_, i) => `## Gizmo gizmo gizmo ${i}\n\nThe gizmo gizmo section ${i}.\n`).join('\n')
   fs.writeFileSync(path.join(dir, 'guide.md'), `# Guide\n\n${headings}`)
