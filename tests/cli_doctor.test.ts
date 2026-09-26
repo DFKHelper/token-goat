@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkHookShim, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkHookShim, checkGlobalMcpConfig, checkMcpProcessHealth, isTokenGoatResidentProcess, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, dbCategoryBreakdown, type ProcessInfo } from '../src/cli_doctor.js'
 import { processListOutput } from '../src/cli_doctor_process.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { recordCreatedConfig, takeCreatedConfig } from '../src/bridges/created_configs.js'
@@ -91,6 +91,14 @@ describe('cli_doctor', () => {
 
       expect(result.status, result.message).toBe('ok')
       expect(result.message, 'the ok message states nothing was found, not a count').not.toMatch(/\d+ orphaned/)
+    })
+
+    it('identifies resident background processes cleanly and rejects unrelated scripts', () => {
+      expect(isTokenGoatResidentProcess('node.exe C:\\dist\\token-goat.mjs --worker-daemon')).toBe(true)
+      expect(isTokenGoatResidentProcess('node C:\\dist\\token-goat.mjs hook-server run --slot 0')).toBe(true)
+      expect(isTokenGoatResidentProcess('"C:\\Program Files\\nodejs\\node.exe" scripts/selfimprove-scheduler.mjs')).toBe(false)
+      expect(isTokenGoatResidentProcess('node.exe orphan_probe.js')).toBe(false)
+      expect(isTokenGoatResidentProcess('')).toBe(false)
     })
 
     it('still reports a genuinely parentless Node process alongside the daemon', () => {
