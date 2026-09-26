@@ -1,4 +1,4 @@
-/** Dirty-queue management for incremental re-indexing. Ports the `queue/dirty.txt` side of `worker.py::enqueue_dirty` and the pre-compact flush concept. Edited files are appended to the queue by {@link appendDirtyPath} (called from `hooks_edit.ts`); the background indexer (Layer 7) will later drain it. On `pre_compact` this module records the pending paths and clears the queue so the next session starts clean. This module owns the queue file path and its read/write/clear surface so the writer (`hooks_edit.ts`) and the drainer share one definition rather than duplicating the path join. */
+/** Dirty-queue management for incremental re-indexing. Ports the `queue/dirty.txt` side of `worker.py::enqueue_dirty` and the pre-compact flush concept. Edited files are appended to the queue by {@link appendDirtyPath} (called from `hooks_edit.ts`); the background indexer (Layer 7) will later drain it. On `pre_compact` this module records the pending paths and clears the queue so the next session starts clean. This module is the read/write/clear surface the hooks and the CLI use; the queue path and the append itself live in worker.ts (`dirtyQueuePathFor`, `appendDirtyQueuePaths`), so the producers here and the worker's own requeues write the queue through one definition. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -11,62 +11,16 @@ import { resolveIndexPath } from './paths.js'
 import { isUnderSystemTemp } from './project.js'
 import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
-import { encodeDirtyQueueLine, ensureWorkerAlive, parseDirtyQueueLines } from './worker.js'
+import { appendDirtyQueuePaths, dirtyQueuePathFor, ensureWorkerAlive, parseDirtyQueueLines } from './worker.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
 export function dirtyQueuePath(): string {
-  return path.join(dataDir(), 'queue', 'dirty.txt')
+  return dirtyQueuePathFor(dataDir())
 }
 
-/** Guard against a torn last line left by a previous crashed write: if the queue file already exists and does not end in a newline, the next append has to start with one so the partial line never merges with the appended path into a single garbage entry. Answers that question from the file's size and its final byte alone. Reading the whole file to look at one byte made every append cost the length of the queue, so enqueueing N paths read 1 + 2 + ... + N lines -- quadratic on a queue that routinely reaches four figures at session start. */
-function dirtyQueueLeadingNewline(queuePath: string): string {
-  let fd: number | undefined
-  try {
-    const size = fs.statSync(queuePath).size
-    if (size === 0) return ''
-    fd = fs.openSync(queuePath, 'r')
-    const tail = Buffer.allocUnsafe(1)
-    fs.readSync(fd, tail, 0, 1, size - 1)
-    return tail[0] === 0x0a ? '' : '\n'
-  } catch {
-    // File doesn't exist yet (first append) -- nothing to guard against.
-    return ''
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd)
-      } catch {
-        // Nothing to do about a failed close of a read-only handle.
-      }
-    }
-  }
-}
-
-/** Append every path in `normalizedPaths` to the dirty queue, one path per line, in one filesystem append. Creates the `queue/` directory and the file on first use. Uses append mode so concurrent edits accumulate; a trailing newline terminates each entry so {@link getDirtyPaths} can split cleanly. The torn-line guard is consulted once for the whole batch, which is correct because the batch is written as a single append: only the first line of it can ever meet a partial line. The worker claims the queue by renaming it, and a handle opened before that rename still writes into the renamed file, which the worker deletes once it has read it a last time. A write landing after that read went out with the delete. So each append checks, after writing, that the file it wrote is still the one named `dirty.txt`, and writes again if a claim took it: from that point on the path is in a file the worker has yet to claim. A duplicate costs the drain one unchanged-sha skip. */
+/** Append every path in `normalizedPaths` to the dirty queue under {@link dataDir}, one newline-terminated path per line, in one filesystem append, through worker.ts::appendDirtyQueuePaths, which holds the torn-line guard and the recheck against a claim renaming the queue mid-write. Throws when the queue cannot be written, which the edit hook records as a failed append. */
 export function appendDirtyPaths(normalizedPaths: string[]): void {
-  if (normalizedPaths.length === 0) return
-  const queuePath = dirtyQueuePath()
-  const dir = path.dirname(queuePath)
-  try {
-    ensureDirSync(dir)
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
-  }
-  const body = normalizedPaths.map((p) => `${encodeDirtyQueueLine(p)}\n`).join('')
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (appendToLiveQueue(queuePath, `${dirtyQueueLeadingNewline(queuePath)}${body}`)) return
-  }
-}
-
-/** Append `data` to `queuePath` and report whether the file written is still the one at that path afterwards. Compared by inode alone: some Windows Node versions report a device number of 0 from a path stat and the volume serial from a descriptor stat of the same file. */
-function appendToLiveQueue(queuePath: string, data: string): boolean {
-  const fd = fs.openSync(queuePath, 'a')
-  try {
-    fs.writeFileSync(fd, data)
-    return fs.statSync(queuePath, { bigint: true, throwIfNoEntry: false })?.ino === fs.fstatSync(fd, { bigint: true }).ino
-  } finally {
-    fs.closeSync(fd)
-  }
+  appendDirtyQueuePaths(dataDir(), normalizedPaths)
 }
 
 /** Append `normalizedPath` to the dirty queue, one path per line. The single-path form of {@link appendDirtyPaths}, kept for the one-at-a-time callers (`hooks_edit.ts` and the CLI write paths). */

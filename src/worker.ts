@@ -399,23 +399,63 @@ function bumpAndCheckRetry(dir: string, absPath: string): boolean {
   return true
 }
 
-// Appends `absPath` to the live dirty queue. Mirrors appendDirtyPath's crash-safe append (mkdir + torn-last-line guard) in hooks_index.ts, but is parameterized by `dir` (rather than hardcoding dataDir()) so it targets the same queue processDirtyBatch/drainOnce were given -- including an isolated dir under test. Best-effort: if the write itself fails, the path is lost for this cycle, but the failure is still captured via logTransientReadFailure above. Returns whether the paths reached the queue, for a caller that can keep them and try again.
-function appendToDirtyQueue(dir: string, ...absPaths: string[]): boolean {
+/** Guard against a torn last line left by a previous crashed write: if the queue file already exists and does not end in a newline, the next append has to start with one so the partial line never merges with the appended path into a single garbage entry. Answers that question from the file's size and its final byte alone. Reading the whole file to look at one byte made every append cost the length of the queue, so enqueueing N paths read 1 + 2 + ... + N lines -- quadratic on a queue that routinely reaches four figures at session start. */
+function dirtyQueueLeadingNewline(queuePath: string): string {
+  let fd: number | undefined
+  try {
+    const size = fs.statSync(queuePath).size
+    if (size === 0) return ''
+    fd = fs.openSync(queuePath, 'r')
+    const tail = Buffer.allocUnsafe(1)
+    fs.readSync(fd, tail, 0, 1, size - 1)
+    return tail[0] === 0x0a ? '' : '\n'
+  } catch {
+    // File doesn't exist yet (first append) -- nothing to guard against.
+    return ''
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // Nothing to do about a failed close of a read-only handle.
+      }
+    }
+  }
+}
+
+/** Append `data` to `queuePath` and report whether the file written is still the one at that path afterwards. Compared by inode alone: some Windows Node versions report a device number of 0 from a path stat and the volume serial from a descriptor stat of the same file. */
+function appendToLiveQueue(queuePath: string, data: string): boolean {
+  const fd = fs.openSync(queuePath, 'a')
+  try {
+    fs.writeFileSync(fd, data)
+    return fs.statSync(queuePath, { bigint: true, throwIfNoEntry: false })?.ino === fs.fstatSync(fd, { bigint: true }).ino
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/** Append every path in `absPaths` to the dirty queue under `dir`, one path per line, in one filesystem append, and report whether they reached the live queue. Throws when the `queue/` directory or the file cannot be written. Creates both on first use. Uses append mode so concurrent producers accumulate; a trailing newline terminates each entry so {@link parseDirtyQueueLines} can split cleanly. The torn-line guard is consulted once for the whole batch, which is correct because the batch is written as a single append: only the first line of it can ever meet a partial line. The worker claims the queue by renaming it, and a handle opened before that rename still writes into the renamed file, which the worker deletes once it has read it a last time. A write landing after that read went out with the delete. So each append checks, after writing, that the file it wrote is still the one named `dirty.txt`, and writes again if a claim took it: from that point on the path is in a file the worker has yet to claim. A duplicate costs the drain one unchanged-sha skip. Every producer appends through here, the hooks and CLI through hooks_index.ts::appendDirtyPaths and the worker's own requeues through {@link appendToDirtyQueue}. */
+export function appendDirtyQueuePaths(dir: string, absPaths: readonly string[]): boolean {
   if (absPaths.length === 0) return true
   const queuePath = dirtyQueuePathFor(dir)
+  const queueDir = path.dirname(queuePath)
   try {
-    ensureDirSync(path.dirname(queuePath))
-    let leadingNewline = ''
-    try {
-      const existing = fs.readFileSync(queuePath, 'utf8')
-      if (existing.length > 0 && !existing.endsWith('\n')) leadingNewline = '\n'
-    } catch {
-      // File doesn't exist yet -- nothing to guard against.
-    }
-    fs.appendFileSync(queuePath, `${leadingNewline}${absPaths.map((p) => `${encodeDirtyQueueLine(p)}\n`).join('')}`)
-    return true
+    ensureDirSync(queueDir)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(queueDir)) throw e
+  }
+  const body = absPaths.map((p) => `${encodeDirtyQueueLine(p)}\n`).join('')
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (appendToLiveQueue(queuePath, `${dirtyQueueLeadingNewline(queuePath)}${body}`)) return true
+  }
+  return false
+}
+
+// The worker's own append to the queue under `dir`, the one processDirtyBatch/drainOnce were given (an isolated dir under test). Best-effort: if the write fails, the path is lost for this cycle, but the failure is still captured via logTransientReadFailure above. Returns whether the paths reached the queue, for a caller that can keep them and try again.
+function appendToDirtyQueue(dir: string, ...absPaths: string[]): boolean {
+  try {
+    return appendDirtyQueuePaths(dir, absPaths)
   } catch {
-    // best-effort -- see doc comment above.
     return false
   }
 }
