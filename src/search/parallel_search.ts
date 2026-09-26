@@ -3,7 +3,8 @@ import { getDb } from '../db.js';
 import { globalDbPath } from '../constants.js';
 import { searchSemantic, mergeNearbyHits, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD } from '../embeddings.js';
 import { checkEmbeddingPreflight } from '../embed_model.js';
-import { searchSymbolsFts, getProjectFileEntries } from '../index_reader.js';
+import { getProjectFileEntries } from '../index_reader.js';
+import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
 import { fuseChannelHits } from './rrf.js';
 import type { ChannelHit, SearchChannel, SearchExecutionSummary, SearchOptions } from './types.js';
@@ -15,7 +16,7 @@ const ALL_CHANNELS: ReadonlyArray<SearchChannel> = ['symbol', 'heading', 'text',
  */
 async function searchSymbolChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
-    const hits = searchSymbolsFts(query, limit, globalDbPath(), rootDir, { notEquals: 'heading' });
+    const hits = searchSymbolsFtsByKind(query, limit, globalDbPath(), rootDir, { notEquals: 'heading' });
     return {
       hits: hits.slice(0, limit).map((sym, idx) => ({
         channel: 'symbol' as SearchChannel,
@@ -39,7 +40,7 @@ async function searchSymbolChannel(query: string, limit: number, rootDir?: strin
  */
 async function searchHeadingChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
-    const hits = searchSymbolsFts(query, limit, globalDbPath(), rootDir, { equals: 'heading' });
+    const hits = searchSymbolsFtsByKind(query, limit, globalDbPath(), rootDir, { equals: 'heading' });
     return {
       hits: hits.slice(0, limit).map((sym, idx) => ({
         channel: 'heading' as SearchChannel,

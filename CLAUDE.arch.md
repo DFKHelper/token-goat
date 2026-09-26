@@ -472,6 +472,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/search/parallel_search.ts`](src/search/parallel_search.ts) | Exports: `executeParallelSearch` |
 | [`src/search/rrf.ts`](src/search/rrf.ts) | Exports: `DEFAULT_RRF_K`, `fuseChannelHits` |
 | [`src/search/search_cli.ts`](src/search/search_cli.ts) | Exports: `runParallelSearch` |
+| [`src/search/symbol_fts.ts`](src/search/symbol_fts.ts) | Full-text symbol search split by kind, for the `search` command's symbol and heading channels. |
 | [`src/secret_redact.ts`](src/secret_redact.ts) | Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. |
 | [`src/served_lines.ts`](src/served_lines.ts) | Finding the stretches of a delivered file window that this session has already served. |
 | [`src/sessions_dir.ts`](src/sessions_dir.ts) | Where per-session state blobs live on disk, and nothing else. |
