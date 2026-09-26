@@ -247,8 +247,10 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   // Dev servers (Next, Vite, Nuxt, Remix, Astro)
   { pattern: /^(?:npx\s+)?next dev/, recallHint: '--tail 30 --grep "error|warn|ready|compiled"' },
   { pattern: /^(?:npx\s+)?next build/, recallHint: '--grep "error|warn|Failed|✓"' },
-  { pattern: /^(?:npx\s+)?vite\b(?:\s+dev|\s+build|\s+preview)?/, recallHint: '--tail 20 --grep "error|warn|ready"' },
-  { pattern: /^(?:npx\s+)?nuxt dev/, recallHint: '--tail 30 --grep "error|warn|ready"' },
+  // vite ends at whitespace or the end of the command, not at a word boundary, which a hyphen satisfies: vite-node is another tool, one isBuildCommand never fingerprints, so its saved output would be offered as fresh forever.
+  { pattern: /^(?:npx\s+)?vite(?:\s|$)/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+  // nuxt dev ends the same way: `nuxt devtools enable` is another nuxt command, and isBuildCommand gives it no fingerprint either.
+  { pattern: /^(?:npx\s+)?nuxt dev(?:\s|$)/, recallHint: '--tail 30 --grep "error|warn|ready"' },
   { pattern: /^(?:npx\s+)?remix dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
   { pattern: /^(?:npx\s+)?astro dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
 
@@ -274,7 +276,8 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^(?:npx\s+)?prettier(?:\s|$)/, recallHint: '--grep "unchanged|reformatted|error"' },
   { pattern: /^npx\s+tsc(?:\s|$)/, recallHint: '--grep "error TS|Cannot find|Type "' },
   { pattern: /^ruff(?:\s|$)/, recallHint: '--grep "error|warning|Found"' },
-  { pattern: /^(?:cargo\s+)?clippy/, recallHint: '--grep "error\\[|warning\\["' },
+  // Ends the same way: clippy-driver is clippy's rustc wrapper, run without cargo, so isBuildCommand gives it no fingerprint to go stale by.
+  { pattern: /^(?:cargo\s+)?clippy(?:\s|$)/, recallHint: '--grep "error\\[|warning\\["' },
 
   // git diff (full diff output — can be very large; excludes --stat which is small)
   { pattern: /^git diff(?!\s+--stat)(?:\s+HEAD)?(?:\s|$)/, recallHint: '--grep "@@|\\+\\+\\+|---|diff --git"' },
