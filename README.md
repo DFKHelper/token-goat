@@ -335,7 +335,7 @@ token-goat install
 token-goat doctor          # confirms hooks are wired; reports any failure it finds
 ```
 
-Three commands. Hooks register and start working immediately: no terminal popups, no tray icon, no service to babysit. That wires up Claude Code; other agent CLIs are added with a flag (`--codex`, `--copilot`, and siblings).
+Three commands. Hooks register and start working immediately: no terminal popups, no tray icon, no service to babysit. That wires up Claude Code; other agent CLIs are added with a flag (`--codex`, `--copilot`, and siblings). On Windows and Linux, each hook runs through a small native client, `tg-hook`, that hands the call to token-goat's resident hook server instead of starting Node, and runs the Node command itself when the server is away; the Windows binaries are code-signed and the Linux ones carry build provenance. Details and the opt-out: [Native hook client](docs/install.md#what-gets-installed).
 
 > **WSL performance tip:** Keep active repositories on WSL's native ext4 filesystem (`~/projects/...`) rather than Windows mounts (`/mnt/c/...`) to avoid 9P cross-OS filesystem translation overhead during initial indexing.
 
@@ -455,25 +455,15 @@ token-goat stats
 
 ### Confirming hooks are wired
 
-`doctor` checks the binary, worker, database, and disk, and whether the installed Claude Code, Codex and Copilot hook shims match the running build. It does not inspect `settings.json` hook wiring. To confirm all three hooks are present, re-run `install`:
+`doctor` checks the binary, worker, database, and disk, whether the installed Claude Code, Codex and Copilot hook shims match the running build, and the hook wiring itself. Its `Claude Code hook events` line reads `every event this build handles is wired` when `settings.json` has a current token-goat entry for each event; otherwise it names, per scope, the events that are missing, still run a command this build no longer writes, or point at a native hook client binary that is gone. The `Native hooks` lines report, per harness, which form of hook command is wired and whether the native client binary is present and passes its self-test. To fix any of them, re-run `install`:
 
 ```
 token-goat install
 ```
 
-`install` is idempotent: it adds any missing entries and leaves existing hook entries alone. Re-running it is always safe. To inspect the wiring directly:
+`install` is idempotent: it adds missing entries, rewrites outdated token-goat entries in place, and leaves everything else in `settings.json` alone. Re-running it is always safe. Restart any running session afterwards so it picks up the new entries.
 
-```bash
-# Linux / macOS / WSL
-jq '[.hooks | to_entries[] | select(.value[].hooks[]?.command | contains("token-goat hook")) | .key]' ~/.claude/settings.json
-
-# Windows (PowerShell with jq on your PATH)
-jq '[.hooks | to_entries[] | select(.value[].hooks[]?.command | contains("token-goat hook")) | .key]' "$env:USERPROFILE\.claude\settings.json"
-```
-
-A working install returns `["PreToolUse", "PostToolUse", "PreCompact"]`. Any missing event means a partial install; run `token-goat install` to fill it in.
-
-**AI agents:** after `token-goat install`, run the `jq` check above or re-run `token-goat install` before marking the install complete. `doctor` does not verify hook wiring.
+**AI agents:** after `token-goat install`, run `token-goat doctor` and check the `Claude Code hook events` line before marking the install complete.
 
 ## Image support
 
