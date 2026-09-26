@@ -5,9 +5,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.pi/` (mirrors the pattern in install_codex.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.pi/` (mirrors the pattern in install_codex.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -38,9 +36,7 @@ beforeEach(() => {
   homedirMock.mockReturnValue(path.join(TMP, 'home'))
 
   origCwd = process.cwd()
-  // Project-local install resolves against process.cwd() (mirrors install.test.ts's
-  // handling of installHooks('project')); chdir into an isolated project dir so
-  // --local writes under {TMP}/project/.pi/extensions, never this repo's own .pi/.
+  // Project-local install resolves against process.cwd() (mirrors install.test.ts's handling of installHooks('project')); chdir into an isolated project dir so --local writes under {TMP}/project/.pi/extensions, never this repo's own .pi/.
   fs.mkdirSync(path.join(TMP, 'project'), { recursive: true })
   process.chdir(path.join(TMP, 'project'))
 })
@@ -68,10 +64,7 @@ describe('installPi (global)', () => {
   })
 
   it('overwrites a hand-modified file wholesale instead of merging or warning', () => {
-    // Design decision (documented in pi_install.ts): the extension is a
-    // single generated artifact with no merge target, analogous to Codex's
-    // shim script -- install always reconciles it to the current template on
-    // any content difference, with no .bak and no confirmation prompt.
+    // Design decision (documented in pi_install.ts): the extension is a single generated artifact with no merge target, analogous to Codex's shim script -- install always reconciles it to the current template on any content difference, with no .bak and no confirmation prompt.
     const p = piGlobalExtensionPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, '// a user hand-edited this file\nexport default function () {}\n')
@@ -179,13 +172,7 @@ describe('isPiInstalled / uninstallPi', () => {
     expect(uninstallPi({ local: true })).toBe(false)
   })
 
-  // Regression: uninstallPi used to require the caller to pass the exact scope
-  // opts it was installed with -- since the CLI's --pi uninstall always forced
-  // { local: opts.local === true } (never left undefined), a plain
-  // `token-goat uninstall --pi` (no --local) could never clean up a --local
-  // install; the user had to remember to also pass --local, or it silently
-  // survived. uninstallPi() with no explicit local now cleans up wherever the
-  // extension actually is, both scopes at once.
+  // Regression: uninstallPi used to require the caller to pass the exact scope opts it was installed with -- since the CLI's --pi uninstall always forced { local: opts.local === true } (never left undefined), a plain `token-goat uninstall --pi` (no --local) could never clean up a --local install; the user had to remember to also pass --local, or it silently survived. uninstallPi() with no explicit local now cleans up wherever the extension actually is, both scopes at once.
   it('uninstallPi() with no explicit scope removes both a global and a local install', () => {
     const globalResult = installPi()
     const localResult = installPi({ local: true })
@@ -202,19 +189,7 @@ describe('isPiInstalled / uninstallPi', () => {
   })
 })
 
-// PI_EXTENSION_SCRIPT's file-writing/idempotency tests above (unlike this
-// block) never exercised whether the embedded template actually speaks
-// token-goat's real hook protocol. It once didn't: every callHook() call in
-// the shipped template used invented per-tool-type event names ("pre-read",
-// "post-bash", "session-start", "pre-compact") that don't exist in the real
-// HOOK_EVENTS vocabulary, so relay() (src/relay.ts) silently no-op'd (`{}`)
-// on every single one -- bash compression, re-read denial, image shrinking,
-// post-edit indexing, and the compaction manifest were all completely inert
-// once installed, despite every test in this file passing. This directly
-// mirrors this project's own documented "injected-seam trap": the file gets
-// written and byte-compared correctly, but nothing checks the content it
-// ships actually reaches a real handler. See HOOK_EVENTS/isHookEventName's
-// contract in src/types.ts / src/relay.ts.
+// PI_EXTENSION_SCRIPT's file-writing/idempotency tests above (unlike this block) never exercised whether the embedded template actually speaks token-goat's real hook protocol. It once didn't: every callHook() call in the shipped template used invented per-tool-type event names ("pre-read", "post-bash", "session-start", "pre-compact") that don't exist in the real HOOK_EVENTS vocabulary, so relay() (src/relay.ts) silently no-op'd (`{}`) on every single one -- bash compression, re-read denial, image shrinking, post-edit indexing, and the compaction manifest were all completely inert once installed, despite every test in this file passing. This directly mirrors this project's own documented "injected-seam trap": the file gets written and byte-compared correctly, but nothing checks the content it ships actually reaches a real handler. See HOOK_EVENTS/isHookEventName's contract in src/types.ts / src/relay.ts.
 describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
   it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
     const calls = [...PI_EXTENSION_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
@@ -244,25 +219,11 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
     expect(match?.[1]).not.toMatch(/"Glob"/)
   })
 
-  // Regression: the tool_result handler built its post_tool_use payload with
-  // session_id/tool_name/tool_input/cwd but never forwarded tool_response, so
-  // extractReadOutput (src/hooks_read.ts) and hooks_bash's truncation-marker
-  // detection always saw empty output for files/commands run through pi --
-  // silently disabling confirmed re-read denial despite this module's header
-  // comment listing it as a working feature.
-  // Regression: callHook's inner spawnSync("token-goat", [...]) depends on PATH
-  // resolution -- the npm global bin being on whatever PATH pi-coding-agent's own
-  // process inherits -- the same single-point-of-failure class fixed for the
-  // Codex/Copilot CLI bridges' hook commands. resolveEntryPath() reads an
-  // install-time sidecar (see installPi in pi_install.ts) so callHook can invoke
-  // the real token-goat entry directly via process.execPath instead.
+  // Regression: the tool_result handler built its post_tool_use payload with session_id/tool_name/tool_input/cwd but never forwarded tool_response, so extractReadOutput (src/hooks_read_post.ts) and hooks_bash's truncation-marker detection always saw empty output for files/commands run through pi -- silently disabling confirmed re-read denial despite this module's header comment listing it as a working feature. Regression: callHook's inner spawnSync("token-goat", [...]) depends on PATH resolution -- the npm global bin being on whatever PATH pi-coding-agent's own process inherits -- the same single-point-of-failure class fixed for the Codex/Copilot CLI bridges' hook commands. resolveEntryPath() reads an install-time sidecar (see installPi in pi_install.ts) so callHook can invoke the real token-goat entry directly via process.execPath instead.
   it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
     expect(PI_EXTENSION_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
     expect(PI_EXTENSION_SCRIPT).toMatch(/token-goat-entry\.json/)
-    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the
-    // in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn
-    // when that's unavailable. See the "in-process hook call" describe block below for
-    // coverage of the in-process path taking priority and never spawning a process.
+    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn when that's unavailable. See the "in-process hook call" describe block below for coverage of the in-process path taking priority and never spawning a process.
     const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
@@ -272,13 +233,7 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
   })
 
   it('fallback spawnSync uses shell:true so it resolves .cmd shims on Windows', () => {
-    // Regression: pi.ts's fallback branch (when resolveEntryPath returns undefined)
-    // ran spawnSync("token-goat", ["hook", event]) without shell:true, causing ENOENT
-    // on Windows where "token-goat" is a .cmd shim and Node doesn't resolve PATHEXT
-    // extensions without shell:true. This made every hook call silently fail when the
-    // entry-path sidecar was missing/stale, defeating the whole PATH-hardening this
-    // commit added. Fix: use string concatenation + shell:true like the Codex/Copilot
-    // CLI bridges already do.
+    // Regression: pi.ts's fallback branch (when resolveEntryPath returns undefined) ran spawnSync("token-goat", ["hook", event]) without shell:true, causing ENOENT on Windows where "token-goat" is a .cmd shim and Node doesn't resolve PATHEXT extensions without shell:true. This made every hook call silently fail when the entry-path sidecar was missing/stale, defeating the whole PATH-hardening this commit added. Fix: use string concatenation + shell:true like the Codex/Copilot CLI bridges already do.
     const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
@@ -290,10 +245,7 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
     expect(fallbackBlock).toContain('token-goat hook')
   })
 
-  // Regression: callHook used to spawnSync a whole second node process
-  // (`token-goat hook <event>`) for every single tool call in this long-lived agent
-  // process. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs
-  // hook lib first, falling back to callHookViaSpawn only when that's unavailable.
+  // Regression: callHook used to spawnSync a whole second node process (`token-goat hook <event>`) for every single tool call in this long-lived agent process. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs hook lib first, falling back to callHookViaSpawn only when that's unavailable.
   it('tries the in-process hook lib (resolveRelayInProcess) before ever calling callHookViaSpawn', () => {
     expect(PI_EXTENSION_SCRIPT).toMatch(/function resolveRelayInProcess\(\)/)
     expect(PI_EXTENSION_SCRIPT).toMatch(/token-goat-hook\.mjs/)

@@ -12,8 +12,12 @@ import { functionMap, parseTopLevelFunctions, reaches, type FnInfo } from './rea
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
-/** The emit boundary this guard walks. */
-const CONTEXT_CALL = 'contextOutput('
+/** The emit boundary this guard walks, and hooks_read.ts's exported pure wrapper over it. The walk is same-file, and hooks_read_post.ts reaches the channel only through that wrapper, so the wrapper is named as a sink or the post-read hint would drop out of the population unadjudicated. */
+const CONTEXT_CALLS = ['contextOutput(', 'quietContextOutput(']
+
+function callsContext(body: string): boolean {
+  return CONTEXT_CALLS.some((call) => body.includes(call))
+}
 
 /** Every function that reaches `contextOutput`, with what it interpolates and why that is safe. Keyed `file.ts::function`. A function here is a promise that someone read it, not that it is inert: three of these entries describe a value that IS third-party and IS escaped on the way in. */
 const ADJUDICATED: Readonly<Record<string, string>> = {
@@ -54,7 +58,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'A pure wrapper over contextOutput, the same class as the exempted emitRewriteIfChanged in the sibling guard. Interpolates nothing.',
   'hooks_read.ts::preReadHandlerInner':
     'The densest set of hints in the codebase. `shown` was already displaySafePath(normalized) everywhere. `basename` was not, and it is live: isManifestFile matches manifest extensions as well as fixed names, so the manifest re-read hint quotes an arbitrary repository-chosen file name. Escaped at its derivation, which also covers the tsconfig branch beside it. The skill directory name out of detectSkillFile is escaped too but is not reachable today, gated upstream by safeSkillName; see the note there. The surgicalHint helper it calls also interpolates repository-chosen text -- markdown heading names and indexed symbol names, from querySymbols or the file\'s own content -- and now routes every one of them through its local escapeHintName, which is drop-then-escape rather than escape-only: it first escapes `\\`/`"` for the quoted suggested command, then if displaySafeText would still change the result (a spoken marker or a control character survived), the name is dropped entirely rather than emitted escaped, because an escaped `&#91;tg]` name would still land in a `token-goat section`/`token-goat read` suggestion that section_reader.ts/read_spec.ts cannot resolve (they compare names literally, without HTML-decoding) -- a dropped name falls back to the branch\'s generic `::HeadingName`/`SymbolName` placeholder, and displaySafeText is still applied to whatever survives as a defence-in-depth backstop; this reaches quietContextOutput on the large-file-redirect path (LARGE_FILE_BYTES to largeFileDenyBytes()), which is a context-channel sink like the rest of this entry.',
-  'hooks_read.ts::postReadHandlerInner':
+  'hooks_read_post.ts::postReadHandlerInner':
     'One site, reached through quietContextOutput. Its path comes through the same displaySafePath-derived `shown` the pre-read hints use.',
   'hooks_agent_spawn.ts::postAgentHandler':
     'The unrestricted-spawn advisory names agent definitions from a roster that includes the project you are in. AGENT_NAME_RE constrains the name at the parser and neutralizeSpokenMarkers escapes it again at the sentence, so widening the character set cannot quietly reopen it.',
@@ -63,7 +67,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_bash.ts::postBashHandler': 'Wrapper over the post-Bash path. Interpolates nothing of its own.',
   'hooks_edit.ts::postEditHandler': 'Wrapper over postEditHandlerInner. Interpolates nothing of its own.',
   'hooks_read.ts::preReadHandler': 'Wrapper over preReadHandlerInner. Interpolates nothing of its own.',
-  'hooks_read.ts::postReadHandler': 'Wrapper over postReadHandlerInner. Interpolates nothing of its own.',
+  'hooks_read_post.ts::postReadHandler': 'Wrapper over postReadHandlerInner. Interpolates nothing of its own.',
   'image_shrink.ts::preReadImageHandler':
     'Wrapper that dispatches to finalizeShrinkResult, adjudicated above. Interpolates nothing of its own.',
 }
@@ -83,11 +87,11 @@ function contextSites(): string[] {
   const out: string[] = []
   for (const file of srcFiles()) {
     const source = fs.readFileSync(file, 'utf8')
-    if (!source.includes(CONTEXT_CALL)) continue
+    if (!callsContext(source)) continue
     const fns: FnInfo[] = parseTopLevelFunctions(source)
     const map = functionMap(fns)
     for (const fn of fns) {
-      if (reaches(fn, map, (body) => body.includes(CONTEXT_CALL))) out.push(`${path.basename(file)}::${fn.name}`)
+      if (reaches(fn, map, callsContext)) out.push(`${path.basename(file)}::${fn.name}`)
     }
   }
   return out.sort()

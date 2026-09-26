@@ -5,9 +5,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.openclaw/` (mirrors the pattern in install_gemini.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.openclaw/` (mirrors the pattern in install_gemini.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -125,8 +123,7 @@ describe('installOpenclaw', () => {
 
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('openclaw.json.bak.'))
-    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly
-    // one call above actually produces a backup file.
+    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly one call above actually produces a backup file.
     expect(backups.length).toBe(1)
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(backupContent).toBe(JSON.stringify({ gateway: { port: 4141 } }))
@@ -142,17 +139,10 @@ describe('installOpenclaw', () => {
     expect(() => installOpenclaw()).toThrow(OpenclawConfigParseError)
     expect(() => installOpenclaw()).toThrow(/invalid JSON/)
 
-    // installOpenclaw must never reach the config write (or the plugin-file
-    // write, which is ordered after config parsing) when the config file
-    // existed but failed to parse -- the corrupt-but-recoverable file must be
-    // left exactly as the user left it, not silently clobbered.
+    // installOpenclaw must never reach the config write (or the plugin-file write, which is ordered after config parsing) when the config file existed but failed to parse -- the corrupt-but-recoverable file must be left exactly as the user left it, not silently clobbered.
     expect(fs.readFileSync(p, 'utf8')).toBe(corrupt)
     expect(fs.existsSync(openclawPluginPath())).toBe(false)
-    // Regression: the entry-path sidecar used to be written unconditionally
-    // BEFORE the strict config parse, so a corrupt openclaw.json still left
-    // a stray token-goat-entry.json behind even though the install as a
-    // whole aborted and the plugin config was never touched. The sidecar
-    // write must now happen only after the strict parse succeeds.
+    // Regression: the entry-path sidecar used to be written unconditionally BEFORE the strict config parse, so a corrupt openclaw.json still left a stray token-goat-entry.json behind even though the install as a whole aborted and the plugin config was never touched. The sidecar write must now happen only after the strict parse succeeds.
     expect(fs.existsSync(openclawEntrySidecarPath())).toBe(false)
   })
 
@@ -168,10 +158,7 @@ describe('installOpenclaw', () => {
   })
 
   it('throws on plugins.load.paths being a bare string instead of an array, and leaves the file untouched', () => {
-    // Regression: readOpenclawConfig cast the parsed JSON straight to OpenclawSettings with no
-    // validation of the nested plugins.load.paths shape. A hand-edited config with a bare
-    // string there made installOpenclaw's `[...(plugins.load?.paths ?? [])]` spread the string
-    // into individual characters and silently persist that garbage back to disk.
+    // Regression: readOpenclawConfig cast the parsed JSON straight to OpenclawSettings with no validation of the nested plugins.load.paths shape. A hand-edited config with a bare string there made installOpenclaw's `[...(plugins.load?.paths ?? [])]` spread the string into individual characters and silently persist that garbage back to disk.
     const p = openclawConfigPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
     const malformed = JSON.stringify({ plugins: { load: { paths: 'not-an-array' } } })
@@ -266,8 +253,7 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
   it('backs openclaw.json up before a rewrite, then removes only the backups it made itself', () => {
     installOpenclaw()
     const p = openclawConfigPath()
-    // Hand-edited back to an empty object, so the second install has something to write and
-    // therefore something to back up first.
+    // Hand-edited back to an empty object, so the second install has something to write and therefore something to back up first.
     fs.writeFileSync(p, '{}\n')
     installOpenclaw()
 
@@ -342,11 +328,7 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     expect(match?.[1]).not.toMatch(/"Glob"/)
   })
 
-  // Regression: the after_tool_call handler built its post_tool_use payload with
-  // session_id/tool_name/tool_input/cwd but never forwarded tool_response, so
-  // extractReadOutput (src/hooks_read.ts) and hooks_bash's truncation-marker/
-  // exit-code extraction always saw undefined tool_response for OpenClaw, even
-  // though the equivalent forwarding works for opencode.ts and pi.ts.
+  // Regression: the after_tool_call handler built its post_tool_use payload with session_id/tool_name/tool_input/cwd but never forwarded tool_response, so extractReadOutput (src/hooks_read_post.ts) and hooks_bash's truncation-marker/ exit-code extraction always saw undefined tool_response for OpenClaw, even though the equivalent forwarding works for opencode.ts and pi.ts.
   it('forwards event.result as tool_response in the post_tool_use payload, mirroring opencode.ts/pi.ts', () => {
     const match = /api\.on\("after_tool_call",[\s\S]*?\n {4}\}\);/.exec(OPENCLAW_PLUGIN_SCRIPT)
     expect(match).not.toBeNull()
@@ -355,21 +337,11 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     expect(handlerBody).toMatch(/event\.result/)
   })
 
-  // Regression: callHook's inner spawnSync("token-goat", [...]) depended on PATH
-  // resolution with no shell:true -- on Windows, a global npm install resolves
-  // "token-goat" to a .cmd/.ps1 shim, which spawnSync cannot exec without
-  // shell: true, so every hook call silently failed (r.error set, callHook
-  // returning null). resolveEntryPath() reads an install-time sidecar (see
-  // installOpenclaw in openclaw_install.ts) so callHook can invoke the real
-  // token-goat entry directly via process.execPath instead, mirroring pi.ts's
-  // identical fix.
+  // Regression: callHook's inner spawnSync("token-goat", [...]) depended on PATH resolution with no shell:true -- on Windows, a global npm install resolves "token-goat" to a .cmd/.ps1 shim, which spawnSync cannot exec without shell: true, so every hook call silently failed (r.error set, callHook returning null). resolveEntryPath() reads an install-time sidecar (see installOpenclaw in openclaw_install.ts) so callHook can invoke the real token-goat entry directly via process.execPath instead, mirroring pi.ts's identical fix.
   it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/token-goat-entry\.json/)
-    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the
-    // in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn
-    // when that's unavailable. See the "in-process hook call" describe block below for
-    // coverage of the in-process path taking priority and never spawning a process.
+    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn when that's unavailable. See the "in-process hook call" describe block below for coverage of the in-process path taking priority and never spawning a process.
     const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
@@ -389,10 +361,7 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     expect(fallbackBlock).toContain('token-goat hook')
   })
 
-  // Regression: callHook used to spawnSync a whole second node process
-  // (`token-goat hook <event>`) for every single tool call in this long-lived gateway
-  // process. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs
-  // hook lib first, falling back to callHookViaSpawn only when that's unavailable.
+  // Regression: callHook used to spawnSync a whole second node process (`token-goat hook <event>`) for every single tool call in this long-lived gateway process. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs hook lib first, falling back to callHookViaSpawn only when that's unavailable.
   it('tries the in-process hook lib (resolveRelayInProcess) before ever calling callHookViaSpawn', () => {
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/function resolveRelayInProcess\(\)/)
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/token-goat-hook\.mjs/)

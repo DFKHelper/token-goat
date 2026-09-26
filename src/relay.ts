@@ -18,6 +18,7 @@ import { shouldSuppressDuplicateVscodeHook } from './vscode_duplicate.js'
 
 // Side-effect imports: each registers its handlers with the hook registry.
 import './hooks_read.js'
+import './hooks_read_post.js'
 import './hooks_grep.js'
 import './hooks_glob.js'
 import './hooks_edit.js'

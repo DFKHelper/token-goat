@@ -1,15 +1,4 @@
-/**
- * Large-source structural-skeleton replacement coverage (hooks_read.ts foldSourceSkeleton).
- *
- * Fixture provenance: HAND-DERIVED. Every source body below is synthetic TypeScript/C# written for
- * this test, sized and shaped to sit either side of this feature's own thresholds; nothing in it is
- * read off the implementation under test, and the declaration lines the must-not-drop assertions
- * name are chosen from the fixture text rather than from anything the fold produces.
- *
- * The `N\tline` numbered rendering is FORMAT-DERIVED from the shape READ_NUMBERED_ROW_RE accepts
- * (the same `numbered` helper tests/hooks_read_markdown_outline.test.ts and tests/code_fold.test.ts
- * use), which is the Read tool's own `cat -n` delivery shape, not this fold's output shape.
- */
+/** Large-source structural-skeleton replacement coverage (hooks_read_post.ts foldSourceSkeleton). Fixture provenance: HAND-DERIVED. Every source body below is synthetic TypeScript/C# written for this test, sized and shaped to sit either side of this feature's own thresholds; nothing in it is read off the implementation under test, and the declaration lines the must-not-drop assertions name are chosen from the fixture text rather than from anything the fold produces. The `N\tline` numbered rendering is FORMAT-DERIVED from the shape READ_NUMBERED_ROW_RE accepts (the same `numbered` helper tests/hooks_read_markdown_outline.test.ts and tests/code_fold.test.ts use), which is the Read tool's own `cat -n` delivery shape, not this fold's output shape. */
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -18,7 +7,7 @@ import * as path from 'node:path'
 
 import { BUNDLE } from './helpers/bundle.js'
 
-import { postReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/util.js'
 import { getFileServedOutputs } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -108,8 +97,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     const file = writeSource(body, '.ts')
     const text = rewrittenText(postReadHandler(postEvent(file, body)))
 
-    // Must-not-drop, named line by line rather than as a ratio: a fold that over-collapsed would
-    // score BETTER on any size assertion while losing the exact thing the skeleton exists to keep.
+    // Must-not-drop, named line by line rather than as a ratio: a fold that over-collapsed would score BETTER on any size assertion while losing the exact thing the skeleton exists to keep.
     for (const imp of IMPORT_LINES) expect(text).toContain(imp)
     for (let i = 0; i < 12; i++) expect(text).toContain(declLine(i))
     // The bodies do not survive: that is the whole point of the replacement.
@@ -135,10 +123,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
   })
 
   it('leaves a source file under the byte floor alone even with enough declarations', () => {
-    // Sized against the DELIVERED text, which is what the floor is measured on: the numbered `cat -n`
-    // rendering the Read tool hands back, never the file's own bytes. Bodies deep enough that every
-    // other gate (declaration count, ratio, net savings) is comfortably clear, so the floor is the
-    // only thing that can be declining this.
+    // Sized against the DELIVERED text, which is what the floor is measured on: the numbered `cat -n` rendering the Read tool hands back, never the file's own bytes. Bodies deep enough that every other gate (declaration count, ratio, net savings) is comfortably clear, so the floor is the only thing that can be declining this.
     const body = tsFile(12, 5)
     expect(Buffer.byteLength(numbered(body), 'utf-8')).toBeLessThan(12_000)
     const file = writeSource(body, '.ts')
@@ -159,12 +144,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     expect(JSON.stringify(postReadHandler(postEvent(file, body)))).not.toContain('structural skeleton')
   })
 
-  /*
-   * The regex extractors would find every one of these C# declarations, and a skeleton built from
-   * them would look perfectly well formed while omitting whatever they missed. C# has no tree-sitter
-   * grammar here, so this is the exact case where a fallback would produce a partial map with
-   * nothing in the output to signal the omission. The fold must return null and deliver the file.
-   */
+  /* The regex extractors would find every one of these C# declarations, and a skeleton built from them would look perfectly well formed while omitting whatever they missed. C# has no tree-sitter grammar here, so this is the exact case where a fallback would produce a partial map with nothing in the output to signal the omission. The fold must return null and deliver the file. */
   it('returns null rather than a partial skeleton on a language tree-sitter cannot parse', () => {
     const methods = Array.from(
       { length: 14 },
@@ -177,8 +157,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     const out = postReadHandler(postEvent(file, body))
 
     expect(JSON.stringify(out)).not.toContain('structural skeleton')
-    // And nothing was withheld by some other path either: a fold that declined here must leave the
-    // C# bodies reachable, which is what "deliver the file whole" means.
+    // And nothing was withheld by some other path either: a fold that declined here must leave the C# bodies reachable, which is what "deliver the file whole" means.
     expect(rewrittenText(out)).not.toContain('withheld from the skeleton')
   })
 
@@ -193,25 +172,15 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     expect(stored.length).toBeGreaterThan(1)
 
     const fileLines = new Set(body.split('\n'))
-    // Every recorded line is a line of the file as delivered: no notice, no reformatting, nothing
-    // the reader was not actually shown.
+    // Every recorded line is a line of the file as delivered: no notice, no reformatting, nothing the reader was not actually shown.
     for (const line of stored) expect(fileLines.has(line)).toBe(true)
-    // And nothing withheld was recorded: a body line in the store would make a later read elide a
-    // line this read never delivered.
+    // And nothing withheld was recorded: a body line in the store would make a later read elide a line this read never delivered.
     expect(stored).not.toContain(BODY_FILLER)
     for (let i = 0; i < 12; i++) expect(stored).toContain(declLine(i))
     expect(stored.length).toBeLessThan(body.split('\n').length)
   })
 
-  /**
-   * Fixture provenance: HAND-DERIVED for the quoting line (a source line written for this test, of
-   * the same shape as the guard lines in src/hooks_read.ts), CAPTURE for the notice constant below.
-   *
-   * The guard against folding a truncated delivery used to scan the whole body for `[Truncated:`
-   * anywhere in it, so any file whose own text discussed truncation became permanently unfoldable:
-   * src/hooks_read.ts and tests/hooks_read.test.ts, the two files an agent working on this subsystem
-   * reads most, were the largest casualties.
-   */
+  /** Fixture provenance: HAND-DERIVED for the quoting line (a source line written for this test, of the same shape as the guard lines in src/hooks_read.ts), CAPTURE for the notice constant below. The guard against folding a truncated delivery used to scan the whole body for `[Truncated:` anywhere in it, so any file whose own text discussed truncation became permanently unfoldable: src/hooks_read.ts and tests/hooks_read.test.ts, the two files an agent working on this subsystem reads most, were the largest casualties. */
   it('still folds a source file whose own body quotes the truncation marker inside a string', () => {
     const quoting = "  if (respText.includes('[Truncated: PARTIAL view')) return null"
     const body = tsFile(12, 12).replace(BODY_FILLER, `${BODY_FILLER}\n${quoting}`)
@@ -224,11 +193,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     for (let i = 0; i < 12; i++) expect(text).toContain(declLine(i))
   })
 
-  /**
-   * Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of
-   * random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the
-   * 25,000-token cap; this is the notice byte-for-byte as the harness emitted it.
-   */
+  /** Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the 25,000-token cap; this is the notice byte-for-byte as the harness emitted it. */
   const HARNESS_TRUNCATION_NOTICE =
     '[Truncated: PARTIAL view — C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_trunc_probe\\probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]'
 
@@ -239,13 +204,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     expect(JSON.stringify(postReadHandler(event))).not.toContain('structural skeleton')
   })
 
-  /**
-   * Fixture provenance: CAPTURE. The `tool_response.file` shape and the `truncatedByTokenCap` key
-   * are taken from the stored `toolUseResult.file` object of real Claude Code Read results: across
-   * 13,904 of them the key is present on 159 and `true` on all 159, and those 159 are exactly the
-   * reads the harness cut at its token cap. On that harness the notice text never reaches the hook
-   * through `tool_response` at all, so this flag is the guard's only live true positive.
-   */
+  /** Fixture provenance: CAPTURE. The `tool_response.file` shape and the `truncatedByTokenCap` key are taken from the stored `toolUseResult.file` object of real Claude Code Read results: across 13,904 of them the key is present on 159 and `true` on all 159, and those 159 are exactly the reads the harness cut at its token cap. On that harness the notice text never reaches the hook through `tool_response` at all, so this flag is the guard's only live true positive. */
   it('declines to fold when tool_response.file.truncatedByTokenCap is set, with no marker in the body', () => {
     const body = tsFile(12, 12)
     const file = writeSource(body, '.ts')
@@ -261,8 +220,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     const truncatedEvent: HookEvent = { ...postEvent(file, body), raw: { tool_response: { type: 'text', file: fileField(true) } } }
     expect(JSON.stringify(postReadHandler(truncatedEvent))).not.toContain('structural skeleton')
 
-    // Calibration: the identical payload without the flag folds, so the decline above is the flag
-    // and not the nested `tool_response.file` shape going unread.
+    // Calibration: the identical payload without the flag folds, so the decline above is the flag and not the nested `tool_response.file` shape going unread.
     const completeEvent: HookEvent = { ...postEvent(file, body), raw: { tool_response: { type: 'text', file: fileField(false) } } }
     expect(JSON.stringify(postReadHandler(completeEvent))).toContain('structural skeleton')
   })
@@ -279,15 +237,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
   })
 })
 
-/*
- * The shipping Read path for the same fold: the built bundle, driven the way the settings.json hook drives it, with NO environment override of the flag under test.
- *
- * Every case in the describe block above sets TOKEN_GOAT_SKELETON_LARGE_SOURCES=1 in its beforeEach, so for as long as they were the only coverage this fold had, they exercised a configuration no install has and the shipped default was covered by nothing: flipping `skeleton_large_sources` in src/config.ts changed no test result in either direction. That is the injected-seam trap CLAUDE.md names, in its exact shape, and it is the same repair tests/code_fold.test.ts made for the sibling body fold. They also all call postReadHandler from source in-process, where `tree-sitter` resolves off the repo's own node_modules; planSourceSkeleton needs a live tree-sitter parse and returns null at src/fold_structure.ts:227 without one, so a shipping artifact that cannot reach the native module folds nothing here while every source-level test stays green. Spawning the built bundle is what puts that resolution under test.
- *
- * The Bash sibling of this fold already had both halves (tests/bash_structural_fold.test.ts drives BUNDLE on a stock environment); the Read surface had neither, which is the gap this block closes.
- *
- * Fixture provenance: the TypeScript body is HAND-DERIVED, built by this file's own tsFile()/declLine() helpers from text written for this test and read off nothing in the implementation. The hook payload shape is FORMAT-DERIVED from the CAPTURE fixture in tests/rewrite_output_shape.test.ts:116, which records `tool_response` as `{type:'text',file:{filePath,content,numLines,startLine,totalLines}}` over 13,324 real results, and `content` is the file's own unnumbered text because that is the rendering the harness actually sends.
- */
+/* The shipping Read path for the same fold: the built bundle, driven the way the settings.json hook drives it, with NO environment override of the flag under test. Every case in the describe block above sets TOKEN_GOAT_SKELETON_LARGE_SOURCES=1 in its beforeEach, so for as long as they were the only coverage this fold had, they exercised a configuration no install has and the shipped default was covered by nothing: flipping `skeleton_large_sources` in src/config.ts changed no test result in either direction. That is the injected-seam trap CLAUDE.md names, in its exact shape, and it is the same repair tests/code_fold.test.ts made for the sibling body fold. They also all call postReadHandler from source in-process, where `tree-sitter` resolves off the repo's own node_modules; planSourceSkeleton needs a live tree-sitter parse and returns null at src/fold_structure.ts:227 without one, so a shipping artifact that cannot reach the native module folds nothing here while every source-level test stays green. Spawning the built bundle is what puts that resolution under test. The Bash sibling of this fold already had both halves (tests/bash_structural_fold.test.ts drives BUNDLE on a stock environment); the Read surface had neither, which is the gap this block closes. Fixture provenance: the TypeScript body is HAND-DERIVED, built by this file's own tsFile()/declLine() helpers from text written for this test and read off nothing in the implementation. The hook payload shape is FORMAT-DERIVED from the CAPTURE fixture in tests/rewrite_output_shape.test.ts:116, which records `tool_response` as `{type:'text',file:{filePath,content,numLines,startLine,totalLines}}` over 13,324 real results, and `content` is the file's own unnumbered text because that is the rendering the harness actually sends. */
 describe('large-source structural skeleton through the built bundle on stock defaults', () => {
   const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skel-bundle-'))
 

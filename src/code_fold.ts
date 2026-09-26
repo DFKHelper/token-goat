@@ -1,18 +1,4 @@
-/**
- * Body folding: keep a source file's structure, replace the inside of long function bodies with a pointer to the command that returns them in full.
- *
- * This exists because the re-read machinery cannot help a *first* read. Every dedup mechanism in hooks_read.ts keys on prior sight -- served runs, identical-read collapse, the heading-tree re-read deny -- and a first read has none, which is where 83.6% of hooked Read bytes are.
- *
- * The unit is the body, not the symbol. A skeleton (signatures only) is 12.0% of what a Read delivers, measured over this repo's 162 source files above 8 KB, so serving one withholds 88% of the file: that is a deny wearing a preview, and it carries a deny's costs (a round trip, an abandonment risk, an edit-error spike) without saying so. Keeping the first lines of each body instead leaves the reader everything a skeleton has plus enough of each implementation to judge whether it needs the rest -- and the rest is one named command away rather than a re-read of the whole file.
- *
- * Long comment blocks fold too, and that reverses an earlier decision recorded here. The old rule was that comments are never touched, on the grounds that they are 46% of this repo's source bytes and carry the design rationale, so removing them would be the largest available saving and the least honest one. That objection was aimed at *stripping*, and it still holds against stripping. What happens here is the same bargain the body fold already makes: the first `commentKeep` lines survive, which is the summary a doc block opens with, and only the rationale underneath is replaced by a notice carrying the exact line range to read back. The contract a reader needs in order to decide whether they want the rest stays on screen. Measured over this repo's 256 source files, folding blocks of 12 lines or more adds 9.9 percentage points of first-read savings, the largest single lever left.
- *
- * What is deliberately never folded:
- * - a `class` or `interface` span, which encloses its members: folding one would swallow every method signature in the type, exactly the structure this is supposed to preserve. Widening to those two kinds measures +6.4 points and is rejected for that reason.
- * - anything outside a symbol span or a comment block: imports and the code between declarations.
- * - a span shorter than `minSpan`, or a comment block shorter than `commentMinBlock`, where the notice costs more than the lines it removes.
- * - a span nested inside one already folded, which would double-count the same lines.
- */
+/** Body folding: keep a source file's structure, replace the inside of long function bodies with a pointer to the command that returns them in full. This exists because the re-read machinery cannot help a *first* read. Every dedup mechanism in the Read hook (hooks_read.ts, hooks_read_post.ts) keys on prior sight -- served runs, identical-read collapse, the heading-tree re-read deny -- and a first read has none, which is where 83.6% of hooked Read bytes are. The unit is the body, not the symbol. A skeleton (signatures only) is 12.0% of what a Read delivers, measured over this repo's 162 source files above 8 KB, so serving one withholds 88% of the file: that is a deny wearing a preview, and it carries a deny's costs (a round trip, an abandonment risk, an edit-error spike) without saying so. Keeping the first lines of each body instead leaves the reader everything a skeleton has plus enough of each implementation to judge whether it needs the rest -- and the rest is one named command away rather than a re-read of the whole file. Long comment blocks fold too, and that reverses an earlier decision recorded here. The old rule was that comments are never touched, on the grounds that they are 46% of this repo's source bytes and carry the design rationale, so removing them would be the largest available saving and the least honest one. That objection was aimed at *stripping*, and it still holds against stripping. What happens here is the same bargain the body fold already makes: the first `commentKeep` lines survive, which is the summary a doc block opens with, and only the rationale underneath is replaced by a notice carrying the exact line range to read back. The contract a reader needs in order to decide whether they want the rest stays on screen. Measured over this repo's 256 source files, folding blocks of 12 lines or more adds 9.9 percentage points of first-read savings, the largest single lever left. What is deliberately never folded: - a `class` or `interface` span, which encloses its members: folding one would swallow every method signature in the type, exactly the structure this is supposed to preserve. Widening to those two kinds measures +6.4 points and is rejected for that reason. - anything outside a symbol span or a comment block: imports and the code between declarations. - a span shorter than `minSpan`, or a comment block shorter than `commentMinBlock`, where the notice costs more than the lines it removes. - a span nested inside one already folded, which would double-count the same lines. */
 
 /** An indexed symbol's line span, as `querySymbols` returns it. Line numbers are 1-based. */
 export interface FoldSpan {
@@ -38,29 +24,13 @@ export interface BodyFold {
   readonly lastLine: number
 }
 
-/**
- * Kinds whose body is an implementation a reader can defer. A `class` or `interface` span encloses its members, so folding it would swallow every method signature in the type -- exactly the structure this is supposed to preserve.
- *
- * `variable` is here because a long one is a data literal: the declaration line says what it is and the rest is detail, which is body-shaped in every way that matters. In this repo it is 64 of the spans that clear a 20-line minimum, worth 3.5 points of first-read savings. A `variable` holding an arrow function is caught by this entry rather than by its nested `function` span, and the outermost-first ordering below makes the two agree instead of racing.
- *
- * `type` is NOT here, for the same reason `interface` is not: a long type alias is a union or an object shape, so folding it swallows exactly the member signatures this is meant to keep. It is also worth nothing here -- one span in this repo clears the minimum.
- */
+/** Kinds whose body is an implementation a reader can defer. A `class` or `interface` span encloses its members, so folding it would swallow every method signature in the type -- exactly the structure this is supposed to preserve. `variable` is here because a long one is a data literal: the declaration line says what it is and the rest is detail, which is body-shaped in every way that matters. In this repo it is 64 of the spans that clear a 20-line minimum, worth 3.5 points of first-read savings. A `variable` holding an arrow function is caught by this entry rather than by its nested `function` span, and the outermost-first ordering below makes the two agree instead of racing. `type` is NOT here, for the same reason `interface` is not: a long type alias is a union or an object shape, so folding it swallows exactly the member signatures this is meant to keep. It is also worth nothing here -- one span in this repo clears the minimum. */
 const FOLDABLE_KINDS = new Set(['function', 'method', 'func', 'def', 'fn', 'procedure', 'constructor', 'variable'])
 
-/**
- * Fewest rows a fold must remove to be worth its notice.
- *
- * The notice is roughly 60-90 bytes and a source line averages well above that, but a run of short lines (a closing brace, a bare `return`) can undercut it. The byte-level net-savings gate in the caller is the real arbiter; this only skips the cases that obviously cannot pay.
- */
+/** Fewest rows a fold must remove to be worth its notice. The notice is roughly 60-90 bytes and a source line averages well above that, but a run of short lines (a closing brace, a bare `return`) can undercut it. The byte-level net-savings gate in the caller is the real arbiter; this only skips the cases that obviously cannot pay. */
 const MIN_FOLDED_ROWS = 3
 
-/**
- * Choose the body stretches to fold.
- *
- * `rows` is the delivered read in order, each carrying its 1-based file line number. It is not assumed to start at line 1 or to be contiguous with the file: a read that delivered a window still folds correctly, because every span is mapped through the rows actually present and a span reaching past them is clipped to what was delivered.
- *
- * Returns folds sorted by position and guaranteed non-overlapping.
- */
+/** Choose the body stretches to fold. `rows` is the delivered read in order, each carrying its 1-based file line number. It is not assumed to start at line 1 or to be contiguous with the file: a read that delivered a window still folds correctly, because every span is mapped through the rows actually present and a span reaching past them is clipped to what was delivered. Returns folds sorted by position and guaranteed non-overlapping. */
 export function planBodyFolds(
   rows: ReadonlyArray<{ readonly no: number }>,
   spans: readonly FoldSpan[],
@@ -124,11 +94,7 @@ export function planBodyFolds(
   return folds
 }
 
-/**
- * Comment syntax by file extension, for {@link planCommentFolds}.
- *
- * Keyed on extension rather than sniffed from content on purpose. A run of lines starting with `#` is a comment block in Python and a run of headings in Markdown, and folding a document's headings would destroy the one structure a reader navigates by. An extension this map does not list gets no comment folding at all, which is the safe direction: the cost is a missed saving, not a mangled read.
- */
+/** Comment syntax by file extension, for {@link planCommentFolds}. Keyed on extension rather than sniffed from content on purpose. A run of lines starting with `#` is a comment block in Python and a run of headings in Markdown, and folding a document's headings would destroy the one structure a reader navigates by. An extension this map does not list gets no comment folding at all, which is the safe direction: the cost is a missed saving, not a mangled read. */
 export interface CommentSyntax {
   readonly line: readonly string[]
   readonly open?: string
@@ -137,13 +103,7 @@ export interface CommentSyntax {
 
 const SLASH_STAR: CommentSyntax = { line: ['//'], open: '/*', close: '*/' }
 
-/**
- * Advance the "am I inside a template literal" state across one row, for the `/* *\/` languages only.
- *
- * {@link planCommentFolds} is purely lexical over delivered text and carried no string state at all, so a row whose trimmed text merely *began* with the block-open marker latched a comment run open until some later row happened to contain a close marker. Swept over 870 files of this repository with the shipping constants, that produced one real hit: `tests/languages.test.ts` folded rows 4393-5155, 598 of them executable code, opened by a `/*`-looking sequence inside a SQL template literal and closed 764 rows later by an unrelated comment inside a protobuf fixture. The notice then asserted the removed rows were comments, so nothing in the delivered output suggested code had gone missing.
- *
- * A backtick is the only string delimiter that spans rows in these languages, which is what makes cross-row state necessary and also what keeps this short of a lexer: single- and double-quoted spans end at the row that opens them, so they are handled within the row and never leak. `${...}` substitutions are deliberately not parsed. A backtick inside one flips the state twice on the same row and cancels out; one that does not is a mismatch this can get wrong, and it gets it wrong in the direction of folding less, which costs bytes rather than content.
- */
+/** Advance the "am I inside a template literal" state across one row, for the `/* *\/` languages only. {@link planCommentFolds} is purely lexical over delivered text and carried no string state at all, so a row whose trimmed text merely *began* with the block-open marker latched a comment run open until some later row happened to contain a close marker. Swept over 870 files of this repository with the shipping constants, that produced one real hit: `tests/languages.test.ts` folded rows 4393-5155, 598 of them executable code, opened by a `/*`-looking sequence inside a SQL template literal and closed 764 rows later by an unrelated comment inside a protobuf fixture. The notice then asserted the removed rows were comments, so nothing in the delivered output suggested code had gone missing. A backtick is the only string delimiter that spans rows in these languages, which is what makes cross-row state necessary and also what keeps this short of a lexer: single- and double-quoted spans end at the row that opens them, so they are handled within the row and never leak. `${...}` substitutions are deliberately not parsed. A backtick inside one flips the state twice on the same row and cancels out; one that does not is a mismatch this can get wrong, and it gets it wrong in the direction of folding less, which costs bytes rather than content. */
 function advanceTemplateState(text: string, inTemplate: boolean): boolean {
   let t = inTemplate
   for (let i = 0; i < text.length; i++) {
@@ -188,15 +148,7 @@ export function commentSyntaxFor(path: string): CommentSyntax | null {
   return COMMENT_SYNTAX.get(path.slice(dot + 1).toLowerCase()) ?? null
 }
 
-/**
- * Choose the comment blocks to fold.
- *
- * A block is a run of consecutive delivered rows that are all comment, either line comments sharing a prefix or the inside of a `/* ... *\/` pair. The first `commentKeep` rows of the run survive, so a doc block keeps its summary and a banner keeps its title; everything after is folded into one notice.
- *
- * `occupied` carries the row indices already claimed by {@link planBodyFolds}, because a doc comment sitting inside a folded function body is gone already and a second notice for it would claim the same bytes twice. Passing an empty set is correct when body folds were not planned, which is what happens when the index is stale: comment blocks come from the delivered text itself and are never stale, so they still fold.
- *
- * Returns folds sorted by position and guaranteed neither overlapping each other nor anything in `occupied`.
- */
+/** Choose the comment blocks to fold. A block is a run of consecutive delivered rows that are all comment, either line comments sharing a prefix or the inside of a `/* ... *\/` pair. The first `commentKeep` rows of the run survive, so a doc block keeps its summary and a banner keeps its title; everything after is folded into one notice. `occupied` carries the row indices already claimed by {@link planBodyFolds}, because a doc comment sitting inside a folded function body is gone already and a second notice for it would claim the same bytes twice. Passing an empty set is correct when body folds were not planned, which is what happens when the index is stale: comment blocks come from the delivered text itself and are never stale, so they still fold. Returns folds sorted by position and guaranteed neither overlapping each other nor anything in `occupied`. */
 export function planCommentFolds(
   rows: ReadonlyArray<{ readonly no: number; readonly text: string }>,
   syntax: CommentSyntax | null,
@@ -289,8 +241,7 @@ export const MAX_FOLD_DETAIL = 400
 /** Room reserved inside {@link MAX_FOLD_DETAIL} for the `,+N more` suffix, so the cap is a hard bound rather than one the suffix can overshoot. */
 const FOLD_DETAIL_SUFFIX_BUDGET = 16
 
-/**
-/** Longest paragraph line left alone. Below this a fold cannot clear the net-benefit floor once its marker is added, and short paragraphs are where a document's structure lives. */
+/** /** Longest paragraph line left alone. Below this a fold cannot clear the net-benefit floor once its marker is added, and short paragraphs are where a document's structure lives. */
 const PROSE_FOLD_MIN_CHARS = 400
 
 /** A kept opening may not run past this share of the paragraph. Beyond it the fold is mostly marker, and the reader pays a recall pointer for almost the whole text anyway. */
@@ -321,15 +272,7 @@ function proseSentenceEnd(text: string): number | null {
   return null
 }
 
-/**
- * Fold each long prose paragraph down to its opening sentence.
- *
- * Documents have no symbol spans, so {@link planBodyFolds} has nothing to work with and a markdown read arrives whole however long it is. What they do have is paragraphs, and a paragraph's opening sentence is its summary by the same convention that makes a docstring's first sentence one. Measured over 814 sessions, shell reads of markdown carry 9.62 MB, of which 1,153 reads holding 6.40 MB contain a paragraph long enough to fold; folding them removes 51.1% of those bytes.
- *
- * One paragraph is one row here, which is how markdown is normally written and is what lets the opening sentence stay in place rather than being dropped with the rest. Every structural line is left alone ({@link PROSE_STRUCTURAL_RE}), so headings, code fences and tables survive intact: on this project's own changelog the fold keeps every heading and every entry's bolded lead while removing 83% of the body text.
- *
- * `claimed` carries the row indices an earlier planner already took, so a document that also holds indexed spans cannot have the same row folded twice.
- */
+/** Fold each long prose paragraph down to its opening sentence. Documents have no symbol spans, so {@link planBodyFolds} has nothing to work with and a markdown read arrives whole however long it is. What they do have is paragraphs, and a paragraph's opening sentence is its summary by the same convention that makes a docstring's first sentence one. Measured over 814 sessions, shell reads of markdown carry 9.62 MB, of which 1,153 reads holding 6.40 MB contain a paragraph long enough to fold; folding them removes 51.1% of those bytes. One paragraph is one row here, which is how markdown is normally written and is what lets the opening sentence stay in place rather than being dropped with the rest. Every structural line is left alone ({@link PROSE_STRUCTURAL_RE}), so headings, code fences and tables survive intact: on this project's own changelog the fold keeps every heading and every entry's bolded lead while removing 83% of the body text. `claimed` carries the row indices an earlier planner already took, so a document that also holds indexed spans cannot have the same row folded twice. */
 export function planProseFolds(rows: ReadonlyArray<{ readonly no: number; readonly text: string }>, claimed: ReadonlySet<number>): BodyFold[] {
   const folds: BodyFold[] = []
   // Inside a fenced block nothing is prose: a long line there is a JSON payload, a log record or a command, and cutting it at the first full stop corrupts the one kind of content a writer fenced specifically to keep intact. The structural rule declines the delimiter lines themselves but says nothing about what sits between them, which let 70 fenced lines fold across the 2,032 real document reads this was measured on. A window that begins part-way through a block has no delimiter to open the state, so this reads as unfenced; that is the residue, and it is bounded by the fold being one line wide.
@@ -353,13 +296,7 @@ export function planProseFolds(rows: ReadonlyArray<{ readonly no: number; readon
   return folds
 }
 
-/**
- * Identify what a fold removed, for the `detail` column of its stats row.
- *
- * The bytes a fold saved were always recorded and what it folded was not, so the cost side -- how often a reader has to come back for a span that was folded away -- could not be computed from the ledger. Recording this closed that gap, and the join has since been run: over 823 folds that named a symbol, 62.3% were followed within thirty minutes by a `read` of that symbol, but 55.8% were PRECEDED by one in the same window and a timestamp shuffle scores 24.3%, so all but 6.6 points of the apparent cost is a symbol the session was working on anyway. That excess is what a fold actually costs a reader.
- *
- * The shape deliberately matches the command a recovery read would use, `file::name`, so a later `read` can be joined back to the fold that provoked it. A comment fold has no symbol to name, so it carries the line span its notice points at instead, in the same `#first-last` form the notice prints.
- */
+/** Identify what a fold removed, for the `detail` column of its stats row. The bytes a fold saved were always recorded and what it folded was not, so the cost side -- how often a reader has to come back for a span that was folded away -- could not be computed from the ledger. Recording this closed that gap, and the join has since been run: over 823 folds that named a symbol, 62.3% were followed within thirty minutes by a `read` of that symbol, but 55.8% were PRECEDED by one in the same window and a timestamp shuffle scores 24.3%, so all but 6.6 points of the apparent cost is a symbol the session was working on anyway. That excess is what a fold actually costs a reader. The shape deliberately matches the command a recovery read would use, `file::name`, so a later `read` can be joined back to the fold that provoked it. A comment fold has no symbol to name, so it carries the line span its notice points at instead, in the same `#first-last` form the notice prints. */
 export function foldDetail(path: string, folds: readonly BodyFold[], maxLen: number = MAX_FOLD_DETAIL): string {
   const head = `${path}::`
   // Only a body fold has a symbol to name. A comment and a prose fold are both identified by their line span, and for prose that is also what keeps the paragraph's own words out of the ledger: `name` there holds document text, which has no business in a stats row.

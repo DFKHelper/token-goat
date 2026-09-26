@@ -1,31 +1,4 @@
-/**
- * A completed Read is rewritten to withhold the stretches of it the session already holds
- * (`hooks_read.ts` `elideAlreadyServedLines`, reached from `postReadHandler`).
- *
- * `alreadyServedOutputId` can only withhold a read whose window is ENTIRELY inside an earlier
- * delivery. Measured over a month of real sessions that is the smaller half: 400 Read calls were
- * fully served against 589 that mixed new lines with already-served ones, and denying any of the
- * 589 would have deleted the new lines too. This path keeps them and replaces only the overlap.
- *
- * The failure this feature is one line away from is self-elision. `postReadHandler` also records
- * the finished Read into the very store the elision compares against, so if the recording ran
- * first every line would match itself and a plain first read would come back as nothing but a
- * notice. The "first read is untouched" test below is the guard for exactly that ordering, and it
- * is why several tests here assert on *content that must survive* rather than only on what went
- * away: an over-collapse improves every byte-count assertion while destroying the feature.
- *
- * Fixture provenance:
- *   - The Read result row shape (`<n>\t<line>`, no padding) is CAPTURE-grade: it was read off
- *     10,549 real Read tool results, of which every numbered row carried a tab separator and zero
- *     leading pad. The parser also tolerates leading spaces, and the one test that exercises that
- *     tolerance says so rather than implying the harness emits them.
- *   - The file content is HAND-DERIVED: generated lines whose sizes are asserted against the
- *     shipped floors rather than assumed, so a change to those floors fails loudly here instead of
- *     turning these into vacuous passes.
- *   - The PostToolUse request payload keys and the `hookSpecificOutput.updatedToolOutput` response
- *     shape are FORMAT-DERIVED from this repo's own `hook_registry.ts::serializeOutput`. That
- *     proves agreement with our serializer, not that a shipped harness build emits it.
- */
+/** A completed Read is rewritten to withhold the stretches of it the session already holds (`hooks_read_post.ts` `elideAlreadyServedLines`, reached from `postReadHandler`). `alreadyServedOutputId` can only withhold a read whose window is ENTIRELY inside an earlier delivery. Measured over a month of real sessions that is the smaller half: 400 Read calls were fully served against 589 that mixed new lines with already-served ones, and denying any of the 589 would have deleted the new lines too. This path keeps them and replaces only the overlap. The failure this feature is one line away from is self-elision. `postReadHandler` also records the finished Read into the very store the elision compares against, so if the recording ran first every line would match itself and a plain first read would come back as nothing but a notice. The "first read is untouched" test below is the guard for exactly that ordering, and it is why several tests here assert on *content that must survive* rather than only on what went away: an over-collapse improves every byte-count assertion while destroying the feature. Fixture provenance: - The Read result row shape (`<n>\t<line>`, no padding) is CAPTURE-grade: it was read off 10,549 real Read tool results, of which every numbered row carried a tab separator and zero leading pad. The parser also tolerates leading spaces, and the one test that exercises that tolerance says so rather than implying the harness emits them. - The file content is HAND-DERIVED: generated lines whose sizes are asserted against the shipped floors rather than assumed, so a change to those floors fails loudly here instead of turning these into vacuous passes. - The PostToolUse request payload keys and the `hookSpecificOutput.updatedToolOutput` response shape are FORMAT-DERIVED from this repo's own `hook_registry.ts::serializeOutput`. That proves agreement with our serializer, not that a shipped harness build emits it. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -34,7 +7,8 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
+import { preReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit } from '../src/session.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -42,13 +16,11 @@ import { rewrittenBody, rewrittenKeys } from './helpers/updated-tool-output.js'
 
 const BUNDLE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'token-goat.mjs')
 
-/** The distinctive wording of the elision notice. Asserting on it rather than on `hookType` keeps
- *  these honest: some other rewrite would otherwise read as this one firing. */
+/** The distinctive wording of the elision notice. Asserting on it rather than on `hookType` keeps these honest: some other rewrite would otherwise read as this one firing. */
 const NOTICE = 'were already served verbatim in this session'
 
 const LINE_COUNT = 40
-/** Wide enough that twenty lines clear bash_compress.cache_min_bytes (512) and a twenty-line run
- *  clears min_net_savings_bytes (100) even after the ~150-byte notice replacing it. */
+/** Wide enough that twenty lines clear bash_compress.cache_min_bytes (512) and a twenty-line run clears min_net_savings_bytes (100) even after the ~150-byte notice replacing it. */
 const LINE_WIDTH = 70
 
 let dir: string
@@ -98,8 +70,7 @@ function deliver(opts: { offset?: number; limit?: number } = {}): void {
   postReadHandler(readEvent('post_tool_use', opts))
 }
 
-/** The post hook's view of a Read that returned `content`, with the pre hook run first so the
- *  session has the file recorded exactly as it would in production. */
+/** The post hook's view of a Read that returned `content`, with the pre hook run first so the session has the file recorded exactly as it would in production. */
 function readBack(content: string, opts: { offset?: number; limit?: number } = {}) {
   preReadHandler(readEvent('pre_tool_use', opts))
   return postReadHandler(readEvent('post_tool_use', { ...opts, content }))

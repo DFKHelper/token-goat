@@ -1,48 +1,13 @@
-/**
- * Every lever that ships ON must be exercised by at least one test that sets nothing.
- *
- * The gap this closes. Each read-shrinking lever has a dedicated test file, and every one of them
- * forces its own setting on in a `beforeEach`: `TOKEN_GOAT_OUTLINE_LARGE_DOCUMENTS = '1'`,
- * `TOKEN_GOAT_SKELETON_LARGE_SOURCES = '1'`, `TOKEN_GOAT_FOLD_COMMENT_BLOCKS = '1'`. That is correct
- * for what those files test, which is the behaviour of the lever. It leaves the shipped default
- * covered by nothing at all: the env var and the config default are two ways to reach the same
- * boolean, and a test that supplies one never observes the other. Verified rather than argued --
- * flipping `fold_prose_paragraphs` from true to false in src/config.ts, disabling a fold credited
- * with 43.4% of markdown read bytes, left the full suite at 596 files and 12,268 tests all passing.
- *
- * This is the injected-seam trap CLAUDE.md names, in the shape it takes for configuration rather than
- * for a callback: the test always supplies the dependency the shipping path omits. It is the same
- * failure that once let the worker drain the queue into a stub, with every worker test injecting its
- * own callback and the suite staying green while nothing wrote to the `symbols` table.
- *
- * Each case below asserts the product contract rather than the boolean. Reading a config value back
- * and comparing it to `true` restates the source; delivering a real file through the real hook with
- * nothing setting that lever, and finding the lever's own notice in what comes back, does not.
- *
- * Isolation: a case turns the OTHER levers off through the environment and leaves its own unset, so
- * the only thing that can produce its marker is the shipped default. Without that, a document large
- * enough for the heading tree also folds paragraphs, and either notice would satisfy a loose
- * assertion for the wrong reason.
- */
+/** Every lever that ships ON must be exercised by at least one test that sets nothing. The gap this closes. Each read-shrinking lever has a dedicated test file, and every one of them forces its own setting on in a `beforeEach`: `TOKEN_GOAT_OUTLINE_LARGE_DOCUMENTS = '1'`, `TOKEN_GOAT_SKELETON_LARGE_SOURCES = '1'`, `TOKEN_GOAT_FOLD_COMMENT_BLOCKS = '1'`. That is correct for what those files test, which is the behaviour of the lever. It leaves the shipped default covered by nothing at all: the env var and the config default are two ways to reach the same boolean, and a test that supplies one never observes the other. Verified rather than argued -- flipping `fold_prose_paragraphs` from true to false in src/config.ts, disabling a fold credited with 43.4% of markdown read bytes, left the full suite at 596 files and 12,268 tests all passing. This is the injected-seam trap CLAUDE.md names, in the shape it takes for configuration rather than for a callback: the test always supplies the dependency the shipping path omits. It is the same failure that once let the worker drain the queue into a stub, with every worker test injecting its own callback and the suite staying green while nothing wrote to the `symbols` table. Each case below asserts the product contract rather than the boolean. Reading a config value back and comparing it to `true` restates the source; delivering a real file through the real hook with nothing setting that lever, and finding the lever's own notice in what comes back, does not. Isolation: a case turns the OTHER levers off through the environment and leaves its own unset, so the only thing that can produce its marker is the shipped default. Without that, a document large enough for the heading tree also folds paragraphs, and either notice would satisfy a loose assertion for the wrong reason. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { postReadHandler } from '../../src/hooks_read.js'
+import { postReadHandler } from '../../src/hooks_read_post.js'
 import type { HookEvent } from '../../src/hook_registry.js'
 
-/**
- * Marker each lever prints, and the environment keys that must be silenced around it.
- *
- * Provenance: FORMAT-DERIVED. Every `marker` was read off the notice template in the producer's own
- * source at this revision, with the file and symbol named beside it, not recalled and not written
- * from what the matcher wanted to see. That distinction has already cost this repo a result once: a
- * prose-fold pattern written from memory as "N more lines of this paragraph folded" matches nothing
- * the code emits, so a replay counted every paragraph fold as a miss and reported a working lever as
- * dead. FORMAT-DERIVED is weaker than a capture: it proves agreement with that template, not that a
- * shipped build emits it. The built-bundle e2e tests cover the shipped-build half.
- */
+/** Marker each lever prints, and the environment keys that must be silenced around it. Provenance: FORMAT-DERIVED. Every `marker` was read off the notice template in the producer's own source at this revision, with the file and symbol named beside it, not recalled and not written from what the matcher wanted to see. That distinction has already cost this repo a result once: a prose-fold pattern written from memory as "N more lines of this paragraph folded" matches nothing the code emits, so a replay counted every paragraph fold as a miss and reported a working lever as dead. FORMAT-DERIVED is weaker than a capture: it proves agreement with that template, not that a shipped build emits it. The built-bundle e2e tests cover the shipped-build half. */
 const ENV_KEYS = [
   'TOKEN_GOAT_FOLD_CODE_BODIES',
   'TOKEN_GOAT_FOLD_COMMENT_BLOCKS',

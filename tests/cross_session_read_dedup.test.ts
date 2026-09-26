@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { preReadHandler, postReadHandler, relPathWithinRoot } from '../src/hooks_read.js'
+import { preReadHandler, relPathWithinRoot } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { loadConfig } from '../src/config.js'
 import { getSessionId } from '../src/session.js'
@@ -404,13 +405,7 @@ describe('Cross-session read dedup', () => {
       expect(relPathWithinRoot(root, path.join(root, 'sub', 'x.txt'))).toBe('sub/x.txt')
     })
 
-    // Regression: path.relative(root, target) returns target's OWN ABSOLUTE PATH unchanged
-    // (not a '..'-prefixed relative path) when root and target are on different Windows drive
-    // letters -- documented Node behavior, not a bug in path.relative itself. The previous guard
-    // here was a bare `!rel.startsWith('..')`, which that absolute-path result trivially passes,
-    // so a file on an unrelated drive was silently treated as "inside" the project and its
-    // absolute path leaked into the project's cross-session read-dedup manifest instead of being
-    // excluded like any other out-of-project file.
+    // Regression: path.relative(root, target) returns target's OWN ABSOLUTE PATH unchanged (not a '..'-prefixed relative path) when root and target are on different Windows drive letters -- documented Node behavior, not a bug in path.relative itself. The previous guard here was a bare `!rel.startsWith('..')`, which that absolute-path result trivially passes, so a file on an unrelated drive was silently treated as "inside" the project and its absolute path leaked into the project's cross-session read-dedup manifest instead of being excluded like any other out-of-project file.
     it.skipIf(process.platform !== 'win32')('rejects a cross-drive path on Windows instead of treating it as in-root', () => {
       expect(relPathWithinRoot('D:\\some\\project', 'C:\\Users\\someone\\secret.env')).toBeNull()
     })
@@ -423,11 +418,7 @@ describe('Cross-session read dedup', () => {
       else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
     })
 
-    // Regression: scanCrossSessionManifests (hooks_read.ts) compared rel_path with raw ===
-    // instead of foldPath(). rel_path is stored case-preserved by writeSessionManifest, so a
-    // sibling session that read the same physical file under a different literal casing (e.g.
-    // "Shared.TXT" vs "shared.txt") on a case-insensitive filesystem never matched, and the
-    // cross-session-read-dedup hint silently failed to fire.
+    // Regression: scanCrossSessionManifests (hooks_read.ts) compared rel_path with raw === instead of foldPath(). rel_path is stored case-preserved by writeSessionManifest, so a sibling session that read the same physical file under a different literal casing (e.g. "Shared.TXT" vs "shared.txt") on a case-insensitive filesystem never matched, and the cross-session-read-dedup hint silently failed to fire.
     it('emits a context hint when a sibling session read the same file under different letter-casing', () => {
       process.env.TOKEN_GOAT_CROSS_SESSION_READ_DEDUP = '1'
       process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
