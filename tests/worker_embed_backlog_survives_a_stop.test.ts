@@ -15,18 +15,23 @@ import { disabledEmbedSha } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { drainOnce, pendingEmbeddings, runWorkerLoop } from '../src/worker.js'
 
-// A pass-through `node:fs` whose append to the dirty queue can be made to fail, the way a full disk or a queue file held by a scanner fails it. `vi.spyOn` cannot redefine a property of a builtin's ESM namespace, so the module is replaced at resolution time instead, as tests/guards/dirty_queue_append_is_constant_time.test.ts does.
+// A pass-through `node:fs` whose append to the dirty queue can be made to fail, the way a full disk or a queue file held by a scanner fails it: an append by path, or the append-mode open of `dirty.txt` that worker.ts::appendDirtyQueuePaths writes the queue through. `vi.spyOn` cannot redefine a property of a builtin's ESM namespace, so the module is replaced at resolution time instead, as tests/guards/dirty_queue_append_is_constant_time.test.ts does.
 const appendFault = vi.hoisted(() => ({ failQueueAppends: false, refused: 0 }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFsModule>()
+  const refuse = (op: string): never => {
+    appendFault.refused += 1
+    throw Object.assign(new Error(`ENOSPC: no space left on device, ${op}`), { code: 'ENOSPC' })
+  }
   const appendFileSync = (file: Parameters<typeof actual.appendFileSync>[0], ...rest: unknown[]): void => {
-    if (appendFault.failQueueAppends && String(file).endsWith('dirty.txt')) {
-      appendFault.refused += 1
-      throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
-    }
+    if (appendFault.failQueueAppends && String(file).endsWith('dirty.txt')) refuse('write')
     ;(actual.appendFileSync as (...a: unknown[]) => void)(file, ...rest)
   }
-  return { ...actual, default: { ...actual, appendFileSync }, appendFileSync }
+  const openSync = (file: Parameters<typeof actual.openSync>[0], ...rest: unknown[]): number => {
+    if (appendFault.failQueueAppends && String(file).endsWith('dirty.txt') && rest[0] === 'a') refuse('open')
+    return (actual.openSync as (...a: unknown[]) => number)(file, ...rest)
+  }
+  return { ...actual, default: { ...actual, appendFileSync, openSync }, appendFileSync, openSync }
 })
 
 // PROVENANCE: HAND-DERIVED. Forty one-line exported functions: more than one chunk, far under any size threshold.
