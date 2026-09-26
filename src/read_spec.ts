@@ -19,9 +19,9 @@ import {
   readFileText,
   resolveAgainstProjectRoot,
   staleWarning,
-  FIND_SCAN_LIMIT as SHARED_FIND_SCAN_LIMIT,
   type ReadOptions,
 } from './read_commands.js'
+import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
   didYouMean,
   endsWithPathBoundary,
@@ -38,8 +38,6 @@ function fileExists(p: string): boolean {
   }
 }
 
-// Every scan below is pinned to one file, so this is a per-file ceiling rather than a window over a project -- it takes the shared constant so the two spellings cannot drift apart.
-const FIND_SCAN_LIMIT = SHARED_FIND_SCAN_LIMIT
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
 export type SymbolResolution =

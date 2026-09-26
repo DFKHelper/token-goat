@@ -22,7 +22,7 @@ import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForConta
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 export { requireNonNegativeStrictInt } from './util.js'
 import { emit, emitErr } from './emit.js'
-import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
+import { FIND_SCAN_LIMIT, UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { loadConfig } from './config.js'
@@ -96,8 +96,6 @@ import {
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
 const SYMBOL_PREVIEW_LINES = 5
 const GREP_MAX_LINES = 200
-// Symbol rows scanned when matching `find <pattern>` by substring — large enough to cover this tool's own index (thousands of symbols) without paging.
-export const FIND_SCAN_LIMIT = 20_000
 
 // `refs --top`, `--exclude-tests` and `--grep` all narrow the resolved set in JavaScript AFTER the query returns, and `--top` additionally aggregates by file before truncating. queryRefs orders rows by file_path then line -- alphabetical, not count-based -- so any finite cap ahead of those steps drops every ref in alphabetically-later files regardless of how many they hold, producing a "top files by reference count" that is really "top files among whichever sort first alphabetically", and an --exclude-tests/--grep page selected from a prefix of the matches instead of from all of them.
 //
@@ -732,7 +730,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
   const text = guardText(warning + blocks.join('\n\n'), 'symbol')
   recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
-  // Under a client-side filter the count is only as complete as the FIND_SCAN_LIMIT window the rows were drawn from, so a scan that filled reports its count as a floor rather than as a total.
+  // Under a client-side filter the sweep walked every row in scope, so its kept count is the exact total rather than a floor.
   const symbolTotal = (): TruncationTotal =>
     anyClientFilter ? { count: sweep.keptCount, exact: true } : { count: countSymbols(queryOpts), exact: true }
   return { text: text + truncationFooter(results.length, effectiveLimit, symbolTotal, 'matches', '--limit'), code: 0 }
@@ -844,7 +842,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     const crossFileLead = formatCrossFileLead('read', symbol, file, opts.projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-    // Query a bounded superset (FIND_SCAN_LIMIT, same bound runSymbol's near-name scan uses) scoped to this one file, THEN rank by similarity and cap at DIDYOUMEAN_LIMIT -- capping in the query itself would return an arbitrary storage-order first-N that can omit the actual closest match entirely.
+    // Query a bounded superset (FIND_SCAN_LIMIT) scoped to this one file, THEN rank by similarity and cap at DIDYOUMEAN_LIMIT -- capping in the query itself would return an arbitrary storage-order first-N that can omit the actual closest match entirely.
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
     const closes = rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
