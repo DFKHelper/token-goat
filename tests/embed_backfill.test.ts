@@ -1,14 +1,4 @@
-/**
- * The sharp edge of shipping a new embedding gate: every chunk row the gate would now reject was
- * written by a build that allowed it, and carries a perfectly valid `files.embed_sha`. The
- * freshness gate therefore reads all of them as current and skips them forever, so a gate shipped
- * on its own changes nothing at all for any index that already exists -- on one real machine-wide
- * index, 141,750 of 243,603 chunk rows.
- *
- * These tests pin the sweep that closes that: which rows it selects, that it deletes their vectors
- * and not only their chunk rows, that it leaves everything else alone, and that it runs once per
- * version rather than on every drain.
- */
+/** The sharp edge of shipping a new embedding gate: every chunk row the gate would now reject was written by a build that allowed it, and carries a perfectly valid `files.embed_sha`. The freshness gate therefore reads all of them as current and skips them forever, so a gate shipped on its own changes nothing at all for any index that already exists -- on one real machine-wide index, 141,750 of 243,603 chunk rows. These tests pin the sweep that closes that: which rows it selects, that it deletes their vectors and not only their chunk rows, that it leaves everything else alone, and that it runs once per version and chunk ceiling rather than on every drain. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -36,12 +26,7 @@ afterEach(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
-/**
- * PROVENANCE: FORMAT-DERIVED -- column list read off `chunks` as created by src/db.ts's
- * initConnection (the same DDL every real index is built with), so these rows are shaped exactly
- * like rows a real embed writes. The path spellings are HAND-DERIVED from the census of a real
- * index: `.jpg` and `.ttf` assets, an over-ceiling generated snapshot, and ordinary source.
- */
+/** PROVENANCE: FORMAT-DERIVED -- column list read off `chunks` as created by src/db.ts's initConnection (the same DDL every real index is built with), so these rows are shaped exactly like rows a real embed writes. The path spellings are HAND-DERIVED from the census of a real index: `.jpg` and `.ttf` assets, an over-ceiling generated snapshot, and ordinary source. */
 function seedChunks(db: SqliteDatabase, filePath: string, count: number): void {
   const insert = db.prepare('INSERT INTO chunks (file_path, start_line, end_line, kind, text) VALUES (?, ?, ?, ?, ?)')
   for (let i = 0; i < count; i++) insert.run(filePath, i + 1, i + 2, 'window', `chunk ${i} of ${filePath}`)
@@ -129,12 +114,7 @@ describe('pruneUnembeddableChunks backfills an index written before the gates ex
   })
 })
 
-/**
- * PROVENANCE: FORMAT-DERIVED -- the `files` column list is read off src/db.ts's SCHEMA_SQL, and the
- * expected stamp values come from the same `assetEmbedSha`/`maxChunksEmbedSha` the shipping gate
- * calls rather than from literals transcribed here, so a change to either marker's spelling moves
- * the product and the expectation together instead of pinning a dead string.
- */
+/** PROVENANCE: FORMAT-DERIVED -- the `files` column list is read off src/db.ts's SCHEMA_SQL, and the expected stamp values come from the same `assetEmbedSha`/`maxChunksEmbedSha` the shipping gate calls rather than from literals transcribed here, so a change to either marker's spelling moves the product and the expectation together instead of pinning a dead string. */
 function seedFile(db: SqliteDatabase, filePath: string, sha: string): void {
   db.prepare('INSERT INTO files (path, sha, embed_sha) VALUES (?, ?, ?)').run(filePath, sha, sha)
 }
@@ -174,6 +154,29 @@ describe('the sweep restamps each pruned file with the verdict the live gate wou
     expect(isEmbedFresh(stored, 'sha-json', true, true, 500, 600)).toBe(true)
     // ...and re-opened the moment it moves, which is the whole reason the marker is threshold-bearing.
     expect(isEmbedFresh(stored, 'sha-json', true, true, 500, 10000)).toBe(false)
+  })
+
+  // PROVENANCE: HAND-DERIVED. 500 chunks sits under the shipped default ceiling of 600 and over a lowered one of 300, so only the second sweep's verdict can refuse it.
+  it('sweeps again within a release when the chunk ceiling is lowered, pruning and restamping the files now over it', () => {
+    const db = getDb(path.join(TMP, 'index.db'))
+    seedChunks(db, 'c:/proj/docs/guide.md', 500)
+    seedFile(db, 'c:/proj/docs/guide.md', 'sha-md')
+    seedChunks(db, 'c:/proj/src/widget.ts', 12)
+    seedFile(db, 'c:/proj/src/widget.ts', 'sha-ts')
+    expect(pruneUnembeddableChunks(db, 600, deleteFileEmbeddings, MARKERS).files).toBe(0)
+
+    // An unchanged file is never re-embedded, so the live gate never sees it again: this sweep is the only thing that applies the new ceiling to it.
+    const lowered = pruneUnembeddableChunks(db, 300, deleteFileEmbeddings, MARKERS)
+
+    expect(lowered.ran).toBe(true)
+    expect(lowered.chunks).toBe(500)
+    expect(chunkCount(db, 'c:/proj/docs/guide.md')).toBe(0)
+    expect(storedEmbedSha(db, 'c:/proj/docs/guide.md')).toBe(maxChunksEmbedSha('sha-md', 300))
+    // The survival anchor: a file under the lowered ceiling keeps its rows and its stamp.
+    expect(chunkCount(db, 'c:/proj/src/widget.ts')).toBe(12)
+    expect(storedEmbedSha(db, 'c:/proj/src/widget.ts')).toBe('sha-ts')
+    // And the ceiling it last applied throttles it again, as the version does.
+    expect(pruneUnembeddableChunks(db, 300, deleteFileEmbeddings, MARKERS).ran).toBe(false)
   })
 
   it('prunes a chunk row with no file row at all rather than failing on the missing stamp target', () => {
