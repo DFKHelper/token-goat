@@ -18,8 +18,8 @@ import {
   resolveSymbolSpecOrEmitError,
   sumFileSizes,
   trimBlankLines,
-  FIND_SCAN_LIMIT,
 } from './read_commands.js'
+import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
   compileGrepMatcher,
   countNoun,
