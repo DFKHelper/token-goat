@@ -1,15 +1,6 @@
-// Regression guard: runSemantic (src/read_commands.ts) returned `blocks.join('\n\n')` directly
-// with no guardText(...) wrapping, unlike symbol/read/section/skeleton/outline, which all route
-// their final text output through guardText/emitGuarded (see the "overflow guard applies to
-// symbol/refs/skeleton/outline (#5)" suite in tests/read_commands.test.ts, whose pattern this
-// mirrors). A large `semantic` result set could therefore blow past
-// config.overflow_guard.max_tokens with no truncation marker, unlike every other surgical-read
-// command.
+// Regression guard: runSemantic (src/read_semantic.ts) returned `blocks.join('\n\n')` directly with no guardText(...) wrapping, unlike symbol/read/section/skeleton/outline, which all route their final text output through guardText/emitGuarded (see the "overflow guard applies to symbol/refs/skeleton/outline (#5)" suite in tests/read_commands.test.ts, whose pattern this mirrors). A large `semantic` result set could therefore blow past config.overflow_guard.max_tokens with no truncation marker, unlike every other surgical-read command.
 //
-// searchSemantic itself needs a real sqlite-vec-backed DB plus the embedding model to exercise
-// end-to-end (expensive to fixture), so this test mocks searchSemantic to return a large
-// candidate set while using the real runSemantic/guardText/mergeNearbyHits — exercising the
-// actual overflow-guard wiring, not an isolated unit test of guardText alone.
+// searchSemantic itself needs a real sqlite-vec-backed DB plus the embedding model to exercise end-to-end (expensive to fixture), so this test mocks searchSemantic to return a large candidate set while using the real runSemantic/guardText/mergeNearbyHits — exercising the actual overflow-guard wiring, not an isolated unit test of guardText alone.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
@@ -51,8 +42,7 @@ describe('semantic command output is capped by the overflow guard (#5 follow-up)
   })
 
   it('caps runSemantic output when the real embedding-search path returns a large hit set', async () => {
-    // Hits far enough apart (500-line gaps) that mergeNearbyHits never merges them, so the
-    // rendered block count -- and the resulting text size -- stays large.
+    // Hits far enough apart (500-line gaps) that mergeNearbyHits never merges them, so the rendered block count -- and the resulting text size -- stays large.
     const bigText = 'x'.repeat(500)
     const hits: SearchHit[] = Array.from({ length: 50 }, (_, i) =>
       hit('big.ts', i * 500 + 1, i * 500 + 10, i * 0.001, bigText),
@@ -81,14 +71,9 @@ describe('semantic command output is capped by the overflow guard (#5 follow-up)
 })
 
 describe('semantic command scopes searchSemantic to the current project (regression: cross-project leakage)', () => {
-  // global.db is a single machine-wide index shared across every project ever indexed
-  // (constants.ts). runSemantic used to call searchSemantic with no project-root argument at
-  // all, so results silently mixed in chunks from unrelated projects sharing the same index.
+  // global.db is a single machine-wide index shared across every project ever indexed (constants.ts). runSemantic used to call searchSemantic with no project-root argument at all, so results silently mixed in chunks from unrelated projects sharing the same index.
   it('passes the resolved project root (not the raw cwd) as the rootDir (6th) argument to searchSemantic', async () => {
-    // Regression: the default fell back to the raw `process.cwd()` instead of resolving it up
-    // to the actual project root, so running from a subdirectory scoped searches to that
-    // subtree only. `resolveProjectRoot` (already used for this exact default elsewhere in
-    // read_commands.ts, e.g. runFind/runChanged) is the correct resolution.
+    // Regression: the default fell back to the raw `process.cwd()` instead of resolving it up to the actual project root, so running from a subdirectory scoped searches to that subtree only. `resolveProjectRoot` (already used for this exact default elsewhere in other read commands, e.g. runFind in read_inspect.ts and runChanged in read_git.ts) is the correct resolution.
     searchSemanticMock.mockResolvedValue([])
 
     await runSemantic('any query', {})

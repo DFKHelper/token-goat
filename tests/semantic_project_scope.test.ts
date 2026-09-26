@@ -1,21 +1,4 @@
-/**
- * Regression: `global.db` is a single machine-wide index keyed by absolute path across every
- * project ever indexed (see constants.ts). `searchSemantic`'s sqlite-vec KNN query used to run
- * completely unscoped, so `token-goat semantic` silently mixed in chunks from unrelated projects
- * that happened to share the same index, and `runSemantic` (read_commands.ts) never post-filtered
- * by cwd/project root either.
- *
- * sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no
- * partition/file_path column to scope the ANN (MATCH + k) query itself against, so the fix
- * over-fetches candidates and post-filters each candidate's joined chunk metadata against the
- * project root via `projectScopeClause`, backfilling with a larger `k` once if too few survive.
- *
- * `fetchScopedHits` takes a raw query vector (not text), so these tests seed real vectors
- * directly into a real sqlite-vec-backed DB and query with a hand-built vector -- no embedding
- * model / network / inference required, only the optional native sqlite-vec extension. Skips
- * cleanly (not silently) when sqlite-vec isn't installed/loadable, mirroring
- * tests/semantic_embeddings_e2e.test.ts's classifyVec0() gate.
- */
+/** Regression: `global.db` is a single machine-wide index keyed by absolute path across every project ever indexed (see constants.ts). `searchSemantic`'s sqlite-vec KNN query used to run completely unscoped, so `token-goat semantic` silently mixed in chunks from unrelated projects that happened to share the same index, and `runSemantic` (read_semantic.ts) never post-filtered by cwd/project root either. sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no partition/file_path column to scope the ANN (MATCH + k) query itself against, so the fix over-fetches candidates and post-filters each candidate's joined chunk metadata against the project root via `projectScopeClause`, backfilling with a larger `k` once if too few survive. `fetchScopedHits` takes a raw query vector (not text), so these tests seed real vectors directly into a real sqlite-vec-backed DB and query with a hand-built vector -- no embedding model / network / inference required, only the optional native sqlite-vec extension. Skips cleanly (not silently) when sqlite-vec isn't installed/loadable, mirroring tests/semantic_embeddings_e2e.test.ts's classifyVec0() gate. */
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -71,8 +54,7 @@ afterEach(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
-// A fixed, arbitrary 384-dim vector. All test chunks share this exact embedding, so every
-// candidate is at distance 0 -- no need for a real model to produce a meaningful vector.
+// A fixed, arbitrary 384-dim vector. All test chunks share this exact embedding, so every candidate is at distance 0 -- no need for a real model to produce a meaningful vector.
 const QUERY_VEC: number[] = Array(DEFAULT_DIM).fill(0.01)
 
 function seedChunk(dbPath: string, filePath: string, text: string): void {
@@ -133,30 +115,14 @@ describe.skipIf(!canExerciseVec0)('fetchScopedHits (project scoping SQL)', () =>
   })
 })
 
-// searchSemantic's own internal call to embedTexts (for the query) cannot be mocked from outside
-// the module -- vi.mock only intercepts external imports, not a module's calls to its own other
-// exports -- so this suite needs a real model load. Gated the same way
-// tests/semantic_embeddings_e2e.test.ts gates its real-inference assertions: sqlite-vec must load
-// AND isAvailable() (the onnxruntime-node runtime) must be true. To stay deterministic
-// without depending on the model's actual semantic judgment, the test embeds a fixed seed string
-// once itself (via the real, exported embedTexts) and reuses that literal vector to seed every
-// test chunk -- so every chunk is at (near-)zero distance from the query embedded inside
-// searchSemantic for the identical string, and the only thing under test is the project-scope
-// filtering/backfill, not embedding quality.
+// searchSemantic's own internal call to embedTexts (for the query) cannot be mocked from outside the module -- vi.mock only intercepts external imports, not a module's calls to its own other exports -- so this suite needs a real model load. Gated the same way tests/semantic_embeddings_e2e.test.ts gates its real-inference assertions: sqlite-vec must load AND isAvailable() (the onnxruntime-node runtime) must be true. To stay deterministic without depending on the model's actual semantic judgment, the test embeds a fixed seed string once itself (via the real, exported embedTexts) and reuses that literal vector to seed every test chunk -- so every chunk is at (near-)zero distance from the query embedded inside searchSemantic for the identical string, and the only thing under test is the project-scope filtering/backfill, not embedding quality.
 //
-// searchSemantic prefixes the query text with QUERY_INSTRUCTION_PREFIX before embedding it
-// (BGE's asymmetric retrieval convention -- see embeddings.ts), so the seed vectors below must
-// be embedded from the *prefixed* string too, or they'd sit at a nonzero distance from what
-// searchSemantic actually embeds internally and the maxDistance assertion below would flake.
+// searchSemantic prefixes the query text with QUERY_INSTRUCTION_PREFIX before embedding it (BGE's asymmetric retrieval convention -- see embeddings.ts), so the seed vectors below must be embedded from the *prefixed* string too, or they'd sit at a nonzero distance from what searchSemantic actually embeds internally and the maxDistance assertion below would flake.
 const canExerciseRealEmbeddings = canExerciseVec0 && isAvailable() && modelFilesPresent()
 const SEED_QUERY = 'a fixed seed string for deterministic distance-zero test vectors'
 
 describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic project scoping + backfill', () => {
-  // Regression: without the fix, this over-fetch/backfill loop never ran and searchSemantic
-  // returned raw ANN hits regardless of rootDir. Seed many rootB chunks ahead of a single rootA
-  // chunk so the first (small) over-fetch pass can plausibly miss the one rootA hit among a
-  // crowd of rootB candidates, proving the backfill retry recovers it rather than just getting
-  // lucky on the first pass.
+  // Regression: without the fix, this over-fetch/backfill loop never ran and searchSemantic returned raw ANN hits regardless of rootDir. Seed many rootB chunks ahead of a single rootA chunk so the first (small) over-fetch pass can plausibly miss the one rootA hit among a crowd of rootB candidates, proving the backfill retry recovers it rather than just getting lucky on the first pass.
   it(
     'never returns a hit from a different project root, even when the scoped project has few matching chunks',
     async () => {
@@ -167,11 +133,7 @@ describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic project scoping + ba
       if (!seedVec) return
 
       const db = getDb(dbPath)
-      // Claim the empty database for the running stack before hand-seeding vectors into it.
-      // searchSemantic checks that stored vectors came from the stack computing the query vector,
-      // and hand-inserted rows carry no such record -- which is precisely the state it throws away.
-      // Stamping first is what real indexing does on its first write; doing it here keeps this test
-      // about project scoping rather than about provenance.
+      // Claim the empty database for the running stack before hand-seeding vectors into it. searchSemantic checks that stored vectors came from the stack computing the query vector, and hand-inserted rows carry no such record -- which is precisely the state it throws away. Stamping first is what real indexing does on its first write; doing it here keeps this test about project scoping rather than about provenance.
       ensureEmbeddingProvenance(db)
       const chunkStmt = db.prepare(
         'INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)',
@@ -195,15 +157,9 @@ describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic project scoping + ba
   )
 })
 
-// Regression (round 10 #39): BGE's retrieval-tuned checkpoints expect an asymmetric
-// instruction prefix on the query side only -- document/chunk embedding stays plain. This
-// doesn't need a real model: setPipelineFnForTesting injects a fake extractor so the test can
-// see exactly what text searchSemantic hands to embedTexts internally.
+// Regression (round 10 #39): BGE's retrieval-tuned checkpoints expect an asymmetric instruction prefix on the query side only -- document/chunk embedding stays plain. This doesn't need a real model: setPipelineFnForTesting injects a fake extractor so the test can see exactly what text searchSemantic hands to embedTexts internally.
 describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic query embedding (BGE instruction prefix)', () => {
-  // The earlier real-inference describe block above (project scoping + backfill) calls the
-  // real embedTexts, which memoizes the pipeline per model name in a cache that only
-  // registerReset()/clearModuleCaches() clears -- without resetting first, that cached real
-  // extractor would silently win over setPipelineFnForTesting's override below.
+  // The earlier real-inference describe block above (project scoping + backfill) calls the real embedTexts, which memoizes the pipeline per model name in a cache that only registerReset()/clearModuleCaches() clears -- without resetting first, that cached real extractor would silently win over setPipelineFnForTesting's override below.
   beforeEach(() => {
     clearModuleCaches()
   })
@@ -215,8 +171,7 @@ describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic query embedding (BGE
   it('prefixes the query text with QUERY_INSTRUCTION_PREFIX before embedding it', async () => {
     const dbPath = path.join(TMP, 'index6.db')
     const db = getDb(dbPath)
-    // No chunks needed -- searchSemantic embeds the query before it ever runs the KNN scan,
-    // so an empty (but present) chunk_vectors table is enough to reach that call.
+    // No chunks needed -- searchSemantic embeds the query before it ever runs the KNN scan, so an empty (but present) chunk_vectors table is enough to reach that call.
 
     const fakeVec = new Float32Array(DEFAULT_DIM).fill(0.01)
     const seenTexts: string[] = []

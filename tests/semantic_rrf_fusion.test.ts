@@ -1,9 +1,4 @@
-// Regression: runSemantic (src/read_commands.ts) used to be a strict either/or -- if searchSemantic
-// (dense vectors) returned even ONE hit, it formatted and returned immediately, never consulting
-// searchSymbolsFts (BM25 keyword search) at all. So a query producing one weak dense hit made an
-// exact keyword match that BM25 would rank first completely unreachable. This proves the fix: both
-// result sets are now always fused (Reciprocal Rank Fusion) and an exact keyword match surfaces
-// even when a weak, unrelated dense hit exists.
+// Regression: runSemantic (src/read_semantic.ts) used to be a strict either/or -- if searchSemantic (dense vectors) returned even ONE hit, it formatted and returned immediately, never consulting searchSymbolsFts (BM25 keyword search) at all. So a query producing one weak dense hit made an exact keyword match that BM25 would rank first completely unreachable. This proves the fix: both result sets are now always fused (Reciprocal Rank Fusion) and an exact keyword match surfaces even when a weak, unrelated dense hit exists.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -40,9 +35,7 @@ describe('runSemantic: RRF fusion closes the dense-nonzero-blocks-fts gap', () =
   let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
-    // These assertions are about RRF fusion over mocked dense hits, not about
-    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
-    // otherwise stop runSemantic from ever reaching searchSemanticMock.
+    // These assertions are about RRF fusion over mocked dense hits, not about indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would otherwise stop runSemantic from ever reaching searchSemanticMock.
     prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
@@ -82,9 +75,7 @@ describe('runSemantic: graceful single-sided degradation', () => {
   let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
-    // Same reason as the describe above: this block forces the dense branch via a mocked
-    // searchSemantic, not via indexing.embeddings_enabled (which isolate-home.ts defaults to
-    // false for the suite).
+    // Same reason as the describe above: this block forces the dense branch via a mocked searchSemantic, not via indexing.embeddings_enabled (which isolate-home.ts defaults to false for the suite).
     prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
