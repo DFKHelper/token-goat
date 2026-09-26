@@ -122,11 +122,6 @@
       "count": 12
     }
   },
-  "src/tool_filters/build.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 2
-    }
-  },
   "src/tool_filters/ci.ts": {
     "regexp/no-super-linear-backtracking": {
       "count": 2
