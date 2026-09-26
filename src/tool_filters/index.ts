@@ -14,13 +14,18 @@ export { LINTER_FILTERS } from './linters.js'
 export { GIT_FILTERS, GitFilter, GitLogFilter, GitDiffFilter, GitStatusVerboseFilter, GitBlameFilter, GitCommitFilter, GitPushFilter } from './git.js'
 export {
   BUILD_FILTERS,
-  MakeFilter, CmakeFilter, GradleFilter, MavenFilter, AntFilter, BazelFilter,
-  MesonFilter, MSBuildFilter, DotnetFilter, SbtFilter, JavacFilter,
-  CargoFilter, GoFilter, NxFilter, LernaFilter, TurboFilter, WebpackFilter,
-  makeFilter, cmakeFilter, gradleFilter, mavenFilter, antFilter, bazelFilter,
-  mesonFilter, msbuildFilter, dotnetFilter, sbtFilter, javacFilter,
-  cargoFilter, goFilter, nxFilter, lernaFilter, turboFilter, webpackFilter,
+  MakeFilter, CmakeFilter, BazelFilter, MesonFilter, CargoFilter, GoFilter,
+  makeFilter, cmakeFilter, bazelFilter, mesonFilter, cargoFilter, goFilter,
 } from './build.js'
+export {
+  GradleFilter, MavenFilter, AntFilter, SbtFilter, JavacFilter,
+  gradleFilter, mavenFilter, antFilter, sbtFilter, javacFilter,
+} from './build_jvm.js'
+export { MSBuildFilter, DotnetFilter, msbuildFilter, dotnetFilter } from './build_dotnet.js'
+export {
+  NxFilter, LernaFilter, TurboFilter, WebpackFilter,
+  nxFilter, lernaFilter, turboFilter, webpackFilter,
+} from './build_js.js'
 export {
   CONTAINER_FILTERS,
   DockerFilter, DockerComposeFilter, KubectlFilter, KubectlLogsFilter, HelmFilter,
