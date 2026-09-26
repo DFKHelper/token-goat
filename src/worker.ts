@@ -484,7 +484,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
       if (depsAvailable) {
         ensureEmbeddingProvenance(getDb(dbPath))
-        // Same placement and the same reason as the call above, for the gates that reject a file rather than the stack that embedded it; see src/embed_backfill.ts. Self-throttling on a ledger row, so after the first drain of a release this is one indexed SELECT per file.
+        // Same placement and the same reason as the call above, for the gates that reject a file rather than the stack that embedded it; see src/embed_backfill.ts. It throttles itself on two ledger rows, the release and the `indexing.max_chunks_per_file` it last swept under, so it sweeps once after a release or a change to that setting and otherwise costs a CREATE TABLE IF NOT EXISTS plus one primary-key SELECT per file.
         pruneUnembeddableChunks(getDb(dbPath), loadConfig().indexing?.max_chunks_per_file ?? 0, deleteFileEmbeddings, { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha })
       }
       const entry = getFileEntry(absPath, dbPath)
