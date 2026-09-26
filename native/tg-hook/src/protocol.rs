@@ -55,7 +55,7 @@ pub fn done_frame_mac(key: &[u8], nc: &str, ns: &str, stdout: &str, exit: i32, n
     mac(key, &["D", nc, ns, stdout, &exit.to_string(), &n.to_string()])
 }
 
-/// `macMatches(expected, actual)`: equal UTF-16 length first, then a constant-time comparison of the bytes. Where Node's `timingSafeEqual` would throw (same UTF-16 length, different UTF-8 length) this answers false, which is what a thrown check amounts to for a peer.
+/// `macMatches(expected, actual)`: equal UTF-16 length first, then equal UTF-8 length, then a constant-time comparison of the bytes.
 pub fn mac_matches(expected: &str, actual: &str) -> bool {
     if expected.encode_utf16().count() != actual.encode_utf16().count() {
         return false;

@@ -657,6 +657,66 @@ describe('authentication', () => {
     // KEY_CHECK_MS in src/hook_server.ts is 2s; 8s leaves room for a loaded machine without letting a server that never checks pass.
     expect(await exitsWithin(server.exit, 8000)).toBe(0)
   })
+
+  // HAND-DERIVED: 'é' is one UTF-16 code unit and two UTF-8 bytes, so this is as many characters as a hex HMAC-SHA256 digest and one byte longer, which is what a peer without the key can send in place of a MAC.
+  const byteLongMac = `é${'0'.repeat(63)}`
+
+  it('hangs up on a request whose MAC is as long as the real one in characters but not in bytes, and keeps serving', async () => {
+    const sb = sandbox()
+    const server = startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    blockAutostart(sb, [0, 1, 2])
+    const frames: Array<Record<string, unknown>> = []
+    await new Promise<void>((resolve) => {
+      const socket = net.connect(distEndpoint(sb, 0))
+      socket.on('error', () => undefined)
+      socket.on('close', () => resolve())
+      socket.on('connect', () => writeFrame(socket, { t: 'hello', v: PROTOCOL_VERSION, nc: nonce() }))
+      readFrames(
+        socket,
+        (msg) => {
+          frames.push(msg)
+          if (msg['t'] === 'challenge') writeFrame(socket, { t: 'req', mac: byteLongMac, body: JSON.stringify({ kind: 'status' }) })
+        },
+        () => undefined,
+      )
+    })
+    expect(frames.map((f) => f['t'])).toEqual(['challenge'])
+    expect(await exitsWithin(server.exit, 2000), server.stderr()).toBe('still running')
+    expect(servedBySlot(sb)).toEqual({ 0: 0 })
+  })
+
+  it('refuses a listener whose challenge MAC is as long as the real one in characters but not in bytes, and the call still answers locally', async () => {
+    const sb = sandbox()
+    ensureServerKey(sb.dataDir)
+    blockAutostart(sb, [1, 2])
+    const frames: Array<Record<string, unknown>> = []
+    const squatter = net.createServer((socket) => {
+      socket.on('error', () => undefined)
+      readFrames(
+        socket,
+        (msg) => {
+          frames.push(msg)
+          if (msg['t'] === 'hello') writeFrame(socket, { t: 'challenge', v: PROTOCOL_VERSION, ns: nonce(), mac: byteLongMac })
+        },
+        () => undefined,
+      )
+    })
+    await new Promise<void>((resolve, reject) => {
+      squatter.once('error', reject)
+      squatter.listen(distEndpoint(sb, 0), () => resolve())
+    })
+    sb.cleanup.push(() => squatter.close())
+
+    // Async spawns, as in the squatter test above: the listener lives in this process.
+    const expected = cold(sb, ['section', 'notes.md::Alpha'])
+    expectSameRun(await cliAsync(sb, ['section', 'notes.md::Alpha']), expected)
+    expect(await relayAsync(sb, 'pre_tool_use', bashDenyPayload('hs-byte-long-mac'))).toBeNull()
+    // Both calls reached the squatter, so the endpoint really is slot 0's and each one met the byte-long MAC, and neither sent a request after it.
+    expect(frames.map((f) => f['t'])).toEqual(['hello', 'hello'])
+    // Closed here as well as in cleanup: the `hook-server stop` in afterEach is a blocking spawn, and a listener in this process still bound to slot 0 could not answer it, holding the stop to its 30s spawn timeout.
+    await new Promise<void>((resolve) => squatter.close(() => resolve()))
+  })
 })
 
 /** A sandbox running a private copy of dist/, for a test that rewrites one of its files. The copy resolves its native dependencies through a junction to this repo's node_modules, as tests/bridges/inprocess.test.ts's hook fixture does. */

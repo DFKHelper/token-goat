@@ -182,9 +182,13 @@ export function mac(key: Buffer, ...parts: string[]): string {
   return h.digest('hex')
 }
 
+/** Whether a peer's MAC equals the expected one, answering false for anything else and never throwing: every caller runs inside a socket's data handler, where a throw is an uncaught exception that ends the process instead of refusing the peer. */
 export function macMatches(expected: string, actual: unknown): boolean {
   if (typeof actual !== 'string' || actual.length !== expected.length) return false
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual))
+  const want = Buffer.from(expected)
+  const got = Buffer.from(actual)
+  // A string as long as the MAC in characters can still be longer in bytes (one non-ASCII character), and timingSafeEqual throws on buffers of unequal length.
+  return want.length === got.length && crypto.timingSafeEqual(want, got)
 }
 
 export function writeFrame(socket: net.Socket, message: unknown): void {

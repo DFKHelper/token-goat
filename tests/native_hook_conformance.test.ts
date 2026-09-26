@@ -467,8 +467,8 @@ describe('MAC', () => {
     }
     const good = mac(keys[0] as Buffer, 'S', nc, ns)
     const flipped = `${good.slice(0, -1)}${good.endsWith('0') ? '1' : '0'}`
-    // Pairs whose UTF-16 lengths match but UTF-8 lengths do not are left out: Node's timingSafeEqual throws on them rather than answering.
-    for (const [e, a] of [[good, good], [good, flipped], [good, good.slice(1)], [good, good.toUpperCase()], ['', ''], [good, `${good}0`]] as const) {
+    // The last three pairs match in UTF-16 length and differ in UTF-8 length, the case a peer without the key can send: both sides answer false.
+    for (const [e, a] of [[good, good], [good, flipped], [good, good.slice(1)], [good, good.toUpperCase()], ['', ''], [good, `${good}0`], [good, `é${good.slice(1)}`], [`é${good.slice(1)}`, good], ['a', 'é']] as const) {
       cases.push({ op: 'macMatches', expected: e, actual: a })
       expected.push(macMatches(e, a))
     }
