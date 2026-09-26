@@ -7,10 +7,12 @@ import { displaySafePath, normalizePath } from './paths.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { redactSecrets } from './secret_redact.js'
 import { embedTexts, isAvailable } from './embeddings.js'
-import { ensureDirSync } from './util.js'
+import { decodeSource, ensureDirSync, statSize } from './util.js'
 
 const MAX_ENTRIES = 500
 const MAX_TEXT_BYTES = 128 * 1024
+// UTF-32, the least dense encoding decodeSource reads, still yields a UTF-8 byte for each four-byte unit after its four-byte mark and drops up to three trailing bytes, so no longer file can decode to text under the cap.
+const MAX_FILE_BYTES = 4 * MAX_TEXT_BYTES + 7
 const CACHE_FILE = 'workspace-evidence.json'
 
 export type EvidenceRepresentation = 'file' | 'tool-output'
@@ -63,6 +65,14 @@ function save(entries: readonly EvidenceEntry[]): void {
   }
 }
 
+/** A file's text as its evidence is hashed, recorded and verified: decoded by its byte-order mark the way the indexer reads it, or null for a file that cannot fit the cache, which a stat settles before any of a longer file is read. Every side of the cache reads through here, since a hash taken over one decoding never matches a hash taken over another. */
+export function readEvidenceFileText(filePath: string): string | null {
+  const size = statSize(filePath)
+  if (size === null || size > MAX_FILE_BYTES) return null
+  const text = decodeSource(fs.readFileSync(filePath))
+  return Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES ? null : text
+}
+
 export function recordEvidence(input: {
   projectRoot: string
   source: string
@@ -71,10 +81,7 @@ export function recordEvidence(input: {
 }): EvidenceEntry | null {
   if (Buffer.byteLength(input.text, 'utf8') > MAX_TEXT_BYTES) return null
   const contentHash = hash(input.text)
-  // redactSecrets is keyword-driven, so on a dotenv file it catches `API_KEY=...` and misses
-  // `DEBUG=true` or any value whose key name does not look like a secret -- a partial redaction,
-  // which reads as handled and is not. Apply the file-type rule first: in a dotenv file every
-  // value is secret regardless of its key. See dotenv_redact.ts.
+  // redactSecrets is keyword-driven, so on a dotenv file it catches `API_KEY=...` and misses `DEBUG=true` or any value whose key name does not look like a secret -- a partial redaction, which reads as handled and is not. Apply the file-type rule first: in a dotenv file every value is secret regardless of its key. See dotenv_redact.ts.
   const text = redactSecrets(redactIfDotenv(input.source, input.text)).text
   const projectRoot = normalizePath(input.projectRoot)
   const source = input.representation === 'file' ? normalizePath(input.source) : input.source
@@ -195,7 +202,8 @@ export function buildDeltaCapsule(projectRoot: string, limit = 8): string | null
     .filter((entry) => entry.projectRoot === root && entry.representation === 'file')
     .filter((entry) => {
       try {
-        return hash(fs.readFileSync(entry.source, 'utf8')) !== entry.contentHash
+        const current = readEvidenceFileText(entry.source)
+        return current === null || hash(current) !== entry.contentHash
       } catch {
         return true
       }
