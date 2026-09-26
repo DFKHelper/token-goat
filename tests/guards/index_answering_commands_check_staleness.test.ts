@@ -27,7 +27,7 @@ interface CommandSite {
   readonly body: string
 }
 
-/** Every top-level function in the scanned files whose body queries the index directly via queryRefs( or searchSymbolsFts(. Nested helpers that only forward to one of these (rather than calling it themselves) are not picked up -- this guard targets the command entry points that decide what to render, not every intermediate query wrapper. */
+/** Every top-level function in the scanned files whose body queries the index directly via queryRefs( or searchSymbolsFts(. Nested helpers that only forward to one of these (rather than calling it themselves) are not picked up -- this guard targets the command entry points that decide what to render, not every intermediate query wrapper. The one exception is read_refs.ts's collectRefs(, the query-and-filter step every `refs` spec form shares: it returns rows and renders nothing, so its callers are the functions that print them, and they are found through it rather than dropping out of the scan. */
 function commandSites(): readonly CommandSite[] {
   const out: CommandSite[] = []
   for (const name of SCAN_FILES) {
@@ -35,7 +35,7 @@ function commandSites(): readonly CommandSite[] {
     const src = fs.readFileSync(file, 'utf8')
     for (const fn of parseTopLevelFunctions(src)) {
       const body = stripComments(fn.body)
-      if (/\bqueryRefs\s*\(|\bsearchSymbolsFts\s*\(/.test(body)) {
+      if (/\bqueryRefs\s*\(|\bsearchSymbolsFts\s*\(|\bcollectRefs\s*\(/.test(body)) {
         out.push({ file: name, name: fn.name, body })
       }
     }
@@ -142,13 +142,20 @@ const CLASSIFICATION: ReadonlyMap<string, { bucket: Bucket; reason: string }> = 
       reason: 'calls warnIfFilesStale(refRows.map(r => r.filePath)) after the per-target loop, before rendering -- covers the multi-symbol and cross-file refs spec forms the same way runRefsSingle covers the single-symbol form.',
     },
   ],
+  [
+    'read_refs.ts::collectRefs',
+    {
+      bucket: 'metadata-only-output-no-body-content-rendered',
+      reason: 'internal helper that queries and filters one name\'s refs and returns the rows; renders nothing. runRefsSingle and renderRefsTargets print those rows, are found here through their collectRefs( call, and check staleness themselves.',
+    },
+  ],
 ])
 
 describe('every index-answering command checks staleness or is proven metadata-only (stale-content defect class)', () => {
   it('finds a real, non-empty population of index-querying command functions', () => {
     const sites = commandSites()
     pinnedPopulation({
-      what: 'exported command functions in graph_commands.ts/read_commands.ts that call queryRefs( or searchSymbolsFts( directly',
+      what: 'exported command functions in graph_commands.ts/read_commands.ts that call queryRefs(, searchSymbolsFts( or collectRefs( directly',
       items: sites.map(key),
       floor: 8,
       mustInclude: ['runRefsSingle', 'runSemantic', 'runAsk', 'runCallChain'],
