@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
+import * as os from 'node:os'
 
 import { envBool } from './env.js'
 import {
@@ -107,7 +108,11 @@ function startServer(slot: number): void {
   if (disabled || markerAgeMs(`spawn-${slot}`) < SPAWN_RETRY_MS || !fs.existsSync(launcher)) return
   touchMarker(`spawn-${slot}`)
   try {
-    spawn(process.execPath, [launcher, 'hook-server', 'run', '--slot', String(slot)], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+    // Started in the temp directory, where the server moves itself anyway (runHookServer), never in the calling hook's directory: on Windows a working directory is an open handle, and until the server's own chdir runs it would hold a throwaway project directory undeletable.
+    const child = spawn(process.execPath, [launcher, 'hook-server', 'run', '--slot', String(slot)], { cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: true })
+    // A spawn that fails for want of that directory (TEMP naming one since deleted) reports it as an 'error' event after this returns, which the catch below never sees and which, unheard, would crash the hook that asked.
+    child.on('error', () => undefined)
+    child.unref()
   } catch {
     // a server that cannot start leaves every caller on the path it used before
   }
