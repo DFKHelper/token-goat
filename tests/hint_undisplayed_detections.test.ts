@@ -1,22 +1,4 @@
-/**
- * A detection the agent never saw -- auto-suppressed, or declined by a hint's own net-benefit
- * gate -- gets a zero-byte row, so the ledger can answer how often a hint fired at all.
- *
- * Before this, a suppressed detection left no trace: a category muted into silence and a category
- * whose trigger had stopped firing printed identically, and those call for opposite actions
- * (review the throttle vs. retire the hint). The same hole swallowed the range hints' priced gate
- * -- it declines on essentially every real file (see src/bash_range_savings.ts), and nothing
- * anywhere recorded that it had.
- *
- * FIXTURE PROVENANCE
- *
- * `RETENTION_DAYS` is FORMAT-DERIVED from the exported constant it must match, imported here
- * rather than restated so the two cannot drift.
- *
- * Everything else is HAND-DERIVED: every count is computed from the emissions the test itself
- * makes, independently of how the implementation aggregates them. The hook-level cases drive
- * preBashHandler against real files in a temp dir and read the ledger back.
- */
+/** A detection the agent never saw -- auto-suppressed, or declined by a hint's own net-benefit gate -- gets a zero-byte row, so the ledger can answer how often a hint fired at all. Before this, a suppressed detection left no trace: a category muted into silence and a category whose trigger had stopped firing printed identically, and those call for opposite actions (review the throttle vs. retire the hint). The same hole swallowed the range hints' priced gate -- it declines on essentially every real file (see src/bash_range_savings.ts), and nothing anywhere recorded that it had. FIXTURE PROVENANCE `RETENTION_DAYS` is FORMAT-DERIVED from the exported constant it must match, imported here rather than restated so the two cannot drift. Everything else is HAND-DERIVED: every count is computed from the emissions the test itself makes, independently of how the implementation aggregates them. The hook-level cases drive preBashHandler against real files in a temp dir and read the ledger back. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -33,7 +15,7 @@ import {
 } from '../src/hint_stats.js'
 import { preBashHandler } from '../src/hooks_bash.js'
 import { postEditHandler } from '../src/hooks_edit.js'
-import { postReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { storeBashOutputSync } from '../src/bash_output_cache.js'
 import { recordBashOutput } from '../src/session.js'
 import { shortFingerprint } from '../src/fingerprint.js'
@@ -138,8 +120,7 @@ describe('a detection that never reached the agent still gets a row', () => {
 
     for (let i = 0; i < 20; i++) logSuppressedDetection('bash_redirect', nonce(), `src/f${i}.ts`)
 
-    // 20 detections, none of them shown. There is no evidence here to mute a category on, and
-    // an efficacy percentage over rows nobody read would be an invention.
+    // 20 detections, none of them shown. There is no evidence here to mute a category on, and an efficacy percentage over rows nobody read would be an invention.
     expect(summaryFor('bash_redirect').efficacyPct).toBeNull()
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
   })
@@ -150,8 +131,7 @@ describe('a detection that never reached the agent still gets a row', () => {
     logHintEmission('bash_redirect', session, null, false, 300)
 
     const row = summaryFor('bash_redirect')
-    // One reached the agent and could not be scored; one never reached it at all. Pooling them
-    // would lose exactly the distinction this column exists to make.
+    // One reached the agent and could not be scored; one never reached it at all. Pooling them would lose exactly the distinction this column exists to make.
     expect(row.detected).toBe(1)
     expect(row.unobservable).toBe(1)
     expect(row.emitted).toBe(0)
@@ -170,8 +150,7 @@ describe('a detection that never reached the agent still gets a row', () => {
 
     pruneHintEmissions(db)
 
-    // Positive control in the same run: the recent row must survive, or a prune that deleted
-    // everything would pass this test for the wrong reason.
+    // Positive control in the same run: the recent row must survive, or a prune that deleted everything would pass this test for the wrong reason.
     expect(rowsFor(session)).toHaveLength(0)
     expect(rowsFor(fresh)).toHaveLength(1)
   })
@@ -194,8 +173,7 @@ describe('the range-read hint records the files its priced gate declined on', ()
 
     const session = nonce()
     const out = preBashHandler(preBashEvent(session, `sed -n '10,52p' sample.ts`, dir))
-    // The gate declines here: the file is not indexed in this temp dir, so no substitute can be
-    // priced, and an unpriceable proposal has not earned the context it would spend.
+    // The gate declines here: the file is not indexed in this temp dir, so no substitute can be priced, and an unpriceable proposal has not earned the context it would spend.
     expect(out.hookType).toBe('pass')
 
     const rows = rowsFor(session)
@@ -224,29 +202,12 @@ describe('the range-read hint records the files its priced gate declined on', ()
     const session = nonce()
     const out = preBashHandler(preBashEvent(session, 'echo hello', dir))
     expect(out.hookType).toBe('pass')
-    // Both this and the declines above return `pass`. Only one of them is a decision, and only
-    // that one leaves a row -- otherwise the column would count every unremarkable command.
+    // Both this and the declines above return `pass`. Only one of them is a decision, and only that one leaves a row -- otherwise the column would count every unremarkable command.
     expect(rowsFor(session)).toHaveLength(0)
   })
 })
 
-/**
- * The same decision, at the other net-benefit gates. `detected` has always promised to count a
- * hint "declined by a hint's own net-benefit gate", but only the bash range-read gate above ever
- * wrote such a row: every other site called meetsSavingsFloor and returned `pass` on failure,
- * which is byte-identical to the hook not recognizing the input at all. On one real ledger that
- * left edit_reread_suggest -- 5140 shown hints, more than any other category -- with zero recorded
- * refusals, so its decline rate was not low, it was unmeasured.
- *
- * Every case here is paired with a control, because the way this change fails is by recording an
- * absence as a refusal: a file too short to hint on, or a command with nothing cached, never
- * reached a price comparison and must stay out of the column.
- *
- * PROVENANCE: HAND-DERIVED. The file sizes are computed against the two shipped defaults --
- * hints.min_session_hint_savings_bytes (512) and post_read_code_compress.min_lines (200) -- rather
- * than read off any producer's output, which is sound here because what is under test is a
- * threshold comparison rather than a wire format.
- */
+/** The same decision, at the other net-benefit gates. `detected` has always promised to count a hint "declined by a hint's own net-benefit gate", but only the bash range-read gate above ever wrote such a row: every other site called meetsSavingsFloor and returned `pass` on failure, which is byte-identical to the hook not recognizing the input at all. On one real ledger that left edit_reread_suggest -- 5140 shown hints, more than any other category -- with zero recorded refusals, so its decline rate was not low, it was unmeasured. Every case here is paired with a control, because the way this change fails is by recording an absence as a refusal: a file too short to hint on, or a command with nothing cached, never reached a price comparison and must stay out of the column. PROVENANCE: HAND-DERIVED. The file sizes are computed against the two shipped defaults -- hints.min_session_hint_savings_bytes (512) and post_read_code_compress.min_lines (200) -- rather than read off any producer's output, which is sound here because what is under test is a threshold comparison rather than a wire format. */
 describe('the other net-benefit gates record their declines too', () => {
   let dir: string
 
@@ -301,15 +262,13 @@ describe('the other net-benefit gates record their declines too', () => {
 
     const rows = rowsFor(session)
     expect(rows).toHaveLength(1)
-    // Same category, opposite column: without this the test above would pass against a gate that
-    // had stopped emitting anything at all.
+    // Same category, opposite column: without this the test above would pass against a gate that had stopped emitting anything at all.
     expect(rows[0]!.displayed).toBe(1)
   })
 
   it('names the source file whose structural-navigation hint was refused on price', () => {
     const file = path.join(dir, 'many.ts')
-    // 250 lines clears post_read_code_compress.min_lines (200); at 2 bytes a line the whole file
-    // is 500 bytes, under the 512-byte floor. Long enough to hint on, too small to be worth it.
+    // 250 lines clears post_read_code_compress.min_lines (200); at 2 bytes a line the whole file is 500 bytes, under the 512-byte floor. Long enough to hint on, too small to be worth it.
     fs.writeFileSync(file, 'a\n'.repeat(250), 'utf8')
     expect(fs.statSync(file).size).toBeLessThan(512)
 
@@ -329,29 +288,25 @@ describe('the other net-benefit gates record their declines too', () => {
 
     const session = nonce()
     expect(postReadHandler(readEvent(session, file)).hookType).toBe('pass')
-    // Also under the floor, so a gate that recorded on size alone would log this one too and
-    // report the structural-navigation hint as declining on files it never considered.
+    // Also under the floor, so a gate that recorded on size alone would log this one too and report the structural-navigation hint as declining on files it never considered.
     expect(rowsFor(session)).toHaveLength(0)
   })
 
   it('names the cached output id a recall hint was refused over', () => {
     const cmd = 'npm test'
-    // Between hints.bash_dedup_min_bytes (200) and the 512-byte floor: big enough for the dedup
-    // branch to take an interest, too small for the recall to pay for the context it would cost.
+    // Between hints.bash_dedup_min_bytes (200) and the 512-byte floor: big enough for the dedup branch to take an interest, too small for the recall to pay for the context it would cost.
     const id = storeBashOutputSync(cmd, 'x'.repeat(300), 0, dir)
     recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), id, 300)
 
     const session = nonce()
-    // Not `pass` like the gates above: a declined recall falls through to the generic compress
-    // path, so the refusal is hidden behind an unrelated success rather than behind silence.
+    // Not `pass` like the gates above: a declined recall falls through to the generic compress path, so the refusal is hidden behind an unrelated success rather than behind silence.
     expect(preBashHandler(preBashEvent(session, cmd, dir)).hookType).toBe('rewriteInput')
 
     const rows = rowsFor(session)
     expect(rows).toHaveLength(1)
     expect(rows[0]!.category).toBe('bash_recall')
     expect(rows[0]!.displayed).toBe(0)
-    // The cache id, not a path: it is what classifyBashHint reads back out of a recall hint that
-    // did get shown, so the declined rows join the shown ones on the same key.
+    // The cache id, not a path: it is what classifyBashHint reads back out of a recall hint that did get shown, so the declined rows join the shown ones on the same key.
     expect(rows[0]!.correlator).toBe(id)
   })
 
@@ -376,8 +331,7 @@ describe('the other net-benefit gates record their declines too', () => {
     postEditHandler(editEvent(session, path.join(dir, 'a.md')))
     postReadHandler(readEvent(session, path.join(dir, 'b.ts')))
 
-    // Read back through the summary rather than the table: the doc comment on CategoryEfficacy
-    // makes its promise about this surface, and a row that never reaches it keeps the gate blind.
+    // Read back through the summary rather than the table: the doc comment on CategoryEfficacy makes its promise about this surface, and a row that never reaches it keeps the gate blind.
     expect(summaryFor('edit_reread_suggest').detected).toBe(1)
     expect(summaryFor('read_structural_nav').detected).toBe(1)
   })

@@ -1,10 +1,10 @@
-/** Large-markdown outline replacement coverage (hooks_read.ts foldMarkdownOutline). Fixture provenance: HAND-DERIVED. The markdown body below is synthetic prose written for this test, sized and headed to sit past this feature's own thresholds; the `N\tline` numbered rendering is written from the shape READ_NUMBERED_ROW_RE accepts (mirrors tests/code_fold.test.ts's `numbered` helper), not read off the implementation under test. */
+/** Large-markdown outline replacement coverage (hooks_read_post.ts foldMarkdownOutline). Fixture provenance: HAND-DERIVED. The markdown body below is synthetic prose written for this test, sized and headed to sit past this feature's own thresholds; the `N\tline` numbered rendering is written from the shape READ_NUMBERED_ROW_RE accepts (mirrors tests/code_fold.test.ts's `numbered` helper), not read off the implementation under test. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { postReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/util.js'
 import { getFileServedOutputs } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'

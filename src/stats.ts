@@ -204,13 +204,13 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Lossless re-layout of Grep content-mode output (hooks_grep.ts foldGrepContentHandler). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as agent_report_compact above: its sibling grep_dedup_hint is advisory and saves nothing directly, whereas this is a real rewrite with real bytes removed. Filing it under the advisory bucket would silently add non-hint savings to hint_stats.ts's savedBytes (which reads by_source[SOURCE_HINT] wholesale) and overstate the hint ledger's net benefit.
   'grep:fold': SOURCE_CONTENT,
 
-  // Withholding of already-served stretches from a completed Read (hooks_read.ts elideAlreadyServedLines). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as grep:fold above: its siblings read_count_deny and read_served_deny are decisions about whether a read happens at all, whereas this is a rewrite of a result that did happen, with real bytes removed from it. Filing it under the advisory bucket would add non-hint savings to hint_stats.ts's savedBytes, which reads by_source[SOURCE_HINT] wholesale.
+  // Withholding of already-served stretches from a completed Read (hooks_read_post.ts elideAlreadyServedLines). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as grep:fold above: its siblings read_count_deny and read_served_deny are decisions about whether a read happens at all, whereas this is a rewrite of a result that did happen, with real bytes removed from it. Filing it under the advisory bucket would add non-hint savings to hint_stats.ts's savedBytes, which reads by_source[SOURCE_HINT] wholesale.
   'read:served_elide': SOURCE_CONTENT,
   // Same bucket and same reasoning as read:served_elide directly above: a rewrite of a Read that did happen, with real bytes removed, not an advisory about whether to read at all.
   'read:body_fold': SOURCE_CONTENT,
-  // Same bucket and same reasoning as read:body_fold directly above: a coarser sibling rewrite of a large untargeted markdown Read (hooks_read.ts foldMarkdownOutline) that replaces the body with a heading tree plus preamble, with real bytes removed, not an advisory about whether to read at all.
+  // Same bucket and same reasoning as read:body_fold directly above: a coarser sibling rewrite of a large untargeted markdown Read (hooks_read_post.ts foldMarkdownOutline) that replaces the body with a heading tree plus preamble, with real bytes removed, not an advisory about whether to read at all.
   'read:markdown_outline': SOURCE_CONTENT,
-  // Same bucket and same reasoning as read:markdown_outline directly above, on source instead of prose: the structural-skeleton replacement of a large untargeted source Read (hooks_read.ts foldSourceSkeleton), with real bytes removed, not an advisory about whether to read at all.
+  // Same bucket and same reasoning as read:markdown_outline directly above, on source instead of prose: the structural-skeleton replacement of a large untargeted source Read (hooks_read_post.ts foldSourceSkeleton), with real bytes removed, not an advisory about whether to read at all.
   'read:source_skeleton': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,

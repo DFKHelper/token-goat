@@ -18,7 +18,8 @@ const _testConfigPath = tempConfigPath('tg-hooks-compact-epoch-config-test.toml'
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { preCompactHandler } from '../src/hooks_compact.js'
-import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
+import { preReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession, markCompacted, getCompactedAt, exportSessionState, importSessionState, type SerializedSession } from '../src/session.js'
@@ -238,9 +239,7 @@ describe('compaction epoch persistence and merge', () => {
   })
 
   it('drops the served-output index of a side that predates the winning epoch', () => {
-    // Same reason as the line ranges above, and it matters more here: a stale range only produces a
-    // wrong hint, while a stale served-output id justifies *withholding* a read's body on the
-    // grounds the model already holds it. After a compaction it no longer does.
+    // Same reason as the line ranges above, and it matters more here: a stale range only produces a wrong hint, while a stale served-output id justifies *withholding* a read's body on the grounds the model already holds it. After a compaction it no longer does.
     const stale: SerializedSession = { ...empty(), compactedAt: 1000, fileServedOutputs: [['/a.txt', ['id-a']]] }
     const fresh: SerializedSession = { ...empty(), compactedAt: 9000, fileServedOutputs: [['/b.txt', ['id-b']]] }
     const paths = (saveThenMerge('epoch-served-drop', stale, fresh).fileServedOutputs ?? []).map(([p]) => p)

@@ -1,14 +1,10 @@
-/**
- * Body-fold coverage.
- *
- * Fixture provenance: every numbered-read fixture below is HAND-DERIVED -- the `N\tline` rendering is written from the shape READ_NUMBERED_ROW_RE accepts, and the line contents are synthetic source written for this test. That is the right tier for logic (does the planner cut where it should) and explicitly NOT evidence about the wire format Claude Code emits; the e2e block below covers the shipping path by indexing a real file and driving the real handler, which is what this repo's "critical path" rule requires of anything touching the indexer or a hook.
- */
+/** Body-fold coverage. Fixture provenance: every numbered-read fixture below is HAND-DERIVED -- the `N\tline` rendering is written from the shape READ_NUMBERED_ROW_RE accepts, and the line contents are synthetic source written for this test. That is the right tier for logic (does the planner cut where it should) and explicitly NOT evidence about the wire format Claude Code emits; the e2e block below covers the shipping path by indexing a real file and driving the real handler, which is what this repo's "critical path" rule requires of anything touching the indexer or a hook. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, foldDetail, MAX_FOLD_DETAIL, type FoldSpan } from '../src/code_fold.js'
-import { postReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/util.js'
 import { getFileServedOutputs } from '../src/session.js'
@@ -364,11 +360,7 @@ describe('foldDetail', () => {
   })
 })
 
-/**
- * The shape Claude Code actually delivers.
- *
- * Fixture provenance: CAPTURE. The envelope and the un-numbered `file.content` below were read off real `toolUseResult` records in a Claude Code session transcript on 2026-09-05 -- 104 of 104 Read results carried the file's own text, none carried a `cat -n` rendering. The block above this one numbers its fixture and says in a comment that numbering is "what the hook parses"; that claim was written from READ_NUMBERED_ROW_RE rather than from the harness, and it was wrong. Because every fold and elision test agreed with it, both post-read rewrites were dead code on this harness -- the fold booked 0 events across a full session while the rest of the read hook ran normally.
- */
+/** The shape Claude Code actually delivers. Fixture provenance: CAPTURE. The envelope and the un-numbered `file.content` below were read off real `toolUseResult` records in a Claude Code session transcript on 2026-09-05 -- 104 of 104 Read results carried the file's own text, none carried a `cat -n` rendering. The block above this one numbers its fixture and says in a comment that numbering is "what the hook parses"; that claim was written from READ_NUMBERED_ROW_RE rather than from the harness, and it was wrong. Because every fold and elision test agreed with it, both post-read rewrites were dead code on this harness -- the fold booked 0 events across a full session while the rest of the read hook ran normally. */
 describe('body fold against the captured Claude Code Read envelope', () => {
   const tmpFiles: string[] = []
   const prevFlag = process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
@@ -511,13 +503,7 @@ describe('body fold against the captured Claude Code Read envelope', () => {
   })
 })
 
-/**
- * Comment folding.
- *
- * Fixture provenance: HAND-DERIVED. The rows below are synthetic source written for this test and the expected spans are computed from the inputs by hand, independently of the planner. That is the right tier for logic and explicitly NOT evidence about any wire format; the captured-envelope block above is what covers the shape Claude Code actually delivers.
- *
- * The markdown case is the one that matters most. A run of `#` lines is a comment block in Python and a run of headings in Markdown, so a content sniff would fold a document's entire heading structure -- the one thing a reader navigates by. Keying on extension is what prevents that, and the assertion below fails if anyone swaps it for a sniff.
- */
+/** Comment folding. Fixture provenance: HAND-DERIVED. The rows below are synthetic source written for this test and the expected spans are computed from the inputs by hand, independently of the planner. That is the right tier for logic and explicitly NOT evidence about any wire format; the captured-envelope block above is what covers the shape Claude Code actually delivers. The markdown case is the one that matters most. A run of `#` lines is a comment block in Python and a run of headings in Markdown, so a content sniff would fold a document's entire heading structure -- the one thing a reader navigates by. Keying on extension is what prevents that, and the assertion below fails if anyone swaps it for a sniff. */
 function crows(lines: string[], from = 1): Array<{ no: number; text: string }> {
   return lines.map((text, i) => ({ no: from + i, text }))
 }

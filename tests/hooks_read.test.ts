@@ -17,7 +17,9 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = tempConfigPath('tg-hooks-read-config-test.toml')
 
 import type { HookEvent } from '../src/hook_registry.js'
-import { preReadHandler, postReadHandler, buildLineDiff, readRequestedSliceWindow } from '../src/hooks_read.js'
+import { preReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
+import { buildLineDiff, readRequestedSliceWindow } from '../src/hooks_read_slice.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState, markCompacted } from '../src/session.js'

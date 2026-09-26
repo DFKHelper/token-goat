@@ -298,12 +298,12 @@ const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
       'file. The key and value printed alongside it go through renderValue().',
   ],
   [
-    'hooks_read.ts:fold.kind',
+    'hooks_read_post.ts:fold.kind',
     "token-goat's own fold-kind vocabulary, assigned by the folding code rather than read out of " +
       'the file being folded.',
   ],
   [
-    'hooks_read.ts:fold.detail',
+    'hooks_read_post.ts:fold.detail',
     "token-goat's own fold detail string, built from counts and literal words by the folding code.",
   ],
   [

@@ -89,7 +89,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_index.ts`](src/hooks_index.ts) | `appendDirtyPath()` — atomic append to `queue/dirty.txt`; `preCompactIndexHandler()` — drains any remaining dirty queue before compaction |
 | [`src/hooks_mcp.ts`](src/hooks_mcp.ts) | `preMcpHandler()` / `postMcpHandler()` — cache read-only `mcp__*` results into the bash-output store; deny an identical repeat with a `bash-output <id>` recall hint |
 | [`src/hooks_read_slice.ts`](src/hooks_read_slice.ts) | Line windowing, slice estimation, line diffing, and truncated-read detection. |
-| [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection; `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
+| [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection |
+| [`src/hooks_read_post.ts`](src/hooks_read_post.ts) | `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
 | [`src/hooks_screenshot.ts`](src/hooks_screenshot.ts) | Pre-tool-use hook — `pre_screenshot`: denies MCP screenshot tool calls that don't specify a destination file, redirecting the model to re-issue the call with one. |
 | [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |

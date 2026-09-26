@@ -1,36 +1,11 @@
-/**
- * Guard: a `session_hint` that credits bytes must say which lever earned them.
- *
- * `recordStat` takes an optional `detail` string, and nine byte-crediting call sites passed none.
- * Every one of them booked into a single undifferentiated `session_hint` bucket, so the ledger could
- * report a total and could not attribute a byte of it. That is not a cosmetic gap: sizing any one of
- * those levers is a precondition for deciding whether to change it, and the question "how much do
- * the stable-doc-compact and notebook denies actually save" was unanswerable for exactly this
- * reason, which is how a lever gets sized by inference instead of measurement.
- *
- * Event-only hints (`0, 0`) are deliberately exempt. They credit nothing, so there are no bytes to
- * attribute, and requiring a label there would be churn rather than accounting.
- *
- * The population assertion is not decoration. A guard whose matcher silently stops matching reports
- * a clean pass over an empty set, which is indistinguishable from every site being labelled. So this
- * fails if it finds no byte-crediting sites at all, and it names each unlabelled site rather than
- * asserting a bare count, because a count is satisfied by the wrong sites being right.
- *
- * PROVENANCE
- *
- * HAND-DERIVED. The expectation is computed from the source at run time by reading the argument
- * lists, never from a checked-in list of site names or a count that would have to be maintained in
- * step. It scans only `src/`, so this file's own regex literals are outside the population it judges
- * -- a guard that scans the tree containing itself matches its own pattern text and reports findings
- * that are its own source.
- */
+/** Guard: a `session_hint` that credits bytes must say which lever earned them. `recordStat` takes an optional `detail` string, and nine byte-crediting call sites passed none. Every one of them booked into a single undifferentiated `session_hint` bucket, so the ledger could report a total and could not attribute a byte of it. That is not a cosmetic gap: sizing any one of those levers is a precondition for deciding whether to change it, and the question "how much do the stable-doc-compact and notebook denies actually save" was unanswerable for exactly this reason, which is how a lever gets sized by inference instead of measurement. Event-only hints (`0, 0`) are deliberately exempt. They credit nothing, so there are no bytes to attribute, and requiring a label there would be churn rather than accounting. The population assertion is not decoration. A guard whose matcher silently stops matching reports a clean pass over an empty set, which is indistinguishable from every site being labelled. So this fails if it finds no byte-crediting sites at all, and it names each unlabelled site rather than asserting a bare count, because a count is satisfied by the wrong sites being right. PROVENANCE HAND-DERIVED. The expectation is computed from the source at run time by reading the argument lists, never from a checked-in list of site names or a count that would have to be maintained in step. It scans only `src/`, so this file's own regex literals are outside the population it judges -- a guard that scans the tree containing itself matches its own pattern text and reports findings that are its own source. */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
 const SRC_DIR = join(__dirname, '..', '..', 'src')
-const FILES = ['hooks_read.ts', 'hooks_skill.ts', 'hooks_bash.ts', 'hooks_agent_spawn.ts']
+const FILES = ['hooks_read.ts', 'hooks_read_post.ts', 'hooks_skill.ts', 'hooks_bash.ts', 'hooks_agent_spawn.ts']
 
 interface Site {
   file: string

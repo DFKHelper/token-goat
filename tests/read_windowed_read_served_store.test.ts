@@ -1,49 +1,4 @@
-/**
- * A windowed Read must mark only the lines it actually delivered.
- *
- * `hooks_read.ts::readWindowFromDisk` is the single slicing shared by the two ends that have to
- * agree byte-for-byte on "what this Read was worth": the producer that stores a finished Read into
- * the per-file served-output store, and the checks that later ask whether those bytes were already
- * served. It consulted `offset` only when a `limit` was also present, so a Read carrying an offset
- * and no limit -- which the harness answers with "that line to the end of the file" -- recorded the
- * WHOLE file as served. A later whole-file Read of the same file then had its never-delivered head
- * withheld under a notice claiming those lines "were already served verbatim in this session".
- *
- * That is the worst shape a compression bug can take here: the model asked for the file, received
- * almost none of it, and was handed a false reason to stop looking. The invariant these tests pin
- * is the elision contract itself -- a line we withhold must have genuinely been delivered earlier,
- * and the command the notice names must return it.
- *
- * Reproduced against the built bundle before the fix: a 178-line file read at offset=100, then read
- * whole, came back as 145 bytes carrying the single notice "lines 1-178 were already served
- * verbatim in this session". Zero of lines 1-99 had ever been delivered.
- *
- * Every case here pairs its must-not-drop assertions with a positive control in the same test: the
- * genuinely-served tail MUST still be withheld and the notice MUST name it. Without that pairing a
- * regression that simply stopped eliding anything would read as a pass, and over-collapsing is not
- * the only way to fail this seam -- under-collapsing passes a byte-ratio floor just as easily.
- *
- * Two layers, per this project's injected-seam discipline:
- *   1. In-process, for the slicing decision and the store's contents.
- *   2. Built-bundle e2e in separate processes, which is the authoritative layer: in production the
- *      two Reads are different process invocations, so the served body only reaches the second one
- *      if it was persisted to disk and rehydrated. An in-process test shares module state across
- *      both and would stay green even if nothing were ever written.
- *
- * Fixture provenance:
- *   - The file body is HAND-DERIVED: generated here from a line template, independent of any
- *     token-goat code, and the delivered windows are sliced from that same generated text with
- *     plain `Array.prototype.slice` rather than through the implementation's own helper. The
- *     expected line numbers are therefore computed independently of the code under test.
- *   - The PostToolUse request payload keys (`hook_event_name`, `session_id`, `cwd`, `tool_name`,
- *     `tool_input`, `tool_response.file.{filePath,content,numLines,startLine,totalLines}`) with
- *     `content` UNNUMBERED are CAPTURE-grade: this is the shape 104 of 104 real Claude Code Reads
- *     arrive in, recorded from live hook payloads. Deliberately not the `cat -n` display rendering,
- *     which the harness never sends on this field.
- *   - The response shape (`hookSpecificOutput.{hookEventName,updatedToolOutput}`) is FORMAT-DERIVED
- *     from this repo's own serializer contract in `src/hook_registry.ts::serializeOutput`. That
- *     proves agreement with our serializer, not that a shipped Claude Code build emits it.
- */
+/** A windowed Read must mark only the lines it actually delivered. `hooks_read_slice.ts::readWindowFromDisk` is the single slicing shared by the two ends that have to agree byte-for-byte on "what this Read was worth": the producer that stores a finished Read into the per-file served-output store, and the checks that later ask whether those bytes were already served. It consulted `offset` only when a `limit` was also present, so a Read carrying an offset and no limit -- which the harness answers with "that line to the end of the file" -- recorded the WHOLE file as served. A later whole-file Read of the same file then had its never-delivered head withheld under a notice claiming those lines "were already served verbatim in this session". That is the worst shape a compression bug can take here: the model asked for the file, received almost none of it, and was handed a false reason to stop looking. The invariant these tests pin is the elision contract itself -- a line we withhold must have genuinely been delivered earlier, and the command the notice names must return it. Reproduced against the built bundle before the fix: a 178-line file read at offset=100, then read whole, came back as 145 bytes carrying the single notice "lines 1-178 were already served verbatim in this session". Zero of lines 1-99 had ever been delivered. Every case here pairs its must-not-drop assertions with a positive control in the same test: the genuinely-served tail MUST still be withheld and the notice MUST name it. Without that pairing a regression that simply stopped eliding anything would read as a pass, and over-collapsing is not the only way to fail this seam -- under-collapsing passes a byte-ratio floor just as easily. Two layers, per this project's injected-seam discipline: 1. In-process, for the slicing decision and the store's contents. 2. Built-bundle e2e in separate processes, which is the authoritative layer: in production the two Reads are different process invocations, so the served body only reaches the second one if it was persisted to disk and rehydrated. An in-process test shares module state across both and would stay green even if nothing were ever written. Fixture provenance: - The file body is HAND-DERIVED: generated here from a line template, independent of any token-goat code, and the delivered windows are sliced from that same generated text with plain `Array.prototype.slice` rather than through the implementation's own helper. The expected line numbers are therefore computed independently of the code under test. - The PostToolUse request payload keys (`hook_event_name`, `session_id`, `cwd`, `tool_name`, `tool_input`, `tool_response.file.{filePath,content,numLines,startLine,totalLines}`) with `content` UNNUMBERED are CAPTURE-grade: this is the shape 104 of 104 real Claude Code Reads arrive in, recorded from live hook payloads. Deliberately not the `cat -n` display rendering, which the harness never sends on this field. - The response shape (`hookSpecificOutput.{hookEventName,updatedToolOutput}`) is FORMAT-DERIVED from this repo's own serializer contract in `src/hook_registry.ts::serializeOutput`. That proves agreement with our serializer, not that a shipped Claude Code build emits it. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -53,7 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { getBashOutput } from '../src/bash_output_cache.js'
-import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
+import { preReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { rewrittenBody } from './helpers/updated-tool-output.js'

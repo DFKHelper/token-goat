@@ -1,23 +1,9 @@
-/**
- * Harness payload normalization: translate harness-specific tool payloads to
- * token-goat's canonical internal shape before dispatch.
- *
- * Ports the payload-normalization slice of Python's hooks_cli.py. Response
- * denormalization and hook dispatch now live in relay.ts / hook_registry.ts.
- */
+/** Harness payload normalization: translate harness-specific tool payloads to token-goat's canonical internal shape before dispatch. Ports the payload-normalization slice of Python's hooks_cli.py. Response denormalization and hook dispatch now live in relay.ts / hook_registry.ts. */
 import { canonicalizeCopilotMcpToolName } from './copilot_mcp_names.js'
 import { COPILOT_CLI_TOOL_NAME_MAP } from './copilot_tool_names.js'
 import { ownGet } from './own_lookup.js'
 
-// All three levels are wired to console.error (stderr), never console.log/console.debug
-// (stdout): `token-goat hook <event>` treats its own stdout as the wire protocol Claude
-// Code parses byte-for-byte as JSON, so any diagnostic output landing on stdout corrupts
-// the response. console.warn/console.error already default to stderr in Node, but
-// console.debug defaults to *stdout* (the same stream as console.log) -- using it here
-// silently prepended a debug line in front of the JSON response the moment this code path
-// actually ran with a payload missing tool_name (see relay.ts's `relay()`: a payload that
-// fails to parse as JSON now degrades to an empty object rather than aborting the whole
-// hook call, so this branch became reachable for real where it previously wasn't).
+// All three levels are wired to console.error (stderr), never console.log/console.debug (stdout): `token-goat hook <event>` treats its own stdout as the wire protocol Claude Code parses byte-for-byte as JSON, so any diagnostic output landing on stdout corrupts the response. console.warn/console.error already default to stderr in Node, but console.debug defaults to *stdout* (the same stream as console.log) -- using it here silently prepended a debug line in front of the JSON response the moment this code path actually ran with a payload missing tool_name (see relay.ts's `relay()`: a payload that fails to parse as JSON now degrades to an empty object rather than aborting the whole hook call, so this branch became reachable for real where it previously wasn't).
 const _LOG = {
   warn: (msg: string, ...args: unknown[]) => console.warn(`[hooks_cli] ${msg}`, ...args),
   debug: (msg: string, ...args: unknown[]) => console.error(`[hooks_cli] ${msg}`, ...args),
@@ -25,18 +11,10 @@ const _LOG = {
     console.error(`[hooks_cli] ${msg}`, ...(err ? [err] : []), ...args),
 }
 
-/**
- * Harness identifier: the Claude Code harness variant token-goat is running under.
- * Determines payload/response shape translation.
- */
+/** Harness identifier: the Claude Code harness variant token-goat is running under. Determines payload/response shape translation. */
 export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi' | 'qwen' | 'vscode'
 
-/**
- * Hook payload: unstructured dict from harness stdin.
- *
- * The raw shape is harness-specific (camelCase in Claude, snake_case in Codex/Gemini).
- * normalize_payload translates to internal PascalCase shape before dispatch.
- */
+/** Hook payload: unstructured dict from harness stdin. The raw shape is harness-specific (camelCase in Claude, snake_case in Codex/Gemini). normalize_payload translates to internal PascalCase shape before dispatch. */
 export type HookPayload = Record<string, unknown>
 
 /** Canonical tool names recognized and handled by token-goat. */
@@ -58,10 +36,7 @@ export const CANONICAL_TG_TOOLS = [
 import { foldToolName } from './tool_name_fold.js'
 export { foldToolName }
 
-/**
- * Normalizes an inbound tool name against a harness map and canonical tool names
- * case-insensitively and separator-insensitively.
- */
+/** Normalizes an inbound tool name against a harness map and canonical tool names case-insensitively and separator-insensitively. */
 export function normalizeToolNameWithMap(toolName: string, nameMap?: Record<string, string>): string {
   if (!toolName || typeof toolName !== 'string') return toolName
 
@@ -111,9 +86,7 @@ export function normalizeToolNameWithMap(toolName: string, nameMap?: Record<stri
 
 export { COPILOT_CLI_TOOL_NAME_MAP }
 
-/**
- * Copilot CLI tool_input key -> internal key, per remapped tool.
- */
+/** Copilot CLI tool_input key -> internal key, per remapped tool. */
 export const COPILOT_CLI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   Read: { path: 'file_path' },
   Write: { path: 'file_path' },
@@ -121,10 +94,7 @@ export const COPILOT_CLI_INPUT_KEY_MAP: Record<string, Record<string, string>> =
   BashOutput: { shellId: 'bash_id' },
 }
 
-/**
- * Codex tool name → internal PascalCase tool name.
- * Codex uses lowercase/snake_case; token-goat handlers expect PascalCase.
- */
+/** Codex tool name → internal PascalCase tool name. Codex uses lowercase/snake_case; token-goat handlers expect PascalCase. */
 const CODEX_TOOL_NAME_MAP: Record<string, string> = {
   bash: 'Bash',
   // CAPTURE, codex-cli 0.155.0, 2026-09-22: a shell call reaches the hook wire already named 'Bash', and its internal spelling is 'exec'. 'shell' and 'bash' are kept for an older Codex or a fork; neither has been seen on a real payload, both came from this repo's own guidance text, and that text was wrong. See CODEX_MATCHERS in bridges/codex_install.ts.
@@ -143,10 +113,7 @@ const CODEX_TOOL_NAME_MAP: Record<string, string> = {
   view_image: 'Read',
 }
 
-/**
- * Gemini tool name → internal PascalCase tool name.
- * Gemini uses snake_case; token-goat uses PascalCase.
- */
+/** Gemini tool name → internal PascalCase tool name. Gemini uses snake_case; token-goat uses PascalCase. */
 export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   run_shell_command: 'Bash',
   read_file: 'Read',
@@ -159,38 +126,20 @@ export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   grep_search: 'Grep',
   // 'search_file_content' was GREP_TOOL_NAME's value before gemini-cli renamed it to 'grep_search' (confirmed against gemini-cli's current base-declarations.ts, which now defines GREP_TOOL_NAME = 'grep_search'; some of gemini-cli's own docs pages still lag the rename). Kept as a backward-compat entry for older installed gemini-cli versions that still emit the pre-rename name -- not dead/hallucinated, just legacy.
   search_file_content: 'Grep',
-  // Gemini's real web-search tool is registered as 'google_web_search' (WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts) -- 'web_search' is not a tool name Gemini CLI ever emits, so the old entry here silently never matched a real invocation.
-  // Previously mapped to 'WebFetch' as a workaround for GEMINI_PRE_TOOLS/POST_TOOLS (gemini_install.ts) excluding 'WebSearch' -- that made the hook fire under the installer's matcher, but hooks_fetch.ts's preFetchHandler/postFetchHandler require a `url` tool-input key, which a search call never sends (it sends `query`), so every google_web_search call silently no-op'd through WebFetch's handler: no URL policy check ever applied to it (it has no URL to check) and no search-result dedup ever ran. Now mapped to the dedicated 'WebSearch' handler (hooks_websearch.ts), which reads `query` directly; the installer gate above was extended to include 'WebSearch' so the hook stays wired.
+  // Gemini's real web-search tool is registered as 'google_web_search' (WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts) -- 'web_search' is not a tool name Gemini CLI ever emits, so the old entry here silently never matched a real invocation. Previously mapped to 'WebFetch' as a workaround for GEMINI_PRE_TOOLS/POST_TOOLS (gemini_install.ts) excluding 'WebSearch' -- that made the hook fire under the installer's matcher, but hooks_fetch.ts's preFetchHandler/postFetchHandler require a `url` tool-input key, which a search call never sends (it sends `query`), so every google_web_search call silently no-op'd through WebFetch's handler: no URL policy check ever applied to it (it has no URL to check) and no search-result dedup ever ran. Now mapped to the dedicated 'WebSearch' handler (hooks_websearch.ts), which reads `query` directly; the installer gate above was extended to include 'WebSearch' so the hook stays wired.
   google_web_search: 'WebSearch',
   web_fetch: 'WebFetch',
 }
 
-/**
- * Gemini tool_input key → internal key, per remapped tool.
- * Only keys that differ between Gemini and token-goat need to appear here.
- */
+/** Gemini tool_input key → internal key, per remapped tool. Only keys that differ between Gemini and token-goat need to appear here. */
 const GEMINI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
-  // Gemini's real write_file/replace tool schemas already use 'file_path' (and replace's 'old_string'/'new_string') verbatim -- identical to token-goat's own canonical keys (see getFilePath() in hooks_common.ts, which reads event.toolInput['file_path']) -- confirmed against gemini-cli's own EditToolParams/WriteFileToolParams interfaces. No remap is needed for Write/Edit; the previous entries here actively renamed a key that was already correct (file_path -> path), which would have silently corrupted the path argument on every real Gemini Write/Edit call.
-  // 'Read' covers THREE distinct raw Gemini tools (see GEMINI_TOOL_NAME_MAP above), and they do NOT share one schema: read_file already uses 'file_path' verbatim, no remap needed; list_directory uses 'dir_path' (confirmed against gemini-cli's LSToolParams) -- remapped to 'file_path' below, exactly mirroring Grep's existing dir_path->path fix; read_many_files uses 'include' (confirmed against gemini-cli's ReadManyFilesParams), an ARRAY of glob patterns, not a single file path -- there is no single string to remap it to, so it is deliberately left unmapped. getFilePath() (hooks_common.ts) will return undefined for this call, and preReadHandler/postReadHandler already fall back to passOutput() on an undefined path (see preReadHandler's `if (filePath === undefined) return passOutput()`), so a real read_many_files call still succeeds normally; it just doesn't get session-dedup tracking or read-count hints. Accepted limitation, not a bug to force-fit.
+  // Gemini's real write_file/replace tool schemas already use 'file_path' (and replace's 'old_string'/'new_string') verbatim -- identical to token-goat's own canonical keys (see getFilePath() in hooks_common.ts, which reads event.toolInput['file_path']) -- confirmed against gemini-cli's own EditToolParams/WriteFileToolParams interfaces. No remap is needed for Write/Edit; the previous entries here actively renamed a key that was already correct (file_path -> path), which would have silently corrupted the path argument on every real Gemini Write/Edit call. 'Read' covers THREE distinct raw Gemini tools (see GEMINI_TOOL_NAME_MAP above), and they do NOT share one schema: read_file already uses 'file_path' verbatim, no remap needed; list_directory uses 'dir_path' (confirmed against gemini-cli's LSToolParams) -- remapped to 'file_path' below, exactly mirroring Grep's existing dir_path->path fix; read_many_files uses 'include' (confirmed against gemini-cli's ReadManyFilesParams), an ARRAY of glob patterns, not a single file path -- there is no single string to remap it to, so it is deliberately left unmapped. getFilePath() (hooks_common.ts) will return undefined for this call, and preReadHandler/postReadHandler already fall back to passOutput() on an undefined path (see preReadHandler's `if (filePath === undefined) return passOutput()`), so a real read_many_files call still succeeds normally; it just doesn't get session-dedup tracking or read-count hints. Accepted limitation, not a bug to force-fit.
   Read: { dir_path: 'file_path' },
   // Grep's real tool (grep_search) calls its target-directory argument 'dir_path', which preReadHandler's Grep fallback (event.toolInput['path']) doesn't recognize, so that one remains remapped.
   Grep: { dir_path: 'path' },
 }
 
-/**
- * Grok CLI tool name -> internal PascalCase tool name.
- *
- * Confirmed empirically (2026-07-09) against grok 0.2.93: `grok inspect`
- * reports "claude" as a supported Harness Compatibility target, and grok
- * genuinely executes the *global* `~/.claude/settings.json` hooks config
- * (not any project-local .claude/settings.json -- a project-scoped
- * settings.json never fired; `grok inspect` reported "Project: (none)" even
- * with one present in the working directory). Verified by patching a
- * diagnostic hook alongside the real `token-goat hook pre_tool_use` /
- * `token-goat hook post_tool_use` commands already registered there and
- * inspecting the literal stdin JSON grok sent for each of Read/Write/Edit/
- * Bash/Grep/list-directory tool calls.
- */
+/** Grok CLI tool name -> internal PascalCase tool name. Confirmed empirically (2026-07-09) against grok 0.2.93: `grok inspect` reports "claude" as a supported Harness Compatibility target, and grok genuinely executes the *global* `~/.claude/settings.json` hooks config (not any project-local .claude/settings.json -- a project-scoped settings.json never fired; `grok inspect` reported "Project: (none)" even with one present in the working directory). Verified by patching a diagnostic hook alongside the real `token-goat hook pre_tool_use` / `token-goat hook post_tool_use` commands already registered there and inspecting the literal stdin JSON grok sent for each of Read/Write/Edit/ Bash/Grep/list-directory tool calls. */
 const GROK_TOOL_NAME_MAP: Record<string, string> = {
   read_file: 'Read',
   write: 'Write',
@@ -214,51 +163,18 @@ const GROK_TOOL_NAME_MAP: Record<string, string> = {
   run_terminal_cmd_concise: 'Bash',
 }
 
-/**
- * Grok tool_input key -> internal key, per remapped tool.
- *
- * Confirmed alongside GROK_TOOL_NAME_MAP above: write/search_replace/
- * run_terminal_command/grep already send token-goat's own canonical
- * argument key names verbatim (file_path/content, file_path/old_string/
- * new_string, command, pattern/path) -- only read_file's `target_file`
- * needs remapping to `file_path` (getFilePath() in hooks_common.ts).
- * list_dir's `target_directory` is left unmapped: unlike Grep, no handler in
- * this codebase currently reads Glob's tool_input by key at all, so there is
- * nothing for a remap to fix yet.
- */
+/** Grok tool_input key -> internal key, per remapped tool. Confirmed alongside GROK_TOOL_NAME_MAP above: write/search_replace/ run_terminal_command/grep already send token-goat's own canonical argument key names verbatim (file_path/content, file_path/old_string/ new_string, command, pattern/path) -- only read_file's `target_file` needs remapping to `file_path` (getFilePath() in hooks_common.ts). list_dir's `target_directory` is left unmapped: unlike Grep, no handler in this codebase currently reads Glob's tool_input by key at all, so there is nothing for a remap to fix yet. */
 const GROK_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   Read: { target_file: 'file_path' },
 }
 
-/**
- * Kimi Code tool name -> internal PascalCase tool name.
- *
- * Kimi's built-in tool vocabulary (`docs/en/reference/tools.md` in
- * MoonshotAI/kimi-code) already matches token-goat's canonical names for
- * `Read`, `Write`, `Edit`, `Grep`, `Glob`, `Bash`, and `WebSearch`, so those
- * need no entry here. Only the two that differ are mapped: Kimi calls its URL
- * fetcher `FetchURL` (Claude Code's `WebFetch`) and its image/video reader
- * `ReadMediaFile` (Claude Code reads media through `Read`). Kimi's `Agent`
- * tool is deliberately left unmapped: it is the sub-agent spawner, not Claude
- * Code's generic `Task`, and no handler in this codebase filters on it.
- */
+/** Kimi Code tool name -> internal PascalCase tool name. Kimi's built-in tool vocabulary (`docs/en/reference/tools.md` in MoonshotAI/kimi-code) already matches token-goat's canonical names for `Read`, `Write`, `Edit`, `Grep`, `Glob`, `Bash`, and `WebSearch`, so those need no entry here. Only the two that differ are mapped: Kimi calls its URL fetcher `FetchURL` (Claude Code's `WebFetch`) and its image/video reader `ReadMediaFile` (Claude Code reads media through `Read`). Kimi's `Agent` tool is deliberately left unmapped: it is the sub-agent spawner, not Claude Code's generic `Task`, and no handler in this codebase filters on it. */
 const KIMI_TOOL_NAME_MAP: Record<string, string> = {
   FetchURL: 'WebFetch',
   ReadMediaFile: 'Read',
 }
 
-/**
- * Kimi tool_input key -> internal key, per remapped tool.
- *
- * Kimi's v2 tools name their path argument `path`, not Claude Code's
- * `file_path` (`ReadInputSchema` in
- * `packages/agent-core-v2/src/agent/tools/os/read/readTool.ts` reads
- * `args.path`; `packages/acp-server/src/events-map.ts` states "v2 tools use
- * `path`"). getFilePath() in hooks_common.ts reads `file_path`, so Read/Write/
- * Edit/ReadMediaFile need that rename or every path-scoped handler silently
- * sees no path at all. Grep and Glob already send `pattern`/`path`, the keys
- * their handlers read, and Bash already sends `command`, so none is remapped.
- */
+/** Kimi tool_input key -> internal key, per remapped tool. Kimi's v2 tools name their path argument `path`, not Claude Code's `file_path` (`ReadInputSchema` in `packages/agent-core-v2/src/agent/tools/os/read/readTool.ts` reads `args.path`; `packages/acp-server/src/events-map.ts` states "v2 tools use `path`"). getFilePath() in hooks_common.ts reads `file_path`, so Read/Write/ Edit/ReadMediaFile need that rename or every path-scoped handler silently sees no path at all. Grep and Glob already send `pattern`/`path`, the keys their handlers read, and Bash already sends `command`, so none is remapped. */
 const KIMI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   // line_offset/n_lines are Kimi's Read paging arguments (ReadInputSchema in MoonshotAI/kimi-code packages/agent-core-v2/src/agent/tools/os/read/read.ts: `path`, `line_offset` "the line number to start reading from", `n_lines` "the number of lines to read"). Unmapped, every ranged Kimi read looked unbounded to hooks_read.ts's estimateRequestedSlice and was gated on the whole file's size -- a small slice of a big file could draw the large-file deny meant for full reads. line_offset's 1-indexed positive form matches Read's own offset semantics exactly; its negative tail-read form has no token-goat equivalent and is clamped to 1 by estimateRequestedSlice's `offset >= 1` guard, degrading to a window of the right SIZE (which is all the gate consumes). ReadMediaFile shares this map via its Read rename and carries only `path`, so the extra entries never touch it.
   Read: { path: 'file_path', line_offset: 'offset', n_lines: 'limit' },
@@ -266,35 +182,7 @@ const KIMI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   Edit: { path: 'file_path' },
 }
 
-/**
- * Qwen Code runtime tool id → internal PascalCase tool name.
- *
- * Qwen Code's hook payloads carry the CANONICAL runtime tool id in `tool_name`
- * (coreToolScheduler.ts passes `canonicalToolName(request.name)` into
- * firePreToolUseHook/firePostToolUseHook, and toolHookTriggers.ts serializes it
- * verbatim), never the PascalCase display name. Ids from QwenLM/qwen-code's own
- * packages/core/src/tools/tool-names.ts (ToolNames plus the ToolNamesMigration
- * legacy aliases, which canonicalToolName resolves before the hook fires -- the
- * legacy spellings are mapped here anyway in case an older Qwen Code build
- * serializes them unresolved; an extra entry is a harmless no-op).
- *
- * Before this map existed, `token-goat install --qwen` wired hooks that FIRED
- * on every tool call (the settings entry uses a catch-all matcher) but never
- * DID anything: `--harness qwen` fell through harnessForNormalization()
- * (src/relay.ts) to 'claude', no rename happened, and a tool_name of
- * `read_file`/`run_shell_command`/... matched no registered handler. Every
- * tool-scoped mechanism -- re-read denial, image shrink, bash compression,
- * post-edit indexing, WebFetch policy, search dedup -- was silently dead on
- * Qwen while the passive events (pre_compact manifest, user_prompt_submit
- * hints) kept working, which is exactly what made the gap invisible.
- *
- * Unmapped on purpose: `agent` (and its `task` legacy alias) -- token-goat's
- * Agent handlers read `prompt`/`subagent_type`, and qwen's agent tool input
- * shape was not verified this pass; `read_many_files` uses an `include` glob
- * array (same reason the Gemini map leaves it alone); everything else in
- * ToolNames (todo_write, save_memory, lsp, cron_*, team_*, ...) has no
- * token-goat equivalent.
- */
+/** Qwen Code runtime tool id → internal PascalCase tool name. Qwen Code's hook payloads carry the CANONICAL runtime tool id in `tool_name` (coreToolScheduler.ts passes `canonicalToolName(request.name)` into firePreToolUseHook/firePostToolUseHook, and toolHookTriggers.ts serializes it verbatim), never the PascalCase display name. Ids from QwenLM/qwen-code's own packages/core/src/tools/tool-names.ts (ToolNames plus the ToolNamesMigration legacy aliases, which canonicalToolName resolves before the hook fires -- the legacy spellings are mapped here anyway in case an older Qwen Code build serializes them unresolved; an extra entry is a harmless no-op). Before this map existed, `token-goat install --qwen` wired hooks that FIRED on every tool call (the settings entry uses a catch-all matcher) but never DID anything: `--harness qwen` fell through harnessForNormalization() (src/relay.ts) to 'claude', no rename happened, and a tool_name of `read_file`/`run_shell_command`/... matched no registered handler. Every tool-scoped mechanism -- re-read denial, image shrink, bash compression, post-edit indexing, WebFetch policy, search dedup -- was silently dead on Qwen while the passive events (pre_compact manifest, user_prompt_submit hints) kept working, which is exactly what made the gap invisible. Unmapped on purpose: `agent` (and its `task` legacy alias) -- token-goat's Agent handlers read `prompt`/`subagent_type`, and qwen's agent tool input shape was not verified this pass; `read_many_files` uses an `include` glob array (same reason the Gemini map leaves it alone); everything else in ToolNames (todo_write, save_memory, lsp, cron_*, team_*, ...) has no token-goat equivalent. */
 const QWEN_TOOL_NAME_MAP: Record<string, string> = {
   read_file: 'Read',
   write_file: 'Write',
@@ -311,46 +199,12 @@ const QWEN_TOOL_NAME_MAP: Record<string, string> = {
   list_directory: 'Read',
 }
 
-/**
- * Qwen Code's tool_input keys are already token-goat's own canonical names for
- * every mapped tool except list_directory -- verified against qwen-code's own
- * param interfaces: read_file `file_path`/`offset`/`limit` (read-file.ts), edit
- * `file_path`/`old_string`/`new_string` (edit.ts), run_shell_command `command`
- * (shell.ts ShellToolParams), grep_search `pattern`/`path` (grep.ts), web_fetch
- * `url` (web-fetch.ts), web_search `query` (web-search.ts), notebook_edit
- * `notebook_path` (notebook-edit.ts; getFilePath() reads notebook_path
- * natively). list_directory's target is `path` (ls.ts LSToolParams -- NOT the
- * `dir_path` its Gemini CLI ancestor uses), remapped so getFilePath() sees it.
- * read_file carries no `path` key, so sharing the Read entry is safe.
- */
+/** Qwen Code's tool_input keys are already token-goat's own canonical names for every mapped tool except list_directory -- verified against qwen-code's own param interfaces: read_file `file_path`/`offset`/`limit` (read-file.ts), edit `file_path`/`old_string`/`new_string` (edit.ts), run_shell_command `command` (shell.ts ShellToolParams), grep_search `pattern`/`path` (grep.ts), web_fetch `url` (web-fetch.ts), web_search `query` (web-search.ts), notebook_edit `notebook_path` (notebook-edit.ts; getFilePath() reads notebook_path natively). list_directory's target is `path` (ls.ts LSToolParams -- NOT the `dir_path` its Gemini CLI ancestor uses), remapped so getFilePath() sees it. read_file carries no `path` key, so sharing the Read entry is safe. */
 const QWEN_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   Read: { path: 'file_path' },
 }
 
-/**
- * VS Code (the built-in Copilot agent, 1.136+) model-facing tool name -> internal PascalCase tool name.
- *
- * VS Code's agent hooks send `tool_name: toolCall.name`, the name the model called, not the
- * `copilot_*` id its package.json registers. Every name below was read out of the VS Code 1.136.0
- * bundle rather than guessed: the ToolName enum in resources/app/extensions/copilot/dist/extension.js
- * (`ReadFile="read_file"`, `ViewImage="view_image"`, `ListDirectory="list_dir"`,
- * `CreateFile="create_file"`, `ReplaceString="replace_string_in_file"`,
- * `EditFile="insert_edit_into_file"`, `EditNotebook="edit_notebook_file"`, plus `grep_search` and
- * `file_search`), and `run_in_terminal` from resources/app/out/vs/workbench/workbench.desktop.main.js.
- *
- * Without this map VS Code's hooks fired and did nothing, the same failure Qwen had: `read_file`
- * matched no registered handler, so re-read denial, image shrinking, Bash wrapping and post-edit
- * indexing were all silently dead.
- *
- * Unmapped on purpose, each because no handler can use what the tool sends:
- * `multi_replace_string_in_file` carries a `replacements[]` array whose entries each name their own
- * file, while postEditHandler reads exactly one path; `apply_patch` carries patch text and no path
- * key; `fetch_webpage` carries a `urls[]` array, while preFetchHandler/postFetchHandler read one
- * `url` string; `get_terminal_output` would reach postBashOutputHandler, whose only output is a
- * result rewrite that VS Code has no channel for; `semantic_search`, `create_directory` and the rest
- * have no token-goat equivalent. `list_dir` is `Read`, the same considered choice as Gemini's and
- * Qwen's directory listers (see GEMINI_TOOL_NAME_MAP).
- */
+/** VS Code (the built-in Copilot agent, 1.136+) model-facing tool name -> internal PascalCase tool name. VS Code's agent hooks send `tool_name: toolCall.name`, the name the model called, not the `copilot_*` id its package.json registers. Every name below was read out of the VS Code 1.136.0 bundle rather than guessed: the ToolName enum in resources/app/extensions/copilot/dist/extension.js (`ReadFile="read_file"`, `ViewImage="view_image"`, `ListDirectory="list_dir"`, `CreateFile="create_file"`, `ReplaceString="replace_string_in_file"`, `EditFile="insert_edit_into_file"`, `EditNotebook="edit_notebook_file"`, plus `grep_search` and `file_search`), and `run_in_terminal` from resources/app/out/vs/workbench/workbench.desktop.main.js. Without this map VS Code's hooks fired and did nothing, the same failure Qwen had: `read_file` matched no registered handler, so re-read denial, image shrinking, Bash wrapping and post-edit indexing were all silently dead. Unmapped on purpose, each because no handler can use what the tool sends: `multi_replace_string_in_file` carries a `replacements[]` array whose entries each name their own file, while postEditHandler reads exactly one path; `apply_patch` carries patch text and no path key; `fetch_webpage` carries a `urls[]` array, while preFetchHandler/postFetchHandler read one `url` string; `get_terminal_output` would reach postBashOutputHandler, whose only output is a result rewrite that VS Code has no channel for; `semantic_search`, `create_directory` and the rest have no token-goat equivalent. `list_dir` is `Read`, the same considered choice as Gemini's and Qwen's directory listers (see GEMINI_TOOL_NAME_MAP). */
 export const VSCODE_TOOL_NAME_MAP: Record<string, string> = {
   read_file: 'Read',
   view_image: 'Read',
@@ -364,23 +218,7 @@ export const VSCODE_TOOL_NAME_MAP: Record<string, string> = {
   run_in_terminal: 'Bash',
 }
 
-/**
- * VS Code tool_input key -> internal key, keyed by the VS Code tool name (not the mapped one).
- *
- * Keyed by the VS Code name because two tools that share a mapped name disagree on their keys
- * (`read_file` sends `filePath`, `list_dir` sends `path`), and the reverse direction in
- * {@link vscodeNativeToolInput} has to know which one it is undoing. Input schemas are from the
- * `languageModelTools` entries in resources/app/extensions/copilot/package.json (VS Code 1.136.0):
- * copilot_readFile `{filePath, startLine, endLine}`, copilot_viewImage `{filePath}`,
- * copilot_listDirectory `{path}`, copilot_findTextInFiles `{query, isRegexp, includePattern,
- * maxResults, includeIgnoredFiles}`, copilot_findFiles `{query, maxResults}`, copilot_createFile
- * `{filePath, content}`, copilot_replaceString `{filePath, oldString, newString}`,
- * copilot_insertEdit `{explanation, filePath, code}`, copilot_editNotebook `{filePath, cellId,
- * newCode, language, editType}`; run_in_terminal `{command, explanation, goal, mode}` from the
- * workbench bundle. `command` is already the key hooks_bash.ts reads, so run_in_terminal needs no
- * rename. read_file's `startLine`/`endLine` (1-based, end inclusive) are left alone:
- * readRequestedSliceWindow in hooks_read.ts reads that exact pair already.
- */
+/** VS Code tool_input key -> internal key, keyed by the VS Code tool name (not the mapped one). Keyed by the VS Code name because two tools that share a mapped name disagree on their keys (`read_file` sends `filePath`, `list_dir` sends `path`), and the reverse direction in {@link vscodeNativeToolInput} has to know which one it is undoing. Input schemas are from the `languageModelTools` entries in resources/app/extensions/copilot/package.json (VS Code 1.136.0): copilot_readFile `{filePath, startLine, endLine}`, copilot_viewImage `{filePath}`, copilot_listDirectory `{path}`, copilot_findTextInFiles `{query, isRegexp, includePattern, maxResults, includeIgnoredFiles}`, copilot_findFiles `{query, maxResults}`, copilot_createFile `{filePath, content}`, copilot_replaceString `{filePath, oldString, newString}`, copilot_insertEdit `{explanation, filePath, code}`, copilot_editNotebook `{filePath, cellId, newCode, language, editType}`; run_in_terminal `{command, explanation, goal, mode}` from the workbench bundle. `command` is already the key hooks_bash.ts reads, so run_in_terminal needs no rename. read_file's `startLine`/`endLine` (1-based, end inclusive) are left alone: readRequestedSliceWindow in hooks_read.ts reads that exact pair already. */
 export const VSCODE_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   read_file: { filePath: 'file_path' },
   view_image: { filePath: 'file_path' },
@@ -397,15 +235,7 @@ export const VSCODE_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
 /** Payload key normalizePayload stores the original VS Code tool name under, so the response side can undo the key rename. */
 export const VSCODE_TOOL_NAME_KEY = '_tg_vscode_tool_name'
 
-/**
- * Rename canonical keys in a rewritten tool input back to the VS Code tool's own keys.
- *
- * VS Code replaces the tool input wholesale with a hook's `updatedInput` and then validates it
- * against the tool's schema, discarding it on failure ("Discarding updatedInput for tool ...:
- * schema validation failed" in extension.js). A rewrite built on the canonical input would carry
- * `file_path` where view_image requires `filePath`, so every rewrite is mapped back through the
- * inverse of that tool's {@link VSCODE_INPUT_KEY_MAP} entry before it is emitted.
- */
+/** Rename canonical keys in a rewritten tool input back to the VS Code tool's own keys. VS Code replaces the tool input wholesale with a hook's `updatedInput` and then validates it against the tool's schema, discarding it on failure ("Discarding updatedInput for tool ...: schema validation failed" in extension.js). A rewrite built on the canonical input would carry `file_path` where view_image requires `filePath`, so every rewrite is mapped back through the inverse of that tool's {@link VSCODE_INPUT_KEY_MAP} entry before it is emitted. */
 export function vscodeNativeToolInput(vscodeToolName: string, canonicalInput: Record<string, unknown>): Record<string, unknown> {
   const inverse: Record<string, string> = {}
   for (const [nativeKey, canonicalKey] of Object.entries(ownGet(VSCODE_INPUT_KEY_MAP, vscodeToolName) ?? {})) {
@@ -414,31 +244,8 @@ export function vscodeNativeToolInput(vscodeToolName: string, canonicalInput: Re
   return remapInputKeys(canonicalInput, inverse)
 }
 
-/**
- * Translate grok's camelCase wire keys (toolName/toolInput/sessionId) to the
- * snake_case shape the rest of normalizePayload expects, and unwrap
- * post_tool_use's tagged `toolResult` object into the `tool_response` shape
- * extractBashOutput/extractReadOutput (hooks_bash.ts/hooks_read.ts) already
- * know how to read (a string, or an object with an 'output'/'content'/
- * 'text'/'body' string key). Unlike Codex/Gemini, grok's entire wire payload
- * is camelCase, not just its tool-name vocabulary -- `toolName`/`toolInput`/
- * `sessionId`, never `tool_name`/`tool_input`/`session_id` -- confirmed via
- * the same live capture as GROK_TOOL_NAME_MAP above. run_terminal_command's
- * `toolResult` carries a ready-made `output_for_prompt` string plus a real
- * `exit_code` number, both pulled through directly; other tools' toolResult
- * keys are dynamic and PascalCase (`Content`/`FileContent`/`EditsApplied`,
- * confirmed for list_dir/read_file/search_replace respectively). Rather than
- * hard-code every one of those (and go stale the next time grok renames a
- * field, exactly as happened to Gemini's grep_search rename above), the
- * first string-valued field other than 'type' is used as a best-effort
- * 'content' value.
- */
-/**
- * Rename `tool_input`'s keys per `keyMap` (unmapped keys pass through
- * unchanged). Shared by the grok and gemini branches of
- * {@link normalizePayload}, which both remap select keys the same way once a
- * tool name has matched.
- */
+/** Translate grok's camelCase wire keys (toolName/toolInput/sessionId) to the snake_case shape the rest of normalizePayload expects, and unwrap post_tool_use's tagged `toolResult` object into the `tool_response` shape extractBashOutput/extractReadOutput (hooks_bash.ts/hooks_read_post.ts) already know how to read (a string, or an object with an 'output'/'content'/ 'text'/'body' string key). Unlike Codex/Gemini, grok's entire wire payload is camelCase, not just its tool-name vocabulary -- `toolName`/`toolInput`/ `sessionId`, never `tool_name`/`tool_input`/`session_id` -- confirmed via the same live capture as GROK_TOOL_NAME_MAP above. run_terminal_command's `toolResult` carries a ready-made `output_for_prompt` string plus a real `exit_code` number, both pulled through directly; other tools' toolResult keys are dynamic and PascalCase (`Content`/`FileContent`/`EditsApplied`, confirmed for list_dir/read_file/search_replace respectively). Rather than hard-code every one of those (and go stale the next time grok renames a field, exactly as happened to Gemini's grep_search rename above), the first string-valued field other than 'type' is used as a best-effort 'content' value. */
+/** Rename `tool_input`'s keys per `keyMap` (unmapped keys pass through unchanged). Shared by the grok and gemini branches of {@link normalizePayload}, which both remap select keys the same way once a tool name has matched. */
 function remapInputKeys(input: Record<string, unknown>, keyMap: Record<string, string>): Record<string, unknown> {
   const newInput: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(input)) {
@@ -447,18 +254,11 @@ function remapInputKeys(input: Record<string, unknown>, keyMap: Record<string, s
   return newInput
 }
 
-// Shared by the grok/gemini/kimi normalizePayload branches: all three rename tool_name via a
-// per-harness map, then remap tool_input's keys via a second per-harness map.
+// Shared by the grok/gemini/kimi normalizePayload branches: all three rename tool_name via a per-harness map, then remap tool_input's keys via a second per-harness map.
 //
-// The input-key map is keyed off the EFFECTIVE tool name -- the renamed one when nameMap has an
-// entry, otherwise the name the harness sent verbatim. Keying it off the rename alone would skip
-// the case Kimi depends on: a tool whose name already matches token-goat's canonical spelling
-// (`Read`) but whose path argument does not (`path`, not `file_path`). Callers whose harness never
-// sends a canonical name are unaffected -- grok and gemini both send snake_case, so an unmapped
-// name can never collide with their PascalCase input-key-map entries.
+// The input-key map is keyed off the EFFECTIVE tool name -- the renamed one when nameMap has an entry, otherwise the name the harness sent verbatim. Keying it off the rename alone would skip the case Kimi depends on: a tool whose name already matches token-goat's canonical spelling (`Read`) but whose path argument does not (`path`, not `file_path`). Callers whose harness never sends a canonical name are unaffected -- grok and gemini both send snake_case, so an unmapped name can never collide with their PascalCase input-key-map entries.
 //
-// `toolName` is guaranteed a non-empty string by normalizePayload's guard above, so assigning
-// tool_name unconditionally is identical to assigning it only on a rename.
+// `toolName` is guaranteed a non-empty string by normalizePayload's guard above, so assigning tool_name unconditionally is identical to assigning it only on a rename.
 function remapToolName(
   obj: Record<string, unknown>,
   toolName: string,
@@ -509,25 +309,7 @@ function grokToCanonicalWire(obj: Record<string, unknown>): Record<string, unkno
   return wire
 }
 
-/**
- * Alias a gemini-family post-tool `tool_response.llmContent` onto `output`, in place.
- *
- * Gemini CLI's AfterTool payload carries the tool result as
- * `tool_response: {llmContent, returnDisplay, error?}` -- stated verbatim in google-gemini/gemini-cli's
- * own `docs/hooks/reference.md` (fetched 2026-08-27, lines 122-123: "`tool_response`: (`object`) The
- * result containing `llmContent`, `returnDisplay`, and optional `error`."). Qwen Code, a fork of that
- * CLI, builds the identical shape (coreToolScheduler.ts, serialized verbatim by toolHookTriggers.ts).
- * Neither `llmContent` nor `returnDisplay` appears in OUTPUT_FIRST_TOOL_RESPONSE_KEYS or
- * BODY_FIRST_TOOL_RESPONSE_KEYS (hooks_common.ts), so every post handler that measures, caches,
- * redacts or compresses a tool result read an empty string on both harnesses and silently did
- * nothing. `output` is the first key both lists read, and it is added ALONGSIDE the originals rather
- * than renaming them, the same safe direction as every other inbound key fix in this file.
- *
- * `llmContent` is a PartListUnion upstream; only the plain-string case is representable here, so a
- * non-string value (an image part array, for instance) falls through untouched rather than being
- * coerced into an invented string. An existing `output` key always wins, so a harness that ever does
- * send one keeps it.
- */
+/** Alias a gemini-family post-tool `tool_response.llmContent` onto `output`, in place. Gemini CLI's AfterTool payload carries the tool result as `tool_response: {llmContent, returnDisplay, error?}` -- stated verbatim in google-gemini/gemini-cli's own `docs/hooks/reference.md` (fetched 2026-08-27, lines 122-123: "`tool_response`: (`object`) The result containing `llmContent`, `returnDisplay`, and optional `error`."). Qwen Code, a fork of that CLI, builds the identical shape (coreToolScheduler.ts, serialized verbatim by toolHookTriggers.ts). Neither `llmContent` nor `returnDisplay` appears in OUTPUT_FIRST_TOOL_RESPONSE_KEYS or BODY_FIRST_TOOL_RESPONSE_KEYS (hooks_common.ts), so every post handler that measures, caches, redacts or compresses a tool result read an empty string on both harnesses and silently did nothing. `output` is the first key both lists read, and it is added ALONGSIDE the originals rather than renaming them, the same safe direction as every other inbound key fix in this file. `llmContent` is a PartListUnion upstream; only the plain-string case is representable here, so a non-string value (an image part array, for instance) falls through untouched rather than being coerced into an invented string. An existing `output` key always wins, so a harness that ever does send one keeps it. */
 function aliasLlmContentToOutput(result: Record<string, unknown>): void {
   const toolResponse = result['tool_response']
   if (toolResponse === null || typeof toolResponse !== 'object' || Array.isArray(toolResponse)) return
@@ -537,16 +319,7 @@ function aliasLlmContentToOutput(result: Record<string, unknown>): void {
   }
 }
 
-/**
- * Translate harness-specific payload to internal format.
- *
- * Codex sends snake_case tool names; Claude uses PascalCase.
- * Gemini sends snake_case tool names and may use functionCallId instead of toolUseId.
- * Grok sends an entirely camelCase wire payload with its own tool-name vocabulary.
- *
- * Returns an empty dict on validation failures (non-dict, empty, missing tool_name)
- * so handlers degrade gracefully.
- */
+/** Translate harness-specific payload to internal format. Codex sends snake_case tool names; Claude uses PascalCase. Gemini sends snake_case tool names and may use functionCallId instead of toolUseId. Grok sends an entirely camelCase wire payload with its own tool-name vocabulary. Returns an empty dict on validation failures (non-dict, empty, missing tool_name) so handlers degrade gracefully. */
 export function normalizePayload(payload: unknown, harness: Harness = 'claude'): HookPayload {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     _LOG.warn('normalizePayload: payload is not a dict; received %s', typeof payload)
@@ -577,10 +350,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     return result
   }
 
-  // Copilot CLI's shim (src/bridges/copilot_cli.ts) already remaps the built-ins it knows
-  // (bash/powershell->Bash, view->Read, ...) and forwards everything else verbatim. Remap
-  // via COPILOT_CLI_TOOL_NAME_MAP case-insensitively, and canonicalise MCP tools to
-  // `mcp__<server>__<tool>` so handlers behind all tool names work consistently.
+  // Copilot CLI's shim (src/bridges/copilot_cli.ts) already remaps the built-ins it knows (bash/powershell->Bash, view->Read, ...) and forwards everything else verbatim. Remap via COPILOT_CLI_TOOL_NAME_MAP case-insensitively, and canonicalise MCP tools to `mcp__<server>__<tool>` so handlers behind all tool names work consistently.
   if (harness === 'copilot_cli') {
     const result = remapToolName(obj, toolName, COPILOT_CLI_TOOL_NAME_MAP, COPILOT_CLI_INPUT_KEY_MAP)
     result['tool_name'] = canonicalizeCopilotMcpToolName(result['tool_name'] as string)

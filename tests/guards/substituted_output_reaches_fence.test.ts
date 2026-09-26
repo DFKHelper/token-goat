@@ -1,27 +1,4 @@
-/**
- * Guard for the substitution rule: a hook that replaces a tool result with text of token-goat's
- * own composition must delimit the third-party bytes it kept, or say in one line why it does not.
- *
- * The sibling guard `third_party_content_reaches_fence.test.ts` asks the provenance question --
- * did these bytes come from outside. This one asks the harder half, which is the one that was
- * actually wrong: `hooks_bash.ts` handed the model a rewritten body with no fence at all for the
- * whole life of the compression feature, and the provenance guard could not see it, because Bash
- * output is not fetched from any of the sources that guard watches. It reaches the handler as a
- * tool result the harness already delivered.
- *
- * The rule is substitution, not provenance. A fence is owed wherever token-goat puts words of its
- * own in a block beside bytes it did not write, because that is the only situation in which the
- * model has to tell two voices apart. Where token-goat adds nothing -- a path that emits the
- * command's own bytes minus terminal escapes -- there is no second voice, and a fence there is a
- * tax the net-benefit gate then charges against the rewrite itself, so the rewrite is declined and
- * the raw output ships unfenced anyway. Those cases are listed below with that reasoning attached,
- * one entry per emit site, because an exemption whose reason is written down can be argued with
- * and an exemption that is merely absent cannot.
- *
- * Do not add a function here to make this pass. Either fence what it substitutes, or write the
- * sentence explaining why the block contains nothing of ours -- and if that sentence is hard to
- * write, that is the finding.
- */
+/** Guard for the substitution rule: a hook that replaces a tool result with text of token-goat's own composition must delimit the third-party bytes it kept, or say in one line why it does not. The sibling guard `third_party_content_reaches_fence.test.ts` asks the provenance question -- did these bytes come from outside. This one asks the harder half, which is the one that was actually wrong: `hooks_bash.ts` handed the model a rewritten body with no fence at all for the whole life of the compression feature, and the provenance guard could not see it, because Bash output is not fetched from any of the sources that guard watches. It reaches the handler as a tool result the harness already delivered. The rule is substitution, not provenance. A fence is owed wherever token-goat puts words of its own in a block beside bytes it did not write, because that is the only situation in which the model has to tell two voices apart. Where token-goat adds nothing -- a path that emits the command's own bytes minus terminal escapes -- there is no second voice, and a fence there is a tax the net-benefit gate then charges against the rewrite itself, so the rewrite is declined and the raw output ships unfenced anyway. Those cases are listed below with that reasoning attached, one entry per emit site, because an exemption whose reason is written down can be argued with and an exemption that is merely absent cannot. Do not add a function here to make this pass. Either fence what it substitutes, or write the sentence explaining why the block contains nothing of ours -- and if that sentence is hard to write, that is the finding. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -46,41 +23,11 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrustedFileContent(',
   'fenceWithMatches(',
   'fenceUntrustedOcrText(',
-  // The interleaved-body fencer. It takes spans rather than one string, so a caller declares which
-  // spans token-goat wrote and the neutralizer runs on the rest -- which is what makes a fence
-  // possible around a block our markers are spliced into. See the class note below.
+  // The interleaved-body fencer. It takes spans rather than one string, so a caller declares which spans token-goat wrote and the neutralizer runs on the rest -- which is what makes a fence possible around a block our markers are spliced into. See the class note below.
   'fenceUntrustedSpans(',
 ]
 
-/**
- * Emit sites that substitute without fencing, each with the reason. Keyed `file.ts::function`.
- *
- * Two classes, and the difference is worth stating because only one of them is settled.
- *
- * (a) There is nothing to separate. Either the emitted block carries no words of token-goat's, so
- * there is no second voice for the model to mistake, or it carries nothing BUT token-goat's words,
- * so there are no third-party bytes to delimit. Both are closed questions.
- *
- * (b) Our text and theirs are interleaved by construction: an elision marker sits between the lines
- * it replaced, so there is no cut point that puts our voice outside a tag. Wrapping the whole body
- * in ONE call would run the marker neutraliser over token-goat's own markers and hand the model
- * `&#91;token-goat: 40 lines elided]` -- our voice, mangled, which is the same defect the Bash cap
- * notice produced before it was moved outside the tag.
- *
- * That is solved, and the fix is `fenceUntrustedSpans`. It takes the body already split into spans,
- * each marked with whether token-goat wrote it, and runs the neutraliser on the others and on
- * nothing else. Authorship is positional -- declared by the producer that emitted the span -- and
- * never recognised from the text, because a rule that spotted our markers by their spelling would
- * exempt a forged one just as readily. Both `hooks_bash.ts` elision sites fence through it now and
- * are no longer listed below.
- *
- * The three that remain are OPEN, and what keeps them open is not a missing mechanism. It is the
- * round-trip risk: an untrusted span containing the literal `[token-goat` comes back escaped, and
- * these three feed the surfaces a model is most likely to copy back into a file (a read the editor
- * round-trips, a subagent report, a browser block carrying data URLs). The Bash sites do not have
- * that property, which is why they went first. See CLAUDE.arch.md, "Decision, 2026-09-04", for the
- * measurement and the reopen condition.
- */
+/** Emit sites that substitute without fencing, each with the reason. Keyed `file.ts::function`. Two classes, and the difference is worth stating because only one of them is settled. (a) There is nothing to separate. Either the emitted block carries no words of token-goat's, so there is no second voice for the model to mistake, or it carries nothing BUT token-goat's words, so there are no third-party bytes to delimit. Both are closed questions. (b) Our text and theirs are interleaved by construction: an elision marker sits between the lines it replaced, so there is no cut point that puts our voice outside a tag. Wrapping the whole body in ONE call would run the marker neutraliser over token-goat's own markers and hand the model `&#91;token-goat: 40 lines elided]` -- our voice, mangled, which is the same defect the Bash cap notice produced before it was moved outside the tag. That is solved, and the fix is `fenceUntrustedSpans`. It takes the body already split into spans, each marked with whether token-goat wrote it, and runs the neutraliser on the others and on nothing else. Authorship is positional -- declared by the producer that emitted the span -- and never recognised from the text, because a rule that spotted our markers by their spelling would exempt a forged one just as readily. Both `hooks_bash.ts` elision sites fence through it now and are no longer listed below. The three that remain are OPEN, and what keeps them open is not a missing mechanism. It is the round-trip risk: an untrusted span containing the literal `[token-goat` comes back escaped, and these three feed the surfaces a model is most likely to copy back into a file (a read the editor round-trips, a subagent report, a browser block carrying data URLs). The Bash sites do not have that property, which is why they went first. See CLAUDE.arch.md, "Decision, 2026-09-04", for the measurement and the reopen condition. */
 const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
   [
     'hooks_common.ts::emitRewriteIfChanged',
@@ -88,7 +35,7 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'belongs to the callers -- which is what the rest of this list is.',
   ],
   [
-    'hooks_read.ts::emitStructuralFold',
+    'hooks_read_post.ts::emitStructuralFold',
     'Also a wrapper, one file further out: it joins a StructuralFold that a producer already built ' +
       'and fenced. The producers are planMarkdownOutline and planSourceSkeleton, both in ' +
       'fold_structure.ts, and both are pinned by the fold-producer test below so this exemption ' +
@@ -131,7 +78,7 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'this site back in the offenders list, which is the intent.',
   ],
   [
-    'hooks_read.ts::elideAlreadyServedLines',
+    'hooks_read_post.ts::elideAlreadyServedLines',
     'Interleaved: a `[token-goat] lines N-M were already served` notice sits between the file ' +
       'lines it replaced. Also the surface most likely to be round-tripped back into an edit, ' +
       'which is what makes escaping the retained lines the wrong trade here. Open, not settled.',
@@ -154,11 +101,7 @@ function substitutes(body: string): boolean {
   return SUBSTITUTION_CALLS.some((t) => body.includes(t))
 }
 
-/**
- * Pinned: the whole claim is "every substitution site is accounted for", which a walk returning
- * nothing would also report. Anchors are the two files that most define the question -- the one
- * where the rule was broken, and the one that defines the emit boundary.
- */
+/** Pinned: the whole claim is "every substitution site is accounted for", which a walk returning nothing would also report. Anchors are the two files that most define the question -- the one where the rule was broken, and the one that defines the emit boundary. */
 function srcFiles(): readonly string[] {
   return pinnedPopulation({
     what: 'src/**/*.ts files scanned for unfenced output substitution',
@@ -204,13 +147,11 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
         'the emit boundary was renamed and SUBSTITUTION_CALLS now names nothing -- in which case ' +
         'this guard would pass against a codebase with no fencing at all.',
     ).not.toEqual([])
-    // The site the whole rule came from. If this one stops being found, the search is broken in a
-    // way an aggregate count cannot show.
+    // The site the whole rule came from. If this one stops being found, the search is broken in a way an aggregate count cannot show.
     expect(sites.map((s) => s.key)).toContain('hooks_bash.ts::maybeCompressCompoundOutput')
   })
 
-  // Per name, not in aggregate: a stale exemption key matches nothing and narrows the guard
-  // silently while every other check stays green.
+  // Per name, not in aggregate: a stale exemption key matches nothing and narrows the guard silently while every other check stays green.
   it.each([...UNFENCED_BY_DESIGN.keys()])('%s is still a real substitution site', (key) => {
     expect(
       substitutionSites().map((s) => s.key),
@@ -240,10 +181,7 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
     ).toEqual([])
   })
 
-  // Backs the hooks_read.ts::emitStructuralFold exemption, whose whole claim is that fencing
-  // happened one file away. Provenance: HAND-DERIVED -- the producer names are read off
-  // fold_structure.ts's exports and the assertion is that each fences, computed independently of
-  // the same-file walk above rather than from its output.
+  // Backs the hooks_read_post.ts::emitStructuralFold exemption, whose whole claim is that fencing happened one file away. Provenance: HAND-DERIVED -- the producer names are read off fold_structure.ts's exports and the assertion is that each fences, computed independently of the same-file walk above rather than from its output.
   it('every StructuralFold producer fences the file bytes it keeps', () => {
     const src = fs.readFileSync(path.join(SRC_DIR, 'fold_structure.ts'), 'utf-8')
     const producers = parseTopLevelFunctions(src).filter((f) => f.body.includes('kind: '))

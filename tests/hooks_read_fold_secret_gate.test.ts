@@ -1,30 +1,11 @@
-/**
- * The Read-hook fold gates ask only the precise secret patterns, never the recall-tuned catch-all.
- *
- * The gates decline to fold on a match, and a decline passes the file through to the model
- * UNREDACTED -- so a false positive there buys no protection and costs every fold the file could
- * have had. `generic_secret_assignment` is tuned the other way on purpose (it guards what gets
- * written to disk, where over-redacting is free), and it matches ordinary source: the prose line
- * below vetoed skeleton, outline and body folds for 9.4% of first-party files of 12 kB or more.
- *
- * Fixture provenance:
- *  - CAPTURE: `PasswordException: those files need a password to open` is a doc-comment line from
- *    this repository's own src/pdf_extract.ts, copied verbatim; it is prose about a exception type
- *    and holds no credential.
- *  - HAND-DERIVED: the surrounding TypeScript is synthetic filler written for this test, sized past
- *    the fold's own byte floor, and the `N\tline` numbered rendering is the Read tool's `cat -n`
- *    delivery shape (the same `numbered` helper tests/hooks_read_source_skeleton.test.ts uses).
- *  - HAND-DERIVED: the credential is assembled at runtime from a prefix and a filler run rather
- *    than written out, so no committed string in this repository is key-shaped. Its prefix is read
- *    off the vendor's documented key format, not off this repo's matcher.
- */
+/** The Read-hook fold gates ask only the precise secret patterns, never the recall-tuned catch-all. The gates decline to fold on a match, and a decline passes the file through to the model UNREDACTED -- so a false positive there buys no protection and costs every fold the file could have had. `generic_secret_assignment` is tuned the other way on purpose (it guards what gets written to disk, where over-redacting is free), and it matches ordinary source: the prose line below vetoed skeleton, outline and body folds for 9.4% of first-party files of 12 kB or more. Fixture provenance: - CAPTURE: `PasswordException: those files need a password to open` is a doc-comment line from this repository's own src/pdf_extract.ts, copied verbatim; it is prose about a exception type and holds no credential. - HAND-DERIVED: the surrounding TypeScript is synthetic filler written for this test, sized past the fold's own byte floor, and the `N\tline` numbered rendering is the Read tool's `cat -n` delivery shape (the same `numbered` helper tests/hooks_read_source_skeleton.test.ts uses). - HAND-DERIVED: the credential is assembled at runtime from a prefix and a filler run rather than written out, so no committed string in this repository is key-shaped. Its prefix is read off the vendor's documented key format, not off this repo's matcher. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { postReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { redactSecrets } from '../src/secret_redact.js'
 import type { HookEvent } from '../src/hook_registry.js'
 

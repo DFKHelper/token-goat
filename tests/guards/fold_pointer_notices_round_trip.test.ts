@@ -1,36 +1,4 @@
-/**
- * Guard for the recall-pointer class of bug: a folded/rewritten delivery names a route back to the
- * withheld bytes, but nothing checks that the named route actually returns them. This repo has
- * shipped that defect three times already (a comment-fold pointer whose recalled span folded to
- * nothing, a bash-output pointer missing the `--full` flag it needed, and the prose-fold pointer
- * this file's population was written to catch -- see project_recall_pointer_fixed_point_only_if
- * and project_recall_pointer_omitted_the_flag memory files). A guard that only checks the printed
- * pointer's *shape* (a regex against the string) would have passed on all three: the shape was
- * always well-formed, the bytes it named were the part that never came back. So this guard drives
- * the real handler pair for each pointer shape and executes the pointer, asserting the withheld
- * text is actually present in what following it returns.
- *
- * Population is a raw source scan of src/*.ts, not `codeOnly()`: the pointer text these functions
- * build lives entirely in ordinary template-literal string content, which `codeOnly()` blanks
- * before a guard ever sees it (see project_codeonly_blanks_the_template_literal). `reachesRaw`
- * (imported from the rewriteInput channel guard, which needed the identical raw-body scan for the
- * identical reason) walks the unblanked body text directly.
- *
- * Scope: this guard covers the two pointer shapes fixed/verified this cycle -- the prose-fold
- * paragraph pointer (fold_delivery.ts::proseFoldNotice, routed through `token-goat section`
- * when an enclosing heading resolves, and folding NOTHING at all when it does not, rather than
- * naming a `Read offset=/limit=` fallback the markdown large-file intercept in hooks_read.ts
- * could refuse unconditionally) and the comment-fold pointer (fold_delivery.ts::commentFoldNotice,
- * a `Read offset=/limit=` pointer verified to round-trip for a source file via the
- * protect_recent_reads exemption). fold_structure.ts::capLeadIn's former lead-in-cut pointer had
- * the identical root cause and no safe fix under the current CLI surface (the withheld lead-in
- * text sits before the document's first heading, so no `token-goat section` target names it), so
- * it no longer cuts or names a pointer at all: the full lead-in is delivered uncapped, and the
- * whole-replacement ratio floor in isStructuralRewriteAccepted is what rejects an oversized one.
- * bodyFoldNotice (`token-goat read "file::symbol"`) and the skeleton-gap notice's whole-file
- * `Read offset=1, limit=<rows.length>` fallback are CLI-route or honestly-scoped-to-the-whole-file
- * pointers respectively, outside this guard's per-paragraph/per-comment-block round-trip shape.
- */
+/** Guard for the recall-pointer class of bug: a folded/rewritten delivery names a route back to the withheld bytes, but nothing checks that the named route actually returns them. This repo has shipped that defect three times already (a comment-fold pointer whose recalled span folded to nothing, a bash-output pointer missing the `--full` flag it needed, and the prose-fold pointer this file's population was written to catch -- see project_recall_pointer_fixed_point_only_if and project_recall_pointer_omitted_the_flag memory files). A guard that only checks the printed pointer's *shape* (a regex against the string) would have passed on all three: the shape was always well-formed, the bytes it named were the part that never came back. So this guard drives the real handler pair for each pointer shape and executes the pointer, asserting the withheld text is actually present in what following it returns. Population is a raw source scan of src/*.ts, not `codeOnly()`: the pointer text these functions build lives entirely in ordinary template-literal string content, which `codeOnly()` blanks before a guard ever sees it (see project_codeonly_blanks_the_template_literal). `reachesRaw` (imported from the rewriteInput channel guard, which needed the identical raw-body scan for the identical reason) walks the unblanked body text directly. Scope: this guard covers the two pointer shapes fixed/verified this cycle -- the prose-fold paragraph pointer (fold_delivery.ts::proseFoldNotice, routed through `token-goat section` when an enclosing heading resolves, and folding NOTHING at all when it does not, rather than naming a `Read offset=/limit=` fallback the markdown large-file intercept in hooks_read.ts could refuse unconditionally) and the comment-fold pointer (fold_delivery.ts::commentFoldNotice, a `Read offset=/limit=` pointer verified to round-trip for a source file via the protect_recent_reads exemption). fold_structure.ts::capLeadIn's former lead-in-cut pointer had the identical root cause and no safe fix under the current CLI surface (the withheld lead-in text sits before the document's first heading, so no `token-goat section` target names it), so it no longer cuts or names a pointer at all: the full lead-in is delivered uncapped, and the whole-replacement ratio floor in isStructuralRewriteAccepted is what rejects an oversized one. bodyFoldNotice (`token-goat read "file::symbol"`) and the skeleton-gap notice's whole-file `Read offset=1, limit=<rows.length>` fallback are CLI-route or honestly-scoped-to-the-whole-file pointers respectively, outside this guard's per-paragraph/per-comment-block round-trip shape. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -39,7 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { HookEvent } from '../../src/hook_registry.js'
-import { preReadHandler, postReadHandler } from '../../src/hooks_read.js'
+import { preReadHandler } from '../../src/hooks_read.js'
+import { postReadHandler } from '../../src/hooks_read_post.js'
 import { normalizePath } from '../../src/paths.js'
 import { clearModuleCaches } from '../../src/reset.js'
 import { readSection } from '../../src/section_reader.js'
@@ -54,10 +23,7 @@ void SELF_EXCLUDE_MARKER
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
-// Not anchored to the literal `-- ` prefix: proseFoldNotice builds the pointer into its own
-// variable before splicing it after `-- `, so the two substrings never sit adjacent in the raw
-// source text even though they do in the rendered output. The marker alone is enough to identify
-// a pointer-constructing function without the false negative that anchoring would cause.
+// Not anchored to the literal `-- ` prefix: proseFoldNotice builds the pointer into its own variable before splicing it after `-- `, so the two substrings never sit adjacent in the raw source text even though they do in the rendered output. The marker alone is enough to identify a pointer-constructing function without the false negative that anchoring would cause.
 const READ_OFFSET_MARKER = 'Read "${shownPath}" with offset='
 const SECTION_MARKER = 'token-goat section "${shownPath}::'
 
@@ -138,13 +104,7 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
 
   it('has an adjudication for every direct definition site this guard covers, and no stale one', () => {
     const covered = [...definitionSitesForMarker(READ_OFFSET_MARKER), ...definitionSitesForMarker(SECTION_MARKER)]
-    // capLeadIn no longer constructs any pointer at all (it delivers the full lead-in uncapped
-    // instead of cutting it), so it no longer appears in `covered` and needs no entry here.
-    // planMarkdownOutline's `token-goat section "path::<Heading>"` also matches SECTION_MARKER, but
-    // it is not this bug's shape: `<Heading>` is a usage-form placeholder in a notice that also
-    // prints the document's real heading list right beside it (guidance + sectionsList, both in
-    // the same numbered[] this notice sits in), unlike proseFoldNotice's old bug, which named a
-    // placeholder heading with no list anywhere in the delivery for a reader to resolve it against.
+    // capLeadIn no longer constructs any pointer at all (it delivers the full lead-in uncapped instead of cutting it), so it no longer appears in `covered` and needs no entry here. planMarkdownOutline's `token-goat section "path::<Heading>"` also matches SECTION_MARKER, but it is not this bug's shape: `<Heading>` is a usage-form placeholder in a notice that also prints the document's real heading list right beside it (guidance + sectionsList, both in the same numbered[] this notice sits in), unlike proseFoldNotice's old bug, which named a placeholder heading with no list anywhere in the delivery for a reader to resolve it against.
     const KNOWN_UNCOVERED = new Set(['fold_structure.ts::planMarkdownOutline'])
     const needsAdjudication = covered.filter((k) => !KNOWN_UNCOVERED.has(k))
     const missing = needsAdjudication.filter((k) => ADJUDICATED[k] === undefined)
@@ -172,10 +132,7 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
   it('SHAPE token-goat section: a folded markdown paragraph pointer, executed, returns the withheld sentence', () => {
     clearModuleCaches()
     const marker = 'the unique sentence this test looks for after following the pointer'
-    // Long enough that the fold's net savings clears isRewriteWorthwhile's floor for the whole
-    // delivery, not just planProseFolds' own per-paragraph floor -- a shorter filler here folded
-    // correctly in isolation but the full postReadHandler pipeline still declined the rewrite,
-    // because the notice and fence overhead outweighed too small a saving.
+    // Long enough that the fold's net savings clears isRewriteWorthwhile's floor for the whole delivery, not just planProseFolds' own per-paragraph floor -- a shorter filler here folded correctly in isolation but the full postReadHandler pipeline still declined the rewrite, because the notice and fence overhead outweighed too small a saving.
     const filler = 'It then continues for a good while longer, restating the point in more detail than a reader scanning the document has any use for, which is exactly the text this fold exists to remove from the delivered output. '
     const paragraph = `This opening sentence stays visible. ${filler.repeat(3)}${marker}.`
     const pad = '```\n' + 'filler line to push the file size past the markdown size threshold\n'.repeat(160) + '```'
