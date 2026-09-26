@@ -135,8 +135,8 @@ const TURBO_RUNNING_RE = /^• Running /
 // The token splits at its first colon after the first character, so the halves cannot trade colons back and forth: the same tokens and the same group as `\S+:\S+`, in linear time.
 const TURBO_TASK_LINE_RE = /^(\S[^\s:]*:\S+)\s+(?:cache (?:miss|hit)|building)/
 const TURBO_CACHE_HIT_RE = /cache hit/i
-const TURBO_SUMMARY_RE =
-  /^Tasks:\s+\d+ successful|\bFailed\b|^Time:\s+\d/i
+// turbo right-aligns the run summary's labels on the longest one it prints (ExecutionSummary::print in turborepo's execution.rs), so " Tasks:" and "  Time:" arrive indented beside "Cached:".
+const TURBO_SUMMARY_RE = /^ *(?:Tasks:\s+\d+ successful|Cached:\s+\d+ cached|Time:\s+\d|Summary:\s)|\bFailed\b/i
 const TURBO_SEPARATOR_RE = /^[-─]{20,}$/
 
 export class TurboFilter extends ToolFilter {
