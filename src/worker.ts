@@ -1007,6 +1007,8 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
       },
     },
   )
+  // A spawn that cannot start returns a child with no pid and emits the cause as an 'error' event after this function returns, outside every caller's try/catch. Unheard, that event is an uncaught exception that crashes the hook whose ensureWorkerAlive asked. The throw below already reports the failure, which ensureWorkerAlive logs, and no pid file is claimed, so its next check retries.
+  child.on('error', () => undefined)
 
   const pid = child.pid
   if (pid === undefined) {

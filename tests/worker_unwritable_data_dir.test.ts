@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // Both builtins are replaced with vi.mock rather than spied: Node's ESM namespace bindings for a builtin are not configurable, so vi.spyOn(fs, 'writeFileSync') throws. State lives in vi.hoisted so the hoisted factories and the tests share it; with `refuse` null the fs mock is a pass-through.
 const state = vi.hoisted(() => ({
   refuse: null as ((p: string) => boolean) | null,
-  child: { pid: 4242424, unref: (): void => undefined },
+  child: { pid: 4242424, unref: (): void => undefined, on: (): void => undefined },
 }))
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -40,7 +40,7 @@ let savedNoSpawn: string | undefined
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-unwritable-'))
   state.refuse = null
-  state.child = { pid: 4242424, unref: vi.fn() }
+  state.child = { pid: 4242424, unref: vi.fn(), on: vi.fn() }
   vi.mocked(spawn).mockClear()
   savedNoSpawn = process.env['TOKEN_GOAT_NO_WORKER_SPAWN']
 })

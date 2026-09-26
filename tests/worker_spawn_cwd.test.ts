@@ -6,9 +6,9 @@ import type * as ChildProcessModule from 'node:child_process'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Replaced with vi.mock rather than spied: Node's ESM namespace bindings for a builtin are not configurable. The fake child is all startDetachedWorker touches (pid, unref); nothing is really started.
+// Replaced with vi.mock rather than spied: Node's ESM namespace bindings for a builtin are not configurable. The fake child is all startDetachedWorker touches (pid, unref, its error listener); nothing is really started.
 const state = vi.hoisted(() => ({
-  child: { pid: 4242425, unref: (): void => undefined },
+  child: { pid: 4242425, unref: (): void => undefined, on: (): void => undefined },
 }))
 
 vi.mock('node:child_process', async (importOriginal) => {
