@@ -335,28 +335,16 @@ function runFtsQuery(
   limit: number,
   scope: ReturnType<typeof projectScopeClause> | undefined,
   rootDir: string | undefined,
-  kindFilter?: { equals?: string; notEquals?: string },
 ): SymbolEntry[] {
-  let kindClause = ''
-  const kindParams: string[] = []
-  if (kindFilter?.equals !== undefined) {
-    kindClause = ' AND s.kind = ?'
-    kindParams.push(kindFilter.equals)
-  } else if (kindFilter?.notEquals !== undefined) {
-    kindClause = ' AND s.kind != ?'
-    kindParams.push(kindFilter.notEquals)
-  }
-
   // FTS5's MATCH operator and bm25() must name the FTS table directly — a table alias resolves as a bare column reference ("no such column: f"), which the catch below would silently swallow, leaving `semantic` permanently empty.
   const sql =
     `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent ` +
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
-    `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''}${kindClause} ORDER BY bm25(symbols_fts) LIMIT ?`
+    `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} ORDER BY bm25(symbols_fts) LIMIT ?`
   const params: (string | number)[] = [match]
   if (scope !== undefined && rootDir !== undefined) {
     params.push(...scope.params(rootDir))
   }
-  params.push(...kindParams)
   params.push(limit)
   const rows = db.prepare(sql).all(...params) as SymbolRow[]
   return rows.map(toSymbolEntry)
@@ -368,7 +356,6 @@ export function searchSymbolsFts(
   limit = 50,
   dbPath: string = globalDbPath(),
   rootDir?: string,
-  kindFilter?: { equals?: string; notEquals?: string },
 ): SymbolEntry[] {
   const andMatch = sanitizeFtsQuery(query, 'AND')
   if (andMatch === '') return []
@@ -376,12 +363,12 @@ export function searchSymbolsFts(
   const db = getDb(dbPath)
   const scope = rootDir !== undefined ? projectScopeClause('s.file_path') : undefined
   try {
-    const andResults = runFtsQuery(db, andMatch, limit, scope, rootDir, kindFilter)
+    const andResults = runFtsQuery(db, andMatch, limit, scope, rootDir)
     if (andResults.length > 0) return andResults
 
     const orMatch = sanitizeFtsQuery(query, 'OR')
     if (orMatch === andMatch) return andResults
-    return runFtsQuery(db, orMatch, limit, scope, rootDir, kindFilter)
+    return runFtsQuery(db, orMatch, limit, scope, rootDir)
   } catch {
     // FTS5 missing or a syntactically invalid MATCH query — degrade to empty.
     return []
