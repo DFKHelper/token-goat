@@ -55,8 +55,10 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | Proces
   const nodeProcesses = processes.filter((process) => process.name.toLowerCase() === 'node.exe')
   const chromeLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*chrome-devtools-mcp/i.test(process.commandLine))
   const playwrightLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*@playwright[\\/]mcp/i.test(process.commandLine))
+  const isTokenGoatResidentProcess = (cmd: string): boolean =>
+    /--worker-daemon\b/.test(cmd) || /\bhook-server\s+run\b/.test(cmd)
   const orphanedNodeProcesses = nodeProcesses.filter(
-    (process) => !byPid.has(process.parentProcessId) && !/--worker-daemon\b/.test(process.commandLine),
+    (process) => !byPid.has(process.parentProcessId) && !isTokenGoatResidentProcess(process.commandLine),
   )
   const launchers = chromeLaunchers.length + playwrightLaunchers.length
 

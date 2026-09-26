@@ -83,6 +83,16 @@ describe('cli_doctor', () => {
       expect(result.message, 'the ok message states nothing was found, not a count').not.toMatch(/\d+ orphaned/)
     })
 
+    it("does not report token-goat's own detached hook server as an orphan", () => {
+      const result = checkMcpProcessHealth([
+        { processId: 1, parentProcessId: 0, name: 'copilot.exe', commandLine: '' },
+        { processId: 8, parentProcessId: 999, name: 'node.exe', commandLine: 'node.exe C:\\dist\\token-goat.mjs hook-server run --slot 0' },
+      ])
+
+      expect(result.status, result.message).toBe('ok')
+      expect(result.message, 'the ok message states nothing was found, not a count').not.toMatch(/\d+ orphaned/)
+    })
+
     it('still reports a genuinely parentless Node process alongside the daemon', () => {
       // The carve-out must be the daemon flag specifically, not "any parentless node.exe once a daemon is present" -- otherwise running the daemon would blind the whole check.
       const result = checkMcpProcessHealth([

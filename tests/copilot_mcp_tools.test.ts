@@ -136,6 +136,37 @@ describe('readCopilotMcpTools', () => {
     })
     expect(readCopilotMcpTools(cacheDir()).servers.map((s) => s.serverName)).toEqual(['big', 'small'])
   })
+
+  it('excludes servers disabled in settings.json', () => {
+    writeCache('active.json', { serverName: 'active', updatedAt: '2026-01-01T00:00:00Z', tools: [tool('a', 'x')] })
+    writeCache('disabled.json', { serverName: 'disabled-srv', updatedAt: '2026-01-01T00:00:00Z', tools: [tool('b', 'y')] })
+    const userRoot = path.join(tmp, 'user-root')
+    fs.mkdirSync(userRoot, { recursive: true })
+    fs.writeFileSync(
+      path.join(userRoot, 'settings.json'),
+      JSON.stringify({ disabledMcpServers: ['disabled-srv'] }),
+      'utf8',
+    )
+
+    const report = readCopilotMcpTools(cacheDir(), userRoot)
+    expect(report.servers.map((s) => s.serverName)).toEqual(['active'])
+    expect(report.disabledServers).toEqual(['disabled-srv'])
+  })
+
+  it('excludes github-mcp-server when disableBuiltinMcps is set in settings.json', () => {
+    writeCache('gh.json', { serverName: 'github-mcp-server', updatedAt: '2026-01-01T00:00:00Z', tools: [tool('g', 'gh')] })
+    const userRoot = path.join(tmp, 'user-root')
+    fs.mkdirSync(userRoot, { recursive: true })
+    fs.writeFileSync(
+      path.join(userRoot, 'settings.json'),
+      JSON.stringify({ disableBuiltinMcps: true }),
+      'utf8',
+    )
+
+    const report = readCopilotMcpTools(cacheDir(), userRoot)
+    expect(report.servers).toEqual([])
+    expect(report.disabledServers).toEqual(['github-mcp-server'])
+  })
 })
 
 describe('waste --copilot per-server section', () => {
@@ -200,5 +231,23 @@ describe('waste --copilot per-server section', () => {
     fs.writeFileSync(path.join(cacheDir(), 'broken.json'), 'nope', 'utf8')
     const out = await render()
     expect(out).toContain('1 cache file could not be read')
+  })
+
+  it('reports when cached servers are disabled in settings.json', async () => {
+    writeSession()
+    writeCache('gh.json', {
+      serverName: 'github-mcp-server',
+      updatedAt: '2026-01-01T00:00:00Z',
+      tools: [tool('search_code', 'Search code')],
+    })
+    fs.writeFileSync(
+      path.join(tmp, 'home', 'settings.json'),
+      JSON.stringify({ disabledMcpServers: ['github-mcp-server'] }),
+      'utf8',
+    )
+    const out = await render()
+    expect(out).toContain('all are disabled in settings (github-mcp-server)')
+    expect(out).toContain('None are contributing to active tool-definition overhead')
+    expect(out).not.toContain('re-sent every request')
   })
 })

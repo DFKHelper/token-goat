@@ -69,15 +69,23 @@ function printCopilotReport(report: CopilotWasteReport): void {
     w('  That is not the same as having no MCP servers: it means nothing has been cached\n')
     w('  there yet, which is also what a Copilot that has never connected one looks like.\n')
   } else if (mcp.servers.length === 0) {
-    w('  Cache is present but holds no servers, so none of the tool-definition budget\n')
-    w(`  above is MCP: it is all Copilot's own tools, which the flags above can narrow\n`)
-    w('  but dropping a server cannot.\n')
+    if (mcp.disabledServers !== undefined && mcp.disabledServers.length > 0) {
+      w(`  Cache holds ${countNoun(mcp.disabledServers.length, 'server')}, but all are disabled in settings (${mcp.disabledServers.join(', ')}).\n`)
+      w('  None are contributing to active tool-definition overhead.\n')
+    } else {
+      w('  Cache is present but holds no servers, so none of the tool-definition budget\n')
+      w(`  above is MCP: it is all Copilot's own tools, which the flags above can narrow\n`)
+      w('  but dropping a server cannot.\n')
+    }
   } else {
     for (const server of mcp.servers) {
       const tokens = server.estimatedTokens.toLocaleString()
       const calls = report.mcpCalls === null ? '' : `, ${countNoun(report.mcpCalls[server.serverName] ?? 0, 'call')} this session`
       w(`  ${server.serverName}: ${countNoun(server.toolCount, 'tool')}, `)
       w(`${formatBytes(server.definitionBytes)}, ~${tokens} tok${calls}\n`)
+    }
+    if (mcp.disabledServers !== undefined && mcp.disabledServers.length > 0) {
+      w(`  Disabled in settings: ${mcp.disabledServers.join(', ')} (omitted from active overhead).\n`)
     }
     const mcpTokens = mcp.servers.reduce((sum, server) => sum + server.estimatedTokens, 0)
     w(`  ~${mcpTokens.toLocaleString()} tok estimated across `)

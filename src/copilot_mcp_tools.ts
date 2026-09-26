@@ -38,8 +38,59 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { copilotCliMcpToolsDir } from './bridges/copilot_cli_install.js'
+import { copilotCliMcpToolsDir, copilotCliUserRoot } from './bridges/copilot_cli_install.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
+
+/**
+ * Built-in MCP server names bundled with GitHub Copilot CLI that are disabled
+ * when `disableBuiltinMcps` is set to true in settings.json.
+ */
+export const COPILOT_BUILTIN_MCP_SERVERS: readonly string[] = ['github-mcp-server']
+
+/**
+ * Reads Copilot CLI's settings.json to discover which MCP servers have been
+ * disabled by the user (`disabledMcpServers`, `disableBuiltinMcps`, or
+ * `--disable-mcp-server`).
+ */
+export function readCopilotDisabledMcpServers(userRoot: string = copilotCliUserRoot()): Set<string> {
+  const disabled = new Set<string>()
+  const settingsPath = path.join(userRoot, 'settings.json')
+  try {
+    if (!fs.existsSync(settingsPath)) return disabled
+    const raw = fs.readFileSync(settingsPath, 'utf8')
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    if (typeof parsed !== 'object' || parsed === null) return disabled
+
+    if (parsed['disableBuiltinMcps'] === true) {
+      for (const builtin of COPILOT_BUILTIN_MCP_SERVERS) {
+        disabled.add(builtin)
+      }
+    }
+
+    const disabledList = parsed['disabledMcpServers']
+    if (Array.isArray(disabledList)) {
+      for (const item of disabledList) {
+        if (typeof item === 'string' && item.trim() !== '') {
+          disabled.add(item.trim())
+        }
+      }
+    }
+
+    const singleOrList = parsed['disableMcpServer']
+    if (Array.isArray(singleOrList)) {
+      for (const item of singleOrList) {
+        if (typeof item === 'string' && item.trim() !== '') {
+          disabled.add(item.trim())
+        }
+      }
+    } else if (typeof singleOrList === 'string' && singleOrList.trim() !== '') {
+      disabled.add(singleOrList.trim())
+    }
+  } catch {
+    // If settings.json is unreadable or malformed, return what was parsed so far
+  }
+  return disabled
+}
 
 /** One MCP server's contribution to the per-request tool-definition budget. */
 export interface CopilotMcpServerTools {
@@ -69,8 +120,10 @@ export interface CopilotMcpToolsReport {
    * would state as measured a thing that was never measured.
    */
   cacheFound: boolean
-  /** Deduplicated, largest contributor first. */
+  /** Deduplicated, active (non-disabled) servers, largest contributor first. */
   servers: CopilotMcpServerTools[]
+  /** Cached servers that are currently disabled in settings.json. */
+  disabledServers?: string[]
   /** Files that were present but could not be parsed or lacked a server name. */
   unreadable: number
 }
@@ -101,15 +154,23 @@ function wireShapeLength(tools: CachedTool[]): number {
  * Read the cache. Never throws on bad input: an unreadable or malformed file
  * is counted in `unreadable` and skipped, because one corrupt cache entry
  * should not take down a report whose other sections are fine.
+ *
+ * Excludes servers that are disabled in settings.json (`disabledMcpServers`,
+ * `disableBuiltinMcps`), so cached tools from disabled servers are not
+ * attributed to active per-request prompt overhead.
  */
-export function readCopilotMcpTools(dir: string = copilotCliMcpToolsDir()): CopilotMcpToolsReport {
+export function readCopilotMcpTools(
+  dir: string = copilotCliMcpToolsDir(),
+  userRoot: string = copilotCliUserRoot(),
+): CopilotMcpToolsReport {
   let entries: string[]
   try {
     entries = fs.readdirSync(dir)
   } catch {
-    return { cacheFound: false, servers: [], unreadable: 0 }
+    return { cacheFound: false, servers: [], disabledServers: [], unreadable: 0 }
   }
 
+  const disabledSet = readCopilotDisabledMcpServers(userRoot)
   const newest = new Map<string, CopilotMcpServerTools>()
   let unreadable = 0
 
@@ -153,8 +214,19 @@ export function readCopilotMcpTools(dir: string = copilotCliMcpToolsDir()): Copi
     if (existing === undefined || candidate.updatedAt > existing.updatedAt) newest.set(serverName, candidate)
   }
 
-  const servers = [...newest.values()].sort(
+  const activeCandidates: CopilotMcpServerTools[] = []
+  const disabledServers: string[] = []
+  for (const [name, candidate] of newest.entries()) {
+    if (disabledSet.has(name)) {
+      disabledServers.push(name)
+    } else {
+      activeCandidates.push(candidate)
+    }
+  }
+  disabledServers.sort()
+
+  const servers = activeCandidates.sort(
     (a, b) => b.definitionBytes - a.definitionBytes || a.serverName.localeCompare(b.serverName),
   )
-  return { cacheFound: true, servers, unreadable }
+  return { cacheFound: true, servers, disabledServers, unreadable }
 }
