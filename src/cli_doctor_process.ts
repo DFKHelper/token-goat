@@ -40,6 +40,15 @@ function describeProcess(commandLine: string): string {
   return trimmed.length > 0 ? (trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed) : '(no command line)'
 }
 
+/**
+ * Determines whether a process command line belongs to one of token-goat's
+ * resident background processes (such as the detached indexer worker daemon
+ * or the detached hook server).
+ */
+export function isTokenGoatResidentProcess(cmd: string): boolean {
+  return /--worker-daemon\b/.test(cmd) || /\bhook-server\s+run\b/.test(cmd)
+}
+
 export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | ProcessListFailure): DoctorResult {
   if (!Array.isArray(processes)) {
     const failure = processes as ProcessListFailure
@@ -55,8 +64,6 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | Proces
   const nodeProcesses = processes.filter((process) => process.name.toLowerCase() === 'node.exe')
   const chromeLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*chrome-devtools-mcp/i.test(process.commandLine))
   const playwrightLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*@playwright[\\/]mcp/i.test(process.commandLine))
-  const isTokenGoatResidentProcess = (cmd: string): boolean =>
-    /--worker-daemon\b/.test(cmd) || /\bhook-server\s+run\b/.test(cmd)
   const orphanedNodeProcesses = nodeProcesses.filter(
     (process) => !byPid.has(process.parentProcessId) && !isTokenGoatResidentProcess(process.commandLine),
   )

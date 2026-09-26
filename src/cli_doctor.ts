@@ -53,6 +53,7 @@ export { checkSymbolBodySize, OVERSIZED_BODY_PROBE_SQL } from './symbol_body_pro
 import {
   type ProcessInfo,
   checkMcpProcessHealth,
+  isTokenGoatResidentProcess,
   readWindowsProcesses,
   checkWorkerRunning,
 } from './cli_doctor_process.js'
@@ -87,6 +88,7 @@ import {
 export {
   type ProcessInfo,
   checkMcpProcessHealth,
+  isTokenGoatResidentProcess,
   readWindowsProcesses,
   checkWorkerRunning,
   globalMcpConfigPath,
