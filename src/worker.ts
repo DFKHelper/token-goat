@@ -2,6 +2,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -978,7 +979,8 @@ function workerBundleMatches(dir: string): boolean {
 
 export function startDetachedWorker(opts?: WorkerOptions): number {
   const pollIntervalMs = resolvePollIntervalMs(opts?.pollIntervalMs)
-  const dir = opts?.dataDir ?? dataDir()
+  // Absolute, because the daemon is not started in this process's directory: a relative TG_WORKER_DATA_DIR would name a different directory there from the one it names here.
+  const dir = path.resolve(opts?.dataDir ?? dataDir())
   try {
     ensureDirSync(dir)
   } catch (e) {
@@ -988,10 +990,13 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
   const refusal = dataDirWriteRefusal(dir)
   if (refusal !== undefined) throw new WorkerDataDirUnwritableError(dir, refusal)
 
+  // Never the caller's directory. The caller is usually a hook running inside the user's project, and on Windows a working directory is an open handle, so a daemon that inherited one kept a throwaway working copy undeletable for as long as it lived. The temp directory, where the hook server sits for the same reason, and not the data directory: `uninstall --purge` and a test's teardown delete that one right after `worker stop`, and a daemon still exiting from inside it made the delete fail. The data directory, created just above, only when TEMP names a directory that is gone, since a spawn into a missing directory starts nothing. (Kept out of the options object below: esbuild ships a comment written there in the hook bundle.)
+  const cwd = fs.existsSync(os.tmpdir()) ? os.tmpdir() : dir
   const child: ChildProcess = spawn(
     process.execPath,
     [daemonEntryScript(), '--worker-daemon'],
     {
+      cwd,
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
@@ -1187,9 +1192,19 @@ export function sigtermDrainDeadline(timeoutMs: number = SIGTERM_DRAIN_TIMEOUT_M
 }
 
 export function runDetachedWorkerDaemon(): void {
-  // First thing the daemon does, before any drain: this process exists to do work nobody is waiting on, and it is spawned detached with stdio ignored, so it is invisible while it runs. Asking to be scheduled behind the user's own work is free when the machine is idle.
+  // Resolved against the directory this process was started in, before leaving it, so a relative TG_WORKER_DATA_DIR keeps meaning what its author meant.
+  const dir = path.resolve(process.env['TG_WORKER_DATA_DIR'] ?? dataDir())
+  // First act: leave the inherited working directory, which startDetachedWorker already avoids but an older client or a hand-run `--worker-daemon` does not. On Windows a working directory is an open handle, and this process lives for hours, so staying put would keep the caller's directory undeletable for all of them. The daemon finds no project through its working directory: every queued path is absolute. The one reader it reaches is loadConfig()'s per-project `.token-goat.toml` lookup, and from an inherited directory that lookup applied whichever project happened to start the daemon to every project it indexed. The temp directory first, as startDetachedWorker chooses it and for its reason; the data directory when TEMP names a directory that is gone.
+  for (const neutral of [os.tmpdir(), dir]) {
+    try {
+      process.chdir(neutral)
+      break
+    } catch {
+      // try the next one; staying put costs only the handle, never the drain
+    }
+  }
+  // Before any drain: this process exists to do work nobody is waiting on, and it is spawned detached with stdio ignored, so it is invisible while it runs. Asking to be scheduled behind the user's own work is free when the machine is idle.
   applyIndexingPriority()
-  const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
   const safeInterval = resolvePollIntervalMs()
   // A daemon stopped mid-batch (see stopWorker) used to drop every embedding call started via embedFileSerialized/indexFileEmbeddings that had not yet resolved: `pendingEmbeddings()` (tracking every such call in {@link inFlightEmbeddings}) existed for exactly this and had no caller anywhere in src/ -- the daemon exited before anything drained it. Awaiting it here, bounded by SIGTERM_DRAIN_TIMEOUT_MS above, gives in-flight embeds a real chance to finish and write their rows before the process dies rather than being silently abandoned. Guarded against a second SIGTERM re-entering mid-wait.
   let sigtermReceived = false

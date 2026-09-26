@@ -1,12 +1,13 @@
 /** End-to-end proof that `token-goat worker start` actually keeps a background daemon running and draining the dirty queue, against the BUILT bundle (dist/token-goat.mjs). Regression for: {@link import('../src/worker.js').startDetachedWorker} spawns `node <bundle> --worker-daemon`, but the bundle's real entrypoint (main.ts -> cli.ts::run()) used to call commander's `parseAsync()` unconditionally, with no pre-check for `--worker-daemon` -- commander has no such registered option or command, so it rejected the flag as unknown and the freshly-spawned daemon child exited (code 1) before ever reaching the daemon loop. `token-goat worker start` reported a pid (the spawn call itself succeeds and returns a pid even for a child that is about to crash), but `token-goat worker status` moments later reported "not running" -- the entire detached background-indexing feature was silently non-functional. A unit test that mocks the daemon dispatch (as worker_daemon.test.ts and most of worker.test.ts do) cannot catch this: the bug is in argv wiring at the real process entrypoint, which only spawning the actual built bundle exercises. This test drives `worker start` for real, confirms the daemon process is still alive well past the point the old bug already killed it, then proves it does real work by seeding a real dirty-queue entry and confirming the running daemon (not a manual `index` call) drains it. */
 
+import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
+import { BUNDLE, readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
   return sharedRunBundle(args, { cwd, env, timeout: 30000 })
@@ -162,7 +163,99 @@ describe('detached worker daemon (built bundle)', () => {
     },
     45000,
   )
+
+  // Regression: the daemon inherited the working directory of whatever started it. `worker start` and the hook auto-restart both run inside the user's project, and on Windows a working directory is an open handle, so a daemon started from a throwaway directory (an evaluation harness's per-run working copy) kept that directory undeletable until the daemon died.
+  it(
+    '`worker start` run from a throwaway directory leaves that directory deletable while the daemon lives',
+    async () => {
+      const dataBase = mkIsolated('tg-daemon-data-')
+      const trigger = mkIsolated('tg-daemon-trigger-')
+      const env = tgEnv(dataBase, DAEMON_POLL_MS)
+      let pid: number | undefined
+      try {
+        const start = runBundle(['worker', 'start'], env, trigger)
+        expect(start.status, `worker start stderr: ${start.stderr}`).toBe(0)
+        const m = start.stdout.match(/pid (\d+)/)
+        expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
+        pid = parseInt((m as RegExpMatchArray)[1], 10)
+        await waitForDaemonHeartbeat(dataBase, pid)
+        expectDirectoryReleasedBy(pid, trigger)
+      } finally {
+        // Run from the data base: the trigger directory is gone once the assertion above has passed.
+        runBundle(['worker', 'stop'], env, dataBase)
+        await stopDaemon(pid)
+      }
+    },
+    45000,
+  )
+
+  // The same, for a daemon nothing spawned with a working directory of its own: an older client, or someone running `--worker-daemon` by hand. The daemon's own entry has to move off the directory it was started in.
+  it(
+    'a daemon started directly with --worker-daemon moves off the directory it was started in',
+    async () => {
+      const dataBase = mkIsolated('tg-daemon-data-')
+      const trigger = mkIsolated('tg-daemon-trigger-')
+      const dataDir = effectiveDataDir(dataBase)
+      fs.mkdirSync(dataDir, { recursive: true })
+      const child = spawn(process.execPath, [BUNDLE, '--worker-daemon'], {
+        cwd: trigger,
+        env: { ...tgEnv(dataBase, DAEMON_POLL_MS), TG_WORKER_DATA_DIR: dataDir },
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      const pid = child.pid
+      try {
+        expect(pid, 'spawning the bundle produced no pid').toBeDefined()
+        await waitForDaemonHeartbeat(dataBase, pid as number)
+        expectDirectoryReleasedBy(pid as number, trigger)
+      } finally {
+        await stopDaemon(pid)
+      }
+    },
+    45000,
+  )
 })
+
+/** Wait until the daemon `pid` has written its drain heartbeat: `runDetachedWorkerDaemon` writes it only after it has moved to its own working directory, so a heartbeat naming `pid` means that move has already happened. */
+async function waitForDaemonHeartbeat(dataBase: string, pid: number): Promise<void> {
+  const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
+  await waitFor('the daemon to write its drain heartbeat', 15000, () => {
+    try {
+      return fs.readFileSync(heartbeat, 'utf8').trim() === String(pid)
+    } catch {
+      return false
+    }
+  })
+}
+
+/** Assert the live daemon `pid` does not hold `dir` as its working directory. On Windows that handle is what blocks deleting `dir`, so the delete is the assertion; Linux lets a working directory be deleted, so there the kernel's record of it is checked first. macOS offers neither cheaply, and there only the delete runs. */
+function expectDirectoryReleasedBy(pid: number, dir: string): void {
+  expect(pidAlive(pid), 'the daemon died before its working directory could be checked').toBe(true)
+  if (process.platform === 'linux') {
+    expect(fs.readlinkSync(`/proc/${pid}/cwd`)).not.toBe(fs.realpathSync(dir))
+  }
+  // Retries absorb a brief handle from a virus scanner or indexer; a directory pinned as a working directory stays pinned through all of them.
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  expect(fs.existsSync(dir)).toBe(false)
+}
+
+/** Terminate a daemon a test started, so no test leaves a real background process behind. */
+async function stopDaemon(pid: number | undefined): Promise<void> {
+  if (pid === undefined || !pidAlive(pid)) return
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch {
+    // already gone
+  }
+  await waitFor('the daemon to exit', 5000, () => !pidAlive(pid)).catch(() => 0)
+  if (pidAlive(pid)) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // already gone
+    }
+  }
+}
 
 // POSIX only: a mode bit is how this platform refuses a directory write, and root ignores it. Windows refuses through an ACL, which tests/worker_unwritable_data_dir.test.ts covers through the same probe.
 describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('`worker start` on a data directory mode 0555 (built bundle)', () => {
