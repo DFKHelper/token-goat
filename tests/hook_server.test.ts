@@ -624,6 +624,8 @@ describe('authentication', () => {
     expect(seen).not.toContain('notes.md')
     expect(seen).not.toContain('xargs')
     expect(seen).not.toContain('"req"')
+    // Closed here as well as in cleanup, for the reason the byte-long MAC test below gives: afterEach's blocking `hook-server stop` cannot be answered by a listener in this process and would wait out its 30s spawn timeout.
+    await new Promise<void>((resolve) => squatter.close(() => resolve()))
   })
 
   it('refuses a server whose key no longer matches the key file, then serves again once the file is restored', async () => {
