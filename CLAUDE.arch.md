@@ -121,11 +121,12 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/read_brief.ts`](src/read_brief.ts) | Surgical read implementation for brief |
-| [`src/read_commands.ts`](src/read_commands.ts) | **Single source of truth for surgical-read logic** — `runSymbol`, `runRead`, `runSection`, `runRefs`, `runSkeleton`, `runOutline`, `runChanged`, `runConfigGet`, `runExports`, `runImports`, `runFind`, `runGrep`; all CLI read subcommands delegate here |
+| [`src/read_commands.ts`](src/read_commands.ts) | **Single source of truth for surgical-read logic** — `runSymbol`, `runRead`, `runSection`, `runSkeleton`, `runOutline`, `runChanged`, `runConfigGet`, `runExports`, `runImports`, `runFind`, `runGrep`; all CLI read subcommands delegate here |
 | [`src/read_git.ts`](src/read_git.ts) | Surgical read implementation for git |
 | [`src/read_inspect.ts`](src/read_inspect.ts) | Surgical read implementation for inspect |
 | [`src/read_meta.ts`](src/read_meta.ts) | Surgical read implementation for meta |
 | [`src/read_outline.ts`](src/read_outline.ts) | Outline and skeleton command handlers. |
+| [`src/read_refs.ts`](src/read_refs.ts) | The `refs` command: every call site of a symbol, found by name in the index, narrowed by the TypeScript checker when the definition is a single TypeScript symbol, and printed per line, grouped by caller, or ranked by file with `--top`. |
 | [`src/read_section.ts`](src/read_section.ts) | Surgical read implementation for section |
 | [`src/read_semantic.ts`](src/read_semantic.ts) | The `semantic` command: a dense embedding search fused with a BM25 keyword pass by reciprocal rank, each hit tagged with the symbol that encloses it. |
 | [`src/read_spec.ts`](src/read_spec.ts) | Surgical read implementation for spec |

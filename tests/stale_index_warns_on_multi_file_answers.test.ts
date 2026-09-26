@@ -1,23 +1,4 @@
-/**
- * `refs`, `ask`, `semantic`, and `trace --bodies` must warn (and self-heal) when the rows they
- * answer from are stale, the same way `symbol`/`read`/`skeleton`/`outline` already did.
- *
- * `staleWarning`/`healStaleIndex` (read_commands.ts) existed and were wired into exactly those
- * four single-file commands. `refs`, `ask`, and `semantic` answer from however many distinct files
- * their query happens to match -- none of which the caller named as a single spec -- and `trace
- * --bodies` resolves a traceback frame's file the same way `symbol`/`read` resolve a spec's file,
- * yet had no staleness check of its own at all. Before this fix, editing a file on disk (without
- * going through the edit hook / dirty-queue) left every one of these four commands silently
- * serving the pre-edit rows with no warning and no self-heal -- exactly the trap
- * `read_commands_stale_self_heal_e2e.test.ts` already covers for the other four commands.
- *
- * Driven through the REAL registered command functions (`runRefs`, `runAsk`, `runSemantic`,
- * `cmdTrace`) against a real, unmocked index built with `indexFileSync` -- same discipline as
- * `read_commands_stale_self_heal_e2e.test.ts` and `trace_bodies_e2e.test.ts`. `runAsk`'s backend
- * spawn (codex/claude, neither installed here) is the one thing stubbed, since this is not a test
- * of the backend integration and `warnIfFilesStale` runs before that spawn regardless of its
- * outcome.
- */
+/** `refs`, `ask`, `semantic`, and `trace --bodies` must warn (and self-heal) when the rows they answer from are stale, the same way `symbol`/`read`/`skeleton`/`outline` already did. `staleWarning`/`healStaleIndex` (read_commands.ts) existed and were wired into exactly those four single-file commands. `refs`, `ask`, and `semantic` answer from however many distinct files their query happens to match -- none of which the caller named as a single spec -- and `trace --bodies` resolves a traceback frame's file the same way `symbol`/`read` resolve a spec's file, yet had no staleness check of its own at all. Before this fix, editing a file on disk (without going through the edit hook / dirty-queue) left every one of these four commands silently serving the pre-edit rows with no warning and no self-heal -- exactly the trap `read_commands_stale_self_heal_e2e.test.ts` already covers for the other four commands. Driven through the REAL registered command functions (`runRefs`, `runAsk`, `runSemantic`, `cmdTrace`) against a real, unmocked index built with `indexFileSync` -- same discipline as `read_commands_stale_self_heal_e2e.test.ts` and `trace_bodies_e2e.test.ts`. `runAsk`'s backend spawn (codex/claude, neither installed here) is the one thing stubbed, since this is not a test of the backend integration and `warnIfFilesStale` runs before that spawn regardless of its outcome. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,14 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ChildProcess from 'node:child_process'
 
-// `runAsk`'s backend spawn is the only thing this file needs to fake -- but `spawnSync` is also
-// how `src/util.ts::runGit` resolves the project root (`git rev-parse --show-toplevel`), and
-// `resolveProjectRoot` runs on every one of these commands to scope their DB queries. A blanket
-// fake broke `runAsk`/`runSemantic`/`cmdTrace --bodies` silently: `runGit` read the fake
-// `{status: 0, stdout: 'answer'}` as a real git toplevel of `answer`, so `resolveProjectRoot`
-// scoped the query to a bogus root and every real hit vanished with no error -- confirmed by
-// diffing this test's real-`spawnSync` debug run against the faked one. Only fake the call whose
-// first argument is not `git`, so `runGit`'s own spawn passes straight through to the real binary.
+// `runAsk`'s backend spawn is the only thing this file needs to fake -- but `spawnSync` is also how `src/util.ts::runGit` resolves the project root (`git rev-parse --show-toplevel`), and `resolveProjectRoot` runs on every one of these commands to scope their DB queries. A blanket fake broke `runAsk`/`runSemantic`/`cmdTrace --bodies` silently: `runGit` read the fake `{status: 0, stdout: 'answer'}` as a real git toplevel of `answer`, so `resolveProjectRoot` scoped the query to a bogus root and every real hit vanished with no error -- confirmed by diffing this test's real-`spawnSync` debug run against the faked one. Only fake the call whose first argument is not `git`, so `runGit`'s own spawn passes straight through to the real binary.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof ChildProcess>()
   const realSpawnSync = actual.spawnSync
@@ -51,7 +25,8 @@ import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { getFileEntry } from '../src/index_reader.js'
 import { fingerprintFile } from '../src/fingerprint.js'
-import { runRefs, runSemantic } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_commands.js'
+import { runRefs } from '../src/read_refs.js'
 import { runAsk } from '../src/graph_commands.js'
 import { cmdTrace } from '../src/text_commands.js'
 
@@ -86,8 +61,7 @@ describe('stale-index warning reaches multi-file answer commands', () => {
     indexFileSync(normalizePath(defFile))
     indexFileSync(normalizePath(callerFile))
 
-    // Genuine staleness: edit the CALLING file directly on disk, bypassing the dirty queue, so
-    // its row's sha no longer matches its current bytes.
+    // Genuine staleness: edit the CALLING file directly on disk, bypassing the dirty queue, so its row's sha no longer matches its current bytes.
     writeFileSync(callerFile, "import { refStaleTarget9k } from './refstale_def9k.js'\n// touched\nrefStaleTarget9k()\n")
 
     const code = runRefs({ spec: `${defFile}::refStaleTarget9k` })

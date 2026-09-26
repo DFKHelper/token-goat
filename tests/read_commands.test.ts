@@ -101,7 +101,6 @@ import {
   runChanged,
   runDiff,
   runLog,
-  runRefs,
   runBrief,
   extractImports,
   importsExtensionFor,
@@ -112,6 +111,7 @@ import {
   runZipRead,
   runZipList,
 } from '../src/read_commands.js'
+import { runRefs } from '../src/read_refs.js'
 import { querySymbols, countSymbols, queryRefs, countRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { runGit } from '../src/util.js'

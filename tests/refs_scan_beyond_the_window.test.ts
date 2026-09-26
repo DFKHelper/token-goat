@@ -1,24 +1,4 @@
-/**
- * Regression: `refs --top`, `--exclude-tests` and `--grep` narrow the resolved set in JavaScript
- * after the query returns, so the SQL cap they queried under decided which rows the filter could
- * ever see. That cap was 20,000, and queryRefs orders by `file_path, line` -- alphabetically, not
- * by count -- so the "top files by reference count" was really the top files among whichever
- * sorted first, and `--exclude-tests` selected from a prefix of the matches rather than all of
- * them.
- *
- * The cap read as generous. It was not: measured against the live index on the machine this was
- * written on, `expect` holds 143,666 references (7.2x the window), `toBe` 62,841 and `test`
- * 52,484, with four further names past it. `token-goat refs expect --top 8` reported a leading
- * file of 695 references while the real leader held 1,571 and did not appear at all; for
- * `push --exclude-tests`, 2,459 of 17,484 genuine non-test references were unreachable at any
- * --limit. See tests/symbol_scan_beyond_one_page.test.ts for the same defect in `find`/`locate`.
- *
- * HAND-DERIVED: the row counts below are computed from the retired cap's own value (20,000) --
- * one filler past it -- and from the arithmetic that makes the target outrank every filler file.
- * Nothing here is read back from this fix's output. The fillers each hold ONE reference in their
- * own file and the target holds several in one file, so ranking by count puts the target first
- * while ranking by the scanned prefix cannot reach it at all.
- */
+/** Regression: `refs --top`, `--exclude-tests` and `--grep` narrow the resolved set in JavaScript after the query returns, so the SQL cap they queried under decided which rows the filter could ever see. That cap was 20,000, and queryRefs orders by `file_path, line` -- alphabetically, not by count -- so the "top files by reference count" was really the top files among whichever sorted first, and `--exclude-tests` selected from a prefix of the matches rather than all of them. The cap read as generous. It was not: measured against the live index on the machine this was written on, `expect` holds 143,666 references (7.2x the window), `toBe` 62,841 and `test` 52,484, with four further names past it. `token-goat refs expect --top 8` reported a leading file of 695 references while the real leader held 1,571 and did not appear at all; for `push --exclude-tests`, 2,459 of 17,484 genuine non-test references were unreachable at any --limit. See tests/symbol_scan_beyond_one_page.test.ts for the same defect in `find`/`locate`. HAND-DERIVED: the row counts below are computed from the retired cap's own value (20,000) -- one filler past it -- and from the arithmetic that makes the target outrank every filler file. Nothing here is read back from this fix's output. The fillers each hold ONE reference in their own file and the target holds several in one file, so ranking by count puts the target first while ranking by the scanned prefix cannot reach it at all. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -29,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
-import { runRefs } from '../src/read_commands.js'
+import { runRefs } from '../src/read_refs.js'
 
 /** One past the retired 20,000-row cap, so a single capped query cannot reach the target below. */
 const FILLER_ROWS = 20_001

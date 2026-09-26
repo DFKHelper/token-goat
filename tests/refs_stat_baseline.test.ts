@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runRefs } from '../src/read_commands.js'
+import { runRefs } from '../src/read_refs.js'
 import { summarize } from '../src/stats.js'
 import { CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES, CLAUDE_CODE_PERSISTED_PREVIEW_BYTES } from '../src/delivery_cap.js'
 

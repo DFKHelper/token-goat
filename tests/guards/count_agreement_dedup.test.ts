@@ -9,7 +9,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
 /** The modules that render count-dependent summary lines. */
-const FILES = ['read_commands.ts', 'read_semantic.ts', 'graph_commands.ts']
+const FILES = ['read_commands.ts', 'read_refs.ts', 'read_semantic.ts', 'graph_commands.ts']
 
 /** `${anything} in test files hidden by --exclude-tests` -- the hard-coded plural. */
 const HARDCODED_HIDDEN_NOTE = /\$\{[^}]*\} in test files hidden by --exclude-tests/

@@ -1,33 +1,4 @@
-/**
- * Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API.
- *
- * `read_commands.ts::runRefs` matches references by identifier NAME alone (the `refs` table has
- * no def-site linkage — see `db.ts`'s `refs` schema), so two unrelated symbols sharing a name
- * (two different classes each with a `run()` method) get conflated: a caller of one is reported
- * as a reference to the other. This module adds an opt-in "exact" tier for `.ts`/`.tsx`/`.mts`/
- * `.cts` symbols: given the symbol's definition site and its name-matched candidate references,
- * it uses `ts.Program` + the type checker's `getSymbolAtLocation` to resolve each candidate's
- * actual bound symbol and keeps only the ones whose declaration falls inside the definition's
- * own [lineStart, lineEnd] span.
- *
- * Lazily `require`s `typescript` (mirrors {@link ./embeddings.ts}'s `ensureTransformerLoaded`
- * pattern for `onnxruntime-node`) so a missing/broken install degrades to `null` instead of
- * throwing, and `typescript` never gets bundled into `dist/token-goat.mjs` (see
- * `esbuild.config.mjs`'s `EXTERNAL_NATIVE_DEPS` -- `typescript` is listed there for the same
- * "optional dependency must not get statically inlined" reason as `onnxruntime-node`).
- *
- * Scoping / performance: building a `ts.Program` for a whole project is the exact cost this
- * product exists to avoid paying on every `refs` call. Instead of the project's full tsconfig
- * `include` set, the program's `rootNames` are just the definition file plus the (deduped) set of
- * candidate reference files -- TypeScript still resolves each root's own `import` graph (that is
- * unavoidable: correctly resolving `foo.run()` requires knowing `foo`'s type, which requires
- * loading whatever module declares it), but never touches files outside that reachable closure.
- * On this repo's own ~600-file tree a single-symbol `refs` call with a handful of candidate files
- * type-checks in well under a second (see `tests/ts_refs.test.ts`'s perf-sanity case). As a
- * second guard against a pathologically interconnected project, {@link MAX_CANDIDATE_FILES} caps
- * how many distinct candidate files this tier will attempt before silently falling back to the
- * existing name-based results.
- */
+/** Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. `read_refs.ts::runRefs` matches references by identifier NAME alone (the `refs` table has no def-site linkage — see `db.ts`'s `refs` schema), so two unrelated symbols sharing a name (two different classes each with a `run()` method) get conflated: a caller of one is reported as a reference to the other. This module adds an opt-in "exact" tier for `.ts`/`.tsx`/`.mts`/ `.cts` symbols: given the symbol's definition site and its name-matched candidate references, it uses `ts.Program` + the type checker's `getSymbolAtLocation` to resolve each candidate's actual bound symbol and keeps only the ones whose declaration falls inside the definition's own [lineStart, lineEnd] span. Lazily `require`s `typescript` (mirrors {@link ./embeddings.ts}'s `ensureTransformerLoaded` pattern for `onnxruntime-node`) so a missing/broken install degrades to `null` instead of throwing, and `typescript` never gets bundled into `dist/token-goat.mjs` (see `esbuild.config.mjs`'s `EXTERNAL_NATIVE_DEPS` -- `typescript` is listed there for the same "optional dependency must not get statically inlined" reason as `onnxruntime-node`). Scoping / performance: building a `ts.Program` for a whole project is the exact cost this product exists to avoid paying on every `refs` call. Instead of the project's full tsconfig `include` set, the program's `rootNames` are just the definition file plus the (deduped) set of candidate reference files -- TypeScript still resolves each root's own `import` graph (that is unavoidable: correctly resolving `foo.run()` requires knowing `foo`'s type, which requires loading whatever module declares it), but never touches files outside that reachable closure. On this repo's own ~600-file tree a single-symbol `refs` call with a handful of candidate files type-checks in well under a second (see `tests/ts_refs.test.ts`'s perf-sanity case). As a second guard against a pathologically interconnected project, {@link MAX_CANDIDATE_FILES} caps how many distinct candidate files this tier will attempt before silently falling back to the existing name-based results. */
 
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
@@ -37,17 +8,13 @@ import { registerReset } from './reset.js'
 
 const _require = createRequire(import.meta.url)
 
-// Above this many distinct candidate files, program construction cost is no longer bounded by
-// "a handful of files near the definition" -- skip the tier and fall back to name-based results
-// rather than risk `refs` becoming slow on a large, densely-interconnected project.
+// Above this many distinct candidate files, program construction cost is no longer bounded by "a handful of files near the definition" -- skip the tier and fall back to name-based results rather than risk `refs` becoming slow on a large, densely-interconnected project.
 const MAX_CANDIDATE_FILES = 50
 
 let _ts: typeof TsModule | null = null
 let _tsError: Error | null = null
 let _tsLoadAttempted = false
-// `undefined` = no override (use the real lazy-loaded module); `null` or a module = forced value.
-// Lets tests exercise the "typescript is unavailable" fallback path deterministically without
-// needing to actually uninstall the package.
+// `undefined` = no override (use the real lazy-loaded module); `null` or a module = forced value. Lets tests exercise the "typescript is unavailable" fallback path deterministically without needing to actually uninstall the package.
 let _tsOverride: typeof TsModule | null | undefined = undefined
 
 function loadTs(): typeof TsModule | null {
@@ -103,21 +70,7 @@ export interface ResolveTypedRefsInput {
   candidates: readonly RefEntry[]
 }
 
-/**
- * Filter `input.candidates` down to the ones whose TypeScript-resolved binding actually points at
- * the definition described by `input.defFile`/`defLineStart`/`defLineEnd`.
- *
- * Returns `null` (never throws) when the tier cannot be applied at all -- `typescript` isn't
- * available, the definition isn't a TS file, there are too many distinct candidate files
- * ({@link MAX_CANDIDATE_FILES}), the program can't be built, or the definition's own declaration
- * can't be located in it -- so callers should treat `null` as "fall back to the name-based
- * `candidates` list unchanged", not as "zero references found".
- *
- * A candidate whose own position can't be resolved to an identifier (e.g. tree-sitter/TS parse
- * drift, or a non-TS/JS candidate file) is kept rather than dropped: this tier only ever narrows
- * results by proven type mismatch, never by uncertainty, so a resolution gap degrades toward the
- * old name-based behavior for that one row instead of silently losing a real reference.
- */
+/** Filter `input.candidates` down to the ones whose TypeScript-resolved binding actually points at the definition described by `input.defFile`/`defLineStart`/`defLineEnd`. Returns `null` (never throws) when the tier cannot be applied at all -- `typescript` isn't available, the definition isn't a TS file, there are too many distinct candidate files ({@link MAX_CANDIDATE_FILES}), the program can't be built, or the definition's own declaration can't be located in it -- so callers should treat `null` as "fall back to the name-based `candidates` list unchanged", not as "zero references found". A candidate whose own position can't be resolved to an identifier (e.g. tree-sitter/TS parse drift, or a non-TS/JS candidate file) is kept rather than dropped: this tier only ever narrows results by proven type mismatch, never by uncertainty, so a resolution gap degrades toward the old name-based behavior for that one row instead of silently losing a real reference. */
 export function resolveTypedRefs(input: ResolveTypedRefsInput): RefEntry[] | null {
   const ts = loadTs()
   if (ts === null) return null
@@ -167,15 +120,7 @@ export function resolveTypedRefs(input: ResolveTypedRefsInput): RefEntry[] | nul
   return out
 }
 
-/**
- * Builds a `ts.Program` rooted at exactly `rootNames` (the definition file plus its name-matched
- * candidate reference files), using the nearest `tsconfig.json` above `defFile` for compiler
- * options (module resolution, path aliases, `jsx`, etc.) if one exists, falling back to a
- * permissive default set otherwise. `fileNames`/`include` from that tsconfig are intentionally
- * NOT used as the root set -- only its `options` -- so this never balloons into a whole-project
- * program; TypeScript still follows `rootNames`' own `import`/`require` graph as needed to type
- * them, which is unavoidable for correct resolution (see module doc).
- */
+/** Builds a `ts.Program` rooted at exactly `rootNames` (the definition file plus its name-matched candidate reference files), using the nearest `tsconfig.json` above `defFile` for compiler options (module resolution, path aliases, `jsx`, etc.) if one exists, falling back to a permissive default set otherwise. `fileNames`/`include` from that tsconfig are intentionally NOT used as the root set -- only its `options` -- so this never balloons into a whole-project program; TypeScript still follows `rootNames`' own `import`/`require` graph as needed to type them, which is unavoidable for correct resolution (see module doc). */
 function buildScopedProgram(
   ts: typeof TsModule,
   rootNames: readonly string[],
@@ -202,21 +147,13 @@ function buildScopedProgram(
         Object.assign(options, parsed.options)
       }
     } catch {
-      // Malformed/unreadable tsconfig.json -- keep the permissive defaults above rather than fail
-      // the whole tier over an unrelated config problem.
+      // Malformed/unreadable tsconfig.json -- keep the permissive defaults above rather than fail the whole tier over an unrelated config problem.
     }
   }
-  // noEmit must stay true regardless of what the project's own tsconfig says -- this program is
-  // only ever used for type resolution, never for emitting output.
+  // noEmit must stay true regardless of what the project's own tsconfig says -- this program is only ever used for type resolution, never for emitting output.
   options.noEmit = true
 
-  // Parsing every JSDoc comment in every file the program pulls in is pure waste here: this tier
-  // only ever asks the checker whether two identifiers resolve to the same declaration, and never
-  // reads a doc comment or reports a diagnostic. Skipping it in .ts files takes program
-  // construction from ~700ms to ~600ms on this repo, with the same 626 files loaded.
-  // ParseForTypeErrors rather than ParseNone so JSDoc in plain .js files, where it is the only
-  // place a type can be declared, is still parsed. The enum arrived in TypeScript 5.3 and
-  // typescript is an optional dependency, so an older install just keeps the default host.
+  // Parsing every JSDoc comment in every file the program pulls in is pure waste here: this tier only ever asks the checker whether two identifiers resolve to the same declaration, and never reads a doc comment or reports a diagnostic. Skipping it in .ts files takes program construction from ~700ms to ~600ms on this repo, with the same 626 files loaded. ParseForTypeErrors rather than ParseNone so JSDoc in plain .js files, where it is the only place a type can be declared, is still parsed. The enum arrived in TypeScript 5.3 and typescript is an optional dependency, so an older install just keeps the default host.
   const jsDocParsingMode = ts.JSDocParsingMode?.ParseForTypeErrors
   if (jsDocParsingMode === undefined) {
     return ts.createProgram({ rootNames: [...rootNames], options })
@@ -226,11 +163,7 @@ function buildScopedProgram(
   return ts.createProgram({ rootNames: [...rootNames], options, host })
 }
 
-/**
- * Finds the symbol bound to the declaration name inside `sourceFile` whose own line falls within
- * `[lineStart, lineEnd]` (1-based, inclusive) and whose identifier text is `name`. Returns `null`
- * if no such declaration identifier is found.
- */
+/** Finds the symbol bound to the declaration name inside `sourceFile` whose own line falls within `[lineStart, lineEnd]` (1-based, inclusive) and whose identifier text is `name`. Returns `null` if no such declaration identifier is found. */
 function findDeclarationSymbolInRange(
   ts: typeof TsModule,
   checker: TsModule.TypeChecker,
@@ -283,12 +216,7 @@ function isDeclarationName(ts: typeof TsModule, node: TsModule.Identifier): bool
   return false
 }
 
-/**
- * Resolves the identifier matching `ref` inside `sourceFile` and returns whether its bound symbol's
- * declaration(s) include `defSymbol`. Returns `null` (rather than `false`) when the position can't
- * be resolved to a matching identifier at all, so the caller treats it as "uncertain, keep the
- * candidate" instead of "proven mismatch, drop it".
- */
+/** Resolves the identifier matching `ref` inside `sourceFile` and returns whether its bound symbol's declaration(s) include `defSymbol`. Returns `null` (rather than `false`) when the position can't be resolved to a matching identifier at all, so the caller treats it as "uncertain, keep the candidate" instead of "proven mismatch, drop it". */
 function refMatchesDefinition(
   ts: typeof TsModule,
   checker: TsModule.TypeChecker,
@@ -317,8 +245,7 @@ function refMatchesDefinition(
     try {
       symbol = checker.getAliasedSymbol(symbol)
     } catch {
-      // Unresolvable alias (e.g. ambient/global) -- fall through and compare the alias symbol
-      // itself, which will simply fail to match rather than throw.
+      // Unresolvable alias (e.g. ambient/global) -- fall through and compare the alias symbol itself, which will simply fail to match rather than throw.
     }
   }
   if (symbol === defSymbol) return true
@@ -333,19 +260,7 @@ function refMatchesDefinition(
   return false
 }
 
-/**
- * Finds the identifier matching `name` closest to (at or after) `position` on source line
- * `line0` (0-based).
- *
- * `refs`' recorded (line, col) is the START of the enclosing expression the extractor matched
- * (e.g. for `foo.run()` it is `foo`'s column, not `run`'s -- see `extractRefs`/`calleeName` in
- * `parser.ts`, whose `record(name, node)` passes the whole call-expression node, not the callee
- * identifier), so this can't require the position to land exactly inside the target identifier's
- * span. Instead it scans every identifier on that line and picks the leftmost one whose text
- * matches `name` and whose start is at or after `position` -- correct as long as `extractRefs`'s
- * own per-(name, line) dedup holds (it does: see the `seen` set in `extractRefs`), since then
- * there is at most one real occurrence of `name` at/after the recorded column on that line.
- */
+/** Finds the identifier matching `name` closest to (at or after) `position` on source line `line0` (0-based). `refs`' recorded (line, col) is the START of the enclosing expression the extractor matched (e.g. for `foo.run()` it is `foo`'s column, not `run`'s -- see `extractRefs`/`calleeName` in `parser.ts`, whose `record(name, node)` passes the whole call-expression node, not the callee identifier), so this can't require the position to land exactly inside the target identifier's span. Instead it scans every identifier on that line and picks the leftmost one whose text matches `name` and whose start is at or after `position` -- correct as long as `extractRefs`'s own per-(name, line) dedup holds (it does: see the `seen` set in `extractRefs`), since then there is at most one real occurrence of `name` at/after the recorded column on that line. */
 function findIdentifierNearPosition(
   ts: typeof TsModule,
   sourceFile: TsModule.SourceFile,
