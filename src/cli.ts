@@ -71,24 +71,14 @@ import {
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
-import {
-  runSymbol,
-  runRead,
-  namedSpecsMergeable,
-  readSpecsMergeable,
-  runBrief,
-  runSection,
-  runListSections,
-  runSkeleton,
-  runOutline,
-  type SkeletonOptions,
-  runPrSlice,
-  extractTranscriptText,
-  extractSection,
-  runSemantic,
-  runSemanticMulti,
-  guardJsonRows,
-} from './read_commands.js'
+import { runSymbol, runRead, runPrSlice, guardJsonRows } from './read_commands.js'
+import { namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
+import { runBrief } from './read_brief.js'
+import { runSection } from './read_section.js'
+import { runListSections, extractTranscriptText } from './read_inspect.js'
+import { runSkeleton, runOutline, type SkeletonOptions } from './read_outline.js'
+import { extractSection } from './section_reader.js'
+import { runSemantic, runSemanticMulti } from './read_semantic.js'
 import { runRefs } from './read_refs.js'
 import { queryJson } from './json_query.js'
 import {

@@ -1,6 +1,4 @@
-/**
- * CLI command registration for code analysis, dependency, graph, and git commands.
- */
+/** CLI command registration for code analysis, dependency, graph, and git commands. */
 
 import type { Command } from 'commander'
 import {
@@ -41,13 +39,8 @@ import {
 import {
   cmdHistory,
 } from './config_commands.js'
-import {
-  runExports,
-  runImports,
-  runFind,
-  runLocate,
-  runGrep,
-} from './read_commands.js'
+import { runGrep } from './read_commands.js'
+import { runExports, runImports, runFind, runLocate } from './read_inspect.js'
 import {
   runDepDocs,
 } from './dep_docs.js'

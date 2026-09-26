@@ -1,11 +1,9 @@
-/**
- * Shared CLI execution and dispatch helpers.
- */
+/** Shared CLI execution and dispatch helpers. */
 
 import * as fs from 'node:fs'
 import { displaySafeText } from './paths.js'
 import { extractErrorMessage } from './util.js'
-import { extraFileArgsNote } from './read_commands.js'
+import { extraFileArgsNote } from './read_spec.js'
 import { out, err, CliError } from './cli.js'
 
 export function readStdinPaths(): string[] {
@@ -30,12 +28,7 @@ export function runExit(fn: () => number): void {
   }
 }
 
-/**
- * Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }`
- * instead of printing directly. Writes `text` to stdout on success (code 0) or stderr
- * otherwise, then maps `code` onto `process.exitCode` — preserving which stream each
- * handler's message goes to (these handlers only ever write to one stream per call).
- */
+/** Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }` instead of printing directly. Writes `text` to stdout on success (code 0) or stderr otherwise, then maps `code` onto `process.exitCode` — preserving which stream each handler's message goes to (these handlers only ever write to one stream per call). */
 export function runExitText(fn: () => { text: string; code: number }): void {
   try {
     const { text, code } = fn()

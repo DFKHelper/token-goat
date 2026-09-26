@@ -1,21 +1,4 @@
-/**
- * Four commands hand a stored symbol range to git, or compare one against a range git produced:
- * `log` (as `-L<start>,<end>:<file>`), `diff` (hunk overlap), `changed --symbol` (hunk overlap) and
- * `grep --symbol` (which symbol encloses this hit's line). Every one of those ranges addresses the
- * file on disk. A `.ipynb` is indexed from a flattened virtual Python document, so its stored ranges
- * address something else entirely, and all four answered about the wrong document -- three of them
- * silently.
- *
- * Measured before the fix, each beside an equivalent `.py` control that got the right answer:
- * `log nb.ipynb::helper` printed the history of two markdown lines under the header
- * `# helper (function)`; `diff nb.ipynb::helper` said "No changes to 'helper'" about a symbol that
- * had just changed; `changed --symbol` listed the `.py`'s helper and omitted the notebook's;
- * `grep --symbol` labelled the `.py` hit and left the notebook's bare.
- *
- * The fix is one rule, not four: where the two coordinate systems meet, widen to the whole file and
- * say so. The controls are load-bearing -- "no notebook answer" and "the right notebook answer" are
- * distinguishable only against a file where the same code demonstrably works.
- */
+/** Four commands hand a stored symbol range to git, or compare one against a range git produced: `log` (as `-L<start>,<end>:<file>`), `diff` (hunk overlap), `changed --symbol` (hunk overlap) and `grep --symbol` (which symbol encloses this hit's line). Every one of those ranges addresses the file on disk. A `.ipynb` is indexed from a flattened virtual Python document, so its stored ranges address something else entirely, and all four answered about the wrong document -- three of them silently. Measured before the fix, each beside an equivalent `.py` control that got the right answer: `log nb.ipynb::helper` printed the history of two markdown lines under the header `# helper (function)`; `diff nb.ipynb::helper` said "No changes to 'helper'" about a symbol that had just changed; `changed --symbol` listed the `.py`'s helper and omitted the notebook's; `grep --symbol` labelled the `.py` hit and left the notebook's bare. The fix is one rule, not four: where the two coordinate systems meet, widen to the whole file and say so. The controls are load-bearing -- "no notebook answer" and "the right notebook answer" are distinguishable only against a file where the same code demonstrably works. */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -23,7 +6,8 @@ import { tmpdir } from 'node:os'
 
 import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 
-import { runDiff, runLog, runGrep, runChanged } from '../../src/read_commands.js'
+import { runGrep } from '../../src/read_commands.js'
+import { runDiff, runLog, runChanged } from '../../src/read_git.js'
 import { indexFileSync } from '../../src/parser.js'
 import { normalizePath } from '../../src/paths.js'
 import { captureStdout } from '../helpers/capture-stdout.js'

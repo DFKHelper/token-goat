@@ -1,6 +1,4 @@
-/**
- * Code graph analysis and query commands: similar, context-for, test-for, coverage-gaps, arch, blame, and ask.
- */
+/** Code graph analysis and query commands: similar, context-for, test-for, coverage-gaps, arch, blame, and ask. */
 
 import * as fs from 'node:fs'
 
@@ -9,7 +7,8 @@ import { displaySafeText, toDisplayPath, displaySafeJson, resolveIndexPath } fro
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { resolveSymbolSpecOrEmitError, guardJsonRows } from './read_commands.js'
+import { guardJsonRows } from './read_commands.js'
+import { resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'

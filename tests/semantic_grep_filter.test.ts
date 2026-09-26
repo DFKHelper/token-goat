@@ -1,9 +1,4 @@
-// Regression coverage for `semantic --grep <pattern>`: the only surgical-read query command
-// that previously had no path filter at all, unlike its siblings (refs/callers/dead/skeleton/
-// outline/exports/types --grep). Mirrors those siblings' convention exactly: filter on the FILE
-// PATH AS RENDERED (toDisplayPath), regex falling back to literal substring, applied BEFORE the
-// `--limit` slice in BOTH result branches (embeddings and the FTS fallback), and a dedicated
-// "filtered to empty" notice distinct from a genuinely empty index/search.
+// Regression coverage for `semantic --grep <pattern>`: the only surgical-read query command that previously had no path filter at all, unlike its siblings (refs/callers/dead/skeleton/ outline/exports/types --grep). Mirrors those siblings' convention exactly: filter on the FILE PATH AS RENDERED (toDisplayPath), regex falling back to literal substring, applied BEFORE the `--limit` slice in BOTH result branches (embeddings and the FTS fallback), and a dedicated "filtered to empty" notice distinct from a genuinely empty index/search.
 import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -33,7 +28,7 @@ vi.mock('../src/index_reader.js', async (importOriginal) => {
   }
 })
 
-const { runSemantic } = await import('../src/read_commands.js')
+const { runSemantic } = await import('../src/read_semantic.js')
 const { OVER_FETCH_FACTOR, MAX_OVER_FETCH } = await import('../src/embeddings.js')
 
 function hit(filePath: string, startLine: number, endLine: number, distance: number, text = 'x'.repeat(20)): SearchHit {
@@ -45,9 +40,7 @@ describe('runSemantic --grep (embeddings branch)', () => {
   let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
-    // This describe's whole point is the --grep filter over mocked dense hits, not
-    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
-    // otherwise stop runSemantic from ever reaching searchSemanticMock.
+    // This describe's whole point is the --grep filter over mocked dense hits, not indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would otherwise stop runSemantic from ever reaching searchSemanticMock.
     prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
@@ -94,9 +87,7 @@ describe('runSemantic --grep (embeddings branch)', () => {
   })
 
   it('filters before slicing to --limit: a low-ranked matching hit still surfaces even though it would fall outside the unfiltered top-N', async () => {
-    // 4 top-ranked (lowest distance) hits under tests/, 1 low-ranked hit under src/. With
-    // --limit 1 and no filter-before-slice, `.slice(0, 1)` would keep only the first tests/ hit
-    // and the src/ hit would never even reach the grep filter.
+    // 4 top-ranked (lowest distance) hits under tests/, 1 low-ranked hit under src/. With --limit 1 and no filter-before-slice, `.slice(0, 1)` would keep only the first tests/ hit and the src/ hit would never even reach the grep filter.
     const hits: SearchHit[] = [
       hit(join(root, 'tests', 't0.ts'), 1, 5, 0.01),
       hit(join(root, 'tests', 't1.ts'), 600, 605, 0.02),
@@ -105,11 +96,7 @@ describe('runSemantic --grep (embeddings branch)', () => {
       hit(join(root, 'src', 'lowRanked.ts'), 2400, 2405, 0.99),
     ]
     searchSemanticMock.mockResolvedValue(hits)
-    // Pinned so a regression that slices before filtering fails on THIS test's own assertion.
-    // Without it, the embeddings branch empties out, execution falls through to the FTS
-    // fallback, and the unconfigured mock returns undefined -- the test still goes red, but on
-    // an incidental TypeError inside the fallback rather than on the filter-before-slice claim
-    // it exists to make, so it would not actually prove the ordering.
+    // Pinned so a regression that slices before filtering fails on THIS test's own assertion. Without it, the embeddings branch empties out, execution falls through to the FTS fallback, and the unconfigured mock returns undefined -- the test still goes red, but on an incidental TypeError inside the fallback rather than on the filter-before-slice claim it exists to make, so it would not actually prove the ordering.
     searchSymbolsFtsMock.mockReturnValue([])
 
     const { text, code } = await runSemantic('q', { projectRoot: root, grep: '^src/', limit: 1 })
@@ -186,9 +173,7 @@ describe('runSemantic --grep (FTS fallback branch)', () => {
     void text
     void code
 
-    // searchSymbolsFts caps results with a SQL LIMIT, so filtering its output after the fact
-    // for a small `--limit` would silently under-fetch: it must be called with an over-fetched
-    // candidate size, not the raw requested limit.
+    // searchSymbolsFts caps results with a SQL LIMIT, so filtering its output after the fact for a small `--limit` would silently under-fetch: it must be called with an over-fetched candidate size, not the raw requested limit.
     expect(searchSymbolsFtsMock).toHaveBeenCalledTimes(1)
     const calledLimit = searchSymbolsFtsMock.mock.calls[0]?.[1]
     expect(calledLimit).toBe(Math.min(MAX_OVER_FETCH, 1 * OVER_FETCH_FACTOR))

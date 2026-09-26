@@ -3,9 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-// Stub config so the overflow guard (used by emitGuarded in runOpenApiOutline/runOpenApiOp's
-// text-mode branch) has a deterministic, permissive budget instead of reading a real config.toml
-// -- same pattern read_commands.test.ts uses for its own runJsonOutline/runJsonQuery coverage.
+// Stub config so the overflow guard (used by emitGuarded in runOpenApiOutline/runOpenApiOp's text-mode branch) has a deterministic, permissive budget instead of reading a real config.toml -- same pattern read_commands.test.ts uses for its own runJsonOutline/runJsonQuery coverage.
 vi.mock('../src/config.js', () => ({
   loadConfig: vi.fn(),
 }))
@@ -19,7 +17,7 @@ import {
   formatOperationDetail,
   type OpenApiOperation,
 } from '../src/openapi_query.js'
-import { runOpenApiOutline, runOpenApiOp } from '../src/read_commands.js'
+import { runOpenApiOutline, runOpenApiOp } from '../src/read_structured_data.js'
 import { loadConfig } from '../src/config.js'
 
 const mockLoadConfig = vi.mocked(loadConfig)
@@ -357,9 +355,7 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
 
     it('returns 1 with a clear message on a malformed spec (neither JSON nor YAML)', () => {
       const f = path.join(tempDir, 'bad.json')
-      // Invalid as JSON (unterminated object) AND invalid as YAML (tab characters are illegal
-      // as YAML indentation), so both the .json-forced parser and, for good measure, the
-      // extension-less fallback path are exercised as genuinely unparseable.
+      // Invalid as JSON (unterminated object) AND invalid as YAML (tab characters are illegal as YAML indentation), so both the .json-forced parser and, for good measure, the extension-less fallback path are exercised as genuinely unparseable.
       fs.writeFileSync(f, '{ "a": \t\tbad\n')
       let code = -1
       const { stderr } = capture(() => { code = runOpenApiOutline({ file: f }) })
@@ -405,8 +401,7 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
       const f = path.join(tempDir, 'openapi.json')
       fs.writeFileSync(f, JSON.stringify(SPEC_JSON))
       let code = -1
-      // 'getUserById' genuinely contains the query as a substring -- an unrelated query
-      // ('nonExistentOp') no longer surfaces it, see the next test.
+      // 'getUserById' genuinely contains the query as a substring -- an unrelated query ('nonExistentOp') no longer surfaces it, see the next test.
       const { stderr } = capture(() => { code = runOpenApiOp({ file: f, operation: 'getUserBy' }) })
       expect(code).toBe(1)
       expect(stderr).toContain("Operation 'getUserBy' not found")
@@ -414,9 +409,7 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
       expect(stderr).toContain('getUserById')
     })
 
-    // Defect fix: the suggestion list used to be every operation in the spec regardless of
-    // relevance to the query. An unrelated query now gets no list at all -- pointing at
-    // openapi-outline (the command that lists them all) instead of a dead end.
+    // Defect fix: the suggestion list used to be every operation in the spec regardless of relevance to the query. An unrelated query now gets no list at all -- pointing at openapi-outline (the command that lists them all) instead of a dead end.
     it('points at openapi-outline instead of an unranked full dump when no operation resembles the query', () => {
       const f = path.join(tempDir, 'openapi.json')
       fs.writeFileSync(f, JSON.stringify(SPEC_JSON))

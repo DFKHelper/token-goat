@@ -1,10 +1,10 @@
-/** CLI command handlers for surgical-read commands. Ports the public command functions from ``read_commands.py`` to TypeScript. The DB-query layer lives in ``index_reader.ts``; section extraction lives in ``section_reader.ts``.  This module owns argument parsing, output formatting, and the "did you mean?" hint logic. */
+/** CLI command handlers for surgical-read commands. Ports the public command functions from ``read_commands.py`` to TypeScript. The DB-query layer lives in ``index_reader.ts``, section extraction in ``section_reader.ts``, and the "did you mean?" hints in ``read_suggest.ts``. A command with a module of its own (``read_outline.ts``, ``read_semantic.ts`` and the other ``read_*.ts`` files) is imported from that module, since this one re-exports nothing. This module owns argument parsing and output formatting for the commands defined here. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS, isIgnoredIndexPath } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
-import { querySymbols, queryRefs, queryRefCounts, getFileEntry, countSymbols, DEFAULT_QUERY_LIMIT } from './index_reader.js'
+import { querySymbols, queryRefCounts, getFileEntry, countSymbols, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexFileSync } from './parser.js'
@@ -13,18 +13,14 @@ import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { dataDir, globalDbPath } from './constants.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
-import { extractExportNames, extractImports, importsExtensionFor } from './import_export_extract.js'
-export { extractExportNames, extractImports, importsExtensionFor }
 import { isReadOnlyDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { readSection, listSections, extractSection } from './section_reader.js'
 import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, isTestFile } from './util.js'
 import { renderContextWindow } from './util_context.js'
-export { requireNonNegativeStrictInt } from './util.js'
 import { emit, emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import type { SymbolEntry, RefEntry } from './parser_types.js'
+import type { SymbolEntry } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
@@ -394,8 +390,6 @@ export function warnIfFilesStale(filePaths: readonly string[]): void {
   }
 }
 
-export { emit, emitErr }
-
 /** Emit text through the overflow guard: caps output at `config.overflow_guard.max_tokens` (when enabled), appending a truncation marker with a hint tailored to `command`. Mirrors the pre-port Python `_emit_text_result` -> `overflow_guard.guard` call, which capped the same three text paths (read's symbol body, read's line-range slice, and section's heading body) before the TS port dropped the wiring. JSON output paths must never call this — line-based truncation would corrupt the JSON payload. */
 export function emitGuarded(text: string, command: string): void {
   emit(guardText(text, command))
@@ -426,9 +420,6 @@ export function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
 }
 
 /** Sum of on-disk byte sizes for a set of file paths, deduplicated so a command that matched several symbols/refs/hits in the same file only counts that file's size once. Used as the "full source" side of a stat's bytes-saved calculation. Best-effort: a path that no longer exists on disk (stale index entry) or can't be stat'd contributes 0 rather than throwing -- stat recording must never turn a successful read into a hard error. */
-// Canonical rationale lives with the constant in util.ts; re-exported here under its original name because tests and other modules already import it from this module.
-export { PER_FILE_COUNTERFACTUAL_CEILING as SUM_FILE_SIZES_PER_FILE_CEILING } from './util.js'
-
 export function sumFileSizes(filePaths: Iterable<string>): number {
   let total = 0
   for (const fp of new Set(filePaths)) {
@@ -942,11 +933,6 @@ export function resolveAgainstProjectRoot(file: string, projectRoot: string | un
   return projectRoot !== undefined && !path.isAbsolute(file) ? path.resolve(projectRoot, file) : file
 }
 
-// ---- skeleton / stub_view / outline -----------------------------------------
-
-export * from './read_outline.js'
-
-/** Why an existing file has no symbol rows when the cause is token-goat rather than the file: no extractor for its type (a named entry in {@link unsupportedLanguageName}, or an unrecognized extension), or a tree-sitter language whose grammar did not load, so only the coarse regex fallback ran. `undefined` otherwise, where "no symbols" is the honest answer. */
 // ---- github pr-slice ---------------------------------------------------------
 
 export interface PrSliceCliOptions {
@@ -1232,10 +1218,6 @@ export async function runScreenshot(
   return `Saved screenshot to ${result.path} (${result.originalBytes} -> ${result.finalBytes} bytes)`
 }
 
-// ---- brief ------------------------------------------------------------------
-
-export * from './read_brief.js'
-
 // ---- grep -------------------------------------------------------------------
 
 export interface GrepOptions {
@@ -1467,22 +1449,3 @@ export function runGrep(opts: GrepOptions): number {
 
   return 0
 }
-
-// ---- re-export underlying layers -------------------------------------------
-
-export type { SymbolEntry, RefEntry }
-
-
-// ---- notes (note-get / note-list) -------------------------------------------
-//
-export * from './read_structured_data.js'
-export * from './read_git.js'
-export * from './read_inspect.js'
-export * from './read_suggest.js'
-export * from './read_section.js'
-export * from './read_spec.js'
-export * from './read_meta.js'
-
-export * from './read_semantic.js'
-
-export { querySymbols, queryRefs, readSection, listSections, extractSection }

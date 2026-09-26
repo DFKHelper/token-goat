@@ -3,11 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-// Stub config so the overflow guard (used by emitGuarded in runConflicts's text-mode branch)
-// has a deterministic, permissive budget instead of reading a real config.toml -- same pattern
-// coverage_query.test.ts / openapi_query.test.ts use for their own run* coverage. loadConfig()
-// is also called internally by walkProject (indexing.skip_dirs), so the mock must return that
-// shape too for the multi-file directory-scan tests below.
+// Stub config so the overflow guard (used by emitGuarded in runConflicts's text-mode branch) has a deterministic, permissive budget instead of reading a real config.toml -- same pattern coverage_query.test.ts / openapi_query.test.ts use for their own run* coverage. loadConfig() is also called internally by walkProject (indexing.skip_dirs), so the mock must return that shape too for the multi-file directory-scan tests below.
 vi.mock('../src/config.js', () => ({
   loadConfig: vi.fn(),
 }))
@@ -19,7 +15,7 @@ import {
   formatConflictSummaries,
   type FileConflicts,
 } from '../src/conflict_query.js'
-import { runConflicts } from '../src/read_commands.js'
+import { runConflicts } from '../src/read_git.js'
 import { loadConfig } from '../src/config.js'
 
 const mockLoadConfig = vi.mocked(loadConfig)
@@ -177,8 +173,7 @@ describe('parseConflicts', () => {
   it('parses a region whose "=======" carries trailing whitespace, like its sibling markers do', () => {
     const text = ['<<<<<<< HEAD', 'ours', '=======  ', 'theirs', '>>>>>>> feature', ''].join('\n')
     const result = parseConflicts('src/trailsp.ts', text)
-    // Was: the strict `/^={7}$/` missed this separator, so the region stayed in the ours state to
-    // EOF -- zero regions, plus a warning claiming no '>>>>>>>' matched when one was right there.
+    // Was: the strict `/^={7}$/` missed this separator, so the region stayed in the ours state to EOF -- zero regions, plus a warning claiming no '>>>>>>>' matched when one was right there.
     expect(result.warnings).toEqual([])
     expect(result.regions).toHaveLength(1)
     expect(result.regions[0]!.ours).toEqual({ label: 'HEAD', content: 'ours' })
@@ -188,9 +183,7 @@ describe('parseConflicts', () => {
   })
 
   it('does not treat a labelled or over-long "=======" line as a separator', () => {
-    // The tolerance above is whitespace only, deliberately unlike the other three markers' label
-    // capture: content lines that merely start with seven `=` must stay content, or a prose file
-    // would have its ours section silently truncated at the first such line.
+    // The tolerance above is whitespace only, deliberately unlike the other three markers' label capture: content lines that merely start with seven `=` must stay content, or a prose file would have its ours section silently truncated at the first such line.
     const labelled = parseConflicts('src/lbl.ts', ['<<<<<<< HEAD', '======= notes', 'ours', '=======', 'theirs', '>>>>>>> feature', ''].join('\n'))
     expect(labelled.warnings).toEqual([])
     expect(labelled.regions).toHaveLength(1)

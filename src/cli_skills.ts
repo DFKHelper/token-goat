@@ -2,9 +2,11 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { CliError, out } from './cli.js'
-import { buildLineDiff } from './hooks_read.js'
+import { buildLineDiff } from './hooks_read_slice.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
-import { didYouMeanLines, filterSimilarHeadings, findSpecSeparator, listSections } from './read_commands.js'
+import { findSpecSeparator } from './read_commands.js'
+import { didYouMeanLines, filterSimilarHeadings } from './read_suggest.js'
+import { listSections } from './section_reader.js'
 import { getSessionId } from './session.js'
 import {
   contentHash,

@@ -1,13 +1,4 @@
-/**
- * A `.ipynb` is indexed from a virtual Python document that parser.ts builds by concatenating the
- * code cells' `source` arrays (see src/indexed_source.ts), so every stored `lineStart`/`lineEnd`
- * addresses that virtual document, never the JSON bytes on disk. `brief`/`outline` used to print
- * that coordinate as a bare `path:line` label -- indistinguishable from a real file:line -- which
- * sends a reader straight to the wrong offset in the JSON. formatSymbolLocation (src/indexed_source.ts)
- * closes this by appending a "(notebook cell lines)" marker whenever the path is virtual-indexed.
- * This guard proves the marker actually reaches the printed surfaces, and that a plain file's label
- * is untouched.
- */
+/** A `.ipynb` is indexed from a virtual Python document that parser.ts builds by concatenating the code cells' `source` arrays (see src/indexed_source.ts), so every stored `lineStart`/`lineEnd` addresses that virtual document, never the JSON bytes on disk. `brief`/`outline` used to print that coordinate as a bare `path:line` label -- indistinguishable from a real file:line -- which sends a reader straight to the wrong offset in the JSON. formatSymbolLocation (src/indexed_source.ts) closes this by appending a "(notebook cell lines)" marker whenever the path is virtual-indexed. This guard proves the marker actually reaches the printed surfaces, and that a plain file's label is untouched. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -17,15 +8,11 @@ import { describe, expect, it } from 'vitest'
 import { indexFileSync } from '../../src/parser.js'
 import { normalizePath } from '../../src/paths.js'
 import { querySymbols } from '../../src/index_reader.js'
-import { runBrief, runOutline } from '../../src/read_commands.js'
+import { runBrief } from '../../src/read_brief.js'
+import { runOutline } from '../../src/read_outline.js'
 import { formatSymbolLocation } from '../../src/indexed_source.js'
 
-/**
- * PROVENANCE: FORMAT-DERIVED -- nbformat 4 shape (`cells[].cell_type`, `cells[].source` as a line
- * array) documented at nbformat.readthedocs.io/en/latest/format_description.html. The leading
- * markdown cell pushes `def caller()` well off the JSON line the flattened virtual document would
- * put it on, which is what the calibration test below checks for.
- */
+/** PROVENANCE: FORMAT-DERIVED -- nbformat 4 shape (`cells[].cell_type`, `cells[].source` as a line array) documented at nbformat.readthedocs.io/en/latest/format_description.html. The leading markdown cell pushes `def caller()` well off the JSON line the flattened virtual document would put it on, which is what the calibration test below checks for. */
 function notebookJson(): string {
   return JSON.stringify(
     {

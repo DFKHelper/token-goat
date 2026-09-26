@@ -3,9 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-// Stub config so the overflow guard (used by emitGuarded in runCoverageReportGaps's text-mode
-// branch) has a deterministic, permissive budget instead of reading a real config.toml -- same
-// pattern openapi_query.test.ts / read_commands.test.ts use for their own run* coverage.
+// Stub config so the overflow guard (used by emitGuarded in runCoverageReportGaps's text-mode branch) has a deterministic, permissive budget instead of reading a real config.toml -- same pattern openapi_query.test.ts / read_commands.test.ts use for their own run* coverage.
 vi.mock('../src/config.js', () => ({
   loadConfig: vi.fn(),
 }))
@@ -20,7 +18,7 @@ import {
   formatCoverageGaps,
   type CoverageGapsReport,
 } from '../src/coverage_query.js'
-import { runCoverageReportGaps } from '../src/read_commands.js'
+import { runCoverageReportGaps } from '../src/read_inspect.js'
 import { loadConfig } from '../src/config.js'
 
 const mockLoadConfig = vi.mocked(loadConfig)
@@ -46,11 +44,7 @@ function capture(fn: () => void): { stdout: string; stderr: string } {
   return { stdout, stderr }
 }
 
-// ---- LCOV fixture: 4 files ----
-// clean.ts: 100% covered (zero gaps, omitted from output)
-// partial.ts: multiple lines uncovered, including two separate contiguous runs (10-12 and 20-21)
-// branchy.ts: fully covered lines/functions, but one uncovered branch
-// untested.ts: fully covered lines, but one uncovered function
+// ---- LCOV fixture: 4 files ---- clean.ts: 100% covered (zero gaps, omitted from output) partial.ts: multiple lines uncovered, including two separate contiguous runs (10-12 and 20-21) branchy.ts: fully covered lines/functions, but one uncovered branch untested.ts: fully covered lines, but one uncovered function
 
 const LCOV_FIXTURE = `TN:
 SF:src/clean.ts
@@ -168,23 +162,19 @@ const ISTANBUL_SUMMARY_FIXTURE = {
 
 describe('detectCoverageFormat', () => {
   it('reads a summary report carrying only its total aggregate as a summary, not an empty final', () => {
-    // A project with nothing instrumented still gets a coverage-summary.json, and it holds only
-    // the `total` key. Filtering `total` out left no entries to match on, so the report came back
-    // under the wrong format name.
+    // A project with nothing instrumented still gets a coverage-summary.json, and it holds only the `total` key. Filtering `total` out left no entries to match on, so the report came back under the wrong format name.
     const metric = { total: 0, covered: 0, skipped: 0, pct: 'Unknown' }
     const text = JSON.stringify({ total: { lines: metric, statements: metric, functions: metric, branches: metric } })
     expect(detectCoverageFormat(text)).toBe('istanbul-summary')
   })
 
   it('still reads a genuinely empty object as an empty final report', () => {
-    // The other side of the check above: `{}` has no `total` to identify it, and erroring on a
-    // valid-but-contentless report would be worse than picking one of the two empty readings.
+    // The other side of the check above: `{}` has no `total` to identify it, and erroring on a valid-but-contentless report would be worse than picking one of the two empty readings.
     expect(detectCoverageFormat('{}')).toBe('istanbul-final')
   })
 
   it('detects LCOV from a TN:/SF: content prefix, not a filename extension', () => {
-    // No file extension involved at all here -- this asserts the content-based mechanism
-    // actually implemented (a leading TN:/SF: record), not an extension-based one.
+    // No file extension involved at all here -- this asserts the content-based mechanism actually implemented (a leading TN:/SF: record), not an extension-based one.
     expect(detectCoverageFormat(LCOV_FIXTURE)).toBe('lcov')
     expect(detectCoverageFormat('SF:foo.ts\nDA:1,1\nend_of_record\n')).toBe('lcov')
   })
@@ -209,12 +199,7 @@ describe('detectCoverageFormat', () => {
     expect(() => detectCoverageFormat(JSON.stringify({ hello: 'world' }))).toThrow(/not a recognized coverage report/)
   })
 
-  // Regression (mutation-testing gap): the root-shape guard explicitly rejects a JSON array
-  // (typeof [] === 'object', so the array check needs its own Array.isArray branch, not just
-  // the typeof/null checks). Dropping that branch still passed the full suite, since an empty
-  // array's filtered Object.entries() is also empty and fell through to the "empty object ->
-  // empty istanbul-final report" fallback instead of throwing -- silently misdetecting a JSON
-  // array root as a valid, contentless coverage report.
+  // Regression (mutation-testing gap): the root-shape guard explicitly rejects a JSON array (typeof [] === 'object', so the array check needs its own Array.isArray branch, not just the typeof/null checks). Dropping that branch still passed the full suite, since an empty array's filtered Object.entries() is also empty and fell through to the "empty object -> empty istanbul-final report" fallback instead of throwing -- silently misdetecting a JSON array root as a valid, contentless coverage report.
   it('throws on a JSON array root instead of misdetecting it as an empty coverage report', () => {
     expect(() => detectCoverageFormat('[]')).toThrow(/not a recognized coverage report/)
   })
@@ -228,9 +213,7 @@ describe('parseLcov', () => {
   })
 
   it('counts two same-named functions separately instead of collapsing them onto the last one', () => {
-    // Two functions in one file may legitimately share a name -- methods of two classes, or a
-    // nested function shadowing an outer one. Keying by name alone kept only the last FN record,
-    // so the total was undercounted and the earlier one could never be reported as a gap.
+    // Two functions in one file may legitimately share a name -- methods of two classes, or a nested function shadowing an outer one. Keying by name alone kept only the last FN record, so the total was undercounted and the earlier one could never be reported as a gap.
     const dup = parseLcov(['TN:', 'SF:/src/x.js', 'FN:1,foo', 'FN:5,foo', 'FNDA:0,foo', 'FNDA:0,foo', 'DA:1,1', 'DA:5,1', 'end_of_record'].join('\n'))
     const f = dup.files[0]!
     expect(f.functionsTotal).toBe(2)
@@ -244,11 +227,7 @@ describe('parseLcov', () => {
   })
 
   it('sums FNDA hits for a shared name, so a covered run is not overwritten by an uncovered one', () => {
-    // LCOV v1 keys hits by name only, so with a shared name it cannot say which function ran.
-    // Overwriting made the answer depend on record order; summing reports the name as covered,
-    // which is the reading that does not invent a gap the report never claimed.
-    // DA:9,0 keeps the file in the report: with the functions all covered it would otherwise have
-    // no gap at all and be dropped by rankAndFilter, leaving nothing to assert the counts on.
+    // LCOV v1 keys hits by name only, so with a shared name it cannot say which function ran. Overwriting made the answer depend on record order; summing reports the name as covered, which is the reading that does not invent a gap the report never claimed. DA:9,0 keeps the file in the report: with the functions all covered it would otherwise have no gap at all and be dropped by rankAndFilter, leaving nothing to assert the counts on.
     const shared = parseLcov(['SF:/src/x.js', 'FN:1,foo', 'FN:5,foo', 'FNDA:3,foo', 'FNDA:0,foo', 'DA:1,1', 'DA:9,0', 'end_of_record'].join('\n'))
     const f = shared.files[0]!
     expect(f.functionsHit).toBe(2)
@@ -299,9 +278,7 @@ describe('parseLcov', () => {
   })
 
   it('joins an LCOV v2 three-field FN record (FN:<start>,<end>,<name>) with its FNDA by name', () => {
-    // Regression: lcov >= 2.0 (geninfo) may emit an optional end-line field in FN records.
-    // Keying fnLines by everything after the first comma ("10,foo") while FNDA keys by the bare
-    // name ("foo") made every function in a v2 report a phantom uncovered function.
+    // Regression: lcov >= 2.0 (geninfo) may emit an optional end-line field in FN records. Keying fnLines by everything after the first comma ("10,foo") while FNDA keys by the bare name ("foo") made every function in a v2 report a phantom uncovered function.
     const r = parseLcov('SF:src/v2.ts\nFN:5,10,foo\nFNDA:3,foo\nDA:5,3\nend_of_record\n')
     const f = r.files.find((f2) => f2.filePath === 'src/v2.ts')
     // foo was hit 3 times -- the file has no gaps at all and must be omitted entirely.
@@ -315,23 +292,13 @@ describe('parseLcov', () => {
   })
 
   it('sorts files worst-offenders-first by uncovered-line-count descending', () => {
-    // partial.ts has 7 uncovered lines; branchy.ts and untested.ts have 0 uncovered lines but
-    // still appear (branch/function gaps), so partial.ts must sort first.
+    // partial.ts has 7 uncovered lines; branchy.ts and untested.ts have 0 uncovered lines but still appear (branch/function gaps), so partial.ts must sort first.
     expect(report.files[0]!.filePath).toBe('src/partial.ts')
   })
 
-  // Regression (mutation-testing gap): rankAndFilter's sort has an explicit tie-break
-  // (a.filePath.localeCompare(b.filePath)) for files with equal uncoveredLineCount, so ordering
-  // is deterministic regardless of the source report's own file order. Dropping the tie-break
-  // still passed the full suite, since Array.prototype.sort is stable and every existing
-  // multi-file fixture's insertion order already happened to match alphabetical order for its
-  // tied entries -- masking the fact that without the tie-break, two equally-uncovered files
-  // sorted only by their position in the source report, not by path.
+  // Regression (mutation-testing gap): rankAndFilter's sort has an explicit tie-break (a.filePath.localeCompare(b.filePath)) for files with equal uncoveredLineCount, so ordering is deterministic regardless of the source report's own file order. Dropping the tie-break still passed the full suite, since Array.prototype.sort is stable and every existing multi-file fixture's insertion order already happened to match alphabetical order for its tied entries -- masking the fact that without the tie-break, two equally-uncovered files sorted only by their position in the source report, not by path.
   it('breaks a tie in uncovered-line-count by filePath ascending, independent of source order', () => {
-    // Both files have 0 uncovered lines but a real gap (an uncovered function), so both survive
-    // rankAndFilter's filter and tie on uncoveredLineCount -- and are inserted in
-    // reverse-alphabetical order, so a source-order-preserving (no tie-break) sort would list
-    // zzz.ts before aaa.ts.
+    // Both files have 0 uncovered lines but a real gap (an uncovered function), so both survive rankAndFilter's filter and tie on uncoveredLineCount -- and are inserted in reverse-alphabetical order, so a source-order-preserving (no tie-break) sort would list zzz.ts before aaa.ts.
     const lcov = [
       'SF:src/zzz.ts',
       'FN:1,zzzFn',
@@ -349,14 +316,7 @@ describe('parseLcov', () => {
     expect(r.files.map((f) => f.filePath)).toEqual(['src/aaa.ts', 'src/zzz.ts'])
   })
 
-  // Regression: rankAndFilter's tie-break used a.filePath.localeCompare(b.filePath) -- with no
-  // explicit locale this resolves to the host's default ICU collation (Windows regional
-  // setting, or LANG/LC_ALL on Linux/CI), which can order two tied paths differently across
-  // machines, defeating the "determinism" the tie-break exists for. formatCoverageGaps's output
-  // can be truncated by size, so a locale-dependent tie order can silently change which files
-  // survive truncation on a different machine. The fix uses a plain ordinal (UTF-16 code-unit)
-  // comparison instead, matching hooks_read.ts's isProtectedRecentRead fix for the identical
-  // bug class -- so localeCompare must never be invoked by this code path at all.
+  // Regression: rankAndFilter's tie-break used a.filePath.localeCompare(b.filePath) -- with no explicit locale this resolves to the host's default ICU collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which can order two tied paths differently across machines, defeating the "determinism" the tie-break exists for. formatCoverageGaps's output can be truncated by size, so a locale-dependent tie order can silently change which files survive truncation on a different machine. The fix uses a plain ordinal (UTF-16 code-unit) comparison instead, matching hooks_read.ts's isProtectedRecentRead fix for the identical bug class -- so localeCompare must never be invoked by this code path at all.
   it('breaks the uncovered-line-count tie without calling the locale-dependent String.prototype.localeCompare', () => {
     const lcov = [
       'SF:src/zzz.ts',
@@ -401,9 +361,7 @@ describe('parseIstanbulFinal', () => {
   })
 
   it('reports a function gap at its declaration line, not where its body opens', () => {
-    // Istanbul's `decl` is the declaration itself; `loc` spans the whole function including the
-    // body, and the two differ when the body opens on a later line than the name. The declaration
-    // line is both what this function's docstring promises and the line worth jumping to.
+    // Istanbul's `decl` is the declaration itself; `loc` spans the whole function including the body, and the two differ when the body opens on a later line than the name. The declaration line is both what this function's docstring promises and the line worth jumping to.
     const declFirst = parseIstanbulFinal({
       '/tmp/a.js': {
         statementMap: { '0': { start: { line: 3, column: 4 }, end: { line: 3, column: 12 } } },
@@ -584,10 +542,7 @@ describe('formatCoverageGaps', () => {
     expect(text).toContain('summary-only report')
   })
 
-  // Regression (mutation-testing gap): the uncovered-branches line pluralizes "line"/"lines"
-  // based on how many distinct branch lines there are. Hardcoding the plural form still passed
-  // the full suite, since no existing formatCoverageGaps test asserted the exact singular-vs-
-  // plural wording -- only that some text containing the data was present.
+  // Regression (mutation-testing gap): the uncovered-branches line pluralizes "line"/"lines" based on how many distinct branch lines there are. Hardcoding the plural form still passed the full suite, since no existing formatCoverageGaps test asserted the exact singular-vs- plural wording -- only that some text containing the data was present.
   it('uses singular "line" for exactly one uncovered branch line, plural "lines" for more than one', () => {
     const branchy = parseLcov(LCOV_FIXTURE)
     const branchyText = formatCoverageGaps(branchy)

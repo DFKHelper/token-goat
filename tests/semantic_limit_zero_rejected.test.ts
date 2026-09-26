@@ -1,11 +1,7 @@
-// Regression: `limit: 0` translates to SQL `LIMIT 0`, which always returns zero rows regardless
-// of whether matches actually exist -- silently reporting "no matches" for a query that would
-// otherwise succeed, instead of surfacing the caller's mistake. `limit: 0` (or negative) must be
-// rejected as an explicit invalid-argument error, and the `semantic` MCP tool's schema must reject
-// it at the validation layer before the handler is even invoked.
+// Regression: `limit: 0` translates to SQL `LIMIT 0`, which always returns zero rows regardless of whether matches actually exist -- silently reporting "no matches" for a query that would otherwise succeed, instead of surfacing the caller's mistake. `limit: 0` (or negative) must be rejected as an explicit invalid-argument error, and the `semantic` MCP tool's schema must reject it at the validation layer before the handler is even invoked.
 import { describe, expect, it } from 'vitest'
 
-import { runSemantic } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_semantic.js'
 import { createMcpServer } from '../src/mcp_server.js'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'

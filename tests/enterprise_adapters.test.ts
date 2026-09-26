@@ -1,6 +1,4 @@
-/**
- * Unit tests for the ABAP, SAS, PL/I, RPG, JCL and OpenEdge ABL adapters: every declaration form each reads, exact spans and parents, nothing out of strings, comments or in-stream data, the imports each emits, and the content routing that decides when a `.p`, `.w` or `.cls` is ABL. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget.
- */
+/** Unit tests for the ABAP, SAS, PL/I, RPG, JCL and OpenEdge ABL adapters: every declaration form each reads, exact spans and parents, nothing out of strings, comments or in-stream data, the imports each emits, and the content routing that decides when a `.p`, `.w` or `.cls` is ABL. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -18,7 +16,7 @@ import { extractSas } from '../src/languages/sas.js'
 import type { StatementAdapterResult } from '../src/languages/span_collector.js'
 import { parseFile } from '../src/parser.js'
 import { detectLanguage, detectLanguageOfFile, refineLanguageByContent } from '../src/parser_types.js'
-import { extractImports } from '../src/read_commands.js'
+import { extractImports } from '../src/import_export_extract.js'
 
 const FIXTURES = path.join(process.cwd(), 'tests', 'fixtures', 'language_adapter_symbols')
 const APEX_FIXTURE = path.join(process.cwd(), 'tests', 'fixtures', 'salesforce-dx', 'force-app', 'main', 'default', 'classes', 'SafeNavigationService.cls')

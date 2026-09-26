@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSemantic, runSymbol } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_semantic.js'
 import { summarize } from '../src/stats.js'
 
 function creditFor(kind: string, run: () => void): number {

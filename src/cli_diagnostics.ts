@@ -1,16 +1,13 @@
-/**
- * Diagnostic, inspection, packaging, and budgeting command handlers.
- *
- * Implements token-goat coverage-report-gaps, conflicts, screenshot,
- * pack, tokens, budget, and failures.
- */
+/** Diagnostic, inspection, packaging, and budgeting command handlers. Implements token-goat coverage-report-gaps, conflicts, screenshot, pack, tokens, budget, and failures. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { CliError, out, err, requireInt, requirePositiveInt, requireNonNegativeInt } from './cli.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
-import { runCoverageReportGaps, runConflicts, runScreenshot } from './read_commands.js'
+import { runScreenshot } from './read_commands.js'
+import { runCoverageReportGaps } from './read_inspect.js'
+import { runConflicts } from './read_git.js'
 import { collectFiles, collectFromStdin, formatPack, scanSecrets, estimateBudget, formatBudgetText } from './pack.js'
 import { loadConfig } from './config.js'
 import {
@@ -50,15 +47,7 @@ export async function cmdScreenshot(
   out(await runScreenshot(url, destPath, opts))
 }
 
-/**
- * Expand a list of literal paths and/or glob patterns relative to `root`.
- * Patterns that don't contain glob metacharacters (*, ?, {) are kept as-is.
- * Absolute paths are preserved; relative matches are resolved to absolute paths.
- *
- * `globFnOverride` exists only for unit tests that need to exercise glob branching (e.g. the
- * large-match-set path below) without writing real files to disk; production callers never
- * pass it, so the real `fs.globSync` is always used.
- */
+/** Expand a list of literal paths and/or glob patterns relative to `root`. Patterns that don't contain glob metacharacters (*, ?, {) are kept as-is. Absolute paths are preserved; relative matches are resolved to absolute paths. `globFnOverride` exists only for unit tests that need to exercise glob branching (e.g. the large-match-set path below) without writing real files to disk; production callers never pass it, so the real `fs.globSync` is always used. */
 export function expandGlobs(
   root: string,
   patterns: string[],
@@ -74,12 +63,7 @@ export function expandGlobs(
     if (globFn !== undefined && (p.includes('*') || p.includes('?') || p.includes('{'))) {
       try {
         const hits = globFn(p, { cwd: root })
-        // Plain loop instead of out.push(...array): spreading a large glob match set (e.g.
-        // `**/*` on a big project) as call arguments blows the engine's call-stack limit well
-        // within realistic file counts (RangeError: Maximum call stack size exceeded), which
-        // this function's own try/catch then silently swallows as "not a valid glob, fall
-        // through to literal path" -- turning a huge, legitimate match set into zero matched
-        // files instead of throwing or reporting the real count.
+        // Plain loop instead of out.push(...array): spreading a large glob match set (e.g. `**/*` on a big project) as call arguments blows the engine's call-stack limit well within realistic file counts (RangeError: Maximum call stack size exceeded), which this function's own try/catch then silently swallows as "not a valid glob, fall through to literal path" -- turning a huge, legitimate match set into zero matched files instead of throwing or reporting the real count.
         for (const h of hits) out.push(path.isAbsolute(h) ? h : path.join(root, h))
         continue
       } catch {
@@ -182,10 +166,7 @@ export function cmdTokens(
   if (opts.top !== undefined) entries = entries.slice(0, requireNonNegativeInt('--top', opts.top))
   const truncated = entries.length < eligibleCount
   if (opts.json === true) {
-    // `total_tokens`/`total_lines` have always described the whole matched set, not the rows in
-    // `entries`. That is fine on a complete result and actively misleading on a capped one: three
-    // entries printed beside a total spanning hundreds of files reads as three files that sum to
-    // it. The added fields say which of the two the reader is looking at.
+    // `total_tokens`/`total_lines` have always described the whole matched set, not the rows in `entries`. That is fine on a complete result and actively misleading on a capped one: three entries printed beside a total spanning hundreds of files reads as three files that sum to it. The added fields say which of the two the reader is looking at.
     out(displaySafeJson({ entries, truncated, totalCount: eligibleCount, total_tokens: result.total_tokens, total_lines: result.total_lines }))
     return
   }
@@ -212,9 +193,7 @@ export function cmdTokens(
     out('No files matched.')
     return
   }
-  // Reduce instead of Math.max(...array): spreading a large project's file list as call
-  // arguments blows the engine's call-stack limit (RangeError) well within realistic file
-  // counts -- mirrors the same fix in pack.ts's formatBudgetText.
+  // Reduce instead of Math.max(...array): spreading a large project's file list as call arguments blows the engine's call-stack limit (RangeError) well within realistic file counts -- mirrors the same fix in pack.ts's formatBudgetText.
   const colW = entries.reduce((max, e) => Math.max(max, e.rel_path.length), 4)
   const lines = [
     `${'File'.padEnd(colW)}  ${'~Tokens'.padStart(8)}  ${'Lines'.padStart(6)}`,
@@ -238,8 +217,7 @@ export function cmdBudget(
   if (opts.json === true) {
     out(displaySafeJson(result))
   } else {
-    // Falls back to the configured context.model_window_tokens (in thousands, matching
-    // --context's own units) so the % line shows up without requiring --context on every call.
+    // Falls back to the configured context.model_window_tokens (in thousands, matching --context's own units) so the % line shows up without requiring --context on every call.
     const contextK = opts.context !== undefined
       ? requirePositiveInt('--context', opts.context)
       : Math.round(loadConfig().context.model_window_tokens / 1000)
@@ -259,9 +237,7 @@ export function cmdFailures(
     return
   }
 
-  // --delta needs a project identity to scope the persisted baseline to (see
-  // failures_state.ts's module doc for why project hash + an explicit --key, not a
-  // (sessionId, bash_id) pair, is the right key here).
+  // --delta needs a project identity to scope the persisted baseline to (see failures_state.ts's module doc for why project hash + an explicit --key, not a (sessionId, bash_id) pair, is the right key here).
   const project = findProject(process.cwd())
   if (project === null) {
     throw new Error('token-goat failures --delta requires a project root (git repo, package.json, etc.) from cwd to scope the saved baseline')

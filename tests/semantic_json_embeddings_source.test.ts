@@ -1,10 +1,4 @@
-// Regression: the fts and no-match branches of runSemantic's --json mode had test coverage
-// (tests/semantic_json_output.test.ts), but the embeddings-source branch -- the one hit first
-// whenever searchSemantic finds a real vector match -- had none. Mocks searchSemantic (same
-// pattern as tests/semantic_rerank_order_survives_merge.test.ts) to force the embeddings branch,
-// then asserts the JSON envelope matches the fts branch's shape: {source, items, truncated,
-// totalCount}, with every item carrying the same keys (name/kind null on this branch, since
-// embeddings hits have neither).
+// Regression: the fts and no-match branches of runSemantic's --json mode had test coverage (tests/semantic_json_output.test.ts), but the embeddings-source branch -- the one hit first whenever searchSemantic finds a real vector match -- had none. Mocks searchSemantic (same pattern as tests/semantic_rerank_order_survives_merge.test.ts) to force the embeddings branch, then asserts the JSON envelope matches the fts branch's shape: {source, items, truncated, totalCount}, with every item carrying the same keys (name/kind null on this branch, since embeddings hits have neither).
 import * as path from 'node:path'
 import * as os from 'node:os'
 
@@ -23,15 +17,13 @@ vi.mock('../src/embeddings.js', async (importOriginal) => {
   }
 })
 
-const { runSemantic } = await import('../src/read_commands.js')
+const { runSemantic } = await import('../src/read_semantic.js')
 
 describe('runSemantic --json: embeddings source', () => {
   let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
-    // This file forces the embeddings branch via a mocked searchSemantic, not via
-    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
-    // otherwise stop runSemantic from ever reaching searchSemanticMock.
+    // This file forces the embeddings branch via a mocked searchSemantic, not via indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would otherwise stop runSemantic from ever reaching searchSemanticMock.
     prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   })
@@ -66,11 +58,7 @@ describe('runSemantic --json: embeddings source', () => {
     expect(payload.totalCount).toBe(1)
   })
 
-  // --json path-spelling: `filePath` used to echo searchSemantic's raw row verbatim, while the
-  // plain-text branch already renders `toDisplayPath(rootDir, ...)`. Positive: an absolute
-  // in-project hit renders root-relative. Negative control: an absolute out-of-project hit stays
-  // absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership
-  // check rather than blindly stripping a prefix from every row.
+  // --json path-spelling: `filePath` used to echo searchSemantic's raw row verbatim, while the plain-text branch already renders `toDisplayPath(rootDir, ...)`. Positive: an absolute in-project hit renders root-relative. Negative control: an absolute out-of-project hit stays absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership check rather than blindly stripping a prefix from every row.
   it('renders an absolute in-project filePath root-relative, and leaves an absolute out-of-project filePath absolute', async () => {
     const inProjectAbs = path.join(process.cwd(), 'src', 'auth.ts')
     const outOfProjectAbs = path.join(os.tmpdir(), 'tg-semantic-outside-project-fixture', 'far.ts')

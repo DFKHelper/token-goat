@@ -1,12 +1,4 @@
-/**
- * Code graph inspection commands: dead, deps, types, and scope.
- *
- * Implements:
- * - token-goat dead: Unreferenced symbol detection with test exclusion and reachability filters
- * - token-goat deps: Internal and external import dependency analysis
- * - token-goat types: Type declaration listing and filtering
- * - token-goat scope: Enclosing symbol resolution for a file:line coordinate
- */
+/** Code graph inspection commands: dead, deps, types, and scope. Implements: - token-goat dead: Unreferenced symbol detection with test exclusion and reachability filters - token-goat deps: Internal and external import dependency analysis - token-goat types: Type declaration listing and filtering - token-goat scope: Enclosing symbol resolution for a file:line coordinate */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -15,7 +7,11 @@ import { querySymbols, queryRefs, distinctSymbolKinds } from './index_reader.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, isRefIndexedFile } from './ref_blindness.js'
-import { symbolExtractorGap, extractImports, importsExtensionFor, fileConfinementRefusal, guardJsonRows, rankSimilarNames, didYouMean } from './read_commands.js'
+import { guardJsonRows } from './read_commands.js'
+import { symbolExtractorGap } from './read_meta.js'
+import { extractImports, importsExtensionFor } from './import_export_extract.js'
+import { fileConfinementRefusal } from './read_spec.js'
+import { rankSimilarNames, didYouMean } from './read_suggest.js'
 import { decodeSource, isTestFile, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun } from './util.js'
 import type { SymbolEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'

@@ -4,17 +4,8 @@ import * as path from 'node:path'
 import { querySymbols } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
 import { displaySafeJson } from './paths.js'
-import {
-  findSpecSeparator,
-  guardText,
-  healStaleIndex,
-  parseCrossFileMultiSpec,
-  readFileText,
-  recordReadStat,
-  resolveAgainstProjectRoot,
-  sumFileSizes,
-} from './read_commands.js'
-import { stripHtmlIdSpelling } from './read_spec.js'
+import { findSpecSeparator, guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
+import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
 import { countNoun } from './util.js'

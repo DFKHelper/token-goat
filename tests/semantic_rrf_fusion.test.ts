@@ -28,7 +28,7 @@ vi.mock('../src/index_reader.js', async (importOriginal) => {
   }
 })
 
-const { runSemantic } = await import('../src/read_commands.js')
+const { runSemantic } = await import('../src/read_semantic.js')
 
 describe('runSemantic: RRF fusion closes the dense-nonzero-blocks-fts gap', () => {
   let root: string

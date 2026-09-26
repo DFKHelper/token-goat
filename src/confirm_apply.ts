@@ -1,23 +1,8 @@
-/**
- * Small, reusable diff-preview + confirm-before-write helper.
- *
- * Shared shape for any command that proposes whole-file rewrites and needs to
- * show the user exactly what will change before writing: print a
- * unified-diff-style preview (reusing {@link buildLineDiff}), then either
- * apply unconditionally (`opts.yes`), prompt per-file on a TTY, or -- when
- * neither applies (non-interactive, no `--yes`) -- refuse to write and print
- * the diffs as a dry run explaining how to apply.
- *
- * Deliberately minimal: no patch/merge logic, no generic diff library. Just
- * enough to preview + gate a whole-file overwrite. First consumer is
- * `token-goat memory --fix`; written as a standalone module because the
- * advisory CLAUDE.md/memory-migration probe work will need the same
- * preview-then-confirm shape later.
- */
+/** Small, reusable diff-preview + confirm-before-write helper. Shared shape for any command that proposes whole-file rewrites and needs to show the user exactly what will change before writing: print a unified-diff-style preview (reusing {@link buildLineDiff}), then either apply unconditionally (`opts.yes`), prompt per-file on a TTY, or -- when neither applies (non-interactive, no `--yes`) -- refuse to write and print the diffs as a dry run explaining how to apply. Deliberately minimal: no patch/merge logic, no generic diff library. Just enough to preview + gate a whole-file overwrite. First consumer is `token-goat memory --fix`; written as a standalone module because the advisory CLAUDE.md/memory-migration probe work will need the same preview-then-confirm shape later. */
 
 import * as readline from 'node:readline'
 
-import { buildLineDiff } from './hooks_read.js'
+import { buildLineDiff } from './hooks_read_slice.js'
 import { atomicWriteText } from './util.js'
 
 /** One proposed whole-file rewrite. */
@@ -57,16 +42,7 @@ async function defaultConfirm(question: string): Promise<boolean> {
   }
 }
 
-/**
- * Preview `changes` as unified diffs, then apply per confirmation rules:
- *
- * - `opts.yes === true`: apply every change, no prompting.
- * - No `--yes` and stdin is a TTY: prompt y/n per file; only confirmed files are written.
- * - No `--yes` and stdin is not a TTY: print diffs only, apply nothing (dry run).
- *
- * Never writes a file that wasn't included in `changes`, and never writes
- * content other than the exact `after` shown in that file's diff.
- */
+/** Preview `changes` as unified diffs, then apply per confirmation rules: - `opts.yes === true`: apply every change, no prompting. - No `--yes` and stdin is a TTY: prompt y/n per file; only confirmed files are written. - No `--yes` and stdin is not a TTY: print diffs only, apply nothing (dry run). Never writes a file that wasn't included in `changes`, and never writes content other than the exact `after` shown in that file's diff. */
 export async function confirmAndApply(
   changes: FileChange[],
   opts: ConfirmAndApplyOptions = {},

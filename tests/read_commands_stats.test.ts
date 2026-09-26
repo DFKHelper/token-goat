@@ -1,17 +1,4 @@
-/**
- * Regression (#238): the surgical-read command family in read_commands.ts (symbol_lookup,
- * read_replacement, section_replacement/section_read, semantic_search, outline, exports,
- * stub_view, symbol_read) stopped calling recordStat entirely during the Python->TS port, even
- * though src/stats.ts's KIND_TO_SOURCE/COMMAND_KINDS and src/render/stats_renderer.ts's
- * Reads/Lookups groups still define display mappings for all of them -- the same class of bug
- * fixed for image_shrink in commit 231856df.
- *
- * These tests drive the real, unmocked command functions (indexFileSync against a real
- * project, real markdown files on disk) and assert a real stats row appears via summarize()
- * against the real (test-isolated) global stats DB. A synthetic recordStat/DB insert would not
- * catch the original absence, so this must exercise the actual production call path -- see
- * tests/image_shrink.test.ts's equivalent #236 regression test for the same reasoning.
- */
+/** Regression (#238): the surgical-read command family in read_commands.ts (symbol_lookup, read_replacement, section_replacement/section_read, semantic_search, outline, exports, stub_view, symbol_read) stopped calling recordStat entirely during the Python->TS port, even though src/stats.ts's KIND_TO_SOURCE/COMMAND_KINDS and src/render/stats_renderer.ts's Reads/Lookups groups still define display mappings for all of them -- the same class of bug fixed for image_shrink in commit 231856df. These tests drive the real, unmocked command functions (indexFileSync against a real project, real markdown files on disk) and assert a real stats row appears via summarize() against the real (test-isolated) global stats DB. A synthetic recordStat/DB insert would not catch the original absence, so this must exercise the actual production call path -- see tests/image_shrink.test.ts's equivalent #236 regression test for the same reasoning. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
@@ -21,7 +8,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol, runRead, runSection, runSemantic, runImports, runChanged } from '../src/read_commands.js'
+import { runSymbol, runRead } from '../src/read_commands.js'
+import { runSection } from '../src/read_section.js'
+import { runSemantic } from '../src/read_semantic.js'
+import { runImports } from '../src/read_inspect.js'
+import { runChanged } from '../src/read_git.js'
 import { summarize } from '../src/stats.js'
 
 describe('read_commands surgical-read stat recording (#238)', () => {

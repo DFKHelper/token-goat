@@ -1,10 +1,4 @@
-// End-to-end regression for `semantic --grep`, against a real indexed project with no mocks
-// (mirrors tests/semantic_fts_fallback_project_scope.test.ts's setup). This is the test that
-// actually catches the stored-vs-rendered-path bug class this repo has hit before: an anchored
-// `^src/` pattern must match the DISPLAY path (toDisplayPath), not the stored absolute path --
-// a filter that tested the stored path would match nothing (an absolute path never starts with
-// "src/"), so this must observe real matches surviving the filter, not just an absence of the
-// wrong file.
+// End-to-end regression for `semantic --grep`, against a real indexed project with no mocks (mirrors tests/semantic_fts_fallback_project_scope.test.ts's setup). This is the test that actually catches the stored-vs-rendered-path bug class this repo has hit before: an anchored `^src/` pattern must match the DISPLAY path (toDisplayPath), not the stored absolute path -- a filter that tested the stored path would match nothing (an absolute path never starts with "src/"), so this must observe real matches surviving the filter, not just an absence of the wrong file.
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -13,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSemantic } from '../src/read_commands.js'
+import { runSemantic } from '../src/read_semantic.js'
 
 describe('runSemantic --grep against a real indexed project (end-to-end, no mocks)', () => {
   it('an anchored ^src/ pattern matches the rendered path, not the stored absolute path', async () => {

@@ -1,22 +1,4 @@
-/**
- * Guard: token-goat's JSON/YAML commands (`json-query`, `yaml-query`, `json-outline`,
- * `yaml-outline`) must be discoverable from the surfaces a model sees without asking for them.
- *
- * They were not. Every unprompted surface -- the shared guidance body written into CLAUDE.md,
- * AGENTS.md, copilot-instructions.md and SKILL.md, and the SessionStart reminder -- listed only
- * code-shaped commands. The guidance body even named `config-get file KEY`, so the absence of a
- * JSON command read as a deliberate statement ("config has a command, JSON data does not")
- * rather than as an omission. Probing then confirmed the wrong conclusion: `symbol
- * better-sqlite3` answered `No matches` plus `Did you mean: sql`, a confident negative with a
- * suggestion pointing away from the answer, because JSON files are indexed only to depth 1.
- *
- * This file covers the third surface: a `symbol` miss on a name that really is a nested
- * JSON/YAML key must name the exact dot-path, so the next command is copy-pasteable. Asserted
- * end-to-end against the built bundle, including running the suggested command verbatim -- a
- * hint that prints a path the tool then rejects would be worse than silence. The other two
- * surfaces are covered in tests/install_claude_md_skill.test.ts and
- * tests/hooks_session_start.test.ts.
- */
+/** Guard: token-goat's JSON/YAML commands (`json-query`, `yaml-query`, `json-outline`, `yaml-outline`) must be discoverable from the surfaces a model sees without asking for them. They were not. Every unprompted surface -- the shared guidance body written into CLAUDE.md, AGENTS.md, copilot-instructions.md and SKILL.md, and the SessionStart reminder -- listed only code-shaped commands. The guidance body even named `config-get file KEY`, so the absence of a JSON command read as a deliberate statement ("config has a command, JSON data does not") rather than as an omission. Probing then confirmed the wrong conclusion: `symbol better-sqlite3` answered `No matches` plus `Did you mean: sql`, a confident negative with a suggestion pointing away from the answer, because JSON files are indexed only to depth 1. This file covers the third surface: a `symbol` miss on a name that really is a nested JSON/YAML key must name the exact dot-path, so the next command is copy-pasteable. Asserted end-to-end against the built bundle, including running the suggested command verbatim -- a hint that prints a path the tool then rejects would be worse than silence. The other two surfaces are covered in tests/install_claude_md_skill.test.ts and tests/hooks_session_start.test.ts. */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,7 +6,7 @@ import { join } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
-import { findStructuredKeyPath } from '../../src/read_commands.js'
+import { findStructuredKeyPath } from '../../src/read_suggest.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -133,10 +115,7 @@ describe('structured-data discoverability', () => {
   })
 
   it('findStructuredKeyPath: suppresses a match reachable only through a key containing "." (dot-path grammar cannot encode it)', () => {
-    // `dependencies.["react.native"]` would be parsed by json_query.ts's grammar as the plain key
-    // "react" followed by a stray ".native" segment, not the single literal key "react.native" --
-    // so a suggestion built from this key would either fail or silently select the wrong value.
-    // The fix must suppress the suggestion rather than emit an unrunnable one.
+    // `dependencies.["react.native"]` would be parsed by json_query.ts's grammar as the plain key "react" followed by a stray ".native" segment, not the single literal key "react.native" -- so a suggestion built from this key would either fail or silently select the wrong value. The fix must suppress the suggestion rather than emit an unrunnable one.
     const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-dotkey-'))
     const file = join(dir, 'package.json')
     writeFileSync(file, JSON.stringify({ name: 'x', version: '1.0.0', dependencies: { 'react.native': '1.0.0' } }, null, 2))
@@ -151,10 +130,7 @@ describe('structured-data discoverability', () => {
   })
 
   it('findStructuredKeyPath: an unrepresentable key does not block a real match reachable through a different (safe) key at the same name', () => {
-    // Two sibling objects both have a key named "needle" -- one reached through a dotted key
-    // ("weird.group"), one through a plain key ("safe"). Breadth-first + "shallowest wins" means
-    // the search must not stop (and return null) at the first, unrepresentable occurrence; it
-    // must keep looking and return the safe one.
+    // Two sibling objects both have a key named "needle" -- one reached through a dotted key ("weird.group"), one through a plain key ("safe"). Breadth-first + "shallowest wins" means the search must not stop (and return null) at the first, unrepresentable occurrence; it must keep looking and return the safe one.
     const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-mixedkey-'))
     const file = join(dir, 'mixed.json')
     writeFileSync(

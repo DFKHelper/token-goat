@@ -1,6 +1,4 @@
-/**
- * Unit tests for the Fortran, Pascal (with Delphi forms), MATLAB/Octave and CMake adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m` is MATLAB and a `.pp` is Pascal. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget.
- */
+/** Unit tests for the Fortran, Pascal (with Delphi forms), MATLAB/Octave and CMake adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m` is MATLAB and a `.pp` is Pascal. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -15,7 +13,7 @@ import { extractObjc, isObjcSource } from '../src/languages/objc.js'
 import { extractPascal, isPascalSource } from '../src/languages/pascal.js'
 import { parseFile } from '../src/parser.js'
 import { detectLanguage, detectLanguageOfFile, type SymbolEntry } from '../src/parser_types.js'
-import { extractImports, importsExtensionFor } from '../src/read_commands.js'
+import { extractImports, importsExtensionFor } from '../src/import_export_extract.js'
 
 const FIXTURES = path.join(process.cwd(), 'tests', 'fixtures', 'language_adapter_symbols')
 

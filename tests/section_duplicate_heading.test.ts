@@ -1,27 +1,13 @@
-/**
- * Regression: `section "file::Heading"` silently answered with one of several identically-named
- * headings.
- *
- * A changelog carries one `### Fixed` per release, so `token-goat section "CHANGELOG.md::Fixed"`
- * matched five headings and returned the first with nothing in the output saying the other four
- * existed. The caller could not tell a lucky hit from a wrong one. `section --list` printed the
- * five names indistinguishably, and an out-of-range ordinal reported the heading as *not found*
- * and then suggested it five times over.
- *
- * The ordinal syntax that fixes all of this (`Heading#2`) already worked -- nothing surfaced it.
- *
- * Why didn't a test catch this: every section fixture in the suite used headings that are unique
- * within their file, so the whole duplicate-name branch was unreached. `read` had refused an
- * ambiguous symbol for a long time; `section` is the same shape of question about the same shape
- * of document and answered it by guessing.
- */
+/** Regression: `section "file::Heading"` silently answered with one of several identically-named headings. A changelog carries one `### Fixed` per release, so `token-goat section "CHANGELOG.md::Fixed"` matched five headings and returned the first with nothing in the output saying the other four existed. The caller could not tell a lucky hit from a wrong one. `section --list` printed the five names indistinguishably, and an out-of-range ordinal reported the heading as *not found* and then suggested it five times over. The ordinal syntax that fixes all of this (`Heading#2`) already worked -- nothing surfaced it. Why didn't a test catch this: every section fixture in the suite used headings that are unique within their file, so the whole duplicate-name branch was unreached. `read` had refused an ambiguous symbol for a long time; `section` is the same shape of question about the same shape of document and answered it by guessing. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { didYouMean, runListSections, runSection } from '../src/read_commands.js'
+import { didYouMean } from '../src/read_suggest.js'
+import { runListSections } from '../src/read_inspect.js'
+import { runSection } from '../src/read_section.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let tmpDir: string
@@ -111,8 +97,7 @@ describe('section --list with repeated names', () => {
 
   it('numbers a repeated name and leaves a unique one bare', () => {
     expect(runListSections({ file: mdFile })).toBe(0)
-    // The exact line set, not a containment check: an implementation that emitted the numbered
-    // names AND kept the bare duplicates would satisfy `toContain` while still being unusable.
+    // The exact line set, not a containment check: an implementation that emitted the numbered names AND kept the bare duplicates would satisfy `toContain` while still being unusable.
     expect(
       stdout.join('').split('\n').filter((l) => l.length > 0),
       'repeated names were listed indistinguishably',
@@ -127,8 +112,7 @@ describe('section --list with repeated names', () => {
   })
 
   it('keeps the ordinals a --grep-narrowed list prints usable as retries', () => {
-    // Numbering after the filter would renumber the survivors, so `Fixed#1` in a narrowed list
-    // would fetch a different section than `Fixed#1` in the full one.
+    // Numbering after the filter would renumber the survivors, so `Fixed#1` in a narrowed list would fetch a different section than `Fixed#1` in the full one.
     expect(runListSections({ file: mdFile, grep: 'Fixed' })).toBe(0)
     expect(stdout.join('').split('\n').filter((l) => l.length > 0)).toEqual([
       'Fixed#1',

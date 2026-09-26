@@ -8,7 +8,7 @@ import {
   serializeXmlNode,
   xmlNodeToJson,
 } from '../src/xml_query.js'
-import { runXmlOutline, runXmlQuery } from '../src/read_commands.js'
+import { runXmlOutline, runXmlQuery } from '../src/read_structured_data.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -155,14 +155,9 @@ describe('parseXmlPath', () => {
     ])
   })
 
-  // FORMAT-DERIVED: predicate stacking is XPath 1.0 §2.4, "a predicate filters a node-set with
-  // respect to an axis to produce a new node-set", applied left to right. Read off the spec, not
-  // off xml_query.ts's own regexes.
+  // FORMAT-DERIVED: predicate stacking is XPath 1.0 §2.4, "a predicate filters a node-set with respect to an axis to produce a new node-set", applied left to right. Read off the spec, not off xml_query.ts's own regexes.
   it('keeps every bracket clause on a segment, not just the last one', () => {
-    // Pre-fix, the three clause regexes were anchored at the end of the whole segment, so the index regex matched the trailing `[2]`, the if/else chain short-circuited before the attribute regex ran, and a greedy `\[.*\]$` strip took `@id='1'` off the tag. The parse came back as a bare positional step and the command answered from it without a word.
-    // Asserted on `predicates`, which carries every clause in source order. The singular
-    // `attributeFilter` beside it is a legacy field holding only the last attribute clause, so
-    // reading stacking off it would report `lang` alone and agree with the very bug this covers.
+    // Pre-fix, the three clause regexes were anchored at the end of the whole segment, so the index regex matched the trailing `[2]`, the if/else chain short-circuited before the attribute regex ran, and a greedy `\[.*\]$` strip took `@id='1'` off the tag. The parse came back as a bare positional step and the command answered from it without a word. Asserted on `predicates`, which carries every clause in source order. The singular `attributeFilter` beside it is a legacy field holding only the last attribute clause, so reading stacking off it would report `lang` alone and agree with the very bug this covers.
     expect(parseXmlPath("item[@id='1'][2]")[0]?.predicates).toEqual([
       { kind: 'attrEquals', name: 'id', value: '1' },
       { kind: 'index', index: 2 },
@@ -363,10 +358,7 @@ describe('runXmlOutline and runXmlQuery CLI commands', () => {
   })
 })
 
-// Both the candidate list and the attribute-value list were appended with `push(...array)`, a
-// call with one argument per item, which fails with "Maximum call stack size exceeded" above
-// roughly 125,000 items. A 300,000-element document reached it, and `xml-query` is the command
-// that exists so a document that size never has to be read whole.
+// Both the candidate list and the attribute-value list were appended with `push(...array)`, a call with one argument per item, which fails with "Maximum call stack size exceeded" above roughly 125,000 items. A 300,000-element document reached it, and `xml-query` is the command that exists so a document that size never has to be read whole.
 describe('a document with more elements than can be spread as call arguments', () => {
   const HUGE = 200_000
 

@@ -1,9 +1,4 @@
-/**
- * CLI command handlers for code-graph commands.
- *
- * Implements callers, call-chain, and impact, and re-exports the full
- * code graph public API across traversal, inspection, and analysis submodules.
- */
+/** CLI command handlers for code-graph commands. Implements callers, call-chain, and impact, and re-exports the full code graph public API across traversal, inspection, and analysis submodules. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -22,7 +17,8 @@ import {
   refBlindKindPartialNote,
 } from './ref_blindness.js'
 import { detectLanguageOfFile } from './parser_types.js'
-import { guardJsonRows, unknownSymbolSuggestion, warnIfFilesStale } from './read_commands.js'
+import { guardJsonRows, warnIfFilesStale } from './read_commands.js'
+import { unknownSymbolSuggestion } from './read_suggest.js'
 import {
   isTestFile,
   compileGrepMatcher,

@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { CliError, out } from './cli.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
-import { buildLineDiff } from './hooks_read.js'
+import { buildLineDiff } from './hooks_read_slice.js'
 import { fingerprintContent } from './fingerprint.js'
 import {
   computeFileFingerprint,
@@ -14,15 +14,10 @@ import {
   WHOLE_FILE_NOTE_SYMBOL,
 } from './notes.js'
 import { resolveIndexPath } from './paths.js'
-import {
-  AMBIGUOUS_HEADING_LIMIT,
-  didYouMeanLines,
-  filterSimilarHeadings,
-  healStaleIndex,
-  listSections,
-  rankSimilarNames,
-  readSection,
-} from './read_commands.js'
+import { healStaleIndex } from './read_commands.js'
+import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
+import { didYouMeanLines, filterSimilarHeadings, rankSimilarNames } from './read_suggest.js'
+import { listSections, readSection } from './section_reader.js'
 import { recordStat } from './stats.js'
 import {
   countNoun,

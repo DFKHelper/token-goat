@@ -1,14 +1,4 @@
-/**
- * End-to-end regression for `token-goat diff "file::symbol" [refA..refB]`: drives the REAL,
- * unmocked pipeline -- a real git repo (execFileSync git, no mocked runGit), a real
- * indexFileSync seed against the real (test-isolated, see tests/setup/isolate-home.ts) global.db,
- * and the real runDiff command function -- so the "only this function's hunk, not an unrelated
- * changed function in the same file" behavior is proven against the actual git-diff-hunk-vs-
- * symbol-line-range intersection, not an injected-callback stand-in for it. Mirrors the real-DB,
- * real-git pattern already used by tests/read_commands_stale_self_heal_e2e.test.ts (indexFileSync
- * + a real run* command against the real DB) and tests/project.test.ts (execFileSync git for a
- * real repo fixture).
- */
+/** End-to-end regression for `token-goat diff "file::symbol" [refA..refB]`: drives the REAL, unmocked pipeline -- a real git repo (execFileSync git, no mocked runGit), a real indexFileSync seed against the real (test-isolated, see tests/setup/isolate-home.ts) global.db, and the real runDiff command function -- so the "only this function's hunk, not an unrelated changed function in the same file" behavior is proven against the actual git-diff-hunk-vs- symbol-line-range intersection, not an injected-callback stand-in for it. Mirrors the real-DB, real-git pattern already used by tests/read_commands_stale_self_heal_e2e.test.ts (indexFileSync + a real run* command against the real DB) and tests/project.test.ts (execFileSync git for a real repo fixture). */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -18,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runDiff } from '../src/read_commands.js'
+import { runDiff } from '../src/read_git.js'
 
 /** Capture stdout/stderr for a function call, same pattern as read_commands.test.ts. */
 function capture(fn: () => void): { stdout: string; stderr: string } {
@@ -180,8 +170,7 @@ describe('runDiff (real git repo + real index, no injected callbacks)', () => {
 
       indexFileSync(normalizePath(file))
 
-      // No further edits are made on disk: the default (no-ref, unstaged-vs-index) diff has
-      // nothing to show, while diffing the explicit v1..v2 commit range shows the change.
+      // No further edits are made on disk: the default (no-ref, unstaged-vs-index) diff has nothing to show, while diffing the explicit v1..v2 commit range shows the change.
       const unstaged = capture(() => {
         expect(runDiff({ spec: `${file}::rangedFn`, projectRoot: root })).toBe(0)
       })
