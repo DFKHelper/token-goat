@@ -13,7 +13,7 @@ import { hintTarget, sliceCommand, sliceForPath, HINT_PLACEHOLDERS } from './hin
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, normalizePath, toDisplayPath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
-import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
+import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, wasHintShown, recordFileServedOutput, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
 import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
@@ -59,7 +59,7 @@ import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 import { isImagePath } from './image_shrink.js'
 import { compactPathFor, isCompactFresh, readCompactBody } from './doc_compact.js'
-import { findVerifiedFileEvidence, recordEvidence } from './evidence_cache.js'
+import { findVerifiedFileEvidence, readEvidenceFileText, recordEvidence } from './evidence_cache.js'
 import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
 import { detectLanguage } from './parser_types.js'
@@ -540,8 +540,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     try {
       const cwd = getCwd(event) ?? process.cwd()
       const project = findProject(cwd) ?? makeProjectAt(cwd)
-      const current = fs.readFileSync(normalized, 'utf8')
-      const evidence = findVerifiedFileEvidence(project.root, normalized, current)
+      const current = readEvidenceFileText(normalized)
+      const evidence = current === null ? null : findVerifiedFileEvidence(project.root, normalized, current)
       if (evidence !== null) {
         recordStat('evidence_cache_hit', 0)
         return quietContextOutput(
@@ -1340,8 +1340,8 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
     try {
       const cwd = getCwd(event) ?? process.cwd()
       const project = findProject(cwd) ?? makeProjectAt(cwd)
-      const source = decodeSource(fs.readFileSync(normalized))
-      recordEvidence({ projectRoot: project.root, source: normalized, representation: 'file', text: source })
+      const source = readEvidenceFileText(normalized)
+      if (source !== null) recordEvidence({ projectRoot: project.root, source: normalized, representation: 'file', text: source })
     } catch {
       // Evidence is best-effort; it must never affect the completed Read.
     }
