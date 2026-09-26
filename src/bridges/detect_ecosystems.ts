@@ -30,9 +30,7 @@ function exists(p: string): boolean {
   }
 }
 
-/**
- * Detects developer ecosystems and agent harnesses present in the current workspace or environment.
- */
+/** Detects developer ecosystems and agent harnesses present in the current workspace or environment. */
 export function detectEcosystems(options: DetectOptions = {}): DetectedEcosystems {
   const projectRoot = options.projectRoot ?? process.cwd();
   const env = options.env ?? process.env;

@@ -54,7 +54,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
     'computes its whole population fresh from the filesystem on every run rather than reading a persistent store, has no filter argument at all, and renders the empty case with the size of the population it searched -- so filtered-to-empty is unreachable and empty-vs-never is already stated in the output':
       ['affected', 'reconcile'],
     'not yet individually classified into THREE_STATE_VERIFIED -- listing-shaped over the index/embeddings but this cycle only closed the residual gaps named in the project memory (call-chain, coverage-gaps, note-list, stats/cost, types, plus hot/recent/scope/arch this cycle)':
-      ['ignores', 'ask', 'context-for', 'similar', 'impact', 'deps', 'failures'],
+      ['ignores', 'ask', 'context-for', 'similar', 'impact', 'deps', 'failures', 'search'],
     'owns no listing of its own -- it prints one `via:` provenance line and then delegates verbatim to symbol/callers/test-for/exports/imports/impact, each classified separately in this same registry, so its result rows carry whichever three-state treatment the delegate already has. Its own non-delegating path is the distinction stated outright: an unindexed subject exits 1 with "\'<subject>\' is not an indexed symbol or file", which is the empty-or-never-indexed case named explicitly rather than rendered as an empty listing':
       ['answer'],
   }
