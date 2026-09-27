@@ -138,9 +138,9 @@ export function withPinnedReads<T>(pins: ReadonlyMap<string, string> | null, fn:
   }
 }
 
-/** Opens `p`, verifies the OPENED DESCRIPTOR's identity against `pinned`, and returns its bytes. Checking the descriptor rather than the path is the whole point: the confinement gate validated a path, and between that check and this open the path can be repointed at something outside the root. fstat answers "what did I actually open", which a second path-based stat cannot. */
-function readPinnedBytes(p: string, pinned: string): Buffer {
-  // Deliberately a plain O_RDONLY, NOT O_NOFOLLOW. Adding O_NOFOLLOW here looks like free hardening and is not: measured on Linux, opening an ordinary in-root symlink with it fails ELOOP, which this function's caller turns into a silent "could not read" for a file the user is entitled to. It would also buy nothing, since the fstat identity comparison below -- not the open flags -- is what closes the check-vs-use window, and it resolves symlinks the same way the gate's stat did.
+/** Opens `p` and returns the descriptor once the OPENED DESCRIPTOR's identity matches `pinned`; on a mismatch it closes the descriptor and throws {@link ConfinementIdentityError}. The caller owns the returned descriptor. Checking the descriptor rather than the path is the whole point: the confinement gate validated a path, and between that check and this open the path can be repointed at something outside the root. fstat answers "what did I actually open", which a second path-based stat cannot. */
+function openPinned(p: string, pinned: string): number {
+  // Deliberately a plain O_RDONLY, NOT O_NOFOLLOW. Adding O_NOFOLLOW here looks like free hardening and is not: measured on Linux, opening an ordinary in-root symlink with it fails ELOOP, which a caller turns into a silent "could not read" for a file the user is entitled to. It would also buy nothing, since the fstat identity comparison below -- not the open flags -- is what closes the check-vs-use window, and it resolves symlinks the same way the gate's stat did.
   const fd = fs.openSync(p, fs.constants.O_RDONLY)
   try {
     const actual = fileIdentity(fs.fstatSync(fd, { bigint: true }))
@@ -150,26 +150,26 @@ function readPinnedBytes(p: string, pinned: string): Buffer {
           'The file was replaced or redirected after the confinement check, so the read was not performed.',
       )
     }
+    return fd
+  } catch (err) {
+    fs.closeSync(fd)
+    throw err
+  }
+}
+
+/** Returns `p`'s bytes, read through the descriptor {@link openPinned} verified against `pinned`, so the bytes are those of the file the gate validated. */
+function readPinnedBytes(p: string, pinned: string): Buffer {
+  const fd = openPinned(p, pinned)
+  try {
     return fs.readFileSync(fd)
   } finally {
     fs.closeSync(fd)
   }
 }
 
-/** Verifies `p`'s CURRENT identity (via an open+fstat, same technique as {@link readPinnedBytes}) matches `pinned`, without reading any content -- used for directories, where `readPinnedBytes` itself cannot be reused because `fs.readFileSync` on a directory fails with EISDIR. Throws {@link ConfinementIdentityError} on a mismatch; returns normally when it matches. */
+/** Verifies `p`'s CURRENT identity matches `pinned` through the same {@link openPinned} check, without reading any content: used for directories, where `readPinnedBytes` itself cannot be reused because `fs.readFileSync` on a directory fails with EISDIR. Throws {@link ConfinementIdentityError} on a mismatch; returns normally when it matches. */
 function verifyPinnedIdentity(p: string, pinned: string): void {
-  const fd = fs.openSync(p, fs.constants.O_RDONLY)
-  try {
-    const actual = fileIdentity(fs.fstatSync(fd, { bigint: true }))
-    if (actual !== pinned) {
-      throw new ConfinementIdentityError(
-        `refused: "${p}" changed identity between validation and read (validated ${pinned}, opened ${actual}). ` +
-          'The file was replaced or redirected after the confinement check, so the read was not performed.',
-      )
-    }
-  } finally {
-    fs.closeSync(fd)
-  }
+  fs.closeSync(openPinned(p, pinned))
 }
 
 /** Verifies a target pinned as {@link ABSENT_PIN} is STILL absent from disk. Throws {@link ConfinementIdentityError} when something now exists at `p` -- the create-after- validated-absent race the negative pin exists to catch (an attacker names an in-root path that does not exist yet, waits for the gate to validate it as absent-but-in-root, then creates an out-of-root symlink there before the read runs). Returns normally when still absent, which the caller then treats exactly like the pre-existing "no pin recorded" missing-file path. */
