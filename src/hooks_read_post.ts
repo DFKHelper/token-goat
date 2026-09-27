@@ -9,7 +9,7 @@ import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
 import { indexServedBody, planServedElisions, type ServedBody, servedRunNotice } from './served_lines.js'
 import { IDENTICAL_READ_MIN_BODY_BYTES, statSize } from './util.js'
 import { loadConfig } from './config.js'
-import { exportSessionState, getFileServedOutputs, markFileTruncated, recordFileServedOutput } from './session.js'
+import { exportSessionState, getFileServedOutputs, markFileTruncated, recordFileServedOutput, resetFileLineRanges } from './session.js'
 import { getBashOutput, storeBashOutputSync } from './bash_output_cache.js'
 import { writeSessionManifest } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
@@ -149,8 +149,9 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
     // Deliberately re-read from THIS response rather than asking the session whether the file has ever been truncated: that flag is sticky for the rest of the session, so one truncated Read would disqualify every later complete Read of the same file, which does deliver its window.
     const respText = extractReadOutput(event.raw)
     if (isTruncatedReadDelivery(event, respText)) return
+    // A fold's delivery is not its whole window, and postReadHandler has already taken that window's range back (forgetFoldedWindow), so recording it here would put it straight back.
+    if (deliveredRaw === null) recordActualSlice(event, normalized)
     // What the model was actually handed, which is the disk window ONLY when nothing rewrote it. A body fold delivers strictly less than the file holds, and storing the disk copy would tell every later read that the folded lines were served -- so a re-read coming back for exactly those lines would have them elided as "already seen". The store's whole contract is a record of what reached the model, and a rewrite is the one case where that differs from disk.
-    recordActualSlice(event, normalized)
     const served = deliveredRaw ?? readWindowFromDisk(event, normalized)
     if (served === null) return
 
@@ -374,8 +375,17 @@ export function postReadHandler(event: HookEvent): HookOutput {
   const folded = elided === null && outlined === null && skeletoned === null ? foldCodeBodies(event, respText) : null
   const rewrite = elided ?? outlined?.output ?? skeletoned?.output ?? folded?.output ?? null
   const out = applyHintTracking(event, postReadHandlerInner(event, rewrite !== null), classifyReadHint)
-  recordReadAsServedOutput(event, outlined?.deliveredRaw ?? skeletoned?.deliveredRaw ?? folded?.deliveredRaw ?? null)
+  const deliveredRaw = outlined?.deliveredRaw ?? skeletoned?.deliveredRaw ?? folded?.deliveredRaw ?? null
+  if (deliveredRaw !== null) forgetFoldedWindow(event)
+  recordReadAsServedOutput(event, deliveredRaw)
   return rewrite ?? out
+}
+
+/** Take back the line range a ranged Read put on record before a fold withheld part of it. preReadHandler records the requested window as served before the Read runs, so it cannot know a fold will withhold some of it, and the range re-read deny then refuses the very `Read offset/limit` a comment-fold notice names as "Lines A..B ... was already read this session" for lines the model was never shown. The whole file's ranges go, not just this window's, for the reason hooks_bash_post.ts's forgetPersistedLineRangeReads gives: session_store.ts merges ranges as a union and only a file-level removal survives the merge. A whole-file Read records no range, so it has none of its own to take back. */
+function forgetFoldedWindow(event: HookEvent): void {
+  if (!readRequestedSliceWindow(event).isExplicitSlice) return
+  const filePath = getFilePath(event)
+  if (filePath !== undefined) resetFileLineRanges(normalizePath(filePath))
 }
 
 registerHook('post_tool_use', postReadHandler, { toolName: 'Read' })

@@ -7,11 +7,15 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { HookEvent } from '../../src/hook_registry.js'
+import { preBashHandler } from '../../src/hooks_bash.js'
+import { postBashHandler } from '../../src/hooks_bash_post.js'
 import { preReadHandler } from '../../src/hooks_read.js'
 import { postReadHandler } from '../../src/hooks_read_post.js'
 import { normalizePath } from '../../src/paths.js'
 import { clearModuleCaches } from '../../src/reset.js'
 import { readSection } from '../../src/section_reader.js'
+import { loadSessionState, saveSessionState } from '../../src/session_store.js'
+import type { HookOutput } from '../../src/types.js'
 import { functionMap, parseTopLevelFunctions, type FnInfo } from './reachability.js'
 import { reachesRaw } from './rewrite_input_channel_population_is_adjudicated.test.js'
 import { pinnedPopulation } from './population.js'
@@ -67,7 +71,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'fold_delivery.ts::proseFoldNotice':
     "Routes through findContainingSection to a `token-goat section \"file::Heading\"` pointer when an enclosing heading resolves (the common case for a markdown document large enough to trip the markdown re-read intercept, which is the scenario this fold exists for), and returns null (the caller must not fold, and delivers the paragraph whole) when no section wraps the withheld line, rather than naming the old `Read offset=/limit=` fallback that named a re-read the same intercept could refuse unconditionally. Both outcomes executed below by driving preReadHandler/postReadHandler against real markdown fixtures.",
   'fold_delivery.ts::commentFoldNotice':
-    "Prints a `Read offset=/limit=` pointer for a folded comment block in a source file. Verified by driving the real handler pair: a source-file re-read is not gated by the markdown-specific unconditional deny (that gate only fires for .md/.mdx/.markdown/.rst), and the immediate follow-up read this pointer names ranks as the most recently read file, which protect_recent_reads (default 4) exempts from every reread-deny branch that would otherwise fire.",
+    "Prints a `Read offset=/limit=` pointer for a folded comment block in a source file. Verified by driving the real handler pair: a source-file re-read is not gated by the markdown-specific unconditional deny (that gate only fires for .md/.mdx/.markdown/.rst), and the immediate follow-up read this pointer names ranks as the most recently read file, which protect_recent_reads (default 4) exempts from the count-based reread denies. The range re-read deny takes no such exemption, so a fold from a ranged delivery also has to take back the line range that delivery went on record under: hooks_read_post.ts::forgetFoldedWindow for a ranged Read, and the reset in hooks_bash_post.ts::maybeCollapseIdenticalRead for a `sed` or `head` read. Both doors executed below, each hook call loading and saving session state as relay.ts does.",
   'fold_structure.ts::skeletonGapNotice':
     'Same shape and same source-file-only scope as commentFoldNotice above (a source skeleton is never built for a markdown document -- planSourceSkeleton requires a tree-sitter language), so the identical protect_recent_reads exemption verified for commentFoldNotice applies here; not separately executed below.',
   'fold_structure.ts::planOutlineAlignedRows':
@@ -188,6 +192,101 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
     const decision = preReadHandler(readEvent(pointerPath ?? file, { offset: Number(offsetStr), limit: Number(limitStr) }))
     // The route only round-trips if this second read is actually let through.
     expect(decision.hookType).not.toBe('deny')
+  })
+
+  /** A ranged Read as Claude Code delivers it. Fixture provenance: CAPTURE, the envelope tests/code_fold.test.ts's `rangedEvent` documents from 798 ranged Read results in real session transcripts: `file.content` holds only the window, un-numbered, `startLine` is the requested offset, and `totalLines` still describes the whole file. */
+  function rangedPostEvent(filePath: string, body: string, offset: number, limit: number, sessionId: string): HookEvent {
+    const all = body.split('\n')
+    const window = all.slice(offset - 1, offset - 1 + limit)
+    return { eventName: 'post_tool_use', toolName: 'Read', toolInput: { file_path: filePath, offset, limit }, sessionId, agentId: undefined, raw: { tool_response: { type: 'text', file: { filePath, content: window.join('\n'), numLines: window.length, startLine: offset, totalLines: all.length } } } }
+  }
+
+  // The windowed twin of the case above, which a whole-file first read cannot reach: a ranged Read's window is recorded as served before the post hook folds anything, and the range re-read deny trusts that record without the protect_recent_reads exemption, so the pointer's own Read was refused as "Lines 3..30 ... was already read this session" for lines the model was never shown. CAPTURE of the defect: a Claude Code Read of tests/install_hook_matcher.test.ts at offset=1, limit=32 on 2026-09-27 folded "28 more comment lines (3-30)", and the Read that notice named was refused with exactly that message. The fixture below is HAND-DERIVED to the same shape: a leading 30-row doc block inside a 40-line window.
+  it('SHAPE Read offset/limit, windowed first read: the pointer is not refused as lines already read', () => {
+    clearModuleCaches()
+    const block = ['/**', ...Array.from({ length: 28 }, (_, i) => ` * comment line ${i} padded with a little extra text to reach the fold floor`), ' */']
+    const code = Array.from({ length: 40 }, (_, i) => `export const padVar${i} = ${i}`)
+    const body = [...block, ...code].join('\n')
+    const file = normalizePath(path.join(os.tmpdir(), `tg-guard-comment-ptr-window-${process.pid}-${Math.random().toString(36).slice(2)}.ts`))
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+
+    const sid = `s-window-${process.pid}-${Math.random().toString(36).slice(2)}`
+    // Each hook call is its own load, handle and save, as relay.ts runs it, so the range the pre hook records is on disk before the post hook runs and has to be taken back through session_store.ts's merge rather than only out of this process's memory.
+    const asHook = <T>(handle: () => T): T => {
+      loadSessionState(sid)
+      try {
+        return handle()
+      } finally {
+        saveSessionState(sid)
+      }
+    }
+    const pre = (offset: number, limit: number): HookOutput => asHook(() => preReadHandler({ ...readEvent(file, { offset, limit }), sessionId: sid }))
+
+    expect(pre(1, 40).hookType).not.toBe('deny')
+    const post = asHook(() => postReadHandler(rangedPostEvent(file, body, 1, 40, sid)))
+    expect(post.hookType).toBe('rewriteOutput')
+    const rewritten = post.hookType === 'rewriteOutput' ? post.updatedOutput : ''
+    const noticeLine = rewritten.split('\n').find((l) => l.includes('more comment lines'))
+    expect(noticeLine).toBeDefined()
+
+    const readPointer = /Read "([^"]+)" with offset=(\d+), limit=(\d+)/.exec(noticeLine ?? '')
+    expect(readPointer).not.toBeNull()
+    const [, pointerPath, offsetStr, limitStr] = readPointer!
+    expect(pointerPath).toBe(file)
+    // The span the notice names is the one the block occupies below its two kept rows, so a pointer that drifted off it cannot pass by pointing somewhere the range record never covered.
+    expect([Number(offsetStr), Number(limitStr)]).toEqual([3, 28])
+    const decision = pre(3, 28)
+    expect(decision.hookType === 'deny' ? decision.message : '').toBe('')
+
+    // Positive control: the recall delivers its window whole, so that window is on record as served and a repeat of it is still refused. Without this, a fix that simply stopped recording ranges would pass the assertion above.
+    const recalled = asHook(() => postReadHandler(rangedPostEvent(file, body, 3, 28, sid)))
+    expect(recalled.hookType === 'rewriteOutput' ? recalled.updatedOutput : '').not.toContain('more comment lines')
+    expect(pre(3, 28).hookType).toBe('deny')
+  })
+
+  // The shell door's twin: the pre-Bash hook records a `sed -n` range as served before the command runs, the post-Bash hook records a `head` read as lines 1..n before it picks a rewrite, and either way it then folds the same comment run through the same foldDelivery, printing the same `Read offset/limit` pointer. Once the file has been through Read at all, which is what sends the pre-read hook into its re-read checks, that pointer met the same refusal. The fixture is HAND-DERIVED, the same shape as the case above; the earlier Read is a code-only window the planner has nothing to fold in. The Bash response is the `{ stdout, stderr, interrupted, isImage, noOutputExpected }` shape tests/hooks_real_harness_payload_shape.test.ts records from real harness traffic.
+  it.each([
+    ['sed range', (base: string): string => `sed -n '1,40p' ${base}`],
+    ['head', (base: string): string => `head -n 40 ${base}`],
+  ])('SHAPE Read offset/limit, after a folded %s read: the pointer is not refused as lines already read', async (_shape, commandFor) => {
+    clearModuleCaches()
+    const block = ['/**', ...Array.from({ length: 28 }, (_, i) => ` * comment line ${i} padded with a little extra text to reach the fold floor`), ' */']
+    const code = Array.from({ length: 40 }, (_, i) => `export const padVar${i} = ${i}`)
+    const lines = [...block, ...code]
+    const file = normalizePath(path.join(os.tmpdir(), `tg-guard-comment-ptr-shell-${process.pid}-${Math.random().toString(36).slice(2)}.ts`))
+    fs.writeFileSync(file, lines.join('\n'))
+    tmpFiles.push(file)
+    const dir = path.dirname(file)
+    const command = commandFor(path.basename(file))
+
+    const sid = `s-sed-${process.pid}-${Math.random().toString(36).slice(2)}`
+    // One load, handle and save per hook call, as relay.ts runs it; see the windowed Read case above for why.
+    const asHook = async <T>(handle: () => T | Promise<T>): Promise<T> => {
+      loadSessionState(sid)
+      try {
+        return await handle()
+      } finally {
+        saveSessionState(sid)
+      }
+    }
+    const bashEvent = (eventName: 'pre_tool_use' | 'post_tool_use', raw: Record<string, unknown>): HookEvent => ({ eventName, toolName: 'Bash', toolInput: { command }, sessionId: sid, agentId: undefined, raw: { cwd: dir, tool_name: 'Bash', tool_input: { command }, ...raw } })
+
+    expect((await asHook(() => preReadHandler({ ...readEvent(file, { offset: 50, limit: 15 }), sessionId: sid }))).hookType).not.toBe('deny')
+    await asHook(() => postReadHandler(rangedPostEvent(file, lines.join('\n'), 50, 15, sid)))
+    expect((await asHook(() => preBashHandler(bashEvent('pre_tool_use', {})))).hookType).not.toBe('deny')
+    const stdout = lines.slice(0, 40).join('\n')
+    const post = await asHook(() => postBashHandler(bashEvent('post_tool_use', { tool_response: { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false } })))
+    expect(post.hookType).toBe('rewriteOutput')
+    const noticeLine = (post.hookType === 'rewriteOutput' ? post.updatedOutput : '').split('\n').find((l) => l.includes('more comment lines'))
+    expect(noticeLine).toBeDefined()
+
+    const readPointer = /Read "([^"]+)" with offset=(\d+), limit=(\d+)/.exec(noticeLine ?? '')
+    expect(readPointer).not.toBeNull()
+    const [, pointerPath, offsetStr, limitStr] = readPointer!
+    expect([Number(offsetStr), Number(limitStr)]).toEqual([3, 28])
+    const decision = await asHook(() => preReadHandler({ ...readEvent(pointerPath ?? file, { offset: Number(offsetStr), limit: Number(limitStr) }), sessionId: sid }))
+    expect(decision.hookType === 'deny' ? decision.message : '').toBe('')
   })
 
   it('SHAPE no pointer: a paragraph before the first heading is delivered whole, not folded behind a dead pointer', () => {
