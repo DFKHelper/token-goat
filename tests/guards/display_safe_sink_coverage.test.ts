@@ -180,7 +180,7 @@ const UNTRUSTED_CALLS: readonly string[] = [
 /** Sites that interpolate an accessor without escaping it, each with the reason. A bare "exempt" is not acceptable here: this repo's recorded finding is that a false exemption reason hides a gap better than a missing test does, because it reads as a decision somebody made rather than as something nobody looked at. So each reason must be one of exactly two shapes, and the test below checks which: - FENCED: name the fence function actually applied. `fenceUntrusted(` and friends delimit the bytes instead of escaping them, which is the other correct answer for a multi-line block. - PAYLOAD: state that the bytes are the payload the reader asked for. token-goat delivers file content unfenced on purpose -- the model would read the source anyway -- so a command whose whole job is to hand back document bytes does not escape them. This applies to the CONTENT only. The label and header lines beside it are token-goat's own voice and are escaped; where a site appears here, check that its neighbouring prose is escaped rather than assuming the exemption covers the whole line. */
 const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
   [
-    'hooks_bash.ts:rewrite.text',
+    'hooks_bash_post.ts:rewrite.text',
     'the rewritten command-output body forwarded to emitRewrite, and it arrives already fenced. ' +
       'Every branch that assigns `rewrite` in this function goes through fenceRewriteWithinCap(, ' +
       'which calls fenceUntrustedSpans( so the filter notices spliced into the body stay in ' +
@@ -307,7 +307,7 @@ const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
     "token-goat's own fold detail string, built from counts and literal words by the folding code.",
   ],
   [
-    'hooks_bash.ts:filter.name',
+    'hooks_bash_post.ts:filter.name',
     "token-goat's own filter names ('jest', 'psalm' and siblings), string literals on the filter " +
       'definitions, interpolated into a stats key.',
   ],
@@ -395,15 +395,15 @@ const NOT_AN_OUTPUT_SINK: ReadonlyMap<string, string> = new Map([
       'passed to a renderer as a number. There is nothing in it to escape.',
   ],
   [
-    'hooks_bash.ts:rewrite.reason',
+    'hooks_bash_post.ts:rewrite.reason',
     "token-goat's own rewrite reason ('bash' and siblings), a literal at the emitRewrite call.",
   ],
   [
-    'hooks_bash.ts:rewrite.kind',
+    'hooks_bash_post.ts:rewrite.kind',
     "token-goat's own rewrite kind, built from a literal prefix and a filter name.",
   ],
   [
-    'hooks_bash.ts:rewrite.detail',
+    'hooks_bash_post.ts:rewrite.detail',
     "token-goat's own optional rewrite detail, built by the filter from counts and literal words.",
   ],
 ])

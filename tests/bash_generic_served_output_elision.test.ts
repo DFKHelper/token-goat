@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { spawnSync } from 'node:child_process'
 
-/** Generic (non-file-read) elision of already-served shell output (hooks_bash.ts `maybeElideServedGenericOutput`). `elideServedShellLines`/`maybeCollapseIdenticalRead` only ever run when `pureFileReadPath(cmd)` resolves, so a `cat`/`head`/`tail`/`sed`/`awk`-shaped read is the only surface that ever got a repeated stretch withheld. Every other command -- `npm test`, `git log`, `rg`, and the rest -- shipped its already-served lines again in full. This exercises the generic path added to cover them, over a session-wide served-output list rather than a per-file one. */
+/** Generic (non-file-read) elision of already-served shell output (hooks_bash_post.ts `maybeElideServedGenericOutput`). `elideServedShellLines`/`maybeCollapseIdenticalRead` only ever run when `pureFileReadPath(cmd)` resolves, so a `cat`/`head`/`tail`/`sed`/`awk`-shaped read is the only surface that ever got a repeated stretch withheld. Every other command -- `npm test`, `git log`, `rg`, and the rest -- shipped its already-served lines again in full. This exercises the generic path added to cover them, over a session-wide served-output list rather than a per-file one. */
 
 // vi.mock is not needed here: these tests exercise the shipped default (bash_compress.elide_served_shell_output = true) without touching config at all, mirroring bash_served_line_elision.test.ts. The one test that forces the config off below still needs a real config file to write into, so it redirects configPath the same way tests/hooks_bash.test.ts does.
 import { vi } from 'vitest'
@@ -19,7 +19,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 })
 const _testConfigPath = tempConfigPath('tg-bash-generic-served-config-test.toml')
 
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'

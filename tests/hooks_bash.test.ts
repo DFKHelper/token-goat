@@ -22,15 +22,24 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractPowerShellFileMethodRead, extractPythonFileRead, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
+import { preBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import {
   extractLineRangeRead,
   extractLineRangeReadsCompound,
   extractHeadFile,
   extractGetContentSelectFirst,
   stripLeadingAssignments,
+  extractCurlDownload,
+  extractMarkdownHeadingGrep,
+  extractRgSymbolSearch,
+  extractPowerShellWrappedGetContent,
+  extractPowerShellFileMethodRead,
+  extractPythonFileRead,
+  extractCatFile,
+  extractGhViewForBatchAdvisory,
 } from '../src/bash_extractors.js'
-import { stripCommandPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
+import { isHeadMovingGitCommand, stripCommandPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -4520,7 +4529,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
     }
   })
 
-  // Regression: `git reset` is deliberately excluded from the ORIG_HEAD-preferring diff base (see ORIG_HEAD_ELIGIBLE_GIT_RE in hooks_bash.ts) because a bare `git reset <pathspec>` shares `git checkout <file>`'s ref-vs-path ambiguity -- always using HEAD@{1} for reset sidesteps that ambiguity entirely rather than trying to heuristically detect it. This test locks in that a reset immediately following a multi-commit rebase (which sets a far-back ORIG_HEAD) still enqueues based on the reset's own single, immediately-prior reflog step, not the rebase's ORIG_HEAD -- proving reset truly never reads ORIG_HEAD, not just that it happens to coincide with HEAD@{1} in the common case.
+  // Regression: `git reset` is deliberately excluded from the ORIG_HEAD-preferring diff base (see ORIG_HEAD_ELIGIBLE_GIT_RE in hooks_bash_commands.ts) because a bare `git reset <pathspec>` shares `git checkout <file>`'s ref-vs-path ambiguity -- always using HEAD@{1} for reset sidesteps that ambiguity entirely rather than trying to heuristically detect it. This test locks in that a reset immediately following a multi-commit rebase (which sets a far-back ORIG_HEAD) still enqueues based on the reset's own single, immediately-prior reflog step, not the rebase's ORIG_HEAD -- proving reset truly never reads ORIG_HEAD, not just that it happens to coincide with HEAD@{1} in the common case.
   it('enqueues based on the reset itself, not a leftover ORIG_HEAD from an earlier rebase', async () => {
     const dir = gitRepoWithCommit()
     try {
@@ -4568,7 +4577,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 })
 
-// Regression: the git-mutation block above only fires for commands that move HEAD, and hooks_edit.ts::postEditHandler only ever sees Edit/Write/NotebookEdit events (it reads tool_input.file_path, which a Bash event does not carry). So every working-tree rewrite that neither moves HEAD nor goes through the Edit tool -- `git restore`, `git stash pop|apply`, `sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix` -- used to reach queue/dirty.txt through NO path at all, leaving the index silently serving pre-mutation symbols. See enqueueNonHeadMovingRewrites in hooks_bash.ts.
+// Regression: the git-mutation block above only fires for commands that move HEAD, and hooks_edit.ts::postEditHandler only ever sees Edit/Write/NotebookEdit events (it reads tool_input.file_path, which a Bash event does not carry). So every working-tree rewrite that neither moves HEAD nor goes through the Edit tool -- `git restore`, `git stash pop|apply`, `sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix` -- used to reach queue/dirty.txt through NO path at all, leaving the index silently serving pre-mutation symbols. See enqueueNonHeadMovingRewrites in hooks_bash_commands.ts.
 describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -5084,7 +5093,7 @@ describe('extractPowerShellFileMethodRead — detects [System.IO.File]::ReadAllT
     expect(r?.isSql).toBe(true)
   })
 
-  // HAND-DERIVED: classifyFileExtensions (src/hooks_bash.ts) already returns isEnv for a .env-shaped basename; every sibling extractor (extractCatFile, extractCatFilesMulti, extractPowerShellWrappedGetContent, extractWslCatFile) carries that flag through and its return type declares it, so this asserts the same for extractPowerShellFileMethodRead.
+  // HAND-DERIVED: classifyFileExtensions (src/bash_extractors.ts) already returns isEnv for a .env-shaped basename; every sibling extractor (extractCatFile, extractCatFilesMulti, extractPowerShellWrappedGetContent, extractWslCatFile) carries that flag through and its return type declares it, so this asserts the same for extractPowerShellFileMethodRead.
   it('classifies .env files as env, matching every other file-read extractor', () => {
     const r = extractPowerShellFileMethodRead(`[IO.File]::ReadAllText('.env')`)
     expect(r).not.toBeNull()
@@ -5125,7 +5134,7 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     }
   })
 
-  // HAND-DERIVED: surgicalHintFor (src/hooks_bash.ts) points an isEnv read at `config-get ... KEY_NAME`, and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy.
+  // HAND-DERIVED: surgicalHintFor (src/bash_extractors.ts) points an isEnv read at `config-get ... KEY_NAME`, and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy.
   it('denies a .NET .env file read with a config-get hint, not the generic symbol hint', () => {
     const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('.env')`))
     expect(interceptedReadHint(result)).not.toBeNull()

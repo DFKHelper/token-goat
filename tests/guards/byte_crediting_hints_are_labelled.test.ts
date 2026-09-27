@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const SRC_DIR = join(__dirname, '..', '..', 'src')
-const FILES = ['hooks_read.ts', 'hooks_read_post.ts', 'hooks_skill.ts', 'hooks_bash.ts', 'hooks_agent_spawn.ts']
+const FILES = ['hooks_read.ts', 'hooks_read_post.ts', 'hooks_skill.ts', 'hooks_bash.ts', 'hooks_bash_post.ts', 'hooks_agent_spawn.ts']
 
 interface Site {
   file: string

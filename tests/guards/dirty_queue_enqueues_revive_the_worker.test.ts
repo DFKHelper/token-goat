@@ -1,25 +1,4 @@
-/**
- * Structural guard for the "enqueue without revive" defect class.
- *
- * `ensureWorkerAlive` (auto-heal: spawn a fresh detached worker if none is running) had exactly one
- * caller in `src/` -- `hooks_edit.ts::postEditHandler`, the Claude Code / Codex post-edit hook.
- * Every other path that appends to the dirty queue (a Bash-hook file rewrite, `token-goat replace`,
- * `write-file`, `read_commands.ts`'s self-heal enqueue, `fold_delivery.ts`, `reconcile.ts`) called
- * `appendDirtyPath` directly and never called `ensureWorkerAlive`: if the worker had died before one
- * of those paths ran, the file it just enqueued sat in `queue/dirty.txt` forever with nothing ever
- * draining it, and the CLI call itself reported success. The fix moved the `ensureWorkerAlive` call
- * into `hooks_index.ts::enqueueDirtyPathSafe`, the one function every one of those paths already
- * calls to append the entry -- so calling `enqueueDirtyPathSafe` (rather than `appendDirtyPath`
- * directly) is now what "safely queues work" means in this codebase.
- *
- * A per-path regression test (tests/enqueue_revives_dead_worker.test.ts) drives one such path
- * (`token-goat replace`) against a real dead worker end to end. It says nothing about the next call
- * site someone adds that calls `appendDirtyPath` directly -- bypassing the safe wrapper -- and
- * forgets the revive `hooks_edit.ts` still does by hand for its own historical reason. So this guard
- * enumerates every direct call to `appendDirtyPath` in `src/` (excluding its own declaration and
- * `enqueueDirtyPathSafe`'s internal call, which is the wrapper itself) and requires each one's
- * enclosing function to also call `ensureWorkerAlive` -- or to be named in EXEMPTIONS with a reason.
- */
+/** Structural guard for the "enqueue without revive" defect class. `ensureWorkerAlive` (auto-heal: spawn a fresh detached worker if none is running) had exactly one caller in `src/` -- `hooks_edit.ts::postEditHandler`, the Claude Code / Codex post-edit hook. Every other path that appends to the dirty queue (a Bash-hook file rewrite, `token-goat replace`, `write-file`, `read_commands.ts`'s self-heal enqueue, `fold_delivery.ts`, `reconcile.ts`) called `appendDirtyPath` directly and never called `ensureWorkerAlive`: if the worker had died before one of those paths ran, the file it just enqueued sat in `queue/dirty.txt` forever with nothing ever draining it, and the CLI call itself reported success. The fix moved the `ensureWorkerAlive` call into `hooks_index.ts::enqueueDirtyPathSafe`, the one function every one of those paths already calls to append the entry -- so calling `enqueueDirtyPathSafe` (rather than `appendDirtyPath` directly) is now what "safely queues work" means in this codebase. A per-path regression test (tests/enqueue_revives_dead_worker.test.ts) drives one such path (`token-goat replace`) against a real dead worker end to end. It says nothing about the next call site someone adds that calls `appendDirtyPath` directly -- bypassing the safe wrapper -- and forgets the revive `hooks_edit.ts` still does by hand for its own historical reason. So this guard enumerates every direct call to `appendDirtyPath` in `src/` (excluding its own declaration and `enqueueDirtyPathSafe`'s internal call, which is the wrapper itself) and requires each one's enclosing function to also call `ensureWorkerAlive` -- or to be named in EXEMPTIONS with a reason. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -50,11 +29,7 @@ function srcFiles(): readonly string[] {
   return out
 }
 
-/**
- * Every direct `appendDirtyPath(` call site in src, excluding `hooks_index.ts` entirely (that file
- * both declares `appendDirtyPath` and contains `enqueueDirtyPathSafe`'s own internal call to it --
- * the wrapper calling its own primitive is the mechanism, not an instance of the defect class).
- */
+/** Every direct `appendDirtyPath(` call site in src, excluding `hooks_index.ts` entirely (that file both declares `appendDirtyPath` and contains `enqueueDirtyPathSafe`'s own internal call to it -- the wrapper calling its own primitive is the mechanism, not an instance of the defect class). */
 function directCallSites(): readonly DirectCallSite[] {
   const out: DirectCallSite[] = []
   for (const f of srcFiles()) {
@@ -69,8 +44,7 @@ function directCallSites(): readonly DirectCallSite[] {
   return out
 }
 
-/** Direct appendDirtyPath call sites that are fine without their own ensureWorkerAlive call, and
- * why. An entry here that stops matching a real call site is caught below. */
+/** Direct appendDirtyPath call sites that are fine without their own ensureWorkerAlive call, and why. An entry here that stops matching a real call site is caught below. */
 const EXEMPTIONS: ReadonlyMap<string, string> = new Map([
   [
     'hooks_edit.ts',
@@ -126,7 +100,7 @@ describe('every direct appendDirtyPath call site also revives a dead worker (enq
         body.includes('ensureWorkerAlive(') || siblings.some((s) => body.includes(`${s}(`)),
         `${name} neither calls ensureWorkerAlive nor delegates to the other safe wrapper -- every ` +
           'caller of the "safe" wrappers (read_commands.ts, cli.ts, reconcile.ts, fold_delivery.ts, ' +
-          "hooks_bash.ts, and this test's own EXEMPTIONS reasoning) relies on one of them reviving " +
+          "hooks_bash_post.ts, and this test's own EXEMPTIONS reasoning) relies on one of them reviving " +
           'the worker.',
       ).toBe(true)
     },

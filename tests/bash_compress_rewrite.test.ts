@@ -15,8 +15,9 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { serializeOutput } from '../src/hook_registry.js'
-import { preBashHandler, postBashHandler, stripTrailingStderrRedirect } from '../src/hooks_bash.js'
-import { unwrapCompressCommand } from '../src/hooks_bash_commands.js'
+import { preBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
+import { stripTrailingStderrRedirect, unwrapCompressCommand } from '../src/hooks_bash_commands.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 

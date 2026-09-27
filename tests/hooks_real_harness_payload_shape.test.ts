@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // Importing relay registers every hook module for its side-effects, so runHook dispatches through the real production registry rather than a handler reference.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import { postFetchHandler } from '../src/hooks_fetch.js'
 import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from '../src/hooks_common.js'
 import { makeHookEvent } from './helpers/hook-event.js'

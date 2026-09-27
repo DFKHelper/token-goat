@@ -1,17 +1,11 @@
-// Regression for readPersistedBashOutput (src/hooks_bash.ts): Claude Code writes a Bash
-// tool_response's full output to <claude home>/projects/<slug>/<session id>/tool-results/*.txt
-// once it exceeds the harness's 20,000-char inline head, but nothing read that file back --
-// extractBashOutput saw only the head, so compression and the bash-output cache both silently
-// dropped everything past it on any real output over ~20 KB. See memory
-// project_persisted_bash_output_hook_sees_20k_head_model_sees_2kb.md for the captured payload
-// shape this fixture reproduces (FORMAT-DERIVED).
+// Regression for readPersistedBashOutput (src/hooks_bash_post.ts): Claude Code writes a Bash tool_response's full output to <claude home>/projects/<slug>/<session id>/tool-results/*.txt once it exceeds the harness's 20,000-char inline head, but nothing read that file back -- extractBashOutput saw only the head, so compression and the bash-output cache both silently dropped everything past it on any real output over ~20 KB. See memory project_persisted_bash_output_hook_sees_20k_head_model_sees_2kb.md for the captured payload shape this fixture reproduces (FORMAT-DERIVED).
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 
-import { readPersistedBashOutput } from '../src/hooks_bash.js'
+import { readPersistedBashOutput } from '../src/hooks_bash_post.js'
 import { projectTranscriptsDir } from '../src/waste.js'
 import { CAN_SYMLINK } from './helpers/can-symlink.js'
 

@@ -7,17 +7,13 @@ vi.mock('../src/stats.js', async (importOriginal) => {
   return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) }
 })
 
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import { recordStat } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-// The delivery cap these expectations assume is Claude Code's. Left to the ambient environment,
-// detectHarness() answers 'claudecode' when the suite runs inside a Claude Code session and
-// something else in CI, so the two would exercise different branches. Pin it.
+// The delivery cap these expectations assume is Claude Code's. Left to the ambient environment, detectHarness() answers 'claudecode' when the suite runs inside a Claude Code session and something else in CI, so the two would exercise different branches. Pin it.
 const CLAUDE_CODE_BASH_OUTPUT_CAP = 20_000
-// Above CLAUDE_CODE_BASH_OUTPUT_CAP, Claude Code does not deliver up to the cap inline -- it
-// persists the rest and shows only a short preview (src/delivery_cap.ts's
-// CLAUDE_CODE_PERSISTED_PREVIEW_BYTES), so that smaller figure is the real counterfactual.
+// Above CLAUDE_CODE_BASH_OUTPUT_CAP, Claude Code does not deliver up to the cap inline -- it persists the rest and shows only a short preview (src/delivery_cap.ts's CLAUDE_CODE_PERSISTED_PREVIEW_BYTES), so that smaller figure is the real counterfactual.
 const CLAUDE_CODE_PERSISTED_PREVIEW = 2048
 let savedHarnessOverride: string | undefined
 
@@ -51,10 +47,7 @@ describe('compound-output compression savings accounting', () => {
     else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
   })
 
-  // The rewrite this path ships is the filter body PLUS the filter's own trailing marker PLUS a
-  // `full output: bash-output <id> --full` recall pointer. The recorded saving must be measured
-  // against that emitted body, not against the filter's marker-less `bytesSaved`, which credits
-  // the run for bytes the model still receives.
+  // The rewrite this path ships is the filter body PLUS the filter's own trailing marker PLUS a `full output: bash-output <id> --full` recall pointer. The recorded saving must be measured against that emitted body, not against the filter's marker-less `bytesSaved`, which credits the run for bytes the model still receives.
   it('records exactly the bytes removed from what the model actually receives', async () => {
     const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
     const result = await postBashHandler(makePostBashEvent('grep pattern app.log | sort', dup))
@@ -62,22 +55,14 @@ describe('compound-output compression savings accounting', () => {
     if (result.hookType !== 'rewriteOutput') return
     const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
     const original = Buffer.byteLength(dup, 'utf-8')
-    // The harness truncates a Bash result at CLAUDE_CODE_BASH_OUTPUT_CAP bytes, persists the rest,
-    // and shows the model only a short preview of it -- not the full truncated slice -- so the
-    // bytes this rewrite actually spared are measured against that preview. Against the full
-    // original this expectation used to credit ~171 KB for an output the model would never have
-    // been shown more than ~2 KB of.
+    // The harness truncates a Bash result at CLAUDE_CODE_BASH_OUTPUT_CAP bytes, persists the rest, and shows the model only a short preview of it -- not the full truncated slice -- so the bytes this rewrite actually spared are measured against that preview. Against the full original this expectation used to credit ~171 KB for an output the model would never have been shown more than ~2 KB of.
     expect(original).toBeGreaterThan(CLAUDE_CODE_BASH_OUTPUT_CAP)
     const expectedBytes = CLAUDE_CODE_PERSISTED_PREVIEW - emitted
-    // The token half of this pair used to restate the producer's own formula, floor(bytes / 3) + 1,
-    // which is how this path came to be the only saving in the database credited on a different scale
-    // from its siblings: the expectation was written from the code and so agreed with it whatever it
-    // did. It is now the savings convention every other kind uses, stated independently here.
+    // The token half of this pair used to restate the producer's own formula, floor(bytes / 3) + 1, which is how this path came to be the only saving in the database credited on a different scale from its siblings: the expectation was written from the code and so agreed with it whatever it did. It is now the savings convention every other kind uses, stated independently here.
     expect(genericSavings()).toEqual([[expectedBytes, Math.round(expectedBytes / 4)]])
   })
 
-  // Control for the over-fix direction: the saving must still be the real (large) reduction, not
-  // some degenerate small number, so a fix that under-credits fails here too.
+  // Control for the over-fix direction: the saving must still be the real (large) reduction, not some degenerate small number, so a fix that under-credits fails here too.
   it('still credits the bulk of a highly compressible output', async () => {
     const dup = 'another repeated noisy progress line that dedupes away\n'.repeat(3000)
     const result = await postBashHandler(makePostBashEvent('grep other app.log | sort', dup))
@@ -87,8 +72,7 @@ describe('compound-output compression savings accounting', () => {
     expect(original).toBeGreaterThan(CLAUDE_CODE_BASH_OUTPUT_CAP)
     const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
     const [saved] = genericSavings()[0]!
-    // Still the bulk of what the model would actually have received -- the under-crediting
-    // direction fails here just as it did before, only now against the preview it actually sees.
+    // Still the bulk of what the model would actually have received -- the under-crediting direction fails here just as it did before, only now against the preview it actually sees.
     expect(saved).toBeGreaterThan(CLAUDE_CODE_PERSISTED_PREVIEW * 0.8)
     expect(saved).toBe(CLAUDE_CODE_PERSISTED_PREVIEW - emitted)
   })
@@ -99,20 +83,14 @@ describe('compound-output compression savings accounting', () => {
     return filler + '\n' + 'a repeated line xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n'.repeat(repeats)
   }
 
-  // Measured against the built pipeline: at eight repeats the emitted body is 2246 bytes against a
-  // 2246-byte original, no reduction at all once the untrusted-content fence around the third-party
-  // bytes is paid for -- under the 100-byte min_net_savings_bytes floor. Pricing only the filter's
-  // own marker (and not the recall pointer) let a case like this ship as a rewrite and record a
-  // saving for it. The pair below sat at 6/7 repeats before the fence, whose bytes the gate now
-  // counts: a rewrite that clears the floor only by omitting its own delimiter is not a saving.
+  // Measured against the built pipeline: at eight repeats the emitted body is 2246 bytes against a 2246-byte original, no reduction at all once the untrusted-content fence around the third-party bytes is paid for -- under the 100-byte min_net_savings_bytes floor. Pricing only the filter's own marker (and not the recall pointer) let a case like this ship as a rewrite and record a saving for it. The pair below sat at 6/7 repeats before the fence, whose bytes the gate now counts: a rewrite that clears the floor only by omitting its own delimiter is not a saving.
   it('declines a rewrite whose true reduction is under the net-benefit floor', async () => {
     const result = await postBashHandler(makePostBashEvent('grep under app.log | sort', tunedOutput(8)))
     expect(result.hookType).toBe('pass')
     expect(genericSavings()).toEqual([])
   })
 
-  // Control one repeat up: 112 bytes truly removed, over the floor, so the rewrite must still ship.
-  // A fix that simply tightened the gate too far would fail here.
+  // Control one repeat up: 112 bytes truly removed, over the floor, so the rewrite must still ship. A fix that simply tightened the gate too far would fail here.
   it('still ships a rewrite whose true reduction clears the net-benefit floor', async () => {
     const output = tunedOutput(9)
     const result = await postBashHandler(makePostBashEvent('grep over app.log | sort', output))
