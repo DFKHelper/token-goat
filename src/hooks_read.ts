@@ -23,6 +23,7 @@ import {
   estimateRequestedSlice,
   describeSliceAdvice,
   loadSnapshotDiff,
+  type SnapshotDiffResult,
   countTextLines,
   estimateTruncatedLineCount,
   editAnywayHint,
@@ -99,6 +100,19 @@ function diffHintCredit(counterfactualBytes: number, body: string): number | nul
   const credit = counterfactualCredit(counterfactualBytes, body.length)
   if (savedTokensFromBytes(credit) < loadConfig().hints.diff_hint_min_tokens_saved) return null
   return credit
+}
+
+/** The deny text for a re-read whose session snapshot shows the file unchanged, or changed by the diff it serves fenced as file content, followed by `suffix`, the narrower read to make instead. Every snapshot-backed re-read deny builds its text here, so none can drift from the shapes session_audit.ts's DENY_TEMPLATES census counts: doc_unchanged_deny and doc_diff_deny, or the session_artifact pair when `suffix` is the bash-output recall. */
+function snapshotDenyText(basename: string, snap: Exclude<SnapshotDiffResult, { kind: 'none' }>, suffix: string): string {
+  const lead = snap.kind === 'unchanged'
+    ? basename + ' is unchanged since last read. '
+    : 'Content changed since last read of ' + basename + '. Here is what changed:\n\n' + fenceUntrustedFileContent('```diff\n' + snap.diff + '\n```') + '\n\n'
+  return (lead + suffix).trimEnd()
+}
+
+/** {@link snapshotDenyText} for a document re-read, whose suffix is the surgical hint for the file as the snapshot now reads it. */
+function docSnapshotDenyText(normalized: string, basename: string, snap: Exclude<SnapshotDiffResult, { kind: 'none' }>): string {
+  return snapshotDenyText(basename, snap, surgicalHint(normalized, basename, countTextLines(snap.currentContent), snap.currentContent))
 }
 
 /** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually inside `root`. A bare `!rel.startsWith('..')` check (the previous form of this guard, at both cross-session-manifest call sites below) is not sufficient on Windows: when `root` and `target` are on different drive letters, `path.relative` returns `target`'s own absolute path unchanged rather than a `..`-prefixed relative path (this is documented Node behavior, not a bug in path.relative), so a file on an unrelated drive silently passed the guard and got written into (or matched against) the project's cross-session read-dedup manifest as if it were a real in-project relative path -- leaking an out-of-project absolute path into a manifest meant to hold only project-relative paths. Mirrors pack.ts's `isPathWithinRoot` guard, which already includes the `!path.isAbsolute(rel)` check this lacked. */
@@ -745,15 +759,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             if (snapDiff.kind === 'unchanged') {
               recordActualRead(event, normalized)
               recordStat('session_hint', 0, 0)
-              return denyOutput(
-                (basename + ' is unchanged since last read. ' +
-                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
-              )
+              return denyOutput(docSnapshotDenyText(normalized, basename, snapDiff))
             }
             if (snapDiff.kind === 'diff') {
-              const diffBody = ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-                fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
-                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd()
+              const diffBody = docSnapshotDenyText(normalized, basename, snapDiff)
               if (diffHintCredit(snapDiff.currentContent.length, diffBody) !== null) {
                 recordActualRead(event, normalized)
                 recordStat('session_hint', 0, 0)
@@ -804,15 +813,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (memSnapDiff.kind === 'unchanged') {
       recordActualRead(event, normalized)
       recordStat('session_hint', 0, 0)
-      return denyOutput(
-        (basename + ' is unchanged since last read. ' +
-        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent), memSnapDiff.currentContent)).trimEnd(),
-      )
+      return denyOutput(docSnapshotDenyText(normalized, basename, memSnapDiff))
     }
     if (memSnapDiff.kind === 'diff') {
-      const diffBody = ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-        fenceUntrustedFileContent('```diff\n' + memSnapDiff.diff + '\n```') + '\n\n' +
-        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent), memSnapDiff.currentContent)).trimEnd()
+      const diffBody = docSnapshotDenyText(normalized, basename, memSnapDiff)
       if (diffHintCredit(memSnapDiff.currentContent.length, diffBody) !== null) {
         recordActualRead(event, normalized)
         recordStat('session_hint', 0, 0)
@@ -875,13 +879,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (snapDiff.kind === 'unchanged') {
         recordActualRead(event, normalized)
         recordStat('session_hint', 0, 0)
-        return denyOutput(
-          basename + ' is unchanged since last read. ' + sessionArtifactRecall(normalized),
-        )
+        return denyOutput(snapshotDenyText(basename, snapDiff, sessionArtifactRecall(normalized)))
       }
       if (snapDiff.kind === 'diff') {
-        const diffBody = 'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-          fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' + sessionArtifactRecall(normalized)
+        const diffBody = snapshotDenyText(basename, snapDiff, sessionArtifactRecall(normalized))
         const artifactDiffCredit = diffHintCredit(snapDiff.currentContent.length, diffBody)
         if (artifactDiffCredit !== null) {
           recordActualRead(event, normalized)
@@ -943,17 +944,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (snapDiff.kind === 'unchanged') {
       recordActualRead(event, normalized)
       recordStat('session_hint', 0, 0)
-      return denyOutput(
-        (basename + ' is unchanged since last read. ' +
-        surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
-      )
+      return denyOutput(docSnapshotDenyText(normalized, basename, snapDiff))
     }
 
     if (snapDiff.kind === 'diff') {
       // Savings guard, uniform for doc and source files: only serve the diff if the full body it wraps (fence + surgical-hint suffix, not the raw diff alone) clears the configured token-savings floor (hints.diff_hint_min_tokens_saved). diffHintCredit prices the floor and the credit from the same bytes, so they can never disagree on scale.
-      const diffBody = ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-        fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
-        surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd()
+      const diffBody = docSnapshotDenyText(normalized, basename, snapDiff)
       const diffCredit = diffHintCredit(snapDiff.currentContent.length, diffBody)
       if (diffCredit !== null) {
         recordActualRead(event, normalized)
