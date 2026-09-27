@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { redactSecrets } from '../src/secret_redact.js'
+import { redactSecrets, redactSerializedJson } from '../src/secret_redact.js'
 
 describe('redactSecrets — per-pattern detection', () => {
   it('redacts an AWS access key (AWS documented example key)', () => {
@@ -27,9 +27,7 @@ describe('redactSecrets — per-pattern detection', () => {
   })
 
   it('redacts a modern OpenAI project key (sk-proj-, which contains - and _ after the prefix)', () => {
-    // Regression: the generic openai pattern requires >=20 chars of [A-Za-z0-9] immediately
-    // after "sk-", so "sk-proj-..." (4 alnum then a hyphen) never matched and the dominant
-    // post-2024 OpenAI key format was written to the cache in plaintext.
+    // Regression: the generic openai pattern requires >=20 chars of [A-Za-z0-9] immediately after "sk-", so "sk-proj-..." (4 alnum then a hyphen) never matched and the dominant post-2024 OpenAI key format was written to the cache in plaintext.
     const fake = 'sk-proj-' + 'Ab1_Cd2-Ef3_Gh4-Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3'
     const { text, count } = redactSecrets(`OPENAI_API_KEY=${fake}`)
     expect(count).toBe(1)
@@ -38,8 +36,7 @@ describe('redactSecrets — per-pattern detection', () => {
   })
 
   it('redacts a GitHub fine-grained personal access token (github_pat_ prefix)', () => {
-    // Regression: the gh[oprsu]_ pattern only covers classic tokens; fine-grained PATs use the
-    // distinct "github_pat_" prefix and were written to the cache in plaintext.
+    // Regression: the gh[oprsu]_ pattern only covers classic tokens; fine-grained PATs use the distinct "github_pat_" prefix and were written to the cache in plaintext.
     const fake = 'github_pat_' + '11ABCDEFG0abcdefghijklmn_ABCdefGHIjklMNOpqrSTUvwxYZ0123456789abcdefghijklmnopqr'
     const { text, count } = redactSecrets(`export GITHUB_TOKEN=${fake}`)
     expect(count).toBe(1)
@@ -151,9 +148,7 @@ describe('redactSecrets — per-pattern detection', () => {
     time(4000)
     const small = Math.max(time(4000), 1)
     const large = time(16000)
-    // Four times the input. Linear scaling lands near 4x; the quadratic shape this guards
-    // against was ~16x. A generous ceiling keeps the test from flaking on a loaded machine
-    // while still failing hard if the negative lookahead bounding the body is ever removed.
+    // Four times the input. Linear scaling lands near 4x; the quadratic shape this guards against was ~16x. A generous ceiling keeps the test from flaking on a loaded machine while still failing hard if the negative lookahead bounding the body is ever removed.
     expect(large / small).toBeLessThan(25)
   })
 
@@ -183,8 +178,7 @@ describe('redactSecrets — per-pattern detection', () => {
   })
 
   it('redacts a JWT (three base64url segments anchored on the eyJ header prefix)', () => {
-    // Regression: before this pattern existed, a JWT was deliberately left unmodified (see the
-    // "leaves a JWT unmodified" case below, which this task's brief changes on purpose).
+    // Regression: before this pattern existed, a JWT was deliberately left unmodified (see the "leaves a JWT unmodified" case below, which this task's brief changes on purpose).
     const jwt =
       'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
     const { text, count } = redactSecrets(`Authorization: ${jwt}`)
@@ -193,11 +187,7 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).not.toContain(jwt)
   })
 
-  // A `=` in the header or payload segment used to defeat the pattern outright, so the token was
-  // not partly redacted but printed whole. Base64url as the JWT spec defines it has no padding,
-  // but a producer using a plain base64 encoder emits it, and a credential that leaks in full is
-  // the same leak whichever encoder made it. The unpadded form is covered by the case above; these
-  // are the three positions padding can appear in.
+  // A `=` in the header or payload segment used to defeat the pattern outright, so the token was not partly redacted but printed whole. Base64url as the JWT spec defines it has no padding, but a producer using a plain base64 encoder emits it, and a credential that leaks in full is the same leak whichever encoder made it. The unpadded form is covered by the case above; these are the three positions padding can appear in.
   it.each([
     ['padded payload', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0=.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'],
     ['padded header', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ==.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'],
@@ -273,8 +263,7 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).not.toContain('A'.repeat(27))
   })
 
-  // The keyword had to sit immediately before the separator, so any name that merely contains
-  // it -- the standard spelling of an AWS secret access key among them -- leaked in full.
+  // The keyword had to sit immediately before the separator, so any name that merely contains it -- the standard spelling of an AWS secret access key among them -- leaked in full.
   it.each([
     ['AWS_SECRET_ACCESS_KEY=', 'wJalrXUtnFEMIKfakeDENGbPxRfiCYEXAMPLEKEY'],
     ['SECRET_KEY=', 'django-insecure-9f8s7df98s7df98sdf'],
@@ -349,10 +338,7 @@ describe('redactSecrets — no false positives on ordinary content', () => {
     expect(text).toBe(input)
   })
 
-  // Behavior change from this task's brief: a JWT is now redacted by the new 'jwt' pattern
-  // above; this case was updated from its previous "leaves a JWT unmodified" assertion to
-  // instead confirm a JWT-shaped-but-too-short string (only two segments, and each segment
-  // under the 10-char floor) is correctly left alone as a near-miss.
+  // Behavior change from this task's brief: a JWT is now redacted by the new 'jwt' pattern above; this case was updated from its previous "leaves a JWT unmodified" assertion to instead confirm a JWT-shaped-but-too-short string (only two segments, and each segment under the 10-char floor) is correctly left alone as a near-miss.
   it('leaves a JWT-shaped string with too few segments or segments below the length floor unmodified', () => {
     const notQuiteAJwt = 'eyJab.cd'
     const { text, count } = redactSecrets(notQuiteAJwt)
@@ -447,11 +433,7 @@ describe('redactSecrets — mixed and multi-secret content', () => {
 
 describe('redactSecrets — performance', () => {
   it('completes quickly over a large blob near the realistic cache size cap', () => {
-    // bash_compress.cache_max_bytes_per_output defaults to 50 MiB (the largest
-    // per-item cap of any storeBlob() caller); mcp_cache's MCP_MAX_CACHE_BYTES
-    // is a much smaller 2 MiB. Exercise a few MiB of realistic log-shaped text
-    // with a handful of secrets sprinkled in, well above MCP's cap and a
-    // meaningful fraction of bash's, without making the test itself slow.
+    // bash_compress.cache_max_bytes_per_output defaults to 50 MiB (the largest per-item cap of any storeBlob() caller); mcp_cache's MCP_MAX_CACHE_BYTES is a much smaller 2 MiB. Exercise a few MiB of realistic log-shaped text with a handful of secrets sprinkled in, well above MCP's cap and a meaningful fraction of bash's, without making the test itself slow.
     const line = 'INFO 2026-07-18T00:00:00Z request completed in 42ms status=200\n'
     const chunks: string[] = []
     let size = 0
@@ -473,14 +455,7 @@ describe('redactSecrets — performance', () => {
   })
 })
 
-// Regression: a quoted secret was never redacted. The value class deliberately excludes quote
-// characters so a match cannot run past the closing quote, but the lookbehind ended at the
-// separator, so an opening quote stopped the match before it began -- and the closing quote of a
-// quoted key name blocked it from the other side. `API_KEY=<value>` was caught while
-// `API_KEY="<value>"` passed through in full, and every JSON body passed through in full.
-// Quoting is the ordinary way secrets are written: .env, JSON, YAML and TOML all quote by
-// default, so the common shape leaked while the uncommon one was covered. Nothing in the 47
-// tests already here used a quote anywhere, which is exactly why it survived.
+// Regression: a quoted secret was never redacted. The value class deliberately excludes quote characters so a match cannot run past the closing quote, but the lookbehind ended at the separator, so an opening quote stopped the match before it began -- and the closing quote of a quoted key name blocked it from the other side. `API_KEY=<value>` was caught while `API_KEY="<value>"` passed through in full, and every JSON body passed through in full. Quoting is the ordinary way secrets are written: .env, JSON, YAML and TOML all quote by default, so the common shape leaked while the uncommon one was covered. Nothing in the 47 tests already here used a quote anywhere, which is exactly why it survived.
 describe('redactSecrets — quoted values', () => {
   const value = 'abcd1234efgh5678ijkl'
 
@@ -499,8 +474,7 @@ describe('redactSecrets — quoted values', () => {
     expect(text).toContain('[REDACTED:generic_secret_assignment]')
   })
 
-  // The quotes themselves stay: they are part of the surrounding document, and the value class
-  // still excludes them, so the match cannot swallow the rest of the line.
+  // The quotes themselves stay: they are part of the surrounding document, and the value class still excludes them, so the match cannot swallow the rest of the line.
   it('leaves the quotes and the key name readable', () => {
     expect(redactSecrets(`API_KEY="${value}"`).text).toBe('API_KEY="[REDACTED:generic_secret_assignment]"')
   })
@@ -521,8 +495,7 @@ describe('redactSecrets — quoted values', () => {
     expect(text).not.toContain('dXNlcjpwYXNz')
   })
 
-  // The quote allowance must not turn prose or an empty value into a false positive, and it must
-  // not let the pattern re-match its own placeholder on a second pass over already-redacted text.
+  // The quote allowance must not turn prose or an empty value into a false positive, and it must not let the pattern re-match its own placeholder on a second pass over already-redacted text.
   it.each([
     ['prose that only mentions the word', 'the password field is required'],
     ['an empty quoted value', 'password: ""'],
@@ -533,12 +506,7 @@ describe('redactSecrets — quoted values', () => {
   })
 })
 
-// A backslash is the one character the value class cannot simply accept or reject. Accepting it
-// stopped the match at the quote it was escaping, so `{"API_KEY":"abcd\\\"efghijkl"}` redacted
-// `abcd\` and left `efghijkl` sitting in plain text -- a partial redaction, which reads as
-// handled and is not. Rejecting it outright would have stopped the match at the backslash instead.
-// The escape branch consumes the pair, and excludes a newline so a trailing backslash cannot pull
-// the following line into the match.
+// A backslash is the one character the value class cannot simply accept or reject. Accepting it stopped the match at the quote it was escaping, so `{"API_KEY":"abcd\\\"efghijkl"}` redacted `abcd\` and left `efghijkl` sitting in plain text -- a partial redaction, which reads as handled and is not. Rejecting it outright would have stopped the match at the backslash instead. The escape branch consumes the pair, and excludes a newline so a trailing backslash cannot pull the following line into the match.
 describe('redactSecrets — backslashes in a value', () => {
   const BS = String.fromCharCode(92)
 
@@ -557,11 +525,7 @@ NEXT_VAR=publicvalue`)
   })
 })
 
-// The value class excludes whitespace, '&', ';' and '#' so a match cannot run into the next
-// key=value pair or a trailing comment. It did not exclude ',' or braces, so the separators used
-// by an inline env list and by unquoted JSON were swallowed along with the secret: redacting
-// `API_KEY=<value>,OTHER=public` also deleted `,OTHER=public`. Over-redaction is the safe
-// direction for the secret itself and the wrong direction for the structure around it.
+// The value class excludes whitespace, '&', ';' and '#' so a match cannot run into the next key=value pair or a trailing comment. It did not exclude ',' or braces, so the separators used by an inline env list and by unquoted JSON were swallowed along with the secret: redacting `API_KEY=<value>,OTHER=public` also deleted `,OTHER=public`. Over-redaction is the safe direction for the secret itself and the wrong direction for the structure around it.
 describe('redactSecrets — structure around the value', () => {
   it.each([
     ['a following comma-separated pair', 'API_KEY=abcd1234efgh5678ijkl,OTHER=public', ',OTHER=public'],
@@ -574,9 +538,7 @@ describe('redactSecrets — structure around the value', () => {
   })
 })
 
-// OAuth token names are not spelled with any of the original four keywords, so an access or
-// refresh token -- the credential most often present in a logged token-endpoint response -- was
-// cached verbatim.
+// OAuth token names are not spelled with any of the original four keywords, so an access or refresh token -- the credential most often present in a logged token-endpoint response -- was cached verbatim.
 describe('redactSecrets — oauth token names', () => {
   it.each([
     ['access_token', '{"access_token":"abcdefghijklmnop"}'],
@@ -590,9 +552,7 @@ describe('redactSecrets — oauth token names', () => {
   })
 })
 
-// A connection url carries its credential in the authority section, where there is no `key=value`
-// separator for the generic pattern to anchor on. A DATABASE_URL echoed by a failing migration
-// went through untouched.
+// A connection url carries its credential in the authority section, where there is no `key=value` separator for the generic pattern to anchor on. A DATABASE_URL echoed by a failing migration went through untouched.
 describe('redactSecrets — credentials in a url', () => {
   it.each([
     ['postgres', 'postgres://user:supersecret@db.example', 'supersecret'],
@@ -605,8 +565,7 @@ describe('redactSecrets — credentials in a url', () => {
     expect(text).toContain('[REDACTED:url_credentials]')
   })
 
-  // The '@' is what separates a credential from a port. Without requiring it, every `host:port`
-  // in every url in the output would be redacted as a credential.
+  // The '@' is what separates a credential from a port. Without requiring it, every `host:port` in every url in the output would be redacted as a credential.
   it.each([
     ['a url with a port but no credentials', 'http://example.com:8080/path'],
     ['a plain url', 'https://example.com/a/b'],
@@ -615,11 +574,7 @@ describe('redactSecrets — credentials in a url', () => {
   })
 })
 
-// `& ; # , :` are separator characters and they are also ordinary credential characters. Rejecting
-// them outright treated every occurrence as a separator, so a value containing one was cut at it
-// and the tail printed in full -- or, when the run before it was under the four-character floor,
-// the whole value went unmatched and `count` reported 0. Both write a live credential to disk via
-// storeBlob; the first also reads as handled, which this module's header calls the worse outcome.
+// `& ; # , :` are separator characters and they are also ordinary credential characters. Rejecting them outright treated every occurrence as a separator, so a value containing one was cut at it and the tail printed in full -- or, when the run before it was under the four-character floor, the whole value went unmatched and `count` reported 0. Both write a live credential to disk via storeBlob; the first also reads as handled, which this module's header calls the worse outcome.
 describe('redactSecrets — separator characters inside a value', () => {
   it.each([
     ['a colon, where the leading run is under the length floor', 'DB_PASSWORD=Aa1:xyz123secret', 'Aa1:xyz123secret'],
@@ -639,8 +594,7 @@ describe('redactSecrets — separator characters inside a value', () => {
     }
   })
 
-  // The other half of the same rule: a separator that really is separating one field from the
-  // next still ends the value, which is what keeps the structure around a secret readable.
+  // The other half of the same rule: a separator that really is separating one field from the next still ends the value, which is what keeps the structure around a secret readable.
   it.each([
     ['a comma-separated pair', 'API_KEY=abcd1234efgh5678ijkl,OTHER=public', ',OTHER=public'],
     ['a cookie-style semicolon', 'Cookie: api_key=abcd1234efgh; other=1', '; other=1'],
@@ -654,10 +608,7 @@ describe('redactSecrets — separator characters inside a value', () => {
   })
 })
 
-// The lookbehind allows up to eight spaces at every gap except the one immediately before the
-// token, which demanded exactly one -- so a header aligned with two spaces went straight through.
-// `token` is the other scheme spelling in wide use (curl and gh pass it for GitHub); a value
-// behind it carries the same authority as one behind `Bearer` and was cached verbatim.
+// The lookbehind allows up to eight spaces at every gap except the one immediately before the token, which demanded exactly one -- so a header aligned with two spaces went straight through. `token` is the other scheme spelling in wide use (curl and gh pass it for GitHub); a value behind it carries the same authority as one behind `Bearer` and was cached verbatim.
 describe('redactSecrets — Authorization header spellings', () => {
   it.each([
     ['two spaces after the scheme', 'Authorization: Bearer  abcdefghijklmnop'],
@@ -678,14 +629,9 @@ describe('redactSecrets — Authorization header spellings', () => {
   })
 })
 
-// An Azure storage account connection string carries a full read/write key to the account in its
-// AccountKey field. Nothing in generic_secret_assignment's keyword list (password|passwd|secret|
-// api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token) matches "AccountKey", so this key
-// went through storeBlob() and every live rewrite path in full plaintext until azure_storage_key
-// was added.
+// An Azure storage account connection string carries a full read/write key to the account in its AccountKey field. Nothing in generic_secret_assignment's keyword list (password|passwd|secret| api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token) matches "AccountKey", so this key went through storeBlob() and every live rewrite path in full plaintext until azure_storage_key was added.
 describe('redactSecrets — Azure storage account keys', () => {
-  // A real-shaped, but not a real, key: 88 base64 characters (64 bytes) with trailing `==`
-  // padding, matching the length Azure actually issues.
+  // A real-shaped, but not a real, key: 88 base64 characters (64 bytes) with trailing `==` padding, matching the length Azure actually issues.
   const AZURE_KEY = 'ZGVmaW5pdGVseW5vdGFyZWFsa2V5ZGVmaW5pdGVseW5vdGFyZWFsa2V5ZGVmaW5pdGVseW5vdGFyZWFsa2V5PT=='
 
   it('redacts the AccountKey field in a full Azure storage connection string, leaving every other field readable', () => {
@@ -695,8 +641,7 @@ describe('redactSecrets — Azure storage account keys', () => {
     expect(count).toBe(1)
     expect(text).not.toContain(AZURE_KEY)
     expect(text).toContain('[REDACTED:azure_storage_key]')
-    // The field name itself, and every field around it -- including the one immediately after the
-    // redacted value -- stay fully readable.
+    // The field name itself, and every field around it -- including the one immediately after the redacted value -- stay fully readable.
     expect(text).toBe(
       'DefaultEndpointsProtocol=https;AccountName=goat;AccountKey=[REDACTED:azure_storage_key];EndpointSuffix=core.windows.net',
     )
@@ -706,12 +651,7 @@ describe('redactSecrets — Azure storage account keys', () => {
     expect(redactSecrets(AZURE_KEY)).toEqual({ text: AZURE_KEY, count: 0 })
   })
 
-  // The spellings below are the ones this module has already been burned by on other patterns:
-  // auth_bearer_token's own comment records that demanding an unquoted value missed every
-  // JSON-carried header, and that demanding exactly one space made a second space the one thing
-  // that defeated the whole pattern. An Azure connection string arrives in exactly those shapes --
-  // a logged MCP result or api response quotes it, an appsettings file or a pretty-printed log
-  // aligns it -- so each gets its own case here rather than being assumed away.
+  // The spellings below are the ones this module has already been burned by on other patterns: auth_bearer_token's own comment records that demanding an unquoted value missed every JSON-carried header, and that demanding exactly one space made a second space the one thing that defeated the whole pattern. An Azure connection string arrives in exactly those shapes -- a logged MCP result or api response quotes it, an appsettings file or a pretty-printed log aligns it -- so each gets its own case here rather than being assumed away.
   it('redacts the JSON-quoted spelling a logged api response or MCP result carries', () => {
     const { text, count } = redactSecrets(`{"AccountKey": "${AZURE_KEY}"}`)
 
@@ -733,9 +673,7 @@ describe('redactSecrets — Azure storage account keys', () => {
     expect(redactSecrets(`AccountKey: ${AZURE_KEY}`).count).toBe(1)
   })
 
-  // Service Bus, Event Hubs and Relay spell the same credential SharedAccessKey.
-  // SharedAccessKeyName sitting immediately before it is a plain identifier and must survive: it
-  // is the case that proves the anchor keys on the separator rather than on the name prefix alone.
+  // Service Bus, Event Hubs and Relay spell the same credential SharedAccessKey. SharedAccessKeyName sitting immediately before it is a plain identifier and must survive: it is the case that proves the anchor keys on the separator rather than on the name prefix alone.
   it('redacts a Service Bus SharedAccessKey while leaving SharedAccessKeyName readable', () => {
     const sb = `Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=${AZURE_KEY}`
     const { text, count } = redactSecrets(sb)
@@ -755,5 +693,19 @@ describe('redactSecrets — Azure storage account keys', () => {
 
     expect(count).toBe(0)
     expect(text).toBe(once)
+  })
+})
+
+describe('redactSerializedJson', () => {
+  // HAND-DERIVED: every control character JSON.stringify escapes, each between ordinary words, in text holding no credential.
+  it('returns a serialization with no secret unchanged, whatever control-character escapes it holds', () => {
+    const json = JSON.stringify({ text: Array.from({ length: 0x20 }, (_, code) => `line${String.fromCharCode(code)}`).join('') })
+    expect(redactSerializedJson(json)).toEqual({ text: json, count: 0 })
+  })
+
+  // HAND-DERIVED: a secret-named Windows path whose first directory starts with n. JSON writes the backslash before it as two, and reading the second of those as the start of an escaped line break would end the value at `C:` and leave the path standing.
+  it('reads an escaped backslash before n as a backslash, not a line break', () => {
+    const { text } = redactSerializedJson(JSON.stringify({ stdout: 'SECRET_FILE=C:\\new\\service.json' }))
+    expect(JSON.parse(text)).toEqual({ stdout: 'SECRET_FILE=[REDACTED:generic_secret_assignment]' })
   })
 })

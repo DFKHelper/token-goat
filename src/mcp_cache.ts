@@ -1,22 +1,10 @@
-/**
- * MCP tool result cache — dedup repeated read-only MCP calls across hook
- * processes.
- *
- * Read-only `mcp__*` tool results are persisted into the shared bash-output
- * blob store (`~/.token-goat/bash_outputs/<id>.json`) so a result captured by
- * the post_tool_use hook process can be recalled — by a later pre_tool_use
- * process firing on an identical call, and by the session-less
- * `token-goat bash-output <id>` CLI. Reusing that proven cross-process store
- * (rather than a parallel MCP-specific one) keeps recall on a single working
- * path and adds no new CLI surface. The previous in-memory-only implementation
- * could never hit across the fresh-process-per-hook boundary.
- */
+/** MCP tool result cache — dedup repeated read-only MCP calls across hook processes. Read-only `mcp__*` tool results are persisted into the shared bash-output blob store (`~/.token-goat/bash_outputs/<id>.json`) so a result captured by the post_tool_use hook process can be recalled — by a later pre_tool_use process firing on an identical call, and by the session-less `token-goat bash-output <id>` CLI. Reusing that proven cross-process store (rather than a parallel MCP-specific one) keeps recall on a single working path and adds no new CLI surface. The previous in-memory-only implementation could never hit across the fresh-process-per-hook boundary. */
 
 import { shortFingerprint } from './fingerprint.js'
 import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
 import { indexRecallEntry } from './recall_index.js'
-import { redactSecrets } from './secret_redact.js'
+import { redactSecrets, redactSerializedJson } from './secret_redact.js'
 
 /** Results larger than this are not cached (recall then degrades to a re-fetch). */
 export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
@@ -29,26 +17,10 @@ const READ_VERBS_RE =
 const MUTATING_VERBS_RE =
   /^(?:request|run)(?=_|$)|(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|execute|close|copy|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban|click|fill|press|type|navigate|evaluate|drag|hover|handle|snapshot|wait|emulate|new|select|resize|audit|apply|commit|grant|deploy|toggle|pin|trigger|finalize|approve|cancel|sync)(?=_|$)/i
 
-/**
- * Input keys that make an otherwise read-verb MCP call state-changing
- * regardless of tool name, e.g. `createIfEmpty` on `tabs_context_mcp`,
- * `clear` on the claude-in-chrome console/network readers, or `save_to_disk`
- * on a screenshot call. Anthropic's own permission system already treats
- * these flags as mutating (code.claude.com/docs/en/chrome), so the cache
- * must never dedup/serve a stale result for a call carrying one truthy.
- */
+/** Input keys that make an otherwise read-verb MCP call state-changing regardless of tool name, e.g. `createIfEmpty` on `tabs_context_mcp`, `clear` on the claude-in-chrome console/network readers, or `save_to_disk` on a screenshot call. Anthropic's own permission system already treats these flags as mutating (code.claude.com/docs/en/chrome), so the cache must never dedup/serve a stale result for a call carrying one truthy. */
 const STATE_CHANGING_INPUT_KEYS = ['createIfEmpty', 'clear', 'save_to_disk']
 
-/**
- * Return true when *toolName* is a read-only MCP tool safe to cache.
- * Only `mcp__`-prefixed tools are considered; the trailing method segment is
- * matched against an ALLOWLIST of known-safe read verbs, so any mutating or
- * unrecognized verb fails safe as NOT read-only (never deduped) instead of
- * requiring every mutating verb to be enumerated up front.
- * *toolInput* is also inspected: a truthy `STATE_CHANGING_INPUT_KEYS` flag
- * overrides the name-based verdict, since it makes the specific call mutate
- * state even though the tool name itself reads as read-only.
- */
+/** Return true when *toolName* is a read-only MCP tool safe to cache. Only `mcp__`-prefixed tools are considered; the trailing method segment is matched against an ALLOWLIST of known-safe read verbs, so any mutating or unrecognized verb fails safe as NOT read-only (never deduped) instead of requiring every mutating verb to be enumerated up front. *toolInput* is also inspected: a truthy `STATE_CHANGING_INPUT_KEYS` flag overrides the name-based verdict, since it makes the specific call mutate state even though the tool name itself reads as read-only. */
 export function isMcpReadOnly(toolName: string, toolInput: Record<string, unknown>): boolean {
   if (!toolName.startsWith('mcp__')) {
     return false
@@ -62,10 +34,7 @@ export function isMcpReadOnly(toolName: string, toolInput: Record<string, unknow
   return false
 }
 
-/**
- * Return a 16-char hex hash for the (toolName, toolInput) pair.
- * Input dict is JSON-serialized with sorted keys for stability.
- */
+/** Return a 16-char hex hash for the (toolName, toolInput) pair. Input dict is JSON-serialized with sorted keys for stability. */
 export function mcpHash(toolName: string, toolInput: Record<string, unknown>): string {
   const sortedInput: Record<string, unknown> = {}
   for (const key of Object.keys(toolInput).sort()) {
@@ -75,38 +44,21 @@ export function mcpHash(toolName: string, toolInput: Record<string, unknown>): s
   return shortFingerprint(canonical)
 }
 
-/**
- * Deterministic, fixed-length, session-scoped recall id for an MCP call.
- * Fingerprinting `${sessionId}\x00${hash}` keeps the id collision-resistant and
- * within the blob-store's 64-char id budget regardless of sessionId length, and
- * scopes the cache per session so two sessions issuing the same call do not
- * cross-pollinate.
- */
+/** Deterministic, fixed-length, session-scoped recall id for an MCP call. Fingerprinting `${sessionId}\x00${hash}` keeps the id collision-resistant and within the blob-store's 64-char id budget regardless of sessionId length, and scopes the cache per session so two sessions issuing the same call do not cross-pollinate. */
 export function mcpOutputId(sessionId: string, hash: string): string {
   return `mcp_${shortFingerprint(`${sessionId}\x00${hash}`)}`
 }
 
-/**
- * Short readable label stored as the blob's `command` for `bash-history`.
- * Redacts BEFORE truncating: a secret in `toolInput` can straddle the 120-char
- * cut, and slicing first can drop enough of a matched pattern's body below its
- * minimum-length floor that redactSecrets() no longer recognizes what remains,
- * letting a raw fragment survive. Redacting the full JSON first means only
- * placeholder text (`[REDACTED:...]`) is ever cut, never secret bytes.
- */
+/** Short readable label stored as the blob's `command` for `bash-history`. Redacts BEFORE truncating: a secret in `toolInput` can straddle the 120-char cut, and slicing first can drop enough of a matched pattern's body below its minimum-length floor that redactSecrets() no longer recognizes what remains, letting a raw fragment survive. Redacting the full JSON first means only placeholder text (`[REDACTED:...]`) is ever cut, never secret bytes. */
 function mcpInputPreview(toolInput: Record<string, unknown>): string {
   try {
-    return redactSecrets(JSON.stringify(toolInput)).text.slice(0, 120)
+    return redactSerializedJson(JSON.stringify(toolInput)).text.slice(0, 120)
   } catch {
     return ''
   }
 }
 
-/**
- * Persist a read-only MCP *resultText* into the shared bash-output store and
- * return its recall id, or null when the result is empty, the inputs are
- * unusable, or the result exceeds {@link MCP_MAX_CACHE_BYTES}.
- */
+/** Persist a read-only MCP *resultText* into the shared bash-output store and return its recall id, or null when the result is empty, the inputs are unusable, or the result exceeds {@link MCP_MAX_CACHE_BYTES}. */
 export function storeMcpOutput(
   sessionId: string,
   toolName: string,
@@ -118,16 +70,9 @@ export function storeMcpOutput(
   if (rawSizeBytes > MCP_MAX_CACHE_BYTES) return null
   const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
   const rawLabel = `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim()
-  // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
-  // redaction pass to the JSON it writes to disk, but the recall index write below
-  // bypassed that pass entirely (indexed raw resultText), leaking secrets into
-  // `token-goat recall`/FTS search. Redacting here keeps disk, in-memory, and the
-  // recall index all consistent with the same sanitized text.
+  // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth redaction pass to the JSON it writes to disk, but the recall index write below bypassed that pass entirely (indexed raw resultText), leaking secrets into `token-goat recall`/FTS search. Redacting here keeps disk, in-memory, and the recall index all consistent with the same sanitized text.
   const redactedOutput = redactSecrets(resultText).text
-  // The label itself is built from toolInput (mcpInputPreview), which can carry a secret an
-  // agent passed as a call argument (an API key, a token) just as readily as the result text
-  // can -- redact it too, mirroring the output redaction above, so entry.command (in-memory
-  // and the recall index's label/content) never surfaces one either.
+  // The label itself is built from toolInput (mcpInputPreview), which can carry a secret an agent passed as a call argument (an API key, a token) just as readily as the result text can -- redact it too, mirroring the output redaction above, so entry.command (in-memory and the recall index's label/content) never surfaces one either.
   const label = redactSecrets(rawLabel).text
   const entry: BashOutputEntry = {
     id,
@@ -135,12 +80,7 @@ export function storeMcpOutput(
     output: redactedOutput,
     exitCode: 0,
     storedAt: Date.now(),
-    // Sized off the redacted output, not the raw pre-redaction resultText (rawSizeBytes is only
-    // the cache-eligibility gate above) -- mirrors bash_output_cache.ts's storeBashOutput, whose
-    // sizeBytes is likewise computed from redactedOutput. Sizing off the raw text here left
-    // mcp-audit's per-call token estimate and `mcp-history`'s byte column reporting a stale byte
-    // count for any entry a secret was actually stripped from, out of sync with the stored/served
-    // (redacted, shorter) output.
+    // Sized off the redacted output, not the raw pre-redaction resultText (rawSizeBytes is only the cache-eligibility gate above) -- mirrors bash_output_cache.ts's storeBashOutput, whose sizeBytes is likewise computed from redactedOutput. Sizing off the raw text here left mcp-audit's per-call token estimate and `mcp-history`'s byte column reporting a stale byte count for any entry a secret was actually stripped from, out of sync with the stored/served (redacted, shorter) output.
     sizeBytes: Buffer.byteLength(redactedOutput, 'utf-8'),
   }
   if (!storeBlob(BASH_OUTPUT_SUBDIR, id, entry)) return null
@@ -149,11 +89,7 @@ export function storeMcpOutput(
   return id
 }
 
-/**
- * Return the recall id for a previously-stored identical MCP call, or null on a
- * miss. Resolves through the shared bash-output store, so a value cached by an
- * earlier hook process is found.
- */
+/** Return the recall id for a previously-stored identical MCP call, or null on a miss. Resolves through the shared bash-output store, so a value cached by an earlier hook process is found. */
 /** Stored byte size of a cached MCP result, or 0 when the blob is gone. Reads `sizeBytes`, which storeMcpOutput computes from the REDACTED output, so this is exactly the payload a recall would serve rather than the raw pre-redaction text. Exists so preMcpHandler's dedup deny can price the re-arrival it blocked; getBashOutput memoizes by id, so calling it again right after getMcpOutput costs no second disk read. */
 export function mcpOutputBytes(id: string): number {
   return getBashOutput(id)?.sizeBytes ?? 0

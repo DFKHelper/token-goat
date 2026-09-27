@@ -10,6 +10,7 @@ import {
   clearCurlDownload,
   exportSessionState,
   getCurlDownloadPath,
+  getOutstandingAgentSpawns,
   importSessionState,
   MAX_RANGES_PER_FILE,
   recordCurlDownload,
@@ -20,6 +21,7 @@ import {
   recordLargeFileHintPending,
   recordOutstandingAgentSpawn,
   recordSymbolRead,
+  removeOutstandingAgentSpawn,
   takePendingLargeFileHint,
   type FileEntry,
   type SerializedSession,
@@ -835,7 +837,7 @@ describe('file cap', () => {
 })
 
 describe('saveSessionState redaction backstop (CLAUDE.arch.md Security Boundaries)', () => {
-  // Regression (HAND-DERIVED credential): a new SerializedSession field (outstandingAgentSpawns) shipped holding a raw, unredacted prompt with no redaction call anywhere in its path -- not a truncate-before-redact ordering bug, a field that never called redactSecrets at all. Rather than trust every future field's author to remember redaction at its own construction site, saveSessionState now sweeps the fully-serialized JSON through redactSecrets immediately before the one atomicWriteText call that ever writes this file, so a field is covered whether or not its author remembered. Reads the raw bytes actually on disk, not the parsed/re-imported object, and asserts absence of a FRAGMENT, matching this repo's own fixture-provenance discipline (a full-key-only assertion would pass even while a fragment leaks).
+  // Regression (HAND-DERIVED credential): a new SerializedSession field (outstandingAgentSpawns) shipped holding a raw, unredacted prompt with no redaction call anywhere in its path -- not a truncate-before-redact ordering bug, a field that never called redactSecrets at all. Rather than trust every future field's author to remember redaction at its own construction site, saveSessionState now sweeps the fully-serialized JSON through redactSerializedJson immediately before the one atomicWriteText call that ever writes this file, so a field is covered whether or not its author remembered. Reads the raw bytes actually on disk, not the parsed/re-imported object, and asserts absence of a FRAGMENT, matching this repo's own fixture-provenance discipline (a full-key-only assertion would pass even while a fragment leaks).
   it('never leaves a raw credential fragment in the on-disk session state file', () => {
     importSessionState(empty())
     recordOutstandingAgentSpawn('billing key sk-ant-A1b2C3d4E5f6G7h8I9J0K1L2M3N4O5P6Q7R8S9T0 rotate it')
@@ -843,5 +845,19 @@ describe('saveSessionState redaction backstop (CLAUDE.arch.md Security Boundarie
     const raw = fs.readFileSync(sessionFile('sid-secret-spawn'), 'utf8')
     expect(raw).not.toMatch(/sk-ant-[A-Za-z0-9]{4,}/)
     expect(raw).not.toMatch(/AKIA[0-9A-Z]{4,}/)
+  })
+
+  // HAND-DERIVED: a spawn prompt quoting an .env file whose first key has a secret-shaped name and no value. The raw pass leaves the prompt unchanged, so it has to come back from disk unchanged too: the finished spawn clears its entry by matching its own prompt against the stored one.
+  it('round-trips a multi-line spawn prompt so the finished spawn still clears it', () => {
+    const prompt = 'Fix the loader so it accepts this .env:\nAPI_KEY=\nDEBUG=true\nReport what changed.'
+    importSessionState(empty())
+    recordOutstandingAgentSpawn(prompt)
+    saveSessionState('sid-multiline-spawn')
+
+    importSessionState(empty())
+    loadSessionState('sid-multiline-spawn')
+    expect(getOutstandingAgentSpawns().map((e) => e.prompt)).toEqual([prompt])
+    removeOutstandingAgentSpawn(prompt)
+    expect(getOutstandingAgentSpawns()).toEqual([])
   })
 })

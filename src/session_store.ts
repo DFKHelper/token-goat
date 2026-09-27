@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock, withRetryOnLock } from './util.js'
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
-import { redactSecrets } from './secret_redact.js'
+import { redactSerializedJson } from './secret_redact.js'
 import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
@@ -20,13 +20,13 @@ export const AGENT_SALT_MARKER = sanitizeIdForFilename(':agent:')
 /** Raw separator `relay.ts`'s `sessionStateKey` joins a session id and an agent id with. */
 const AGENT_SALT_SEPARATOR = ':agent:'
 
-/** Characters of agent-id digest appended to a salted stem. 12 hex chars is 48 bits: far more than enough to keep the handful of subagents alive in one session apart, and short enough * that the session id keeps most of the 64-char budget. */
+/** Characters of agent-id digest appended to a salted stem. 12 hex chars is 48 bits: far more than enough to keep the handful of subagents alive in one session apart, and short enough that the session id keeps most of the 64-char budget. */
 const AGENT_DIGEST_CHARS = 12
 
-/** How much of the session id a SALTED stem may use, leaving room for the marker and the * digest so both always survive the 64-char cap. */
+/** How much of the session id a SALTED stem may use, leaving room for the marker and the digest so both always survive the 64-char cap. */
 const SALTED_SESSION_MAX = 64 - AGENT_SALT_MARKER.length - AGENT_DIGEST_CHARS
 
-/** The session-id portion of a salted filename, and the prefix sibling discovery matches on. Must be derived here rather than recomputed at each site, so the writer and the scanner can * never disagree about how much of the id survived. */
+/** The session-id portion of a salted filename, and the prefix sibling discovery matches on. Must be derived here rather than recomputed at each site, so the writer and the scanner can never disagree about how much of the id survived. */
 function saltedStemPrefix(sessionId: string): string {
   return `${sanitizeIdForFilename(sessionId, SALTED_SESSION_MAX)}${AGENT_SALT_MARKER}`
 }
@@ -40,7 +40,7 @@ export function sessionFileStem(sessionId: string): string {
   return `${saltedStemPrefix(sessionId.slice(0, sep))}${digest}`
 }
 
-/** Resolve the on-disk path for `sessionId`, or null when the id is empty, sanitizes to empty, or would escape the sessions dir (traversal guard). * See {@link sessionFileStem} for how salted keys are spelled. */
+/** Resolve the on-disk path for `sessionId`, or null when the id is empty, sanitizes to empty, or would escape the sessions dir (traversal guard). See {@link sessionFileStem} for how salted keys are spelled. */
 function sessionPath(sessionId: string): string | null {
   return sessionSidecarPath(sessionId, '.json')
 }
@@ -161,12 +161,12 @@ function asServedOutputs(raw: unknown): Array<[string, string[]]> {
   return out
 }
 
-/** Coerce an untrusted parsed-JSON value into a valid (possibly empty) Coerce an untrusted parsed-JSON value into a valid (possibly empty) {@link SerializedSession}, dropping anything malformed. Never throws. Handles both the TS array format (`files: FileEntry[]`) and the legacy Python dict format (`files: { path: { rel_or_abs, read_count, last_read_ts, ... } }`). Python-format files are transparently migrated to the TS shape on load; the next {@link saveSessionState} call then writes the file in the TS format so * subsequent loads use the fast path automatically. subsequent loads use the fast path automatically. */
 /** Rewrite persisted keys into the current shape as they come off disk. Every disk read passes through {@link coerce}, including the fresh re-read the save path does before merging, so migrating here means no individual caller has to know a key shape ever changed. A last-write-wins collapse is correct if two legacy keys migrate to the same key: the new key is a function of the same pair, so a collision means they were the same fetch. */
 function migrateKeys(pairs: Array<[string, string]>, migrate: (key: string) => string): Array<[string, string]> {
   return pairs.map(([key, value]) => [migrate(key), value])
 }
 
+/** Coerce an untrusted parsed-JSON value into a valid (possibly empty) {@link SerializedSession}, dropping anything malformed. Never throws. Handles both the TS array format (`files: FileEntry[]`) and the legacy Python dict format (`files: { path: { rel_or_abs, read_count, last_read_ts, ... } }`). Python-format files are transparently migrated to the TS shape on load; the next {@link saveSessionState} call then writes the file in the TS format so subsequent loads use the fast path automatically. */
 function coerce(raw: unknown): SerializedSession {
   const o = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const files: FileEntry[] = []
@@ -250,7 +250,7 @@ function coerce(raw: unknown): SerializedSession {
   }
 }
 
-/** Combine two views of one file: keep every read/edit/truncation signal and * the size from the more recent read. Never loses a positive flag. */
+/** Combine two views of one file: keep every read/edit/truncation signal and the size from the more recent read. Never loses a positive flag. */
 function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   const newest = a.lastReadAt >= b.lastReadAt ? a : b
   // readCount is reconciled, not maxed: b (this process's own in-memory view) may have started from a stale disk snapshot and incremented independently of whatever other concurrent processes already wrote into a (the freshest disk read, taken under the save lock in saveSessionState). Math.max(a, b) silently drops a concurrent process's distinct increment whenever the two counters happen to coincide. Instead, add only the reads this process genuinely made since its own load (b.readCount minus its baseline at hydration time) on top of the freshest disk count, so two processes that each record one real read from the same starting point sum to two instead of collapsing to one.
@@ -278,7 +278,7 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   return merged
 }
 
-/** "mem overlays disk" merge: the current process's view is at least as fresh. Shared by every "mem overlays disk" merge: the current process's view is at least as fresh. Shared by every pure-append/overwrite disk/mem pair-list field with no removal path (webFetches, bashOutputs, grepQueries, globQueries). curlDownloads has one (clearCurlDownload) and uses * {@link mergeCurlDownloads} instead so a clearing deletion actually sticks. {@link mergeCurlDownloads} instead so a clearing deletion actually sticks. */
+/** "mem overlays disk" merge: the current process's view is at least as fresh. Shared by every pure-append/overwrite disk/mem pair-list field with no removal path (webFetches, bashOutputs, grepQueries, globQueries). curlDownloads has one (clearCurlDownload) and uses {@link mergeCurlDownloads} instead so a clearing deletion actually sticks. */
 function mergePairs<V>(disk: Array<[string, V]>, mem: Array<[string, V]>): Array<[string, V]> {
   return Array.from(new Map([...disk, ...mem]).entries())
 }
@@ -292,7 +292,7 @@ function mergeMaxNumberPairs(disk: Array<[string, number]>, mem: Array<[string, 
   return Array.from(merged.entries())
 }
 
-/** Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file. Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file. The cap never evicts a range already on disk (another process's confirmed, persisted work) — once a file is at the cap, a fresh range from this process's own in-memory view is simply not added rather * than displacing a disk-persisted entry. than displacing a disk-persisted entry. */
+/** Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file. The cap never evicts a range already on disk (another process's confirmed, persisted work) — once a file is at the cap, a fresh range from this process's own in-memory view is simply not added rather than displacing a disk-persisted entry. */
 function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Array<[string, Array<[number, number]>]>): Array<[string, Array<[number, number]>]> {
   const byPath = new Map<string, Array<[number, number]>>()
   for (const [filePath, ranges] of disk) byPath.set(filePath, [...ranges])
@@ -327,7 +327,7 @@ function mergeServedOutputs(disk: Array<[string, string[]]>, mem: Array<[string,
   return Array.from(byPath.entries())
 }
 
-/** Merge pending large-file hints: union disk with mem, but drop any key this process Merge pending large-file hints: union disk with mem, but drop any key this process explicitly consumed (took an outcome for) even if a stale disk read still has it — the other merged fields are monotonic sets where union is always correct, but this one is a pending-to-consumed lifecycle where a deletion must actually stick. The overlay only re-asserts keys this process actually acted on this run: brand-new keys it added, or keys whose value it changed. A key it merely carried unchanged from hydration (same key, same size as `pendingLargeFileHintsAtLoad`) is left alone and instead defers to whatever the freshest disk read says — otherwise a process that loaded a key but never touched it would resurrect that key on every save, even after a *different* concurrent * process legitimately consumed and removed it from disk in the meantime. process legitimately consumed and removed it from disk in the meantime. */
+/** Merge pending large-file hints: union disk with mem, but drop any key this process explicitly consumed (took an outcome for) even if a stale disk read still has it — the other merged fields are monotonic sets where union is always correct, but this one is a pending-to-consumed lifecycle where a deletion must actually stick. The overlay only re-asserts keys this process actually acted on this run: brand-new keys it added, or keys whose value it changed. A key it merely carried unchanged from hydration (same key, same size as `pendingLargeFileHintsAtLoad`) is left alone and instead defers to whatever the freshest disk read says — otherwise a process that loaded a key but never touched it would resurrect that key on every save, even after a *different* concurrent process legitimately consumed and removed it from disk in the meantime. */
 function mergePendingLargeFileHints(
   disk: Array<[string, number]>,
   mem: Array<[string, number]>,
@@ -342,7 +342,7 @@ function mergePendingLargeFileHints(
   return Array.from(merged.entries())
 }
 
-/** Merge two views of curl -o download records: union disk with mem, but drop any URL this Merge two views of curl -o download records: union disk with mem, but drop any URL this process explicitly cleared (see {@link consumedCurlDownloadKeys}) even if a stale disk read still has it -- like mergePendingLargeFileHints, this is NOT a plain set-union field, because clearCurlDownload's removal must actually stick. The overlay only re-asserts URLs this process actually acted on this run: brand-new URLs it recorded, or URLs whose saved path it changed. A URL merely carried unchanged from hydration (same URL, same path as `curlDownloadsAtLoad`) is left alone and instead defers to whatever the freshest disk read says -- otherwise a process that loaded a URL but never touched it would resurrect that URL on every save, even after a *different* concurrent process legitimately * cleared it from disk in the meantime. cleared it from disk in the meantime. */
+/** Merge two views of curl -o download records: union disk with mem, but drop any URL this process explicitly cleared (see {@link consumedCurlDownloadKeys}) even if a stale disk read still has it -- like mergePendingLargeFileHints, this is NOT a plain set-union field, because clearCurlDownload's removal must actually stick. The overlay only re-asserts URLs this process actually acted on this run: brand-new URLs it recorded, or URLs whose saved path it changed. A URL merely carried unchanged from hydration (same URL, same path as `curlDownloadsAtLoad`) is left alone and instead defers to whatever the freshest disk read says -- otherwise a process that loaded a URL but never touched it would resurrect that URL on every save, even after a *different* concurrent process legitimately cleared it from disk in the meantime. */
 function mergeCurlDownloads(
   disk: Array<[string, string]>,
   mem: Array<[string, string]>,
@@ -357,7 +357,7 @@ function mergeCurlDownloads(
   return Array.from(merged.entries())
 }
 
-/** Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below, Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below, this is NOT a plain set-union: removal (the post-hook clearing a completed spawn) must actually stick, so a plain disk-union would silently resurrect an entry this process just removed from the pre-update disk snapshot. Start from disk, drop anything this process explicitly removed (see consumedOutstandingAgentSpawnKeys), then overlay only the entries this process newly added (present in mem but not in its own load-time snapshot) -- an entry merely carried over unchanged defers to disk. Finally cap to MAX_OUTSTANDING_AGENT_SPAWNS, dropping the oldest entries first, * same oldest-evicted shape as recordOutstandingAgentSpawn's own local cap. same oldest-evicted shape as recordOutstandingAgentSpawn's own local cap. */
+/** Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below, this is NOT a plain set-union: removal (the post-hook clearing a completed spawn) must actually stick, so a plain disk-union would silently resurrect an entry this process just removed from the pre-update disk snapshot. Start from disk, drop anything this process explicitly removed (see consumedOutstandingAgentSpawnKeys), then overlay only the entries this process newly added (present in mem but not in its own load-time snapshot) -- an entry merely carried over unchanged defers to disk. Finally cap to MAX_OUTSTANDING_AGENT_SPAWNS, dropping the oldest entries first, same oldest-evicted shape as recordOutstandingAgentSpawn's own local cap. */
 function mergeOutstandingAgentSpawns(
   disk: Array<[string, number]>,
   mem: Array<[string, number]>,
@@ -529,7 +529,7 @@ export function saveSessionState(sessionId: string): void {
       // Defense-in-depth backstop, not the primary control: individual fields (e.g. recordOutstandingAgentSpawn in session.ts) redact at their own write sites, but CLAUDE.arch.md documents that this file is the one place a *new* SerializedSession field does not automatically inherit redaction -- relying on every future field's author to remember a redactSecrets() call is exactly the gap that shipped outstandingAgentSpawns unredacted. Sweeping the fully-serialized JSON here, at the sole place this state ever reaches disk, means a future field is covered whether or not its author remembered. Fail-safe like storeBlob(): if redaction itself throws, skip this write rather than risk persisting unredacted content -- the next successful save still merges from disk.
       let json: string
       try {
-        json = redactSecrets(JSON.stringify(merged)).text
+        json = redactSerializedJson(JSON.stringify(merged)).text
       } catch {
         return true
       }

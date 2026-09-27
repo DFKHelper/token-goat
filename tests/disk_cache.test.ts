@@ -5,10 +5,7 @@ import * as path from 'node:path'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted — this redirects configPath() to a per-test-file temp file
-// so storeBlob/pruneBlobs's new config-driven eviction limits (bash_compress /
-// webfetch) can be exercised deterministically, independent of the shared
-// per-worker DATA_DIR other test files write to. Mirrors tests/config.test.ts.
+// vi.mock is hoisted — this redirects configPath() to a per-test-file temp file so storeBlob/pruneBlobs's new config-driven eviction limits (bash_compress / webfetch) can be exercised deterministically, independent of the shared per-worker DATA_DIR other test files write to. Mirrors tests/config.test.ts.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -17,21 +14,17 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-// vi.mock is hoisted — wraps the real redactSecrets in a spy (calls through by
-// default) so tests can both assert it ran and force a one-off throw to exercise
-// storeBlob()'s fail-safe path, without duplicating the real redaction logic.
+// vi.mock is hoisted — wraps the real redactSerializedJson in a spy (calls through by default) so tests can force a one-off throw to exercise storeBlob()'s fail-safe path, without duplicating the real redaction logic.
 vi.mock('../src/secret_redact.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
-  const real = original['redactSecrets'] as (text: string) => { text: string; count: number }
+  const real = original['redactSerializedJson'] as (json: string) => { text: string; count: number }
   return {
     ...original,
-    redactSecrets: vi.fn((text: string) => real(text)),
+    redactSerializedJson: vi.fn((json: string) => real(json)),
   }
 })
 
-// vi.mock is hoisted — wraps the real recordStat in a spy (calls through by
-// default) so tests can assert a 'secret_redacted' stat fired without needing a
-// real global.db fixture. Mirrors tests/hooks_glob.test.ts's recordStat spy.
+// vi.mock is hoisted — wraps the real recordStat in a spy (calls through by default) so tests can assert a 'secret_redacted' stat fired without needing a real global.db fixture. Mirrors tests/hooks_glob.test.ts's recordStat spy.
 vi.mock('../src/stats.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   const real = original['recordStat'] as (...args: unknown[]) => void
@@ -45,7 +38,7 @@ const _testConfigPath = tempConfigPath('tg-disk-cache-config-test.toml')
 
 import { storeBlob, loadBlob, pruneBlobs, tokenGoatHome } from '../src/disk_cache.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
-import { redactSecrets } from '../src/secret_redact.js'
+import { redactSecrets, redactSerializedJson } from '../src/secret_redact.js'
 import { recordStat, kindToSource, SOURCE_OTHER } from '../src/stats.js'
 
 let tmpHome: string
@@ -55,7 +48,7 @@ beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-blob-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
-  vi.mocked(redactSecrets).mockClear()
+  vi.mocked(redactSerializedJson).mockClear()
   vi.mocked(recordStat).mockClear()
 })
 
@@ -169,13 +162,7 @@ describe('pruneBlobs', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Config-driven eviction limits (bash_compress.cache_max_file_count /
-// cache_max_bytes / cache_max_bytes_per_output, webfetch.max_file_count /
-// max_bytes). Before this fix, storeBlob always called pruneBlobs with the
-// hardcoded DEFAULT_MAX_COUNT (200) and no byte budget at all — these knobs
-// were validated and saved by config.ts but had zero effect on real eviction.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Config-driven eviction limits (bash_compress.cache_max_file_count / cache_max_bytes / cache_max_bytes_per_output, webfetch.max_file_count / max_bytes). Before this fix, storeBlob always called pruneBlobs with the hardcoded DEFAULT_MAX_COUNT (200) and no byte budget at all — these knobs were validated and saved by config.ts but had zero effect on real eviction. ---------------------------------------------------------------------------
 describe('storeBlob — config-driven cache limits for bash_outputs/web_outputs', () => {
   it('evicts down to a configured bash_compress.cache_max_file_count well below the old hardcoded 200 default', () => {
     const cfg = defaultConfig()
@@ -258,17 +245,7 @@ describe('storeBlob — config-driven cache limits for bash_outputs/web_outputs'
   })
 })
 
-// Regression coverage for a bug where storeBlob() reported success (`true`) for a
-// blob that was written to disk and then immediately deleted again by its own
-// pruneBlobs() call, whenever cache_max_bytes_per_output (per-item ceiling) was
-// configured larger than cache_max_bytes (total-directory budget) — the item
-// would pass the per-item check, get written, then get evicted oldest-first by
-// the byte-budget pass because nothing protected "the item this same call just
-// wrote" from its own eviction sweep. Fixed two ways: config.ts now clamps
-// cache_max_bytes_per_output down to cache_max_bytes so the misconfiguration
-// can't happen via config; pruneBlobs() also now never evicts the blob the
-// current storeBlob() call just wrote, as defense in depth for callers that
-// bypass config validation via storeBlob()'s own maxBytes/maxBytesPerItem opts.
+// Regression coverage for a bug where storeBlob() reported success (`true`) for a blob that was written to disk and then immediately deleted again by its own pruneBlobs() call, whenever cache_max_bytes_per_output (per-item ceiling) was configured larger than cache_max_bytes (total-directory budget) — the item would pass the per-item check, get written, then get evicted oldest-first by the byte-budget pass because nothing protected "the item this same call just wrote" from its own eviction sweep. Fixed two ways: config.ts now clamps cache_max_bytes_per_output down to cache_max_bytes so the misconfiguration can't happen via config; pruneBlobs() also now never evicts the blob the current storeBlob() call just wrote, as defense in depth for callers that bypass config validation via storeBlob()'s own maxBytes/maxBytesPerItem opts.
 describe('storeBlob — does not self-evict the blob it just wrote', () => {
   it('config.ts clamps cache_max_bytes_per_output <= cache_max_bytes, so a misconfigured per-item ceiling larger than the total budget is rejected up front instead of silently wiped after writing', () => {
     const cfg = defaultConfig()
@@ -294,9 +271,7 @@ describe('storeBlob — does not self-evict the blob it just wrote', () => {
   })
 })
 
-// Coverage for the redaction pass wired into storeBlob() (src/disk_cache.ts) as
-// the single choke point every blob-persisting caller (bash-output, web-output,
-// mcp-output) funnels through — see src/secret_redact.ts.
+// Coverage for the redaction pass wired into storeBlob() (src/disk_cache.ts) as the single choke point every blob-persisting caller (bash-output, web-output, mcp-output) funnels through — see src/secret_redact.ts.
 describe('storeBlob — secret redaction choke point', () => {
   const fakeAws = 'AKIA' + 'IOSFODNN7EXAMPLE'
   it('redacts a secret before it ever reaches disk', () => {
@@ -309,8 +284,7 @@ describe('storeBlob — secret redaction choke point', () => {
     expect(loaded.stdout).toBe('AWS_ACCESS_KEY_ID=[REDACTED:aws_access_key]')
     expect(loaded.stdout).not.toContain(fakeAws)
 
-    // The raw bytes on disk never contain the secret either — not just the
-    // parsed-back value.
+    // The raw bytes on disk never contain the secret either — not just the parsed-back value.
     const p = path.join(tmpHome, 'bash_outputs', 'secret1.json')
     const raw = fs.readFileSync(p, 'utf8')
     expect(raw).not.toContain(fakeAws)
@@ -340,17 +314,65 @@ describe('storeBlob — secret redaction choke point', () => {
     )
   })
 
+  // HAND-DERIVED: an environment dump whose first variable has a secret-shaped name and no value. There is no credential in it, so the raw pass leaves it alone, and every variable after it is ordinary text that has to come back from disk exactly as it went in.
+  it('keeps the lines after an empty secret-named assignment', () => {
+    const stdout = 'STRIPE_API_KEY=\nDATABASE_URL=postgres://localhost:5432/app\nPORT=3000\n'
+    expect(redactSecrets(stdout).text).toBe(stdout)
+
+    expect(storeBlob('bash_outputs', 'empty-assignment', { stdout })).toBe(true)
+    expect(loadBlob('bash_outputs', 'empty-assignment')).toEqual({ stdout })
+    expect(fs.readFileSync(path.join(tmpHome, 'bash_outputs', 'empty-assignment.json'), 'utf8')).toBe(JSON.stringify({ stdout }))
+  })
+
+  // HAND-DERIVED: a secret-named assignment with a value, then an ordinary variable on the next line. The value ends at the line break, as it does when the same text is redacted raw.
+  it('ends a redacted assignment value at the line break', () => {
+    expect(storeBlob('bash_outputs', 'value-then-line', { stdout: 'API_KEY=abcd1234efgh\nNEXT_VAR=publicvalue' })).toBe(true)
+
+    const loaded = loadBlob('bash_outputs', 'value-then-line') as { stdout: string }
+    expect(loaded.stdout).toBe('API_KEY=[REDACTED:generic_secret_assignment]\nNEXT_VAR=publicvalue')
+  })
+
+  // HAND-DERIVED: an Azure storage connection string printed one field per line. The AccountKey pattern anchors on a word boundary, which a line break provides and the `n` of an escaped line break does not.
+  it('redacts an AccountKey field that starts a line', () => {
+    const fakeKey = 'A1b2C3d4'.repeat(11) + '=='
+    expect(storeBlob('bash_outputs', 'azure-lines', { stdout: `AccountName=devstore\nAccountKey=${fakeKey}\n` })).toBe(true)
+
+    const loaded = loadBlob('bash_outputs', 'azure-lines') as { stdout: string }
+    expect(loaded.stdout).toBe('AccountName=devstore\nAccountKey=[REDACTED:azure_storage_key]\n')
+    expect(fs.readFileSync(path.join(tmpHome, 'bash_outputs', 'azure-lines.json'), 'utf8')).not.toContain(fakeKey)
+  })
+
+  // HAND-DERIVED: the SHA-256 digests of the empty string and of `abc` (the FIPS 180-2 test vectors), one per line in the uppercase spelling PowerShell's Get-FileHash prints. Uppercase letters and digits are two character classes, so strict mode leaves each digest alone in raw text.
+  it('keeps a strict-mode blob loadable when a digest starts the second line', () => {
+    const cfg = defaultConfig()
+    cfg.redaction.strict = true
+    saveConfig(cfg)
+    const stdout = 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855\nBA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD\n'
+    expect(redactSecrets(stdout).text).toBe(stdout)
+
+    expect(storeBlob('bash_outputs', 'strict-digests', { stdout })).toBe(true)
+    expect(loadBlob('bash_outputs', 'strict-digests')).toEqual({ stdout })
+  })
+
+  // HAND-DERIVED: a lone low surrogate directly before the uppercase SHA-256 of the empty string (the FIPS 180-2 test vector). A string holds one when it was cut between the two halves of a pair, or when Python read a filename byte that is not UTF-8 (PEP 383) and json.dumps escaped it. JSON.stringify writes it as a `\u` escape, whose `u` and lowercase hex would give the digest the third character class it lacks.
+  it('keeps a strict-mode blob loadable when a lone surrogate precedes a digest', () => {
+    const cfg = defaultConfig()
+    cfg.redaction.strict = true
+    saveConfig(cfg)
+    const stdout = 'name: \udcffE3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855\n'
+    expect(redactSecrets(stdout).text).toBe(stdout)
+
+    expect(storeBlob('bash_outputs', 'strict-surrogate', { stdout })).toBe(true)
+    expect(loadBlob('bash_outputs', 'strict-surrogate')).toEqual({ stdout })
+  })
+
   it('records a secret_redacted stat when redaction fires, and that kind is registered in stats.ts (KIND_TO_SOURCE)', () => {
     const fakeAws = 'AKIA' + 'IOSFODNN7EXAMPLE'
     storeBlob('bash_outputs', 'stat1', { stdout: fakeAws })
 
     const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted')
     expect(call).toBeDefined()
-    // Never left unregistered in KIND_TO_SOURCE -- a recurring bug class in this
-    // codebase per CLAUDE.md. Falling through to the generic default (SOURCE_OTHER)
-    // silently for an unregistered kind would also pass this loose an assertion,
-    // so assert the kind resolves to the intentionally-chosen source rather than
-    // merely "some source".
+    // Never left unregistered in KIND_TO_SOURCE -- a recurring bug class in this codebase per CLAUDE.md. Falling through to the generic default (SOURCE_OTHER) silently for an unregistered kind would also pass this loose an assertion, so assert the kind resolves to the intentionally-chosen source rather than merely "some source".
     expect(kindToSource('secret_redacted')).toBe(SOURCE_OTHER)
   })
 
@@ -362,7 +384,7 @@ describe('storeBlob — secret redaction choke point', () => {
   })
 
   it('fails safe (skips caching this blob) when the redaction pass itself throws', () => {
-    vi.mocked(redactSecrets).mockImplementationOnce(() => {
+    vi.mocked(redactSerializedJson).mockImplementationOnce(() => {
       throw new Error('boom')
     })
 
@@ -391,7 +413,7 @@ describe('storeBlob — secret redaction choke point', () => {
   })
 
   it('recovers on the next call after a one-off redaction failure (the mocked throw does not persist)', () => {
-    vi.mocked(redactSecrets).mockImplementationOnce(() => {
+    vi.mocked(redactSerializedJson).mockImplementationOnce(() => {
       throw new Error('boom')
     })
     expect(storeBlob('bash_outputs', 'recover1', { stdout: fakeAws })).toBe(false)
