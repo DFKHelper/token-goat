@@ -9,7 +9,8 @@ import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 
 import { registerHook } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { buildEvent, readStdinJson, relay, relayInProcess, RELAY_QUEUE_WAIT_MS } from '../src/relay.js'
+import { buildEvent, relay, relayInProcess, RELAY_QUEUE_WAIT_MS } from '../src/relay.js'
+import { readStdinJson } from '../src/stdin_json.js'
 import type { HookOutput } from '../src/types.js'
 import { getSessionId, getTranscriptPath } from '../src/session.js'
 

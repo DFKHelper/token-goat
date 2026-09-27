@@ -12,8 +12,7 @@ import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
 import { setTranscriptPath } from './session.js'
 import { HOOK_PROBE_ENV, recordStat } from './stats.js'
-// Re-exported below: this was defined here until it was split out (see stdin_json.ts's own note).
-import { MAX_STDIN_BYTES, readStdinJson } from './stdin_json.js'
+import { readStdinJson } from './stdin_json.js'
 import { shouldSuppressDuplicateVscodeHook } from './vscode_duplicate.js'
 
 // Side-effect imports: each registers its handlers with the hook registry.
@@ -40,8 +39,6 @@ import './hooks_screenshot.js'
 import './hooks_browser_image.js'
 import './hooks_agent_spawn.js'
 import './image_shrink.js'
-
-export { MAX_STDIN_BYTES, readStdinJson }
 
 /** Validate that `name` is a known internal hook event name. */
 function isHookEventName(name: string): name is HookEventName {
