@@ -302,13 +302,21 @@ export function confinedProjectRoot(explicitRoot?: string): string | null {
   return resolveProjectRoot(explicitRoot !== undefined && explicitRoot.trim().length > 0 ? { project: explicitRoot } : {})
 }
 
-export function isProjectRootAllowed(candidateRoot: string, baseConfinedRoot: string): boolean {
+function isProjectRootAllowed(candidateRoot: string, baseConfinedRoot: string): boolean {
   if (isInsideRoot(candidateRoot, baseConfinedRoot)) return true
   const allowedRoots = loadConfig().mcp.allowed_roots
   if (allowedRoots.length > 0 && allowedRoots.some((allowed) => isInsideRoot(candidateRoot, path.resolve(allowed)))) {
     return true
   }
   return false
+}
+
+/** The root a name-searched lookup (`symbol`, `refs`) is confined to, and the refusal for an explicit `--project` it may not widen to. `root` is null when `indexing.cross_project_symbols` leaves lookups unconfined. An explicit root moves the confinement only when it sits inside the one the command runs from or inside `mcp.allowed_roots`; any other is refused rather than silently ignored. */
+export function resolveProjectConfinement(projectRoot: string | undefined): { root: string | null; denial: string | null } {
+  const base = confinedProjectRoot()
+  if (base === null || projectRoot === undefined) return { root: base, denial: null }
+  const root = isProjectRootAllowed(projectRoot, base) ? (confinedProjectRoot(projectRoot) ?? base) : base
+  return { root, denial: root !== base ? null : confinementRefusal('--project', projectRoot, base) }
 }
 
 export function confinementRefusal(label: string, resolved: string, root: string | null): string | null {

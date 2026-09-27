@@ -64,15 +64,14 @@ import {
   trimBlankLines,
 } from './read_suggest.js'
 import {
-  confinedProjectRoot,
   confinementRefusal,
   formatAmbiguity,
-  isProjectRootAllowed,
   parseColonLineRange,
   parseColonLineSpec,
   parseCrossFileMultiSpec,
   parseLineRange,
   parseReadSpec,
+  resolveProjectConfinement,
   resolveSymbolSpec,
   runLineRange,
   runLineRegion,
@@ -509,20 +508,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const excludeVendored = opts.excludeVendored === true
 
   // `symbol` is the one read command that searches the machine-wide index by default, which is documented and useful on a personal machine and a disclosure channel on a shared one: from any indexed directory, `symbol --grep .` enumerates every symbol of every project ever indexed here, bodies included, without touching the filesystem -- so a directory sandbox around the agent does not contain it. `indexing.cross_project_symbols = false` confines the command to the project it is run from. The confinement has to cover --project and an absolute --file as well, or the setting is bypassed by the same caller it exists to constrain.
-  const baseConfined = confinedProjectRoot()
-  const confinedRoot = opts.projectRoot !== undefined && baseConfined !== null && isProjectRootAllowed(opts.projectRoot, baseConfined)
-    ? (confinedProjectRoot(opts.projectRoot) ?? baseConfined)
-    : baseConfined
-  if (baseConfined !== null) {
-    const requested = opts.projectRoot
-    const projectDenial = requested === undefined || (confinedRoot !== baseConfined)
-      ? null
-      : confinementRefusal('--project', requested, baseConfined)
-    if (projectDenial !== null) return { text: projectDenial, code: 1 }
-    if (opts.file !== undefined) {
-      const fileDenial = confinementRefusal('--file', resolveIndexPath(opts.file, requested ?? process.cwd()), confinedRoot)
-      if (fileDenial !== null) return { text: fileDenial, code: 1 }
-    }
+  const { root: confinedRoot, denial: projectDenial } = resolveProjectConfinement(opts.projectRoot)
+  if (projectDenial !== null) return { text: projectDenial, code: 1 }
+  if (confinedRoot !== null && opts.file !== undefined) {
+    const fileDenial = confinementRefusal('--file', resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd()), confinedRoot)
+    if (fileDenial !== null) return { text: fileDenial, code: 1 }
   }
 
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
