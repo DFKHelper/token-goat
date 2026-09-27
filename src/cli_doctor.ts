@@ -30,7 +30,7 @@ import { cleanupDeprecatedVscodeProjectMcp, vscodeHooksInstalled, vscodeUsesClau
 import { visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
 import { cursorMcpPath } from './bridges/cursor_install.js'
 import { zedSettingsPath } from './bridges/zed_install.js'
-import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
+import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_compiler.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
 import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'

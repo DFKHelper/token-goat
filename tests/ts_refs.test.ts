@@ -3,12 +3,11 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import {
-  isAvailable,
   isTsPath,
   resolveTypedRefs,
-  setTsModuleForTesting,
   type ResolveTypedRefsInput,
 } from '../src/ts_refs.js'
+import { isAvailable, setTsModuleForTesting } from '../src/ts_compiler.js'
 import type { RefEntry } from '../src/parser_types.js'
 import * as realTs from 'typescript'
 import type * as TsModule from 'typescript'
@@ -73,10 +72,7 @@ describe('ts_refs — resolveTypedRefs precision: two same-named methods on unre
     fs.writeFileSync(callerA, callerASrc)
     fs.writeFileSync(callerB, callerBSrc)
 
-    // col 0 mirrors the REAL indexer's column semantics for a call reference: `parser.ts`'s
-    // `extractRefs` records the position of the whole call-expression node (`foo.run()`, starting
-    // at `foo`), not the callee identifier's own column -- both caller lines start flush left with
-    // no leading whitespace, so that start column is 0, not the column of `run` itself.
+    // col 0 mirrors the REAL indexer's column semantics for a call reference: `parser.ts`'s `extractRefs` records the position of the whole call-expression node (`foo.run()`, starting at `foo`), not the callee identifier's own column -- both caller lines start flush left with no leading whitespace, so that start column is 0, not the column of `run` itself.
     const trueRef = ref(callerA, 3, 0)
     const falsePositiveRef = ref(callerB, 3, 0)
 
@@ -98,8 +94,7 @@ describe('ts_refs — resolveTypedRefs precision: two same-named methods on unre
   })
 
   it('name-based matching alone (no type resolution) would have kept BOTH refs — sanity-checks the fixture actually reproduces the bug', () => {
-    // Same fixture as above, asserted from the other direction: both refs share the name
-    // 'run' and would be indistinguishable to a name-only matcher.
+    // Same fixture as above, asserted from the other direction: both refs share the name 'run' and would be indistinguishable to a name-only matcher.
     const callerASrc = "foo.run()\n"
     const callerBSrc = "bar.run()\n"
     expect(colOf(callerASrc, 1, 'run')).toBe(colOf(callerBSrc, 1, 'run'))
@@ -118,13 +113,7 @@ describe('ts_refs — precision survives with JSDoc parsing narrowed', () => {
   })
 
   it('drops a same-named false positive when the true caller is a .js file typed only by JSDoc', () => {
-    // The scoped program is built with jsDocParsingMode ParseForTypeErrors, which skips JSDoc in
-    // .ts files but keeps it in .js files, where it is the only place a type can be written. This
-    // pins that a JS caller typed that way still survives the tier rather than being lost with the
-    // comments. It does not prove the mode choice: switching to ParseNone leaves this fixture
-    // green, because a candidate the checker cannot decide about is kept rather than dropped, so
-    // an erased annotation looks the same from here as a resolved one. ParseForTypeErrors is
-    // conservatism about .js typing, not something this assertion can distinguish.
+    // The scoped program is built with jsDocParsingMode ParseForTypeErrors, which skips JSDoc in .ts files but keeps it in .js files, where it is the only place a type can be written. This pins that a JS caller typed that way still survives the tier rather than being lost with the comments. It does not prove the mode choice: switching to ParseNone leaves this fixture green, because a candidate the checker cannot decide about is kept rather than dropped, so an erased annotation looks the same from here as a resolved one. ParseForTypeErrors is conservatism about .js typing, not something this assertion can distinguish.
     const fooSrc = ['export class Foo {', '  run(): void {}', '}', ''].join('\n')
     const barSrc = ['export class Bar {', '  run(): void {}', '}', ''].join('\n')
     const jsCallerSrc = [
@@ -230,8 +219,7 @@ describe('ts_refs — graceful fallback', () => {
       fs.writeFileSync(defFile, defSrc)
       fs.writeFileSync(callerFile, callerSrc)
 
-      // Deliberately wrong column (past end of line) so the identifier lookup fails to resolve --
-      // must be KEPT (fail open), not silently dropped.
+      // Deliberately wrong column (past end of line) so the identifier lookup fails to resolve -- must be KEPT (fail open), not silently dropped.
       const unresolvable = ref(callerFile, 1, 999)
 
       const result = resolveTypedRefs({
@@ -253,9 +241,7 @@ describe('ts_refs — graceful fallback', () => {
 describe('ts_refs — performance sanity on this repo\'s own codebase', () => {
   it('type-resolves a real symbol (foldPath, ~20 call sites) in well under the CI-safe budget', () => {
     const repoRoot = path.resolve(__dirname, '..')
-    // `foldPath` was defined in src/util.ts until the containment primitives were split out into
-    // their own leaf module; util.ts now re-exports it. The definition has to be the real one or
-    // resolveTypedRefs is handed a line range that does not contain the symbol.
+    // `foldPath` was defined in src/util.ts until the containment primitives were split out into their own leaf module; util.ts now re-exports it. The definition has to be the real one or resolveTypedRefs is handed a line range that does not contain the symbol.
     const defFile = path.resolve(repoRoot, 'src/path_containment.ts')
     const defSrc = fs.readFileSync(defFile, 'utf-8')
     const defLines = defSrc.split('\n')
@@ -264,8 +250,7 @@ describe('ts_refs — performance sanity on this repo\'s own codebase', () => {
     let endLineIdx = defLineIdx
     while (defLines[endLineIdx] !== '}' && endLineIdx < defLines.length - 1) endLineIdx++
 
-    // Real candidate files across the repo that call foldPath(...) -- a realistic-shape
-    // multi-file `refs` scan, not a synthetic single-file case.
+    // Real candidate files across the repo that call foldPath(...) -- a realistic-shape multi-file `refs` scan, not a synthetic single-file case.
     const candidateFileRel = [
       'src/index_reader.ts',
       'src/db.ts',
@@ -301,8 +286,7 @@ describe('ts_refs — performance sanity on this repo\'s own codebase', () => {
     const elapsedMs = Date.now() - start
 
     expect(result).not.toBeNull()
-    // Generous CI-safe ceiling -- this repo has ~600 files total, but the scoped program only
-    // ever touches defFile + candidate files + their own import closures, not the whole project.
+    // Generous CI-safe ceiling -- this repo has ~600 files total, but the scoped program only ever touches defFile + candidate files + their own import closures, not the whole project.
     expect(elapsedMs).toBeLessThan(30_000)
   })
 })
@@ -312,12 +296,7 @@ describe('ts_refs — scoped program skips JSDoc parsing it never reads', () => 
     setTsModuleForTesting(undefined)
   })
 
-  // This tier asks the checker one thing -- do two identifiers resolve to the same declaration --
-  // and never reads a doc comment or reports a diagnostic, so parsing every JSDoc comment in every
-  // file the program pulls in is pure waste. Configuring the host to skip it is worth ~127ms of a
-  // ~1180ms `refs` call here, measured on the built bundle across three alternating builds, with
-  // byte-identical output. None of that is observable from the command's behaviour: drop the host
-  // and every functional test still passes while the saving silently disappears.
+  // This tier asks the checker one thing -- do two identifiers resolve to the same declaration -- and never reads a doc comment or reports a diagnostic, so parsing every JSDoc comment in every file the program pulls in is pure waste. Configuring the host to skip it is worth ~127ms of a ~1180ms `refs` call here, measured on the built bundle across three alternating builds, with byte-identical output. None of that is observable from the command's behaviour: drop the host and every functional test still passes while the saving silently disappears.
   function recordingTs(withEnum: boolean): { calls: TsModule.CreateProgramOptions[]; mod: typeof TsModule } {
     const calls: TsModule.CreateProgramOptions[] = []
     const mod = {
@@ -352,9 +331,7 @@ describe('ts_refs — scoped program skips JSDoc parsing it never reads', () => 
   })
 
   it('falls back to the default host on a TypeScript too old to have the enum', () => {
-    // typescript is an optional dependency and JSDocParsingMode only exists from 5.3, so reading
-    // the mode off an older module yields undefined -- which must mean "keep the default host",
-    // not "pass undefined as the mode" and not a crash.
+    // typescript is an optional dependency and JSDocParsingMode only exists from 5.3, so reading the mode off an older module yields undefined -- which must mean "keep the default host", not "pass undefined as the mode" and not a crash.
     const { calls, mod } = recordingTs(false)
     runOnce(mod)
 

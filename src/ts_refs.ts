@@ -1,53 +1,12 @@
-/** Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. `read_refs.ts::runRefs` matches references by identifier NAME alone (the `refs` table has no def-site linkage — see `db.ts`'s `refs` schema), so two unrelated symbols sharing a name (two different classes each with a `run()` method) get conflated: a caller of one is reported as a reference to the other. This module adds an opt-in "exact" tier for `.ts`/`.tsx`/`.mts`/ `.cts` symbols: given the symbol's definition site and its name-matched candidate references, it uses `ts.Program` + the type checker's `getSymbolAtLocation` to resolve each candidate's actual bound symbol and keeps only the ones whose declaration falls inside the definition's own [lineStart, lineEnd] span. Lazily `require`s `typescript` (mirrors {@link ./embeddings.ts}'s `ensureTransformerLoaded` pattern for `onnxruntime-node`) so a missing/broken install degrades to `null` instead of throwing, and `typescript` never gets bundled into `dist/token-goat.mjs` (see `esbuild.config.mjs`'s `EXTERNAL_NATIVE_DEPS` -- `typescript` is listed there for the same "optional dependency must not get statically inlined" reason as `onnxruntime-node`). Scoping / performance: building a `ts.Program` for a whole project is the exact cost this product exists to avoid paying on every `refs` call. Instead of the project's full tsconfig `include` set, the program's `rootNames` are just the definition file plus the (deduped) set of candidate reference files -- TypeScript still resolves each root's own `import` graph (that is unavoidable: correctly resolving `foo.run()` requires knowing `foo`'s type, which requires loading whatever module declares it), but never touches files outside that reachable closure. On this repo's own ~600-file tree a single-symbol `refs` call with a handful of candidate files type-checks in well under a second (see `tests/ts_refs.test.ts`'s perf-sanity case). As a second guard against a pathologically interconnected project, {@link MAX_CANDIDATE_FILES} caps how many distinct candidate files this tier will attempt before silently falling back to the existing name-based results. */
+/** Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. `read_refs.ts::runRefs` matches references by identifier NAME alone (the `refs` table has no def-site linkage — see `db.ts`'s `refs` schema), so two unrelated symbols sharing a name (two different classes each with a `run()` method) get conflated: a caller of one is reported as a reference to the other. This module adds an opt-in "exact" tier for `.ts`/`.tsx`/`.mts`/ `.cts` symbols: given the symbol's definition site and its name-matched candidate references, it uses `ts.Program` + the type checker's `getSymbolAtLocation` to resolve each candidate's actual bound symbol and keeps only the ones whose declaration falls inside the definition's own [lineStart, lineEnd] span. Takes `typescript` from ts_compiler.ts's lazy require, so a missing/broken install degrades to `null` instead of throwing, and `typescript` never gets bundled into `dist/token-goat.mjs`. Scoping / performance: building a `ts.Program` for a whole project is the exact cost this product exists to avoid paying on every `refs` call. Instead of the project's full tsconfig `include` set, the program's `rootNames` are just the definition file plus the (deduped) set of candidate reference files -- TypeScript still resolves each root's own `import` graph (that is unavoidable: correctly resolving `foo.run()` requires knowing `foo`'s type, which requires loading whatever module declares it), but never touches files outside that reachable closure. On this repo's own ~600-file tree a single-symbol `refs` call with a handful of candidate files type-checks in well under a second (see `tests/ts_refs.test.ts`'s perf-sanity case). As a second guard against a pathologically interconnected project, {@link MAX_CANDIDATE_FILES} caps how many distinct candidate files this tier will attempt before silently falling back to the existing name-based results. */
 
-import { createRequire } from 'node:module'
 import * as path from 'node:path'
 import type TsModule from 'typescript'
 import type { RefEntry } from './parser_types.js'
-import { registerReset } from './reset.js'
-
-const _require = createRequire(import.meta.url)
+import { loadTs } from './ts_compiler.js'
 
 // Above this many distinct candidate files, program construction cost is no longer bounded by "a handful of files near the definition" -- skip the tier and fall back to name-based results rather than risk `refs` becoming slow on a large, densely-interconnected project.
 const MAX_CANDIDATE_FILES = 50
-
-let _ts: typeof TsModule | null = null
-let _tsError: Error | null = null
-let _tsLoadAttempted = false
-// `undefined` = no override (use the real lazy-loaded module); `null` or a module = forced value. Lets tests exercise the "typescript is unavailable" fallback path deterministically without needing to actually uninstall the package.
-let _tsOverride: typeof TsModule | null | undefined = undefined
-
-function loadTs(): typeof TsModule | null {
-  if (_tsOverride !== undefined) return _tsOverride
-  if (!_tsLoadAttempted) {
-    _tsLoadAttempted = true
-    try {
-      _ts = _require('typescript') as typeof TsModule
-    } catch (e) {
-      _tsError = e instanceof Error ? e : new Error(String(e))
-    }
-  }
-  return _ts
-}
-
-/** True when the `typescript` compiler API is loadable (installed and requires cleanly). */
-export function isAvailable(): boolean {
-  return loadTs() !== null
-}
-
-/** Last load error, for diagnostics (`token-goat doctor` style callers). Null when never attempted or loaded successfully. */
-export function loadError(): Error | null {
-  return _tsError
-}
-
-/** Test-only: force `isAvailable()`/internal resolution to use `mod` (or `null` to simulate "not installed") instead of the real lazily-`require`d module. Pass `undefined` to clear the override. */
-export function setTsModuleForTesting(mod: typeof TsModule | null | undefined): void {
-  _tsOverride = mod
-}
-
-registerReset(() => {
-  _tsOverride = undefined
-})
 
 const TS_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts'])
 const TS_JS_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'])
