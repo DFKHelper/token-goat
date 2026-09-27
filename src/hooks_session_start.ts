@@ -75,6 +75,12 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
     const clauses: string[] = []
     if (drifted > 0) clauses.push(`${countNoun(drifted, 'file')} that changed outside this session${breakdown}`)
     if (upgraded > 0) clauses.push(`${countNoun(upgraded, 'file')} unchanged on disk but indexed by an older version of token-goat`)
+    // Said from what the queue took, not from what the sweep found: the queue refuses every path under the OS temp dir, and a note promising a reindex there told the model its stale lookups would heal on their own.
+    const unqueued = total - result.enqueued
+    if (unqueued > 0) {
+      const refused = unqueued < total ? `${unqueued} of them` : total === 1 ? 'it' : 'they'
+      return `token-goat: found ${clauses.join(' and ')}${truncated}, but ${refused} could not be queued for reindexing, so symbol lookups may stay stale until token-goat index runs here.`
+    }
     return `token-goat: reindexing ${clauses.join(' and ')}${truncated}. Symbol lookups may be briefly stale.`
   } catch (e) {
     recordStat('reconcile_note_failed', 0, 0, undefined, extractErrorMessage(e))

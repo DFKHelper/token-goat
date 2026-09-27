@@ -80,7 +80,7 @@ export interface ReconcileResult {
   trackedUnavailable: boolean
   /** Tracked files never examined because the budget ran out. */
   unscanned: number
-  /** Total paths enqueued for reindexing (0 when `dryRun`). */
+  /** Paths that reached the dirty queue (0 when `dryRun`). Fewer than changed + added + removed when the queue refused some: it takes nothing under the OS temp dir, and nothing at all when it cannot be written. */
   enqueued: number
   elapsedMs: number
 }
@@ -111,6 +111,9 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     return 0
   }
 
+  // Worded from what the queue took, not from what the sweep found: the queue refuses every path under the OS temp dir, and a report that called those files queued promised a reindex no worker would run.
+  const unqueued = opts.dryRun === true ? 0 : result.changed.length + result.added.length + result.removed.length - result.enqueued
+  const noneQueued = unqueued > 0 && result.enqueued === 0
   const lines: string[] = []
   if (isReconcileClean(result)) {
     // Not claimed when the enumeration failed: an empty drift set there means nothing was compared, and "Index matches disk" over zero comparisons is the confident wrong answer this whole command exists to avoid. The disclosure below carries that case instead.
@@ -118,9 +121,9 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
       lines.push(`Index matches disk: ${countNoun(result.scanned, 'file')} checked in ${result.elapsedMs}ms.`)
     }
   } else {
-    const verb = opts.dryRun === true ? 'would reindex' : 'queued for reindexing'
+    const verb = opts.dryRun === true ? 'would reindex' : noneQueued ? 'not queued' : 'queued for reindexing'
     // Deletions get their own verb. The shared one is accurate for the other two kinds and wrong here -- "indexed but gone from disk (queued for reindexing)" describes reparsing a file that no longer exists, which is the opposite of what the queue does with it.
-    const dropVerb = opts.dryRun === true ? 'would drop from the index' : 'queued for removal'
+    const dropVerb = opts.dryRun === true ? 'would drop from the index' : noneQueued ? 'not queued' : 'queued for removal'
     if (result.changed.length > 0) lines.push(`${countNoun(result.changed.length, 'file')} changed since indexing (${verb}):`)
     for (const f of result.changed) lines.push(`  ~ ${f}`)
     if (result.added.length > 0) lines.push(`${countNoun(result.added.length, 'file')} not in the index (${verb}):`)
@@ -134,12 +137,15 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     lines.push(`${countNoun(result.mtimeOnly, 'file')} had a newer timestamp but identical content, so ${result.mtimeOnly === 1 ? 'it was' : 'they were'} left alone.`)
   }
   if (result.parserStale > 0) {
-    const reparseVerb = opts.dryRun === true ? 'would reparse' : 'queued for reparse'
+    const reparseVerb = opts.dryRun === true ? 'would reparse' : noneQueued ? 'not queued' : 'queued for reparse'
     lines.push(`${countNoun(result.parserStale, 'file')} of the above ${result.parserStale === 1 ? 'was' : 'were'} unchanged on disk but indexed by an older parser (${reparseVerb}).`)
   }
   if (result.embedStale > 0) {
-    const reembedVerb = opts.dryRun === true ? 'would re-embed' : 'queued for re-embedding'
+    const reembedVerb = opts.dryRun === true ? 'would re-embed' : noneQueued ? 'not queued' : 'queued for re-embedding'
     lines.push(`${countNoun(result.embedStale, 'file')} of the above ${result.embedStale === 1 ? 'was' : 'were'} unchanged on disk but held out-of-date embeddings (${reembedVerb}).`)
+  }
+  if (unqueued > 0) {
+    lines.push(`${countNoun(unqueued, 'file')} of the above could not be queued for reindexing: the queue takes nothing under the OS temp dir, and nothing at all when it cannot be written. Run token-goat index here to bring the index up to date.`)
   }
   if (result.trackedUnavailable) {
     lines.push('This project has an index but git listed no files in it, so nothing on disk was compared against it and changed or new files could not be found. Files gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
@@ -281,9 +287,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   if (opts.dryRun !== true) {
     // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
     const toEnqueue = [...changed, ...added, ...removed].map((p) => resolveIndexPath(p, cwd))
-    // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately.
-    enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true })
-    enqueued = toEnqueue.length
+    // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately. The count is what the queue took, not what it was offered: it refuses every path under the OS temp dir, and a project there reported files enqueued that no worker would ever see.
+    enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true })
     // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (budget already gone before the first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
     if (budgetExhausted) {
       if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)
