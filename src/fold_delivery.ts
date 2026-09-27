@@ -111,8 +111,8 @@ export interface FoldedDelivery {
  */
 export type FoldLayout = 'compact' | 'aligned'
 
-/** The layout note a rewrite in `aligned` layout hands the reader alongside the result, so an empty line is not mistaken for an empty line of the file. One place, so every aligned producer describes the layout the same way. */
-export const ALIGNED_LAYOUT_NOTE = 'Every line shows its real line number: each withheld run is one `...` pointer line on the run\'s first line, and the rest of the run is left as empty lines.'
+/** The layout note a rewrite in `aligned` layout hands the reader alongside the result, so an empty line is not mistaken for an empty line of the file. One place, so every aligned producer describes the layout the same way. Worded to cover both notice shapes an aligned rewrite can open a withheld run with: a `...` pointer (every structural fold) and a `[token-goat] lines ... were already served` notice (elideAlreadyServedLines), rather than naming only the first and leaving the second looking undocumented. */
+export const ALIGNED_LAYOUT_NOTE = 'Every line shows its real line number: each withheld run opens with one notice line on the run\'s first line (a `...` pointer, or a `[token-goat] lines ... were already served` notice), and the rest of the run is left as empty lines.'
 
 /** Append the notice standing in for `len` withheld rows. In `aligned` layout the rest of the run is padded with empty lines, and a notice spanning more than one line is joined onto one: either way the count of lines appended is exactly `len`, which is the whole invariant the layout exists for. */
 export function pushWithheld(out: string[], notice: string, len: number, layout: FoldLayout): void {
