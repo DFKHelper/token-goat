@@ -3,7 +3,6 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, countRefs, searchSymbolsFts } from './index_reader.js'
@@ -26,8 +25,8 @@ import {
   excludeTestsHiddenNote,
   countNoun,
   resolveOnPath,
-  windowsCmdQuoteArg,
 } from './util.js'
+import { spawnResolvedSync } from './process_util.js'
 import { buildContextWindow, renderContextWindow } from './util_context.js'
 import { globalDbPath } from './constants.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
@@ -478,7 +477,6 @@ export function runAsk(opts: AskOptions): number {
     return degrade(`${BACKEND_ENV}=${backendLabel} is set, but no indexed symbol matched this question, so there is no context to answer from -- try different wording or token-goat semantic`)
   }
 
-  const isWin = process.platform === 'win32'
   const backendPath = resolveOnPath(backendLabel)
 
   if (!backendPath) return degrade(`${BACKEND_ENV}=${backendLabel} is set, but '${backendLabel}' was not found on PATH`)
@@ -497,11 +495,7 @@ export function runAsk(opts: AskOptions): number {
     } else {
       askArgs = ['--print', '--bare', '--no-session-persistence']
     }
-    const needsShell = isWin && /\.(cmd|bat)$/i.test(backendPath)
-    const command = [backendPath, ...askArgs].map(windowsCmdQuoteArg).join(' ')
-    const result = needsShell
-      ? spawnSync(process.env['ComSpec'] || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], { input: prompt, encoding: 'utf8', timeout: 30000, windowsVerbatimArguments: true })
-      : spawnSync(backendPath, askArgs, { input: prompt, encoding: 'utf8', timeout: 30000 })
+    const result = spawnResolvedSync(backendPath, askArgs, { input: prompt, encoding: 'utf8', timeout: 30000 })
     let answer = ''
     if (result.status === 0) {
       if (codexOutPath) {

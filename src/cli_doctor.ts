@@ -5,6 +5,7 @@ import * as path from 'path'
 import { spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, resolveOnPath } from './util.js'
+import { spawnResolvedSync } from './process_util.js'
 import { displaySafeText } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
 import { compareSemver } from './cli_upgrade.js'
@@ -52,12 +53,8 @@ export function checkInstall(): DoctorResult {
   // Resolved against PATH and then executed by absolute path. This used to be `execSync('token-goat --version')`: a bare name in a shell string, which on Windows `cmd.exe` resolves from the current directory before PATH, so running `token-goat doctor` inside a repository containing a `token-goat.bat` ran that file and printed its output as the installed version. Demonstrated end to end against the shipped bundle. `resolveOnPath` skips the current directory, and spawnSync with an argv array never reaches a shell, so neither half of the original shape remains.
   const resolved = resolveOnPath('token-goat')
   if (resolved !== null) {
-    // A global npm install on Windows puts a `.CMD` shim on PATH, and since the argument-injection fix in Node 20.12/21.7 a batch file cannot be spawned directly at all -- spawnSync returns EINVAL. Running it through an explicit absolute cmd.exe with an argv array keeps the property that matters (the name is never re-resolved by an interpreter, so the current directory cannot supply the binary) while still executing the shim. Reported as a FAIL by the shipped build until this was run for real: the resolver was correct and the spawn was the part that broke.
-    const isBatch = /\.(?:cmd|bat)$/i.test(resolved)
-    const comspec = path.join(process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows', 'System32', 'cmd.exe')
-    const result = isBatch
-      ? spawnSync(fs.existsSync(comspec) ? comspec : 'cmd.exe', ['/d', '/s', '/c', resolved, '--version'], { encoding: 'utf-8', timeout: 15000, windowsHide: true })
-      : spawnSync(resolved, ['--version'], { encoding: 'utf-8', timeout: 15000, windowsHide: true })
+    // The `.CMD` shim a global npm install puts on PATH on Windows is the usual answer here, and spawnResolvedSync is what runs one. Reported as a FAIL by the shipped build until this was run for real: the resolver was correct and the spawn was the part that broke.
+    const result = spawnResolvedSync(resolved, ['--version'], { encoding: 'utf-8', timeout: 15000, windowsHide: true })
     if (result.status === 0) return { name: 'Installation', status: 'ok', message: (result.stdout ?? '').trim() }
   }
   // The package name is read from the manifest rather than written here: it was hardcoded as `token-goat-ts`, which is not the published name and is an unregistered, claimable npm package. This message prints exactly when a user's install is broken and they are most likely to run the command in it, and it installs globally.

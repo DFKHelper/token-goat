@@ -1,6 +1,5 @@
 /** Install / uninstall token-goat's hooks in Claude Code settings. Ports the `patch_settings_json` / `unpatch_settings_json` slice of `install.py` to TypeScript. Claude Code reads hook wiring from `~/.claude/settings.json` (user scope) or `<project>/.claude/settings.json` (project scope). Each token-goat hook is a `{ type: "command", command: ... }` entry under the matching event key, where the command invokes the generated shim at {@link claudeHookScriptPath} via {@link hookCommandFor} — `"<node>" "<shim>" <event> "<entry>"`. Going through the shim rather than the bare `token-goat hook <event>` PATH lookup buys two things: the shim's in-process fast path imports `dist/token-goat-hook.mjs` and calls `relayInProcess` directly instead of spawning a second process, and naming the node binary explicitly skips the npm bin wrapper (on Windows, a `cmd.exe` layer) that a PATH lookup would pay for on every single hook. Measured at ~480ms → ~324ms per invocation. Writes go through {@link atomicWriteText}; an absent settings file is created with only the hooks section. Installation is idempotent — re-running never duplicates an entry — and uninstall removes only token-goat's own entries plus the generated shim, leaving any user-authored hooks intact. */
 
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -14,7 +13,7 @@ import { loadConfig } from './config.js'
 import { nativeHookBinary, nativeHookCommandLine, nativeHookExecParts, parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
-import { resolveOnPath } from './process_util.js'
+import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
 import { removeCreatedBackups } from './bridges/created_configs.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
@@ -84,16 +83,12 @@ export function claudeExecFormHooksSupported(): boolean {
   return _claudeExecFormHooksSupported
 }
 
-/** The actual probe behind {@link claudeExecFormHooksSupported}: absent binary, a spawn error, a non-zero exit, or unparsable output all fall back to `false` (string form) rather than risk registering a hook the running Claude Code might silently drop. Mirrors cli_doctor.ts's checkInstall: a global npm install puts a `.cmd` shim on PATH, which node 20.12+/21.7+ refuses to spawn directly, so a batch shim is run through an explicit cmd.exe instead. */
+/** The actual probe behind {@link claudeExecFormHooksSupported}: absent binary, a spawn error, a non-zero exit, or unparsable output all fall back to `false` (string form) rather than risk registering a hook the running Claude Code might silently drop. Runs the binary as cli_doctor.ts's checkInstall does, through spawnResolvedSync, since a global npm install puts a `.cmd` shim on PATH that Node refuses to spawn directly. */
 function probeClaudeExecFormHooksSupported(): boolean {
   const resolved = resolveOnPath('claude')
   if (resolved === null) return false
   try {
-    const isBatch = /\.(?:cmd|bat)$/i.test(resolved)
-    const comspec = path.join(process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows', 'System32', 'cmd.exe')
-    const result = isBatch
-      ? spawnSync(fs.existsSync(comspec) ? comspec : 'cmd.exe', ['/d', '/s', '/c', resolved, '--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true })
-      : spawnSync(resolved, ['--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true })
+    const result = spawnResolvedSync(resolved, ['--version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true })
     if (result.status !== 0) return false
     return execFormSupportedForVersionOutput(result.stdout ?? '')
   } catch {
