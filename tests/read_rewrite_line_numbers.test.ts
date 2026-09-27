@@ -288,7 +288,10 @@ describe('a rewritten Read keeps every line on its real line number', () => {
     const second = envelopeEvent(file, body, session)
     preReadHandler({ ...second, eventName: 'pre_tool_use' })
     const view = harnessView(second)
-    expect(view.lines[0]?.text).toMatch(/^\[token-goat\] lines 1-30 were already served/)
+    // The leading bracket is neutralised (`&#91;`) because this notice is now routed through the same marker neutraliser every verbatim row in the body goes through, so a hostile file line spelling out this exact text is escaped identically rather than reaching the model unneutralised.
+    expect(view.lines[0]?.text).toMatch(/^&#91;token-goat\] lines 1-30 were already served/)
     expectRealNumbering(view, body)
+    // The served-elision notice is file-position line 1 here, same as every other aligned withheld-run notice; the layout note travels beside the result (PostToolUse additionalContext), not folded into a rewritten preamble line the fence would otherwise have to lead the body with.
+    expect(view.context, 'the aligned layout note travels beside a served-elision rewrite, same as every other aligned producer').toMatch(/real line number/)
   })
 })

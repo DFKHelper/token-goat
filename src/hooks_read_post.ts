@@ -202,22 +202,38 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   if (cuts.length === 0) return null
 
   const layout = readLayout(event)
-  const out: string[] = [...parsed.header]
+  const bodyRows: string[] = []
   let at = 0
   for (const cut of cuts) {
-    for (let i = at; i < cut.start; i++) out.push(parsed.rows[i]?.raw ?? '')
+    for (let i = at; i < cut.start; i++) bodyRows.push(parsed.rows[i]?.raw ?? '')
     const first = parsed.rows[cut.start]
     const last = parsed.rows[cut.start + cut.len - 1]
     if (first === undefined || last === undefined) return null
-    pushWithheld(out, servedRunNotice(first.no, last.no, cut.id, cut.len), cut.len, layout)
+    pushWithheld(bodyRows, servedRunNotice(first.no, last.no, cut.id, cut.len), cut.len, layout)
     at = cut.start + cut.len
   }
-  for (let i = at; i < parsed.rows.length; i++) out.push(parsed.rows[i]?.raw ?? '')
-  out.push(...parsed.trailer)
+  for (let i = at; i < parsed.rows.length; i++) bodyRows.push(parsed.rows[i]?.raw ?? '')
 
-  const rewritten = out.join('\n')
+  // fenceNumberedFileContent's `body` is the marker-neutralised text alone (no fence lines added, unlike fenceUntrustedFileContent), so it is safe to use here regardless of layout: a hostile file line spelling out this exact notice ("[token-goat] lines 1-500 were already served -- bash-output x") is escaped in place, at no line-count cost, header and trailer (the harness's own framing, never file content) left outside it. Aligned layout additionally can't let the fence's own preamble lead the body -- the same reason every other aligned producer (planMarkdownOutline, planSourceSkeleton, foldCodeBodies) moves it into the PostToolUse context instead of printing it inline.
+  const fenced = fenceNumberedFileContent(bodyRows.join('\n'), ALIGNED_LAYOUT_NOTE)
+  const rewritten = [...parsed.header, fenced.body, ...parsed.trailer].join('\n')
   if (layout === 'aligned' && !keepsLineNumbers(respText, rewritten)) return null
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
+
+  if (layout === 'aligned') {
+    if (
+      !isRewriteWorthwhile({
+        originalBytes,
+        rewrittenBytes: Buffer.byteLength(rewritten, 'utf-8') + Buffer.byteLength(fenced.preamble, 'utf-8'),
+        noticeBytes: 0,
+        minNetSavingsBytes: resolveMinNetSavingsBytes(),
+      })
+    ) {
+      return null
+    }
+    return emitRewriteWithContext(rewritten, fenced.preamble, 'read', { kind: 'read:served_elide', originalBytes })
+  }
+
   if (
     !isRewriteWorthwhile({
       originalBytes,

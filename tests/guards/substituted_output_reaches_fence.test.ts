@@ -55,6 +55,19 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'instructions preamble as the context this wrapper carries. Its callers are pinned to that ' +
       'form by the aligned-rewrite test below.',
   ],
+  [
+    'hooks_read_post.ts::elideAlreadyServedLines',
+    'Neutralises in place (fenceNumberedFileContent) the same way emitRewriteWithContext\'s other ' +
+      'callers do, and for the same reason, but for both layouts rather than only the aligned one: ' +
+      'this rewrite\'s whole saving is often a single small cut, so the three lines ' +
+      'fenceUntrustedFileContent would add to a compact-layout rewrite could turn a real saving ' +
+      'into a net loss, the same "without changing line count" constraint aligned layout has ' +
+      'unconditionally. A `[token-goat] lines N-M were already served` notice sits between the ' +
+      'file lines it replaced, same as before; the notice and every verbatim row around it are now ' +
+      'neutralised together, so a hostile file line spelling out this exact notice is escaped like ' +
+      'any other marker rather than reaching the model as our own voice. Pinned by the ' +
+      'aligned-rewrite test below.',
+  ],
   // (a) nothing to separate
   [
     'hooks_bash_post.ts::maybeStripAnsiOnly',
@@ -88,12 +101,6 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'AGENT_NAME_RE-shaped names and drops the definition otherwise, and the joined names are ' +
       'neutralised before interpolation. Both halves are load-bearing; widening either one puts ' +
       'this site back in the offenders list, which is the intent.',
-  ],
-  [
-    'hooks_read_post.ts::elideAlreadyServedLines',
-    'Interleaved: a `[token-goat] lines N-M were already served` notice sits between the file ' +
-      'lines it replaced. Also the surface most likely to be round-tripped back into an edit, ' +
-      'which is what makes escaping the retained lines the wrong trade here. Open, not settled.',
   ],
   [
     'hooks_browser_image.ts::postBrowserImageHandler',
@@ -217,9 +224,16 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
   it('every aligned rewrite neutralises the file bytes it keeps in place', () => {
     const readPost = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'hooks_read_post.ts'), 'utf-8'))
     const callers = readPost.filter((f) => codeOnly(f.body).includes('emitRewriteWithContext(')).map((f) => f.name).sort()
-    expect(callers, 'The set of emitRewriteWithContext callers changed; name the new one here with how it neutralises.').toEqual(['emitStructuralFold', 'foldCodeBodies'])
+    expect(callers, 'The set of emitRewriteWithContext callers changed; name the new one here with how it neutralises.').toEqual([
+      'elideAlreadyServedLines',
+      'emitStructuralFold',
+      'foldCodeBodies',
+    ])
     const foldCodeBodies = readPost.find((f) => f.name === 'foldCodeBodies')
     expect(foldCodeBodies?.body.includes(NUMBERED_FENCE_CALL)).toBe(true)
+    // elideAlreadyServedLines fences the same way in both layouts, not only its aligned branch (unlike foldCodeBodies, whose compact branch reaches fenceUntrustedFileContent instead): the fenced body is built once and shared, so a hostile file line spelling out its own served-elision notice is neutralised regardless of which layout emits it.
+    const elideAlreadyServedLines = readPost.find((f) => f.name === 'elideAlreadyServedLines')
+    expect(elideAlreadyServedLines?.body.includes(NUMBERED_FENCE_CALL)).toBe(true)
     const structural = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'fold_structure.ts'), 'utf-8')).filter((f) => f.body.includes('context: '))
     expect(structural.map((f) => f.name).sort(), 'The set of StructuralFold producers setting `context` changed.').toEqual(['planMarkdownOutline', 'planSourceSkeleton'])
     for (const fn of structural) expect(fn.body.includes(NUMBERED_FENCE_CALL), `${fn.name} sets an aligned fold's context without neutralising the file bytes`).toBe(true)
