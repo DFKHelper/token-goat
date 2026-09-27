@@ -381,16 +381,15 @@ function uninstallHooksScoped(scope: HookScope): boolean {
 
   if (!removed) return removedScript
 
-  if (Object.keys(hooks).length === 0) {
-    delete settings.hooks
-  } else {
-    settings.hooks = hooks
-  }
-
-  writeJsonSettings(p, settings)
-  // The timestamped backups of this file are token-goat's own litter, so they leave with it.
-  removeCreatedBackups(p)
+  saveUninstalledHookSettings(p, settings)
   return true
+}
+
+/** Write back a JSON settings file whose token-goat hook entries were just stripped, dropping a `hooks` map left empty, then delete the timestamped backups token-goat made of the file: they are its own litter, so they leave with it. The Claude Code, Gemini CLI and Qwen Code uninstalls all end here. */
+export function saveUninstalledHookSettings(p: string, settings: { hooks?: Record<string, unknown> }): void {
+  if (settings.hooks !== undefined && Object.keys(settings.hooks).length === 0) delete settings.hooks
+  writeJsonSettings(p, settings)
+  removeCreatedBackups(p)
 }
 
 /** Are token-goat hooks installed in `scope`? True only when every mapped event key carries a *current-format* token-goat hook command — a legacy-only entry does not count, since it is dead on this build, and a partial install (some events wired, some not) reads as not installed so {@link installHooks} will top up the missing entries. */
