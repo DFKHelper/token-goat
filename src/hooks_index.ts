@@ -1,4 +1,4 @@
-/** Dirty-queue management for incremental re-indexing. Ports the `queue/dirty.txt` side of `worker.py::enqueue_dirty` and the pre-compact flush concept. Edited files are appended to the queue by {@link appendDirtyPath} (called from `hooks_edit.ts`); the background indexer (Layer 7) will later drain it. On `pre_compact` this module records the pending paths and clears the queue so the next session starts clean. This module is the read/write/clear surface the hooks and the CLI use; the queue path and the append itself live in worker.ts (`dirtyQueuePathFor`, `appendDirtyQueuePaths`), so the producers here and the worker's own requeues write the queue through one definition. */
+/** Dirty-queue management for incremental re-indexing. Ports the `queue/dirty.txt` side of `worker.py::enqueue_dirty` and the pre-compact flush concept. Edited files are appended to the queue by {@link appendDirtyPath} (called from `hooks_edit.ts`); the background indexer (Layer 7) will later drain it. On `pre_compact` this module records the pending paths and clears the queue so the next session starts clean. This module is the read/write/clear surface the hooks and the CLI use; the queue path and the append itself live in dirty_queue.ts (`dirtyQueuePathFor`, `appendDirtyQueuePaths`), so the producers here and the worker's own requeues write the queue through one definition. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -11,14 +11,15 @@ import { resolveIndexPath } from './paths.js'
 import { isUnderSystemTemp } from './project.js'
 import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
-import { appendDirtyQueuePaths, dirtyQueuePathFor, ensureWorkerAlive, getDirtyPathsFor } from './worker.js'
+import { appendDirtyQueuePaths, dirtyQueuePathFor, getDirtyPathsFor } from './dirty_queue.js'
+import { ensureWorkerAlive } from './worker_lifecycle.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
 export function dirtyQueuePath(): string {
   return dirtyQueuePathFor(dataDir())
 }
 
-/** Append every path in `normalizedPaths` to the dirty queue under {@link dataDir}, one newline-terminated path per line, in one filesystem append, through worker.ts::appendDirtyQueuePaths, which holds the torn-line guard and the recheck against a claim renaming the queue mid-write. Throws when the queue cannot be written, which the edit hook records as a failed append. */
+/** Append every path in `normalizedPaths` to the dirty queue under {@link dataDir}, one newline-terminated path per line, in one filesystem append, through dirty_queue.ts::appendDirtyQueuePaths, which holds the torn-line guard and the recheck against a claim renaming the queue mid-write. Throws when the queue cannot be written, which the edit hook records as a failed append. */
 export function appendDirtyPaths(normalizedPaths: string[]): void {
   appendDirtyQueuePaths(dataDir(), normalizedPaths)
 }

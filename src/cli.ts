@@ -61,13 +61,8 @@ import { detectEcosystems } from './bridges/detect_ecosystems.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor_platforms.js'
-import {
-  isWorkerRunning,
-  runDetachedWorkerDaemon,
-  startDetachedWorker,
-  stopWorker,
-  WorkerAlreadyRunningError,
-} from './worker.js'
+import { runDetachedWorkerDaemon } from './worker.js'
+import { isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
@@ -1167,7 +1162,7 @@ function cmdWorkerStart(): void {
     out('Worker already running.')
     return
   }
-  // startDetachedWorker's own atomic pid-file claim (see worker.ts::claimWorkerPidFile) is the real guard against the TOCTOU race above: two near-simultaneous `worker start` invocations can both pass the isWorkerRunning() check above, but only one of them can win the exclusive pid-file create that follows, so the loser reports this cleanly instead of orphaning a second, unstoppable daemon.
+  // startDetachedWorker's own atomic pid-file claim (see worker_lifecycle.ts::claimWorkerPidFile) is the real guard against the TOCTOU race above: two near-simultaneous `worker start` invocations can both pass the isWorkerRunning() check above, but only one of them can win the exclusive pid-file create that follows, so the loser reports this cleanly instead of orphaning a second, unstoppable daemon.
   try {
     const pid = startDetachedWorker()
     out(`Worker started (pid ${pid}).`)
@@ -2309,7 +2304,7 @@ export function applyExitOverride(command: Command): void {
 
 /** Parse `argv` and dispatch. Sets `process.exitCode`; callers (main.ts) should let the process exit naturally so buffered stdout flushes first. */
 export async function run(argv: string[] = process.argv): Promise<void> {
-  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts): `spawn(node, [thisModule, '--worker-daemon'])`, i.e. always argv[2]. It is not a registered commander option or command anywhere in buildProgram, so it must be intercepted here, before parseAsync ever sees argv -- otherwise commander rejects it as an unknown option and the freshly-spawned daemon child exits immediately, silently disabling the entire detached background-indexing feature (`token-goat worker start`). Checking only argv[2] (rather than "anywhere in argv") avoids hijacking an unrelated command that merely carries that literal string as one of its own arguments, e.g. `token-goat grep -- --worker-daemon`.
+  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker_lifecycle.ts::startDetachedWorker): `spawn(node, [thisModule, '--worker-daemon'])`, i.e. always argv[2]. It is not a registered commander option or command anywhere in buildProgram, so it must be intercepted here, before parseAsync ever sees argv -- otherwise commander rejects it as an unknown option and the freshly-spawned daemon child exits immediately, silently disabling the entire detached background-indexing feature (`token-goat worker start`). Checking only argv[2] (rather than "anywhere in argv") avoids hijacking an unrelated command that merely carries that literal string as one of its own arguments, e.g. `token-goat grep -- --worker-daemon`.
   if (argv[2] === '--worker-daemon') {
     runDetachedWorkerDaemon()
     return

@@ -16,7 +16,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { ensureWorkerAlive, workerPidPath } from '../src/worker.js'
+import { ensureWorkerAlive, workerPidPath } from '../src/worker_lifecycle.js'
 
 /** What `spawn` returns for a process that never started: no pid, and the cause still to come as an 'error' event. */
 class FailedChild extends EventEmitter {

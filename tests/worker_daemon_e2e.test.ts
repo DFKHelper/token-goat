@@ -25,7 +25,7 @@ function effectiveDataDir(base: string): string {
   return path.join(base, 'token-goat')
 }
 
-/** Signal-0 liveness probe, mirroring worker.ts's own pidAlive. */
+/** Signal-0 liveness probe, mirroring worker_lifecycle.ts's own pidAlive. */
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)

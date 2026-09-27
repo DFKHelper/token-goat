@@ -17,7 +17,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 import { spawn } from 'node:child_process'
-import { startDetachedWorker } from '../src/worker.js'
+import { startDetachedWorker } from '../src/worker_lifecycle.js'
 
 const TEMP_KEYS = ['TEMP', 'TMP', 'TMPDIR'] as const
 

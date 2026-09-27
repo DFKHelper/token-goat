@@ -4,27 +4,13 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Regression harness: pruneDeletedFiles used to call fs.existsSync(p), which per Node's own docs
-// swallows ANY stat error (not just ENOENT -- also EPERM/EBUSY/permission-denied-mid-scan) and
-// just returns false, indistinguishable from "genuinely deleted". existsSync is implemented via
-// Node's internal binding, not by calling the public fs.statSync -- so a mock that only patches
-// statSync never reaches the buggy existsSync call at all and would pass identically pre- and
-// post-fix. To faithfully reproduce the real failure mode we mock BOTH: existsSync returns false
-// for the blocked path (exactly what it does in real life when any stat error occurs underneath
-// it), while statSync throws a non-ENOENT error for that same path (what the fixed code checks
-// for). vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot
-// redefine property"), so a module mock with a hoisted flag is the portable way to do this while
-// every other fs call in this file passes straight through to the real module untouched.
+// Regression harness: pruneDeletedFiles used to call fs.existsSync(p), which per Node's own docs swallows ANY stat error (not just ENOENT -- also EPERM/EBUSY/permission-denied-mid-scan) and just returns false, indistinguishable from "genuinely deleted". existsSync is implemented via Node's internal binding, not by calling the public fs.statSync -- so a mock that only patches statSync never reaches the buggy existsSync call at all and would pass identically pre- and post-fix. To faithfully reproduce the real failure mode we mock BOTH: existsSync returns false for the blocked path (exactly what it does in real life when any stat error occurs underneath it), while statSync throws a non-ENOENT error for that same path (what the fixed code checks for). vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so a module mock with a hoisted flag is the portable way to do this while every other fs call in this file passes straight through to the real module untouched.
 const mockState = vi.hoisted(() => ({
   blockedPath: undefined as string | undefined,
-  // Fires once, synchronously, from inside statSync for this exact path -- used to simulate a
-  // concurrent recreate-and-reindex landing in the gap between a prune scan observing "file
-  // gone" and the prune's own delete of that path actually running.
+  // Fires once, synchronously, from inside statSync for this exact path -- used to simulate a concurrent recreate-and-reindex landing in the gap between a prune scan observing "file gone" and the prune's own delete of that path actually running.
   onStatOnce: undefined as (() => void) | undefined,
   onStatOncePath: undefined as string | undefined,
-  // Number of matching stats to let pass before the hook fires. 0 = fire on the first match
-  // (findDeletablePaths' scan). 1 = fire on the second match, which is removeDeletedFilesBestEffort's
-  // own recheck scan -- the window Fix C narrows and a batch-shape delete leaves wide open.
+  // Number of matching stats to let pass before the hook fires. 0 = fire on the first match (findDeletablePaths' scan). 1 = fire on the second match, which is removeDeletedFilesBestEffort's own recheck scan -- the window Fix C narrows and a batch-shape delete leaves wide open.
   onStatSkip: 0,
 }))
 vi.mock('node:fs', async (importOriginal) => {
@@ -75,10 +61,7 @@ import {
 import { recordKnownRoot, recordKnownRootThrottled } from '../src/known_roots.js'
 import * as embeddingsModule from '../src/embeddings.js'
 
-// Resolved at collection time so the vector test below can be a real skip rather than a body that
-// returns having asserted nothing. Resolution alone, not a vec0 load probe: the test asserts on
-// reclamation, and a build where the module resolves but vec0 will not load already has a
-// dedicated three-state test elsewhere (tests/embeddings_vec_insert.test.ts) whose job that is.
+// Resolved at collection time so the vector test below can be a real skip rather than a body that returns having asserted nothing. Resolution alone, not a vec0 load probe: the test asserts on reclamation, and a build where the module resolves but vec0 will not load already has a dedicated three-state test elsewhere (tests/embeddings_vec_insert.test.ts) whose job that is.
 function sqliteVecInstalled(): boolean {
   try {
     createRequire(import.meta.url).resolve('sqlite-vec')
@@ -140,14 +123,7 @@ describe('index_prune', () => {
     expect(symbolCount(dbPath, aKey)).toBe(countBefore)
   })
 
-  // Regression: pruneDeletedFiles used to call fs.existsSync(p), which swallows ANY
-  // stat error (not just ENOENT -- also EPERM/EBUSY/permission-denied-mid-scan, all
-  // documented Node behavior) and returns false. A transient lock (e.g. a Windows AV
-  // scanner or search indexer holding the file open at the exact moment prune runs)
-  // was therefore indistinguishable from "genuinely deleted", and the tracked file's
-  // rows were wiped even though it was still on disk. The fix must confirm real
-  // absence (ENOENT) before pruning, and leave a file's rows intact when its
-  // existence can't be confirmed for any other reason.
+  // Regression: pruneDeletedFiles used to call fs.existsSync(p), which swallows ANY stat error (not just ENOENT -- also EPERM/EBUSY/permission-denied-mid-scan, all documented Node behavior) and returns false. A transient lock (e.g. a Windows AV scanner or search indexer holding the file open at the exact moment prune runs) was therefore indistinguishable from "genuinely deleted", and the tracked file's rows were wiped even though it was still on disk. The fix must confirm real absence (ENOENT) before pruning, and leave a file's rows intact when its existence can't be confirmed for any other reason.
   it('keeps rows for a file that cannot be stat-checked (e.g. EPERM/EBUSY), only prunes genuinely deleted files', () => {
     const lockedPath = path.join(dir, 'locked.ts')
     const goneePath = path.join(dir, 'gone.ts')
@@ -160,13 +136,9 @@ describe('index_prune', () => {
     expect(symbolCount(dbPath, lockedKey)).toBe(1)
     expect(symbolCount(dbPath, goneKey)).toBe(1)
 
-    // "gone" is genuinely deleted (real ENOENT via a plain fs.rmSync). "locked" stays on disk but
-    // its existence is unconfirmable (simulated EPERM via the module-level mock above).
+    // "gone" is genuinely deleted (real ENOENT via a plain fs.rmSync). "locked" stays on disk but its existence is unconfirmable (simulated EPERM via the module-level mock above).
     fs.rmSync(goneePath)
-    // pruneDeletedFiles iterates over the NORMALIZED paths stored in the DB (forward slashes,
-    // lowercased drive letter), not the raw path.join() result -- match on that, or the mock
-    // never actually intercepts the call the function makes and silently falls through to the
-    // real filesystem instead.
+    // pruneDeletedFiles iterates over the NORMALIZED paths stored in the DB (forward slashes, lowercased drive letter), not the raw path.join() result -- match on that, or the mock never actually intercepts the call the function makes and silently falls through to the real filesystem instead.
     mockState.blockedPath = lockedKey
 
     const result = pruneDeletedFiles(normalizePath(dir), dbPath)
@@ -211,12 +183,7 @@ describe('index_prune', () => {
     expect(symbolCount(dbPath, app2Key)).toBe(1)
   })
 
-  // CAPTURE: this is the exact shape the real worker writes. The built 2.9.22 bundle, run against
-  // a scratch project holding a directory named `goner.ts` (an EISDIR read failure, the same class
-  // as a held lock), left `index_retries` = ('c:/.../goner.ts', 2) and NO `files` row -- which is
-  // the whole point of the table. The first version of this test seeded the counter for a path
-  // that also had a `files` row, and passed against an implementation that only ever cleared
-  // counters for already-indexed paths; the dogfood run is what showed the real row surviving.
+  // CAPTURE: this is the exact shape the real worker writes. The built 2.9.22 bundle, run against a scratch project holding a directory named `goner.ts` (an EISDIR read failure, the same class as a held lock), left `index_retries` = ('c:/.../goner.ts', 2) and NO `files` row -- which is the whole point of the table. The first version of this test seeded the counter for a path that also had a `files` row, and passed against an implementation that only ever cleared counters for already-indexed paths; the dogfood run is what showed the real row surviving.
   it('reclaims a retry counter for a path that was never indexed at all', () => {
     const neverIndexed = normalizePath(path.join(dir, 'goner.ts'))
     const db = getDb(dbPath)
@@ -283,9 +250,7 @@ describe('index_prune', () => {
   })
 
   it('refuses to prune at a WSL-mounted drive root (/mnt/c), the same hazard as a bare drive letter', () => {
-    // A file that would never actually be indexed this way on Windows (real paths use "c:/..."),
-    // but exercises the guard directly: a row whose path genuinely falls under "/mnt/c/" must
-    // survive a prune scoped to that prefix, exactly like the "c:" drive-letter case above.
+    // A file that would never actually be indexed this way on Windows (real paths use "c:/..."), but exercises the guard directly: a row whose path genuinely falls under "/mnt/c/" must survive a prune scoped to that prefix, exactly like the "c:" drive-letter case above.
     const db = getDb(dbPath)
     const fakePath = '/mnt/c/projects/fake/a.ts'
     db.prepare(
@@ -307,13 +272,7 @@ describe('index_prune', () => {
       else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
     })
 
-    // Regression (M8): pruneDeletedFiles compared the stored path and rootPrefix with a
-    // case-SENSITIVE `startsWith`, while every other path comparison in this codebase
-    // (pathEqClause/COLLATE NOCASE for SQL, foldPath for JS string comparisons -- see
-    // parseDirtyQueueLines in worker.ts) folds case on case-insensitive filesystems.
-    // normalizePath only lowercases the drive letter, so a rootPrefix whose casing
-    // differs from the stored key elsewhere in the path (a realistic drift on
-    // Windows/macOS) never matched the prefix check and the row was never pruned.
+    // Regression (M8): pruneDeletedFiles compared the stored path and rootPrefix with a case-SENSITIVE `startsWith`, while every other path comparison in this codebase (pathEqClause/COLLATE NOCASE for SQL, foldPath for JS string comparisons -- see parseDirtyQueueLines in dirty_queue.ts) folds case on case-insensitive filesystems. normalizePath only lowercases the drive letter, so a rootPrefix whose casing differs from the stored key elsewhere in the path (a realistic drift on Windows/macOS) never matched the prefix check and the row was never pruned.
     it('prunes rows for a deleted file even when rootPrefix casing differs from the stored path', () => {
       process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
       const aPath = path.join(dir, 'a.ts')
@@ -361,24 +320,7 @@ describe('index_prune', () => {
     expect(symbolCount(dbPath, aKey)).toBe(0)
   })
 
-  // Regression: findDeletablePaths scans every candidate path for disk existence, THEN a second
-  // pass deletes every path found gone -- these are not one atomic step. If a file is recreated
-  // and reindexed (by a concurrent edit hook, worker drain, or second `token-goat index`
-  // invocation) in the gap between "this path was observed gone" and "this path's row is
-  // actually deleted", the unconditional delete used to wipe the freshly-written row too,
-  // silently losing the new content even though the file exists on disk again with fresh index
-  // rows. Simulated here via a statSync hook that fires exactly once for the target path (mid
-  // prune scan) and, as a side effect, recreates the file with different content and reindexes
-  // it before the mocked stat call reports "gone" -- faithfully reproducing the race without
-  // needing real wall-clock timing.
-  // The case above fires the recreate during the target's OWN recheck, which the pre-fix shape
-  // also survived: its filter stat'd the path, the hook recreated it, and the filter then dropped
-  // it from the delete list. The window that shape actually left open is a different one. It
-  // rechecked EVERY path first and only then began deleting, so a path checked early stayed
-  // condemned across all the remaining checks and all the deletes -- the very full-scan-then-
-  // delete-all shape the recheck was added to close, moved one stage later. Here the recreate
-  // lands while a LATER path is being checked, after the earlier one has already been judged
-  // gone, and the earlier file's fresh rows must still survive.
+  // Regression: findDeletablePaths scans every candidate path for disk existence, THEN a second pass deletes every path found gone -- these are not one atomic step. If a file is recreated and reindexed (by a concurrent edit hook, worker drain, or second `token-goat index` invocation) in the gap between "this path was observed gone" and "this path's row is actually deleted", the unconditional delete used to wipe the freshly-written row too, silently losing the new content even though the file exists on disk again with fresh index rows. Simulated here via a statSync hook that fires exactly once for the target path (mid prune scan) and, as a side effect, recreates the file with different content and reindexes it before the mocked stat call reports "gone" -- faithfully reproducing the race without needing real wall-clock timing. The case above fires the recreate during the target's OWN recheck, which the pre-fix shape also survived: its filter stat'd the path, the hook recreated it, and the filter then dropped it from the delete list. The window that shape actually left open is a different one. It rechecked EVERY path first and only then began deleting, so a path checked early stayed condemned across all the remaining checks and all the deletes -- the very full-scan-then- delete-all shape the recheck was added to close, moved one stage later. Here the recreate lands while a LATER path is being checked, after the earlier one has already been judged gone, and the earlier file's fresh rows must still survive.
   it('does not delete a file recreated while a later path in the same batch is being checked', () => {
     const aPath = path.join(dir, 'a-early.ts')
     const bPath = path.join(dir, 'z-later.ts')
@@ -391,14 +333,7 @@ describe('index_prune', () => {
     fs.rmSync(aPath)
     fs.rmSync(bPath)
 
-    // The recreate must land during removeDeletedFilesBestEffort's OWN recheck scan, not
-    // findDeletablePaths' first scan -- otherwise the filter re-stat that follows the first scan
-    // already sees the recreated file and excludes it, so batch and interleaved shapes behave
-    // identically. onStatSkip = 1 lets the first-scan stat of bKey pass through and fires the hook
-    // on the second stat of bKey (the recheck scan), after a-early was rechecked-gone in that same
-    // scan but before its row is deleted. The batch shape (filter-all, then delete-all) deletes the
-    // now-recreated a-early; the interleaved shape (delete each path right after its own recheck)
-    // has already deleted a-early's stale row and leaves the fresh one alone.
+    // The recreate must land during removeDeletedFilesBestEffort's OWN recheck scan, not findDeletablePaths' first scan -- otherwise the filter re-stat that follows the first scan already sees the recreated file and excludes it, so batch and interleaved shapes behave identically. onStatSkip = 1 lets the first-scan stat of bKey pass through and fires the hook on the second stat of bKey (the recheck scan), after a-early was rechecked-gone in that same scan but before its row is deleted. The batch shape (filter-all, then delete-all) deletes the now-recreated a-early; the interleaved shape (delete each path right after its own recheck) has already deleted a-early's stale row and leaves the fresh one alone.
     mockState.onStatOncePath = bKey
     mockState.onStatSkip = 1
     mockState.onStatOnce = () => {
@@ -430,8 +365,7 @@ describe('index_prune', () => {
 
     const result = pruneDeletedFiles(normalizePath(dir), dbPath)
 
-    // The recreated file must survive with its fresh content indexed, not get wiped by the
-    // prune pass that observed it "gone" a moment before the recreate landed.
+    // The recreated file must survive with its fresh content indexed, not get wiped by the prune pass that observed it "gone" a moment before the recreate landed.
     expect(result).toBe(0)
     expect(symbolCount(dbPath, aKey)).toBe(1)
     const db = getDb(dbPath)
@@ -441,14 +375,7 @@ describe('index_prune', () => {
     expect(row?.body).toContain('newSym')
   })
 
-  // Regression: removeFileFromIndex called deleteFileRows then deleteFileEmbeddings with no
-  // transaction wrapping the pair. A crash between them (e.g. deleteFileEmbeddings throwing)
-  // left the files/symbols/refs rows deleted but the chunks/chunk_vectors rows for that same
-  // file still present -- orphaned rows nothing else ever cleans up, since pruneDeletedFiles
-  // only iterates `SELECT DISTINCT path FROM files`, which no longer names the file at all
-  // once deleteFileRows alone has run. The fix wraps both deletes in one db.transaction() call
-  // (mirroring upsertChunks in embeddings.ts), so a thrown error between them rolls back the
-  // whole operation instead of leaving it half-applied.
+  // Regression: removeFileFromIndex called deleteFileRows then deleteFileEmbeddings with no transaction wrapping the pair. A crash between them (e.g. deleteFileEmbeddings throwing) left the files/symbols/refs rows deleted but the chunks/chunk_vectors rows for that same file still present -- orphaned rows nothing else ever cleans up, since pruneDeletedFiles only iterates `SELECT DISTINCT path FROM files`, which no longer names the file at all once deleteFileRows alone has run. The fix wraps both deletes in one db.transaction() call (mirroring upsertChunks in embeddings.ts), so a thrown error between them rolls back the whole operation instead of leaving it half-applied.
   it('rolls back deleteFileRows when deleteFileEmbeddings throws (atomic removeFileFromIndex)', () => {
     const aPath = path.join(dir, 'atomic.ts')
     fs.writeFileSync(aPath, 'export const atomicSym = 1\n')
@@ -472,29 +399,22 @@ describe('index_prune', () => {
     expect(() => removeFileFromIndex(db, aKey)).toThrow('simulated crash between deletes')
     deleteEmbeddingsSpy.mockRestore()
 
-    // Pre-fix (no transaction): deleteFileRows' effect would have persisted despite the throw
-    // -- symbols/files rows gone, orphaning the (untested-here) chunks rows nothing else could
-    // ever clean up. Post-fix: the whole operation rolls back, so the row survives intact.
+    // Pre-fix (no transaction): deleteFileRows' effect would have persisted despite the throw -- symbols/files rows gone, orphaning the (untested-here) chunks rows nothing else could ever clean up. Post-fix: the whole operation rolls back, so the row survives intact.
     expect(symbolCount(dbPath, aKey)).toBe(1)
     expect(filesRowCount()).toBe(1)
   })
 })
 
-// Regression: nothing ever retroactively purged already-indexed rows for files living under the
-// OS system temp directory (scratch checkouts, ad hoc debugging copies). The prevention half
-// (hooks_edit.ts's postEditHandler gating on isUnderSystemTemp) only stops NEW pollution --
-// these two cover the retroactive cleanup half, which `token-goat project prune` now also runs.
+// Regression: nothing ever retroactively purged already-indexed rows for files living under the OS system temp directory (scratch checkouts, ad hoc debugging copies). The prevention half (hooks_edit.ts's postEditHandler gating on isUnderSystemTemp) only stops NEW pollution -- these two cover the retroactive cleanup half, which `token-goat project prune` now also runs.
 describe('findSystemTempFiles / pruneSystemTempFiles', () => {
   let tempScratchDir: string
   let nonTempDir: string
   let dbPath: string
 
   beforeEach(() => {
-    // dir fixtures created via mkdtempSync(os.tmpdir(), ...) elsewhere in this file are
-    // themselves already under system temp -- reused here as the "should be pruned" side.
+    // dir fixtures created via mkdtempSync(os.tmpdir(), ...) elsewhere in this file are themselves already under system temp -- reused here as the "should be pruned" side.
     tempScratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-prune-systemp-'))
-    // A fixture rooted under the repo's own cwd, NOT under os.tmpdir(), proves the retroactive
-    // cleanup leaves legitimate real-project rows untouched.
+    // A fixture rooted under the repo's own cwd, NOT under os.tmpdir(), proves the retroactive cleanup leaves legitimate real-project rows untouched.
     nonTempDir = fs.mkdtempSync(path.join(process.cwd(), 'tg-prune-nontemp-'))
     dbPath = path.join(tempScratchDir, 'test.db')
   })
@@ -561,11 +481,7 @@ describe('findSystemTempFiles / pruneSystemTempFiles', () => {
   })
 })
 
-// Regression: before recordKnownRoot/sweepKnownRoots, pruneDeletedFiles only ever ran via the
-// manual `token-goat index [path]` CLI command -- nothing periodic existed, so a shared
-// global.db could (and did) accumulate hundreds of dead rows indefinitely with zero automatic
-// recovery. These cover the registry (recordKnownRoot) and the worker-driven sweep
-// (sweepKnownRoots) that closes that gap.
+// Regression: before recordKnownRoot/sweepKnownRoots, pruneDeletedFiles only ever ran via the manual `token-goat index [path]` CLI command -- nothing periodic existed, so a shared global.db could (and did) accumulate hundreds of dead rows indefinitely with zero automatic recovery. These cover the registry (recordKnownRoot) and the worker-driven sweep (sweepKnownRoots) that closes that gap.
 describe('known_roots auto-prune (regression)', () => {
   let dir: string
   let dbPath: string
@@ -599,8 +515,7 @@ describe('recordKnownRoot', () => {
     expect(normalizePath(row!.root)).toBe(normalizePath(dir))
     expect(row!.first_missing_ms).toBeNull()
 
-    // A second observation refreshes the existing row (and clears a stale first_missing_ms)
-    // rather than duplicating it.
+    // A second observation refreshes the existing row (and clears a stale first_missing_ms) rather than duplicating it.
     db.prepare('UPDATE known_roots SET first_missing_ms = ?').run(Date.now())
     recordKnownRoot(normalizePath(filePath), dbPath)
     const rows = db.prepare('SELECT * FROM known_roots').all()
@@ -612,8 +527,7 @@ describe('recordKnownRoot', () => {
   })
 
   it('is a no-op for a file with no recognizable project root', () => {
-    // `dir` itself has no PROJECT_MARKERS (.git, package.json, ...), so findProject walks up to
-    // the os.tmpdir() boundary without finding one and returns null.
+    // `dir` itself has no PROJECT_MARKERS (.git, package.json, ...), so findProject walks up to the os.tmpdir() boundary without finding one and returns null.
     const filePath = path.join(dir, 'a.ts')
     fs.writeFileSync(filePath, 'export const a = 1\n')
     recordKnownRoot(normalizePath(filePath), dbPath)
@@ -633,19 +547,14 @@ describe('recordKnownRootThrottled', () => {
     const db = getDb(dbPath)
     expect((db.prepare('SELECT COUNT(*) AS n FROM known_roots').get() as { n: number }).n).toBe(1)
 
-    // A second call within the throttle window must not touch the DB again -- proven by
-    // deleting the row and confirming it is NOT recreated (a real re-record would recreate it).
+    // A second call within the throttle window must not touch the DB again -- proven by deleting the row and confirming it is NOT recreated (a real re-record would recreate it).
     db.prepare('DELETE FROM known_roots').run()
     recordKnownRootThrottled(normalizePath(filePath), dir, dbPath)
     expect((db.prepare('SELECT COUNT(*) AS n FROM known_roots').get() as { n: number }).n).toBe(0)
   })
 
   it('records each distinct project root independently, not just the first root seen in the rate-limit window', () => {
-    // The throttle marker lives under one shared global dataDir() regardless of which project
-    // is being edited (see recordKnownRootThrottled's real call site in hooks_edit.ts, which
-    // always passes dataDir()). A dev machine routinely has edits land in more than one project
-    // within the same hour -- the marker must not let the second project's root go permanently
-    // unregistered just because a first, unrelated project's edit happened to land first.
+    // The throttle marker lives under one shared global dataDir() regardless of which project is being edited (see recordKnownRootThrottled's real call site in hooks_edit.ts, which always passes dataDir()). A dev machine routinely has edits land in more than one project within the same hour -- the marker must not let the second project's root go permanently unregistered just because a first, unrelated project's edit happened to land first.
     const proj1 = path.join(dir, 'proj1')
     const proj2 = path.join(dir, 'proj2')
     fs.mkdirSync(path.join(proj1, '.git'), { recursive: true })
@@ -751,9 +660,7 @@ describe('sweepKnownRoots', () => {
   it('flags instead of pruning when a reachable root would lose an anomalously large fraction of its rows', () => {
     const projectDir = path.join(dir, 'proj')
     fs.mkdirSync(path.join(projectDir, '.git'), { recursive: true })
-    // 25 files total; delete 21 of them (84%, well past the 50% ratio and 20-file minimum)
-    // while the root itself stays reachable -- simulating a mount point/subdirectory inside the
-    // root going offline, not the files actually being deleted.
+    // 25 files total; delete 21 of them (84%, well past the 50% ratio and 20-file minimum) while the root itself stays reachable -- simulating a mount point/subdirectory inside the root going offline, not the files actually being deleted.
     const files: string[] = []
     for (let i = 0; i < 25; i++) {
       const p = path.join(projectDir, `f${i}.ts`)
@@ -767,8 +674,7 @@ describe('sweepKnownRoots', () => {
     const result = sweepKnownRoots(dbPath)
     expect(result.flaggedRoots.map(normalizePath)).toContain(normalizePath(projectDir))
     expect(result.prunedRows).toBe(0)
-    // Every row -- including the genuinely-deleted ones -- survives; nothing was pruned this
-    // cycle. A human can investigate and re-run a manual `token-goat index` once confirmed.
+    // Every row -- including the genuinely-deleted ones -- survives; nothing was pruned this cycle. A human can investigate and re-run a manual `token-goat index` once confirmed.
     for (const f of files) {
       expect(symbolCount(dbPath, normalizePath(f))).toBe(1)
     }
@@ -791,11 +697,7 @@ describe('sweepKnownRoots', () => {
 })
 })
 
-// An embedding chunk whose `files` row is already gone. Every existing prune enumerates paths
-// with `SELECT DISTINCT path FROM files`, so once the file row goes, no sweep can even name the
-// path -- the chunk keeps its text and its vector and keeps being served by `semantic` forever.
-// The live global index had 14 such rows, all under system temp, all holding the full source of
-// files deleted long ago, and `project prune` reported a clean nothing-to-do on every one.
+// An embedding chunk whose `files` row is already gone. Every existing prune enumerates paths with `SELECT DISTINCT path FROM files`, so once the file row goes, no sweep can even name the path -- the chunk keeps its text and its vector and keeps being served by `semantic` forever. The live global index had 14 such rows, all under system temp, all holding the full source of files deleted long ago, and `project prune` reported a clean nothing-to-do on every one.
 describe('orphaned embedding chunks (files row gone, chunks row left behind)', () => {
   let dir: string
   let dbPath: string
@@ -813,9 +715,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     }
   })
 
-  // Reproduce the half-applied removal exactly: deleteFileRows drops symbols/refs/files and
-  // leaves chunks untouched, which is what an interrupted removeFileFromIndex (or a prune racing
-  // a lagging embed for the same path) leaves behind.
+  // Reproduce the half-applied removal exactly: deleteFileRows drops symbols/refs/files and leaves chunks untouched, which is what an interrupted removeFileFromIndex (or a prune racing a lagging embed for the same path) leaves behind.
   function seedOrphanChunk(): string {
     const filePath = path.join(dir, 'gone.ts')
     fs.writeFileSync(filePath, 'export function secretHandlerAlpha(x: string): string { return x }\n')
@@ -865,13 +765,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     expect(findOrphanedChunkPaths(dbPath)).not.toContain(key)
   })
 
-  // The repair has to be reachable without the user knowing to run anything: the worker's
-  // periodic sweep is the only thing that runs on its own, and before this it could not see the
-  // row at all, so `reclaim --rebuild` (which wipes the whole index) was the only cure.
-  // A chunk's vector lives in a separate virtual table keyed by the chunk id. Deleting the chunk
-  // row alone leaves the vector behind, still reachable by the nearest-neighbour scan, so the
-  // search hit survives the clean-up meant to remove it. Skipped where sqlite-vec is not
-  // installed, since the table does not exist on those builds at all.
+  // The repair has to be reachable without the user knowing to run anything: the worker's periodic sweep is the only thing that runs on its own, and before this it could not see the row at all, so `reclaim --rebuild` (which wipes the whole index) was the only cure. A chunk's vector lives in a separate virtual table keyed by the chunk id. Deleting the chunk row alone leaves the vector behind, still reachable by the nearest-neighbour scan, so the search hit survives the clean-up meant to remove it. Skipped where sqlite-vec is not installed, since the table does not exist on those builds at all.
   it('clears the vector as well as the chunk row', () => {
     const key = seedOrphanChunk()
     const db = getDb(dbPath)
@@ -886,18 +780,9 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     expect(vectorCount()).toBe(0)
   })
 
-  // The mirror of the case above: the chunk row goes and the vector stays. deleteFileEmbeddings
-  // produces this whenever chunk_vectors is unusable (sqlite-vec absent) and purgeDotenvEmbeddings
-  // produces it whenever the vector delete throws, both deliberately -- a leaked chunk row is worse
-  // than a leaked vector. What made it a defect is that nothing then collected the leftover: every
-  // other sweep takes its population from chunks or files rows, which for an orphan are already
-  // gone, so only a full rebuild cleared them.
+  // The mirror of the case above: the chunk row goes and the vector stays. deleteFileEmbeddings produces this whenever chunk_vectors is unusable (sqlite-vec absent) and purgeDotenvEmbeddings produces it whenever the vector delete throws, both deliberately -- a leaked chunk row is worse than a leaked vector. What made it a defect is that nothing then collected the leftover: every other sweep takes its population from chunks or files rows, which for an orphan are already gone, so only a full rebuild cleared them.
   //
-  // Provenance: the ORPHAN SHAPE is CAPTURE -- a read-only query against the maintainer's live
-  // global.db on 2026-09-22 found 6,685 vectors with no chunks row against 212,089 chunks (3.1%),
-  // with rowids spanning both below min(chunks.id) and inside the live id range, so this is an
-  // ongoing leak rather than one historical migration. The rows below are HAND-DERIVED to that
-  // shape: a chunk and its vector, then the chunk row deleted on its own.
+  // Provenance: the ORPHAN SHAPE is CAPTURE -- a read-only query against the maintainer's live global.db on 2026-09-22 found 6,685 vectors with no chunks row against 212,089 chunks (3.1%), with rowids spanning both below min(chunks.id) and inside the live id range, so this is an ongoing leak rather than one historical migration. The rows below are HAND-DERIVED to that shape: a chunk and its vector, then the chunk row deleted on its own.
   it.skipIf(!sqliteVecInstalled())('reclaims a vector whose chunk row is already gone, and leaves a live one alone', () => {
     const db = getDb(dbPath)
 
@@ -913,8 +798,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     const orphanId = idOf(orphanKey)
     insertVector(orphanId)
 
-    // The survival anchor. Without it this test passes just as well against a sweep that deletes
-    // every vector in the table, which would destroy the whole index rather than reclaim a leak.
+    // The survival anchor. Without it this test passes just as well against a sweep that deletes every vector in the table, which would destroy the whole index rather than reclaim a leak.
     const livePath = path.join(dir, 'live-vector.ts')
     fs.writeFileSync(livePath, 'export const liveVectorSym = 1\n')
     const liveKey = normalizePath(livePath)
@@ -927,8 +811,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     db.prepare('DELETE FROM chunks WHERE id = ?').run(orphanId)
     expect(vectorCount(orphanId)).toBe(1)
 
-    // The gap this function closes. Neither existing sweep can see a row with no chunks entry, so
-    // both report nothing to do while the vector is still there.
+    // The gap this function closes. Neither existing sweep can see a row with no chunks entry, so both report nothing to do while the vector is still there.
     expect(findOrphanedChunkPaths(dbPath)).not.toContain(orphanKey)
     expect(pruneOrphanedChunks(dbPath)).toEqual([])
     expect(vectorCount(orphanId)).toBe(1)
@@ -939,10 +822,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     expect(pruneOrphanedVectors(dbPath)).toBe(0)
   })
 
-  // Same file, two spellings that differ by separator rather than by case. deleteFileEmbeddings
-  // folds the spelling it is handed but does not normalize it, so these are two different deletes.
-  // Reporting them as one file is right; deleting only one of them is not -- the survivor comes
-  // back as an orphan on every future sweep and is never cleared.
+  // Same file, two spellings that differ by separator rather than by case. deleteFileEmbeddings folds the spelling it is handed but does not normalize it, so these are two different deletes. Reporting them as one file is right; deleting only one of them is not -- the survivor comes back as an orphan on every future sweep and is never cleared.
   it('clears every stored spelling of one orphaned file', () => {
     const key = seedOrphanChunk()
     const db = getDb(dbPath)
@@ -954,12 +834,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     expect((db.prepare('SELECT COUNT(*) AS n FROM chunks').get() as { n: number }).n).toBe(0)
   })
 
-  // The scan that decides a path is orphaned and the delete that acts on it must be one atomic
-  // step: another process reindexing that path in between restores its files row and rewrites its
-  // chunks, and a delete that never re-reads would wipe live rows. Only a second process can
-  // actually interleave there, so what this pins is the property that makes such an interleave
-  // impossible -- the deletes run inside a transaction, which pruneOrphanedChunks opens with the
-  // write lock already held. It does not, and cannot in one process, demonstrate the race itself.
+  // The scan that decides a path is orphaned and the delete that acts on it must be one atomic step: another process reindexing that path in between restores its files row and rewrites its chunks, and a delete that never re-reads would wipe live rows. Only a second process can actually interleave there, so what this pins is the property that makes such an interleave impossible -- the deletes run inside a transaction, which pruneOrphanedChunks opens with the write lock already held. It does not, and cannot in one process, demonstrate the race itself.
   it('runs its deletes inside a transaction', () => {
     seedOrphanChunk()
     const db = getDb(dbPath)
@@ -977,10 +852,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     }
   })
 
-  // The same file can be stored under two spellings that differ only by case, and
-  // deleteFileEmbeddings folds -- so clearing one clears both. Counting both spellings reported
-  // "2 files" for one file cleared once, which is how the dogfood run first surfaced it. Forces
-  // the case-insensitive fold on every platform so the assertion means the same thing on Linux CI.
+  // The same file can be stored under two spellings that differ only by case, and deleteFileEmbeddings folds -- so clearing one clears both. Counting both spellings reported "2 files" for one file cleared once, which is how the dogfood run first surfaced it. Forces the case-insensitive fold on every platform so the assertion means the same thing on Linux CI.
   it('counts two spellings of one folded path as one file', () => {
     const prior = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
     process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
