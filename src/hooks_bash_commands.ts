@@ -411,15 +411,25 @@ export function pipelineShapeFilter(cmd: string, cwd: string | null): { filter: 
   return detected === null ? null : { filter: detected.filter, argv: detected.argv }
 }
 
+/** The words of the first pipeline stage of `cmd` when that stage is a `token-goat bash-output|web-output|mcp-output` recall, whatever its flags, otherwise null. `tg` counts as `token-goat`: package.json installs both names for the same program. */
+function recallStageTokens(cmd: string): string[] | null {
+  const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
+  if (hasBareBackgroundOrNewline(forSplit)) return null
+  const first = splitShellSegments(forSplit)[0]
+  if (first === undefined || !(segmentCommandIs(first, 'token-goat') || segmentCommandIs(first, 'tg'))) return null
+  const tokens = safeShlexSplit(stripOutputPipeline(first))
+  if (tokens === null) return null
+  return Object.values(RECALL_COMMAND).includes(tokens[1] ?? '') ? tokens : null
+}
+
+/** True when the first pipeline stage of `cmd` recalls a cached output, with or without `--full`, `--grep`, `--section`, `--head` or `--tail`. What it prints is text the model asked to have back, so withholding any of it behind a recall pointer names the very id the model just recalled and the text never arrives. */
+export function isRecallCommand(cmd: string): boolean {
+  return recallStageTokens(cmd) !== null
+}
+
 /** True when the first pipeline stage of `cmd` is a `token-goat bash-output|web-output|mcp-output <id> --full` recall. That command's output is already the model's own earlier full delivery, so it must never be recompressed into a new, smaller pointer -- e.g. `token-goat bash-output <id> --full | head -300` capping a 16,959-byte recall down to a fresh 7,468-byte one. */
 export function isFullRecallCommand(cmd: string): boolean {
-  const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
-  if (hasBareBackgroundOrNewline(forSplit)) return false
-  const first = splitShellSegments(forSplit)[0]
-  if (first === undefined || !segmentCommandIs(first, 'token-goat')) return false
-  const tokens = safeShlexSplit(stripOutputPipeline(first))
-  if (tokens === null) return false
-  return Object.values(RECALL_COMMAND).includes(tokens[1] ?? '') && tokens.includes('--full')
+  return recallStageTokens(cmd)?.includes('--full') === true
 }
 
 /** The file read by a pure file read, or null when `cmd` is not one. */

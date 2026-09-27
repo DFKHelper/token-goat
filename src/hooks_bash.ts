@@ -55,6 +55,7 @@ import {
   enqueueNonHeadMovingRewrites,
   pipelineShapeFilter,
   isFullRecallCommand,
+  isRecallCommand,
   pureFileReadPath,
   deliveredLineNumbers,
   isWholeFileDump,
@@ -420,6 +421,8 @@ async function maybeElideServedGenericOutput(
   persisted = false,
 ): Promise<HookOutput | null> {
   if (optedOut) return null
+  // A recall is neither withheld nor kept as a match target. Withheld, its notice names the id just recalled, so the text never arrives however often the model follows it; kept, its copy of an earlier command's output carries the recall's name, so a rerun of that command slips past the same-command exclusion below and is collapsed against it.
+  if (isRecallCommand(cmd)) return null
   if (!loadConfig().bash_compress.elide_served_shell_output) return null
   // A failed command's output is an error message, not content a later run should be matched against or have withheld from it.
   if (exitCode !== null && exitCode !== 0) return null
