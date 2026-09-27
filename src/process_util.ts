@@ -1,5 +1,7 @@
 /** Process and OS execution utilities. Extracted from src/util.ts as part of modular decomposition. */
 
+import { spawnSync } from 'node:child_process'
+import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import * as path from 'node:path'
 
@@ -132,6 +134,14 @@ export function resolveOnPath(label: string): string | null {
     }
   }
   return null
+}
+
+/** Run `resolved`, a program {@link resolveOnPath} found, with `args` and no shell. A Windows `.cmd` or `.bat` shim, which is what a global npm install puts on PATH, cannot be spawned directly (Node refuses batch files with EINVAL since 20.12 and 21.7), so it runs through System32's cmd.exe by absolute path, never a bare `cmd.exe` the current directory could supply. `/s /c` strips the first and last quote on the line and runs the rest, so the line is quoted whole around words each encoded by {@link windowsCmdQuoteArg} and passed verbatim; passed as separate arguments instead, the two quotes stripped were the ones around the shim's path, and a shim in a directory with a space in its path ran as the path up to the space. */
+export function spawnResolvedSync(resolved: string, args: readonly string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string> {
+  if (!isWindows() || !/\.(?:cmd|bat)$/i.test(resolved)) return spawnSync(resolved, args, options)
+  const comspec = path.join(process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows', 'System32', 'cmd.exe')
+  const line = [resolved, ...args].map(windowsCmdQuoteArg).join(' ')
+  return spawnSync(existsSync(comspec) ? comspec : 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], { ...options, windowsVerbatimArguments: true })
 }
 
 /** Swallow EPIPE on stdio streams. */
