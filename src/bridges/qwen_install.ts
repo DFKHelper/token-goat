@@ -4,8 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { anchoredMarkerPattern } from '../install.js'
-import { removeCreatedBackups } from './created_configs.js'
+import { anchoredMarkerPattern, saveUninstalledHookSettings } from '../install.js'
 import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 
 import { groupHasTokenGoat } from './matcher_group.js'
@@ -148,15 +147,7 @@ export function uninstallQwen(): boolean {
 
   if (!removed) return false
 
-  if (Object.keys(hooks).length === 0) {
-    delete settings.hooks
-  } else {
-    settings.hooks = hooks
-  }
-
-  writeJsonSettings(p, settings)
-  // The timestamped backups of this file are token-goat's own litter, so they leave with it.
-  removeCreatedBackups(p)
+  saveUninstalledHookSettings(p, settings)
   return true
 }
 

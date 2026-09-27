@@ -6,9 +6,8 @@ import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { toolMatcherFor } from '../hook_registry.js'
-import { anchoredMarkerPattern } from '../install.js'
+import { anchoredMarkerPattern, saveUninstalledHookSettings } from '../install.js'
 import type { HookEventName } from '../types.js'
-import { removeCreatedBackups } from './created_configs.js'
 import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 import { groupHasTokenGoat } from './matcher_group.js'
 
@@ -209,15 +208,7 @@ export function uninstallGemini(): boolean {
 
   if (!removed) return false
 
-  if (Object.keys(hooks).length === 0) {
-    delete settings.hooks
-  } else {
-    settings.hooks = hooks
-  }
-
-  writeJsonSettings(p, settings)
-  // The timestamped backups of this file are token-goat's own litter, so they leave with it.
-  removeCreatedBackups(p)
+  saveUninstalledHookSettings(p, settings)
   return true
 }
 
