@@ -1,22 +1,4 @@
-/**
- * `global.db` is a single machine-wide index keyed by ABSOLUTE path across every project ever
- * indexed (see constants.ts), so two unrelated projects can both hold `src/thing.ts::sharedName`.
- * A raised concern was that `read` with a bare relative spec might therefore serve the wrong
- * project's copy. It does not: `resolveIndexPath` (src/paths.ts) resolves the relative file
- * against the base (cwd by default) into an absolute key BEFORE the exact-equality lookup, so
- * the two projects' rows never collide.
- *
- * Nothing asserted that, though, and the guarantee rests entirely on resolution happening before
- * the lookup rather than on the lookup itself -- exactly the shape that broke repeatedly in the
- * MCP confinement layer, where a check and its use drifted apart. These tests pin it: the same
- * relative spec, run from two different projects, must return each project's own file.
- *
- * The bare-NAME case is deliberately the opposite and is pinned here too: `symbol <name>` with no
- * file is a machine-wide lookup that legitimately returns rows from other projects, each labelled
- * with its absolute path (see toDisplayPath's docblock in src/paths.ts). That is documented
- * behavior, not leakage, and a future change narrowing it should have to update this test on
- * purpose rather than silently.
- */
+/** `global.db` is a single machine-wide index keyed by ABSOLUTE path across every project ever indexed (see constants.ts), so two unrelated projects can both hold `src/thing.ts::sharedName`. A raised concern was that `read` with a bare relative spec might therefore serve the wrong project's copy. It does not: `resolveIndexPath` (src/paths.ts) resolves the relative file against the base (cwd by default) into an absolute key BEFORE the exact-equality lookup, so the two projects' rows never collide. Nothing asserted that, though, and the guarantee rests entirely on resolution happening before the lookup rather than on the lookup itself -- exactly the shape that broke repeatedly in the MCP confinement layer, where a check and its use drifted apart. These tests pin it: the same relative spec, run from two different projects, must return each project's own file. The bare-NAME case is deliberately the opposite and is pinned here too: `symbol <name>` with no file is a machine-wide lookup that legitimately returns rows from other projects, each labelled with its absolute path (see toDisplayPath's docblock in src/paths.ts). That is documented behavior, not leakage, and a future change narrowing it should have to update this test on purpose rather than silently. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -27,7 +9,8 @@ import { globalDbPath } from '../src/constants.js'
 import { closeAllDbs } from '../src/db.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runRead, runSymbol } from '../src/read_commands.js'
+import { runRead } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 
 let rootA: string
 let rootB: string

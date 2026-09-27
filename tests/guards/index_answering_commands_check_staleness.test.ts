@@ -18,6 +18,7 @@ const SCAN_FILES = [
   'read_commands.ts',
   'read_refs.ts',
   'read_semantic.ts',
+  'read_symbol.ts',
   'text_commands.ts',
 ]
 

@@ -1,16 +1,4 @@
-/**
- * `symbol --exclude-tests`: the flag already existed on refs/callers/dead/semantic but not on
- * `symbol`, the most-used command of the set. Measured against this repo's own index, that gap
- * bites hard -- `symbol run` returned 18 rows of which 14 (78%) were test-file definitions, and
- * `symbol capture` returned 9 of 9. An agent reaching for `symbol` to find the production
- * implementation paid for that noise on every lookup with no way to suppress it.
- *
- * The two traps this filter has to avoid are both already documented inside runSymbol for
- * `--grep`, and both are covered below: filtering after the SQL LIMIT would let suppressed test
- * symbols occupy slots ahead of the cutoff and silently under-return, and reporting a
- * filtered-to-nothing result as a plain "No matches" would turn "you asked the wrong question"
- * into "there is no answer".
- */
+/** `symbol --exclude-tests`: the flag already existed on refs/callers/dead/semantic but not on `symbol`, the most-used command of the set. Measured against this repo's own index, that gap bites hard -- `symbol run` returned 18 rows of which 14 (78%) were test-file definitions, and `symbol capture` returned 9 of 9. An agent reaching for `symbol` to find the production implementation paid for that noise on every lookup with no way to suppress it. The two traps this filter has to avoid are both already documented inside runSymbol for `--grep`, and both are covered below: filtering after the SQL LIMIT would let suppressed test symbols occupy slots ahead of the cutoff and silently under-return, and reporting a filtered-to-nothing result as a plain "No matches" would turn "you asked the wrong question" into "there is no answer". */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -20,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 
 let root: string
 let cwdSpy: ReturnType<typeof vi.spyOn>
@@ -56,8 +44,7 @@ describe('symbol --exclude-tests', () => {
   })
 
   it('leaves output unchanged when the flag is omitted, so the default is not silently narrowed', () => {
-    // The anti-regression half: this flag is opt-in, and every existing caller must keep
-    // seeing test-file definitions exactly as before.
+    // The anti-regression half: this flag is opt-in, and every existing caller must keep seeing test-file definitions exactly as before.
     addSymbol('src/util.ts', 'helper')
     addSymbol('tests/util.test.ts', 'helper')
 
@@ -69,8 +56,7 @@ describe('symbol --exclude-tests', () => {
   })
 
   it('reports the filter rather than a bare "No matches" when every definition was a test file', () => {
-    // Saying "No matches" for a symbol that IS indexed stops the caller looking. Naming the
-    // filter that hid them is the difference between "wrong question" and "no answer".
+    // Saying "No matches" for a symbol that IS indexed stops the caller looking. Naming the filter that hid them is the difference between "wrong question" and "no answer".
     addSymbol('tests/only.test.ts', 'testOnlyHelper')
 
     const { text, code } = runSymbol({ name: 'testOnlyHelper', projectRoot: root, excludeTests: true })
@@ -101,8 +87,7 @@ describe('symbol --exclude-tests', () => {
   })
 
   it('still reports a genuine miss as "No matches", not as a filtered-to-empty result', () => {
-    // Negative control for the branch above: nothing was hidden, so the message must stay the
-    // plain not-found one and keep its exit code 1.
+    // Negative control for the branch above: nothing was hidden, so the message must stay the plain not-found one and keep its exit code 1.
     addSymbol('src/util.ts', 'helper')
 
     const { text, code } = runSymbol({ name: 'noSuchSymbolAnywhere', projectRoot: root, excludeTests: true })
@@ -113,12 +98,7 @@ describe('symbol --exclude-tests', () => {
   })
 
   it('does not under-return when test symbols would have filled the whole --limit window', () => {
-    // The filter-before-slice trap. querySymbols orders by `file_path, line_start`, so the
-    // decoy paths are named to sort BEFORE the real one -- with `--limit 3` a filter applied
-    // AFTER the SQL LIMIT would see only the three .test.ts rows, drop all of them, and report
-    // nothing for a symbol that is plainly indexed in src. Sorting the real file first (the
-    // obvious `tests/...` spelling, since `src/` < `tests/`) makes this assertion pass whether
-    // or not the over-fetch exists, which is exactly the vacuous shape being avoided here.
+    // The filter-before-slice trap. querySymbols orders by `file_path, line_start`, so the decoy paths are named to sort BEFORE the real one -- with `--limit 3` a filter applied AFTER the SQL LIMIT would see only the three .test.ts rows, drop all of them, and report nothing for a symbol that is plainly indexed in src. Sorting the real file first (the obvious `tests/...` spelling, since `src/` < `tests/`) makes this assertion pass whether or not the over-fetch exists, which is exactly the vacuous shape being avoided here.
     addSymbol('src/aaa.test.ts', 'crowded')
     addSymbol('src/bbb.test.ts', 'crowded')
     addSymbol('src/ccc.test.ts', 'crowded')
@@ -144,8 +124,7 @@ describe('symbol --exclude-tests', () => {
   })
 
   it('--json reports the post-filter count as totalCount, not the pre-filter one', () => {
-    // countSymbols() reruns the SQL filters with no LIMIT and has no notion of "is a test
-    // file", so it would report 3 here and contradict the single row it ships.
+    // countSymbols() reruns the SQL filters with no LIMIT and has no notion of "is a test file", so it would report 3 here and contradict the single row it ships.
     addSymbol('src/util.ts', 'helper')
     addSymbol('tests/x.test.ts', 'helper')
     addSymbol('tests/y.test.ts', 'helper')

@@ -110,7 +110,7 @@ function semanticDegradedFields(preflight: EmbeddingPreflightResult, searchSeman
 }
 
 export async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
-  // Same reasoning as runSymbol in read_commands.ts: a limit of 0 (or negative) would silently query for zero results instead of surfacing a clear "you asked for nothing" error.
+  // Same reasoning as runSymbol in read_symbol.ts: a limit of 0 (or negative) would silently query for zero results instead of surfacing a clear "you asked for nothing" error.
   if (opts.limit !== undefined && opts.limit <= 0) {
     const message = `--limit must be a positive number, got: ${opts.limit}`
     if (opts.json === true) {

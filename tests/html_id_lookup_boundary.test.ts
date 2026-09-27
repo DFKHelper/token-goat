@@ -6,11 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
 import { indexFileSync } from '../src/parser.js'
-import { runRead, runSymbol } from '../src/read_commands.js'
+import { runRead } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 import { runSection } from '../src/read_section.js'
 
-// HAND-DERIVED: shape of a classic dashboard template, from a user report. `chart1-panel` is a
-// plain `<section id="...">`, not a heading, so it exercises the html_id (not heading) lookup path.
+// HAND-DERIVED: shape of a classic dashboard template, from a user report. `chart1-panel` is a plain `<section id="...">`, not a heading, so it exercises the html_id (not heading) lookup path.
 const TEMPLATE = [
   '<!doctype html>',
   '<html>',

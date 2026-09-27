@@ -9,7 +9,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
 /** The modules that render count-dependent summary lines. */
-const FILES = ['read_commands.ts', 'read_refs.ts', 'read_semantic.ts', 'graph_commands.ts']
+const FILES = ['read_commands.ts', 'read_symbol.ts', 'read_refs.ts', 'read_semantic.ts', 'graph_commands.ts']
+
+/** The ones among them with an `--exclude-tests` flag, so a hidden-count note to render: read_commands.ts lost its one when `symbol` moved to read_symbol.ts. */
+const HIDDEN_NOTE_FILES = ['read_symbol.ts', 'read_refs.ts', 'read_semantic.ts', 'graph_commands.ts']
 
 /** `${anything} in test files hidden by --exclude-tests` -- the hard-coded plural. */
 const HARDCODED_HIDDEN_NOTE = /\$\{[^}]*\} in test files hidden by --exclude-tests/
@@ -37,7 +40,7 @@ describe('count/noun agreement is centralized, not re-interpolated per call site
     expect(util).toContain('export function countNoun(')
   })
 
-  it.each(FILES)('%s imports the shared helpers it needs', (file) => {
+  it.each(HIDDEN_NOTE_FILES)('%s imports the shared helpers it needs', (file) => {
     const src = fs.readFileSync(path.join(SRC_DIR, file), 'utf8')
     expect(src).toContain('excludeTestsHiddenNote')
   })

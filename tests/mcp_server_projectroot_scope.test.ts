@@ -1,16 +1,6 @@
-// Regression: only the `semantic` MCP tool accepted a `projectRoot` argument to scope
-// ambiguous-match disambiguation to the client's actual workspace (see
-// mcp_server_semantic_scope.test.ts). The other five tools (`read`, `symbol`, `skeleton`,
-// `outline`, `section`) had no equivalent -- when `mcp-serve` is launched from outside a
-// project root, a relative `file`/`spec` resolves against the wrong directory, and a bare
-// symbol-name search can match an unrelated project's same-named definition anywhere in the
-// machine-wide index.
+// Regression: only the `semantic` MCP tool accepted a `projectRoot` argument to scope ambiguous-match disambiguation to the client's actual workspace (see mcp_server_semantic_scope.test.ts). The other five tools (`read`, `symbol`, `skeleton`, `outline`, `section`) had no equivalent -- when `mcp-serve` is launched from outside a project root, a relative `file`/`spec` resolves against the wrong directory, and a bare symbol-name search can match an unrelated project's same-named definition anywhere in the machine-wide index.
 //
-// This mocks `../src/index_reader.js`'s `querySymbols` (and `../src/section_reader.js`'s
-// `readSection`/`listSections`) and drives each tool call through the REAL MCP protocol
-// layer (Client <-> McpServer over InMemoryTransport, same pattern as mcp_server.test.ts and
-// mcp_server_semantic_scope.test.ts) to assert the `projectRoot` argument actually reaches the
-// underlying resolution, instead of being silently dropped.
+// This mocks `../src/index_reader.js`'s `querySymbols` (and `../src/section_reader.js`'s `readSection`/`listSections`) and drives each tool call through the REAL MCP protocol layer (Client <-> McpServer over InMemoryTransport, same pattern as mcp_server.test.ts and mcp_server_semantic_scope.test.ts) to assert the `projectRoot` argument actually reaches the underlying resolution, instead of being silently dropped.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -73,8 +63,7 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
   beforeEach(() => {
     vi.clearAllMocks()
     scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-scope-'))
-    // The MCP layer resolves the root once and hands the RESOLVED value to the run* handler, so
-    // that -- not the raw argument spelling -- is what the assertions below expect.
+    // The MCP layer resolves the root once and hands the RESOLVED value to the run* handler, so that -- not the raw argument spelling -- is what the assertions below expect.
     resolvedScratchRoot = resolveProjectRoot({ project: scratchRoot })
     querySymbolsMock.mockReturnValue([])
     readSectionMock.mockReturnValue(null)
@@ -86,8 +75,7 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
     try {
       const result = await client.callTool({ name: 'symbol', arguments: { name: 'Foo', projectRoot: scratchRoot } })
       expect(result.isError).toBe(true) // no matches from the mock -- we only care about the call args
-      // A miss now triggers a second querySymbols call for the "Did you mean" near-name scan
-      // (runSymbol, src/read_commands.ts); both calls must stay scoped to projectRoot.
+      // A miss now triggers a second querySymbols call for the "Did you mean" near-name scan (runSymbol, src/read_symbol.ts); both calls must stay scoped to projectRoot.
       expect(querySymbolsMock).toHaveBeenCalledTimes(2)
       const call = querySymbolsMock.mock.calls[0]?.[0] as { rootDir?: string }
       expect(call.rootDir).toBe(resolvedScratchRoot)
@@ -148,10 +136,7 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
       expect(result.isError).toBe(true) // mock returns null -- we only care about the call args
       expect(readSectionMock).toHaveBeenCalledTimes(1)
       const [calledPath] = readSectionMock.mock.calls[0] as [string, string]
-      // Like every other tool in this file, section must resolve against the RESOLVED root
-      // (resolvedScratchRoot), not the raw argument spelling -- passing the raw projectRoot
-      // straight through, as section previously did, resolves a different, ungated path than
-      // the one the confinement gate validated and pinned.
+      // Like every other tool in this file, section must resolve against the RESOLVED root (resolvedScratchRoot), not the raw argument spelling -- passing the raw projectRoot straight through, as section previously did, resolves a different, ungated path than the one the confinement gate validated and pinned.
       expect(calledPath).toBe(path.resolve(resolvedScratchRoot, 'relative/doc.md'))
       expect(calledPath).not.toBe(path.resolve(process.cwd(), 'relative/doc.md'))
     } finally {
