@@ -1,13 +1,4 @@
-/**
- * Guard against the "implemented but unregistered" command class.
- *
- * The `refs` subcommand once existed as a handler but was never wired into the
- * Commander program, so it silently did not run. These tests introspect the
- * built program and the cli.ts source so that gap (and its siblings) cannot
- * regress: every `cmd*` handler defined in cli.ts must be referenced by an
- * `.action(...)`, every command intended for users must be registered, and the
- * program's own `--help` must list each registered command.
- */
+/** Guard against the "implemented but unregistered" command class. The `refs` subcommand once existed as a handler but was never wired into the Commander program, so it silently did not run. These tests introspect the built program and the cli.ts source so that gap (and its siblings) cannot regress: every `cmd*` handler defined in cli.ts, or in a module cli.ts imports one from, must be referenced by an `.action(...)`, every command intended for users must be registered, and the program's own `--help` must list each registered command. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -19,27 +10,36 @@ import { buildProgram } from '../../src/cli.js'
 import { allCommandNames } from '../registry.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const CLI_SRC = fs.readFileSync(path.join(HERE, '..', '..', 'src', 'cli.ts'), 'utf8')
+const SRC_DIR = path.join(HERE, '..', '..', 'src')
+const CLI_SRC = fs.readFileSync(path.join(SRC_DIR, 'cli.ts'), 'utf8')
+
+/** The modules cli.ts imports a `cmd*` handler from, so that a handler moved out of cli.ts, as the install and cached-output commands were, stays in the population the first test below checks. */
+const HANDLER_MODULES = [...CLI_SRC.matchAll(/^import\s*\{([^}]*)\}\s*from\s*'\.\/([\w/]+)\.js'/gm)]
+  .filter((m) => /\bcmd[A-Z]/.test(m[1] ?? ''))
+  .map((m) => `${m[2] ?? ''}.ts`)
 
 /** Names of every registered command and subcommand in the program. */
 function registeredCommandNames(): Set<string> {
   return new Set(allCommandNames())
 }
 
-/** Every `function cmd<Name>(` handler declared in cli.ts. */
+/** Every `function cmd<Name>(` handler declared in cli.ts or in one of {@link HANDLER_MODULES}. */
 function declaredCmdHandlers(): string[] {
   const re = /\bfunction\s+(cmd[A-Z]\w*)\s*\(/g
   const out: string[] = []
-  let m: RegExpExecArray | null
-  while ((m = re.exec(CLI_SRC)) !== null) {
-    const name = m[1]
-    if (name !== undefined) out.push(name)
+  for (const src of [CLI_SRC, ...HANDLER_MODULES.map((mod) => fs.readFileSync(path.join(SRC_DIR, mod), 'utf8'))]) {
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src)) !== null) {
+      const name = m[1]
+      if (name !== undefined) out.push(name)
+    }
   }
   return [...new Set(out)]
 }
 
 describe('CLI command registration', () => {
-  it('every cmd* handler in cli.ts is wired into an .action()', () => {
+  it('every cmd* handler in cli.ts, or in a module cli.ts imports one from, is wired into an .action()', () => {
+    expect(HANDLER_MODULES, 'no module cli.ts imports a cmd* handler from').not.toEqual([])
     const handlers = declaredCmdHandlers()
     expect(handlers.length).toBeGreaterThan(10)
     const unwired = handlers.filter((name) => {

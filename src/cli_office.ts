@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 
-import { _applyFiltersAndPrint, CliError, out, requireNonNegativeInt, requirePositiveInt } from './cli.js'
+import { CliError, out, requireNonNegativeInt, requirePositiveInt } from './cli.js'
+import { _applyFiltersAndPrint } from './cli_cached_output.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
 import { fenceUntrustedContent, UNTRUSTED_FILE_TAG } from './injection_scan.js'
