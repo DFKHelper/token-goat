@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_folded ON symbols(TG_LOWER(file_path));
 CREATE INDEX IF NOT EXISTS idx_symbols_file_name_folded ON symbols(TG_LOWER(file_path), name);
--- Partial index backing checkSymbolBodySize (cli_doctor.ts), which every SessionStart hook runs.
+-- Partial index backing checkSymbolBodySize (symbol_body_probe.ts), which every SessionStart hook runs.
 -- Its predicate cannot be served by any index above, so the check had to read the whole symbols
 -- table -- 226 MB / 231324 rows here, 229 ms per session start, and the early-exit LIMIT 1 never
 -- fires on a healthy index because there is nothing to find. Indexing the *violating* rows only
@@ -74,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file_name_folded ON symbols(TG_LOWER(file
 -- ms, 4 KB on disk, and no measurable insert cost (-0.2%, within noise, over 40000 real rows),
 -- because SQLite evaluates the predicate and skips the b-tree write for every row under the cap.
 -- SQLite uses a partial index only where the query's WHERE implies the index's, so the probe in
--- cli_doctor.ts spells its comparison the same way and against the same constant. That makes the
+-- symbol_body_probe.ts spells its comparison the same way and against the same constant. That makes the
 -- threshold part of the stored schema -- see SYMBOL_BODY_CHAR_CAP in constants.ts for what
 -- changing it requires. A query with a lower threshold correctly gets a full scan instead, so no
 -- other reader can be served stale rows by this index.
