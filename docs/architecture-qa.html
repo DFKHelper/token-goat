@@ -2114,7 +2114,7 @@ pre_skill_advisory = false</pre>
                             <span>The PARSER_FINGERPRINT Freshness Invariant</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/cli_doctor.ts" target="_blank" class="github-inline-ref"><code>src/cli_doctor.ts</code></a>, <code>checkParserFreshness</code> queries SQLite using <code>PARSER_FINGERPRINT</code> (a hash computed from all AST parsing rules in <a href="https://github.com/DFKHelper/token-goat/blob/main/src/parser.ts" target="_blank" class="github-inline-ref"><code>src/parser.ts</code></a>). If tree-sitter extraction logic changes in a release, the doctor check flags the mismatch:</p>
+                            <p>In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/cli_doctor_index.ts" target="_blank" class="github-inline-ref"><code>src/cli_doctor_index.ts</code></a>, <code>checkParserFreshness</code> queries SQLite using <code>PARSER_FINGERPRINT</code> (a hash computed from all AST parsing rules in <a href="https://github.com/DFKHelper/token-goat/blob/main/src/parser.ts" target="_blank" class="github-inline-ref"><code>src/parser.ts</code></a>). If tree-sitter extraction logic changes in a release, the doctor check flags the mismatch:</p>
 <div class="example-box">
     <div class="example-header">token-goat doctor Freshness Warning</div>
     <code>[WARN] Parser freshness: 1040 of 1102 indexed file(s) match the running parser. Run 'token-goat index' in this project to reparse them; --force is not needed, a parser mismatch reindexes on its own.</code>

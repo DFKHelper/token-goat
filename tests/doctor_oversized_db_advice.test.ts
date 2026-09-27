@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { freelistBytes, oversizeDbMessage } from '../src/cli_doctor.js'
+import { freelistBytes, oversizeDbMessage } from '../src/cli_doctor_index.js'
 import { tempDir } from './helpers/temp-config.js'
 
 const MB = 1024 * 1024
