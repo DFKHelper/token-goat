@@ -1,10 +1,9 @@
 import { executeParallelSearch } from './parallel_search.js';
 import type { FusedSearchResult, SearchOptions } from './types.js';
 import { displaySafeJson, displaySafeText } from '../paths.js';
+import { resolveProjectConfinement } from '../read_spec.js';
 
-/**
- * Formats a single fused search result for terminal display.
- */
+/** Formats a single fused search result for terminal display. */
 function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
   const channelBadge = hit.channels.map((c) => `[${c}]`).join('');
   const lineRange = hit.lineStart === hit.lineEnd ? `:${hit.lineStart}` : `:${hit.lineStart}-${hit.lineEnd}`;
@@ -24,15 +23,19 @@ function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
   return lines.join('\n');
 }
 
-/**
- * Runs the parallel search command and formats the output.
- */
+/** Runs the parallel search command and formats the output. */
 export async function runParallelSearch(options: SearchOptions): Promise<{ text: string; code: number }> {
   if (!options.query || options.query.trim().length === 0) {
     return {
       text: 'Usage: token-goat search <query> [--channels symbol,heading,text,semantic] [--limit <n>] [--json]',
       code: 1,
     };
+  }
+
+  // The symbol, heading and semantic channels read the machine-wide index, so a `--project` root outside what indexing.cross_project_symbols = false admits is refused the way `symbol --project` refuses it, rather than searched.
+  const projectDenial = resolveProjectConfinement(options.projectRoot).denial;
+  if (projectDenial !== null) {
+    return { text: options.json === true ? displaySafeJson({ error: projectDenial }) : projectDenial, code: 1 };
   }
 
   const summary = await executeParallelSearch(options);
