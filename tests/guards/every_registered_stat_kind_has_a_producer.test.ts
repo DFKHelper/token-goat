@@ -4,17 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { _registeredKinds, _registeredKindPrefixes } from '../../src/stats.js'
 
-/**
- * The mirror of guards/every_recorded_stat_kind_is_registered.test.ts.
- *
- * That guard checks one direction: a kind some src/ call site records must be registered in
- * stats.ts, or kindToSource() silently files it under "other". Nothing checked the reverse, and
- * the reverse failure is the invisible one: SOURCE_MCP sat in KIND_PREFIX_TO_SOURCE with zero
- * producers, so an entire shipped mechanism contributed nothing to `token-goat stats` and no test
- * noticed, because a registry entry nobody records is indistinguishable from a mechanism nobody
- * runs. Every registered name here must either have a producer in src/ or an allowlist entry
- * stating why it deliberately has none.
- */
+/** The mirror of guards/every_recorded_stat_kind_is_registered.test.ts. That guard checks one direction: a kind some src/ call site records must be registered in stats.ts, or kindToSource() silently files it under "other". Nothing checked the reverse, and the reverse failure is the invisible one: SOURCE_MCP sat in KIND_PREFIX_TO_SOURCE with zero producers, so an entire shipped mechanism contributed nothing to `token-goat stats` and no test noticed, because a registry entry nobody records is indistinguishable from a mechanism nobody runs. Every registered name here must either have a producer in src/ or an allowlist entry stating why it deliberately has none. */
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -25,12 +15,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
-/**
- * `walk('src')` with its population pinned. The floor cannot live inside `walk` -- the recursion
- * calls it once per subdirectory -- so it lives on the single entry point the scans below use. An
- * empty walk here reports "every kind is registered" / "every kind has a producer" for the same
- * reason a correct tree does.
- */
+/** `walk('src')` with its population pinned. The floor cannot live inside `walk` -- the recursion calls it once per subdirectory -- so it lives on the single entry point the scans below use. An empty walk here reports "every kind is registered" / "every kind has a producer" for the same reason a correct tree does. */
 function scannedSrcFiles(): readonly string[] {
   return pinnedPopulation({
     what: 'src/**/*.ts files scanned for stat-kind call sites',
@@ -60,7 +45,7 @@ function collectProducedKinds(): Set<string> {
 const NO_PRODUCER_ALLOWLIST: Record<string, string> = {
   // The shrink re-encode cache is live (image_shrink.ts findCachedShrink), but a cache hit still records the ordinary image_shrink saving at the same call site, so no saving is lost. This is an unwired diagnostic counter, not a missing credit.
   image_shrink_cache_hit: 'diagnostic counter for a cache whose hits already record image_shrink',
-  // shrinkImage() has exactly three callers (hooks_browser_image, hooks_read, the config-commands shrink CLI). No webfetch or Drive path shrinks an image at all, so these two name a mechanism that does not exist yet. They stay registered because stats.ts's _BYTES_MODE_ONLY_KINDS and the renderer's Images group already classify them.
+  // shrinkImage() has five callers: the Read hook's preReadImageHandler (image_shrink.ts), the MCP browser-image hook (hooks_browser_image.ts), and the `screenshot`, `fetch-image` and `image-meta` commands (screenshot.ts, config_commands.ts, read_commands.ts). None is a WebFetch or Drive path, and `fetch-image` records no stat, so these two name a mechanism that does not exist yet. They stay registered because stats.ts's _BYTES_MODE_ONLY_KINDS and the renderer's Images group already classify them.
   webfetch_image: 'no webfetch image-shrink path exists; reserved classification only',
   gdrive_image: 'no Drive image-shrink path exists; reserved classification only',
   // Hint auto-suppression is live (hint_stats.ts), but suppressing a hint withholds the hint's own bytes rather than saving a read, and that overhead is already accounted by the live session_hint_overhead kind. Event-only counter, never wired.
