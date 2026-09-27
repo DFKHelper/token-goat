@@ -4,14 +4,13 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { cursorManagedServer, cursorMcpPath, installCursor, isCursorInstalled, uninstallCursor } from '../src/bridges/cursor_install.js'
-import { checkCursor } from '../src/cli_doctor.js'
+import { checkCursor } from '../src/cli_doctor_platforms.js'
 
 let origHome: string | undefined
 let origUserProfile: string | undefined
 let fakeHome: string
 
-// cursorUserConfigDir() resolves ~/.cursor via os.homedir(), which reads USERPROFILE on Windows and
-// HOME on POSIX at each call -- same isolation tests/install.test.ts documents for settingsPath().
+// cursorUserConfigDir() resolves ~/.cursor via os.homedir(), which reads USERPROFILE on Windows and HOME on POSIX at each call -- same isolation tests/install.test.ts documents for settingsPath().
 beforeEach(() => {
   origHome = process.env['HOME']
   origUserProfile = process.env['USERPROFILE']
@@ -38,11 +37,7 @@ describe('Cursor install writes an mcpServers entry with no type key', () => {
     const parsed = JSON.parse(fs.readFileSync(result.mcpPath, 'utf8')) as Record<string, unknown>
     const servers = parsed['mcpServers'] as Record<string, unknown>
     const entry = servers['token-goat'] as Record<string, unknown>
-    // Provenance: CAPTURE -- extracted live from Cursor 3.19.7's own shipped
-    // resources/app/out/vs/workbench/workbench.desktop.main.js JSON schema for mcp.json:
-    // `zto={...additionalProperties:{...oneOf:[{additionalProperties:!1,properties:{command:...,
-    // args:...,env:...}}...`. No `type` field is declared for the stdio variant, and
-    // additionalProperties is false, so this file writes command+args only.
+    // Provenance: CAPTURE -- extracted live from Cursor 3.19.7's own shipped resources/app/out/vs/workbench/workbench.desktop.main.js JSON schema for mcp.json: `zto={...additionalProperties:{...oneOf:[{additionalProperties:!1,properties:{command:..., args:...,env:...}}...`. No `type` field is declared for the stdio variant, and additionalProperties is false, so this file writes command+args only.
     expect(Object.keys(entry).sort()).toEqual(['args', 'command'])
     expect(entry['command']).toBe(process.execPath)
     expect(Array.isArray(entry['args'])).toBe(true)
@@ -92,8 +87,7 @@ describe('Cursor install merges surgically into an existing mcp.json', () => {
   it('preserves a user comment, unrelated keys, and another server entry', () => {
     const mcpPath = cursorMcpPath()
     fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
-    // Provenance: HAND-DERIVED from Cursor's own documented ~/.cursor/mcp.json shape
-    // (root mcpServers, {command,args,env,envFile} per entry).
+    // Provenance: HAND-DERIVED from Cursor's own documented ~/.cursor/mcp.json shape (root mcpServers, {command,args,env,envFile} per entry).
     const before = ['{', '  // user\'s own server', '  "mcpServers": {', '    "some-other-server": {', '      "command": "/usr/local/bin/other-mcp",', '      "args": ["--flag"]', '    }', '  }', '}', ''].join('\n')
     fs.writeFileSync(mcpPath, before)
 

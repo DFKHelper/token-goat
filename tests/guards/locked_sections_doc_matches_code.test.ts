@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { lockedEnvOverridableKeys } from '../../src/cli_doctor.js'
+import { lockedEnvOverridableKeys } from '../../src/cli_doctor_security.js'
 import { PROJECT_LOCKED_KEYS, PROJECT_LOCKED_SECTIONS } from '../../src/config.js'
 
 const DOC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'security.md')

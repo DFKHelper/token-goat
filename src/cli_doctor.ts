@@ -43,74 +43,9 @@ import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingC
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
-
-// Both live outside this module so hooks_session_start.ts can run the one check it needs without pulling cli_doctor.ts's dependency graph into the hook bundle -- see symbol_body_probe.ts. They are re-exported here because the doctor command and its tests are the rest of their audience.
-export type { DoctorResult } from './doctor_result.js'
-export { checkSymbolBodySize, OVERSIZED_BODY_PROBE_SQL } from './symbol_body_probe.js'
-
-import {
-  type ProcessInfo,
-  checkMcpProcessHealth,
-  isTokenGoatResidentProcess,
-  readWindowsProcesses,
-  checkWorkerRunning,
-} from './cli_doctor_process.js'
-
-import {
-  globalMcpConfigPath,
-  checkGlobalMcpConfig,
-  VSCODE_USER_SCOPE_MIGRATED_NOTE,
-  VSCODE_PROJECT_SCOPE_COVERAGE_NOTE,
-  VSCODE_USER_SCOPE_MULTIROOT_NOTE,
-  checkVscodeUserScopeHooks,
-  VSCODE_DOUBLE_FIRE_NOTE,
-  checkVscodeClaudeHooks,
-  checkClaudeHookEvents,
-  dedupeByResolvedPath,
-  checkVisualStudio,
-  checkZed,
-  checkCursor,
-  checkStrayClaudeMdBlocks,
-  checkVscodeProjectMcp,
-} from './cli_doctor_platforms.js'
-
-import {
-  LOCKED_BOOLEAN_SAFE_VALUE,
-  lockedEnvOverridableKeys,
-  type EnvOverriddenSetting,
-  envOverriddenSecuritySettings,
-  checkSecurityPosture,
-  dataDirPermissionResult,
-} from './cli_doctor_security.js'
-
-export {
-  type ProcessInfo,
-  checkMcpProcessHealth,
-  isTokenGoatResidentProcess,
-  readWindowsProcesses,
-  checkWorkerRunning,
-  globalMcpConfigPath,
-  checkGlobalMcpConfig,
-  VSCODE_USER_SCOPE_MIGRATED_NOTE,
-  VSCODE_PROJECT_SCOPE_COVERAGE_NOTE,
-  VSCODE_USER_SCOPE_MULTIROOT_NOTE,
-  checkVscodeUserScopeHooks,
-  VSCODE_DOUBLE_FIRE_NOTE,
-  checkVscodeClaudeHooks,
-  checkClaudeHookEvents,
-  dedupeByResolvedPath,
-  checkVisualStudio,
-  checkZed,
-  checkCursor,
-  checkStrayClaudeMdBlocks,
-  checkVscodeProjectMcp,
-  LOCKED_BOOLEAN_SAFE_VALUE,
-  lockedEnvOverridableKeys,
-  type EnvOverriddenSetting,
-  envOverriddenSecuritySettings,
-  checkSecurityPosture,
-  dataDirPermissionResult,
-}
+import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWorkerRunning } from './cli_doctor_process.js'
+import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
+import { checkSecurityPosture } from './cli_doctor_security.js'
 
 /** Check if token-goat binary is installed and accessible. */
 export function checkInstall(): DoctorResult {
