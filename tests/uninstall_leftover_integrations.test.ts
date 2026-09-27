@@ -1,13 +1,4 @@
-/**
- * `token-goat uninstall` removes the Claude Code hooks, the CLAUDE.md block, and the skill, and
- * leaves every other harness integration wired unless its flag is passed. It said nothing about
- * that: three "Removed" lines and a Codex or Copilot hook still pointing at the binary the operator
- * is about to delete. Confirmed live before the fix by installing --codex and running a plain
- * uninstall, which left config.toml, AGENTS.md, and the shim in place without a word. Offboarding a
- * machine is exactly when nobody looks twice, and a Copilot preToolUse hook whose target is gone
- * fails closed on every call in that session. Uninstall now names each one and the flag that
- * removes it, following the report-rather-than-delete rule the stray CLAUDE.md blocks already use.
- */
+/** `token-goat uninstall` removes the Claude Code hooks, the CLAUDE.md block, and the skill, and leaves every other harness integration wired unless its flag is passed. It said nothing about that: three "Removed" lines and a Codex or Copilot hook still pointing at the binary the operator is about to delete. Confirmed live before the fix by installing --codex and running a plain uninstall, which left config.toml, AGENTS.md, and the shim in place without a word. Offboarding a machine is exactly when nobody looks twice, and a Copilot preToolUse hook whose target is gone fails closed on every call in that session. Uninstall now names each one and the flag that removes it, following the report-rather-than-delete rule the stray CLAUDE.md blocks already use. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -15,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { leftoverIntegrations } from '../src/cli.js'
+import { leftoverIntegrations } from '../src/cli_install.js'
 
 let root: string
 const ENV_KEYS = [

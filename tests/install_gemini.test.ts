@@ -5,9 +5,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.gemini/` (mirrors the pattern in install_codex.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.gemini/` (mirrors the pattern in install_codex.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -26,12 +24,7 @@ import {
   uninstallGemini,
 } from '../src/bridges/gemini_install.js'
 
-// Side-effect import: registers every hook handler, mirroring cli.ts's real cmdInstall path
-// (which now imports relay.js before calling any install* function -- see cmdInstall in
-// src/cli.ts) and tests/install_hook_matcher.test.ts's own documented pattern. gemini_install.ts
-// derives its per-event matcher gate from the live handler registry (registeredInternalTools,
-// backed by hook_registry.ts's toolMatcherFor) rather than a hand-maintained list; without this
-// import the registry is empty and every matcher assertion below would be vacuously wrong.
+// Side-effect import: registers every hook handler, mirroring cli_install.ts's real cmdInstall path (which now imports relay.js before calling any install* function -- see cmdInstall in src/cli_install.ts) and tests/install_hook_matcher.test.ts's own documented pattern. gemini_install.ts derives its per-event matcher gate from the live handler registry (registeredInternalTools, backed by hook_registry.ts's toolMatcherFor) rather than a hand-maintained list; without this import the registry is empty and every matcher assertion below would be vacuously wrong.
 import '../src/relay.js'
 
 interface GeminiHookEntry {
@@ -66,19 +59,7 @@ beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gemini-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(TMP)
-  // installGemini/isGeminiInstalled/uninstallGemini identify their own hook commands by
-  // checking whether process.argv[1] (the entry path baked into the written command) contains
-  // a "token-goat" path segment (GEMINI_ENTRY_PATH_MARKER_PATTERN in gemini_install.ts) -- a
-  // real npm install always places the entry under a `node_modules/token-goat/...` directory,
-  // so this is reliable in production. Under vitest's fork pool, though, process.argv[1] is
-  // tinypool's own internal worker script (node_modules/tinypool/dist/entry/process.js), which
-  // has nothing to do with token-goat's identity -- whether it happens to also satisfy the
-  // marker depends entirely on whether the repo's checkout *directory* incidentally contains
-  // "token-goat" somewhere in its path (true for this repo's usual checkout locations, false
-  // for e.g. an arbitrarily-named scratch clone), making the suite pass or fail for reasons
-  // unrelated to the code under test. Stub argv[1] to a realistic token-goat entry path so
-  // these tests exercise real install/uninstall behavior deterministically, independent of
-  // where the repo happens to be checked out.
+  // installGemini/isGeminiInstalled/uninstallGemini identify their own hook commands by checking whether process.argv[1] (the entry path baked into the written command) contains a "token-goat" path segment (GEMINI_ENTRY_PATH_MARKER_PATTERN in gemini_install.ts) -- a real npm install always places the entry under a `node_modules/token-goat/...` directory, so this is reliable in production. Under vitest's fork pool, though, process.argv[1] is tinypool's own internal worker script (node_modules/tinypool/dist/entry/process.js), which has nothing to do with token-goat's identity -- whether it happens to also satisfy the marker depends entirely on whether the repo's checkout *directory* incidentally contains "token-goat" somewhere in its path (true for this repo's usual checkout locations, false for e.g. an arbitrarily-named scratch clone), making the suite pass or fail for reasons unrelated to the code under test. Stub argv[1] to a realistic token-goat entry path so these tests exercise real install/uninstall behavior deterministically, independent of where the repo happens to be checked out.
   originalArgv1 = process.argv[1]
   process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
 })
@@ -96,9 +77,7 @@ describe('installGemini', () => {
 
     const settings = readSettings()
 
-    // BeforeTool: Bash/Read/Grep/WebFetch/Glob/WebSearch/Write all have a pre_tool_use handler
-    // (hooks_write.ts's preWriteRewriteHandler registers on 'Write' too, src/hooks_write.ts:162);
-    // Edit is the one Gemini-mapped internal tool with no pre_tool_use handler anywhere.
+    // BeforeTool: Bash/Read/Grep/WebFetch/Glob/WebSearch/Write all have a pre_tool_use handler (hooks_write.ts's preWriteRewriteHandler registers on 'Write' too, src/hooks_write.ts:162); Edit is the one Gemini-mapped internal tool with no pre_tool_use handler anywhere.
     const beforeMatchers = matchersFor(settings, 'BeforeTool')
     expect(beforeMatchers).toContain('^(run_shell_command)$')
     expect(beforeMatchers).toContain('^(read_file|read_many_files|list_directory)$')
@@ -115,9 +94,7 @@ describe('installGemini', () => {
       expect(command.endsWith('hook pre_tool_use')).toBe(true)
     }
 
-    // AfterTool: Bash/Read/Write/Edit/WebFetch/Glob/WebSearch/Grep all have a post_tool_use
-    // handler (hooks_grep.ts's postGrepHandler registers on 'Grep' too, src/hooks_grep.ts:230,
-    // and also does secret redaction on Grep output -- see redactSecrets there).
+    // AfterTool: Bash/Read/Write/Edit/WebFetch/Glob/WebSearch/Grep all have a post_tool_use handler (hooks_grep.ts's postGrepHandler registers on 'Grep' too, src/hooks_grep.ts:230, and also does secret redaction on Grep output -- see redactSecrets there).
     const afterMatchers = matchersFor(settings, 'AfterTool')
     expect(afterMatchers).toContain('^(run_shell_command)$')
     expect(afterMatchers).toContain('^(read_file|read_many_files|list_directory)$')
@@ -144,8 +121,7 @@ describe('installGemini', () => {
     expect(preCompressCommands[0]).toContain(`"${process.argv[1]}"`)
     expect(preCompressCommands[0]?.endsWith('hook pre_compact')).toBe(true)
 
-    // session_start is retired (its handler was a permanent no-op) -- Gemini's
-    // SessionStart must not get an entry at all, not even a dead one.
+    // session_start is retired (its handler was a permanent no-op) -- Gemini's SessionStart must not get an entry at all, not even a dead one.
     expect(settings.hooks?.['SessionStart']).toBeUndefined()
 
     expect(isGeminiInstalled()).toBe(true)
@@ -164,18 +140,11 @@ describe('installGemini', () => {
     }
   })
 
-  // Regression: a token-goat hook command bakes in process.argv[1] (the running
-  // entry path) as a trailing arg. That path goes stale whenever the entry
-  // moves -- an npm reinstall, switching from a local checkout to a global
-  // install, etc. installGemini used to only check whether a token-goat entry
-  // was PRESENT (groupHasTokenGoat), never whether its baked path was still
-  // CURRENT, so a stale entry was treated as already installed and left
-  // pointing at a path that may no longer exist, forever.
+  // Regression: a token-goat hook command bakes in process.argv[1] (the running entry path) as a trailing arg. That path goes stale whenever the entry moves -- an npm reinstall, switching from a local checkout to a global install, etc. installGemini used to only check whether a token-goat entry was PRESENT (groupHasTokenGoat), never whether its baked path was still CURRENT, so a stale entry was treated as already installed and left pointing at a path that may no longer exist, forever.
   it('repairs a stale baked entry path in an existing token-goat hook command instead of leaving it in place', () => {
     installGemini()
     const p = geminiSettingsPath()
-    // JSON.stringify doubles each backslash in a string, so a Windows entry
-    // path's on-disk representation has \\ where process.argv[1] has \.
+    // JSON.stringify doubles each backslash in a string, so a Windows entry path's on-disk representation has \\ where process.argv[1] has \.
     const jsonEscapedEntryPath = process.argv[1]!.replace(/\\/g, '\\\\')
     const entryPathPattern = new RegExp(jsonEscapedEntryPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
     const staleContent = fs.readFileSync(p, 'utf8').replace(entryPathPattern, '/some/stale/old-install-path/token-goat.mjs')
@@ -231,8 +200,7 @@ describe('installGemini', () => {
 
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
-    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly
-    // one call above actually produces a backup file.
+    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly one call above actually produces a backup file.
     expect(backups.length).toBe(1)
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(backupContent).toBe(JSON.stringify({ theme: 'dark' }))
@@ -248,9 +216,7 @@ describe('installGemini', () => {
     expect(() => installGemini()).toThrow(GeminiSettingsParseError)
     expect(() => installGemini()).toThrow(/invalid JSON/)
 
-    // installGemini must never reach the settings.json write when the file
-    // existed but failed to parse -- the corrupt-but-recoverable file must be
-    // left exactly as the user left it, not silently clobbered.
+    // installGemini must never reach the settings.json write when the file existed but failed to parse -- the corrupt-but-recoverable file must be left exactly as the user left it, not silently clobbered.
     expect(fs.readFileSync(p, 'utf8')).toBe(corrupt)
   })
 
@@ -321,11 +287,7 @@ describe('installGemini', () => {
       expect(command).toContain(`"${process.execPath}"`)
       expect(command).toContain(`"${process.argv[1]}"`)
     }
-    // Not asserting isGeminiInstalled() here: it requires process.argv[1] to
-    // literally contain a "token-goat" path segment, which the test runner's
-    // own entry path does not -- a pre-existing, unrelated environment
-    // limitation also hit by the "fresh install" test above, not something
-    // this fix changes.
+    // Not asserting isGeminiInstalled() here: it requires process.argv[1] to literally contain a "token-goat" path segment, which the test runner's own entry path does not -- a pre-existing, unrelated environment limitation also hit by the "fresh install" test above, not something this fix changes.
   })
 })
 
@@ -449,25 +411,18 @@ describe('isGeminiInstalled / uninstallGemini', () => {
     installGemini()
     uninstallGemini()
 
-    // The unrelated lookalike command must survive both an install (which
-    // tops up token-goat's own entries alongside it) and an uninstall (which
-    // must not mistake it for token-goat's own entry and strip it).
+    // The unrelated lookalike command must survive both an install (which tops up token-goat's own entries alongside it) and an uninstall (which must not mistake it for token-goat's own entry and strip it).
     const settings = readSettings()
     const beforeCommands = commandsFor(settings, 'BeforeTool')
     expect(beforeCommands).toContain('"C:/some/other/node.exe" "C:/some/other/tool.js" hook pre_tool_use')
-    // A real token-goat-authored command of the identical shape (this
-    // process's own actual execPath/entryPath, exactly what installGemini()
-    // itself writes) IS recognized and gets removed by the same uninstall --
-    // only the unrelated lookalike (whose paths never reference process.execPath)
-    // remains.
+    // A real token-goat-authored command of the identical shape (this process's own actual execPath/entryPath, exactly what installGemini() itself writes) IS recognized and gets removed by the same uninstall -- only the unrelated lookalike (whose paths never reference process.execPath) remains.
     expect(beforeCommands.some((c) => c.includes(process.execPath))).toBe(false)
   })
 
   it('backs settings.json up before a rewrite, then removes only the backups it made itself', () => {
     installGemini()
     const p = geminiSettingsPath()
-    // Hand-edited back to an empty object, so the second install has something to write and
-    // therefore something to back up first.
+    // Hand-edited back to an empty object, so the second install has something to write and therefore something to back up first.
     fs.writeFileSync(p, '{}\n')
     installGemini()
 

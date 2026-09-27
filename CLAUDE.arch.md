@@ -381,6 +381,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/cli_file_ops.ts`](src/cli_file_ops.ts) | Exports: `cmdNoteAdd`, `cmdWriteFile`, `cmdReplace`, `cmdInsertSection` |
 | [`src/cli_hint_stats.ts`](src/cli_hint_stats.ts) | CLI handler for `token-goat hint-stats`. |
 | [`src/cli_hook_server.ts`](src/cli_hook_server.ts) | `token-goat hook-server`: start, inspect and stop the resident hook servers in `hook_server.ts`. |
+| [`src/cli_install.ts`](src/cli_install.ts) | The `install`, `uninstall` and `mcp-status` commands and the helpers only they use: the Claude Code base gate, post-install notes, the leftover-integration report and the purge. |
 | [`src/cli_mcp_audit.ts`](src/cli_mcp_audit.ts) | CLI handler for `token-goat mcp-audit`. |
 | [`src/cli_memory.ts`](src/cli_memory.ts) | CLI handler for `token-goat memory --analyze` / `--fix`. |
 | [`src/cli_office.ts`](src/cli_office.ts) | Exports: `fenceFileText`, `fenceFileFieldIfMatched`, `fileSizeOrZero`, `recordDocStat` |

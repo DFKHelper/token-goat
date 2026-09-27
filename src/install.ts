@@ -461,7 +461,7 @@ export function hookEventGaps(scope: HookScope = 'user'): HookEventGaps | null {
   return { missing, outdated, broken }
 }
 
-// --- CLAUDE.md delimited-block writer --- README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
+// --- CLAUDE.md delimited-block writer --- README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli_install.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
 
 const CLAUDE_MD_BEGIN = '<!-- token-goat-begin -->'
 const CLAUDE_MD_END = '<!-- token-goat-end -->'
