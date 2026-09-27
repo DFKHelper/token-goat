@@ -11,7 +11,7 @@ import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } fro
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import { emitGuarded, findSpecSeparator, guardJsonRows, guardText, recordReadStat, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
-import { confinedProjectRoot, confinementRefusal, isProjectRootAllowed, parseCrossFileMultiSpec, parseReadSpec } from './read_spec.js'
+import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement } from './read_spec.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
@@ -280,19 +280,12 @@ export function runRefs(opts: RefsOptions): number {
   }
 
   // Same confinement the file-spec read commands enforce, applied before any query: an explicit --project or an out-of-root file in the spec would otherwise re-open the channel that refsRootDir closes for the bare-name form.
-  const baseConfined = confinedProjectRoot()
-  const confinedRoot = opts.projectRoot !== undefined && baseConfined !== null && isProjectRootAllowed(opts.projectRoot, baseConfined)
-    ? (confinedProjectRoot(opts.projectRoot) ?? baseConfined)
-    : baseConfined
-  if (baseConfined !== null) {
-    const requested = opts.projectRoot
-    const projectDenial = requested === undefined || (confinedRoot !== baseConfined)
-      ? null
-      : confinementRefusal('--project', requested, baseConfined)
-    if (projectDenial !== null) {
-      emitErr(projectDenial)
-      return 1
-    }
+  const { root: confinedRoot, denial: projectDenial } = resolveProjectConfinement(opts.projectRoot)
+  if (projectDenial !== null) {
+    emitErr(projectDenial)
+    return 1
+  }
+  if (confinedRoot !== null) {
     for (const file of refsSpecFiles(opts.spec)) {
       const denial = confinementRefusal('This file', resolveIndexPath(file, opts.projectRoot ?? process.cwd()), confinedRoot)
       if (denial !== null) {
