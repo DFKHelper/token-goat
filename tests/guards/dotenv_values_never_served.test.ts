@@ -282,6 +282,49 @@ describe('the other paths that hand file text to a model', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // `compress-text --file` and `handoff-create --file` store a local file's text, and `retrieve` and `handoff-resolve --full` print back exactly what was stored, so a dotenv value has to be masked when the file is read in. CAPTURE: the built bundle's `retrieve` printed a scratch .env's `HARMLESS_LOOKING=plainsecret444` verbatim after `compress-text --file` stored it, and `handoff-resolve --full` did the same after `handoff-create --file`, since both stores run only the keyword-driven redactSecrets pass.
+  it('compress-text --file stores the keys without the values, so retrieve has none to print', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dotenv-compress-'))
+    try {
+      const file = join(root, '.env')
+      writeFileSync(file, `${ENV_FILE}HARMLESS_LOOKING=${'plainsecret444'}\n`)
+      const bundle = resolve(process.cwd(), 'dist', 'token-goat.mjs')
+
+      const stored = spawnSync(process.execPath, [bundle, 'compress-text', '--file', file], { encoding: 'utf8', cwd: root })
+      expect(stored.status).toBe(0)
+      const id = /^id: (\S+)$/m.exec(stored.stdout)?.[1]
+      expect(id).toBeDefined()
+      const run = spawnSync(process.execPath, [bundle, 'retrieve', String(id)], { encoding: 'utf8', cwd: root })
+
+      expect(run.status).toBe(0)
+      const out = `${run.stdout}${run.stderr}`
+      expect(out).not.toContain('plainsecret444')
+      expect(out).toContain('HARMLESS_LOOKING')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('handoff-create --file stores the keys without the values, so handoff-resolve --full has none to print', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dotenv-handoff-'))
+    try {
+      const file = join(root, '.env')
+      writeFileSync(file, `${ENV_FILE}HARMLESS_LOOKING=${'plainsecret444'}\n`)
+      const bundle = resolve(process.cwd(), 'dist', 'token-goat.mjs')
+
+      const stored = spawnSync(process.execPath, [bundle, 'handoff-create', 'dotenv-guard', '--file', file], { encoding: 'utf8', cwd: root })
+      expect(stored.status).toBe(0)
+      const run = spawnSync(process.execPath, [bundle, 'handoff-resolve', 'dotenv-guard', '--full'], { encoding: 'utf8', cwd: root })
+
+      expect(run.status).toBe(0)
+      const out = `${run.stdout}${run.stderr}`
+      expect(out).not.toContain('plainsecret444')
+      expect(out).toContain('HARMLESS_LOOKING')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 // Redacting from now on does not undo what is already stored. The embed-freshness gate skips a file whose bytes have not changed, so an index built before the fix would have gone on serving its .env chunks forever -- a fix that leaves the leak live for every existing install.

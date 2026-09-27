@@ -60,7 +60,7 @@ import { installNeovim, isNeovimInstalled, uninstallNeovim } from './bridges/neo
 import { detectEcosystems } from './bridges/detect_ecosystems.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
-import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor.js'
+import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor_platforms.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -148,7 +148,8 @@ function readBoundedText(text: string | undefined, file: string | undefined): st
     if (fs.statSync(file).size > CONTENT_MAX_INPUT_CHARS) {
       throw new CliError(`file exceeds the ${CONTENT_MAX_INPUT_CHARS}-byte safety limit`)
     }
-    value = fs.readFileSync(file, 'utf8')
+    // Masked here, at intake: both stores keep this text and `retrieve` and `handoff-resolve --full` print it back verbatim, and the keyword-driven redactSecrets pass they run misses a dotenv value whose key looks harmless.
+    value = redactIfDotenv(file, fs.readFileSync(file, 'utf8'))
   } else {
     if (text === undefined) throw new CliError('provide text or --file')
     value = text
