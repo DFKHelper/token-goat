@@ -1,4 +1,4 @@
-// Batch C golden tests — linter filters. Faithfully ported from the Python suite (test_bash_compress.py linter classes). These are the regression spec for the 16 filters in src/tool_filters/linters.ts.
+// Batch C golden tests — linter filters. Faithfully ported from the Python suite (test_bash_compress.py linter classes). These are the regression spec for the 16 filters in src/tool_filters/linters.ts, linters_js.ts and linters_python.ts.
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,9 +9,7 @@ import { LINTER_FILTERS, TOOL_FILTERS, detectFromCommand, selectFilter } from '.
 import { compressOutput } from '../src/tool_filters/dispatch.js'
 import { CAPTURE_ESLINT_40_FILES } from './fixtures/eslint_real_captures.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 const filterByName = (name: string) => {
   const f = TOOL_FILTERS.find((x) => x.name === name) ?? LINTER_FILTERS.find((x) => x.name === name)
@@ -36,9 +34,7 @@ const ktlintFilter = filterByName('ktlint')
 const cppcheckFilter = filterByName('cppcheck')
 const clangTidyFilter = filterByName('clang-tidy')
 
-// ---------------------------------------------------------------------------
-// LINTER_FILTERS array
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- LINTER_FILTERS array ---------------------------------------------------------------------------
 
 describe('LINTER_FILTERS', () => {
   it('exports 16 filter entries', () => {
@@ -67,9 +63,7 @@ describe('LINTER_FILTERS', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// TscFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TscFilter ---------------------------------------------------------------------------
 
 describe('TscFilter', () => {
   it('matches bare tsc', () => {
@@ -129,9 +123,7 @@ describe('TscFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// RuffFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- RuffFilter ---------------------------------------------------------------------------
 
 describe('RuffFilter', () => {
   it('matches ruff', () => {
@@ -204,8 +196,7 @@ describe('RuffFilter', () => {
     ].join('\n')
     const result = ruffFilter.apply(lines, '', 1, ['ruff', 'check', '.'])
 
-    // Collapsed code: one summary line with the real count, context dropped
-    // for every occurrence — not just the header, and not left as noise.
+    // Collapsed code: one summary line with the real count, context dropped for every occurrence — not just the header, and not left as noise.
     expect(result.text).toMatch(/F401: 4 occurrences in 2 files/)
     expect(result.text).not.toContain('import sys')
     expect(result.text).not.toContain('import json')
@@ -319,9 +310,7 @@ describe('RuffFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ESLintFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ESLintFilter ---------------------------------------------------------------------------
 
 describe('ESLintFilter', () => {
   it('matches eslint', () => {
@@ -340,11 +329,7 @@ describe('ESLintFilter', () => {
     expect(result.text).toMatch(/ESLint/i)
   })
 
-  // Regression: ESLint exits 0 whenever there are no *errors*, even when warnings were emitted
-  // (unless --max-warnings is set). The clean-exit fast path used to blindly search for a
-  // "✖ N problems" summary line and fall back to a blanket "ESLint: no errors" otherwise --
-  // silently discarding real warning lines whenever the output has no stylish-style summary
-  // footer (e.g. --format unix, or a summary line the caller stripped).
+  // Regression: ESLint exits 0 whenever there are no *errors*, even when warnings were emitted (unless --max-warnings is set). The clean-exit fast path used to blindly search for a "✖ N problems" summary line and fall back to a blanket "ESLint: no errors" otherwise -- silently discarding real warning lines whenever the output has no stylish-style summary footer (e.g. --format unix, or a summary line the caller stripped).
   it('surfaces warning lines instead of a false "no errors" when exit code is 0 but warnings were emitted (no summary footer)', () => {
     const header = '/project/src/foo.ts'
     const warning = "  12:8  warning  'x' is defined but never used  no-unused-vars"
@@ -483,9 +468,7 @@ describe('ESLintFilter under the shipping line cap', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// MypyFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- MypyFilter ---------------------------------------------------------------------------
 
 describe('MypyFilter', () => {
   it('matches mypy and dmypy', () => {
@@ -521,9 +504,7 @@ describe('MypyFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PylintFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PylintFilter ---------------------------------------------------------------------------
 
 describe('PylintFilter', () => {
   it('matches pylint', () => {
@@ -624,10 +605,7 @@ describe('PylintFilter', () => {
   })
 
   it('per-code cap is scoped per-module, not global across the whole run', () => {
-    // Module A exhausts the C0301 cap on its own (4 issues -> 3 kept + placeholder).
-    // Module B comes after A and has its own C0301 issues, fewer than the cap.
-    // A global (unscoped) cap would treat B's issues as already over-cap and B's
-    // header would never flush, silently dropping B's entire section.
+    // Module A exhausts the C0301 cap on its own (4 issues -> 3 kept + placeholder). Module B comes after A and has its own C0301 issues, fewer than the cap. A global (unscoped) cap would treat B's issues as already over-cap and B's header would never flush, silently dropping B's entire section.
     const input = [
       '************* Module a',
       'a.py:1:0: C0301 (C0301): Line too long (90/88)',
@@ -649,17 +627,14 @@ describe('PylintFilter', () => {
     expect(result.text).not.toContain('a.py:4:')
     expect(result.text).toContain('+1 more C0301')
 
-    // Module B must not vanish: its header and both issues must appear,
-    // since neither is over B's own per-module cap.
+    // Module B must not vanish: its header and both issues must appear, since neither is over B's own per-module cap.
     expect(result.text).toContain('Module b')
     expect(result.text).toContain('b.py:1:')
     expect(result.text).toContain('b.py:2:')
   })
 })
 
-// ---------------------------------------------------------------------------
-// OxlintFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- OxlintFilter ---------------------------------------------------------------------------
 
 describe('OxlintFilter', () => {
   it('matches oxlint and oxc_linter', () => {
@@ -708,9 +683,7 @@ describe('OxlintFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BiomeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BiomeFilter ---------------------------------------------------------------------------
 
 describe('BiomeFilter', () => {
   it('matches biome', () => {
@@ -750,9 +723,7 @@ describe('BiomeFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Generic LinterFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Generic LinterFilter ---------------------------------------------------------------------------
 
 describe('LinterFilter (generic)', () => {
   it('matches pyright', () => {
@@ -803,9 +774,7 @@ describe('LinterFilter (generic)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GolangciLintFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GolangciLintFilter ---------------------------------------------------------------------------
 
 describe('GolangciLintFilter', () => {
   it('matches golangci-lint', () => {
@@ -884,9 +853,7 @@ describe('GolangciLintFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PhpStanFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PhpStanFilter ---------------------------------------------------------------------------
 
 describe('PhpStanFilter', () => {
   it('matches phpstan and psalm', () => {
@@ -915,10 +882,7 @@ describe('PhpStanFilter', () => {
     expect(result.text).toContain('[ERROR]')
   })
 
-  // FORMAT-DERIVED: the identifier continuation line comes from phpstan-src's TableErrorFormatter,
-  // which appends `"\n" . '🪪  ' . $error->getIdentifier()` to the message inside one table cell;
-  // Symfony's Table helper renders that newline as a row with an empty Line column. Read off that
-  // formatter, not off this filter's regexes.
+  // FORMAT-DERIVED: the identifier continuation line comes from phpstan-src's TableErrorFormatter, which appends `"\n" . '🪪  ' . $error->getIdentifier()` to the message inside one table cell; Symfony's Table helper renders that newline as a row with an empty Line column. Read off that formatter, not off this filter's regexes.
   it('phpstan: drops the identifier line belonging to a row it just deduplicated', () => {
     const header = ' Line  src/foo.php'
     const rows = Array.from({ length: 6 }, (_, i) => [
@@ -974,15 +938,12 @@ describe('PhpStanFilter', () => {
     const summary = ' [ERROR] Found 5 errors'
     const input = [header, ...rows, summary].join('\n')
     const result = phpstanFilter.apply(input, '', 1, ['phpstan', 'analyse'])
-    // A naive split(' ', 2) on the header would truncate the path at the
-    // first space, reporting "src/my" instead of the full path.
+    // A naive split(' ', 2) on the header would truncate the path at the first space, reporting "src/my" instead of the full path.
     expect(result.text).toContain('duplicate error(s) in src/my project/foo.php')
   })
 })
 
-// ---------------------------------------------------------------------------
-// SwiftLintFilter (makeLinterFilter factory)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SwiftLintFilter (makeLinterFilter factory) ---------------------------------------------------------------------------
 
 describe('SwiftLintFilter (factory)', () => {
   it('matches swiftlint', () => {
@@ -1028,9 +989,7 @@ describe('SwiftLintFilter (factory)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BlackIsortFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BlackIsortFilter ---------------------------------------------------------------------------
 
 describe('BlackIsortFilter', () => {
   it('matches black and isort', () => {
@@ -1060,9 +1019,7 @@ describe('BlackIsortFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PrettierFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PrettierFilter ---------------------------------------------------------------------------
 
 describe('PrettierFilter', () => {
   it('matches prettier', () => {
@@ -1096,9 +1053,7 @@ describe('PrettierFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// KtlintFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- KtlintFilter ---------------------------------------------------------------------------
 
 describe('KtlintFilter', () => {
   it('matches ktlint', () => {
@@ -1163,9 +1118,7 @@ describe('KtlintFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CppcheckFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CppcheckFilter ---------------------------------------------------------------------------
 
 describe('CppcheckFilter', () => {
   it('matches cppcheck', () => {
@@ -1187,9 +1140,7 @@ describe('CppcheckFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ClangTidyFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ClangTidyFilter ---------------------------------------------------------------------------
 
 describe('ClangTidyFilter', () => {
   it('matches clang-tidy and run-clang-tidy', () => {
@@ -1226,9 +1177,7 @@ describe('ClangTidyFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Dispatch integration
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Dispatch integration ---------------------------------------------------------------------------
 
 describe('detectFromCommand (linter dispatch)', () => {
   it('detects eslint src/ as the eslint filter', () => {
@@ -1267,10 +1216,7 @@ describe('detectFromCommand (linter dispatch)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Residue regressions: pylint's over-cap placeholder and note pluralisation,
-// and clang-tidy's translation-unit extension list.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Residue regressions: pylint's over-cap placeholder and note pluralisation, and clang-tidy's translation-unit extension list. ---------------------------------------------------------------------------
 
 describe('PylintFilter over-cap placeholder, driven from the real 4.0.7 capture', () => {
   // Expectations derived from the fixture, not from the filter: `grep -c '^service.py.*C0209'` is 14 and the cap keeps 3, so 11 are elided; `grep -c '^service.py.*W0611'` is 4, so 1 is elided. The symbolic names are the trailing parenthesised token on those same lines.
@@ -1347,21 +1293,10 @@ describe('ClangTidyFilter diagnostic matcher covers every translation unit clang
   })
 })
 
-// ---------------------------------------------------------------------------
-// PhpStanFilter / psalm: the verdict line and INFO diagnostics
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PhpStanFilter / psalm: the verdict line and INFO diagnostics ---------------------------------------------------------------------------
 
 describe('PhpStanFilter psalm verdict', () => {
-  // HAND-DERIVED. CAPTURE was impossible: psalm and PHP are not installed on this machine and this
-  // loop is forbidden from making network requests to install either. The input is not copied from
-  // psalm and it is not written from the matcher it exercises. It is written from the *other*
-  // regex in the same function: `_PSALM_PROGRESS_RE` enumerates `No errors` and `Found \d+ error`
-  // by name as shapes it expects psalm to print, and then routes both into the dropped-as-progress
-  // branch. So whatever psalm's exact wording is, the filter's own stated recognition of a verdict
-  // line is what discards it, and that is what these cases pin. The severity case is the same
-  // shape: `_PSALM_ERROR_RE` lists INFO as a diagnostic severity alongside ERROR and FATAL, while
-  // `_PSALM_PROGRESS_RE` matched a leading `INFO:` first and dropped it, so the two regexes in one
-  // function disagreed about what an INFO line is.
+  // HAND-DERIVED. CAPTURE was impossible: psalm and PHP are not installed on this machine and this loop is forbidden from making network requests to install either. The input is not copied from psalm and it is not written from the matcher it exercises. It is written from the *other* regex in the same function: `_PSALM_PROGRESS_RE` enumerates `No errors` and `Found \d+ error` by name as shapes it expects psalm to print, and then routes both into the dropped-as-progress branch. So whatever psalm's exact wording is, the filter's own stated recognition of a verdict line is what discards it, and that is what these cases pin. The severity case is the same shape: `_PSALM_ERROR_RE` lists INFO as a diagnostic severity alongside ERROR and FATAL, while `_PSALM_PROGRESS_RE` matched a leading `INFO:` first and dropped it, so the two regexes in one function disagreed about what an INFO line is.
   it('psalm: keeps the "No errors found!" verdict of a clean run', () => {
     const input = ['Scanning files...', 'Analyzing files...', 'No errors found!'].join('\n')
     const result = phpstanFilter.apply(input, '', 0, ['psalm'])

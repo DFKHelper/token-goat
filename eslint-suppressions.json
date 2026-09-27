@@ -152,7 +152,17 @@
       "count": 2
     },
     "regexp/no-super-linear-backtracking": {
-      "count": 20
+      "count": 11
+    }
+  },
+  "src/tool_filters/linters_js.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 8
+    }
+  },
+  "src/tool_filters/linters_python.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
     }
   },
   "src/tool_filters/misc.ts": {
