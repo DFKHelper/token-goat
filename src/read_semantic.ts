@@ -8,7 +8,7 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { emitErr } from './emit.js'
-import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, checkEmbeddingPreflight, type SearchHit } from './embeddings.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, checkEmbeddingPreflight, type EmbeddingPreflightResult, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
@@ -92,6 +92,21 @@ export function applyRelevanceFloor(
     }
   }
   return { kept, nearestRejected }
+}
+
+/** The fields every `--json` answer carries when matching on meaning took no part in it: the preflight's status, summary and required action when the embeddings are not ready, or the error the dense search raised when they were. Nothing when it ran, so a consumer reads a degraded answer the same way whether hits came back, none did, or the index is empty. */
+function semanticDegradedFields(preflight: EmbeddingPreflightResult, searchSemanticError: string | null): { preflightStatus?: string; warning?: string; actionRequired?: string } {
+  if (preflight.status !== 'ready') {
+    return {
+      preflightStatus: preflight.status,
+      warning: preflight.summary,
+      ...(preflight.actionRequired ? { actionRequired: preflight.actionRequired } : {}),
+    }
+  }
+  if (searchSemanticError !== null) {
+    return { preflightStatus: 'degraded', warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.` }
+  }
+  return {}
 }
 
 export async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
@@ -347,18 +362,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
         totalCount: eligibleCount,
         ...(candidatesClipped ? { totalCountIsFloor: true } : {}),
         ...(weakClosestDistance !== null ? { lowConfidence: { closestDistance: weakClosestDistance, threshold: WEAK_MATCH_DISTANCE } } : {}),
-        ...(preflight.status !== 'ready'
-          ? {
-              preflightStatus: preflight.status,
-              warning: preflight.summary,
-              ...(preflight.actionRequired ? { actionRequired: preflight.actionRequired } : {}),
-            }
-          : searchSemanticError !== null
-            ? {
-                preflightStatus: 'degraded',
-                warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.`,
-              }
-            : {}),
+        ...semanticDegradedFields(preflight, searchSemanticError),
       })
       recordReadStat('semantic_search', largestFileSize(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
@@ -460,36 +464,14 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
           totalCount: 0,
           indexEmpty: true,
           hint: emptyIndexMessage(rootDir),
-          ...(preflight.status !== 'ready'
-            ? {
-                preflightStatus: preflight.status,
-                warning: preflight.summary,
-                ...(preflight.actionRequired ? { actionRequired: preflight.actionRequired } : {}),
-              }
-            : searchSemanticError !== null
-              ? {
-                  preflightStatus: 'degraded',
-                  warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.`,
-                }
-              : {}),
+          ...semanticDegradedFields(preflight, searchSemanticError),
         }
       : {
           source: 'fts',
           items: [],
           truncated: false,
           totalCount: 0,
-          ...(preflight.status !== 'ready'
-            ? {
-                preflightStatus: preflight.status,
-                warning: preflight.summary,
-                ...(preflight.actionRequired ? { actionRequired: preflight.actionRequired } : {}),
-              }
-            : searchSemanticError !== null
-              ? {
-                  preflightStatus: 'degraded',
-                  warning: `Matching on meaning failed (${searchSemanticError}); results come from keyword search alone.`,
-                }
-              : {}),
+          ...semanticDegradedFields(preflight, searchSemanticError),
           ...(!indexEmpty && isIdentifier
             ? {
                 symbolSuggestion: `token-goat symbol "${trimmedQuery}"`,
