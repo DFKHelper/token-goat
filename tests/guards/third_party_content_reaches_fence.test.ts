@@ -66,6 +66,11 @@ const CONDITIONAL_FENCE_EXCEPTIONS: ReadonlyMap<string, string> = new Map([
     'same exception, for recall --json. The printed recall listing is fenced unconditionally as ' +
       'one block by fenceRecallListing.',
   ],
+  [
+    'fenceToolFieldIfMatched',
+    'same exception, for every string in mcp-output --json-query --json. The printed form of the ' +
+      'same query is fenced unconditionally by _applyFiltersAndPrint(..., true, UNTRUSTED_TOOL_TAG).',
+  ],
 ])
 
 /** Every way a body can reach the fence boundary. `fenceUntrusted`/`fenceWithMatches` (the shared decision point in src/untrusted_fence.ts) and `fenceUntrustedOcrText` (OCR's own notice) all end at `fenceUntrustedContent`, but they live in a different module than their callers, so the per-file call graph below cannot walk into them -- they have to be named here as terminals or a correctly-fenced caller reads as a violation. */
