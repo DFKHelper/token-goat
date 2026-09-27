@@ -351,6 +351,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/sqlite_query.ts`](src/sqlite_query.ts) | Narrow schema summary + read-only query extraction for `token-goat sqlite-schema` / `sqlite-query`, so a project's `.db`/`.sqlite`/`.sqlite3` fixture never needs a raw-byte `Read` |
 | [`src/xml_parser.ts`](src/xml_parser.ts) | Minimal XML reader for the OOXML parts token-goat extracts (.docx, .pptx, .xlsx). |
 | [`src/xml_query.ts`](src/xml_query.ts) | XML structure inspection and querying for token-goat. |
+| [`src/xml_selector.ts`](src/xml_selector.ts) | The selector language of `xml-query`: a path such as `catalog/book[@id='101']/@lang` parsed into steps, and the tag, attribute and predicate tests each step applies to a node. |
 
 **Specialized Subsystems**
 

@@ -1,15 +1,8 @@
-/**
- * XML structure inspection and querying for token-goat.
- *
- * Provides lightweight, generic, security-safe XML parsing without external entity resolution (XXE safe)
- * for structural outlining (`xml-outline`) and tag/path querying (`xml-query`).
- *
- * Deliberately generic and schema-agnostic: makes no assumptions about specific XML vocabularies,
- * namespaces, or domain models.
- */
+/** XML structure inspection and querying for token-goat. Provides lightweight, generic, security-safe XML parsing without external entity resolution (XXE safe) for structural outlining (`xml-outline`) and tag/path querying (`xml-query`). Deliberately generic and schema-agnostic: makes no assumptions about specific XML vocabularies, namespaces, or domain models. */
 
 import { displaySafeText } from './paths.js'
 import { pushAll } from './util.js'
+import { evalPredicate, getAttrValue, matchTag, parseXmlPath } from './xml_selector.js'
 
 export interface XmlNode {
   tag: string
@@ -38,23 +31,15 @@ export interface XmlOutlineElement {
   textLength: number
 }
 
-// XML Names are Unicode, not ASCII: `<café>` and `<数据>` are as legal as `<item>`, and an
-// ASCII-only class truncated the first at its first non-ASCII character and dropped the second from
-// the tree entirely. These follow the NameStartChar/NameChar productions of XML 1.0; the surrogate
-// range is included so a name from an astral plane matches as its two code units.
+// XML Names are Unicode, not ASCII: `<café>` and `<数据>` are as legal as `<item>`, and an ASCII-only class truncated the first at its first non-ASCII character and dropped the second from the tree entirely. These follow the NameStartChar/NameChar productions of XML 1.0; the surrogate range is included so a name from an astral plane matches as its two code units.
 const XML_NAME_START = 'A-Za-z_:\u00C0-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uD800-\uDFFF\uF900-\uFDCF\uFDF0-\uFFFD'
 const XML_NAME_REST = 'A-Za-z_:\u00C0-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uD800-\uDFFF\uF900-\uFDCF\uFDF0-\uFFFD0-9.\u00B7\u0300-\u036F\u203F-\u2040-'
 const XML_NAME = `[${XML_NAME_START}][${XML_NAME_REST}]*`
 
-// The region between a tag name and its closing `>`. A `>` is legal inside a quoted attribute
-// value -- only `<` and `&` are forbidden there -- so a scan that stops at the first `>` ends the
-// start tag in the middle of a value. Quoted spans are consumed whole; the bare-quote alternative
-// is last so an unpaired quote in a malformed document still parses rather than dropping the
-// element silently.
+// The region between a tag name and its closing `>`. A `>` is legal inside a quoted attribute value -- only `<` and `&` are forbidden there -- so a scan that stops at the first `>` ends the start tag in the middle of a value. Quoted spans are consumed whole; the bare-quote alternative is last so an unpaired quote in a malformed document still parses rather than dropping the element silently.
 const XML_ATTR_REGION = `(?:[^>"']|"[^"]*"|'[^']*'|["'])*?`
 
-// Same rule for a doctype: a SystemLiteral is quoted and may contain `>`, and stopping at the
-// first one let a document hide an element inside one and have it read as the root.
+// Same rule for a doctype: a SystemLiteral is quoted and may contain `>`, and stopping at the first one let a document hide an element inside one and have it read as the root.
 const XML_DOCTYPE_TOKEN = `<!DOCTYPE(?:[^>"']|"[^"]*"|'[^']*')*>`
 
 /** Decodes standard XML entities and numeric character references. */
@@ -98,19 +83,13 @@ export function escapeXmlAttr(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;')
-    // A tab, newline or carriage return left raw here still round-trips through token-goat's own
-    // parser, but any conforming XML reader normalises whitespace in an attribute value to spaces,
-    // so serialized output meant something different from the document it came from. Numeric
-    // references survive that normalisation.
+    // A tab, newline or carriage return left raw here still round-trips through token-goat's own parser, but any conforming XML reader normalises whitespace in an attribute value to spaces, so serialized output meant something different from the document it came from. Numeric references survive that normalisation.
     .replace(/\n/g, '&#xA;')
     .replace(/\r/g, '&#xD;')
     .replace(/\t/g, '&#x9;')
 }
 
-/**
- * Fast, generic, secure XML tokenizer and tree builder without external entity loading.
- * Handles elements, attributes, self-closing tags, CDATA, comments, processing instructions, and DOCTYPE.
- */
+/** Fast, generic, secure XML tokenizer and tree builder without external entity loading. Handles elements, attributes, self-closing tags, CDATA, comments, processing instructions, and DOCTYPE. */
 export function parseXml(xmlText: string): XmlNode {
   const { root } = parseXmlTree(xmlText)
   if (!root) {
@@ -125,9 +104,7 @@ export function parseXmlTree(xmlText: string): {
   doctype: string | null
   totalElements: number
 } {
-  // `line` is reported against the document the caller passed, so the prefix trimmed off here
-  // has to be counted rather than forgotten: an element three blank lines down was reported as
-  // being on line 1.
+  // `line` is reported against the document the caller passed, so the prefix trimmed off here has to be counted rather than forgotten: an element three blank lines down was reported as being on line 1.
   const leadingTrim = xmlText.length - xmlText.trimStart().length
   let text = xmlText.trim()
   let lineOffset = (xmlText.slice(0, leadingTrim).match(/\n/g) ?? []).length
@@ -149,10 +126,7 @@ export function parseXmlTree(xmlText: string): {
 
   function parseAttributes(attrString: string): Record<string, string> {
     const attrs: Record<string, string> = {}
-    // The rule below guards against a class that can match half a grapheme, which is exactly what
-    // an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F
-    // and the zero-width joiner U+200D as name characters in their own right, and an astral name
-    // matches as its two code units. Matching per code unit is the intent, not an oversight.
+    // The rule below guards against a class that can match half a grapheme, which is exactly what an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F and the zero-width joiner U+200D as name characters in their own right, and an astral name matches as its two code units. Matching per code unit is the intent, not an oversight.
     // eslint-disable-next-line no-misleading-character-class, regexp/no-super-linear-backtracking
     const attrRegex = new RegExp(`(${XML_NAME})(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+)))?`, 'g')
     let m: RegExpExecArray | null
@@ -168,11 +142,7 @@ export function parseXmlTree(xmlText: string): {
     return attrs
   }
 
-  // Tokenize elements, comments, CDATA, and processing instructions
-  // The rule below guards against a class that can match half a grapheme, which is exactly what
-  // an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F
-  // and the zero-width joiner U+200D as name characters in their own right, and an astral name
-  // matches as its two code units. Matching per code unit is the intent, not an oversight.
+  // Tokenize elements, comments, CDATA, and processing instructions. The rule below guards against a class that can match half a grapheme, which is exactly what an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F and the zero-width joiner U+200D as name characters in their own right, and an astral name matches as its two code units. Matching per code unit is the intent, not an oversight.
   const tagRegex = new RegExp(
     // eslint-disable-next-line no-misleading-character-class, regexp/no-super-linear-backtracking
     `<(\\/)?(${XML_NAME})(${XML_ATTR_REGION})(\\/)?>` +
@@ -199,11 +169,7 @@ export function parseXmlTree(xmlText: string): {
 
     // Capture text preceding the tag
     if (stack.length > 0 && match.index > lastIndex) {
-      // Verbatim, and with no separator invented between chunks. Trimming each chunk and joining
-      // with a space turned `a<!--x-->b` into `a b` and threw away the spaces in
-      // `<![CDATA[ a ]]>`, which is the one thing CDATA exists to keep. A chunk that is nothing
-      // but whitespace is dropped, because that is the indentation of a pretty-printed document
-      // rather than content anybody asked for.
+      // Verbatim, and with no separator invented between chunks. Trimming each chunk and joining with a space turned `a<!--x-->b` into `a b` and threw away the spaces in `<![CDATA[ a ]]>`, which is the one thing CDATA exists to keep. A chunk that is nothing but whitespace is dropped, because that is the indentation of a pretty-printed document rather than content anybody asked for.
       const raw = text.slice(lastIndex, match.index)
       if (raw.trim()) {
         stack[stack.length - 1]!.text += decodeXmlEntities(raw)
@@ -224,9 +190,7 @@ export function parseXmlTree(xmlText: string): {
       continue
     }
 
-    // Counted forward from the previous tag rather than by rescanning the whole prefix each
-    // time: the rescan made an otherwise ordinary large document quadratic, so doubling the
-    // element count quadrupled the time.
+    // Counted forward from the previous tag rather than by rescanning the whole prefix each time: the rescan made an otherwise ordinary large document quadratic, so doubling the element count quadrupled the time.
     while (lineScan < match.index) {
       if (text.charCodeAt(lineScan) === 10) lineOffset++
       lineScan++
@@ -290,9 +254,7 @@ export function parseXmlTree(xmlText: string): {
   return { root: rootNode, namespaces, doctype, totalElements }
 }
 
-/**
- * Builds a structural outline of an XML document bounded by maxDepth.
- */
+/** Builds a structural outline of an XML document bounded by maxDepth. */
 export function outlineXml(xmlText: string, opts: { maxDepth?: number } = {}): XmlOutlineSummary {
   const maxDepth = opts.maxDepth ?? 4
   const { root, namespaces, doctype, totalElements } = parseXmlTree(xmlText)
@@ -362,9 +324,7 @@ export function outlineXml(xmlText: string, opts: { maxDepth?: number } = {}): X
   }
 }
 
-/**
- * Formats an XML outline into a clean, human-readable hierarchy.
- */
+/** Formats an XML outline into a clean, human-readable hierarchy. */
 export function formatXmlOutline(summary: XmlOutlineSummary): string {
   const lines: string[] = []
   lines.push(
@@ -378,10 +338,7 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
   const nsKeys = Object.keys(summary.namespaces)
   if (nsKeys.length > 0) {
     lines.push('Namespaces:')
-    // Both halves are the document's own bytes: an XML author picks the namespace prefix as freely
-    // as the URI beside it, and this line is token-goat's own summary rather than a reproduction of
-    // the markup. Held in bare locals, which the display-safe sink guard cannot see by design, so
-    // the coverage for this pair is the end-to-end test that runs the built binary.
+    // Both halves are the document's own bytes: an XML author picks the namespace prefix as freely as the URI beside it, and this line is token-goat's own summary rather than a reproduction of the markup. Held in bare locals, which the display-safe sink guard cannot see by design, so the coverage for this pair is the end-to-end test that runs the built binary.
     for (const [k, v] of Object.entries(summary.namespaces)) {
       lines.push(`  ${displaySafeText(k)}: ${displaySafeText(v)}`)
     }
@@ -400,8 +357,7 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
         ['id', 'name', 'type', 'key', 'class', 'code', 'status', 'value'].includes(k.toLowerCase()) ||
         attrKeys.length <= 3
       ) {
-        // Truncate first, then escape: the cap is on what the document supplied, so measuring it
-        // after an escape would let a value shrink or grow depending on what it happened to carry.
+        // Truncate first, then escape: the cap is on what the document supplied, so measuring it after an escape would let a value shrink or grow depending on what it happened to carry.
         const valPreview = v.length > 35 ? `${v.slice(0, 32)}...` : v
         attrParts.push(`${displaySafeText(k)}="${displaySafeText(valPreview)}"`)
       }
@@ -427,31 +383,6 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
   return lines.join('\n')
 }
 
-export type XmlPredicate =
-  | { kind: 'index'; index: number }
-  | { kind: 'all' }
-  | { kind: 'attrExists'; name: string }
-  | { kind: 'attrEquals'; name: string; value: string; notEqual?: boolean }
-  | { kind: 'attrContains'; name: string; value: string }
-  | { kind: 'attrStartsWith'; name: string; value: string }
-  | { kind: 'textEquals'; value: string; notEqual?: boolean }
-  | { kind: 'textContains'; value: string }
-  | { kind: 'localNameEquals'; value: string; notEqual?: boolean }
-  | { kind: 'childEquals'; tag: string; value: string; notEqual?: boolean }
-  | { kind: 'childExists'; tag: string }
-  | { kind: 'and'; predicates: XmlPredicate[] }
-  | { kind: 'or'; predicates: XmlPredicate[] }
-
-export interface XmlSelectorStep {
-  tag: string
-  isRecursive: boolean
-  predicates?: XmlPredicate[] | undefined
-  index?: number | undefined
-  allIndices?: boolean | undefined
-  attributeFilter?: { name: string; value?: string | undefined; notEqual?: boolean | undefined } | undefined
-  attributeSelect?: string | undefined
-}
-
 export interface XmlQueryResult {
   items: XmlNode[]
   attributeValues?: string[]
@@ -459,413 +390,7 @@ export interface XmlQueryResult {
   fanned: boolean
 }
 
-function getLocalName(tag: string): string {
-  const idx = tag.indexOf(':')
-  return idx === -1 ? tag : tag.slice(idx + 1)
-}
-
-function matchTag(nodeTag: string, targetTag: string): boolean {
-  if (targetTag === '*' || targetTag === '') return true
-  if (nodeTag.toLowerCase() === targetTag.toLowerCase()) return true
-  if (!targetTag.includes(':')) {
-    return getLocalName(nodeTag).toLowerCase() === targetTag.toLowerCase()
-  }
-  return false
-}
-
-function getAttrValue(node: XmlNode, targetAttr: string): string | undefined {
-  const clean = targetAttr.startsWith('@') ? targetAttr.slice(1) : targetAttr
-  if (clean === '*') {
-    const vals = Object.values(node.attributes)
-    return vals.length > 0 ? vals[0] : undefined
-  }
-  if (node.attributes[clean] !== undefined) return node.attributes[clean]
-  const lowerClean = clean.toLowerCase()
-  for (const [k, v] of Object.entries(node.attributes)) {
-    if (k.toLowerCase() === lowerClean) return v
-  }
-  if (!clean.includes(':')) {
-    for (const [k, v] of Object.entries(node.attributes)) {
-      if (getLocalName(k).toLowerCase() === lowerClean) return v
-    }
-  }
-  return undefined
-}
-
-function splitTopLevel(str: string, delimiter: string): string[] {
-  const parts: string[] = []
-  let current = ''
-  let quote: string | null = null
-  let parenDepth = 0
-
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i]!
-    if (!quote && (ch === '"' || ch === "'")) {
-      quote = ch
-      current += ch
-    } else if (quote && ch === quote) {
-      quote = null
-      current += ch
-    } else if (!quote && ch === '(') {
-      parenDepth++
-      current += ch
-    } else if (!quote && ch === ')') {
-      if (parenDepth > 0) parenDepth--
-      current += ch
-    } else if (!quote && parenDepth === 0 && str.startsWith(delimiter, i)) {
-      parts.push(current.trim())
-      current = ''
-      i += delimiter.length - 1
-    } else {
-      current += ch
-    }
-  }
-  if (current.trim()) parts.push(current.trim())
-  return parts
-}
-
-function parseSinglePredicate(predStr: string): XmlPredicate | null {
-  const s = predStr.trim()
-  if (!s) return null
-
-  // `or` binds loosest (XPath 1.0 §3.4), so it has to be split first: splitting `and` first parses `@a='1' or @b='2' and @c='3'` as `(A or B) and C` and answers a three-book catalog with one book instead of two. Splitting on the loosest operator first is what puts it at the root of the tree.
-  const orParts = splitTopLevel(s, ' or ')
-  if (orParts.length > 1) {
-    const predicates = orParts.map(parseSinglePredicate)
-    if (predicates.some((p) => p === null)) return null
-    return { kind: 'or', predicates: predicates as XmlPredicate[] }
-  }
-
-  // A sub-predicate this parser cannot read makes the whole conjunction unreadable. Filtering the nulls out instead would quietly evaluate `@a='1' and not(@b)` as `@a='1'`, widening the match to rows the caller asked to exclude.
-  const andParts = splitTopLevel(s, ' and ')
-  if (andParts.length > 1) {
-    const predicates = andParts.map(parseSinglePredicate)
-    if (predicates.some((p) => p === null)) return null
-    return { kind: 'and', predicates: predicates as XmlPredicate[] }
-  }
-
-  if (/^-?\d+$/.test(s)) {
-    const n = parseInt(s, 10)
-    return { kind: 'index', index: n }
-  }
-
-  if (s === 'last()') {
-    return { kind: 'index', index: -1 }
-  }
-
-  if (s === '*') {
-    return { kind: 'all' }
-  }
-
-  const localMatch = /^local-name\(\)\s*(!?=)\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))\s*$/i.exec(s)
-  if (localMatch) {
-    const val = localMatch[2] !== undefined ? localMatch[2] : localMatch[3] !== undefined ? localMatch[3] : localMatch[4] ?? ''
-    return {
-      kind: 'localNameEquals',
-      value: val,
-      ...(localMatch[1] === '!=' ? { notEqual: true } : {}),
-    }
-  }
-
-  const containsAttrMatch = /^contains\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*(?:"([^"]*)"|'([^']*)')\s*\)$/i.exec(s)
-  if (containsAttrMatch) {
-    const attrName = containsAttrMatch[1]!.replace(/^@/, '')
-    return { kind: 'attrContains', name: attrName, value: containsAttrMatch[2] ?? containsAttrMatch[3]! }
-  }
-
-  const containsTextMatch = /^contains\(\s*(?:text\(\)|\.)\s*,\s*(?:"([^"]*)"|'([^']*)')\s*\)$/i.exec(s)
-  if (containsTextMatch) {
-    return { kind: 'textContains', value: containsTextMatch[1] ?? containsTextMatch[2]! }
-  }
-
-  const startsWithAttrMatch = /^starts-with\(\s*(@[a-zA-Z0-9_:.\\-]+|\*)\s*,\s*(?:"([^"]*)"|'([^']*)')\s*\)$/i.exec(s)
-  if (startsWithAttrMatch) {
-    const attrName = startsWithAttrMatch[1]!.replace(/^@/, '')
-    return { kind: 'attrStartsWith', name: attrName, value: startsWithAttrMatch[2] ?? startsWithAttrMatch[3]! }
-  }
-
-  const textMatch = /^(?:text\(\)|\.)\s*(!?=)\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))\s*$/i.exec(s)
-  if (textMatch) {
-    const val = textMatch[2] !== undefined ? textMatch[2] : textMatch[3] !== undefined ? textMatch[3] : textMatch[4] ?? ''
-    return {
-      kind: 'textEquals',
-      value: val,
-      ...(textMatch[1] === '!=' ? { notEqual: true } : {}),
-    }
-  }
-
-  const compMatch = /^(@?[a-zA-Z0-9_:.\\-]+)\s*(!?=)\s*(?:"([^"]*)"|'([^']*)'|([^\s\]]+))$/.exec(s)
-  if (compMatch) {
-    const name = compMatch[1]!
-    const op = compMatch[2]!
-    const val = compMatch[3] !== undefined ? compMatch[3] : compMatch[4] !== undefined ? compMatch[4] : compMatch[5] ?? ''
-    if (name.startsWith('@')) {
-      return {
-        kind: 'attrEquals',
-        name: name.slice(1),
-        value: val,
-        ...(op === '!=' ? { notEqual: true } : {}),
-      }
-    }
-    return {
-      kind: 'childEquals',
-      tag: name,
-      value: val,
-      ...(op === '!=' ? { notEqual: true } : {}),
-    }
-  }
-
-  if (s.startsWith('@')) {
-    return { kind: 'attrExists', name: s.slice(1) }
-  }
-
-  if (/^[a-zA-Z0-9_:.\\-]+$/.test(s)) {
-    return { kind: 'childExists', tag: s }
-  }
-
-  return null
-}
-
-function evalPredicate(node: XmlNode, pred: XmlPredicate, indexInMatch: number, totalMatching: number): boolean {
-  switch (pred.kind) {
-    case 'index': {
-      const targetIdx = pred.index < 0 ? totalMatching + pred.index : pred.index
-      return indexInMatch === targetIdx
-    }
-    case 'all':
-      return true
-    case 'and':
-      return pred.predicates.every((p) => evalPredicate(node, p, indexInMatch, totalMatching))
-    case 'or':
-      return pred.predicates.some((p) => evalPredicate(node, p, indexInMatch, totalMatching))
-    case 'localNameEquals': {
-      const local = getLocalName(node.tag)
-      const eq = local.toLowerCase() === pred.value.toLowerCase()
-      return pred.notEqual ? !eq : eq
-    }
-    case 'attrExists':
-      return getAttrValue(node, pred.name) !== undefined
-    case 'attrEquals': {
-      const val = getAttrValue(node, pred.name)
-      if (val !== undefined) {
-        return pred.notEqual ? val !== pred.value : val === pred.value
-      }
-      const child = node.children.find((c) => matchTag(c.tag, pred.name))
-      if (child !== undefined) {
-        return pred.notEqual ? child.text.trim() !== pred.value.trim() : child.text.trim() === pred.value.trim()
-      }
-      return pred.notEqual === true
-    }
-    case 'attrContains': {
-      const val = getAttrValue(node, pred.name)
-      if (val === undefined) return false
-      return val.toLowerCase().includes(pred.value.toLowerCase())
-    }
-    case 'attrStartsWith': {
-      const val = getAttrValue(node, pred.name)
-      if (val === undefined) return false
-      return val.toLowerCase().startsWith(pred.value.toLowerCase())
-    }
-    case 'textEquals': {
-      const eq = node.text.trim() === pred.value.trim()
-      return pred.notEqual ? !eq : eq
-    }
-    case 'textContains':
-      return node.text.toLowerCase().includes(pred.value.toLowerCase())
-    case 'childExists':
-      return node.children.some((c) => matchTag(c.tag, pred.tag))
-    case 'childEquals': {
-      const child = node.children.find((c) => matchTag(c.tag, pred.tag))
-      if (!child) return pred.notEqual === true
-      return pred.notEqual ? child.text.trim() !== pred.value.trim() : child.text.trim() === pred.value.trim()
-    }
-  }
-}
-
-/**
- * Parses a query selector/path into a sequence of steps.
- * Examples:
- *   "catalog/book"
- *   "feed.entry[0]"
- *   "//item[@id='101']"
- *   "//DTS:Executable[@DTS:ExecutableType='Microsoft.ExecuteSQLTask']"
- *   "items/item[status=active]"
- *   "//entry[title='Example']"
- */
-export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
-  let normalized = pathStr.trim()
-  if (normalized === '' || normalized === '/') return []
-
-  const isGlobalRecursive = normalized.startsWith('//')
-  if (isGlobalRecursive) {
-    normalized = normalized.slice(2)
-  } else if (normalized.startsWith('/')) {
-    normalized = normalized.slice(1)
-  }
-
-  // Split by `/` or `.` (outside of bracketed expressions and quotes)
-  const segments: string[] = []
-  let inBracket = false
-  let quoteChar: string | null = null
-  let currentSegment = ''
-
-  for (let i = 0; i < normalized.length; i++) {
-    const ch = normalized[i]!
-    if (!quoteChar && (ch === '"' || ch === "'")) {
-      quoteChar = ch
-      currentSegment += ch
-    } else if (quoteChar && ch === quoteChar) {
-      quoteChar = null
-      currentSegment += ch
-    } else if (!quoteChar && ch === '[') {
-      inBracket = true
-      currentSegment += ch
-    } else if (!quoteChar && ch === ']') {
-      inBracket = false
-      currentSegment += ch
-    } else if (!quoteChar && !inBracket && (ch === '/' || ch === '.')) {
-      if (currentSegment) {
-        segments.push(currentSegment)
-        currentSegment = ''
-      }
-      if (ch === '/' && normalized[i + 1] === '/') {
-        segments.push('//')
-        i++
-      }
-    } else {
-      currentSegment += ch
-    }
-  }
-  if (currentSegment) segments.push(currentSegment)
-
-  const steps: XmlSelectorStep[] = []
-  let nextIsRecursive = isGlobalRecursive
-
-  for (let i = 0; i < segments.length; i++) {
-    const s = segments[i]!
-    if (s === '//') {
-      nextIsRecursive = true
-      continue
-    }
-
-    const isRecursive = nextIsRecursive
-    nextIsRecursive = false
-
-    const attrSelectMatch = /^@([a-zA-Z0-9_:.\\-]+|\*)$/.exec(s)
-    if (attrSelectMatch) {
-      steps.push({ tag: '', isRecursive, attributeSelect: attrSelectMatch[1]! })
-      continue
-    }
-
-    // Extract tag and all bracket predicates [...]
-    let tag = ''
-    const rawPredicates: string[] = []
-    let inB = false
-    let qChar: string | null = null
-    let curPred = ''
-
-    for (let cIdx = 0; cIdx < s.length; cIdx++) {
-      const c = s[cIdx]!
-      if (!qChar && (c === '"' || c === "'")) {
-        qChar = c
-        if (inB) curPred += c
-      } else if (qChar && c === qChar) {
-        qChar = null
-        if (inB) curPred += c
-      } else if (!qChar && c === '[') {
-        if (!inB) {
-          inB = true
-          curPred = ''
-        } else {
-          curPred += c
-        }
-      } else if (!qChar && c === ']') {
-        if (inB) {
-          inB = false
-          rawPredicates.push(curPred.trim())
-          curPred = ''
-        }
-      } else if (!inB) {
-        tag += c
-      } else {
-        curPred += c
-      }
-    }
-
-    tag = tag.trim()
-    if (!tag) tag = '*'
-
-    // An unclosed predicate (`book[@genre='Fantasy'`) or an unterminated quote inside one leaves the scanner mid-clause at the end of the segment, and the half-read clause is discarded. Dropping it silently turns a typo into no predicate at all, so a filtered query answers with every sibling element as a single confident result. Treat the whole segment as the tag instead: it matches no tag, and the caller is told nothing matched rather than being handed the unfiltered list.
-    if (inB || qChar !== null) {
-      steps.push({ tag: s, isRecursive })
-      continue
-    }
-
-    const predicates: XmlPredicate[] = []
-    let legacyIndex: number | undefined
-    let legacyAllIndices: boolean | undefined
-    let legacyAttrFilter: XmlSelectorStep['attributeFilter']
-
-    let unreadablePredicate = false
-    for (const rawP of rawPredicates) {
-      const parsedP = parseSinglePredicate(rawP)
-      if (!parsedP) {
-        unreadablePredicate = true
-        break
-      }
-      predicates.push(parsedP)
-      if (parsedP.kind === 'index') {
-        legacyIndex = parsedP.index
-      } else if (parsedP.kind === 'all') {
-        legacyAllIndices = true
-      } else if (parsedP.kind === 'attrEquals' || parsedP.kind === 'childEquals') {
-        legacyAttrFilter = {
-          name: parsedP.kind === 'attrEquals' ? parsedP.name : parsedP.tag,
-          value: parsedP.value,
-          ...(parsedP.notEqual ? { notEqual: true } : {}),
-        }
-      }
-    }
-
-    // A predicate this parser does not support (`book[not(@archived)]`) is well-formed XPath, so it reaches here parsed as null. Dropping it leaves the step unfiltered and `//book[not(@archived)]` answers with every book, which is the opposite of what was asked. Fall back to the same treatment an unclosed predicate gets: match nothing, so the caller sees an empty result rather than a wrong one.
-    if (unreadablePredicate) {
-      steps.push({ tag: s, isRecursive })
-      continue
-    }
-
-    const hasComplexPredicates =
-      rawPredicates.length > 1 ||
-      predicates.some(
-        (p) =>
-          p.kind === 'and' ||
-          p.kind === 'or' ||
-          p.kind === 'localNameEquals' ||
-          p.kind === 'attrContains' ||
-          p.kind === 'textContains' ||
-          p.kind === 'attrStartsWith' ||
-          p.kind === 'textEquals' ||
-          p.kind === 'attrExists' ||
-          p.kind === 'childExists',
-      )
-
-    const step: XmlSelectorStep = {
-      tag,
-      isRecursive,
-      ...(legacyIndex !== undefined ? { index: legacyIndex } : {}),
-      ...(legacyAllIndices !== undefined ? { allIndices: legacyAllIndices } : {}),
-      ...(legacyAttrFilter !== undefined ? { attributeFilter: legacyAttrFilter } : {}),
-      ...(hasComplexPredicates ? { predicates } : {}),
-    }
-
-    steps.push(step)
-  }
-
-  return steps
-}
-
-/**
- * Tries to decode entity-encoded or embedded XML content and format it.
- */
+/** Tries to decode entity-encoded or embedded XML content and format it. */
 export function tryDecodeEmbeddedXml(
   content: string,
   opts: { maxLines?: number } = {},
@@ -900,9 +425,7 @@ export function tryDecodeEmbeddedXml(
   }
 }
 
-/**
- * Serializes an XmlNode back to a formatted XML string.
- */
+/** Serializes an XmlNode back to a formatted XML string. */
 export function serializeXmlNode(
   node: XmlNode,
   indent = 0,
@@ -982,9 +505,7 @@ function getAllDescendants(node: XmlNode): XmlNode[] {
   return desc
 }
 
-/**
- * Converts an XmlNode into a clean JSON-serializable object/value.
- */
+/** Converts an XmlNode into a clean JSON-serializable object/value. */
 export function xmlNodeToJson(
   node: XmlNode,
   opts: { withLines?: boolean; decodeEmbedded?: boolean } = {},
@@ -1044,9 +565,7 @@ export function xmlNodeToJson(
   return result
 }
 
-/**
- * Queries XML nodes matching the path or XPath selector.
- */
+/** Queries XML nodes matching the path or XPath selector. */
 export function queryXml(
   xmlText: string,
   pathStr: string,

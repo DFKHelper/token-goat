@@ -3,11 +3,11 @@ import {
   parseXml,
   outlineXml,
   formatXmlOutline,
-  parseXmlPath,
   queryXml,
   serializeXmlNode,
   xmlNodeToJson,
 } from '../src/xml_query.js'
+import { parseXmlPath } from '../src/xml_selector.js'
 import { runXmlOutline, runXmlQuery } from '../src/read_structured_data.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 import * as fs from 'node:fs'
