@@ -3,6 +3,7 @@
 import * as fs from 'node:fs'
 
 import type { HookEvent } from './hook_registry.js'
+import { OUTPUT_FIRST_TOOL_RESPONSE_KEYS, resolveToolResponseFieldPath } from './hooks_common.js'
 import { displaySafePath } from './paths.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
@@ -91,6 +92,22 @@ export function readStartLine(event: HookEvent): number {
 }
 
 const HARNESS_TRUNCATION_NOTICE_RE = /^[ \t]*\[Truncated: PARTIAL view/m
+
+/** True when the harness numbers this Read's text itself, by position: Claude Code's `{type: 'text', file: {content, startLine, ...}}` envelope, which it renders by prefixing line `i` of `file.content` with `startLine + i` (read off claude.exe 2.1.281, whose renderer splits the field on newlines and emits `${startLine + i}` and a tab ahead of each piece). A rewrite that lands in that field must keep one line per delivered line and put nothing ahead of the first, or every number the model is shown after the change names the wrong line. Decided by the same resolver `serializeOutput` uses to pick the field it writes the rewrite back into, so this answers true exactly when the rewrite will be numbered that way, and never for a harness that takes the rewrite as plain text. */
+export function harnessNumbersReadContent(event: HookEvent): boolean {
+  const resp = event.raw['tool_response']
+  if (resp === null || typeof resp !== 'object') return false
+  const fieldPath = resolveToolResponseFieldPath(resp as Record<string, unknown>, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+  return fieldPath !== null && fieldPath.length === 2 && fieldPath[0] === 'file' && fieldPath[1] === 'content'
+}
+
+/** What `text` costs once the harness has numbered it from `startLine`: its bytes plus each line's number-and-tab prefix. A ratio gate on a rewrite the harness numbers has to price this on both sides, because a line-aligned rewrite keeps every line, empty ones included, and each still carries its prefix. */
+export function numberedRenderBytes(text: string, startLine: number): number {
+  let bytes = Buffer.byteLength(text, 'utf-8')
+  const lines = text.split('\n').length
+  for (let n = startLine; n < startLine + lines; n++) bytes += String(n).length + 1
+  return bytes
+}
 
 /** True when the harness handed back only part of the read, so folding it would withhold lines the model never received. */
 export function isTruncatedReadDelivery(event: HookEvent, respText: string): boolean {

@@ -61,6 +61,8 @@ export type HookOutput =
       readonly hookType: 'rewriteOutput'
       readonly updatedOutput: string
       readonly updatedBlocks?: readonly Record<string, unknown>[]
+      /** Words of token-goat's own to deliver beside the rewritten result rather than inside it: PostToolUse `additionalContext`, which Claude Code shows as its own message next to the result: claude.exe 2.1.281's PostToolUse runner yields `updatedToolOutput` and then, independently, a `hook_additional_context` message from the same hook result, so the two travel together. For a rewrite whose body cannot carry them, because the harness numbers that body by position and every line of ours in it would push the file's lines down a number (see `harnessNumbersReadContent`). Other harnesses read only `updatedOutput`, which is why the one producer sets this only on the Claude Code Read envelope. */
+      readonly context?: string
     }
   | { readonly hookType: 'pass' }
 

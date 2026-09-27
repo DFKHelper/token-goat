@@ -13,7 +13,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
 /** The emit boundary. Every one of these hands the model a body token-goat composed. */
-const SUBSTITUTION_CALLS: readonly string[] = ['emitRewrite(', 'emitRewriteIfChanged(']
+const SUBSTITUTION_CALLS: readonly string[] = ['emitRewrite(', 'emitRewriteIfChanged(', 'emitRewriteWithContext(']
+
+/** The in-place form a harness-numbered Read uses instead of a fence. Deliberately not a FENCE_TERMINAL: it neutralises the fence markers in the file bytes but adds no enclosing tags (they would sit on numbered lines), so it is checked by name at its own call sites below rather than counted as delimiting anything. */
+const NUMBERED_FENCE_CALL = 'fenceNumberedFileContent('
 
 /** Same terminals the provenance guard uses; kept in sync by the cross-check test below. */
 const FENCE_TERMINALS: readonly string[] = [
@@ -42,6 +45,15 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'cannot outlive them. This walk is same-file, which is exactly why the two real unfenced ' +
       'sites here went unnoticed for a release: an exemption resting on a cross-file call needs ' +
       'its own assertion, not a sentence.',
+  ],
+  [
+    'hooks_common.ts::emitRewriteWithContext',
+    'A wrapper like emitRewriteIfChanged, for the rewrite whose body the harness numbers by ' +
+      'position. There a fence cannot wrap the body, because its tags would occupy numbered lines ' +
+      'and shift every file line under the wrong number, so its callers neutralise the fence ' +
+      'markers in the file bytes in place (fenceNumberedFileContent) and send the data-not-' +
+      'instructions preamble as the context this wrapper carries. Its callers are pinned to that ' +
+      'form by the aligned-rewrite test below.',
   ],
   // (a) nothing to separate
   [
@@ -199,5 +211,17 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
           'exemption and fence at the emit site.',
       ).toBe(true)
     }
+  })
+
+  // Backs the hooks_common.ts::emitRewriteWithContext exemption. Provenance: HAND-DERIVED -- the caller set is read off the source by name, and each caller must neutralise in place itself or be emitStructuralFold, whose producers must. The same-file walk above cannot see this: foldCodeBodies also reaches fenceUntrustedFileContent through its compact branch, so it reads as fenced whatever its aligned branch does.
+  it('every aligned rewrite neutralises the file bytes it keeps in place', () => {
+    const readPost = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'hooks_read_post.ts'), 'utf-8'))
+    const callers = readPost.filter((f) => codeOnly(f.body).includes('emitRewriteWithContext(')).map((f) => f.name).sort()
+    expect(callers, 'The set of emitRewriteWithContext callers changed; name the new one here with how it neutralises.').toEqual(['emitStructuralFold', 'foldCodeBodies'])
+    const foldCodeBodies = readPost.find((f) => f.name === 'foldCodeBodies')
+    expect(foldCodeBodies?.body.includes(NUMBERED_FENCE_CALL)).toBe(true)
+    const structural = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'fold_structure.ts'), 'utf-8')).filter((f) => f.body.includes('context: '))
+    expect(structural.map((f) => f.name).sort(), 'The set of StructuralFold producers setting `context` changed.').toEqual(['planMarkdownOutline', 'planSourceSkeleton'])
+    for (const fn of structural) expect(fn.body.includes(NUMBERED_FENCE_CALL), `${fn.name} sets an aligned fold's context without neutralising the file bytes`).toBe(true)
   })
 })

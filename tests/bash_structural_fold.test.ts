@@ -90,9 +90,10 @@ function hookViaBundle(session: string, event: Record<string, unknown>): string 
     env: { ...process.env, TOKEN_GOAT_HOME: home },
   })
   if (res.status !== 0) throw new Error(`bundle hook exited ${String(res.status)}: ${res.stderr.slice(0, 300)}`)
-  const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { updatedToolOutput?: { stdout?: string; file?: { content?: string } } } }
+  const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { updatedToolOutput?: { stdout?: string; file?: { content?: string } }; additionalContext?: string } }
   const updated = parsed.hookSpecificOutput?.updatedToolOutput
-  return updated?.stdout ?? updated?.file?.content ?? ''
+  // What the model receives: the substituted result, plus the context message a harness-numbered Read carries its notice in (the notice cannot lead a body the harness numbers by position).
+  return [updated?.stdout ?? updated?.file?.content ?? '', parsed.hookSpecificOutput?.additionalContext ?? ''].join('\n')
 }
 
 describe('postBashHandler: structural folding of a whole-file shell read', () => {

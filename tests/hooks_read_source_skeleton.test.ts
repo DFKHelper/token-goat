@@ -273,8 +273,9 @@ describe('large-source structural skeleton through the built bundle on stock def
     }
     const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env })
     expect(res.status, `bundle hook exited ${String(res.status)}: ${res.stderr.slice(0, 400)}`).toBe(0)
-    const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { updatedToolOutput?: { file?: { content?: string } } } }
-    return parsed.hookSpecificOutput?.updatedToolOutput?.file?.content ?? ''
+    const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { updatedToolOutput?: { file?: { content?: string } }; additionalContext?: string } }
+    // What the model receives: the substituted file content, plus the context message the skeleton notice travels in on a Read the harness numbers by position.
+    return [parsed.hookSpecificOutput?.updatedToolOutput?.file?.content ?? '', parsed.hookSpecificOutput?.additionalContext ?? ''].join('\n')
   }
 
   it('emits the skeleton notice for a large untargeted source read with no flag forced', () => {

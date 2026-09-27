@@ -2,7 +2,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { emitRewrite, extractToolResponseField, getCwd, getFilePath, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, passOutput } from './hooks_common.js'
+import { emitRewrite, emitRewriteWithContext, extractToolResponseField, getCwd, getFilePath, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, passOutput } from './hooks_common.js'
 import { type HookEvent, registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
@@ -15,21 +15,31 @@ import { writeSessionManifest } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { hasPreciseSecret } from './secret_redact.js'
-import { countTextLines, isTruncatedReadDelivery, type NumberedRow, parseNumberedReadResult, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
+import { countTextLines, harnessNumbersReadContent, isTruncatedReadDelivery, type NumberedRow, numberedRenderBytes, parseNumberedReadResult, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
-import { fenceUntrustedFileContent } from './injection_scan.js'
+import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
 import { isImagePath } from './image_shrink.js'
 import { readEvidenceFileText, recordEvidence } from './evidence_cache.js'
 import { foldDetail } from './code_fold.js'
-import { foldDelivery, foldingEnabled } from './fold_delivery.js'
+import { ALIGNED_LAYOUT_NOTE, type FoldLayout, foldDelivery, foldingEnabled, pushWithheld } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton, type StructuralFold } from './fold_structure.js'
 import { isDiffableSource, isSessionArtifactFile, isSourceExtension, quietContextOutput, recordActualSlice, relPathWithinRoot } from './hooks_read.js'
 
 /** Extract tool response text from a post_tool_use Read event. */
 function extractReadOutput(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+}
+
+/** The layout every rewrite of this Read has to use. `aligned` wherever the harness numbers the result by position (Claude Code's Read envelope): there a withheld run must keep its lines and nothing may lead the body, or every line after the change is shown under the wrong number -- measured on a 176-line file with six folded bodies, real line 150 came back displayed as 57, and six independent review runs cited the displayed number. */
+function readLayout(event: HookEvent): FoldLayout {
+  return harnessNumbersReadContent(event) ? 'aligned' : 'compact'
+}
+
+/** The invariant `aligned` layout exists for, checked on the finished text rather than trusted to each planner: one line out for every line in. A rewrite that fails it is declined whole, because a Read delivered as it arrived is merely longer, while a misnumbered one silently points every later citation at the wrong line. */
+function keepsLineNumbers(original: string, rewritten: string): boolean {
+  return original.split('\n').length === rewritten.split('\n').length
 }
 
 /** post_tool_use handler for the Read tool. Detects truncation markers in the tool response and flags the file so the next pre_tool_use for the same file returns an immediate deny with a surgical-read hint instead of allowing another full (and expensive) read. */
@@ -191,6 +201,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   const cuts = planServedElisions(parsed.rows, bodies)
   if (cuts.length === 0) return null
 
+  const layout = readLayout(event)
   const out: string[] = [...parsed.header]
   let at = 0
   for (const cut of cuts) {
@@ -198,13 +209,14 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
     const first = parsed.rows[cut.start]
     const last = parsed.rows[cut.start + cut.len - 1]
     if (first === undefined || last === undefined) return null
-    out.push(servedRunNotice(first.no, last.no, cut.id, cut.len))
+    pushWithheld(out, servedRunNotice(first.no, last.no, cut.id, cut.len), cut.len, layout)
     at = cut.start + cut.len
   }
   for (let i = at; i < parsed.rows.length; i++) out.push(parsed.rows[i]?.raw ?? '')
   out.push(...parsed.trailer)
 
   const rewritten = out.join('\n')
+  if (layout === 'aligned' && !keepsLineNumbers(respText, rewritten)) return null
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
   if (
     !isRewriteWorthwhile({
@@ -219,9 +231,9 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   return emitRewrite(rewritten, 'read', { kind: 'read:served_elide', originalBytes })
 }
 
-/** Replace the inside of long function bodies with a pointer, keeping everything else verbatim. This is the only mechanism on the Read path aimed at a FIRST read. Everything beside it -- served-run elision, identical-read collapse, the heading-tree re-read deny -- keys on prior sight, and 83.6% of hooked Read bytes have none. It uses the rewrite channel rather than a deny on purpose. A deny that carries a compact still blocks the call: the agent pays a round trip, may re-acquire the file anyway, and the measured analogue abandons its task 42.7% of the time and runs edit errors at 4x baseline. A rewrite changes only what the same successful call delivers, so none of those costs apply. Returns the rewrite together with the raw text it actually delivered, because the served-output store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}. */
+/** Replace the inside of long function bodies with a pointer, keeping everything else verbatim. This is the only mechanism on the Read path aimed at a FIRST read. Everything beside it -- served-run elision, identical-read collapse, the heading-tree re-read deny -- keys on prior sight, and 83.6% of hooked Read bytes have none. It uses the rewrite channel rather than a deny on purpose. A deny that carries a compact still blocks the call: the agent pays a round trip, may re-acquire the file anyway, and the measured analogue abandons its task 42.7% of the time and runs edit errors at 4x baseline. A rewrite changes only what the same successful call delivers, so none of those costs apply. Returns the rewrite together with the raw text it actually delivered, because the served-output store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}. Where the harness numbers the result (`aligned` layout) the fence cannot lead the body, since its two lines put real line 1 at displayed line 3: the file bytes get the fence's neutralisation in place, and its preamble travels beside the result with the note on how the withheld runs are laid out. */
 /** The gates only a Read can answer, applied ahead of either structural planner below. Untargeted only: a reader who asked for a specific window gets that window, not a map of the file it came from. Never a truncated delivery, or the rewrite would withhold lines the model was never handed in the first place. And never a body a precise secret pattern matches: composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted, so declining is the honest move and the same call {@link foldCodeBodies} makes. Returns the delivered rows together with the harness text around them, which is the one thing a shell read has no equivalent of and the reason this split falls where it does. */
-function structuralFoldInputs(event: HookEvent, respText: string): { rows: readonly NumberedRow[]; header: string[]; trailer: string[]; normalized: string; shown: string; originalBytes: number } | null {
+function structuralFoldInputs(event: HookEvent, respText: string): { rows: readonly NumberedRow[]; header: string[]; trailer: string[]; normalized: string; shown: string; originalBytes: number; respText: string; layout: FoldLayout; startLine: number } | null {
   const filePath = getFilePath(event)
   if (filePath === undefined) return null
   if (readRequestedSliceWindow(event).isExplicitSlice) return null
@@ -232,12 +244,22 @@ function structuralFoldInputs(event: HookEvent, respText: string): { rows: reado
   const normalized = normalizePath(filePath)
   // Repo-relative, because the notices repeat this path and an absolute Windows path is most of one. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on.
   const shown = displaySafePath(toDisplayPath(findProject(getCwd(event) ?? process.cwd())?.root, normalized))
-  return { rows: parsed.rows, header: parsed.header, trailer: parsed.trailer, normalized, shown, originalBytes: Buffer.byteLength(respText, 'utf-8') }
+  return { rows: parsed.rows, header: parsed.header, trailer: parsed.trailer, normalized, shown, originalBytes: Buffer.byteLength(respText, 'utf-8'), respText, layout: readLayout(event), startLine: readStartLine(event) }
 }
 
-/** Assemble a planned structural fold back into a Read delivery, or decline it on the shared acceptance gate. The recorded `deliveredRaw` is the plan's own `raw` field and nothing else, the same contract {@link foldCodeBodies} relies on: a line the plan withheld, trimmed at the lead-in cap, or rendered into a heading tree rather than delivered verbatim must never be recorded as served, or a later read of the file would elide a line the reader was never shown. */
-function emitStructuralFold(inputs: { header: string[]; trailer: string[]; originalBytes: number }, fold: StructuralFold): { output: HookOutput; deliveredRaw: string } | null {
+/** Assemble a planned structural fold back into a Read delivery, or decline it on the shared acceptance gate. The recorded `deliveredRaw` is the plan's own `raw` field and nothing else, the same contract {@link foldCodeBodies} relies on: a line the plan withheld, trimmed at the lead-in cap, or rendered into a heading tree rather than delivered verbatim must never be recorded as served, or a later read of the file would elide a line the reader was never shown. A fold carrying `context` is an `aligned` one: it keeps every line, so the harness's number prefixes are no longer a cost the rewrite sheds, and the gate prices both sides as rendered, with the context counted as part of what the rewrite delivers. */
+function emitStructuralFold(inputs: { header: string[]; trailer: string[]; originalBytes: number; respText: string; startLine: number }, fold: StructuralFold): { output: HookOutput; deliveredRaw: string } | null {
   const rewritten = [...inputs.header, ...fold.numbered, ...inputs.trailer].join('\n')
+  if (fold.context !== undefined) {
+    if (!keepsLineNumbers(inputs.respText, rewritten)) return null
+    const renderedOriginal = numberedRenderBytes(inputs.respText, inputs.startLine)
+    const renderedRewrite = numberedRenderBytes(rewritten, inputs.startLine) + Buffer.byteLength(fold.context, 'utf-8')
+    if (!isStructuralRewriteAccepted(renderedOriginal, renderedRewrite, fold.ratioCap)) return null
+    return {
+      output: emitRewriteWithContext(rewritten, fold.context, 'read', { kind: fold.kind, originalBytes: inputs.originalBytes, detail: fold.detail }),
+      deliveredRaw: fold.raw.join('\n'),
+    }
+  }
   if (!isStructuralRewriteAccepted(inputs.originalBytes, Buffer.byteLength(rewritten, 'utf-8'), fold.ratioCap)) return null
   return {
     output: emitRewrite(rewritten, 'read', { kind: fold.kind, originalBytes: inputs.originalBytes, detail: fold.detail }),
@@ -249,7 +271,7 @@ function emitStructuralFold(inputs: { header: string[]; trailer: string[]; origi
 function foldMarkdownOutline(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
   const inputs = structuralFoldInputs(event, respText)
   if (inputs === null) return null
-  const fold = planMarkdownOutline(inputs.rows, inputs.normalized, inputs.shown, inputs.originalBytes)
+  const fold = planMarkdownOutline(inputs.rows, inputs.normalized, inputs.shown, inputs.originalBytes, inputs.layout)
   return fold === null ? null : emitStructuralFold(inputs, fold)
 }
 
@@ -257,7 +279,7 @@ function foldMarkdownOutline(event: HookEvent, respText: string): { output: Hook
 function foldSourceSkeleton(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
   const inputs = structuralFoldInputs(event, respText)
   if (inputs === null) return null
-  const fold = planSourceSkeleton(inputs.rows, inputs.normalized, inputs.shown, inputs.originalBytes)
+  const fold = planSourceSkeleton(inputs.rows, inputs.normalized, inputs.shown, inputs.originalBytes, inputs.layout)
   return fold === null ? null : emitStructuralFold(inputs, fold)
 }
 
@@ -282,12 +304,33 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
 
   // Repo-relative, because the notice repeats this path once per fold and an absolute Windows path is most of the notice: measured over 201 session transcripts, the absolute form costs 10.9 KB of notice against 9.0 KB relative. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on, and either way the notice stays a command that can be run as printed.
   const shown = displaySafePath(toDisplayPath(findProject(getCwd(event) ?? process.cwd())?.root, normalized))
-  const folded = foldDelivery(parsed.rows, normalized, shown, sliceWin.isExplicitSlice)
+  const layout = readLayout(event)
+  const folded = foldDelivery(parsed.rows, normalized, shown, sliceWin.isExplicitSlice, layout)
   if (folded === null) return null
+  const originalBytes = Buffer.byteLength(respText, 'utf-8')
+
+  if (layout === 'aligned') {
+    const fenced = fenceNumberedFileContent(folded.numbered.join('\n'), ALIGNED_LAYOUT_NOTE)
+    const rewritten = [...parsed.header, fenced.body, ...parsed.trailer].join('\n')
+    if (!keepsLineNumbers(respText, rewritten)) return null
+    if (
+      !isRewriteWorthwhile({
+        originalBytes,
+        rewrittenBytes: Buffer.byteLength(rewritten, 'utf-8') + Buffer.byteLength(fenced.preamble, 'utf-8'),
+        noticeBytes: 0,
+        minNetSavingsBytes: resolveMinNetSavingsBytes(),
+      })
+    ) {
+      return null
+    }
+    return {
+      output: emitRewriteWithContext(rewritten, fenced.preamble, 'read', { kind: 'read:body_fold', originalBytes, detail: foldDetail(normalized, folded.folds) }),
+      deliveredRaw: folded.raw.join('\n'),
+    }
+  }
 
   // `folded.numbered` is file bytes with this fold's own `... N lines folded` pointers interleaved, and it shipped unfenced: a source file's own text arrived beside token-goat's narration in one unlabelled block, so a first line spelling `[tg] ...` read as this rewrite's preamble. Fence the whole run, header and trailer (the harness's own framing) left outside it. Same repair as planSourceSkeleton.
   const rewritten = [...parsed.header, fenceUntrustedFileContent(folded.numbered.join('\n')), ...parsed.trailer].join('\n')
-  const originalBytes = Buffer.byteLength(respText, 'utf-8')
   if (
     !isRewriteWorthwhile({
       originalBytes,
