@@ -275,9 +275,36 @@ describe('scope and refs with cross_project_symbols = false', () => {
   })
 })
 
+// A caller-supplied root moves the confinement only where the policy symbol and refs apply admits it: inside the root the command runs from, or inside mcp.allowed_roots. Anywhere else the named root is refused rather than confining the lookup to itself.
+describe('cross_project_symbols = false with a caller-supplied projectRoot that mcp.allowed_roots does not list', () => {
+  it('read, skeleton, outline and exports refuse the root instead of serving its index rows', () => {
+    confine()
+    const fileB = path.join(rootB, 'src', 'thing.ts')
+    const read = runRead({ spec: 'src/thing.ts::betaSecretForecast', projectRoot: rootB })
+    expect(read.code).toBe(1)
+    expect(read.text).toContain('--project is outside this project root')
+    expect(read.text).not.toContain('BBB-CONFIDENTIAL-FROM-PROJECT-B')
+    for (const run of [runSkeleton, runOutline]) {
+      const res = run({ file: fileB, projectRoot: rootB })
+      expect(res.code).toBe(1)
+      expect(res.text).not.toContain('betaSecretForecast')
+    }
+    const exp = captureStdoutCode(() => runExports({ file: fileB, projectRoot: rootB }))
+    expect(exp.code).toBe(1)
+    expect(exp.text).not.toContain('betaSecretForecast(')
+  })
+})
+
 describe('cross_project_symbols = false with caller-supplied projectRoot (e.g. MCP tool calls)', () => {
   beforeEach(() => {
     confine()
+    process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = rootB
+    invalidateConfigCache()
+  })
+
+  afterEach(() => {
+    delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
+    invalidateConfigCache()
   })
 
   it('read resolves a symbol in projectRoot when cwd is a different directory', () => {
@@ -323,29 +350,15 @@ describe('cross_project_symbols = false with caller-supplied projectRoot (e.g. M
   })
 
   it('refs honors caller-supplied projectRoot and spec inside rootB when allowed in mcp.allowed_roots', () => {
-    process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = rootB
-    invalidateConfigCache()
-    try {
-      const fileB = path.join(rootB, 'src', 'thing.ts')
-      const refs = captureStdoutCode(() => runRefs({ spec: `${fileB}::betaSecretForecast`, projectRoot: rootB }))
-      expect(refs.code, refs.text).toBe(0)
-      expect(refs.text).toContain('betaSecretForecastCaller')
-    } finally {
-      delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
-      invalidateConfigCache()
-    }
+    const fileB = path.join(rootB, 'src', 'thing.ts')
+    const refs = captureStdoutCode(() => runRefs({ spec: `${fileB}::betaSecretForecast`, projectRoot: rootB }))
+    expect(refs.code, refs.text).toBe(0)
+    expect(refs.text).toContain('betaSecretForecastCaller')
   })
 
   it('symbol honors caller-supplied projectRoot when allowed in mcp.allowed_roots', () => {
-    process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = rootB
-    invalidateConfigCache()
-    try {
-      const sym = runSymbol({ name: 'betaSecretForecast', projectRoot: rootB })
-      expect(sym.code, sym.text).toBe(0)
-      expect(sym.text).toContain('BBB-CONFIDENTIAL-FROM-PROJECT-B')
-    } finally {
-      delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
-      invalidateConfigCache()
-    }
+    const sym = runSymbol({ name: 'betaSecretForecast', projectRoot: rootB })
+    expect(sym.code, sym.text).toBe(0)
+    expect(sym.text).toContain('BBB-CONFIDENTIAL-FROM-PROJECT-B')
   })
 })

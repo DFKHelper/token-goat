@@ -12,7 +12,7 @@ import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { indexFileSyncPinned, healStaleIndex, staleWarning, guardText, fileIsGone, recordReadStat, guardJsonRows, sumFileSizes } from './read_commands.js'
 import { noSymbolsMessage, formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { firstBodyLine } from './read_suggest.js'
-import { parseMultiFileSpec, confinementRefusal, confinedProjectRoot } from './read_spec.js'
+import { parseMultiFileSpec, fileConfinementRefusal } from './read_spec.js'
 
 export interface SkeletonOptions {
   file: string
@@ -70,7 +70,7 @@ export function prepareSymbolListing(
   opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
 ): { kind: 'confined'; text: string } | { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined; totalLines: number } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-  const confined = confinementRefusal('This file', resolved, confinedProjectRoot(opts.projectRoot))
+  const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) return { kind: 'confined', text: confined }
   if (opts.forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())
