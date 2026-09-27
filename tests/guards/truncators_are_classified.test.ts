@@ -1,38 +1,4 @@
-/**
- * Structural guard for the truncate-before-redact defect class (four confirmed sites, fixed in
- * mcp_cache.ts::mcpInputPreview, session.ts::recordOutstandingAgentSpawn + session_store.ts's
- * saveSessionState backstop, tool_filters/base.ts::apply(), and mcp_compress_packs.ts's
- * truncateSnapshotLine via hooks_mcp.ts::postMcpHandler). Every one of those bugs had the same
- * shape: a helper that shortens a string ran before -- not after -- the pipeline's redaction
- * pass, so a credential straddling the cut point survived as an unrecognizable fragment.
- *
- * A per-site regression test (see tests/tool_filters.test.ts, tests/mcp_cache.test.ts,
- * tests/session.test.ts, tests/session_store.test.ts, tests/hooks_mcp.test.ts) pins those four
- * sites. It says nothing about a fifth truncator someone adds next month -- which is exactly what
- * this repo's own precedent predicts will happen (`dangerous_sinks_are_named.test.ts`'s own words:
- * "this repo already has eighty-odd structural guards, and every one of them encodes a defect
- * somebody already found").
- *
- * So this guard is keyed on the SHAPE (a function whose job is to shorten a string) rather than on
- * the four known names. It enumerates every such function in `src/` and requires each one to carry
- * an explicit classification: is the text it shortens already guaranteed secret-free by the time it
- * runs, or does it operate somewhere a raw secret could never legitimately reach in the first place?
- * An unclassified truncator is red. That inverts the usual default -- new code is guilty until a
- * human looks at it and says why it's fine -- which is the only way a static scan protects against
- * a shape it has never seen before.
- *
- * WHY A NAME-HEURISTIC SCAN, NOT A DATAFLOW ANALYSIS. A fully general "does redaction dominate
- * every path into this truncator" check needs interprocedural dataflow this suite cannot run
- * offline and fast (see dangerous_sinks_are_named.test.ts's note on why CodeQL, not vitest, owns
- * that half). The fallback the task brief specifies is an explicit registry, so that's what this
- * is: the population is every top-level function whose name reads as a truncator (trunc*, clip*,
- * cap<Word>, elide*, shorten*, *preview*, clamp*), found by scanning comment-stripped source, and
- * the registry is TRUNCATOR_CLASSIFICATION below. A name-based population can miss an anonymously-
- * named shortening helper; it cannot silently miss one that keeps a name in this family, and the
- * four real bugs this guard exists to generalize all had names in exactly this family
- * (mcpInputPreview, capLongLines, clipWideLines, truncateSnapshotLine, truncateMiddleSmart,
- * capBytes, clampKeepingEnds).
- */
+/** Structural guard for the truncate-before-redact defect class (four confirmed sites, fixed in mcp_cache.ts::mcpInputPreview, session.ts::recordOutstandingAgentSpawn + session_store.ts's saveSessionState backstop, tool_filters/base.ts::apply(), and mcp_compress_packs.ts's truncateSnapshotLine via hooks_mcp.ts::postMcpHandler). Every one of those bugs had the same shape: a helper that shortens a string ran before -- not after -- the pipeline's redaction pass, so a credential straddling the cut point survived as an unrecognizable fragment. A per-site regression test (see tests/tool_filters.test.ts, tests/mcp_cache.test.ts, tests/session.test.ts, tests/session_store.test.ts, tests/hooks_mcp.test.ts) pins those four sites. It says nothing about a fifth truncator someone adds next month -- which is exactly what this repo's own precedent predicts will happen (`dangerous_sinks_are_named.test.ts`'s own words: "this repo already has eighty-odd structural guards, and every one of them encodes a defect somebody already found"). So this guard is keyed on the SHAPE (a function whose job is to shorten a string) rather than on the four known names. It enumerates every such function in `src/` and requires each one to carry an explicit classification: is the text it shortens already guaranteed secret-free by the time it runs, or does it operate somewhere a raw secret could never legitimately reach in the first place? An unclassified truncator is red. That inverts the usual default -- new code is guilty until a human looks at it and says why it's fine -- which is the only way a static scan protects against a shape it has never seen before. WHY A NAME-HEURISTIC SCAN, NOT A DATAFLOW ANALYSIS. A fully general "does redaction dominate every path into this truncator" check needs interprocedural dataflow this suite cannot run offline and fast (see dangerous_sinks_are_named.test.ts's note on why CodeQL, not vitest, owns that half). The fallback the task brief specifies is an explicit registry, so that's what this is: the population is every top-level function whose name reads as a truncator (trunc*, clip*, cap<Word>, elide*, shorten*, *preview*, clamp*), found by scanning comment-stripped source, and the registry is TRUNCATOR_CLASSIFICATION below. A name-based population can miss an anonymously- named shortening helper; it cannot silently miss one that keeps a name in this family, and the four real bugs this guard exists to generalize all had names in exactly this family (mcpInputPreview, capLongLines, clipWideLines, truncateSnapshotLine, truncateMiddleSmart, capBytes, clampKeepingEnds). */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -53,13 +19,7 @@ interface TruncatorSite {
   readonly line: number
 }
 
-/**
- * Name shape shared by every truncator this codebase has ever shipped, including the four that
- * leaked: a `trunc*`/`Trunc*` root, `clip*`/`Clip*`, `cap` immediately followed by an uppercase
- * letter (word-boundary, so `escape`/`capture`/`capabilities` do not match -- case-SENSITIVE on
- * purpose, since a case-insensitive class match makes `cap[A-Z]` match "cape" inside "escape"),
- * `elide*`/`Elide*`, `shorten*`/`Shorten*`, `*preview*`/`*Preview*`, and `clamp*`/`Clamp*`.
- */
+/** Name shape shared by every truncator this codebase has ever shipped, including the four that leaked: a `trunc*`/`Trunc*` root, `clip*`/`Clip*`, `cap` immediately followed by an uppercase letter (word-boundary, so `escape`/`capture`/`capabilities` do not match -- case-SENSITIVE on purpose, since a case-insensitive class match makes `cap[A-Z]` match "cape" inside "escape"), `elide*`/`Elide*`, `shorten*`/`Shorten*`, `*preview*`/`*Preview*`, and `clamp*`/`Clamp*`. */
 const TRUNCATOR_NAME_RE = /function\s+([A-Za-z0-9_]*(?:trunc|Trunc|clip|Clip|cap[A-Z]|Cap[A-Z]|elide|Elide|shorten|Shorten|preview|Preview|clamp|Clamp)[A-Za-z0-9_]*)\s*\(/
 
 function truncatorSites(): readonly TruncatorSite[] {
@@ -86,28 +46,17 @@ function truncatorSites(): readonly TruncatorSite[] {
 type Bucket =
   /** Redacts the input itself, in the same function, before shortening it. */
   | 'redacts-before-truncating'
-  /** Never sees raw content: every caller in its pipeline already redacted upstream (Step 1.5 of
-   * tool_filters/base.ts::apply(), or an equivalent early pass) before this function runs. */
+  /** Never sees raw content: every caller in its pipeline already redacted upstream (Step 1.5 of tool_filters/base.ts::apply(), or an equivalent early pass) before this function runs. */
   | 'operates-on-already-redacted-input'
-  /** The function it shortens can never legitimately contain a secret string at all: it caps the
-   * NUMBER of items in an array/rows (not a string's characters), or shortens a value that is
-   * itself already a hash/fingerprint/digest/counter, never free text. */
+  /** The function it shortens can never legitimately contain a secret string at all: it caps the NUMBER of items in an array/rows (not a string's characters), or shortens a value that is itself already a hash/fingerprint/digest/counter, never free text. */
   | 'shortens-a-count-or-a-digest-not-free-text'
-  /** Its caller already refused to touch the input at all (returned the original untouched, with
-   * no token-goat substitution) whenever `redactSecrets(input).count > 0`, so this function only
-   * ever runs on text proven to contain zero secret-shaped fragments. */
+  /** Its caller already refused to touch the input at all (returned the original untouched, with no token-goat substitution) whenever `redactSecrets(input).count > 0`, so this function only ever runs on text proven to contain zero secret-shaped fragments. */
   | 'caller-refuses-any-secret-shaped-input-before-reaching-here'
-  /** Operates on the user's own project source (a Read-tool-shaped file, or a token-goat CLI's own
-   * index of it), or on the model's own prior transcript -- a trust boundary this repo's redaction
-   * invariant (CLAUDE.arch.md Security Boundaries) never covered, because that content was never
-   * mediated through token-goat's tool-output/session-state pipeline in the first place. */
+  /** Operates on the user's own project source (a Read-tool-shaped file, or a token-goat CLI's own index of it), or on the model's own prior transcript -- a trust boundary this repo's redaction invariant (CLAUDE.arch.md Security Boundaries) never covered, because that content was never mediated through token-goat's tool-output/session-state pipeline in the first place. */
   | 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary'
-  /** Shortens an operator-supplied value (a URL from the user's own config.toml) for a CLI error
-   * message, not a model-driven tool-output value; the threat model this guard protects against is
-   * a credential a TOOL CALL surfaced, not one the operator typed into their own config. */
+  /** Shortens an operator-supplied value (a URL from the user's own config.toml) for a CLI error message, not a model-driven tool-output value; the threat model this guard protects against is a credential a TOOL CALL surfaced, not one the operator typed into their own config. */
   | 'operator-supplied-value-cli-error-path'
-  /** Exported but never imported anywhere outside its own module -- dead code, unreachable from any
-   * hook/CLI entry point, verified by grepping every `from '.../<module>.js'` import in src/. */
+  /** Exported but never imported anywhere outside its own module -- dead code, unreachable from any hook/CLI entry point, verified by grepping every `from '.../<module>.js'` import in src/. */
   | 'dead-code-unreachable-from-any-entry-point'
 
 interface Classification {
@@ -115,11 +64,7 @@ interface Classification {
   readonly reason: string
 }
 
-/**
- * The contract. Every name {@link truncatorSites} finds must appear here -- an unclassified
- * truncator fails the "every discovered truncator is classified" test below, deliberately, so a
- * new one is red until someone puts a real answer next to it.
- */
+/** The contract. Every name {@link truncatorSites} finds must appear here -- an unclassified truncator fails the "every discovered truncator is classified" test below, deliberately, so a new one is red until someone puts a real answer next to it. */
 const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
   [
     'mcpInputPreview',
@@ -268,7 +213,7 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     {
       bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
       reason:
-        'read_commands.ts backs `token-goat read`/`symbol`/`section`, which serve the user\'s own ' +
+        'read_meta.ts helper behind `token-goat semantic`\'s previews, which serve the user\'s own ' +
         'indexed project source -- a Read-tool-equivalent boundary token-goat has never redacted, ' +
         'not model-driven tool-output content.',
     },
@@ -277,7 +222,7 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     'clipDocSummary',
     {
       bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
-      reason: 'Same read_commands.ts doc-summary surface as previewLines: indexed project source, not tool output.',
+      reason: 'read_outline.ts doc-summary clip for `token-goat outline`: indexed project source, not tool output.',
     },
   ],
   [
@@ -298,7 +243,7 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     'truncatedReadDenyMessage',
     {
       bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
-      reason: 'hooks_read.ts deny-message builder for the Read-tool truncation-tracking surface, not tool output.',
+      reason: 'hooks_read_slice.ts deny-message builder for the Read-tool truncation-tracking surface, not tool output.',
     },
   ],
   [
@@ -520,15 +465,7 @@ describe('every truncation/shortening helper is classified (redaction-precedes-t
   })
 
   it('recordGrepQuery and recordGlobQuery are still uncalled outside session.ts', () => {
-    // Neither grepQueries nor globQueries (SerializedSession fields) has a live writer today --
-    // recordGrepQuery/recordGlobQuery are exported but never called from anywhere else in src, so
-    // the raw grep/glob pattern text they would store never actually reaches disk. That is an
-    // absence of exercise, not a redaction guarantee: the moment a caller appears, a raw grep
-    // pattern (which can itself be a credential someone searched for) would persist unredacted.
-    // This assertion is what turns "currently unused" into an enforced fact rather than a belief:
-    // if it goes red, the new caller needs redaction added at the writer (see
-    // recordOutstandingAgentSpawn for the pattern) before this test's failure is resolved by
-    // widening it rather than fixing it.
+    // Neither grepQueries nor globQueries (SerializedSession fields) has a live writer today -- recordGrepQuery/recordGlobQuery are exported but never called from anywhere else in src, so the raw grep/glob pattern text they would store never actually reaches disk. That is an absence of exercise, not a redaction guarantee: the moment a caller appears, a raw grep pattern (which can itself be a credential someone searched for) would persist unredacted. This assertion is what turns "currently unused" into an enforced fact rather than a belief: if it goes red, the new caller needs redaction added at the writer (see recordOutstandingAgentSpawn for the pattern) before this test's failure is resolved by widening it rather than fixing it.
     const srcFiles: string[] = []
     ;(function walk(dir: string) {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

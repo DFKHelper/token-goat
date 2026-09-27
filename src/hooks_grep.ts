@@ -14,7 +14,7 @@ import { recordStat } from './stats.js'
 import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
 
-/** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
+/** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating a numeric string. Mirrors hooks_read_slice.ts's readIntToolInput. */
 function grepIntInput(toolInput: Record<string, unknown>, key: string): number | undefined {
   const value = toolInput[key]
   if (typeof value === 'number' && Number.isFinite(value)) return value
