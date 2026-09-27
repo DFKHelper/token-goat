@@ -184,7 +184,7 @@ export function runLineRegion(
   if (start < 1) return { text: `Invalid line range: start must be >= 1 (got ${start})`, code: 1 }
   if (end < start) return { text: `Invalid line range: end (${end}) is before start (${start})`, code: 1 }
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-  const confined = confinementRefusal('This file', resolved, confinedProjectRoot(opts.projectRoot))
+  const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) return { text: confined, code: 1 }
   const text = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
   if (text === null) return { text: `Could not read: ${file}`, code: 1 }
@@ -324,9 +324,10 @@ export function confinementRefusal(label: string, resolved: string, root: string
   return `${label} is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(root, resolved)}`
 }
 
+/** The refusal for a file that `indexing.cross_project_symbols = false` puts out of reach, or null. The confining root is the one {@link resolveProjectConfinement} settles on, so a caller-named `projectRoot` (every MCP call carries one) moves it only as far as it moves `symbol` and `refs`; confining to whatever root the caller named let an MCP `read` serve another project's index rows. */
 export function fileConfinementRefusal(label: string, file: string, projectRoot: string | undefined): string | null {
-  const root = confinedProjectRoot(projectRoot)
-  if (root === null) return null
+  const { root, denial } = resolveProjectConfinement(projectRoot)
+  if (denial !== null) return denial
   return confinementRefusal(label, resolveIndexPath(file, projectRoot ?? process.cwd()), root)
 }
 
@@ -345,7 +346,7 @@ export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectR
 
   const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
   const symbol = stripHtmlIdSpelling(anchorSymbol, resolved)
-  const confined = confinementRefusal('This file', resolved, confinedProjectRoot(projectRoot))
+  const confined = fileConfinementRefusal('This file', file, projectRoot)
   if (confined !== null) return { kind: 'confined', message: confined }
   if (forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())
