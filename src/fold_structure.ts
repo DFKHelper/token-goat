@@ -1,10 +1,11 @@
 /** Turning a whole-file delivery into a structural view of it: a heading tree for a document, a declaration skeleton for source. Split out of hooks_read.ts for the same reason fold_delivery.ts was, and with the same division of labour. The two surfaces that deliver a whole file gate very differently -- a Read arrives as a numbered rendering with an offset/limit the harness reports, a shell read arrives as the bare stdout of a command that has to be recognised as a whole-file read before any of this applies -- but everything between "here are the delivered rows" and "here is the structural replacement" is identical, and that middle is where the size floors, the count floors and the notice wording live. One copy, so a change to either reaches both. Everything here is built from the DELIVERED text, never the index. That is what lets it serve a first read of a file the indexer has never touched, and what keeps it working where fold_delivery.ts's body fold cannot: measured on a real index, the parser stamp sits stale on 95% of this project's own rows, and a stale row yields no spans at all. */
-import { foldDelivery, isProseFoldablePath, type FoldRow } from './fold_delivery.js'
+import { ALIGNED_LAYOUT_NOTE, alignedPaddingBytes, foldDelivery, isProseFoldablePath, pushWithheld, type FoldLayout, type FoldRow } from './fold_delivery.js'
 import { bodyFoldNotice } from './fold_delivery.js'
 import { loadConfig } from './config.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
-import { fenceUntrustedFileContent } from './injection_scan.js'
+import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { hintTarget } from './hint_target.js'
+import { displaySafeText } from './paths.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
@@ -33,6 +34,8 @@ export interface StructuralFold {
   readonly kind: 'read:markdown_outline' | 'read:source_skeleton'
   readonly detail: string
   readonly ratioCap: number
+  /** Text for the caller to deliver beside the result rather than inside it (PostToolUse `additionalContext`). Set only in `aligned` layout, where the notice and the fence preamble cannot lead the body: every line they took there pushed each file line one displayed number down. */
+  readonly context?: string
 }
 
 /** The lead-in a large-document outline keeps ahead of its heading tree: the document body up to its first second-level (`##`) heading when it opens with an H1, or -- when it does not, so there is no "everything under the H1" region to speak of -- the body up to its very first heading of any level, same as before this lead-in concept existed. Either way this is what a reader loses if it goes unkept: the paragraph that says what the document is. `headings[0]` rather than a scan is enough to tell which case applies: `extractMarkdownHeadings` returns headings in document order, so the very first entry is either the leading H1 or it is not. */
@@ -49,8 +52,8 @@ function capLeadIn(rows: readonly FoldRow[]): { rows: FoldRow[]; notice: string 
   return { rows: [...rows], notice: null }
 }
 
-/** Plan the heading-tree replacement of a large, untargeted markdown delivery, so a reader who wanted the whole document's prose still gets pointed at each section by name instead of losing it outright. `extractMarkdownHeadings` already skips `#` inside a fenced code block via `eachUnfencedLine`, so a fence never gets mistaken for a heading here. Returns null on a path that is not prose, a document under the size floor, or one with too few headings. The caller owns the gates only it can see: whether the read was targeted, whether the delivery was truncated, and whether the body holds a secret. */
-export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, originalBytes: number): StructuralFold | null {
+/** Plan the heading-tree replacement of a large, untargeted markdown delivery, so a reader who wanted the whole document's prose still gets pointed at each section by name instead of losing it outright. `extractMarkdownHeadings` already skips `#` inside a fenced code block via `eachUnfencedLine`, so a fence never gets mistaken for a heading here. Returns null on a path that is not prose, a document under the size floor, or one with too few headings. The caller owns the gates only it can see: whether the read was targeted, whether the delivery was truncated, and whether the body holds a secret. In `aligned` layout (a Read the harness numbers by position) the tree is laid over the document instead of printed beside it: the lead-in, then each heading on its own real line with the text under it withheld, because a tree printed as its own block would be numbered as if it were lines 1..N of the file. The notice and fence preamble then travel in `context`. */
+export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, originalBytes: number, layout: FoldLayout = 'compact'): StructuralFold | null {
   if (!loadConfig().hints.outline_large_documents) return null
   if (!isProseFoldablePath(normalizedPath)) return null
   if (originalBytes < OUTLINE_MIN_BODY_BYTES) return null
@@ -64,13 +67,19 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
   const leadInRows = outlineLeadInRows(rows, headings)
   const { rows: cappedLeadIn, notice: capNotice } = capLeadIn(leadInRows)
   // Fed through the same prose fold every other document read gets, rather than exempting the lead-in from it: a long-but-under-cap lead-in still gets its over-long paragraphs folded to their opening sentence. `windowed=false` is correct here regardless of the outer read's own range (already declined by the caller) -- this is a fold of the lead-in slice itself, not of the file at large.
-  const leadInFolded = foldDelivery(cappedLeadIn, normalizedPath, shownPath, false)
+  const leadInFolded = foldDelivery(cappedLeadIn, normalizedPath, shownPath, false, layout)
   const leadInNumbered = leadInFolded !== null ? leadInFolded.numbered : cappedLeadIn.map((r) => r.raw)
   const leadInRaw = leadInFolded !== null ? leadInFolded.raw : cappedLeadIn.map((r) => r.text)
 
   // headings.length is a floor, not a total: extractMarkdownHeadings caps display extraction at 40 entries and H1-H3 only, so a document with more headings or deeper nesting reports fewer than it actually has. Disclosed as "at least" for that reason, never as an exact count. The lead-in clause is worded from what the rewrite actually kept: claiming "its lead-in" when leadInRows came back empty would be a claim the output does not support.
   const headingCount = `at least ${headings.length} heading${headings.length === 1 ? '' : 's'} found`
   const heading = hintTarget(normalizedPath, 'section', { headings, content: fileText, placeholder: '<Heading>' }).name
+  if (layout === 'aligned') {
+    const truncatedList = extractMarkdownHeadings(fileText, Infinity).filter((h) => h.level <= 3).length > headings.length
+    const body = fenceNumberedFileContent([...leadInNumbered, ...planOutlineAlignedRows(rows, headings, leadInNumbered.length, shownPath, truncatedList)].join('\n'), ALIGNED_LAYOUT_NOTE)
+    const alignedNotice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was cut down to ${leadInRows.length > 0 ? 'its lead-in and ' : ''}its headings (${headingCount}), each on its real line, with the text under each heading withheld behind a pointer. Run token-goat section "${shownPath}::${heading}" to read one section verbatim.`
+    return { numbered: [body.body], raw: leadInRaw, kind: 'read:markdown_outline', detail: shownPath, ratioCap: OUTLINE_MAX_REPLACEMENT_RATIO, context: `${body.preamble}\n${alignedNotice}` }
+  }
   const notice =
     leadInRows.length > 0
       ? `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was replaced with its lead-in (the content before its first section) and a heading tree (${headingCount}). Run token-goat section "${shownPath}::${heading}" to read one section verbatim.`
@@ -92,6 +101,50 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
   }
 }
 
+/** The body rows of an `aligned` outline after its lead-in: every listed heading kept verbatim on its own line, and each run between two of them withheld behind one pointer, padded to the run's length. The pointer names the section the run sits under, spelled the way formatHeadingTreeParts spells a repeated heading (`Text #2`), because `token-goat section` of that heading returns at least the run: the run ends at the next listed heading, which either closes the section or opens a child of it. Where that argument fails -- no listed heading above the run, a heading whose text would break the quoted command or would be shown altered, or the last run of a document whose heading list was cut at its cap, which may cross sections the list never named -- the run is delivered as it stands. There is deliberately no ranged-Read fallback: the markdown intercept in hooks_read.ts refuses any Read of a markdown file already read in full, ranged or not, so such a pointer would name a route that never returns the lines (the defect proseFoldNotice was fixed for). A run whose pointer costs as much as the run is delivered as it stands too, the rule {@link planSourceSkeletonRuns} applies. `truncatedList` is whether the cap cut the list short. */
+function planOutlineAlignedRows(rows: readonly FoldRow[], headings: readonly MarkdownHeading[], startIdx: number, shownPath: string, truncatedList: boolean): string[] {
+  const named = new Map<number, string>()
+  const seen = new Map<string, number>()
+  for (const h of headings) {
+    const count = (seen.get(h.text) ?? 0) + 1
+    seen.set(h.text, count)
+    named.set(h.lineNumber, count > 1 ? `${h.text} #${count}` : h.text)
+  }
+  const lastListed = headings.length > 0 ? Math.max(...headings.map((h) => h.lineNumber)) : 0
+  const out: string[] = []
+  let under: string | null = null
+  let i = startIdx
+  while (i < rows.length) {
+    const row = rows[i]
+    if (row === undefined) break
+    const name = named.get(row.no)
+    if (name !== undefined) {
+      out.push(row.raw)
+      under = name
+      i++
+      continue
+    }
+    let j = i
+    while (j < rows.length && !named.has(rows[j]?.no ?? -1)) j++
+    const firstLine = row.no
+    const lastLine = rows[j - 1]?.no ?? firstLine
+    const n = j - i
+    const notice =
+      under !== null && !/["`$\\]/.test(under) && displaySafeText(under) === under && !(truncatedList && firstLine > lastListed)
+        ? `... ${n} line${n === 1 ? '' : 's'} (${firstLine}-${lastLine}) under "${under}" withheld -- token-goat section "${shownPath}::${under}"`
+        : null
+    let runBytes = 0
+    for (let k = i; k < j; k++) runBytes += Buffer.byteLength(rows[k]?.raw ?? '', 'utf-8') + 1
+    if (notice === null || Buffer.byteLength(notice, 'utf-8') + alignedPaddingBytes(n, 'aligned') >= runBytes) {
+      for (let k = i; k < j; k++) out.push(rows[k]?.raw ?? '')
+    } else {
+      pushWithheld(out, notice, n, 'aligned')
+    }
+    i = j
+  }
+  return out
+}
+
 /** The line standing in for a withheld run the skeleton cannot name a symbol for: the interior of a class between its methods, top-level statements between declarations, a trailing block after the last symbol. There is no `token-goat read "file::symbol"` that returns such a run, so the pointer is a ranged Read of the exact span, worded to match {@link commentFoldNotice} rather than inventing a fourth shape. A ranged read is also the one shape this fold never touches (ranged reads are declined outright by both callers), so the pointer cannot loop back into another skeleton. */
 function skeletonGapNotice(firstLine: number, lastLine: number, shownPath: string): string {
   const n = lastLine - firstLine + 1
@@ -106,7 +159,7 @@ interface SkeletonPlan {
 }
 
 /** Keep the file's preamble and one line per declaration, replace every run between them with a notice. A run that exactly spans one symbol's body (the line after its declaration through its last line) gets {@link bodyFoldNotice}, which names the symbol and the command that returns it. Every other run gets {@link skeletonGapNotice}, which names a ranged Read of the same span. Nothing is dropped without one of the two standing in its place: a skeleton whose omissions are invisible is worse than the file it replaced, because the reader cannot tell what is missing. A run whose notice would cost at least as many bytes as the lines it replaces is left verbatim instead. That is not a rounding detail: without it, every blank line between two declarations becomes an 80-byte pointer to a blank line, and the ratio gate would start declining files the fold should have shrunk. Returns null when nothing was withheld, so a file whose declarations are already every line it has is delivered as it arrived rather than as an identical copy with a "partial view" notice on it. */
-function planSourceSkeletonRuns(rows: readonly FoldRow[], symbols: readonly SymbolEntry[], shownPath: string): SkeletonPlan | null {
+function planSourceSkeletonRuns(rows: readonly FoldRow[], symbols: readonly SymbolEntry[], shownPath: string, layout: FoldLayout): SkeletonPlan | null {
   const base = rows[0]?.no ?? 1
   const keep = new Set<number>()
   // The preamble is every line ahead of the first declaration: imports, a package or module clause, the file's header comment. It is what says how to read the declarations that follow, and it is the part of a source file a skeleton is least able to reconstruct.
@@ -146,7 +199,7 @@ function planSourceSkeletonRuns(rows: readonly FoldRow[], symbols: readonly Symb
     const notice = sym !== undefined && sym.lineEnd === lastLine ? bodyFoldNotice(sym.name, firstLine, lastLine, shownPath, sym.lineStart) : skeletonGapNotice(firstLine, lastLine, shownPath)
     let runBytes = 0
     for (let k = i; k < j; k++) runBytes += Buffer.byteLength(rows[k]?.raw ?? '', 'utf-8') + 1
-    if (Buffer.byteLength(notice, 'utf-8') >= runBytes) {
+    if (Buffer.byteLength(notice, 'utf-8') + alignedPaddingBytes(j - i, layout) >= runBytes) {
       for (let k = i; k < j; k++) {
         const kept = rows[k]
         if (kept === undefined) continue
@@ -154,7 +207,7 @@ function planSourceSkeletonRuns(rows: readonly FoldRow[], symbols: readonly Symb
         raw.push(kept.text)
       }
     } else {
-      numbered.push(notice)
+      pushWithheld(numbered, notice, j - i, layout)
       withheldLines += lastLine - firstLine + 1
     }
     i = j
@@ -162,8 +215,8 @@ function planSourceSkeletonRuns(rows: readonly FoldRow[], symbols: readonly Symb
   return withheldLines === 0 ? null : { numbered, raw, withheldLines }
 }
 
-/** Plan the structural-skeleton replacement of a large, untargeted source delivery, so a reader who asked for a whole file still gets every declaration by name with a command that returns any one body verbatim. The extension gate is the language table plus the grammar check the parser itself uses, rather than a second list of extensions that could drift from it: a language this answers true for is exactly a language the parse can succeed on. Returns null on a language with no grammar, a body under the size floor, a parse failure, too few declarations, or a file whose declarations are already every line it has. The caller owns the gates only it can see: whether the read was targeted, whether the delivery was truncated, and whether the body holds a secret. */
-export function planSourceSkeleton(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, originalBytes: number): StructuralFold | null {
+/** Plan the structural-skeleton replacement of a large, untargeted source delivery, so a reader who asked for a whole file still gets every declaration by name with a command that returns any one body verbatim. The extension gate is the language table plus the grammar check the parser itself uses, rather than a second list of extensions that could drift from it: a language this answers true for is exactly a language the parse can succeed on. Returns null on a language with no grammar, a body under the size floor, a parse failure, too few declarations, or a file whose declarations are already every line it has. The caller owns the gates only it can see: whether the read was targeted, whether the delivery was truncated, and whether the body holds a secret. In `aligned` layout nothing may lead the body, so the notice and the fence preamble travel in `context` instead, and the file bytes keep the neutralisation the fence would have given them. */
+export function planSourceSkeleton(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, originalBytes: number, layout: FoldLayout = 'compact'): StructuralFold | null {
   if (!loadConfig().hints.skeleton_large_sources) return null
   if (originalBytes < SKELETON_MIN_BODY_BYTES) return null
 
@@ -175,13 +228,17 @@ export function planSourceSkeleton(rows: readonly FoldRow[], normalizedPath: str
   if (symbols === null) return null
   if (symbols.length < SKELETON_MIN_SYMBOLS) return null
 
-  const plan = planSourceSkeletonRuns(rows, symbols, shownPath)
+  const plan = planSourceSkeletonRuns(rows, symbols, shownPath, layout)
   if (plan === null) return null
 
   // "at least", never an exact count: these are the declarations tree-sitter surfaces as symbols, which is not every name in the file (a local, a nested closure, a declaration inside a body the extractors deliberately skip), so the number is a floor on what the file holds and the wording has to say so. The withheld-line count IS exact, being what the notices below it stand for, and no claim is made about how much of the file a reader recovers.
   const notice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString('en-US')} line${plan.withheldLines === 1 ? '' : 's'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? '' : 's'} found). Run token-goat read "${shownPath}::SymbolName" for one body verbatim, or Read "${shownPath}" with offset=1, limit=${rows.length} for the whole file.`
 
   // The notice leads so token-goat speaks first, and everything after it is fenced: `plan.numbered` is file bytes -- the preamble verbatim, one declaration line per symbol -- interleaved with this rewrite's own `... N more lines ... folded` pointers. It shipped unfenced, which let a source file's first line arrive as an unlabelled `[tg]`-prefixed instruction wearing token-goat's voice, and let a planted `</untrusted-file-content>` close a fence it was never inside. Fencing the interleaved block escapes nothing token-goat authored: the pointers spell `token-goat read "..."` with no bracket, and neutralizeSpokenMarkers only matches the bracketed forms.
+  if (layout === 'aligned') {
+    const body = fenceNumberedFileContent(plan.numbered.join('\n'), ALIGNED_LAYOUT_NOTE)
+    return { numbered: [body.body], raw: plan.raw, kind: 'read:source_skeleton', detail: shownPath, ratioCap: SKELETON_MAX_REPLACEMENT_RATIO, context: `${body.preamble}\n${notice}` }
+  }
   return { numbered: [notice, fenceUntrustedFileContent(plan.numbered.join('\n'))], raw: plan.raw, kind: 'read:source_skeleton', detail: shownPath, ratioCap: SKELETON_MAX_REPLACEMENT_RATIO }
 }
 

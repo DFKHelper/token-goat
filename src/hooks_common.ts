@@ -255,6 +255,12 @@ export function emitRewriteIfChanged(original: string, emitted: string, detail: 
   return emitRewrite(emitted, detail)
 }
 
+/** {@link emitRewrite} with `context` delivered beside the rewritten body instead of inside it (see the `context` field of HookOutput's `rewriteOutput`). The saving booked is net of the context, because those bytes reach the model too. Where emitRewrite passes instead (VS Code), the context goes with it: it describes a rewrite that never happened. */
+export function emitRewriteWithContext(updatedOutput: string, context: string, detail: string, savings: RewriteSavings): HookOutput {
+  const out = emitRewrite(updatedOutput, detail, { ...savings, originalBytes: savings.originalBytes - Buffer.byteLength(context, 'utf-8') })
+  return out.hookType === 'rewriteOutput' ? { ...out, context } : out
+}
+
 /** Non-empty lines in `text`, used as a match-count proxy for tools whose output is a flat newline-separated list (one line per matched file/line/path). Shared by Grep and Glob's dedup-hint handlers via {@link makeDedupHintHandlers}. */
 export function countNonEmptyLines(text: string): number {
   return text.split(/\r\n|\r|\n/).filter((line) => line.length > 0).length

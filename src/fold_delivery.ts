@@ -104,6 +104,31 @@ export interface FoldedDelivery {
   readonly folds: readonly BodyFold[]
 }
 
+/**
+ * How a withheld run sits in the delivered text. `compact`: one notice line stands in for the whole run, which is right wherever nobody numbers the result by position -- a shell read's stdout, or a delivery whose rows carry their own numbers. `aligned`: the notice takes the run's first line and every other withheld line is left empty, so the delivery keeps exactly one line per line it replaced.
+ *
+ * `aligned` exists because Claude Code numbers a Read result itself, as `startLine + i` for line `i` of the text it is handed (see `harnessNumbersReadContent` in hooks_read_slice.ts). A compact fold there shifted every later line up by the run's length less one, so after six 20-line folds real line 150 was displayed as 57 -- and that displayed number is the one a model cites and edits by.
+ */
+export type FoldLayout = 'compact' | 'aligned'
+
+/** The layout note a rewrite in `aligned` layout hands the reader alongside the result, so an empty line is not mistaken for an empty line of the file. One place, so every aligned producer describes the layout the same way. */
+export const ALIGNED_LAYOUT_NOTE = 'Every line shows its real line number: each withheld run is one `...` pointer line on the run\'s first line, and the rest of the run is left as empty lines.'
+
+/** Append the notice standing in for `len` withheld rows. In `aligned` layout the rest of the run is padded with empty lines, and a notice spanning more than one line is joined onto one: either way the count of lines appended is exactly `len`, which is the whole invariant the layout exists for. */
+export function pushWithheld(out: string[], notice: string, len: number, layout: FoldLayout): void {
+  if (layout === 'compact') {
+    out.push(notice)
+    return
+  }
+  out.push(notice.replace(/\r?\n/g, ' '))
+  for (let i = 1; i < len; i++) out.push('')
+}
+
+/** Bytes an `aligned` rewrite pays for one withheld run beyond its notice: the newline ending each padded line. Priced by the planners that compare a notice against the run it replaces, so padding can never make a fold cost more than the lines it withheld. */
+export function alignedPaddingBytes(len: number, layout: FoldLayout): number {
+  return layout === 'aligned' ? Math.max(0, len - 1) : 0
+}
+
 /** Largest file this will parse on the read path when the index cannot answer. A body fold is worth a few milliseconds and not a few hundred: past this the read stays whole and the enqueued reindex is left to serve the next one. */
 const FOLD_SPAN_PARSE_MAX_BYTES = 400_000
 
@@ -174,9 +199,9 @@ function strictlyInteriorOnWindow(folds: readonly BodyFold[], rowCount: number, 
 /**
  * Fold the long bodies and long comment blocks out of one delivered slice of a file.
  *
- * Returns null when nothing is worth folding, which the callers treat as "leave the output exactly as it arrived". Header and trailer lines are the caller's business: a Read result carries a preamble this never sees, and a shell read has none.
+ * Returns null when nothing is worth folding, which the callers treat as "leave the output exactly as it arrived". Header and trailer lines are the caller's business: a Read result carries a preamble this never sees, and a shell read has none. `layout` decides how each folded span sits in `numbered` (see {@link FoldLayout}); `raw` is the same either way.
  */
-export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, windowed = false): FoldedDelivery | null {
+export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, windowed = false, layout: FoldLayout = 'compact'): FoldedDelivery | null {
   const syntax = commentSyntaxFor(normalizedPath)
   // Resolved only when a body fold could use it. Spans cost a whole-file hash against the index plus, on a miss, an append to the dirty reindex queue, and both are pure waste for the caller that cannot fold bodies. That caller is now every stock install: prose folding ships on, so `foldingEnabled` is true everywhere and each read of a source file reaches this line, where the old default left it unreachable. A miss is also the common case rather than the rare one (measured on a real index, the parser stamp was stale on 95% of this project's files), so an unguarded call would enqueue most source files for reindex on every read and fold nothing at all in return.
   const foldBodies = loadConfig().hints.fold_code_bodies
@@ -230,7 +255,7 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
       at = fold.startIdx + fold.len
       continue
     }
-    numbered.push(notice)
+    pushWithheld(numbered, notice, fold.len, layout)
     at = fold.startIdx + fold.len
   }
   for (let i = at; i < rows.length; i++) {

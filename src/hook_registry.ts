@@ -235,6 +235,7 @@ export function serializeOutput(
             output.updatedBlocks !== undefined && harness === 'claudecode'
               ? output.updatedBlocks
               : shapedUpdatedToolOutput(output.updatedOutput, harness, event),
+          ...(output.context !== undefined ? { additionalContext: output.context } : {}),
         },
       })
     case 'pass':
