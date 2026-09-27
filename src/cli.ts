@@ -61,7 +61,7 @@ import { detectEcosystems } from './bridges/detect_ecosystems.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor_platforms.js'
-import { runDetachedWorkerDaemon } from './worker.js'
+import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
 import { isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
@@ -100,7 +100,7 @@ import { contentHash, extractCompactFromMarker, storeCompact, skillOutputsDir } 
 import { findProject } from './project.js'
 import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
-import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
+import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys, withConfigProjectRoot } from './config.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctorChecks } from './cli_doctor.js'
@@ -310,12 +310,8 @@ export async function cmdIndex(
   }
   const blockedRoots = loadConfig().worker.blocked_roots
   const ixCfg = loadConfig().indexing
-  // files.embed_sha records WHICH CONTENT was embedded, never WHICH STACK embedded it, so the per-file freshness gate in the loop below cannot see a model or inference-runtime change on its own: it reads a bare sha as fresh and skips the file. ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision, but its only callers were upsertChunks and searchSemantic, both downstream of that gate -- so a whole-index run after an onnxruntime major.minor upgrade printed "Skipped N unchanged file(s)" and left every vector from the previous stack in place, which is exactly what the warning that reset prints tells the user to run this command to fix. It must run here rather than inside the loop: the reset clears each affected file's embed_sha, and by the time the loop has read a file's row into `entry` that clearing is already too late to be seen. Gated on the deps being usable because backendId() cannot name a runtime that did not load, and wiping the index on the strength of an unknowable identity would be worse than the staleness it is guarding against.
-  if ((loadConfig().indexing?.embeddings_enabled ?? true) && embeddingsDepsAvailable(getDb(dbPath))) {
-    ensureEmbeddingProvenance(getDb(dbPath))
-    // Chunk rows written before the asset and chunk-count gates existed carry a valid embed_sha, so the per-file freshness gate below reads every one of them as current and would leave them searchable forever. Same placement and the same reason as ensureEmbeddingProvenance directly above: it has to run before the loop reads any row. See src/embed_backfill.ts for why this is a version-keyed sweep rather than a fingerprint bump.
-    pruneUnembeddableChunks(getDb(dbPath), ixCfg.max_chunks_per_file, deleteFileEmbeddings, { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha })
-  }
+  // Whether a file is embedded is decided by its own project's configuration, through the rule the worker's drain applies to the same file (see embedPolicyResolver), never by the directory this command runs in: run inside a monorepo package, or given a path from elsewhere, the index and the drain stamped one file two ways and each undid the other. The other indexing keys this function reads through loadConfig() with no root are right from any root only because each is in PROJECT_LOCKED_KEYS, so no project file can set one.
+  const embedPolicy = embedPolicyResolver()
   let indexed = 0
   let failed = 0
   let skipped = 0
@@ -362,6 +358,15 @@ export async function cmdIndex(
     if (sha === null && !fs.existsSync(key)) continue
     // Register the project root as sweepable before the freshness gates below can skip this file: a walk that finds everything already current still proves the project has rows worth sweeping. See recordKnownRootThrottled.
     recordKnownRootThrottled(key, dataDir(), dbPath)
+    const { configRoot, embeddingsEnabled } = embedPolicy(key)
+    // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.
+    const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
+    if (depsAvailable) {
+      // files.embed_sha records WHICH CONTENT was embedded, never WHICH STACK embedded it, so the per-file freshness gate below cannot see a model or inference-runtime change on its own: it reads a bare sha as fresh and skips the file. ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision, but its only callers were upsertChunks and searchSemantic, both downstream of that gate -- so a whole-index run after an onnxruntime major.minor upgrade printed "Skipped N unchanged file(s)" and left every vector from the previous stack in place, which is exactly what the warning that reset prints tells the user to run this command to fix. It must run before the row read below, not beside the gate that consults the row: the reset clears each affected file's embed_sha, and once `entry` holds a row that clearing can no longer be seen. Memoized per database per process, so after the first file this costs one Set lookup. Gated on the deps being usable because backendId() cannot name a runtime that did not load, and wiping the index on the strength of an unknowable identity would be worse than the staleness it is guarding against.
+      ensureEmbeddingProvenance(getDb(dbPath))
+      // Chunk rows written before the asset and chunk-count gates existed carry a valid embed_sha, so the per-file freshness gate below reads every one of them as current and would leave them searchable forever. Same placement and the same reason as ensureEmbeddingProvenance directly above: it has to run before a row is read. See src/embed_backfill.ts for why this is a version-keyed sweep rather than a fingerprint bump.
+      pruneUnembeddableChunks(getDb(dbPath), ixCfg.max_chunks_per_file, deleteFileEmbeddings, { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha })
+    }
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     // A case-only rename (`mv b.ts B.ts`) leaves the content byte-identical, so the sha gate below would skip the file and the row would keep the old spelling indefinitely -- see indexedPathSpellingIsStale. Reindexing rewrites the row under the spelling the file actually has.
     const spellingStale = entry !== null && indexedPathSpellingIsStale(entry.filePath, key)
@@ -372,11 +377,7 @@ export async function cmdIndex(
       sha !== null &&
       entry?.sha === sha &&
       entry.parserSha === parserFingerprintForLanguage(entry.language)
-    // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
-    const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
-    // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.
-    const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
-    // Embed freshness is decided on its own inputs, never on parseUnchanged: files.parser_sha answers "which extractor wrote the symbol rows", which carries no information about whether the stored vectors match this content, so conjoining it made a parser-stamp bump re-embed the whole index (measured: a stamp-only reparse of 300 unchanged files cost 94% of indexing them from nothing) and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent. isEmbedFresh already answers false for a new file (no stored embed_sha) and for moved content (the stored sha no longer matches), so the sha coupling was redundant -- except for spellingStale, which is kept by name: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever.
+    // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled. Embed freshness is decided on its own inputs, never on parseUnchanged: files.parser_sha answers "which extractor wrote the symbol rows", which carries no information about whether the stored vectors match this content, so conjoining it made a parser-stamp bump re-embed the whole index (measured: a stamp-only reparse of 300 unchanged files cost 94% of indexing them from nothing) and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent. isEmbedFresh already answers false for a new file (no stored embed_sha) and for moved content (the stored sha no longer matches), so the sha coupling was redundant -- except for spellingStale, which is kept by name: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever.
     const embedFreshFor = (embedSha: string | undefined): boolean =>
       !force &&
       !spellingStale &&
@@ -420,8 +421,8 @@ export async function cmdIndex(
     const embedFresh = parseUnchanged ? embedUnchanged : embedFreshFor(getFileEntry(key, dbPath)?.embedSha)
     if (!embedFresh) {
       paintProgress('embedding')
-      // Best-effort semantic-embeddings step for the same file, run right after its syntactic parse; awaited here because this is a one-shot foreground command the caller waits on, unlike the worker's incremental drain which fires this and forgets it. Passing sha lets it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses.
-      await indexFileEmbeddings(key, dbPath, sha ?? undefined)
+      // Best-effort semantic-embeddings step for the same file, run right after its syntactic parse; awaited here because this is a one-shot foreground command the caller waits on, unlike the worker's incremental drain which fires this and forgets it. Passing sha lets it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses. It reads `embeddings_enabled` with no root to pass, as its first synchronous statement, so the file's own project is the one loadConfig() resolves for that stretch, as in worker.ts's embedFileSerialized.
+      await withConfigProjectRoot(configRoot, () => indexFileEmbeddings(key, dbPath, sha ?? undefined))
     }
     indexed += 1
   }
