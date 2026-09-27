@@ -3,7 +3,7 @@
 import * as path from 'node:path'
 import { statSync } from 'node:fs'
 
-import { getFilePath } from './hooks_common.js'
+import { getCwd, getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
@@ -12,7 +12,7 @@ import { leadWithCommand } from './hint_suggestion_guard.js'
 import { hintTarget } from './hint_target.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './known_roots.js'
-import { displaySafePath, normalizePath } from './paths.js'
+import { displaySafePath, normalizePath, resolveIndexPath } from './paths.js'
 import { extractErrorMessage } from './util.js'
 import { recordFileEdit } from './session.js'
 import { isUnderSystemTemp } from './project.js'
@@ -22,18 +22,20 @@ import { compactPathFor, markCompactStale } from './doc_compact.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 import type { HookOutput } from './types.js'
 
-/** post_tool_use handler for Write/Edit/NotebookEdit. Records the edit in the session cache and enqueues the normalized path for reindexing. A missing path (malformed payload — `file_path` for Write/Edit, `notebook_path` for NotebookEdit) is tolerated — the call passes through without touching the queue. Returns a context hint for markdown/rst files suggesting the token-goat section command for re-reading. */
+/** post_tool_use handler for Write/Edit/NotebookEdit. Records the edit in the session cache and enqueues the absolute path for reindexing. A missing path (malformed payload — `file_path` for Write/Edit, `notebook_path` for NotebookEdit) is tolerated — the call passes through without touching the queue. Returns a context hint for markdown/rst files suggesting the token-goat section command for re-reading. */
 function postEditHandlerInner(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
 
   const normalized = normalizePath(filePath)
   recordFileEdit(normalized)
+  // The index keys on the absolute path and the worker drains from its own directory, so a relative path (pi's edit and write tools take one) is resolved against the directory the harness ran the tool in before it is queued: left relative, the drain found no such file, read it as a deletion of a path no row carries, and the edit was never indexed.
+  const indexPath = resolveIndexPath(filePath, getCwd(event) ?? process.cwd())
   // Nothing under the OS system temp dir should ever become a permanent index citizen -- see isUnderSystemTemp's docstring for the concrete pollution this prevents; skip both the dirty-queue enqueue and the known-root recording.
-  const underSystemTemp = isUnderSystemTemp(normalized)
+  const underSystemTemp = isUnderSystemTemp(indexPath)
   if (!underSystemTemp) {
     try {
-      appendDirtyPath(normalized)
+      appendDirtyPath(indexPath)
     } catch (e) {
       // Fail-soft: a transient fs error (disk full, permission, Windows file lock) must not crash the whole handler -- recordFileEdit above already succeeded, and the rest of this handler's work (the markdown hint below) should still run.
       recordStat('dirty_queue_append_failed', 0, 0, undefined, extractErrorMessage(e))
@@ -48,7 +50,7 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
 
     // Record this file's project root as known-alive so the worker's periodic sweep (sweepKnownRoots) has a safe, bounded set of roots to auto-prune dead file rows from -- see recordKnownRootThrottled's docstring. Also rate-limited internally.
     try {
-      recordKnownRootThrottled(normalized)
+      recordKnownRootThrottled(indexPath)
     } catch (e) {
       recordStat('known_root_record_failed', 0, 0, undefined, extractErrorMessage(e))
     }
