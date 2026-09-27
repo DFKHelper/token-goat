@@ -18,7 +18,7 @@ import { runSemantic } from './read_semantic.js'
 import { runBrief } from './read_brief.js'
 import { runChanged } from './read_git.js'
 import { runImports, runExports } from './read_inspect.js'
-import { parseColonLineSpec, parseLineRange } from './read_spec.js'
+import { parseColonLineSpec, parseLineRange, resolveProjectConfinement } from './read_spec.js'
 import { runRefs } from './read_refs.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import {
@@ -763,7 +763,11 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { compact, projectRoot } = args
-      const map = buildProjectMap(resolveToolRoot(projectRoot), { compact: compact === true })
+      const root = resolveToolRoot(projectRoot)
+      // The headline symbols come from the machine-wide index, so a root outside what indexing.cross_project_symbols = false admits is refused the way `symbol` refuses it.
+      const projectDenial = resolveProjectConfinement(root).denial
+      if (projectDenial !== null) return toCallToolResult({ text: projectDenial, code: 1 })
+      const map = buildProjectMap(root, { compact: compact === true })
       const text = formatProjectMap(map, map.compact)
       // buildProjectMap/formatProjectMap don't self-report the way the run*() handlers above do, so this replicates cmdMap's stat-recording wiring in cli.ts (see project_runchanged_missing_stat / map_lookup) locally rather than importing cmdMap itself, since cmdMap also owns process.exitCode/stdout side effects this tool must not perform. The byte accounting -- and the recentFiles-vs-topSymbols path canonicalization the dedup depends on, which stays correct even when projectRoot differs from this server process's cwd -- lives in mapLookupBytesSaved, shared with cmdMap so the two accountings cannot drift.
       const bytesSaved = mapLookupBytesSaved(map, text)

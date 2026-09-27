@@ -17,6 +17,7 @@ import { displaySafeJson, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { guardJsonRows, guardText, largestFileSize, recordReadStat, warnIfFilesStale } from './read_commands.js'
 import { previewLines } from './read_meta.js'
+import { resolveProjectConfinement } from './read_spec.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, grepFilteredToEmptyNotice, isTestFile } from './util.js'
 
 // Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.
@@ -114,6 +115,11 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       }
       return { text: message, code: 1 }
     }
+  }
+  // Both halves of the search read the machine-wide index, so a caller-named root outside what indexing.cross_project_symbols = false admits is refused the way `symbol` refuses it, rather than searched.
+  const projectDenial = resolveProjectConfinement(opts.projectRoot).denial
+  if (projectDenial !== null) {
+    return { text: opts.json === true ? displaySafeJson({ error: projectDenial }) : projectDenial, code: 1 }
   }
   const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
   let projectCoverage: { indexedFiles: number; embeddedFiles: number } | undefined

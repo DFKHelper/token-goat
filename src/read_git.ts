@@ -9,7 +9,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
-import { resolveSymbolSpecOrEmitError } from './read_spec.js'
+import { resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { trimBlankLines } from './read_suggest.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
@@ -174,6 +174,12 @@ export function runChanged(opts: ChangedOptions = {}): number {
   const ref = opts.ref ?? 'HEAD~5'
   if (!refIsSafe(ref)) {
     emitUnsafeRef(ref)
+    return 1
+  }
+  // Symbol mode answers from the machine-wide index, unlike the file list, which git reads from the working tree, so only it refuses a root outside what indexing.cross_project_symbols = false admits.
+  const projectDenial = opts.symbolMode === true ? resolveProjectConfinement(opts.projectRoot).denial : null
+  if (projectDenial !== null) {
+    emitErr(projectDenial)
     return 1
   }
   const cwd = opts.projectRoot ?? process.cwd()
