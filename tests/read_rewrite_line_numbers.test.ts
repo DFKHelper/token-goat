@@ -225,13 +225,17 @@ describe('a rewritten Read keeps every line on its real line number', () => {
   })
 
   it('markdown outline: every pointer, followed literally after the read it came from, returns the lines it withheld', () => {
-    // Provenance: HAND-DERIVED. Two sections share a heading so the `Text #2` spelling the pointer borrows from formatHeadingTreeParts is exercised, a level-3 child sits under one of them so a run that stops at a child heading is covered, and one heading carries a backtick, which no quoted `section` command can name, so its run exercises whatever route the outline falls back to. A ranged `Read` of a markdown file already read in full is refused by the markdown re-read intercept in hooks_read.ts, so that route is executed here, not assumed.
+    // Provenance: HAND-DERIVED. Two sections share a heading so repeat-disambiguation is exercised, a level-3 child sits under one of them so a run that stops at a child heading is covered, one heading carries a backtick, which no quoted `section` command can name, so its run exercises whatever route the outline falls back to, and two more collisions are layered in: an H4 ("Notes") nested inside the Beta child that shares text with the listed "## Notes" sections but is invisible to extractMarkdownHeadings' H1-H3 cap, and a same-text-different-case pair ("## Notes" immediately followed by "## notes") at the end. Both are the repro this fixture was extended for: a pointer's disambiguating ordinal has to come from the same case-insensitive, all-levels count resolveHeaderPos itself uses, not a tally kept locally over the capped, case-sensitive heading list, or the pointer names the wrong section. A ranged `Read` of a markdown file already read in full is refused by the markdown re-read intercept in hooks_read.ts, so that route is executed here, not assumed.
     const src: string[] = ['# Round trip document', '', `Lead-in paragraph for the round trip. ${TAG}`, '']
-    const sections = ['Alpha', 'Notes', 'Beta', 'Notes', 'The `run` command', 'Delta']
+    const sections = ['Alpha', 'Notes', 'Beta', 'Notes', 'The `run` command', 'Delta', 'Notes', 'notes']
     sections.forEach((name, s) => {
       src.push(`## ${name}`, '')
       for (let k = 0; k < 18; k++) src.push(`Body ${k} of section ${s} (${name}), padded to push the document over the size floor. ${TAG}`)
-      if (s === 2) src.push('', '### Beta child', '', ...Array.from({ length: 6 }, (_, k) => `Child body ${k} under Beta, padded the same way as the rest. ${TAG}`))
+      if (s === 2) {
+        src.push('', '### Beta child', '', ...Array.from({ length: 6 }, (_, k) => `Child body ${k} under Beta, padded the same way as the rest. ${TAG}`))
+        // Unlisted (H4 exceeds extractMarkdownHeadings' H1-H3 cap) but still counted by resolveHeaderPos's case-insensitive scan, so it shifts the ordinal of every "Notes"/"notes" section after it.
+        src.push('', '#### Notes', '', ...Array.from({ length: 6 }, (_, k) => `Nested notes body ${k}, unlisted but still counted by the real resolver. ${TAG}`))
+      }
       src.push('')
     })
     const body = tagged(src)
@@ -244,7 +248,8 @@ describe('a rewritten Read keeps every line on its real line number', () => {
     expectRealNumbering(view, body)
     const pointers = view.lines.filter((l) => isPointer(l.text))
     expect(pointers.length).toBeGreaterThanOrEqual(sections.length - 1)
-    expect(pointers.some((p) => p.text.includes('::Notes #2"'))).toBe(true)
+    // Positive control: the repeat-disambiguation path is actually exercised, spelled the way findContainingSection spells it (`Heading#N`, matching resolveHeaderPos's own counting) now that the fix derives it from the real resolver instead of a locally-kept, case-sensitive tally over the capped heading list.
+    expect(pointers.some((p) => /::Notes#\d"/.test(p.text))).toBe(true)
     for (const p of pointers) {
       const span = /\((\d+)-(\d+)\)/.exec(p.text)
       expect(span, p.text).not.toBeNull()

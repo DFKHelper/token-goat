@@ -9,6 +9,7 @@ import { displaySafeText } from './paths.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
+import { findContainingSection } from './section_reader.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /** Body size floor for the large-markdown outline replacement below: measured over 5,104 real session transcripts (13,870 Read deliveries, 130,249,204 bytes), untargeted markdown reads with >=6 headings at this floor withhold 41.03% of all Read bytes, within 1.8 points of the best floor sampled (2,000 B) while firing far less often on documents small enough that the interruption outweighs the win. */
@@ -75,8 +76,7 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
   const headingCount = `at least ${headings.length} heading${headings.length === 1 ? '' : 's'} found`
   const heading = hintTarget(normalizedPath, 'section', { headings, content: fileText, placeholder: '<Heading>' }).name
   if (layout === 'aligned') {
-    const truncatedList = extractMarkdownHeadings(fileText, Infinity).filter((h) => h.level <= 3).length > headings.length
-    const body = fenceNumberedFileContent([...leadInNumbered, ...planOutlineAlignedRows(rows, headings, leadInNumbered.length, shownPath, truncatedList)].join('\n'), ALIGNED_LAYOUT_NOTE)
+    const body = fenceNumberedFileContent([...leadInNumbered, ...planOutlineAlignedRows(rows, headings, leadInNumbered.length, shownPath, normalizedPath)].join('\n'), ALIGNED_LAYOUT_NOTE)
     const alignedNotice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was cut down to ${leadInRows.length > 0 ? 'its lead-in and ' : ''}its headings (${headingCount}), each on its real line, with the text under each heading withheld behind a pointer. Run token-goat section "${shownPath}::${heading}" to read one section verbatim.`
     return { numbered: [body.body], raw: leadInRaw, kind: 'read:markdown_outline', detail: shownPath, ratioCap: OUTLINE_MAX_REPLACEMENT_RATIO, context: `${body.preamble}\n${alignedNotice}` }
   }
@@ -101,36 +101,27 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
   }
 }
 
-/** The body rows of an `aligned` outline after its lead-in: every listed heading kept verbatim on its own line, and each run between two of them withheld behind one pointer, padded to the run's length. The pointer names the section the run sits under, spelled the way formatHeadingTreeParts spells a repeated heading (`Text #2`), because `token-goat section` of that heading returns at least the run: the run ends at the next listed heading, which either closes the section or opens a child of it. Where that argument fails -- no listed heading above the run, a heading whose text would break the quoted command or would be shown altered, or the last run of a document whose heading list was cut at its cap, which may cross sections the list never named -- the run is delivered as it stands. There is deliberately no ranged-Read fallback: the markdown intercept in hooks_read.ts refuses any Read of a markdown file already read in full, ranged or not, so such a pointer would name a route that never returns the lines (the defect proseFoldNotice was fixed for). A run whose pointer costs as much as the run is delivered as it stands too, the rule {@link planSourceSkeletonRuns} applies. `truncatedList` is whether the cap cut the list short. */
-function planOutlineAlignedRows(rows: readonly FoldRow[], headings: readonly MarkdownHeading[], startIdx: number, shownPath: string, truncatedList: boolean): string[] {
-  const named = new Map<number, string>()
-  const seen = new Map<string, number>()
-  for (const h of headings) {
-    const count = (seen.get(h.text) ?? 0) + 1
-    seen.set(h.text, count)
-    named.set(h.lineNumber, count > 1 ? `${h.text} #${count}` : h.text)
-  }
-  const lastListed = headings.length > 0 ? Math.max(...headings.map((h) => h.lineNumber)) : 0
+/** The body rows of an `aligned` outline after its lead-in: every listed heading kept verbatim on its own line, and each run between two of them withheld behind one pointer, padded to the run's length. The pointer names the section the run sits under via {@link findContainingSection} -- the same resolver `token-goat section` itself uses to answer a plain, ordinal-less spec -- rather than a count kept locally over the capped, H1-H3-only, case-sensitive `headings` list: an H4 (excluded from `headings` by extractMarkdownHeadings) or a heading differing only in case shares text with a listed heading but is still counted by resolveHeaderPos's case-insensitive scan, so a locally-kept tally drifts from the real ordinal on exactly those inputs and the pointer names the wrong section. Deferring to the real resolver also makes the old `truncatedList`/last-listed guard unnecessary: whether or not the heading list was cut at its cap, findContainingSection still resolves the ACTUAL enclosing section (which may not even be one of the listed headings, if the run nests one), and readSection/resolveHeaderPos will still return it for that spec. Where no enclosing section resolves at all, or the resolved heading's text would break the quoted command or would be shown altered, the run is delivered as it stands. There is deliberately no ranged-Read fallback: the markdown intercept in hooks_read.ts refuses any Read of a markdown file already read in full, ranged or not, so such a pointer would name a route that never returns the lines (the defect proseFoldNotice was fixed for). A run whose pointer costs as much as the run is delivered as it stands too, the rule {@link planSourceSkeletonRuns} applies. */
+function planOutlineAlignedRows(rows: readonly FoldRow[], headings: readonly MarkdownHeading[], startIdx: number, shownPath: string, normalizedPath: string): string[] {
+  const listedLines = new Set(headings.map((h) => h.lineNumber))
   const out: string[] = []
-  let under: string | null = null
   let i = startIdx
   while (i < rows.length) {
     const row = rows[i]
     if (row === undefined) break
-    const name = named.get(row.no)
-    if (name !== undefined) {
+    if (listedLines.has(row.no)) {
       out.push(row.raw)
-      under = name
       i++
       continue
     }
     let j = i
-    while (j < rows.length && !named.has(rows[j]?.no ?? -1)) j++
+    while (j < rows.length && !listedLines.has(rows[j]?.no ?? -1)) j++
     const firstLine = row.no
     const lastLine = rows[j - 1]?.no ?? firstLine
     const n = j - i
+    const under = findContainingSection(normalizedPath, firstLine, lastLine)?.heading ?? null
     const notice =
-      under !== null && !/["`$\\]/.test(under) && displaySafeText(under) === under && !(truncatedList && firstLine > lastListed)
+      under !== null && !/["`$\\]/.test(under) && displaySafeText(under) === under
         ? `... ${n} line${n === 1 ? '' : 's'} (${firstLine}-${lastLine}) under "${under}" withheld -- token-goat section "${shownPath}::${under}"`
         : null
     let runBytes = 0
