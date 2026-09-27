@@ -1,22 +1,4 @@
-/**
- * Cross-process disk persistence for id-keyed content caches.
- *
- * token-goat hooks run as a fresh `token-goat hook <event>` process per tool
- * call, so any state kept only in module-level Maps dies when the process exits.
- * This module backs the bash-output and web-output content caches with small
- * JSON blobs on disk, keyed by a content id, so a value stored by one hook
- * process is readable by a later, separate process and by the session-less CLI
- * (`token-goat bash-output <id>` / `web-output <id>`).
- *
- * The storage root mirrors {@link file://./snapshots.ts} (`~/.token-goat/...`),
- * resolved lazily per call so tests can redirect it. Every operation is
- * fail-soft: a disk error never throws into a hook. Blobs are content-addressed,
- * so two processes that store the same id write identical bytes — concurrent
- * writers cannot corrupt each other. `storeBlob()` also runs every value
- * through {@link file://./secret_redact.ts}'s `redactSecrets()` before it
- * touches disk, so a credential accidentally echoed into cached tool output
- * never gets persisted in plaintext.
- */
+/** Cross-process disk persistence for id-keyed content caches. token-goat hooks run as a fresh `token-goat hook <event>` process per tool call, so any state kept only in module-level Maps dies when the process exits. This module backs the bash-output and web-output content caches with small JSON blobs on disk, keyed by a content id, so a value stored by one hook process is readable by a later, separate process and by the session-less CLI (`token-goat bash-output <id>` / `web-output <id>`). The storage root mirrors {@link file://./snapshots.ts} (`~/.token-goat/...`), resolved lazily per call so tests can redirect it. Every operation is fail-soft: a disk error never throws into a hook. Blobs are content-addressed, so two processes that store the same id write identical bytes — concurrent writers cannot corrupt each other. `storeBlob()` also runs every value through {@link file://./secret_redact.ts}'s `redactSerializedJson()` before it touches disk, so a credential accidentally echoed into cached tool output never gets persisted in plaintext. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -24,7 +6,7 @@ import * as path from 'node:path'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './constants.js'
 import { ensureDirSync, atomicWriteText, sanitizeIdForFilename } from './util.js'
-import { redactSecrets } from './secret_redact.js'
+import { redactSerializedJson } from './secret_redact.js'
 import { recordStat } from './stats.js'
 
 /** Default cap on blobs kept per subdir before the oldest are evicted. */
@@ -32,17 +14,10 @@ export const DEFAULT_MAX_COUNT = 200
 /** Default max age (ms) before a blob is pruned. Mirrors snapshots' 24h stale window. */
 export const DEFAULT_MAX_AGE_MS = 24 * 3600 * 1000
 
-/**
- * Root for token-goat cross-process state, mirroring `snapshots.ts`.
- *
- * Defined in `constants.ts` and re-exported here, where every existing caller imports it from:
- * `ensureDirSync` has to harden whichever root a path falls under, and `constants.ts` is the one
- * module both it and this one can import without a cycle.
- */
+/** Root for token-goat cross-process state, mirroring `snapshots.ts`. Defined in `constants.ts` and re-exported here, where every existing caller imports it from: `ensureDirSync` has to harden whichever root a path falls under, and `constants.ts` is the one module both it and this one can import without a cycle. */
 export { tokenGoatHome }
 
-/** Sanitize a content id to a filesystem-safe stem (ids are already hex; this is
- * defense in depth, never trust the key). Empty result means "unusable id". */
+/** Sanitize a content id to a filesystem-safe stem (ids are already hex; this is defense in depth, never trust the key). Empty result means "unusable id". */
 function sanitizeId(id: string): string {
   return sanitizeIdForFilename(id, 64)
 }
@@ -51,8 +26,7 @@ function blobDir(subdir: string): string {
   return path.join(tokenGoatHome(), subdir)
 }
 
-/** Resolve the on-disk path for `id` in `subdir`, or null when the id sanitizes
- * to empty or escapes the subdir (traversal guard, mirrors snapshots). */
+/** Resolve the on-disk path for `id` in `subdir`, or null when the id sanitizes to empty or escapes the subdir (traversal guard, mirrors snapshots). */
 export function blobPath(subdir: string, id: string): string | null {
   const safe = sanitizeId(id)
   if (!safe) return null
@@ -79,12 +53,7 @@ export function isBlobStale(subdir: string, id: string): boolean {
   }
 }
 
-/**
- * Resolve the maxCount/maxBytes/maxBytesPerItem eviction budget for a subdir from
- * its matching config section (bash_compress for bash outputs, webfetch for web
- * outputs), falling back to the generic defaults for subdirs with no dedicated
- * config (e.g. the skill/image caches, which manage their own pruning elsewhere).
- */
+/** Resolve the maxCount/maxBytes/maxBytesPerItem eviction budget for a subdir from its matching config section (bash_compress for bash outputs, webfetch for web outputs), falling back to the generic defaults for subdirs with no dedicated config (e.g. the skill/image caches, which manage their own pruning elsewhere). */
 function subdirCacheDefaults(subdir: string): { maxCount: number; maxBytes: number; maxBytesPerItem: number } {
   try {
     if (subdir === 'bash_outputs') {
@@ -101,12 +70,7 @@ function subdirCacheDefaults(subdir: string): { maxCount: number; maxBytes: numb
   return { maxCount: DEFAULT_MAX_COUNT, maxBytes: Number.POSITIVE_INFINITY, maxBytesPerItem: Number.POSITIVE_INFINITY }
 }
 
-/**
- * Atomically write `value` as JSON to `<home>/<subdir>/<id>.json`, then prune.
- *
- * Fail-soft: returns false on any error (never throws). A prune failure never
- * undoes the store. The parent dir is created on demand.
- */
+/** Atomically write `value` as JSON to `<home>/<subdir>/<id>.json`, then prune. Fail-soft: returns false on any error (never throws). A prune failure never undoes the store. The parent dir is created on demand. */
 export function storeBlob(
   subdir: string,
   id: string,
@@ -117,29 +81,17 @@ export function storeBlob(
   if (!p) return false
   const defaults = subdirCacheDefaults(subdir)
   const maxBytesPerItem = opts.maxBytesPerItem ?? defaults.maxBytesPerItem
-  // Inside the guard, not above it: JSON.stringify itself throws on a value it cannot serialize --
-  // a circular reference (an object graph a caller built by hand, or a tool result that references
-  // its own request) or a BigInt -- and this function's contract is that it returns false on any
-  // error and never throws. Uncaught, it propagated out of the one funnel every cached blob goes
-  // through, into a hook, which is the one place a throw is never acceptable.
+  // Inside the guard, not above it: JSON.stringify itself throws on a value it cannot serialize -- a circular reference (an object graph a caller built by hand, or a tool result that references its own request) or a BigInt -- and this function's contract is that it returns false on any error and never throws. Uncaught, it propagated out of the one funnel every cached blob goes through, into a hook, which is the one place a throw is never acceptable.
   let rawJson: string
   try {
     rawJson = JSON.stringify(value)
   } catch {
     return false
   }
-  // Defense-in-depth: scan every blob for high-confidence secret patterns
-  // (API keys, tokens, private-key blocks) before it ever reaches disk, so a
-  // credential accidentally echoed into cached tool output isn't persisted
-  // in plaintext. This is the single funnel every blob-persisting caller
-  // (bash-output, web-output, mcp-output) goes through. Fail-safe, not
-  // fail-open: if the redaction pass itself throws, skip caching this blob
-  // entirely rather than risk writing unredacted content — consistent with
-  // every other failure path in this function (oversized blob, mkdir
-  // failure, write failure all return false without persisting).
+  // Defense-in-depth: scan every blob for high-confidence secret patterns (API keys, tokens, private-key blocks) before it ever reaches disk, so a credential accidentally echoed into cached tool output isn't persisted in plaintext. This is the single funnel every blob-persisting caller (bash-output, web-output, mcp-output) goes through. Fail-safe, not fail-open: if the redaction pass itself throws, skip caching this blob entirely rather than risk writing unredacted content — consistent with every other failure path in this function (oversized blob, mkdir failure, write failure all return false without persisting).
   let json: string
   try {
-    const result = redactSecrets(rawJson)
+    const result = redactSerializedJson(rawJson)
     json = result.text
     if (result.count > 0) recordStat('secret_redacted', 0, result.count, undefined, subdir)
   } catch {
@@ -153,10 +105,7 @@ export function storeBlob(
   } catch {
     return false
   }
-  // Protect the blob this call just wrote from its own eviction pass below — a
-  // misconfigured (or future) maxBytesPerItem/maxBytes pairing where the per-item
-  // ceiling exceeds the total-directory budget must not silently delete the data
-  // storeBlob() is about to report as successfully stored.
+  // Protect the blob this call just wrote from its own eviction pass below — a misconfigured (or future) maxBytesPerItem/maxBytes pairing where the per-item ceiling exceeds the total-directory budget must not silently delete the data storeBlob() is about to report as successfully stored.
   pruneBlobs(
     subdir,
     opts.maxCount ?? defaults.maxCount,
@@ -167,12 +116,7 @@ export function storeBlob(
   return true
 }
 
-/**
- * Read and JSON-parse `<home>/<subdir>/<id>.json`.
- *
- * Fail-soft: returns null on any error (missing, corrupt, traversal). The caller
- * validates the parsed shape.
- */
+/** Read and JSON-parse `<home>/<subdir>/<id>.json`. Fail-soft: returns null on any error (missing, corrupt, traversal). The caller validates the parsed shape. */
 export function loadBlob(subdir: string, id: string): unknown {
   const p = blobPath(subdir, id)
   if (!p) return null
@@ -206,12 +150,7 @@ export function listBlobs(subdir: string): Array<{ id: string; mtime: number; va
   return out
 }
 
-/**
- * Drop blobs older than `maxAgeMs`, then evict the oldest beyond `maxCount`.
- *
- * Mirrors `snapshots.cleanup_stale` + `evictOldest`. Fail-soft: returns the
- * number removed and never throws.
- */
+/** Drop blobs older than `maxAgeMs`, then evict the oldest beyond `maxCount`. Mirrors `snapshots.cleanup_stale` + `evictOldest`. Fail-soft: returns the number removed and never throws. */
 export function pruneBlobs(
   subdir: string,
   maxCount: number = DEFAULT_MAX_COUNT,
@@ -222,18 +161,7 @@ export function pruneBlobs(
   return pruneBlobDir(blobDir(subdir), maxCount, maxAgeMs, maxBytes, protectedPath)
 }
 
-/**
- * Same policy as {@link pruneBlobs}, but against an absolute directory rather than a subdir of
- * the current {@link tokenGoatHome}. Lets a sweep reach cache directories under a *second* root
- * (see {@link sweepCacheRoots}) without pretending they live under this process's home.
- *
- * The age cutoff applies to every file in the directory, not only `.json` blobs: a cache dir also
- * accumulates companions and debris that no blob id addresses -- `.txt`/`.gz` payloads written by
- * older versions, `.tmp` files from an interrupted atomic write, `.lock` files whose holder died.
- * None of those were ever removed by anything, so they survived every prune forever. The count and
- * byte budgets still consider only `.json` entries, since those are the addressable blobs the
- * budgets are expressed in.
- */
+/** Same policy as {@link pruneBlobs}, but against an absolute directory rather than a subdir of the current {@link tokenGoatHome}. Lets a sweep reach cache directories under a *second* root (see {@link sweepCacheRoots}) without pretending they live under this process's home. The age cutoff applies to every file in the directory, not only `.json` blobs: a cache dir also accumulates companions and debris that no blob id addresses -- `.txt`/`.gz` payloads written by older versions, `.tmp` files from an interrupted atomic write, `.lock` files whose holder died. None of those were ever removed by anything, so they survived every prune forever. The count and byte budgets still consider only `.json` entries, since those are the addressable blobs the budgets are expressed in. */
 export function pruneBlobDir(
   dir: string,
   maxCount: number = DEFAULT_MAX_COUNT,
@@ -246,9 +174,7 @@ export function pruneBlobDir(
     if (!fs.existsSync(dir)) return 0
     const cutoff = Date.now() - maxAgeMs
     let kept: Array<[string, number, number]> = []
-    // The blob just written by this storeBlob() call, if any — never a candidate
-    // for eviction in this pass, no matter how the age/count/byte-budget policies
-    // below would otherwise treat it.
+    // The blob just written by this storeBlob() call, if any — never a candidate for eviction in this pass, no matter how the age/count/byte-budget policies below would otherwise treat it.
     let protectedEntry: [string, number, number] | undefined
     for (const file of fs.readdirSync(dir)) {
       const full = path.join(dir, file)
@@ -304,10 +230,7 @@ export function pruneBlobDir(
           break
         }
       }
-      // If the protected entry alone still exceeds maxBytes even with every other
-      // evictable entry gone, that's a real "budget too small for this item"
-      // situation — leave it in place rather than deleting the caller's just-written
-      // data out from under a storeBlob() call that already reported success.
+      // If the protected entry alone still exceeds maxBytes even with every other evictable entry gone, that's a real "budget too small for this item" situation — leave it in place rather than deleting the caller's just-written data out from under a storeBlob() call that already reported success.
     }
   } catch {
     return removed
@@ -315,21 +238,7 @@ export function pruneBlobDir(
   return removed
 }
 
-/**
- * Every cache subdir a sweep should reap, with the eviction policy that applies to it.
- *
- * Named as string literals rather than imported from their owning modules (bash_output_cache,
- * web_cache, session_store) because those modules all import *this* one -- importing back would
- * make the cycle. `mcp_outputs` has no current writer: MCP results share `bash_outputs` today,
- * but older versions wrote their own directory, and those files are still on disk with nothing
- * that ever removes them.
- *
- * `sessions` is deliberately age-only (no count cap). A session blob is not a cache entry that
- * can be re-fetched: it holds the read-dedup state for a live conversation, and evicting one by
- * count would silently reset that session's state mid-conversation. The age cutoff is safe on its
- * own because `saveSessionState` rewrites the file on every hook, so a live session's mtime never
- * goes stale.
- */
+/** Every cache subdir a sweep should reap, with the eviction policy that applies to it. Named as string literals rather than imported from their owning modules (bash_output_cache, web_cache, session_store) because those modules all import *this* one -- importing back would make the cycle. `mcp_outputs` has no current writer: MCP results share `bash_outputs` today, but older versions wrote their own directory, and those files are still on disk with nothing that ever removes them. `sessions` is deliberately age-only (no count cap). A session blob is not a cache entry that can be re-fetched: it holds the read-dedup state for a live conversation, and evicting one by count would silently reset that session's state mid-conversation. The age cutoff is safe on its own because `saveSessionState` rewrites the file on every hook, so a live session's mtime never goes stale. */
 const SWEEPABLE_CACHE_SUBDIRS: ReadonlyArray<{ subdir: string; countCapped: boolean }> = [
   { subdir: 'bash_outputs', countCapped: true },
   { subdir: 'web_outputs', countCapped: true },
@@ -337,26 +246,7 @@ const SWEEPABLE_CACHE_SUBDIRS: ReadonlyArray<{ subdir: string; countCapped: bool
   { subdir: 'sessions', countCapped: false },
 ]
 
-/**
- * Apply the standard blob-eviction policy to every cache subdir under `tokenGoatHome()` plus each
- * of `extraRoots`, and return how many files were removed.
- *
- * Nothing invoked eviction for these directories automatically before this: `storeBlob` prunes the
- * subdir it just wrote, but session state is written outside that funnel (session_store.ts writes
- * through `sessionPath`, not `storeBlob`), so the sessions directory grew without any bound at all
- * -- 83k files on the author's own machine, which every hook that lists sibling session states then
- * had to `readdir` past. `clean-cache`/`prune-cache` could fix it, but only if a human remembered
- * to run them.
- *
- * `extraRoots` exists for a second, older storage root: on Windows the caches used to live under
- * the data dir (`%LOCALAPPDATA%/dfk-helper/token-goat`) rather than `~/.token-goat`. Rather than
- * special-case "delete the legacy directory", the same age policy is applied to both roots. If a
- * root is genuinely still live its files are fresh and survive the cutoff; if it is dead, its
- * contents age out on their own. That reclaims the stranded copies with no bespoke migration code
- * and no way to delete data that is still in use.
- *
- * Fail-soft throughout: a bad root or subdir is skipped, never thrown.
- */
+/** Apply the standard blob-eviction policy to every cache subdir under `tokenGoatHome()` plus each of `extraRoots`, and return how many files were removed. Nothing invoked eviction for these directories automatically before this: `storeBlob` prunes the subdir it just wrote, but session state is written outside that funnel (session_store.ts writes through `sessionPath`, not `storeBlob`), so the sessions directory grew without any bound at all -- 83k files on the author's own machine, which every hook that lists sibling session states then had to `readdir` past. `clean-cache`/`prune-cache` could fix it, but only if a human remembered to run them. `extraRoots` exists for a second, older storage root: on Windows the caches used to live under the data dir (`%LOCALAPPDATA%/dfk-helper/token-goat`) rather than `~/.token-goat`. Rather than special-case "delete the legacy directory", the same age policy is applied to both roots. If a root is genuinely still live its files are fresh and survive the cutoff; if it is dead, its contents age out on their own. That reclaims the stranded copies with no bespoke migration code and no way to delete data that is still in use. Fail-soft throughout: a bad root or subdir is skipped, never thrown. */
 export function sweepCacheRoots(extraRoots: readonly string[] = []): number {
   let removed = 0
   const roots = [tokenGoatHome(), ...extraRoots]

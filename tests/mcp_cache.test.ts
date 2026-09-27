@@ -57,9 +57,7 @@ describe('isMcpReadOnly', () => {
   })
 
   it('returns false for browser-automation / state-mutating verbs', () => {
-    // These chrome-devtools-mcp tool names mutate page/browser state (or their
-    // result is expected to change between calls), so they must never be
-    // classified as read-only/cacheable.
+    // These chrome-devtools-mcp tool names mutate page/browser state (or their result is expected to change between calls), so they must never be classified as read-only/cacheable.
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__click', {})).toBe(false)
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill', {})).toBe(false)
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill_form', {})).toBe(false)
@@ -81,12 +79,7 @@ describe('isMcpReadOnly', () => {
   })
 
   it('returns false for mutating verbs not covered by the old blocklist', () => {
-    // These verbs (finalize_plan, approve, cancel, deploy, toggle, pin, grant,
-    // sync, commit, apply, trigger) are all state-changing but contained none
-    // of the old MUTABLE_VERBS_RE blocklist entries, so the pre-fix classifier
-    // silently miscategorized them as read-only/cacheable. The allowlist
-    // redesign fixes this by defaulting anything not a known-safe read verb
-    // to NOT read-only, so no enumeration of every mutating verb is needed.
+    // These verbs (finalize_plan, approve, cancel, deploy, toggle, pin, grant, sync, commit, apply, trigger) are all state-changing but contained none of the old MUTABLE_VERBS_RE blocklist entries, so the pre-fix classifier silently miscategorized them as read-only/cacheable. The allowlist redesign fixes this by defaulting anything not a known-safe read verb to NOT read-only, so no enumeration of every mutating verb is needed.
     expect(isMcpReadOnly('mcp__design_sync__finalize_plan', {})).toBe(false)
     expect(isMcpReadOnly('mcp__test__approve', {})).toBe(false)
     expect(isMcpReadOnly('mcp__test__cancel', {})).toBe(false)
@@ -101,8 +94,7 @@ describe('isMcpReadOnly', () => {
   })
 
   it('returns false for an unrecognized/unknown verb (fail-safe default)', () => {
-    // The allowlist's core invariant: anything NOT matching a known-safe read
-    // verb defaults to mutating, even a made-up verb no one has classified.
+    // The allowlist's core invariant: anything NOT matching a known-safe read verb defaults to mutating, even a made-up verb no one has classified.
     expect(isMcpReadOnly('mcp__test__frobnicate', {})).toBe(false)
   })
 
@@ -120,10 +112,7 @@ describe('isMcpReadOnly', () => {
   })
 
   it('returns false for compound names carrying a read-verb token alongside a mutating one', () => {
-    // READ_VERBS_RE alone would match on the read-verb token present in each of these
-    // (get / search / view) and misclassify them as read-only, even though the full name is
-    // a mutating operation (create / update / delete respectively). MUTATING_VERBS_RE closes
-    // that gap.
+    // READ_VERBS_RE alone would match on the read-verb token present in each of these (get / search / view) and misclassify them as read-only, even though the full name is a mutating operation (create / update / delete respectively). MUTATING_VERBS_RE closes that gap.
     expect(isMcpReadOnly('mcp__test__get_or_create', {})).toBe(false)
     expect(isMcpReadOnly('mcp__test__search_and_update', {})).toBe(false)
     expect(isMcpReadOnly('mcp__test__view_and_delete', {})).toBe(false)
@@ -157,21 +146,12 @@ describe('isMcpReadOnly', () => {
   })
 
   it('returns false for screenshot tools (not idempotent, content changes between calls)', () => {
-    // Screenshots are not idempotent: the page content can change between calls,
-    // so they must never be cached/dedup'd. This test ensures the pre_screenshot hook
-    // can always capture a fresh screenshot within the cache TTL window.
+    // Screenshots are not idempotent: the page content can change between calls, so they must never be cached/dedup'd. This test ensures the pre_screenshot hook can always capture a fresh screenshot within the cache TTL window.
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot', {})).toBe(false)
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__browser_take_screenshot', {})).toBe(false)
   })
 
-  // Bug: Anthropic's Claude-in-Chrome docs (code.claude.com/docs/en/chrome) state that
-  // an otherwise read-only call that sets createIfEmpty/clear/save_to_disk is treated
-  // as state-changing by their own permission system as of v2.1.199 - token-goat's
-  // verb-only classifier didn't know this, so it would dedup e.g. a second
-  // read_console_messages({clear: true}) call and silently re-serve the first call's
-  // messages instead of letting the (state-mutating) clear actually re-run. These
-  // tests fail on the pre-fix single-arg isMcpReadOnly(toolName) and pass once the
-  // toolInput flag check is added.
+  // Bug: Anthropic's Claude-in-Chrome docs (code.claude.com/docs/en/chrome) state that an otherwise read-only call that sets createIfEmpty/clear/save_to_disk is treated as state-changing by their own permission system as of v2.1.199 - token-goat's verb-only classifier didn't know this, so it would dedup e.g. a second read_console_messages({clear: true}) call and silently re-serve the first call's messages instead of letting the (state-mutating) clear actually re-run. These tests fail on the pre-fix single-arg isMcpReadOnly(toolName) and pass once the toolInput flag check is added.
   it('returns false for a read-verb tool when a state-changing input flag is truthy', () => {
     expect(
       isMcpReadOnly('mcp__claude-in-chrome__read_console_messages', { tabId: 5, clear: true }),
@@ -182,8 +162,7 @@ describe('isMcpReadOnly', () => {
     expect(isMcpReadOnly('mcp__claude-in-chrome__tabs_context_mcp', { createIfEmpty: true })).toBe(
       false,
     )
-    // Use a non-screenshot-named tool for save_to_disk so this assertion actually
-    // exercises the input-flag check rather than the pre-existing screenshot-name regex.
+    // Use a non-screenshot-named tool for save_to_disk so this assertion actually exercises the input-flag check rather than the pre-existing screenshot-name regex.
     expect(
       isMcpReadOnly('mcp__claude-in-chrome__get_page_source', { save_to_disk: true }),
     ).toBe(false)
@@ -259,8 +238,7 @@ describe('storeMcpOutput / getMcpOutput', () => {
   it('recalls across a cleared in-memory cache (disk round-trip)', () => {
     const id = storeMcpOutput(sessionId, toolName, toolInput, 'persisted body')
     expect(id).not.toBeNull()
-    // Drop every in-memory map; recall must now resolve from the blob on disk —
-    // the exact cross-hook-process path the previous in-memory-only cache failed.
+    // Drop every in-memory map; recall must now resolve from the blob on disk — the exact cross-hook-process path the previous in-memory-only cache failed.
     clearModuleCaches()
     expect(getMcpOutput(sessionId, toolName, toolInput)).toBe(id)
     const entry = getBashOutput(id as string)
@@ -320,10 +298,7 @@ describe('storeMcpOutput / getMcpOutput', () => {
     }
   })
 
-  // Regression (secret-redaction bypass): storeMcpOutput indexed the raw, pre-redaction
-  // resultText into the cache_recall table even though storeBlob() redacted the same
-  // text before writing it to disk -- `token-goat recall`/FTS search over cache_recall
-  // could surface a secret the blob-store redaction was specifically built to strip.
+  // Regression (secret-redaction bypass): storeMcpOutput indexed the raw, pre-redaction resultText into the cache_recall table even though storeBlob() redacted the same text before writing it to disk -- `token-goat recall`/FTS search over cache_recall could surface a secret the blob-store redaction was specifically built to strip.
   it('never indexes a raw secret into the recall table, even when the blob is redacted', () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE'
     const id = storeMcpOutput(sessionId, toolName, toolInput, `before ${secret} after`)
@@ -336,10 +311,7 @@ describe('storeMcpOutput / getMcpOutput', () => {
     expect(hits).toHaveLength(0)
   })
 
-  // Regression: the label (built from toolInput via mcpInputPreview -- e.g. an agent passing a
-  // secret as a call argument) can carry a secret too, not just resultText. entry.command and
-  // the recall index's label/content were both built from the raw, unredacted label, bypassing
-  // redaction entirely -- only the resultText half of this fix was ever applied.
+  // Regression: the label (built from toolInput via mcpInputPreview -- e.g. an agent passing a secret as a call argument) can carry a secret too, not just resultText. entry.command and the recall index's label/content were both built from the raw, unredacted label, bypassing redaction entirely -- only the resultText half of this fix was ever applied.
   it('never surfaces a raw secret embedded in the toolInput label', () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE'
     const id = storeMcpOutput(sessionId, toolName, { ...toolInput, token: secret }, 'body')
@@ -350,12 +322,7 @@ describe('storeMcpOutput / getMcpOutput', () => {
     expect(hits).toHaveLength(0)
   })
 
-  // Regression: storeMcpOutput computed sizeBytes from the raw pre-redaction resultText even
-  // though the stored/served entry.output is the redacted (shorter) text -- mismatching
-  // bash_output_cache.ts's storeBashOutput, whose sizeBytes is sized off the redacted output.
-  // Any consumer that reports entry.sizeBytes as "how big is this cached entry" (mcp-audit's
-  // per-call token estimate, mcp-history's byte column) was reporting a stale, too-large count
-  // for any entry a secret was actually stripped from.
+  // Regression: storeMcpOutput computed sizeBytes from the raw pre-redaction resultText even though the stored/served entry.output is the redacted (shorter) text -- mismatching bash_output_cache.ts's storeBashOutput, whose sizeBytes is sized off the redacted output. Any consumer that reports entry.sizeBytes as "how big is this cached entry" (mcp-audit's per-call token estimate, mcp-history's byte column) was reporting a stale, too-large count for any entry a secret was actually stripped from.
   it('sizes the stored entry off the redacted output, not the raw pre-redaction text', () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE'
     const raw = `before ${secret} after`
@@ -367,18 +334,7 @@ describe('storeMcpOutput / getMcpOutput', () => {
     expect(entry?.sizeBytes).not.toBe(Buffer.byteLength(raw, 'utf-8'))
   })
 
-  // Regression (HAND-DERIVED: padding length computed independently so `JSON.stringify(toolInput)`
-  // places the AKIA value's byte offset such that mcpInputPreview's 120-char slice falls inside
-  // it, not derived from mcpInputPreview's own code): mcpInputPreview truncated
-  // JSON.stringify(toolInput) to 120 chars BEFORE storeMcpOutput ever redacted the result, so a
-  // credential straddling that cut could survive as a raw fragment -- the AWS key pattern
-  // (`AKIA[0-9A-Z]{16}`, fixed length, no keyword fallback) has no way to recognise a
-  // shorter-than-20-char remnant, so the truncated piece slipped through unredacted. Field name
-  // is deliberately non-keyword ("key", not "apiKey"/"token") so the keyword-based
-  // generic_secret_assignment pattern cannot mask the ordering bug by coincidence. Asserts absence
-  // of a FRAGMENT (any run of 4+ trailing AKIA chars), not just the full key, per this repo's own
-  // "fixture written from the filter's own regex" lesson: a full-key-only assertion passes even
-  // while a fragment leaks.
+  // Regression (HAND-DERIVED: padding length computed independently so `JSON.stringify(toolInput)` places the AKIA value's byte offset such that mcpInputPreview's 120-char slice falls inside it, not derived from mcpInputPreview's own code): mcpInputPreview truncated JSON.stringify(toolInput) to 120 chars BEFORE storeMcpOutput ever redacted the result, so a credential straddling that cut could survive as a raw fragment -- the AWS key pattern (`AKIA[0-9A-Z]{16}`, fixed length, no keyword fallback) has no way to recognise a shorter-than-20-char remnant, so the truncated piece slipped through unredacted. Field name is deliberately non-keyword ("key", not "apiKey"/"token") so the keyword-based generic_secret_assignment pattern cannot mask the ordering bug by coincidence. Asserts absence of a FRAGMENT (any run of 4+ trailing AKIA chars), not just the full key, per this repo's own "fixture written from the filter's own regex" lesson: a full-key-only assertion passes even while a fragment leaks.
   it('never leaves a raw AKIA fragment in the label when the key straddles the 120-char preview cut', () => {
     const padded = { pad: 'x'.repeat(90), key: 'AKIA' + 'ABCDEFGHIJ123456' } // AKIA + 16 chars = 20, the pattern's exact required length
     expect(JSON.stringify(padded).slice(107, 120)).toBe('AKIAABCDEFGHI') // pin the boundary this test relies on
@@ -388,5 +344,16 @@ describe('storeMcpOutput / getMcpOutput', () => {
     expect(entry?.command ?? '').not.toMatch(/AKIA[0-9A-Z]{4,}/)
     const hits = likeSearchForTesting('AKIAABCDEFGHI', 'mcp')
     expect(hits).toHaveLength(0)
+  })
+
+  // HAND-DERIVED: a call argument quoting a storage connection string one field per line. The label is built from the arguments serialized as JSON, where that line break is the two characters `\` and `n`, and the AccountKey pattern anchors on a word boundary that only the line break itself provides.
+  it('never surfaces an AccountKey that starts a line inside a call argument', () => {
+    const fakeKey = 'A1b2C3d4'.repeat(11) + '=='
+    const id = storeMcpOutput(sessionId, toolName, { q: `AccountName=devstore\nAccountKey=${fakeKey}` }, 'body')
+    expect(id).not.toBeNull()
+    const entry = getBashOutput(id as string)
+    expect(entry?.command).toContain('AccountKey=[REDACTED:azure_storage_key]')
+    expect(likeSearchForTesting(fakeKey.slice(0, 16), 'mcp')).toHaveLength(0)
+    expect(fs.readFileSync(path.join(tmpHome, 'bash_outputs', `${id as string}.json`), 'utf8')).not.toContain(fakeKey.slice(0, 16))
   })
 })

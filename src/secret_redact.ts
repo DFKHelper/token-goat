@@ -1,46 +1,4 @@
-/**
- * Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s
- * `storeBlob()` choke point.
- *
- * token-goat persists a lot of tool output to disk (bash-output, web-output,
- * and mcp-output caches, all funneling through `storeBlob()`). If a cached
- * tool result happens to contain a real credential (an API key echoed by a
- * misconfigured script, a token pasted into a bash command's output), it
- * would otherwise sit in plaintext under `~/.token-goat` indefinitely. This
- * module scans the JSON-serialized blob text for a small set of
- * high-confidence secret patterns and replaces each match with a fixed-width
- * placeholder before it ever reaches disk.
- *
- * Deliberately a small, high-confidence pattern set rather than an
- * exhaustive one: broad heuristics (generic "api_key=..." key/value pairs,
- * high-entropy hex/base64 blobs, bare AWS secret-access-key strings with no
- * anchoring prefix) false-fire constantly on normal code, JSON, and log
- * output, and a redaction pass that mangles ordinary content is worse for a
- * caching layer than one that misses an unusual credential format. Each
- * pattern here has a distinctive, low-collision prefix or block marker.
- *
- * `src/pack.ts` has its own `SECRET_PATTERNS` list, but it exists for a
- * different purpose (scanning project files for `token-goat pack`'s
- * report-only secret warning) and is deliberately noisier — it includes
- * generic "api_key=", "password=", and database-URL patterns that are fine
- * for a human-reviewed report but too false-positive-prone to blindly mangle
- * cached tool output. That list is also module-private. This module keeps a
- * separate, narrower set tuned for automatic in-place redaction.
- *
- * All patterns are single-pass and non-backtracking: fixed-width, bounded, or a
- * single negated-class quantifier whose alternatives are disjoint, so nothing here
- * has a nested or overlapping quantifier for the engine to explore two ways.
- *
- * Every quantifier inside a lookbehind is bounded, which is a stronger requirement
- * than the rest of the pattern needs and is not decoration. A variable-length
- * lookbehind is re-evaluated at each start position, so an unbounded run inside one
- * turns the pass quadratic even though no single match backtracks: the generic
- * assignment pattern below once held `\s*` around its separator, and the literal
- * input `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at
- * n=80000 -- four times the work for twice the input, on a path that runs over every
- * command output before it reaches the model. Bounding the run made the same input
- * 0.5 ms and 1.9 ms. Keep quantifiers inside a lookbehind bounded.
- */
+/** Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. token-goat persists a lot of tool output to disk (bash-output, web-output, and mcp-output caches, all funneling through `storeBlob()`). If a cached tool result happens to contain a real credential (an API key echoed by a misconfigured script, a token pasted into a bash command's output), it would otherwise sit in plaintext under `~/.token-goat` indefinitely. This module scans the JSON-serialized blob text for a small set of high-confidence secret patterns and replaces each match with a fixed-width placeholder before it ever reaches disk. Deliberately a small, high-confidence pattern set rather than an exhaustive one: broad heuristics (generic "api_key=..." key/value pairs, high-entropy hex/base64 blobs, bare AWS secret-access-key strings with no anchoring prefix) false-fire constantly on normal code, JSON, and log output, and a redaction pass that mangles ordinary content is worse for a caching layer than one that misses an unusual credential format. Each pattern here has a distinctive, low-collision prefix or block marker. `src/pack.ts` has its own `SECRET_PATTERNS` list, but it exists for a different purpose (scanning project files for `token-goat pack`'s report-only secret warning) and is deliberately noisier — it includes generic "api_key=", "password=", and database-URL patterns that are fine for a human-reviewed report but too false-positive-prone to blindly mangle cached tool output. That list is also module-private. This module keeps a separate, narrower set tuned for automatic in-place redaction. All patterns are single-pass and non-backtracking: fixed-width, bounded, or a single negated-class quantifier whose alternatives are disjoint, so nothing here has a nested or overlapping quantifier for the engine to explore two ways. Every quantifier inside a lookbehind is bounded, which is a stronger requirement than the rest of the pattern needs and is not decoration. A variable-length lookbehind is re-evaluated at each start position, so an unbounded run inside one turns the pass quadratic even though no single match backtracks: the generic assignment pattern below once held `\s*` around its separator, and the literal input `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at n=80000 -- four times the work for twice the input, on a path that runs over every command output before it reaches the model. Bounding the run made the same input 0.5 ms and 1.9 ms. Keep quantifiers inside a lookbehind bounded. */
 
 import { loadConfig, type Config } from './config.js'
 import { growsExponentially, hasNestedQuantifier } from './regex_guard.js'
@@ -86,47 +44,12 @@ export interface RedactResult {
   count: number
 }
 
-/**
- * Scan `text` for high-confidence secret patterns and replace each match
- * with `[REDACTED:<kind>]`. Never partially reveals a matched secret.
- *
- * Pure and synchronous — callers decide how to handle a thrown error (regex
- * engine failures are not expected in practice given the patterns above, but
- * this function does not swallow them itself; see `storeBlob()` for the
- * fail-safe wrapping applied at the actual disk-write choke point).
- */
-/**
- * Count the `[REDACTED:<kind>]` placeholders present in `text`.
- *
- * `redactSecrets().count` answers "how many secrets were in the input"; this answers "how many are
- * gone from THIS string" -- and for the `secret_redacted` stat the second is the honest number,
- * because handlers rarely emit the whole redacted text. A poll-diff handler emits a suffix slice,
- * the approved-plan handler emits a truncated prefix, and several branches replace the output with
- * a notice entirely. In each of those, a secret outside the emitted region was removed by slicing,
- * truncation, or replacement -- not by redaction -- so crediting the input count would report a
- * protection that some other mechanism had already provided.
- *
- * Counting the emitted text also makes the number correct by construction for a branch nobody has
- * written yet, which a hand-computed count at each emit site is not.
- *
- * Known false positive, in the over-reporting direction: text that already contained a literal
- * `[REDACTED:foo]` before redaction ran counts as one. That is accepted rather than defended
- * against -- distinguishing them would mean diffing against the pre-redaction string, which
- * reintroduces exactly the slice-alignment problem this exists to avoid.
- */
+/** Count the `[REDACTED:<kind>]` placeholders present in `text`. `redactSecrets().count` answers "how many secrets were in the input"; this answers "how many are gone from THIS string" -- and for the `secret_redacted` stat the second is the honest number, because handlers rarely emit the whole redacted text. A poll-diff handler emits a suffix slice, the approved-plan handler emits a truncated prefix, and several branches replace the output with a notice entirely. In each of those, a secret outside the emitted region was removed by slicing, truncation, or replacement -- not by redaction -- so crediting the input count would report a protection that some other mechanism had already provided. Counting the emitted text also makes the number correct by construction for a branch nobody has written yet, which a hand-computed count at each emit site is not. Known false positive, in the over-reporting direction: text that already contained a literal `[REDACTED:foo]` before redaction ran counts as one. That is accepted rather than defended against -- distinguishing them would mean diffing against the pre-redaction string, which reintroduces exactly the slice-alignment problem this exists to avoid. */
 export function countRedactionPlaceholders(text: string): number {
   return text.match(/\[REDACTED:[a-z0-9_]+\]/g)?.length ?? 0
 }
 
-/**
- * The most patterns a `redaction.custom_patterns` list may contain, and the longest any one of
- * them may be.
- *
- * These are not security limits -- the patterns come from the machine's own config file, so
- * somebody able to set them can already do worse. They bound the cost of a mistake: this runs over
- * every command output, and one accidentally pasted 50 KB regex, or a list grown to thousands of
- * entries by a generator, turns a redaction pass into a visible stall with no obvious cause.
- */
+/** The most patterns a `redaction.custom_patterns` list may contain, and the longest any one of them may be. These are not security limits -- the patterns come from the machine's own config file, so somebody able to set them can already do worse. They bound the cost of a mistake: this runs over every command output, and one accidentally pasted 50 KB regex, or a list grown to thousands of entries by a generator, turns a redaction pass into a visible stall with no obvious cause. */
 const MAX_CUSTOM_PATTERNS = 64
 const MAX_CUSTOM_PATTERN_LENGTH = 512
 
@@ -138,24 +61,7 @@ export interface CustomPatternProblem {
 /** Compiled custom patterns plus whatever was rejected, memoised on the exact source list. */
 let customCache: { key: string; patterns: RegExp[]; problems: CustomPatternProblem[] } | null = null
 
-/**
- * The compiled form of every usable custom pattern, plus what was wrong with the rest.
- *
- * A pattern is rejected, rather than used, when it cannot compile, when it is longer than
- * {@link MAX_CUSTOM_PATTERN_LENGTH}, when it matches the empty string, or when it nests a
- * quantifier inside a quantified group. The last two both come from an adversarial review:
- *
- * - `x*` matches the empty string at every position, so the replace inserts a marker between every
- *   character. `hello world` came back as twelve markers wrapped around eleven letters, with the
- *   redaction count reported as twelve. Output destroyed, and the counter -- the number an operator
- *   would read to decide the rule was working -- inflated to agree with it.
- * - `(a+)+$` did not finish against twenty-two characters in sixty seconds.
- *
- * Both are what a trailing `*` or a copied snippet produces, so neither needs an attacker. Every
- * rejection lands in `problems`, which `token-goat doctor` prints: a redaction rule an operator
- * believes is running and which is not is worse than no rule at all, and that is only true if the
- * silence is broken.
- */
+/** The compiled form of every usable custom pattern, plus what was wrong with the rest. A pattern is rejected, rather than used, when it cannot compile, when it is longer than {@link MAX_CUSTOM_PATTERN_LENGTH}, when it matches the empty string, or when it nests a quantifier inside a quantified group. The last two both come from an adversarial review: - `x*` matches the empty string at every position, so the replace inserts a marker between every character. `hello world` came back as twelve markers wrapped around eleven letters, with the redaction count reported as twelve. Output destroyed, and the counter -- the number an operator would read to decide the rule was working -- inflated to agree with it. - `(a+)+$` did not finish against twenty-two characters in sixty seconds. Both are what a trailing `*` or a copied snippet produces, so neither needs an attacker. Every rejection lands in `problems`, which `token-goat doctor` prints: a redaction rule an operator believes is running and which is not is worse than no rule at all, and that is only true if the silence is broken. */
 export function compileCustomPatterns(sources: readonly string[]): {
   patterns: RegExp[]
   problems: CustomPatternProblem[]
@@ -215,16 +121,7 @@ export function compileCustomPatterns(sources: readonly string[]): {
   return { patterns, problems }
 }
 
-/**
- * A run long enough, and varied enough, to be worth testing for randomness.
- *
- * Deliberately not anchored to any credential format: strict mode exists for the credentials whose
- * format we do not know.
- *
- * `=` is accepted only as trailing padding, never inside the run. Allowing it in the body let a
- * match run backwards through `TOKEN=` and redact the label along with the value, which loses the
- * one piece of context an operator reading the output actually needs.
- */
+/** A run long enough, and varied enough, to be worth testing for randomness. Deliberately not anchored to any credential format: strict mode exists for the credentials whose format we do not know. `=` is accepted only as trailing padding, never inside the run. Allowing it in the body let a match run backwards through `TOKEN=` and redact the label along with the value, which loses the one piece of context an operator reading the output actually needs. */
 const STRICT_CANDIDATE = /[A-Za-z0-9+/_-]{24,}={0,2}/g
 
 /** Shannon entropy in bits per character. */
@@ -249,53 +146,14 @@ function characterClasses(s: string): number {
   return n
 }
 
-/**
- * Whether a candidate run looks like credential material rather than ordinary output.
- *
- * Three conditions, and the character-class count is the one doing most of the work. Entropy alone
- * is a poor discriminator at this length: a 24-character string of distinct characters tops out
- * near log2(24), so a long camelCase identifier scores close to a real token. Requiring three of
- * the four classes separates them, and it spares the two things people most resent losing -- a git
- * SHA and a hex digest are lowercase-plus-digits, two classes, so neither is touched. A base64
- * credential is almost always three or four.
- *
- * This is a heuristic and is documented as one. It runs only when `redaction.strict` is on.
- */
+/** Whether a candidate run looks like credential material rather than ordinary output. Three conditions, and the character-class count is the one doing most of the work. Entropy alone is a poor discriminator at this length: a 24-character string of distinct characters tops out near log2(24), so a long camelCase identifier scores close to a real token. Requiring three of the four classes separates them, and it spares the two things people most resent losing -- a git SHA and a hex digest are lowercase-plus-digits, two classes, so neither is touched. A base64 credential is almost always three or four. This is a heuristic and is documented as one. It runs only when `redaction.strict` is on. */
 function looksLikeCredential(s: string): boolean {
   return characterClasses(s) >= 3 && entropyBitsPerChar(s) >= 3.5
 }
 
-/**
- * Redact every secret this build knows how to recognise.
- *
- * Three passes, in order, and the order matters. The built-in patterns run first so a credential
- * with a known shape is always labelled with that shape rather than the generic `custom` or
- * `high_entropy`. Custom patterns run second, so an organisation's own rule can still catch what
- * the built-ins missed. Strict mode runs last and only over what the first two left behind, which
- * is what keeps it from relabelling a token the built-ins already handled correctly.
- *
- * `config` is a parameter rather than a module-level read so a test can drive a specific policy
- * without writing a config file; every production caller takes the default.
- */
-/**
- * A note on markers this function did not write.
- *
- * Untrusted text can contain the literal string `[REDACTED:aws_access_key]`, and nothing here
- * removes it, so a marker in the output is not by itself proof that this function put it there.
- * An adversarial review raised defusing incoming markers as a fix. It was tried and reverted: the
- * only way to defuse them is to rewrite them, and that breaks idempotence -- redacting
- * already-redacted text stops being a no-op, which several call sites and their tests rely on,
- * and it puts a second odd-looking marker in front of the reader to solve a cosmetic problem.
- *
- * So the limit is documented instead of papered over: `count` is the number of replacements this
- * call made, never the number of markers in the text, and a marker is not evidence of anything on
- * its own. Nothing downstream should read either as a measure of what was handled.
- */
-/**
- * The one pattern above that is tuned for recall rather than precision, named here so a caller whose cost asymmetry runs the other way can stand down from it.
- *
- * `generic_secret_assignment` keys on a keyword followed by a separator, with no left word boundary (a leading `\b` would stop matching `DB_PASSWORD_HASH=` and `AWS_SECRET_ACCESS_KEY=`, since `_` is a word character) and a trailing identifier class that must stay for the same reason. Those two choices are correct where it runs: on the persistence paths, over-redacting a cached blob costs nothing and a missed credential costs everything. They also make it match ordinary source -- a `PasswordException:` in a doc comment, a `SECRET_PATTERNS: Array<...> =` type annotation, a `secret_redacted:` object key -- so anything that reads its verdict as "this file holds a credential" is wrong roughly one file in ten.
- */
+/** Redact every secret this build knows how to recognise. Three passes, in order, and the order matters. The built-in patterns run first so a credential with a known shape is always labelled with that shape rather than the generic `custom` or `high_entropy`. Custom patterns run second, so an organisation's own rule can still catch what the built-ins missed. Strict mode runs last and only over what the first two left behind, which is what keeps it from relabelling a token the built-ins already handled correctly. `config` is a parameter rather than a module-level read so a test can drive a specific policy without writing a config file; every production caller takes the default. */
+/** A note on markers this function did not write. Untrusted text can contain the literal string `[REDACTED:aws_access_key]`, and nothing here removes it, so a marker in the output is not by itself proof that this function put it there. An adversarial review raised defusing incoming markers as a fix. It was tried and reverted: the only way to defuse them is to rewrite them, and that breaks idempotence -- redacting already-redacted text stops being a no-op, which several call sites and their tests rely on, and it puts a second odd-looking marker in front of the reader to solve a cosmetic problem. So the limit is documented instead of papered over: `count` is the number of replacements this call made, never the number of markers in the text, and a marker is not evidence of anything on its own. Nothing downstream should read either as a measure of what was handled. */
+/** The one pattern above that is tuned for recall rather than precision, named here so a caller whose cost asymmetry runs the other way can stand down from it. `generic_secret_assignment` keys on a keyword followed by a separator, with no left word boundary (a leading `\b` would stop matching `DB_PASSWORD_HASH=` and `AWS_SECRET_ACCESS_KEY=`, since `_` is a word character) and a trailing identifier class that must stay for the same reason. Those two choices are correct where it runs: on the persistence paths, over-redacting a cached blob costs nothing and a missed credential costs everything. They also make it match ordinary source -- a `PasswordException:` in a doc comment, a `SECRET_PATTERNS: Array<...> =` type annotation, a `secret_redacted:` object key -- so anything that reads its verdict as "this file holds a credential" is wrong roughly one file in ten. */
 const RECALL_TUNED_KIND = 'generic_secret_assignment'
 
 /** Whether an already-compiled pattern matches anywhere in `text`. `lastIndex` is cleared on both sides because most of the patterns above are global and are shared module state: a `test` left partway through one caller's text would make the next scan start mid-string and miss a secret sitting before that offset. */
@@ -306,15 +164,7 @@ function matchesAnywhere(pattern: RegExp, text: string): boolean {
   return hit
 }
 
-/**
- * Whether `text` matches a secret pattern precise enough to act on when a false positive costs the caller something.
- *
- * Written for the Read-hook fold gates, whose asymmetry is the inverse of the persistence paths': they decline to fold on a match, and a declined fold passes the file through to the model UNREDACTED, so a false positive buys no protection at all and costs the whole fold. Measured against first-party source of 12 kB or more, {@link RECALL_TUNED_KIND} alone vetoed every fold -- skeleton, outline and body -- for 9.4% of files.
- *
- * Every other built-in pattern is anchored on a literal credential prefix, header name or key field, so it stays in. Custom patterns stay in too: they are declared by the machine's own operator, who is entitled to have them treated as precise. So does the strict-mode entropy heuristic, which is off by default and, when on, is a deliberate request to err toward treating opaque blobs as secrets.
- *
- * Reads the same list {@link redactSecrets} does, so a pattern added there is covered here without a second edit, and changes nothing about what gets written to disk.
- */
+/** Whether `text` matches a secret pattern precise enough to act on when a false positive costs the caller something. Written for the Read-hook fold gates, whose asymmetry is the inverse of the persistence paths': they decline to fold on a match, and a declined fold passes the file through to the model UNREDACTED, so a false positive buys no protection at all and costs the whole fold. Measured against first-party source of 12 kB or more, {@link RECALL_TUNED_KIND} alone vetoed every fold -- skeleton, outline and body -- for 9.4% of files. Every other built-in pattern is anchored on a literal credential prefix, header name or key field, so it stays in. Custom patterns stay in too: they are declared by the machine's own operator, who is entitled to have them treated as precise. So does the strict-mode entropy heuristic, which is off by default and, when on, is a deliberate request to err toward treating opaque blobs as secrets. Reads the same list {@link redactSecrets} does, so a pattern added there is covered here without a second edit, and changes nothing about what gets written to disk. */
 export function hasPreciseSecret(text: string, config: Config = loadConfig()): boolean {
   for (const [kind, pattern] of SECRET_PATTERNS) {
     if (kind === RECALL_TUNED_KIND) continue
@@ -331,6 +181,7 @@ export function hasPreciseSecret(text: string, config: Config = loadConfig()): b
   return false
 }
 
+/** Scan `text` for high-confidence secret patterns and replace each match with `[REDACTED:<kind>]`. Never partially reveals a matched secret. Pure and synchronous: callers decide how to handle a thrown error (regex engine failures are not expected in practice given the patterns above, but this function does not swallow them itself; see `storeBlob()` for the fail-safe wrapping applied at the actual disk-write choke point). */
 export function redactSecrets(text: string, config: Config = loadConfig()): RedactResult {
   let count = 0
   let out = text
@@ -357,4 +208,35 @@ export function redactSecrets(text: string, config: Config = loadConfig()): Reda
   }
 
   return { text: out, count }
+}
+
+/** JSON.stringify's spelling of each control character, read off JSON.stringify itself. */
+const CONTROL_ESCAPES: ReadonlyMap<string, string> = new Map(
+  Array.from({ length: 0x20 }, (_, code) => {
+    const ch = String.fromCharCode(code)
+    return [ch, JSON.stringify(ch).slice(1, -1)] as const
+  }),
+)
+
+const CONTROL_CHARACTER_OF_ESCAPE: ReadonlyMap<string, string> = new Map([...CONTROL_ESCAPES].map(([ch, escape]) => [escape, ch]))
+
+/** One JSON escape sequence, matched whole, so the second half of an escaped backslash is never read as the start of an escape of its own. */
+const JSON_ESCAPE = /\\(?:u[0-9a-fA-F]{4}|[^u])/g
+
+/** The escape of a surrogate. JSON.stringify writes a surrogate as an escape only when it has no partner, and never beside the half that would pair with it, so the code unit it decodes to is still unpaired. */
+const SURROGATE_ESCAPE = /^\\u[dD][89a-fA-F][0-9a-fA-F]{2}$/
+
+/** Every character the decoding below can leave raw that JSON.stringify never writes raw: a control character, or a surrogate with no partner beside it. */
+// eslint-disable-next-line no-control-regex -- the control characters are the point: JSON.stringify writes none of them raw, so each one here came from the decoding
+const DECODED_CHARACTER = /[\u0000-\u001f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
+
+/** The character a JSON escape stands for, when it is one the patterns have to read as that character. A quote or a backslash stays escaped, since either one raw would end or break the string it sits in. */
+function decodeEscape(escape: string): string {
+  return CONTROL_CHARACTER_OF_ESCAPE.get(escape) ?? (SURROGATE_ESCAPE.test(escape) ? String.fromCharCode(Number.parseInt(escape.slice(2), 16)) : escape)
+}
+
+/** Redact a compact JSON serialization (JSON.stringify output with no indentation) as the text its strings hold. The patterns are written for raw text, and JSON spells every control character as an escape, so a line break reads as the two characters `\` and `n`: an assignment value ran on across it and took the lines after it, a pattern anchored on a word boundary missed a match at the start of a line, and strict mode's candidate run took in the escape's letter and left a lone backslash that made the whole document unparseable. A surrogate with no partner is written as a `\u` escape as well, whose letter and hex digits gave strict mode's run the same start. Each of those escapes is decoded before the patterns run and escaped again after, byte for byte, which is safe because JSON.stringify writes none of those characters raw, so each one in the result came from that decoding. */
+export function redactSerializedJson(json: string): RedactResult {
+  const result = redactSecrets(json.replace(JSON_ESCAPE, decodeEscape))
+  return { text: result.text.replace(DECODED_CHARACTER, (ch) => CONTROL_ESCAPES.get(ch) ?? JSON.stringify(ch).slice(1, -1)), count: result.count }
 }
