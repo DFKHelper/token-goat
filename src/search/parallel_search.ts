@@ -8,9 +8,7 @@ import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
 import { readFileText } from '../read_commands.js';
 import { fuseChannelHits } from './rrf.js';
-import type { ChannelHit, SearchChannel, SearchExecutionSummary, SearchOptions } from './types.js';
-
-const ALL_CHANNELS: ReadonlyArray<SearchChannel> = ['symbol', 'heading', 'text', 'semantic'];
+import { ALL_CHANNELS, type ChannelHit, type SearchChannel, type SearchExecutionSummary, type SearchOptions } from './types.js';
 
 /** Searches symbols via Full-Text Search and symbol queries. */
 async function searchSymbolChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
