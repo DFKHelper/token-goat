@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -146,9 +147,7 @@ describe('isWorkerRunning', () => {
   })
 })
 
-/**
- * Wait, briefly and synchronously, for a just-spawned detached daemon to become visible to `pidAlive`. Returns true as soon as it is. On timeout it returns the worker's own error log instead of false, so a real spawn failure reports its cause rather than collapsing into an inscrutable boolean -- the assertion still fails either way, this only decides what it prints. Busy-waits deliberately: the surrounding test is synchronous, and the loop exits on first success.
- */
+/** Wait, briefly and synchronously, for a just-spawned detached daemon to become visible to `pidAlive`. Returns true as soon as it is. On timeout it returns the worker's own error log instead of false, so a real spawn failure reports its cause rather than collapsing into an inscrutable boolean -- the assertion still fails either way, this only decides what it prints. Busy-waits deliberately: the surrounding test is synchronous, and the loop exits on first success. */
 function waitForWorkerAlive(dir: string, timeoutMs = 5000): true | string {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -403,6 +402,30 @@ describe('claimWorkerPidFile (TOCTOU race regression)', () => {
 
     expect(claimWorkerPidFile(DIR, 424242)).toBe(true)
     expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
+  })
+
+  // Regression: the reclaim path is reached only when the named pid proves no worker lease, which is exactly the state a hard-killed daemon leaves behind (a reboot, a crash, Task Manager) once the OS hands its pid to an unrelated process. The reclaim used to SIGTERM that pid, so the next hook to heal the worker killed whatever process of the user's now held it.
+  it('reclaims the slot from a reused pid without signalling the process that now holds it', async () => {
+    // HAND-DERIVED: a stand-in node process plays the unrelated process holding the reused pid; the pid file and the heartbeat both name it and are older than the startup grace and the heartbeat lease, the state a daemon killed without running its exit handler leaves on disk.
+    const bystander = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+    try {
+      const bystanderPid = bystander.pid
+      if (bystanderPid === undefined) throw new Error('the stand-in process spawned with no pid')
+      const exited = new Promise<boolean>((resolve) => bystander.once('exit', () => resolve(true)))
+      fs.writeFileSync(workerPidPath(DIR), `${bystanderPid}\n`)
+      writeWorkerHeartbeat(DIR, bystanderPid)
+      const old = new Date(Date.now() - 120_000)
+      fs.utimesSync(workerPidPath(DIR), old, old)
+      fs.utimesSync(drainHeartbeatPathFor(DIR), old, old)
+
+      expect(claimWorkerPidFile(DIR, 424242)).toBe(true)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
+
+      const killed = await Promise.race([exited, new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000))])
+      expect(killed).toBe(false)
+    } finally {
+      bystander.kill()
+    }
   })
 })
 
@@ -1745,7 +1768,7 @@ describe('runWorkerLoop self-terminates when its data dir is deleted (regression
   })
 })
 
-// Regression: runWorkerLoop only self-terminated when its data dir was deleted, never when another daemon took over the pid file. claimWorkerPidFile's reclaim path SIGTERMs the prior daemon and takes the pid file, but that kill is best-effort; when it does not land (a reused pid, a failed or raced kill) the superseded daemon kept draining the same live dir forever, which is how several stray daemons pile up across sessions. The loop now exits once it has owned the pid file and then sees it naming a different pid. `shouldStop` stays false and the dir is never deleted, so the only thing that can end this loop is the new ownership check.
+// Regression: runWorkerLoop only self-terminated when its data dir was deleted, never when another daemon took over the pid file. claimWorkerPidFile's reclaim path takes the pid file from a daemon whose heartbeat lease lapsed without signalling it, so a superseded daemon that was still running kept draining the same live dir forever, which is how several stray daemons pile up across sessions. The loop now exits once it has owned the pid file and then sees it naming a different pid. `shouldStop` stays false and the dir is never deleted, so the only thing that can end this loop is the new ownership check.
 describe('runWorkerLoop self-terminates when another daemon takes over its pid file (regression)', () => {
   it('exits once the pid file it owned names a different pid, with the dir still present', async () => {
     const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-takeover-'))
