@@ -5,10 +5,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   TerraformFilter,
-  AwsFilter,
-  AwsCliFilter,
-  GcloudFilter,
-  AzureCliFilter,
   AnsibleFilter,
   PulumiFilter,
   CdkFilter,
@@ -22,12 +18,11 @@ import {
   ForgeFilter,
   CLOUD_FILTERS,
 } from '../src/tool_filters/cloud.js'
+import { AwsFilter, AwsCliFilter, GcloudFilter, AzureCliFilter } from '../src/tool_filters/cloud_providers.js'
 import { selectFilter } from '../src/tool_filters/dispatch.js'
 import type { ToolFilter, CompressedOutput } from '../src/tool_filters/base.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function apply(
   filter: ToolFilter,
@@ -39,9 +34,7 @@ function apply(
   return filter.apply(stdout, stderr, exitCode, argv)
 }
 
-// ---------------------------------------------------------------------------
-// CLOUD_FILTERS dispatch ordering
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CLOUD_FILTERS dispatch ordering ---------------------------------------------------------------------------
 
 describe('CLOUD_FILTERS dispatch ordering', () => {
   it('AwsCliFilter wins for aws cloudformation describe-stack-events', () => {
@@ -98,9 +91,7 @@ describe('CLOUD_FILTERS dispatch ordering', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// TerraformFilter — ported from Python TestTerraformFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TerraformFilter — ported from Python TestTerraformFilter ---------------------------------------------------------------------------
 
 describe('TerraformFilter', () => {
   const f = new TerraformFilter()
@@ -224,9 +215,7 @@ describe('TerraformFilter', () => {
     for (let i = 0; i < 15; i++) lines.push(`Terraform notice line ${i}`)
     lines.push('Terraform has been successfully initialized!')
     const { text } = apply(f, lines.join('\n'), '', 0, ['terraform', 'init'])
-    // Every other filter in this codebase emits collapse notes wrapped as `[token-goat: ...]`
-    // (see ToolFilter.emitNotes). The provider-collapse note here must follow the same
-    // convention instead of appearing as an unwrapped raw line.
+    // Every other filter in this codebase emits collapse notes wrapped as `[token-goat: ...]` (see ToolFilter.emitNotes). The provider-collapse note here must follow the same convention instead of appearing as an unwrapped raw line.
     expect(text).toContain('[token-goat: collapsed 15 provider install/find lines]')
     expect(text).not.toMatch(/^collapsed 15 provider install\/find lines$/m)
   })
@@ -258,9 +247,7 @@ describe('TerraformFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// AwsFilter — ported from Python TestAwsFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AwsFilter — ported from Python TestAwsFilter ---------------------------------------------------------------------------
 
 describe('AwsFilter', () => {
   const f = new AwsFilter()
@@ -289,9 +276,7 @@ describe('AwsFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// AwsCliFilter — enhanced handler with CFN/S3 routing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AwsCliFilter — enhanced handler with CFN/S3 routing ---------------------------------------------------------------------------
 
 describe('AwsCliFilter', () => {
   const f = new AwsCliFilter()
@@ -420,18 +405,13 @@ describe('AwsCliFilter', () => {
     ])
     expect(result).toContain('more rows')
     expect(result).not.toContain('key/path-39.dat')
-    // Regression: this hint used to be copy-pasted verbatim from the kubectl table
-    // truncation helper ("use --selector or -l to narrow"), telling AWS CLI users to pass
-    // kubectl-only flags that don't exist on `aws`. It must name real AWS CLI narrowing
-    // mechanisms instead.
+    // Regression: this hint used to be copy-pasted verbatim from the kubectl table truncation helper ("use --selector or -l to narrow"), telling AWS CLI users to pass kubectl-only flags that don't exist on `aws`. It must name real AWS CLI narrowing mechanisms instead.
     expect(result).toContain('use --query or --max-items to narrow')
     expect(result).not.toContain('--selector')
   })
 })
 
-// ---------------------------------------------------------------------------
-// GcloudFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GcloudFilter ---------------------------------------------------------------------------
 
 describe('GcloudFilter', () => {
   const f = new GcloudFilter()
@@ -455,14 +435,7 @@ describe('GcloudFilter', () => {
     expect(typeof text).toBe('string')
   })
 
-  // Regression: _maybeCollapseStructured used to fire on ANY output over 20
-  // non-blank lines where >=70% of lines contained {}/[]/:/- -- which is
-  // ordinary YAML key-value/list syntax, so it fired on nearly every real
-  // `describe` output and replaced it with a single placeholder line,
-  // destroying the actual answer (status/IPs/config) the command was run to
-  // retrieve. It must now require 2+ `---` document separators (gcloud's own
-  // marker for repeated resource blocks from `list --format=yaml`) before
-  // collapsing anything.
+  // Regression: _maybeCollapseStructured used to fire on ANY output over 20 non-blank lines where >=70% of lines contained {}/[]/:/- -- which is ordinary YAML key-value/list syntax, so it fired on nearly every real `describe` output and replaced it with a single placeholder line, destroying the actual answer (status/IPs/config) the command was run to retrieve. It must now require 2+ `---` document separators (gcloud's own marker for repeated resource blocks from `list --format=yaml`) before collapsing anything.
   it('does NOT collapse a single `describe` YAML document (the actual answer)', () => {
     const stdout = [
       'name: my-instance',
@@ -563,9 +536,7 @@ describe('GcloudFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// AzureCliFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AzureCliFilter ---------------------------------------------------------------------------
 
 describe('AzureCliFilter', () => {
   const f = new AzureCliFilter()
@@ -608,9 +579,7 @@ describe('AzureCliFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// AnsibleFilter — ported from Python TestAnsibleFilter + TestAnsibleLintModernFormat
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AnsibleFilter — ported from Python TestAnsibleFilter + TestAnsibleLintModernFormat ---------------------------------------------------------------------------
 
 describe('AnsibleFilter', () => {
   const f = new AnsibleFilter()
@@ -763,9 +732,7 @@ describe('AnsibleFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PulumiFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PulumiFilter ---------------------------------------------------------------------------
 
 describe('PulumiFilter', () => {
   const f = new PulumiFilter()
@@ -803,9 +770,7 @@ describe('PulumiFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CdkFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CdkFilter ---------------------------------------------------------------------------
 
 describe('CdkFilter', () => {
   const f = new CdkFilter()
@@ -841,9 +806,7 @@ describe('CdkFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// VaultFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- VaultFilter ---------------------------------------------------------------------------
 
 describe('VaultFilter', () => {
   const f = new VaultFilter()
@@ -919,9 +882,7 @@ describe('VaultFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PackerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PackerFilter ---------------------------------------------------------------------------
 
 describe('PackerFilter', () => {
   const f = new PackerFilter()
@@ -954,9 +915,7 @@ describe('PackerFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// NixFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NixFilter ---------------------------------------------------------------------------
 
 describe('NixFilter', () => {
   const f = new NixFilter()
@@ -990,9 +949,7 @@ describe('NixFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// WranglerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WranglerFilter ---------------------------------------------------------------------------
 
 describe('WranglerFilter', () => {
   const f = new WranglerFilter()
@@ -1023,9 +980,7 @@ describe('WranglerFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// HardhatFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- HardhatFilter ---------------------------------------------------------------------------
 
 describe('HardhatFilter', () => {
   const f = new HardhatFilter()
@@ -1059,9 +1014,7 @@ describe('HardhatFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ServerlessFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ServerlessFilter ---------------------------------------------------------------------------
 
 describe('ServerlessFilter', () => {
   const f = new ServerlessFilter()
@@ -1104,9 +1057,7 @@ describe('ServerlessFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// FlyFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FlyFilter ---------------------------------------------------------------------------
 
 describe('FlyFilter', () => {
   const f = new FlyFilter()
@@ -1139,9 +1090,7 @@ describe('FlyFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ForgeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ForgeFilter ---------------------------------------------------------------------------
 
 describe('ForgeFilter', () => {
   const f = new ForgeFilter()
