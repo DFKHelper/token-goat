@@ -6,7 +6,7 @@ import { leadWithCommand, stripUnsafeSuggestions } from './hint_suggestion_guard
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
+import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
 import { resolveIndexPath, displaySafePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -29,7 +29,8 @@ import {
   isDirectTestRunnerCommand,
   resolveCdHintPath,
   cdPrefixCwd,
-  stripOutputPipeline,
+  commandRunDir,
+  bashRecallKey,
   pipelineDivergenceNote,
   extractCommand,
   detectUnbalancedShellSyntax,
@@ -194,8 +195,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const cdStripped = stripCdPrefix(grouped) !== grouped
   // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell itself would — hoisted here (rather than computed right before its first use) so every path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
   const preHookCwd = getCwd(event) ?? null
+  // Held for this call's post hook, which resolves the command's cd against the directory the call started in rather than the one Claude Code's main thread reports after it: see session.ts::_bashStartCwds.
+  const toolUseId = event.raw['tool_use_id']
+  if (typeof toolUseId === 'string' && toolUseId !== '' && preHookCwd !== null) recordBashStartCwd(toolUseId, preHookCwd)
   // When a cd prefix was stripped, path-based hints below resolve their filePath against the directory that cd would actually leave the shell in, not this hook's own cwd.
   const hintCwd = preHookCwd ?? process.cwd()
+  // The directory the command runs in, which a cached output is recorded against and checked for staleness in, and which a `token-goat read` path resolves against: the post hook derives the same one from the same command and cwd.
+  const runDir = commandRunDir(rawCmd, preHookCwd)
   // Every hint below that names a file returns through this instead of a bare contextOutput, so the efficacy ledger is handed the path the hint was built from rather than regex-scraping one back out of the rendered sentence (see extractPathCorrelator's doc comment for what that scrape actually recorded). Measurement only -- relay.ts drops the field before the harness sees the output, so the hint text is byte-identical either way. The `token-goat bash-output <id>` recall branches near the end deliberately do NOT use this: their correlator is a cache id, which classifyBashHint already reads straight out of the command it printed, not a path.
   const pathHint = (paths: string | readonly string[], text: string): HookOutput =>
     contextOutput(text, typeof paths === 'string' ? [paths] : paths)
@@ -587,11 +593,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Monitoring commands: always suggest recall if cached, even on a single prior run.
   const monitoringHint = getMonitoringRecallHint(cmd)
   if (monitoringHint !== null) {
-    const monCmdHash = shortFingerprint(stripOutputPipeline(cmd))
+    const monCmdHash = bashRecallKey(cmd, runDir)
     const monOutputId = getBashOutputId(monCmdHash)
     // Only emit the recall hint if the content entry is actually present (the session index may name an id whose blob was pruned) and not stale — a matching id whose stored git/dir/lockfile fingerprint no longer matches the current state means the source changed since it was cached, so it must not be recalled as fresh.
     const monEntryRaw = monOutputId !== null ? getBashOutput(monOutputId) : null
-    const monEntry = monEntryRaw !== null && !isBashEntryStale(monEntryRaw, cmd, preHookCwd) ? monEntryRaw : null
+    const monEntry = monEntryRaw !== null && !isBashEntryStale(monEntryRaw, cmd, runDir) ? monEntryRaw : null
     if (monOutputId !== null && monEntry !== null && recallWorthShowing(monOutputId, monEntry)) {
       const monBytes = monEntry.sizeBytes
       const catFile = extractCatSourceFile(cmd)
@@ -635,7 +641,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const curlOutputId = getBashOutputId(curlHash)
     // Guard on the content entry and its freshness, not just the index (see the monitoring case above).
     const curlEntryRaw = curlOutputId !== null ? getBashOutput(curlOutputId) : null
-    const curlEntry = curlEntryRaw !== null && !isBashEntryStale(curlEntryRaw, cmd, preHookCwd) ? curlEntryRaw : null
+    const curlEntry = curlEntryRaw !== null && !isBashEntryStale(curlEntryRaw, cmd, runDir) ? curlEntryRaw : null
     if (curlOutputId !== null && curlEntry !== null && recallWorthShowing(curlOutputId, curlEntry)) {
       const curlBytes = curlEntry.sizeBytes
       recordStat('bash_compress:recall', curlBytes, savedTokensFromBytes(curlBytes))
@@ -652,10 +658,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   // gh api recall — emit a hint when the same read-only `gh api` GET was already run this session. Key on the command minus output pipes/redirects (endpoint + flags), matching the post-side cache key.
   if (isReadOnlyGhApi(cmd)) {
-    const ghHash = shortFingerprint(stripOutputPipeline(cmd))
+    const ghHash = bashRecallKey(cmd, runDir)
     const ghOutputId = getBashOutputId(ghHash)
     const ghEntryRaw = ghOutputId !== null ? getBashOutput(ghOutputId) : null
-    const ghEntry = ghEntryRaw !== null && !isBashEntryStale(ghEntryRaw, cmd, preHookCwd) ? ghEntryRaw : null
+    const ghEntry = ghEntryRaw !== null && !isBashEntryStale(ghEntryRaw, cmd, runDir) ? ghEntryRaw : null
     if (ghOutputId !== null && ghEntry !== null && recallWorthShowing(ghOutputId, ghEntry)) {
       const ghBytes = ghEntry.sizeBytes
       recordStat('bash_compress:recall', ghBytes, savedTokensFromBytes(ghBytes))
@@ -670,10 +676,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   // Scoped git status / git diff --stat recall — `git status --porcelain -- <path>` or `git diff --stat -- <path>` is byte-identical on every rerun until HEAD moves or the working tree changes. The `gitMutable` fingerprint already attached in computeBashFingerprints (HEAD sha + `git status --porcelain` hash) invalidates the instant either happens — including an edit to the scoped path recorded through the normal postEditHandler/dirty-queue flow, since that edit shows up in `git status --porcelain` regardless of whether the reindex queue has drained yet — so this reuses the same staleness check as monitoring/curl/gh-api recall above rather than a bespoke one.
   if (isScopedGitStatusOrDiffStatCommand(cmd)) {
-    const gitScopedHash = shortFingerprint(stripOutputPipeline(cmd))
+    const gitScopedHash = bashRecallKey(cmd, runDir)
     const gitScopedOutputId = getBashOutputId(gitScopedHash)
     const gitScopedEntryRaw = gitScopedOutputId !== null ? getBashOutput(gitScopedOutputId) : null
-    const gitScopedEntry = gitScopedEntryRaw !== null && !isBashEntryStale(gitScopedEntryRaw, cmd, preHookCwd) ? gitScopedEntryRaw : null
+    const gitScopedEntry = gitScopedEntryRaw !== null && !isBashEntryStale(gitScopedEntryRaw, cmd, runDir) ? gitScopedEntryRaw : null
     if (gitScopedOutputId !== null && gitScopedEntry !== null && recallWorthShowing(gitScopedOutputId, gitScopedEntry)) {
       const gitScopedBytes = gitScopedEntry.sizeBytes
       recordStat('bash_compress:recall', gitScopedBytes, savedTokensFromBytes(gitScopedBytes))
@@ -686,7 +692,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   // CLI surgical-read dedup: warn on an exact repeat `token-goat symbol|read|section` invocation, and cross-check against the Read-tool ledger (a file already fully Read this session may already cover the same content).
-  const tgRead = extractTgSurgicalRead(cmd, preHookCwd)
+  const tgRead = extractTgSurgicalRead(cmd, runDir)
   if (tgRead !== null) {
     const cliKey = tgRead.sub + '::' + tgRead.spec
     const notes = []
@@ -722,11 +728,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (!isBuildCommand(cmd) && detectFromCommand(stripTrailingStderrRedirect(cmd), preHookCwd ?? undefined) === null) return passOutput()
 
   // Derive the same command hash used by the session store.
-  const cmdHash = shortFingerprint(stripOutputPipeline(cmd))
+  const cmdHash = bashRecallKey(cmd, runDir)
   const outputId = getBashOutputId(cmdHash)
   // A cached prior run wins: recall it instead of re-running (and re-compressing). Guard on the content blob and its freshness — a pruned id would make `bash-output <id>` error, and a stale fingerprint means the source changed since the output was cached.
   const entryRaw = outputId !== null ? getBashOutput(outputId) : null
-  const entry = entryRaw !== null && !isBashEntryStale(entryRaw, cmd, preHookCwd) ? entryRaw : null
+  const entry = entryRaw !== null && !isBashEntryStale(entryRaw, cmd, runDir) ? entryRaw : null
   if (outputId !== null && entry !== null && recallWorthShowing(outputId, entry)) {
     const bytes = entry.sizeBytes
     recordStat('bash_compress:recall', bytes, savedTokensFromBytes(bytes))

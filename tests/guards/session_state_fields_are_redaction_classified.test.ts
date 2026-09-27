@@ -1,19 +1,4 @@
-/**
- * Structural guard for the second half of the truncate-before-redact defect class:
- * `session.ts::recordOutstandingAgentSpawn` shipped a raw agent-spawn prompt into
- * `SerializedSession.outstandingAgentSpawns` with no redaction at the writer at all (a related but
- * distinct bug from the four truncate-before-redact sites -- this one never redacted, rather than
- * redacting too late). `CLAUDE.arch.md::Security Boundaries` already says, in prose, that a new
- * session-state field does not automatically inherit redaction. Prose did not stop the very next
- * field from violating it: this guard is what turns that sentence into something enforced.
- *
- * The population is every field of the `SerializedSession` interface (`src/session.ts`), extracted
- * by parsing the interface's own source text -- not a hand-copied list -- so a field added to the
- * interface tomorrow is picked up automatically and starts UNCLASSIFIED, i.e. red, until someone
- * looks at it and records why it is safe. That inversion (guilty until classified) is the actual
- * protection; a hand-copied field list would just be a second place for the same person to forget
- * to update.
- */
+/** Structural guard for the second half of the truncate-before-redact defect class: `session.ts::recordOutstandingAgentSpawn` shipped a raw agent-spawn prompt into `SerializedSession.outstandingAgentSpawns` with no redaction at the writer at all (a related but distinct bug from the four truncate-before-redact sites -- this one never redacted, rather than redacting too late). `CLAUDE.arch.md::Security Boundaries` already says, in prose, that a new session-state field does not automatically inherit redaction. Prose did not stop the very next field from violating it: this guard is what turns that sentence into something enforced. The population is every field of the `SerializedSession` interface (`src/session.ts`), extracted by parsing the interface's own source text -- not a hand-copied list -- so a field added to the interface tomorrow is picked up automatically and starts UNCLASSIFIED, i.e. red, until someone looks at it and records why it is safe. That inversion (guilty until classified) is the actual protection; a hand-copied field list would just be a second place for the same person to forget to update. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -28,12 +13,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SESSION_TS = path.join(HERE, '..', '..', 'src', 'session.ts')
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
-/**
- * Extract the field names of `export interface SerializedSession { ... }` by brace-matching from
- * the interface keyword, then reading each top-level `name?:`/`name:` line inside it. Comments are
- * stripped first so a field name mentioned only in a doc comment (e.g. this guard's own header
- * text) is never picked up as a real field.
- */
+/** Extract the field names of `export interface SerializedSession { ... }` by brace-matching from the interface keyword, then reading each top-level `name?:`/`name:` line inside it. Comments are stripped first so a field name mentioned only in a doc comment (e.g. this guard's own header text) is never picked up as a real field. */
 function serializedSessionFields(): readonly string[] {
   const raw = fs.readFileSync(SESSION_TS, 'utf8')
   const code = stripComments(raw)
@@ -56,18 +36,13 @@ function serializedSessionFields(): readonly string[] {
 }
 
 type Coverage =
-  /** Every free-text sub-value is passed through redactSecrets() at the writer before being pushed
-   * into the in-memory state that this field serializes from. */
+  /** Every free-text sub-value is passed through redactSecrets() at the writer before being pushed into the in-memory state that this field serializes from. */
   | 'redacted-at-writer'
-  /** The field's value is a hash/fingerprint/digest of the sensitive input, computed with a
-   * one-way function -- never the input itself. */
+  /** The field's value is a hash/fingerprint/digest of the sensitive input, computed with a one-way function -- never the input itself. */
   | 'hash-keyed-not-raw-text'
-  /** The field carries no free text at all: paths, booleans, counters, timestamps, or opaque
-   * session-scoped keys a caller already controls (not attacker/tool-output-shaped text). */
+  /** The field carries no free text at all: paths, booleans, counters, timestamps, or opaque session-scoped keys a caller already controls (not attacker/tool-output-shaped text). */
   | 'structural-no-free-text'
-  /** The field's writer function exists but has zero call sites anywhere else in src/ today, so no
-   * raw text currently reaches it -- flagged explicitly so a future live-wiring is forced to pass
-   * through this guard's reasoning rather than silently inheriting an unredacted writer. */
+  /** The field's writer function exists but has zero call sites anywhere else in src/ today, so no raw text currently reaches it -- flagged explicitly so a future live-wiring is forced to pass through this guard's reasoning rather than silently inheriting an unredacted writer. */
   | 'dead-writer-currently-uncalled'
 
 interface FieldCoverage {
@@ -156,6 +131,13 @@ const SESSION_FIELD_COVERAGE: ReadonlyMap<string, FieldCoverage> = new Map([
     {
       coverage: 'structural-no-free-text',
       reason: 'Keyed by file path, value is a numeric byte size -- no free text.',
+    },
+  ],
+  [
+    'bashStartCwds',
+    {
+      coverage: 'structural-no-free-text',
+      reason: 'Keyed by the harness tool_use_id, an opaque call id, and the value is the directory path that Bash call started in -- no free text.',
     },
   ],
   [
@@ -268,10 +250,7 @@ describe('every SerializedSession field has recorded redaction coverage', () => 
   })
 
   it('no field name is classified twice with different coverage (map keys are unique by construction, this documents that fact rather than testing it)', () => {
-    // A Map literal cannot carry a duplicate key silently (the later entry would just overwrite the
-    // earlier one with no error) -- this test exists so a future refactor away from a literal Map
-    // toward something that COULD silently duplicate (e.g. an array of entries) trips a visible
-    // failure instead of a silent overwrite.
+    // A Map literal cannot carry a duplicate key silently (the later entry would just overwrite the earlier one with no error) -- this test exists so a future refactor away from a literal Map toward something that COULD silently duplicate (e.g. an array of entries) trips a visible failure instead of a silent overwrite.
     const fields = serializedSessionFields()
     const seen = new Set<string>()
     for (const f of fields) {
@@ -281,10 +260,7 @@ describe('every SerializedSession field has recorded redaction coverage', () => 
   })
 
   it('recordOutstandingAgentSpawn is not reachable from src without the redaction call, statically', () => {
-    // A direct regression pin, in addition to the population-level classification above: the
-    // exact line this session's fifth fix touches must still contain the redaction call, so a
-    // future edit that drops it (rather than adding a new unrelated field) is also caught here,
-    // not only by the fragment-based behavioural test in tests/session.test.ts.
+    // A direct regression pin, in addition to the population-level classification above: the exact line this session's fifth fix touches must still contain the redaction call, so a future edit that drops it (rather than adding a new unrelated field) is also caught here, not only by the fragment-based behavioural test in tests/session.test.ts.
     const code = stripComments(fs.readFileSync(path.join(SRC_DIR, 'session.ts'), 'utf8'))
     const fnMatch = /function\s+recordOutstandingAgentSpawn\s*\([^)]*\)\s*:\s*void\s*\{([\s\S]*?)\n\}/.exec(code)
     expect(fnMatch, 'recordOutstandingAgentSpawn not found by this shape -- signature changed, update the guard').not.toBeNull()

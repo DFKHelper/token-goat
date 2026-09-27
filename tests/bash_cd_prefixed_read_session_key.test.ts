@@ -49,9 +49,9 @@ async function asHook<T>(sid: string, handle: () => T | Promise<T>): Promise<T> 
   }
 }
 
-function bashEvent(sid: string, cwd: string, command: string, eventName: 'pre_tool_use' | 'post_tool_use', stdout = ''): HookEvent {
-  const raw: Record<string, unknown> = { cwd, tool_name: 'Bash', tool_input: { command } }
-  if (eventName === 'post_tool_use') raw['tool_response'] = { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false }
+function bashEvent(sid: string, cwd: string, command: string, eventName: 'pre_tool_use' | 'post_tool_use', stdout = '', toolUseId?: string, response: Record<string, unknown> = {}): HookEvent {
+  const raw: Record<string, unknown> = { cwd, tool_name: 'Bash', tool_input: { command }, ...(toolUseId !== undefined ? { tool_use_id: toolUseId } : {}) }
+  if (eventName === 'post_tool_use') raw['tool_response'] = { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false, ...response }
   return { eventName, toolName: 'Bash', toolInput: { command }, sessionId: sid, agentId: undefined, raw }
 }
 
@@ -72,6 +72,13 @@ async function partialRead(sid: string, filePath: string): Promise<void> {
 async function runBash(sid: string, cwd: string, command: string, stdout: string): Promise<void> {
   await asHook(sid, () => preBashHandler(bashEvent(sid, cwd, command, 'pre_tool_use')))
   await asHook(sid, () => postBashHandler(bashEvent(sid, cwd, command, 'post_tool_use', stdout)))
+}
+
+/** One call on Claude Code's main thread, where a `cd` runs in the harness's own shell and moves it: both hooks carry the call's tool_use_id, the pre hook reports the directory the call started in, and the post hook the one the cd left the shell in. CAPTURE: under Claude Code 2.1.281, a main-thread `cd sub && pwd` run from the project reported the project to the pre hook and `sub` to the post hook, under one tool_use_id. runBash above is the subagent shape, whose shell starts every call where the session did, so both of its hooks report that directory. */
+async function runMainThreadBash(sid: string, start: string, landed: string, command: string, stdout: string, response: Record<string, unknown> = {}): Promise<void> {
+  const toolUseId = `toolu_${Math.random().toString(36).slice(2)}`
+  await asHook(sid, () => preBashHandler(bashEvent(sid, start, command, 'pre_tool_use', '', toolUseId)))
+  await asHook(sid, () => postBashHandler(bashEvent(sid, landed, command, 'post_tool_use', stdout, toolUseId, response)))
 }
 
 describe('a cd-prefixed Bash read is recorded against the file the cd landed on', () => {
@@ -131,6 +138,52 @@ describe('a cd-prefixed Bash read is recorded against the file the cd landed on'
     // The download landed in sub/, and root/ holds an unrelated file of the same name, which is the only case where the old key recorded anything.
     for (const dir of [root, sub]) fs.writeFileSync(path.join(dir, 'data.json'), '{"a":1}')
     await runBash(sid, root, `cd sub && curl -o data.json ${url}`, '')
+
+    loadSessionState(sid)
+    expect(getCurlDownloadPath(url)).toBe(resolveIndexPath('data.json', sub))
+  })
+})
+
+// The post hook resolves a cd prefix from the directory the call started in, which the pre hook holds for it under the call's id. Resolved from the post hook's own cwd instead, the main thread's cd applied twice and every record below named a file in sub/sub/.
+describe('on the main thread, whose post hook reports the directory the cd moved the shell to', () => {
+  it('head: the range lands on sub/x.ts', async () => {
+    clearModuleCaches()
+    const { root, sub } = layout()
+    const sid = newSession()
+    await runMainThreadBash(sid, root, sub, 'cd sub && head -n 40 x.ts', LINES.slice(0, 40).join('\n'))
+
+    loadSessionState(sid)
+    expect(getFileLineRanges(resolveIndexPath('x.ts', sub))).toEqual([[1, 40]])
+  })
+
+  it('a persisted sed read takes back the range the pre hook recorded for sub/x.ts', async () => {
+    clearModuleCaches()
+    const { root, sub } = layout()
+    const command = "cd sub && sed -n '1,40p' x.ts"
+    const shown = resolveIndexPath('x.ts', sub)
+    const head = LINES.slice(0, 40).join('\n')
+    // Control: delivered whole, the range the pre hook recorded stays, so the empty list below is the persisted result's doing.
+    const inline = newSession()
+    await runMainThreadBash(inline, root, sub, command, head)
+    loadSessionState(inline)
+    expect(getFileLineRanges(shown)).toEqual([[1, 40]])
+
+    // The persisted-result fields as tests/bash_persisted_output_is_not_served.test.ts sends them: where the harness wrote the whole output, and its size.
+    const sid = newSession()
+    const persisted = path.join(root, 'persisted.txt')
+    fs.writeFileSync(persisted, BODY)
+    await runMainThreadBash(sid, root, sub, command, head, { persistedOutputPath: persisted, persistedOutputSize: Buffer.byteLength(BODY, 'utf-8') })
+    loadSessionState(sid)
+    expect(getFileLineRanges(shown)).toEqual([])
+  })
+
+  it('curl -o: the download is recorded at sub/data.json', async () => {
+    clearModuleCaches()
+    const { root, sub } = layout()
+    const sid = newSession()
+    const url = 'https://example.com/data.json'
+    fs.writeFileSync(path.join(sub, 'data.json'), '{"a":1}')
+    await runMainThreadBash(sid, root, sub, `cd sub && curl -o data.json ${url}`, '')
 
     loadSessionState(sid)
     expect(getCurlDownloadPath(url)).toBe(resolveIndexPath('data.json', sub))

@@ -18,8 +18,7 @@ import { postEditHandler } from '../src/hooks_edit.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { storeBashOutputSync } from '../src/bash_output_cache.js'
 import { recordBashOutput } from '../src/session.js'
-import { shortFingerprint } from '../src/fingerprint.js'
-import { stripOutputPipeline } from '../src/hooks_bash_commands.js'
+import { bashRecallKey } from '../src/hooks_bash_commands.js'
 import { pruneHintEmissions, STATS_RETENTION_DAYS } from '../src/stats.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath, configPath } from '../src/constants.js'
@@ -296,7 +295,7 @@ describe('the other net-benefit gates record their declines too', () => {
     const cmd = 'npm test'
     // Between hints.bash_dedup_min_bytes (200) and the 512-byte floor: big enough for the dedup branch to take an interest, too small for the recall to pay for the context it would cost.
     const id = storeBashOutputSync(cmd, 'x'.repeat(300), 0, dir)
-    recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), id, 300)
+    recordBashOutput(bashRecallKey(cmd, dir), id, 300)
 
     const session = nonce()
     // Not `pass` like the gates above: a declined recall falls through to the generic compress path, so the refusal is hidden behind an unrelated success rather than behind silence.
@@ -313,7 +312,7 @@ describe('the other net-benefit gates record their declines too', () => {
   it('positive control: the same recall above the floor is shown instead of declined', () => {
     const cmd = 'npm test'
     const id = storeBashOutputSync(cmd, 'x'.repeat(4000), 0, dir)
-    recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), id, 4000)
+    recordBashOutput(bashRecallKey(cmd, dir), id, 4000)
 
     const session = nonce()
     expect(preBashHandler(preBashEvent(session, cmd, dir)).hookType).toBe('context')

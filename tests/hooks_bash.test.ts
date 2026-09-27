@@ -4,7 +4,7 @@ import type { HookEvent } from '../src/hook_registry.js'
 import type { HookOutput } from '../src/types.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
@@ -4575,6 +4575,30 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // A HEAD-moving command behind a relative cd into a sibling repository: git ran there, so the reflog and the changed files the hook reads are there. The post hook's cwd is where the call started, since a git command the compressor wraps takes its cd in a child shell and a subagent's shell starts every call there.
+  it('enqueues the changed file of the repository a `cd` prefix moved into, not of the one the call started in', async () => {
+    const start = gitRepoWithCommit()
+    const other = gitRepoWithCommit()
+    try {
+      const git = (args: string[]): void => {
+        execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: other, stdio: 'ignore' })
+      }
+      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: other }).toString().trim()
+      git(['checkout', '-b', 'feature'])
+      writeFileSync(join(other, 'a.txt'), 'two\n')
+      git(['add', '.'])
+      git(['commit', '-m', 'change a.txt'])
+      git(['checkout', originalBranch])
+
+      await postBashHandler(makePostBashEvent(`cd ../${basename(other)} && git checkout ${originalBranch}`, '', start))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', other)))
+    } finally {
+      rmSync(start, { recursive: true, force: true })
+      rmSync(other, { recursive: true, force: true })
+    }
+  })
 })
 
 // Regression: the git-mutation block above only fires for commands that move HEAD, and hooks_edit.ts::postEditHandler only ever sees Edit/Write/NotebookEdit events (it reads tool_input.file_path, which a Bash event does not carry). So every working-tree rewrite that neither moves HEAD nor goes through the Edit tool -- `git restore`, `git stash pop|apply`, `sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix` -- used to reach queue/dirty.txt through NO path at all, leaving the index silently serving pre-mutation symbols. See enqueueNonHeadMovingRewrites in hooks_bash_commands.ts.
@@ -4775,6 +4799,43 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
     try {
       await postBashHandler(makePostBashEvent('echo hi > never-created.txt', '', dir))
       expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // CAPTURE, Claude Code 2.1.281: on the main thread a `cd` runs in the harness's own shell and moves it, so under one tool_use_id the pre hook reports where the call started and the post hook where the cd landed (a `cd sub && pwd` run from the project reported the project, then `sub`). No filter claims `sed`, so the compressor leaves the command to that shell.
+  it('enqueues a `sed -i` target behind `cd sub &&` on the main thread, where the post hook reports the directory the cd moved the shell to', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      const sub = join(dir, 'sub')
+      mkdirSync(sub)
+      writeFileSync(join(sub, 'a.txt'), 'two\n')
+      const command = "cd sub && sed -i 's/one/two/' a.txt"
+      const call = { tool_use_id: 'toolu_cd_sed_main_thread' }
+      preBashHandler(makeHookEvent({ toolName: 'Bash', toolInput: { command }, sessionId: 'test-session', raw: { tool_name: 'Bash', tool_input: { command }, cwd: dir, ...call } }))
+      await postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId: 'test-session', raw: { tool_name: 'Bash', tool_input: { command }, tool_response: '', cwd: sub, ...call } }))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', sub)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('expands a `git restore` pathspec behind `cd sub &&` in sub, where git resolved it', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      const sub = join(dir, 'sub')
+      mkdirSync(sub)
+      writeFileSync(join(sub, 'a.txt'), 'one\n')
+      gitIn(dir)(['add', '.'])
+      gitIn(dir)(['commit', '-m', 'add sub/a.txt'])
+      writeFileSync(join(sub, 'a.txt'), 'locally edited\n')
+      gitIn(sub)(['restore', 'a.txt'])
+
+      await postBashHandler(makePostBashEvent('cd sub && git restore a.txt', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', sub)))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -2,7 +2,8 @@
 
 import { statSync } from 'node:fs'
 
-import { resolveIndexPath } from './paths.js'
+import { normalizePath, resolveIndexPath } from './paths.js'
+import { shortFingerprint } from './fingerprint.js'
 import { runGit } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import {
@@ -96,6 +97,17 @@ export function cdPrefixCwd(rawCmd: string, cwd: string): string {
   let dir = cwd
   for (const target of extractCdPrefixDirs(rawCmd)) dir = resolveIndexPath(target, dir)
   return dir
+}
+
+/** The directory `rawCmd` runs in: where its leading `cd DIR` prefix leaves the shell, else `cwd` as given. A null `cwd` stays null when there is no prefix, so an event that reports no directory keys a command exactly as it always has. */
+export function commandRunDir(rawCmd: string, cwd: string | null): string | null {
+  return cwd === null && extractCdPrefixDirs(rawCmd).length === 0 ? null : cdPrefixCwd(rawCmd, cwd ?? process.cwd())
+}
+
+/** The session key a cached Bash result is recorded and looked up under: the command without its output pipeline, scoped to the directory it ran in, so one command run in two directories is two entries. Both hooks build it here, which keeps the post hook's write on exactly the key the pre hook reads. */
+export function bashRecallKey(cmd: string, runDir: string | null): string {
+  const base = stripOutputPipeline(cmd)
+  return shortFingerprint(runDir === null ? base : `${normalizePath(runDir)}\x00${base}`)
 }
 
 /** Strips a command's downstream pipeline and trailing redirections, returning the base command. Used to key the bash-output cache so that the same build/test command run with different downstream filters (`| tail -40` vs `| grep ERROR`) or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET commands are keyed on their URL. Splits on the first top-level pipe operator (`|`), ignoring `|` inside single or double quotes and the `||` logical-OR operator, then removes trailing stream redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.). */
@@ -337,23 +349,22 @@ function enqueueRewrittenPath(absPath: string): void {
   enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
-/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. */
-export function enqueueNonHeadMovingRewrites(cmd: string, rawCmd: string, cwd: string): void {
-  // A stripped `cd sub && sed -i ... f` prefix means `f` is relative to `sub`, not to the hook's cwd -- resolving it against cwd would produce a path that is not on disk and silently enqueue nothing.
-  const atCwd = (f: string): string => resolveIndexPath(resolveCdHintPath(rawCmd, f, cwd), cwd)
+/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
+export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void {
+  const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
   const paths: string[] = []
   let needsStatusSweep = GIT_STASH_APPLY_RE.test(cmd)
   if (GIT_RESTORE_RE.test(cmd) && !GIT_RESTORE_STAGED_ONLY_RE.test(cmd)) {
-    paths.push(...expandGitPathspecs(extractGitRestorePathspecs(cmd), cwd))
+    paths.push(...expandGitPathspecs(extractGitRestorePathspecs(cmd), runDir))
   }
   for (const segment of splitShellSegments(cmd)) {
     if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) needsStatusSweep = true
     if (isFormatterWriteSegment(segment)) needsStatusSweep = true
-    for (const f of extractSedInPlaceFiles(segment)) paths.push(atCwd(f))
-    for (const f of extractTeeFiles(segment)) paths.push(atCwd(f))
-    for (const f of extractRedirectTargets(segment)) paths.push(atCwd(f))
+    for (const f of extractSedInPlaceFiles(segment)) paths.push(atRunDir(f))
+    for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
+    for (const f of extractRedirectTargets(segment)) paths.push(atRunDir(f))
   }
-  if (needsStatusSweep) paths.push(...workingTreeStatusPaths(cwd))
+  if (needsStatusSweep) paths.push(...workingTreeStatusPaths(runDir))
   for (const p of paths) enqueueRewrittenPath(p)
 }
 
