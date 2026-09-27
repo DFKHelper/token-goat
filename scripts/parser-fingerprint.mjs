@@ -7,9 +7,7 @@
 //
 // PENDING, to apply the next time EMBED_FINGERPRINT moves for some other reason. `ensureEmbeddingProvenance` in src/embeddings.ts adds the connection to `_provenanceChecked` on its second line, before the reset and the stamp write that follow it -- so if either throws (SQLITE_BUSY past busy_timeout is the ordinary case here: the worker daemon, the hooks and the CLI all write global.db concurrently, and resetAllEmbeddings holds one immediate transaction across a point-delete per vector), every later call on that connection returns at the memo and re-checks nothing. A long-lived worker then answers `semantic` for days by ranking this stack's query vectors against the previous stack's stored ones, with the stamp still naming the old stack and the one console.warn that would have said so sitting on the path that never ran. The fix is to move the `_provenanceChecked.add(db)` to after the stamp write, plus a second one on the `stored === current` early return, and ideally to wrap the reset and the stamp in one immediate transaction so a crash between them cannot discard vectors under an unwritten stamp. It is recorded here rather than applied because src/embeddings.ts is hashed below: the edit measured at digest e93663ff4ac2b82d, i.e. it alone would re-embed every file on every machine to fix a fault that only bites when a write to that same database fails. Bundling it with a move that is already being paid for costs nothing extra.
 //
-// Usage:
-//   node scripts/parser-fingerprint.mjs           regenerate both constants
-//   node scripts/parser-fingerprint.mjs --check    exit 1 if either checked-in constant is stale
+// Usage: `node scripts/parser-fingerprint.mjs` regenerates both constants, `--check` exits 1 if either checked-in constant is stale, and `--help` prints the usage; any other argument exits 2 with the usage on stderr, having computed and written nothing.
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -318,10 +316,23 @@ const invokedDirectly =
   process.argv[1] !== undefined &&
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
 
-const parserFingerprint = invokedDirectly ? computeFingerprint() : ''
-const embedFingerprint = invokedDirectly ? computeEmbedFingerprint() : ''
-const wantedParser = renderParser(parserFingerprint, invokedDirectly ? computeLanguageFingerprints() : new Map())
-const wantedEmbed = renderEmbed(embedFingerprint, invokedDirectly ? computeEmbedKindFingerprints() : new Map())
+const USAGE = [
+  'usage: node scripts/parser-fingerprint.mjs [--check | --help]',
+  '  (no argument)  regenerate src/parser_fingerprint.ts and src/embed_fingerprint.ts',
+  '  --check        exit 1 if either checked-in constant is stale',
+  '  --help         print this usage',
+  '',
+].join('\n')
+
+// Read before anything is computed or written. The mode used to be "--check anywhere in argv, else write", so a mistyped `--chek`, or `--help` from someone asking what the script does, regenerated both checked-in files.
+const args = invokedDirectly ? process.argv.slice(2) : []
+const mode = args.length === 0 ? 'write' : args.length > 1 ? 'unknown' : args[0] === '--check' ? 'check' : args[0] === '--help' || args[0] === '-h' ? 'help' : 'unknown'
+const computing = invokedDirectly && (mode === 'write' || mode === 'check')
+
+const parserFingerprint = computing ? computeFingerprint() : ''
+const embedFingerprint = computing ? computeEmbedFingerprint() : ''
+const wantedParser = renderParser(parserFingerprint, computing ? computeLanguageFingerprints() : new Map())
+const wantedEmbed = renderEmbed(embedFingerprint, computing ? computeEmbedKindFingerprints() : new Map())
 
 function readNormalized(file) {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\r\n').join('\n') : ''
@@ -329,7 +340,12 @@ function readNormalized(file) {
 
 if (!invokedDirectly) {
   // Imported for computeFingerprint/computeEmbedFingerprint alone; nothing to do.
-} else if (process.argv.includes('--check')) {
+} else if (mode === 'help') {
+  process.stdout.write(USAGE)
+} else if (mode === 'unknown') {
+  process.stderr.write(`unknown argument: ${args.join(' ')}\n${USAGE}`)
+  process.exit(2)
+} else if (mode === 'check') {
   const staleParser = readNormalized(PARSER_OUT) !== wantedParser
   const staleEmbed = readNormalized(EMBED_OUT) !== wantedEmbed
   if (staleParser || staleEmbed) {
