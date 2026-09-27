@@ -535,7 +535,6 @@ function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): s
   return hints.length > 0 ? hints.join(' ') : null
 }
 
-// Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen. Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one. extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record.
 /** Drop the line ranges the pre-hook recorded for a line-range read whose result the harness persisted, keyed the way the pre-hook keyed them. It records before the output exists, so it cannot know the model will see a 2 KB preview; left in place, those ranges make a later Read of the same lines a refusal for lines the model never saw. The whole file's ranges go, not just this read's: session_store.ts merges ranges as a union and only a file-level removal survives the merge. */
 function forgetPersistedLineRangeReads(rawCmd: string, cmd: string, cwd: string | null): void {
   const hintCwd = cwd ?? process.cwd()
@@ -546,8 +545,10 @@ function forgetPersistedLineRangeReads(rawCmd: string, cmd: string, cwd: string 
   }
 }
 
-function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): void {
-  const resolve = (p: string) => resolveIndexPath(p, cwd ?? process.cwd())
+// Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen. Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one. extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record. Every path resolves against the directory a leading `cd DIR &&` prefix leaves the shell in, the key the pre-hook gives a `sed` range and maybeCollapseIdenticalRead gives the same read: keyed on the hook's own cwd, `cd sub && head -n 40 x.ts` put lines 1..40 on record against ./x.ts, so a Read of ./x.ts was refused as already read while sub/x.ts, the file shown, had no record.
+function recordBashFileReadsForSessionCache(cmd: string, rawCmd: string, cwd: string | null): void {
+  const base = cdPrefixCwd(rawCmd, cwd ?? process.cwd())
+  const resolve = (p: string) => resolveIndexPath(p, base)
 
   const gcTail = extractGetContentTail(cmd)
   if (gcTail !== null) {
@@ -681,7 +682,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
     const curlDl = extractCurlDownload(cmd)
     if (curlDl !== null && (exitCode === null || exitCode === 0)) {
-      const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, cwd ?? process.cwd())
+      const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, cdPrefixCwd(rawCmd, cwd ?? process.cwd()))
       if (existsSync(resolvedOutputPath)) {
         recordCurlDownload(curlDl.url, resolvedOutputPath)
       }
@@ -689,7 +690,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Feed the pre-hook's own file-path extractors into the session read-cache so a file dumped through Bash (cat/head/Get-Content) is no longer invisible to a later Read's dedup hint. Whole-file dumps record a full read; partial dumps (head/tail/-Tail/-First) record only what was actually shown, so a later Read is never falsely told the whole file was already seen. A persisted result reached the model as a 2 KB preview, so it records no read at all, and the ranges the pre-hook recorded for it come back out.
     if (persisted) forgetPersistedLineRangeReads(rawCmd, cmd, cwd)
-    else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, cwd)
+    else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, rawCmd, cwd)
 
     // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
 
