@@ -7,7 +7,8 @@ import { describe, expect, it } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol, sumFileSizes } from '../src/read_commands.js'
+import { sumFileSizes } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 import { summarize } from '../src/stats.js'
 
 const CEILING = 100_000

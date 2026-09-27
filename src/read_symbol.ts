@@ -1,0 +1,275 @@
+/** The `symbol` command: every indexed definition of a name, or of each name `--grep` matches, printed with a short body preview. A bare name searches every indexed project unless `--project` scopes it or `indexing.cross_project_symbols = false` confines it to the project it is run from. Each hit is tagged when its file is gone from disk or could not be reindexed, and a name with no match gets the nearest indexed names instead. */
+
+import { isIgnoredIndexPath } from './baseline.js'
+import { querySymbols, queryRefCounts, countSymbols, DEFAULT_QUERY_LIMIT } from './index_reader.js'
+import { formatSymbolLocation } from './indexed_source.js'
+import { resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
+import { globalDbPath } from './constants.js'
+import { compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, isTestFile } from './util.js'
+import { getDisplayRoot, resolveProjectRoot } from './project.js'
+import type { SymbolEntry } from './parser_types.js'
+import { forEachSymbol } from './symbol_scan.js'
+import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
+import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, rankSimilarNames } from './read_suggest.js'
+import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
+import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
+import { fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, largestFileSize, recordReadStat, resolveBody, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
+
+/** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
+const SYMBOL_PREVIEW_LINES = 5
+
+// What `staleWarning`'s DELETED banner says, as a suffix rather than a banner, for surfaces that render one line per match and cannot put a whole-output warning at the top without it applying to every hit. Shares the '⚠ DELETED' prefix so callers (and tests) have one marker to look for.
+const DELETED_TAG = '⚠ DELETED: file no longer on disk'
+
+// The STALE counterpart of DELETED_TAG, for a result row whose file changed on disk and whose reindex was attempted and failed. A per-row suffix for the same reason DELETED_TAG is one: a bare `symbol NAME` spans every indexed project, so one hit can be current and the next one not.
+const STALE_TAG = '⚠ STALE: file changed on disk and could not be reindexed'
+
+/** Shared empty set for the common path where nothing was left stale, so the ordinary lookup allocates nothing. */
+const EMPTY_PATH_SET: ReadonlySet<string> = new Set<string>()
+
+export interface SymbolOptions {
+  name?: string
+  file?: string
+  kind?: string
+  limit?: number
+  json?: boolean
+  context?: number
+  /** Project root to scope the search to. Defaults to `process.cwd()`; same field name as {@link SemanticOptions.projectRoot}. When `file` is a relative path, this is the base it resolves against. When no `file` filter is given, this also scopes a bare-name search to the given project instead of matching a same-named symbol anywhere across the machine-wide index -- relevant for callers (e.g. an MCP server) whose cwd is not the workspace root. */
+  projectRoot?: string
+  /** Only list symbols whose NAME matches this pattern, project-wide. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. Mutually exclusive with `name`: an exact `name` match is already pinned to one identifier, so regex-filtering that same fixed name is never useful. */
+  grep?: string
+  /** `--exclude-tests`: drop symbols DEFINED in a test file (per isTestFile), matching the flag already on refs/callers/dead/semantic. Opt-in; omitted or false leaves output byte-identical to today. Like `--grep`, this filters client-side, so it forces the over-fetch below -- filtering after the SQL LIMIT would let suppressed test symbols occupy slots ahead of the cutoff and silently under-return. */
+  excludeTests?: boolean
+  /** `--exclude-vendored`: drop symbols DEFINED under a directory the indexer itself skips (node_modules, dist, site-packages, ... -- the shared `isIgnoredIndexPath` predicate, not a second copy). Older index generations still hold such rows, so a bare name search can answer with a `node_modules/pdfjs-dist/...` definition ahead of the project's own. Opt-in; omitted or false leaves output byte-identical to today. Filters client-side like `--grep`, so it forces the same over-fetch -- filtering after the SQL LIMIT would let vendored rows occupy slots ahead of the cutoff and silently under-return. */
+  excludeVendored?: boolean
+  /** `--stats`: add a per-result reference count and doc-coverage flag, same shape as read/skeleton/outline's `--stats`. Opt-in; omitted or false leaves output byte-identical to today, and the extra `queryRefCounts` round trip is only paid when this is set. `symbol` is the one command in the family where this matters most for disambiguation -- it can return several same-named candidates across files -- but that is also where its known limitation bites hardest: `queryRefCounts` keys by symbol NAME (project-wide), not by definition site, so several same-named symbols in different files (e.g. under `--grep`) all show the identical count rather than a per-file one. Documented, not fixed, here for the same reason it is not fixed in read/skeleton/outline. */
+  stats?: boolean
+}
+
+// A destructuring re-bind of an imported name: `const { x } = require('m')`, or the `await import()` form. The parser records one of these as a symbol named `x`, which is true as far as scope goes and wrong as an answer to "where is x defined" -- the definition is in the module being imported from, and this line is a use of it. Matched on the body rather than on `kind` because the kind these land in is `variable`, which is also what a genuine `export const HINT_CATEGORIES = [...]` is: demoting by kind would sink real definitions to fix a shape this regex identifies exactly. Linear-time by construction -- `[^}]*` is bounded by the following `\}` and no quantifier nests inside another.
+const IMPORT_BIND_BODY_RE = /^\s*(?:const|let|var)\s*\{[^}]*\}\s*=\s*(?:await\s+)?(?:import|require)\s*\(/
+
+/** Orders import re-binds after everything else while preserving the incoming order within each group (Array.prototype.sort is stable), so an exact-name lookup leads with a definition when one is present. */
+function stableSortImportBindsLast<T extends { body?: string | null }>(rows: readonly T[]): T[] {
+  const isBind = (r: T): number => (typeof r.body === 'string' && IMPORT_BIND_BODY_RE.test(r.body) ? 1 : 0)
+  return [...rows].sort((a, b) => isBind(a) - isBind(b))
+}
+
+/** Handle ``token-goat symbol <name>``. */
+export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero rows regardless of whether the symbol exists -- silently reporting "no matches" for a symbol that's actually indexed. Reject it explicitly instead of querying with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
+  }
+  // `--grep` IS the query when there is no exact name to anchor on. Combining it with a name is near-useless -- an exact `name = ?` match is already pinned to one identifier, so regex-filtering that same fixed name either matches everything or nothing -- and more likely a caller mistake than real intent, so reject the combination outright rather than silently pick a winner.
+  if (opts.name !== undefined && opts.grep !== undefined) {
+    return {
+      text: 'symbol: --grep cannot be combined with a name; drop the name to search by pattern, or drop --grep to search by exact name',
+      code: 1,
+    }
+  }
+  if (opts.name === undefined && opts.grep === undefined) {
+    return { text: 'symbol requires a name or --grep <pattern>', code: 1 }
+  }
+
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const excludeTests = opts.excludeTests === true
+  const excludeVendored = opts.excludeVendored === true
+
+  // `symbol` is the one read command that searches the machine-wide index by default, which is documented and useful on a personal machine and a disclosure channel on a shared one: from any indexed directory, `symbol --grep .` enumerates every symbol of every project ever indexed here, bodies included, without touching the filesystem -- so a directory sandbox around the agent does not contain it. `indexing.cross_project_symbols = false` confines the command to the project it is run from. The confinement has to cover --project and an absolute --file as well, or the setting is bypassed by the same caller it exists to constrain.
+  const { root: confinedRoot, denial: projectDenial } = resolveProjectConfinement(opts.projectRoot)
+  if (projectDenial !== null) return { text: projectDenial, code: 1 }
+  if (confinedRoot !== null && opts.file !== undefined) {
+    const fileDenial = confinementRefusal('--file', resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd()), confinedRoot)
+    if (fileDenial !== null) return { text: fileDenial, code: 1 }
+  }
+
+  const queryOpts: Parameters<typeof querySymbols>[0] = {}
+  if (opts.file !== undefined) {
+    queryOpts.filePath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
+    // Self-heal before querying so a stale index serves fresh data instead of a warning.
+    healStaleIndex(queryOpts.filePath)
+  }
+  if (opts.name !== undefined) queryOpts.name = queryOpts.filePath !== undefined ? stripHtmlIdSpelling(opts.name, queryOpts.filePath) : opts.name
+  if (opts.kind !== undefined) queryOpts.kind = opts.kind
+  // `--grep` filters client-side on NAME (no regex support in SQL) and `--exclude-tests`/`--exclude-vendored` on file path, so none of the three can become a SQL `LIMIT`: filtering after the slice returns however many of the top-N unfiltered rows happen to match, not N matching rows, and N test-file symbols could fill the result set and leave nothing to show, reporting "no matches" for a symbol that is indexed. That was papered over by over-fetching 20,000 rows first, which is a cap all the same -- three indexed projects on the machine this was measured on exceed it -- so the filtered path now walks the whole scope (src/symbol_scan.ts) and keeps only what it will print. The unfiltered path keeps its SQL `LIMIT`, which is exact there because nothing narrows the rows after the query.
+  const anyClientFilter = matchesGrep !== undefined || excludeTests || excludeVendored
+  // Matches querySymbols's own fallback, so the unfiltered path's SQL `LIMIT` and the filtered path's keep-ceiling stay the same number rather than two spellings of it.
+  const effectiveLimit = opts.limit ?? DEFAULT_QUERY_LIMIT
+  if (!anyClientFilter && opts.limit !== undefined) {
+    queryOpts.limit = opts.limit
+  }
+  // Only scope a bare-name search to projectRoot; when `file` already pins an exact indexed path there's nothing left to disambiguate across projects.
+  if (opts.file === undefined && opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
+  // Confinement supplies the scope the caller left open, so a bare-name lookup with no --project searches this project instead of the whole machine.
+  if (opts.file === undefined && queryOpts.rootDir === undefined && confinedRoot !== null) queryOpts.rootDir = confinedRoot
+
+  // One pass over the scope that keeps only the rows this call can print, alongside the exact counts the notices below quote. Both shapes run through it so the filter, the counts and the heal retry stay in one place: a client-filtered call walks every row, a plain lookup takes the single SQL-limited page it always did.
+  interface SymbolSweep { kept: SymbolEntry[]; keptCount: number; scanned: number; hiddenByExcludeTests: number; files: Set<string> }
+  const runSweep = (): SymbolSweep => {
+    const found: SymbolSweep = { kept: [], keptCount: 0, scanned: 0, hiddenByExcludeTests: 0, files: new Set() }
+    const take = (s: SymbolEntry): void => {
+      found.scanned++
+      found.files.add(s.filePath)
+      const nameKept = matchesGrep === undefined || matchesGrep(s.name)
+      if (nameKept && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath))) {
+        found.keptCount++
+        if (found.kept.length < effectiveLimit) found.kept.push(s)
+      } else if (excludeTests && nameKept && isTestFile(s.filePath)) {
+        // Counted after --grep so the two filters never report the same row twice; only used to explain an empty result below.
+        found.hiddenByExcludeTests++
+      }
+    }
+    if (anyClientFilter) forEachSymbol(queryOpts, take)
+    else for (const row of querySymbols(queryOpts)) take(row)
+    return found
+  }
+
+  let sweep = runSweep()
+  // A bare `symbol NAME` names no file, so the pre-query heal above never ran for it -- and that is the form `symbol --help` documents first. It answered from stale rows with no warning at all, while `read "file::symbol"` against the same file self-healed and returned the current body: the same data, two documented commands, two different answers. Heal whatever the query actually hit, then ask again.
+  let stillStale: ReadonlySet<string> = EMPTY_PATH_SET
+  if (opts.file === undefined) {
+    const heal = healStaleResultFiles([...sweep.files])
+    stillStale = heal.stillStale
+    if (heal.healed) sweep = runSweep()
+  }
+  const preFilterCount = sweep.scanned
+  const unordered = sweep.kept.slice(0, effectiveLimit)
+  // An exact-name lookup asks where a thing is defined, and `file_path, line_start` answers it by alphabet: `const { ambigProbeFn } = await import('../src/thing.js')` in scripts/ sorts ahead of the real function in src/ purely because "scripts" precedes "src", so the first block a caller reads is an import statement rather than the body it went looking for. Sink the rows that only re-bind an imported name, keeping the query's own order within each group so the existing tie-breaks and paging behaviour are untouched. Nothing is dropped -- every candidate still prints, so a misjudged row costs one position and never an answer, which is the reason this reorders rather than filters. `--grep` listings are deliberately excluded: those are a browse of many different names, where file order is the useful one.
+  const results = opts.name === undefined ? unordered : stableSortImportBindsLast(unordered)
+
+  const hiddenByExcludeTests = sweep.hiddenByExcludeTests
+
+  if (excludeTests && sweep.keptCount === 0 && hiddenByExcludeTests > 0) {
+    // The symbol IS indexed, just only ever in test files. Saying "No matches" here would be a lie that stops the caller looking; name the filter that hid them instead.
+    const label = opts.name ?? opts.grep ?? '*'
+    const notice = `no non-test matches for '${label}' (${excludeTestsHiddenNote(hiddenByExcludeTests)})`
+    if (opts.json === true) {
+      return { text: displaySafeJson({ items: [], truncated: false, totalCount: 0 }), code: 0 }
+    }
+    return { text: `token-goat: ${notice}`, code: 0 }
+  }
+
+  if (matchesGrep !== undefined && sweep.keptCount === 0 && preFilterCount > 0) {
+    // The scope (--file/--kind/--project) genuinely has symbols, but --grep matched none of them -- distinct from the `results.length === 0` branch below, which means there was nothing in scope at all. Same "filtered store renders as populated" trap already fixed for types/dead/exports.
+    if (opts.json === true) {
+      const text = displaySafeJson({ items: [], truncated: false, totalCount: 0 })
+      return { text, code: 0 }
+    }
+    return { text: grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'symbol', 'symbols'), code: 0 }
+  }
+
+  if (results.length === 0) {
+    let text = `No matches for '${opts.name ?? opts.grep ?? '*'}'`
+    // Resolved once here, before the near-name scan, because both the `Try: semantic` fallback and the trailing empty-index note need the answer -- and the fallback needs it to decide whether to print at all. Still only paid after the query already came back empty, and only in text mode: --json's zero-result string isn't real JSON either way (see the comment below), so appending prose to it wouldn't gain anything and would look like an attempt at a JSON field.
+    const emptyIndexRoot = opts.json !== true ? (opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })) : null
+    const indexEmpty = emptyIndexRoot !== null && isIndexEmptyForProject(globalDbPath(), emptyIndexRoot)
+    // --json callers parse this string as an error message, not human-facing prose -- keep it byte-identical to before and only append the suggestion in text mode.
+    if (opts.name !== undefined && emptyIndexRoot !== null) {
+      // Same near-name mechanism as `find`: scan the index and match by case-insensitive substring in either direction, so a typo'd or partial name still gets a cheap next step instead of dead-ending into a full-file Read or a wide Grep.
+      const rootDir = emptyIndexRoot
+      // Walked in full rather than fetched as one capped page: a cap is applied by SQLite, ahead of the name tests below, so a symbol that sorts past it is reported as absent by the very branch whose job is to say it is present but out of scope. Only names, distinct paths and exact hits are retained, none of which grows with the project's symbol count. See src/symbol_scan.ts.
+      const exactMatches: SymbolEntry[] = []
+      const allNames = new Set<string>()
+      const structuredFileSet = new Set<string>()
+      forEachSymbol({ rootDir }, (s) => {
+        allNames.add(s.name)
+        structuredFileSet.add(s.filePath)
+        if (s.name === opts.name) exactMatches.push(s)
+      })
+      // An EXACT name match in this scan cannot be a typo: the caller spelled the symbol correctly and the lookup above only came back empty because a scope filter (--kind/--file) narrowed it away. Reporting that as "Did you mean: alphaOne" for the query `alphaOne` prints a correction byte-identical to what was typed, and pairs it with a "No matches" line that reads as proof the symbol does not exist -- so the caller concludes it is absent and falls back to a full Read. Name the scope that hid it instead.
+      if (exactMatches.length > 0) {
+        const shown = exactMatches.slice(0, DIDYOUMEAN_LIMIT)
+        const where = shown.map((s) => `${s.kind} at ${formatSymbolLocation(toDisplayPath(rootDir, s.filePath), s.lineStart)}`).join('; ')
+        const more = exactMatches.length > shown.length ? ` (+${exactMatches.length - shown.length} more)` : ''
+        const flags = [opts.kind !== undefined ? '--kind' : null, opts.file !== undefined ? '--file' : null].filter((f): f is string => f !== null)
+        const widen = flags.length > 0 ? `drop ${flags.join('/')} to see it` : 'widen the search scope to see it'
+        text += `\n'${opts.name}' IS indexed (${where}${more}) -- ${widen}`
+      } else {
+        // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
+        const candidates = rankSimilarNames([...allNames], opts.name)
+        text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
+      }
+      // Appended in BOTH branches on purpose: the didYouMean case is exactly the one that needs correcting, since a near-name suggestion ("Did you mean: sql" for `better-sqlite3`) reads as a confident answer and points away from the real one. Candidate files come from the scan already in hand above, so this costs no extra DB round trip.
+      const structuredFiles = [...structuredFileSet].sort()
+      const hit = findStructuredKeyPath(opts.name, structuredFiles)
+      if (hit !== null) {
+        const display = toDisplayPath(rootDir, hit.filePath)
+        text += `\n'${opts.name}' is a key in ${display} at ${hit.dotPath} -- JSON/YAML keys below the top level are not symbols; read it with: token-goat ${hit.command} ${display} '${hit.dotPath}'`
+      }
+    }
+    if (indexEmpty && emptyIndexRoot !== null) {
+      text += `\n${emptyIndexMessage(emptyIndexRoot)}`
+    }
+    return { text, code: 1 }
+  }
+
+  const fullSourceBytes = largestFileSize(results.map((s) => s.filePath))
+
+  // Shared by both the --json payload and the human blocks below, so a caller-supplied projectRoot (or none) resolves the same way for either output mode.
+  const symbolDisplayRoot = getDisplayRoot(opts.projectRoot)
+
+  // Only queried when --stats is actually requested, and only after every early-return above -- a zero-result or filtered-to-empty call must not pay for an extra DB round trip. Same call shape as read's single-symbol lookup and prepareSymbolListing's skeleton/outline lookup.
+  const refCounts =
+    opts.stats === true
+      ? queryRefCounts(
+          results.map((s) => s.name),
+          globalDbPath(),
+          resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }),
+        )
+      : undefined
+
+  if (opts.json === true) {
+    const capped = guardJsonRows(results)
+    let trueTotal: number
+    let truncatedFlag: boolean
+    if (anyClientFilter) {
+      // No SQL regex support, and no SQL notion of "is a test file" either -- `keptCount` is the post-filter count over the whole scope, since the sweep above walks every row rather than a window, so it is the honest total for what --grep/--exclude-tests actually matched. countSymbols(queryOpts) would instead report the pre-filter count of the whole kind/file/rootDir scope, which contradicts the filtered rows below.
+      trueTotal = sweep.keptCount
+      truncatedFlag = capped.truncated || results.length < sweep.keptCount
+    } else {
+      // `results` is already truncated by querySymbols's own SQL `LIMIT` (opts.limit, or the default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length) is not the real number of matching symbols -- countSymbols reruns the same filters with no LIMIT to report an honest total, the same distinction json_query's --head already makes (its totalCount survives --head unlike this one used to).
+      trueTotal = countSymbols(queryOpts)
+      truncatedFlag = capped.truncated || trueTotal > results.length
+    }
+    // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(symbolDisplayRoot, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
+    const items = capped.items.map((s) => ({
+      ...s,
+      filePath: toDisplayPath(symbolDisplayRoot, s.filePath),
+      // Only present when true, so a result set of live files stays byte-identical to what this command has always emitted and only the genuinely-gone rows grow a field.
+      ...(fileIsGone(s.filePath) ? { deleted: true } : {}),
+      ...(stillStale.has(s.filePath) ? { stale: true } : {}),
+      ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
+    }))
+    const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
+    const text = displaySafeJson(payload)
+    recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
+    return { text, code: 0 }
+  }
+
+  // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
+  const blocks = results.map((sym) => {
+    const statsStr = formatStatsSuffix(refCounts, sym)
+    // Per match, not one banner for the whole result set: a bare `symbol NAME` searches every indexed project, so one hit can be a live file and the next one a checkout that was deleted months ago. A single header line would have to lie about one of them.
+    const goneTag = fileIsGone(sym.filePath) ? `  ${DELETED_TAG}` : ''
+    const staleTag = stillStale.has(sym.filePath) ? `  ${STALE_TAG}` : ''
+    const header = `# ${sym.name} (${sym.kind}) — ${formatSymbolLocation(toDisplayPath(symbolDisplayRoot, sym.filePath), sym.lineStart, sym.lineEnd)}${statsStr}${goneTag}${staleTag}`
+    const body = resolveBody(sym)
+    const bodyLines = body.split(/\r?\n/)
+    const preview = bodyLines.slice(0, SYMBOL_PREVIEW_LINES).join('\n')
+    // The header states the symbol's real line span, so a five-line preview of a forty-line function looked like the whole thing was five lines long -- a silent cap of exactly the kind truncationFooter below exists to prevent. Say what was cut and how to get the rest.
+    const dropped = bodyLines.length - SYMBOL_PREVIEW_LINES
+    const elided =
+      dropped > 0
+        ? `\n  ...(${countNoun(dropped, 'more line')}; full body: token-goat read "${toDisplayPath(symbolDisplayRoot, sym.filePath)}::${sym.name}")`
+        : ''
+    return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
+  })
+  const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
+  const text = guardText(warning + blocks.join('\n\n'), 'symbol')
+  recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
+  // Under a client-side filter the sweep walked every row in scope, so its kept count is the exact total rather than a floor.
+  const symbolTotal = (): TruncationTotal =>
+    anyClientFilter ? { count: sweep.keptCount, exact: true } : { count: countSymbols(queryOpts), exact: true }
+  return { text: text + truncationFooter(results.length, effectiveLimit, symbolTotal, 'matches', '--limit'), code: 0 }
+}

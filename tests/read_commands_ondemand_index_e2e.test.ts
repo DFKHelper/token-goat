@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 
 import { normalizePath } from '../src/paths.js'
-import { runRead, runSymbol } from '../src/read_commands.js'
+import { runRead } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 import { runSkeleton, runOutline } from '../src/read_outline.js'
 
 describe('on-demand index for a never-indexed on-disk file (real pipeline, no injected callbacks)', () => {

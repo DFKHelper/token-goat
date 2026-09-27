@@ -10,7 +10,8 @@ import * as parserModule from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { getFileEntry } from '../src/index_reader.js'
 import { fingerprintFile } from '../src/fingerprint.js'
-import { runSymbol, runRead } from '../src/read_commands.js'
+import { runRead } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 import { runSkeleton, runOutline } from '../src/read_outline.js'
 
 describe('stale-index self-heal (real pipeline, no injected callbacks)', () => {

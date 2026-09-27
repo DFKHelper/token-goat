@@ -1,14 +1,4 @@
-/**
- * Every `--exclude-tests` surface appends a parenthetical naming how many rows the flag hid.
- * Fourteen call sites across refs/callers/dead/call-chain/impact/semantic each interpolated that
- * string themselves with a hard-coded plural, so hiding exactly one row reported
- * `1 in test files hidden by --exclude-tests` -- confirmed against the shipped binary, on both
- * `refs` and `callers`, before this was extracted into a shared helper.
- *
- * Nothing caught it because every fixture in the suite hid two or more rows: the singular branch
- * of a count-dependent string is invisible to a test that only ever exercises the plural one.
- * These tests pin count == 1 specifically, at the helper and through the real commands.
- */
+/** Every `--exclude-tests` surface appends a parenthetical naming how many rows the flag hid. Fourteen call sites across refs/callers/dead/call-chain/impact/semantic each interpolated that string themselves with a hard-coded plural, so hiding exactly one row reported `1 in test files hidden by --exclude-tests` -- confirmed against the shipped binary, on both `refs` and `callers`, before this was extracted into a shared helper. Nothing caught it because every fixture in the suite hid two or more rows: the singular branch of a count-dependent string is invisible to a test that only ever exercises the plural one. These tests pin count == 1 specifically, at the helper and through the real commands. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -18,16 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 import { countNoun, excludeTestsHiddenNote, grepFilteredToEmptyNotice } from '../src/util.js'
 
 describe('grepFilteredToEmptyNotice', () => {
-  // Same defect family one function over, and the same reason nothing caught it: every fixture
-  // filtered out two or more rows. Reproduced against the shipped binary with
-  // `token-goat types src/worker.ts --grep zzzNoMatchAtAll`, whose file holds exactly one type
-  // declaration: "all 1 type declaration was filtered out ... to see them". The author had already
-  // reasoned about agreement here and fixed the verb, so the count-dependent branch was live and
-  // half-right -- it contradicted itself one clause later.
+  // Same defect family one function over, and the same reason nothing caught it: every fixture filtered out two or more rows. Reproduced against the shipped binary with `token-goat types src/worker.ts --grep zzzNoMatchAtAll`, whose file holds exactly one type declaration: "all 1 type declaration was filtered out ... to see them". The author had already reasoned about agreement here and fixed the verb, so the count-dependent branch was live and half-right -- it contradicted itself one clause later.
   it('agrees the trailing pronoun with the singular noun the count selects', () => {
     const text = grepFilteredToEmptyNotice(1, 'zzz', 'type declaration', 'type declarations')
     expect(text).toContain('all 1 type declaration was filtered out')
@@ -62,8 +47,7 @@ describe('excludeTestsHiddenNote', () => {
   })
 
   it('never emits the singular count against the plural noun', () => {
-    // The exact defect this replaced, stated as its own assertion so a future refactor that
-    // reintroduces a hard-coded plural fails here rather than silently shipping.
+    // The exact defect this replaced, stated as its own assertion so a future refactor that reintroduces a hard-coded plural fails here rather than silently shipping.
     expect(excludeTestsHiddenNote(1)).not.toContain('test files')
   })
 })

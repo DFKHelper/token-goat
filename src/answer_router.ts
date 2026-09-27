@@ -1,15 +1,4 @@
-/**
- * `token-goat answer` -- a deterministic question router.
- *
- * Classifies a plain-English question to one of a small set of high-precision intents, resolves the
- * question's subject against the index (is it a symbol? is it a file?), and delegates in-process to
- * the existing command that already answers that intent. No model call, no inference, no file bodies.
- *
- * The routing rule is precision over recall: a question that does not match an intent confidently,
- * or whose subject does not resolve to a real index row, is refused with a reason and a suggested
- * command rather than answered approximately. An answer the agent trusts and stops checking is far
- * more expensive than a refusal it can act on.
- */
+/** `token-goat answer` -- a deterministic question router. Classifies a plain-English question to one of a small set of high-precision intents, resolves the question's subject against the index (is it a symbol? is it a file?), and delegates in-process to the existing command that already answers that intent. No model call, no inference, no file bodies. The routing rule is precision over recall: a question that does not match an intent confidently, or whose subject does not resolve to a real index row, is refused with a reason and a suggested command rather than answered approximately. An answer the agent trusts and stops checking is far more expensive than a refusal it can act on. */
 
 import { getFileEntry, getProjectFileEntries, querySymbols } from './index_reader.js'
 import { isIgnoredIndexPath } from './baseline.js'
@@ -19,7 +8,7 @@ import { resolveProjectRoot } from './project.js'
 import { runCallers, runImpact } from './graph_commands.js'
 import { runTestFor } from './graph_analysis.js'
 import { runExports, runImports } from './read_inspect.js'
-import { runSymbol } from './read_commands.js'
+import { runSymbol } from './read_symbol.js'
 import { emit, emitErr } from './emit.js'
 
 export interface AnswerOptions {
@@ -33,12 +22,7 @@ export function refusal(why: string, suggestion: string): string {
 
 export type AnswerIntent = 'where' | 'callers' | 'tests' | 'exports' | 'imports' | 'impact'
 
-/**
- * Questions that must refuse even when they name a resolvable symbol. These ask for judgement,
- * intent, runtime behaviour, or a reading of a body -- none of which any index row can answer. This
- * guard runs before intent matching precisely because the over-firing case is a judgement question
- * that happens to contain a symbol name ("why does foldPath normalize", "is foldPath correct").
- */
+/** Questions that must refuse even when they name a resolvable symbol. These ask for judgement, intent, runtime behaviour, or a reading of a body -- none of which any index row can answer. This guard runs before intent matching precisely because the over-firing case is a judgement question that happens to contain a symbol name ("why does foldPath normalize", "is foldPath correct"). */
 const JUDGEMENT_PATTERNS: readonly RegExp[] = [
   /\bwhy\b/i,
   /\bshould (?:i|we|it|this|that)\b/i,
@@ -58,12 +42,7 @@ interface IntentRule {
   re: RegExp
 }
 
-/**
- * Intent patterns, matched against the whitespace-normalized, question-mark-stripped question. Each
- * must capture the subject in group 1, and each is anchored at both ends so a question that merely
- * contains one of these phrases inside a longer sentence does not match -- a partial match is the
- * over-firing shape this router exists to avoid.
- */
+/** Intent patterns, matched against the whitespace-normalized, question-mark-stripped question. Each must capture the subject in group 1, and each is anchored at both ends so a question that merely contains one of these phrases inside a longer sentence does not match -- a partial match is the over-firing shape this router exists to avoid. */
 const INTENT_RULES: readonly IntentRule[] = [
   { intent: 'callers', re: /^who calls (.+)$/i },
   { intent: 'callers', re: /^what calls (.+)$/i },
@@ -103,18 +82,10 @@ export interface Classification {
   subject: string
 }
 
-/**
- * Collapses runs of whitespace and drops trailing question marks so every pattern below can use
- * literal single spaces, which is what keeps them free of the ambiguous-quantifier backtracking the
- * repo's regexp lint rejects. Also strips a leading imperative framing verb: agents overwhelmingly
- * phrase a question as an instruction to themselves ("Check env.ts exports"), and 2,388 of the
- * 25,425 distinct questions captured from a real session transcript open with "Check " alone. The
- * verb carries no subject and no intent, so removing it widens recall without widening the match.
- */
+/** Collapses runs of whitespace and drops trailing question marks so every pattern below can use literal single spaces, which is what keeps them free of the ambiguous-quantifier backtracking the repo's regexp lint rejects. Also strips a leading imperative framing verb: agents overwhelmingly phrase a question as an instruction to themselves ("Check env.ts exports"), and 2,388 of the 25,425 distinct questions captured from a real session transcript open with "Check " alone. The verb carries no subject and no intent, so removing it widens recall without widening the match. */
 export function normalizeQuestion(question: string): string {
   const collapsed = question.replace(/\s+/g, ' ').trim().replace(/[?\s]+$/, '')
-  // Retrieval verbs only. An edit verb (`add`, `update`, `wire`, `patch`, `fix`) is deliberately absent: stripping it would turn "Add imports" -- an instruction to write code -- into a query about a file named `Add`. `read` is included because it is the single most common lead-in on retrieval-shaped lines in the captured corpus, and its edit-instruction cases carry multi-word subjects that subject resolution refuses anyway.
-  // The article is peeled only as part of the verb, so a bare "the blast radius of X" is untouched: the captured corpus writes it as "Measure the blast radius of ...", where the article belongs to the framing and not to the question.
+  // Retrieval verbs only. An edit verb (`add`, `update`, `wire`, `patch`, `fix`) is deliberately absent: stripping it would turn "Add imports" -- an instruction to write code -- into a query about a file named `Add`. `read` is included because it is the single most common lead-in on retrieval-shaped lines in the captured corpus, and its edit-instruction cases carry multi-word subjects that subject resolution refuses anyway. The article is peeled only as part of the verb, so a bare "the blast radius of X" is untouched: the captured corpus writes it as "Measure the blast radius of ...", where the article belongs to the framing and not to the question.
   return collapsed.replace(/^(?:check|show|list|find|get|print|inspect|read|locate|verify|measure|view|trace|identify) (?:the |a |an )?/i, '')
 }
 
@@ -157,36 +128,13 @@ export type ResolvedSubject =
   | { kind: 'ambiguous'; candidates: string[] }
   | { kind: 'symbol-only'; name: string; file: string }
 
-/**
- * Which table the subject is looked up in first, and whether the other one is allowed at all.
- *
- * `symbol-first` -- `where`/`callers`/`impact`: these ask about a definition, so a symbol wins and a
- * file is the fallback (the router then refuses, naming `outline`).
- * `file-first` -- `tests`: `what tests cover config` means the file, `what tests cover foldPath` means
- * the symbol, and both have to work, so the file interpretation leads and the symbol backs it up.
- * `file-only` -- `exports`/`imports`: these are module-level properties, and a symbol subject is a
- * category error rather than a thing to redirect. Resolving them symbol-first is what made
- * `Check config exports` answer about src/bridges/openclaw_install.ts, because a same-named symbol
- * sorted first and the intent then followed it to ITS defining file: measured over the 32 distinct
- * subjects the captured corpus uses with this shape, 12 of the 14 that resolved were wrong.
- */
+/** Which table the subject is looked up in first, and whether the other one is allowed at all. `symbol-first` -- `where`/`callers`/`impact`: these ask about a definition, so a symbol wins and a file is the fallback (the router then refuses, naming `outline`). `file-first` -- `tests`: `what tests cover config` means the file, `what tests cover foldPath` means the symbol, and both have to work, so the file interpretation leads and the symbol backs it up. `file-only` -- `exports`/`imports`: these are module-level properties, and a symbol subject is a category error rather than a thing to redirect. Resolving them symbol-first is what made `Check config exports` answer about src/bridges/openclaw_install.ts, because a same-named symbol sorted first and the intent then followed it to ITS defining file: measured over the 32 distinct subjects the captured corpus uses with this shape, 12 of the 14 that resolved were wrong. */
 export type SubjectMode = 'symbol-first' | 'file-first' | 'file-only'
 
 /** Page size for the scan in {@link resolveSymbolHit}. Not a cap: the scan pages until it finds a hit or the index runs out. */
 const SYMBOL_SCAN_PAGE = 200
 
-/**
- * One indexed symbol with this exact name in this project, never one in a vendored, generated, or
- * tool-metadata tree.
- *
- * Deliberately paged rather than filtered from a single capped query. Ignored trees sort FIRST under
- * `querySymbols`'s `ORDER BY file_path` -- `node_modules/` and `.git/` both come before `src/` -- so
- * they are exactly the rows that fill the front of any page, and a fixed cap followed by a filter
- * would report "no such symbol" for a symbol that is plainly there. That is not hypothetical: this
- * project's index holds 147 rows named `constructor` under `node_modules/` from six files alone.
- * Paging until a hit or exhaustion has no such blind spot, and costs one extra query only when a
- * project really has that much vendored code indexed.
- */
+/** One indexed symbol with this exact name in this project, never one in a vendored, generated, or tool-metadata tree. Deliberately paged rather than filtered from a single capped query. Ignored trees sort FIRST under `querySymbols`'s `ORDER BY file_path` -- `node_modules/` and `.git/` both come before `src/` -- so they are exactly the rows that fill the front of any page, and a fixed cap followed by a filter would report "no such symbol" for a symbol that is plainly there. That is not hypothetical: this project's index holds 147 rows named `constructor` under `node_modules/` from six files alone. Paging until a hit or exhaustion has no such blind spot, and costs one extra query only when a project really has that much vendored code indexed. */
 function resolveSymbolHit(subject: string, rootDir: string): { name: string; file: string } | null {
   for (let offset = 0; ; offset += SYMBOL_SCAN_PAGE) {
     const rows = querySymbols({ name: subject, rootDir, limit: SYMBOL_SCAN_PAGE, offset })
@@ -197,16 +145,7 @@ function resolveSymbolHit(subject: string, rootDir: string): { name: string; fil
   }
 }
 
-/**
- * The subject read as a file: an exact path, else the project's file list matched by basename
- * ("config.ts") or by extensionless stem ("config"). Several matches is reported as ambiguity rather
- * than resolved by picking one, which would be a confident wrong answer.
- *
- * The match runs over the `files` table rather than over symbol rows: `files` is the authoritative
- * list of what is indexed (a file with no extracted symbols has no symbol rows at all), it needs one
- * query instead of a capped path-suffix scan, and it makes the candidate set independent of how many
- * symbols each file happens to contain.
- */
+/** The subject read as a file: an exact path, else the project's file list matched by basename ("config.ts") or by extensionless stem ("config"). Several matches is reported as ambiguity rather than resolved by picking one, which would be a confident wrong answer. The match runs over the `files` table rather than over symbol rows: `files` is the authoritative list of what is indexed (a file with no extracted symbols has no symbol rows at all), it needs one query instead of a capped path-suffix scan, and it makes the candidate set independent of how many symbols each file happens to contain. */
 function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | null {
   const entry = getFileEntry(resolveIndexPath(subject))
   if (entry && !isIgnoredIndexPath(entry.filePath)) return { kind: 'file', path: entry.filePath }
@@ -226,13 +165,7 @@ function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | nul
   return { kind: 'ambiguous', candidates: paths }
 }
 
-/**
- * Looks the subject up in the index, in the order `mode` prescribes. Returns null when the subject is
- * in neither table -- the router then refuses rather than falling back to a fuzzy or semantic match
- * and presenting it as fact. Vendored dependency trees are excluded on every path: this repo indexes
- * 6 files under node_modules, and unfiltered they answered "where is worker" with a pdfjs type
- * declaration and "who calls worker" with a line of pdf.mjs.
- */
+/** Looks the subject up in the index, in the order `mode` prescribes. Returns null when the subject is in neither table -- the router then refuses rather than falling back to a fuzzy or semantic match and presenting it as fact. Vendored dependency trees are excluded on every path: this repo indexes 6 files under node_modules, and unfiltered they answered "where is worker" with a pdfjs type declaration and "who calls worker" with a line of pdf.mjs. */
 export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-first'): ResolvedSubject | null {
   // Every lookup is scoped to THIS project. The symbols table is machine-wide, so an unscoped name query answers from whichever project happens to sort first: asking this repo "where does normalizePath live" resolved to a JavaScript file in an unrelated website checkout, and "tests for runWorker" to a scratch repro script on another drive. Both were confident, both were wrong, and neither was visible to a test whose index only ever holds one project.
   const rootDir = resolveProjectRoot({ project: process.cwd() })

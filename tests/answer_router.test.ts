@@ -1,24 +1,4 @@
-/**
- * Tests for `token-goat answer` -- the deterministic question router in src/answer_router.ts.
- *
- * FIXTURE PROVENANCE: CAPTURE. Every question string in QUESTIONS below is a verbatim, unedited
- * line extracted from a real Claude Code session transcript for this repository:
- *   C:/Users/zelys/.claude/projects/C--Projects-token-goat/2ab49bbf-9914-4011-81d8-e30ccde5b635.jsonl
- *   (512,191,083 bytes, captured 2026-09-20)
- * Extraction command:
- *   rg -o '"description":"[^"]{6,70}"' <transcript> | sed 's/^"description":"//; s/"$//' | sort -u
- * That yields ~25,400 distinct agent-authored statements of intent (25,425 on the first run, 25,447
- * when re-run under Git Bash's `sort -u`; the per-shape counts quoted below come from the re-run).
- * The 30 lines below were selected from it by hand and each was then re-verified against the
- * extraction with `grep -Fxq` before being pasted here. None was written from the router's own
- * regexes -- which is the point: a corpus derived from the implementation agrees with the
- * implementation's bugs by construction, and this repository has shipped that defect 6+ times across
- * three unrelated subsystems.
- *
- * The integration cases index this repo's own `src` tree (HAND-DERIVED expectations: the symbol
- * `foldPath` lives in src/path_containment.ts and the file src/config.ts exists, both verifiable
- * with `token-goat symbol foldPath` / `token-goat outline src/config.ts`).
- */
+/** Tests for `token-goat answer` -- the deterministic question router in src/answer_router.ts. FIXTURE PROVENANCE: CAPTURE. Every question string in QUESTIONS below is a verbatim, unedited line extracted from a real Claude Code session transcript for this repository: C:/Users/zelys/.claude/projects/C--Projects-token-goat/2ab49bbf-9914-4011-81d8-e30ccde5b635.jsonl (512,191,083 bytes, captured 2026-09-20) Extraction command: rg -o '"description":"[^"]{6,70}"' <transcript> | sed 's/^"description":"//; s/"$//' | sort -u That yields ~25,400 distinct agent-authored statements of intent (25,425 on the first run, 25,447 when re-run under Git Bash's `sort -u`; the per-shape counts quoted below come from the re-run). The 30 lines below were selected from it by hand and each was then re-verified against the extraction with `grep -Fxq` before being pasted here. None was written from the router's own regexes -- which is the point: a corpus derived from the implementation agrees with the implementation's bugs by construction, and this repository has shipped that defect 6+ times across three unrelated subsystems. The integration cases index this repo's own `src` tree (HAND-DERIVED expectations: the symbol `foldPath` lives in src/path_containment.ts and the file src/config.ts exists, both verifiable with `token-goat symbol foldPath` / `token-goat outline src/config.ts`). */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -30,7 +10,7 @@ import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { querySymbols } from '../src/index_reader.js'
 import { runCallers } from '../src/graph_commands.js'
-import { runSymbol } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 
 import {
   classify,
@@ -242,13 +222,7 @@ describe('runAnswer against the real index', () => {
   })
 
   it('never resolves a subject to a same-named symbol in a DIFFERENT project', () => {
-    // The symbols table is machine-wide. Dogfooding the built binary against this repo answered
-    // "where does normalizePath live" with a JavaScript file in an unrelated website checkout and
-    // "tests for runWorker" with a scratch script on another drive -- both confident, both wrong.
-    // An index holding only one project cannot show that, so this indexes a decoy outside the root.
-    // The decoy's symbol name exists ONLY outside the root, so the assertion does not depend on
-    // which of two same-named rows querySymbols happens to order first: scoped, there is no
-    // in-project row at all and the only correct answer is a refusal.
+    // The symbols table is machine-wide. Dogfooding the built binary against this repo answered "where does normalizePath live" with a JavaScript file in an unrelated website checkout and "tests for runWorker" with a scratch script on another drive -- both confident, both wrong. An index holding only one project cannot show that, so this indexes a decoy outside the root. The decoy's symbol name exists ONLY outside the root, so the assertion does not depend on which of two same-named rows querySymbols happens to order first: scoped, there is no in-project row at all and the only correct answer is a refusal.
     const outside = mkdtempSync(join(tmpdir(), 'tg-answer-foreign-'))
     try {
       const decoy = join(outside, 'decoy.ts')
@@ -266,9 +240,7 @@ describe('runAnswer against the real index', () => {
       // Calibration, the other direction: an in-project symbol still resolves under the same scoping.
       expect(resolveSubject('foldPath')?.kind).toBe('symbol')
 
-      // Resolving the subject in-project is not enough on its own: the DELEGATE has to be scoped
-      // too. `where` hands the name to runSymbol, which without a projectRoot searches the same
-      // machine-wide table and lists every same-named definition on the machine.
+      // Resolving the subject in-project is not enough on its own: the DELEGATE has to be scoped too. `where` hands the name to runSymbol, which without a projectRoot searches the same machine-wide table and lists every same-named definition on the machine.
       const shared = join(outside, 'shared.ts')
       writeFileSync(shared, 'export function foldPath(p: string): string {\n  return p\n}\n')
       indexFileSync(normalizePath(shared))

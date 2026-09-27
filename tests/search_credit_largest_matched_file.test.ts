@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 import { runSemantic } from '../src/read_semantic.js'
 import { summarize } from '../src/stats.js'
 

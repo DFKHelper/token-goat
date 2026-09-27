@@ -1,16 +1,4 @@
-/**
- * `token-goat symbol NAME` answers "where is this defined", and its rows came back ordered by
- * `file_path, line_start`. That is alphabetical, which has nothing to do with which row is the
- * definition: a one-line `const { ambigProbeFn } = await import('../src/thing.js')` under
- * `scripts/` sorts ahead of the real function under `src/` because "scripts" precedes "src", so
- * the first block a caller reads is an import statement. The skill text points agents at this
- * command for exactly this question, so the first row is the one that gets acted on.
- *
- * PROVENANCE: CAPTURE. The fixture is the reduced form of a real run against a scratch project on
- * 2026-09-21, which printed `# ambigProbeFn (variable) - scripts/use.ts:1-1` above
- * `# ambigProbeFn (function) - src/thing.ts:1-3`. The file names are chosen for that alphabetical
- * relationship, which is the mechanism under test, rather than copied from the matcher's own source.
- */
+/** `token-goat symbol NAME` answers "where is this defined", and its rows came back ordered by `file_path, line_start`. That is alphabetical, which has nothing to do with which row is the definition: a one-line `const { ambigProbeFn } = await import('../src/thing.js')` under `scripts/` sorts ahead of the real function under `src/` because "scripts" precedes "src", so the first block a caller reads is an import statement. The skill text points agents at this command for exactly this question, so the first row is the one that gets acted on. PROVENANCE: CAPTURE. The fixture is the reduced form of a real run against a scratch project on 2026-09-21, which printed `# ambigProbeFn (variable) - scripts/use.ts:1-1` above `# ambigProbeFn (function) - src/thing.ts:1-3`. The file names are chosen for that alphabetical relationship, which is the mechanism under test, rather than copied from the matcher's own source. */
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -19,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 
 function seed(root: string, files: ReadonlyArray<readonly [string, string]>): void {
   for (const [rel, body] of files) {
@@ -59,8 +47,7 @@ describe('symbol NAME leads with a definition rather than an import re-bind', ()
   it('leaves a genuine exported const alone, which is the row a kind-based rule would have sunk', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-symconst-'))
     try {
-      // Both rows are kind `variable`. Ordering on kind would have been unable to tell them apart,
-      // and sinking this one would answer a "where is it defined" question with the wrong file.
+      // Both rows are kind `variable`. Ordering on kind would have been unable to tell them apart, and sinking this one would answer a "where is it defined" question with the wrong file.
       seed(root, [
         ['src/consts.ts', `export const sharedName9k7 = ['a', 'b']\n`],
         ['tests/use.test.ts', `const { sharedName9k7 } = require('../src/consts.js')\n`],
@@ -89,8 +76,7 @@ describe('symbol NAME leads with a definition rather than an import re-bind', ()
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
         const { text } = runSymbol({ name: 'plainDup9k7', projectRoot: root })
-        // A stable sort over an all-equal key must not disturb anything. Without this, a switch to
-        // an unstable comparator or a broader rule would go unnoticed on ordinary lookups.
+        // A stable sort over an all-equal key must not disturb anything. Without this, a switch to an unstable comparator or a broader rule would go unnoticed on ordinary lookups.
         expect(text.indexOf('a/one.ts')).toBeLessThan(text.indexOf('b/two.ts'))
       } finally {
         cwdSpy.mockRestore()

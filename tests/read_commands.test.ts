@@ -75,7 +75,8 @@ vi.mock('../src/screenshot.js', () => ({
   takeScreenshot: vi.fn(async () => ({ path: '/tmp/out.png', originalBytes: 100, finalBytes: 50 })),
 }))
 
-import { runSymbol, runRead, runGrep, withPinnedReads, runScreenshot } from '../src/read_commands.js'
+import { runRead, runGrep, withPinnedReads, runScreenshot } from '../src/read_commands.js'
+import { runSymbol } from '../src/read_symbol.js'
 import { runSection } from '../src/read_section.js'
 import { runSkeleton, runOutline } from '../src/read_outline.js'
 import { runFind, runLocate, runListSections, runConfigGet, runSqliteSchema, runSqliteQuery, runExports, runImports, extractTranscriptText, runZipRead, runZipList } from '../src/read_inspect.js'

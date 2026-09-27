@@ -125,7 +125,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/read_brief.ts`](src/read_brief.ts) | Surgical read implementation for brief |
-| [`src/read_commands.ts`](src/read_commands.ts) | **Single source of truth for surgical-read logic** — `runSymbol`, `runRead`, `runSection`, `runSkeleton`, `runOutline`, `runChanged`, `runConfigGet`, `runExports`, `runImports`, `runFind`, `runGrep`; all CLI read subcommands delegate here |
+| [`src/read_commands.ts`](src/read_commands.ts) | `runRead`, `runGrep`, `runPrSlice` and the PDF, image and screenshot read commands, plus the helpers every surgical-read module shares: the confinement pin (`withPinnedReads`, `readFileText`, `indexFileSyncPinned`), the stale and deleted checks (`staleWarning`, `healStaleIndex`, `warnIfFilesStale`), the output guards (`guardText`, `guardJsonRows`) and `recordReadStat` |
 | [`src/read_git.ts`](src/read_git.ts) | Surgical read implementation for git |
 | [`src/read_inspect.ts`](src/read_inspect.ts) | Surgical read implementation for inspect |
 | [`src/read_meta.ts`](src/read_meta.ts) | Surgical read implementation for meta |
@@ -136,6 +136,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/read_spec.ts`](src/read_spec.ts) | Surgical read implementation for spec |
 | [`src/read_structured_data.ts`](src/read_structured_data.ts) | Surgical read implementation for structured_data |
 | [`src/read_suggest.ts`](src/read_suggest.ts) | Surgical read implementation for suggest |
+| [`src/read_symbol.ts`](src/read_symbol.ts) | The `symbol` command: every indexed definition of a name, or of each name `--grep` matches, printed with a short body preview. |
 | [`src/text_commands.ts`](src/text_commands.ts) | Text-processing and session/index/config CLI commands (Family C2). |
 | [`src/text_logfold.ts`](src/text_logfold.ts) | Text processing, analysis, and transformation for logfold |
 | [`src/text_todo.ts`](src/text_todo.ts) | Text processing, analysis, and transformation for todo |
