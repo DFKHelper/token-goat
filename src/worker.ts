@@ -42,6 +42,8 @@ export function resolvePollIntervalMs(explicit?: number): number {
   const parsed = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_POLL_INTERVAL_MS
 }
+
+/** How old the drain-heartbeat marker (see drainHeartbeatPathFor) may get before hasFreshWorkerHeartbeat stops counting the pid it names as a running worker: 30x the 2 s default poll interval, a generous margin against a slow cycle on a large repo. */
 export const WORKER_HEARTBEAT_STALE_MS = 60_000
 const WORKER_HEARTBEAT_REFRESH_MS = 5_000
 const WORKER_STARTUP_GRACE_MS = 10_000

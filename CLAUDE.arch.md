@@ -88,9 +88,9 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_grep.ts`](src/hooks_grep.ts) | post_tool_use / pre_tool_use handlers for the Grep tool. |
 | [`src/hooks_index.ts`](src/hooks_index.ts) | `appendDirtyPath()` — atomic append to `queue/dirty.txt`; `preCompactIndexHandler()` — drains any remaining dirty queue before compaction |
 | [`src/hooks_mcp.ts`](src/hooks_mcp.ts) | `preMcpHandler()` / `postMcpHandler()` — cache read-only `mcp__*` results into the bash-output store; deny an identical repeat with a `bash-output <id>` recall hint |
+| [`src/hooks_read_post.ts`](src/hooks_read_post.ts) | `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
 | [`src/hooks_read_slice.ts`](src/hooks_read_slice.ts) | Line windowing, slice estimation, line diffing, and truncated-read detection. |
 | [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection |
-| [`src/hooks_read_post.ts`](src/hooks_read_post.ts) | `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
 | [`src/hooks_screenshot.ts`](src/hooks_screenshot.ts) | Pre-tool-use hook — `pre_screenshot`: denies MCP screenshot tool calls that don't specify a destination file, redirecting the model to re-issue the call with one. |
 | [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
@@ -305,6 +305,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
+| [`src/cli_doctor_index.ts`](src/cli_doctor_index.ts) | Index and reindex-queue diagnostics for token-goat doctor. |
 | [`src/cli_doctor_native.ts`](src/cli_doctor_native.ts) | `doctor`'s native hook client rows: per harness and scope, which form of hook command is wired (the native client in front of the Node command, or the Node command alone), whether |
 | [`src/cli_doctor_platforms.ts`](src/cli_doctor_platforms.ts) | Platform and harness integration diagnostics for token-goat doctor. |
 | [`src/cli_doctor_process.ts`](src/cli_doctor_process.ts) | Process table and MCP process health diagnostics for token-goat doctor. |
@@ -439,7 +440,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/import_export_extract.ts`](src/import_export_extract.ts) | Language-specific import and export extractors. |
 | [`src/import_graph.ts`](src/import_graph.ts) | The project's internal import graph, built once and shared by every command that needs it. |
 | [`src/index_freshness.ts`](src/index_freshness.ts) | Whether the index's record of a file still matches what is on disk. |
-| [`src/index_health.ts`](src/index_health.ts) | Shared "this project has zero indexed files" diagnosis, reused by doctor's Symbols check (cli_doctor.ts's checkSymbolCount) and by every query command that can dead-end on an empty |
+| [`src/index_health.ts`](src/index_health.ts) | Shared "this project has zero indexed files" diagnosis, reused by doctor's Symbols check (cli_doctor_index.ts's checkSymbolCount) and by every query command that can dead-end on an empty |
 | [`src/index_reclaim.ts`](src/index_reclaim.ts) | Index-space reclamation (`token-goat reclaim-index`). |
 | [`src/indexed_source.ts`](src/indexed_source.ts) | Resolves the document a stored symbol line range actually addresses. |
 | [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |

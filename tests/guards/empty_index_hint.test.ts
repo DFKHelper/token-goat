@@ -1,18 +1,4 @@
-/**
- * Guard: symbol/semantic/refs/types/callers/brief/dead/call-chain must not let a zero-result
- * query read as a genuine "not found" when the real cause is that the project has zero indexed
- * files. Doctor's Symbols check already diagnoses this exact condition (cli_doctor.ts's
- * checkSymbolCount) -- these commands must append the same wording (via index_health.ts's
- * emptyIndexMessage) instead of dead-ending into the plain message alone.
- *
- * Every case is asserted both ways: an unindexed project gets the new hint, and an indexed
- * project with a genuine miss keeps its original message byte-identical -- a fix that always
- * appended the hint (or fired the DB check regardless of query outcome) would pass only one half.
- *
- * The suggested command in the hint must also be git-aware: `token-goat index .` inside a git
- * repo, `token-goat index . --walk` outside one (a non-git scratch folder is empty-index's most
- * common trigger, and plain `index .` refuses there with "no tracked files found").
- */
+/** Guard: symbol/semantic/refs/types/callers/brief/dead/call-chain must not let a zero-result query read as a genuine "not found" when the real cause is that the project has zero indexed files. Doctor's Symbols check already diagnoses this exact condition (cli_doctor_index.ts's checkSymbolCount) -- these commands must append the same wording (via index_health.ts's emptyIndexMessage) instead of dead-ending into the plain message alone. Every case is asserted both ways: an unindexed project gets the new hint, and an indexed project with a genuine miss keeps its original message byte-identical -- a fix that always appended the hint (or fired the DB check regardless of query outcome) would pass only one half. The suggested command in the hint must also be git-aware: `token-goat index .` inside a git repo, `token-goat index . --walk` outside one (a non-git scratch folder is empty-index's most common trigger, and plain `index .` refuses there with "no tracked files found"). */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,14 +13,7 @@ let nonGitProjectDir: string
 let indexedProjectDir: string
 let homeDir: string
 
-/**
- * `out` is stdout and stderr together, which is what the message assertions below want: a hint
- * counts whichever stream it came out on. `stdout` is kept separate because the `--json` cases
- * must not: a caller pipes stdout and parses it, and stderr carries lines that have nothing to do
- * with the query -- the one-off embedding-model download notice in particular, which appears only
- * on a machine that has not cached the model yet. Parsing the combined string made those two cases
- * pass on a warm machine and fail on a cold one.
- */
+/** `out` is stdout and stderr together, which is what the message assertions below want: a hint counts whichever stream it came out on. `stdout` is kept separate because the `--json` cases must not: a caller pipes stdout and parses it, and stderr carries lines that have nothing to do with the query -- the one-off embedding-model download notice in particular, which appears only on a machine that has not cached the model yet. Parsing the combined string made those two cases pass on a warm machine and fail on a cold one. */
 function run(args: string[], cwd: string, home: string): { status: number; out: string; stdout: string } {
   try {
     const stdout = execFileSync(process.execPath, [BUNDLE, ...args], {
@@ -122,10 +101,7 @@ describe('empty-index hint', () => {
     expect(r.out).toContain(EMPTY_INDEX_SNIPPET)
   })
 
-  // 'noSuchSymbol' isn't indexed anywhere in indexedProjectDir (only 'gamma' is) -- this is the
-  // "unknown symbol" case, distinct from "indexed symbol, genuinely zero references" below.
-  // This assertion changed when that distinction was added: the old blanket "No references
-  // found" now reports the more accurate "Symbol not found" instead.
+  // 'noSuchSymbol' isn't indexed anywhere in indexedProjectDir (only 'gamma' is) -- this is the "unknown symbol" case, distinct from "indexed symbol, genuinely zero references" below. This assertion changed when that distinction was added: the old blanket "No references found" now reports the more accurate "Symbol not found" instead.
   it('refs: an unindexed-but-nonexistent symbol name is reported as "Symbol not found", not "No references found"', () => {
     const r = run(['refs', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
@@ -134,9 +110,7 @@ describe('empty-index hint', () => {
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
-  // Anti-regression for the distinction above: a real, indexed symbol ('gamma', defined in
-  // c.ts, called nowhere) must still get today's exact "No references found" message -- proving
-  // the "Symbol not found" branch above only fires for names that truly aren't indexed.
+  // Anti-regression for the distinction above: a real, indexed symbol ('gamma', defined in c.ts, called nowhere) must still get today's exact "No references found" message -- proving the "Symbol not found" branch above only fires for names that truly aren't indexed.
   it('refs: a real indexed symbol with genuinely zero references keeps the old message unchanged', () => {
     const r = run(['refs', 'gamma'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
@@ -164,8 +138,7 @@ describe('empty-index hint', () => {
     expect(r.out).toContain(EMPTY_INDEX_SNIPPET)
   })
 
-  // Same distinction as refs above: 'noSuchSymbol' isn't indexed at all in indexedProjectDir,
-  // so this is now "Symbol not found", not the old blanket "No references found".
+  // Same distinction as refs above: 'noSuchSymbol' isn't indexed at all in indexedProjectDir, so this is now "Symbol not found", not the old blanket "No references found".
   it('callers: an unindexed-but-nonexistent symbol name is reported as "Symbol not found", not "No references found"', () => {
     const r = run(['callers', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
@@ -174,8 +147,7 @@ describe('empty-index hint', () => {
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
-  // Anti-regression: a real, indexed symbol ('gamma') with genuinely zero callers must still
-  // get today's exact "No references found" message.
+  // Anti-regression: a real, indexed symbol ('gamma') with genuinely zero callers must still get today's exact "No references found" message.
   it('callers: a real indexed symbol with genuinely zero callers keeps the old message unchanged', () => {
     const r = run(['callers', 'gamma'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
@@ -205,8 +177,7 @@ describe('empty-index hint', () => {
   })
 
   it('dead: indexed project with a genuinely clean result keeps the old message unchanged', () => {
-    // Scan for a kind the indexed project genuinely has none of (no classes in c.ts) -- a real
-    // "nothing of this kind exists" zero-result, distinct from "never indexed".
+    // Scan for a kind the indexed project genuinely has none of (no classes in c.ts) -- a real "nothing of this kind exists" zero-result, distinct from "never indexed".
     const r = run(['dead', '--kind', 'class'], indexedProjectDir, homeDir)
     expect(r.status).toBe(0)
     expect(r.out).toContain('No dead symbols found.')
