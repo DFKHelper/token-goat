@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { parse } from 'smol-toml'
 
 import { configPath, projectConfigPath } from './constants.js'
@@ -171,8 +172,34 @@ export function mergeRawConfig(base: Record<string, unknown>, override: Record<s
 
 let _projectRootCache: { cwd: string; root: string } | null = null
 
-/** Resolve the project root to check for a per-project `.token-goat.toml` override, for callers of {@link loadConfig} that don't pass one explicitly — almost every hook and CLI command. Deliberately uses the cheap, subprocess-free `findProject()` marker walk rather than `resolveProjectRoot()`'s `git rev-parse` step: loadConfig() is called from the hot hook path (every Read/Grep/Bash/... hook invocation), where hooks already avoid spawning git for this exact reason (see hooks_read.ts's own findProject() usage). Memoized per `process.cwd()`, matching constants.ts's DATA_DIR memoization rationale — cwd does not change within a hook or CLI process's lifetime. */
+let _projectRootOverride: string | null = null
+
+/** Run `fn` with {@link resolveConfigProjectRoot} answering `root`, so every argument-less {@link loadConfig} that `fn` reaches before its first `await` layers that project's `.token-goat.toml`. For a caller working on a file whose project is not its working directory's: the worker daemon runs in the temp directory, and parser.ts's indexFileEmbeddings reads its settings with no root to pass. */
+export function withConfigProjectRoot<T>(root: string, fn: () => T): T {
+  const prior = _projectRootOverride
+  _projectRootOverride = root
+  try {
+    return fn()
+  } finally {
+    _projectRootOverride = prior
+  }
+}
+
+/** The project root whose `.token-goat.toml` governs a file in `dir`: the nearest enclosing project root that has one, else the directory's own project, else `dir` itself. It climbs past a project root without the file because a monorepo gives each package its own package.json while the configuration sits at the repository root, which is where `token-goat index` and the harness hooks run. */
+export function configProjectRootFor(dir: string): string {
+  const own = findProject(dir)
+  let project = own
+  while (project !== null) {
+    if (fs.existsSync(projectConfigPath(project.root))) return project.root
+    const parent = path.dirname(project.root)
+    project = parent === project.root ? null : findProject(parent)
+  }
+  return own?.root ?? dir
+}
+
+/** Resolve the project root to check for a per-project `.token-goat.toml` override, for callers of {@link loadConfig} that don't pass one explicitly — almost every hook and CLI command. Deliberately uses the cheap, subprocess-free `findProject()` marker walk rather than `resolveProjectRoot()`'s `git rev-parse` step: loadConfig() is called from the hot hook path (every Read/Grep/Bash/... hook invocation), where hooks already avoid spawning git for this exact reason (see hooks_read.ts's own findProject() usage). Memoized per `process.cwd()`, matching constants.ts's DATA_DIR memoization rationale — cwd does not change within a hook or CLI process's lifetime. Inside {@link withConfigProjectRoot} it answers that call's root instead. */
 export function resolveConfigProjectRoot(): string {
+  if (_projectRootOverride !== null) return _projectRootOverride
   const cwd = process.cwd()
   if (_projectRootCache !== null && _projectRootCache.cwd === cwd) return _projectRootCache.root
   const project = findProject(cwd)

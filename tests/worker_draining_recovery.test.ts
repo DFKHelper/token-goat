@@ -4,9 +4,7 @@ import type * as fs from 'node:fs'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Two stage (a) crash-recovery defects in drainOnce, both of which silently lose queued paths.
-// Injecting a filesystem failure needs a module mock with hoisted flags: node:fs namespace
-// exports are non-configurable, so vi.spyOn cannot patch them (same reason as parser_read_failure_swallow.test.ts).
+// Two stage (a) crash-recovery defects in drainOnce, both of which silently lose queued paths. Injecting a filesystem failure needs a module mock with hoisted flags: node:fs namespace exports are non-configurable, so vi.spyOn cannot patch them (same reason as parser_read_failure_swallow.test.ts).
 const mockState = vi.hoisted(() => ({
   readFailTarget: '',
   readFailuresRemaining: 0,
@@ -38,7 +36,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, default: actual, readFileSync, rmSync, renameSync }
 })
 
-vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
+vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), loadConfig: vi.fn() }))
 
 const realFs = await vi.importActual<typeof fs>('node:fs')
 const { loadConfig } = await import('../src/config.js')

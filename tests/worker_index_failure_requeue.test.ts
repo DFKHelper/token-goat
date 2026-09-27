@@ -1,29 +1,4 @@
-/**
- * A file the worker failed to INDEX must get another attempt, exactly as one it failed to READ does.
- *
- * `drainOnce` claims the dirty queue by renaming it to `.draining`, processes the batch, then deletes
- * the claimed file. So a path is durably removed from the queue the moment its batch is processed, and
- * whatever `processDirtyBatch` decides is the path's last chance. It already handles the read half
- * correctly: `fingerprintFile` returning null logs a transient failure and requeues. The index half did
- * not. `makeIndexer` catches everything, logs it, and returns the INDEX_FAILED sentinel, and
- * `processDirtyBatch` used that only to skip the tally -- so a file whose write lost a SQLITE_BUSY race,
- * or whose read inside indexFileSync hit a lock the earlier fingerprint had missed, was dropped from the
- * queue for good. Its symbols then stay stale until something edits it again, and nothing says so: the
- * index is silently wrong rather than visibly behind.
- *
- * The retry accounting had to move for this to be safe. `clearRetryCount` ran as soon as the fingerprint
- * succeeded, on the reasoning that a successful read is progress. It is not progress if the index that
- * follows it fails: clearing there and requeuing here would reset the budget every cycle and hammer a
- * permanently unparseable file forever. The counter now clears only once the path is actually current,
- * which is why the give-up case below is part of this file rather than a separate concern.
- *
- * Provenance: CAPTURE for the mechanism, HAND-DERIVED for the counts. The failure is injected by making
- * the real `indexFileSync` throw, so the path under test is the production one: real `makeIndexer`, real
- * catch, real sentinel, real `drainOnce` queue claim and deletion against real files on disk. Nothing
- * here asserts on the sentinel itself (it is module-private) -- only on what a reader can observe: which
- * paths are on the queue afterwards, what the error log says, and whether the file ever gets indexed.
- * The cycle counts are chosen from MAX_TRANSIENT_RETRIES = 5, read from src/worker.ts.
- */
+/** A file the worker failed to INDEX must get another attempt, exactly as one it failed to READ does. `drainOnce` claims the dirty queue by renaming it to `.draining`, processes the batch, then deletes the claimed file. So a path is durably removed from the queue the moment its batch is processed, and whatever `processDirtyBatch` decides is the path's last chance. It already handles the read half correctly: `fingerprintFile` returning null logs a transient failure and requeues. The index half did not. `makeIndexer` catches everything, logs it, and returns the INDEX_FAILED sentinel, and `processDirtyBatch` used that only to skip the tally -- so a file whose write lost a SQLITE_BUSY race, or whose read inside indexFileSync hit a lock the earlier fingerprint had missed, was dropped from the queue for good. Its symbols then stay stale until something edits it again, and nothing says so: the index is silently wrong rather than visibly behind. The retry accounting had to move for this to be safe. `clearRetryCount` ran as soon as the fingerprint succeeded, on the reasoning that a successful read is progress. It is not progress if the index that follows it fails: clearing there and requeuing here would reset the budget every cycle and hammer a permanently unparseable file forever. The counter now clears only once the path is actually current, which is why the give-up case below is part of this file rather than a separate concern. Provenance: CAPTURE for the mechanism, HAND-DERIVED for the counts. The failure is injected by making the real `indexFileSync` throw, so the path under test is the production one: real `makeIndexer`, real catch, real sentinel, real `drainOnce` queue claim and deletion against real files on disk. Nothing here asserts on the sentinel itself (it is module-private) -- only on what a reader can observe: which paths are on the queue afterwards, what the error log says, and whether the file ever gets indexed. The cycle counts are chosen from MAX_TRANSIENT_RETRIES = 5, read from src/worker.ts. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -36,7 +11,7 @@ import { normalizePath } from '../src/paths.js'
 import * as parserModule from '../src/parser.js'
 import { drainOnce, getDirtyPathsFor, pendingEmbeddings } from '../src/worker.js'
 
-vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
+vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), loadConfig: vi.fn() }))
 
 let DIR: string
 
