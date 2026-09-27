@@ -501,7 +501,48 @@ describe('body fold against the captured Claude Code Read envelope', () => {
     delete (resp['file'] as Record<string, unknown>)['startLine']
     expect(JSON.stringify(postReadHandler(event))).toBe('{"hookType":"pass"}')
   })
+
+  /** Fixture provenance: HAND-DERIVED source around a listing whose rows open with a number and a tab, the shape a captured `cat -n` listing or `git log --numstat` record takes as file text (tests/fixtures/git_log_real_captures.ts holds 43 such lines verbatim). The envelope is the CAPTURE above, so every line of `content` is the file's own. */
+  it('numbers raw content by position even where a file line opens with a number and a tab', () => {
+    const lines = ['export function longFunction(n: number): number {']
+    for (let i = 0; i < 33; i++) lines.push(`  const localVariable${i} = n + ${i} // body line ${i}`)
+    lines.push('  return n', '}', '', 'export const CAPTURED_LISTING = `')
+    for (let i = 1; i <= 40; i++) lines.push(`${String(i).padStart(6)}\tcaptured line ${i}`)
+    lines.push('`', '')
+    const body = lines.join('\n')
+    const file = path.join(indexableDir(), 'fold-numbered-raw.ts')
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+    indexFileSync(normalizePath(file))
+
+    const updated = ((postReadHandler(capturedEvent(file, body)) as { updatedOutput?: string }).updatedOutput ?? '').split('\n')
+    const notices = bodyFoldNotices(updated)
+    expect(notices.map((n) => n.name)).toContain('longFunction')
+    // The harness numbers this text by position, so a notice naming lines 9-36 has to sit on line 9. Read as a numbered rendering, the listing's own "9" was taken for file line 9: the notice landed 38 lines lower over listing rows it never named, and the body it named was delivered whole.
+    for (const n of notices) expect(n.at).toBe(n.first)
+    expect(updated.join('\n')).not.toContain('localVariable32')
+  })
+
+  /** Fixture provenance: CAPTURE. tests/fixtures/git_log_real_captures.ts holds real `git log` output as file text, its numstat records opening with a number and a tab, delivered in the captured envelope exactly as a Read of it arrives. */
+  it('folds a real file whose captured records open with a number and a tab', () => {
+    const body = fs.readFileSync(path.join(__dirname, 'fixtures', 'git_log_real_captures.ts'), 'utf-8')
+    const file = path.join(indexableDir(), 'git-log-captures-copy.ts')
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+    // Its first such record sits on line 748 and the next one breaks the count, so the old parse made that record the only row, as "line 2": nothing to fold, and all 58 KB were delivered as they arrived.
+    const notices = bodyFoldNotices(((postReadHandler(capturedEvent(file, body)) as { updatedOutput?: string }).updatedOutput ?? '').split('\n'))
+    expect(notices.length).toBeGreaterThan(0)
+    for (const n of notices) expect(n.at).toBe(n.first)
+  })
 })
+
+/** Each body-fold notice in a rewritten Read: the symbol it names, the line it sits on, and the first line it says it withheld. */
+function bodyFoldNotices(updated: readonly string[]): Array<{ name: string | undefined; at: number; first: number }> {
+  return updated.flatMap((line, idx) => {
+    const m = /^\.\.\. \d+ more lines of (\w+) \((\d+)-\d+\) folded/.exec(line)
+    return m === null ? [] : [{ name: m[1], at: idx + 1, first: Number(m[2]) }]
+  })
+}
 
 /** Comment folding. Fixture provenance: HAND-DERIVED. The rows below are synthetic source written for this test and the expected spans are computed from the inputs by hand, independently of the planner. That is the right tier for logic and explicitly NOT evidence about any wire format; the captured-envelope block above is what covers the shape Claude Code actually delivers. The markdown case is the one that matters most. A run of `#` lines is a comment block in Python and a run of headings in Markdown, so a content sniff would fold a document's entire heading structure -- the one thing a reader navigates by. Keying on extension is what prevents that, and the assertion below fails if anyone swaps it for a sniff. */
 function crows(lines: string[], from = 1): Array<{ no: number; text: string }> {
