@@ -15,9 +15,7 @@ import {
   truncateTableRows,
 } from './helpers.js'
 
-// ---------------------------------------------------------------------------
-// Docker regexes (BuildKit and legacy format)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Docker regexes (BuildKit and legacy format) ---------------------------------------------------------------------------
 
 // #N sha256:… digest lines or #N resolve … lines — noise
 const _DOCKER_DIGEST_RE = /^\s*#\d+\s+(sha256:[a-f0-9]{8,}|resolve\s)/
@@ -40,14 +38,10 @@ const _DOCKER_OLD_SHA_RE = /^ *---> (?:sha256:)?[0-9a-f]{12,}\s*$/
 const _DOCKER_OLD_STEP_RE = /^Step \d+\/\d+ : /
 const _DOCKER_OLD_SUCCESS_RE = /^Successfully built [0-9a-f]+/
 const _DOCKER_OLD_INTERMEDIATE_RE = /^Removing intermediate container [0-9a-f]+/
-// Real-world RUN failures rarely spell the literal word "error" (npm/yarn use "npm ERR!"), but
-// docker's own legacy builder always emits this line right after a failed step's command output,
-// so it's a reliable signal even when the command's own error text doesn't say "error".
+// Real-world RUN failures rarely spell the literal word "error" (npm/yarn use "npm ERR!"), but docker's own legacy builder always emits this line right after a failed step's command output, so it's a reliable signal even when the command's own error text doesn't say "error".
 const _DOCKER_OLD_STEP_ERROR_RE = /error|returned a non-zero code/i
 
-// ---------------------------------------------------------------------------
-// DockerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DockerFilter ---------------------------------------------------------------------------
 
 export class DockerFilter extends ToolFilter {
   readonly name = 'docker'
@@ -148,9 +142,7 @@ export class DockerFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// DockerCompose helpers + filter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DockerCompose helpers + filter ---------------------------------------------------------------------------
 
 // Streaming service logs: "service_name | message"
 const _DC_SERVICE_LOG_RE = /^(?<svc>[a-zA-Z0-9_\-.]+(?:-\d+)?)\s*\|\s*(?<msg>.*)$/
@@ -247,9 +239,7 @@ export class DockerComposeFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Kubectl table / describe / events helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Kubectl table / describe / events helpers ---------------------------------------------------------------------------
 
 function _compressKubectlTable(text: string, maxRows = 10): string {
   return truncateTableRows(text, maxRows, 'use --selector or -l to narrow')
@@ -389,11 +379,7 @@ function _compressKubectlDescribe(text: string): string {
   return kept.join('\n')
 }
 
-// kubectl's global options that take a SEPARATE next-token value rather than a `--flag=value`
-// or a no-value boolean form. These are valid before the subcommand (`kubectl -n myns get pods`,
-// `kubectl --context prod describe pod x`), so positionalArgs must skip both the flag and its
-// value token to keep pos[0]/pos[1] pointing at the real subcommand/resource, matching the
-// AWS_GLOBAL_VALUE_FLAGS precedent in cloud.ts.
+// kubectl's global options that take a SEPARATE next-token value rather than a `--flag=value` or a no-value boolean form. These are valid before the subcommand (`kubectl -n myns get pods`, `kubectl --context prod describe pod x`), so positionalArgs must skip both the flag and its value token to keep pos[0]/pos[1] pointing at the real subcommand/resource, matching the AWS_GLOBAL_VALUE_FLAGS precedent in cloud_providers.ts.
 const KUBECTL_GLOBAL_VALUE_FLAGS = new Set([
   '-n',
   '--namespace',
@@ -409,19 +395,9 @@ const KUBECTL_GLOBAL_VALUE_FLAGS = new Set([
   '--request-timeout',
 ])
 
-// ---------------------------------------------------------------------------
-// KubectlFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- KubectlFilter ---------------------------------------------------------------------------
 
-/**
- * Output formats that produce a document or a template result rather than a table.
- *
- * `kubectl get` defaults to a table, which {@link _compressKubectlTable} is right to truncate: the rows that survive stay readable and the marker says how many did not. A document is not a table, and truncating one leaves something the caller cannot parse at all. Measured against the shipped 2.9.27 binary on 2026-09-23, a 1445-line `-o json` listing was cut to ten lines in the middle of an object -- 99% gone, the remainder not valid JSON -- and a 121-line `-o yaml` one was cut mid-document, each under a marker offering `--selector` as the remedy, which does not make either parseable.
- *
- * `wide`, `name` and `custom-columns` are absent deliberately. All three stay line-oriented, so a truncated one is still valid and the marker still discloses the loss; they are the same case as the default table, not this one.
- *
- * Matched as prefixes rather than whole words, because every suffixed spelling kubectl accepts extends one of these four: `jsonpath`, `jsonpath-file` and `jsonpath-as-json` all extend `json`, `go-template-file` extends `go-template`, and `templatefile` extends `template`. Nothing line-oriented shares a prefix with them, and a format kubectl does not accept never reaches here at all -- it exits with the error on stderr and no stdout to compress. This regex is a string literal in the shipped bundle rather than a comment the bundler strips, and `containers.ts` is hook-eager through the bash filter registry, so the shorter form is bytes on every install as well as the simpler statement of the rule.
- */
+/** Output formats that produce a document or a template result rather than a table. `kubectl get` defaults to a table, which {@link _compressKubectlTable} is right to truncate: the rows that survive stay readable and the marker says how many did not. A document is not a table, and truncating one leaves something the caller cannot parse at all. Measured against the shipped 2.9.27 binary on 2026-09-23, a 1445-line `-o json` listing was cut to ten lines in the middle of an object -- 99% gone, the remainder not valid JSON -- and a 121-line `-o yaml` one was cut mid-document, each under a marker offering `--selector` as the remedy, which does not make either parseable. `wide`, `name` and `custom-columns` are absent deliberately. All three stay line-oriented, so a truncated one is still valid and the marker still discloses the loss; they are the same case as the default table, not this one. Matched as prefixes rather than whole words, because every suffixed spelling kubectl accepts extends one of these four: `jsonpath`, `jsonpath-file` and `jsonpath-as-json` all extend `json`, `go-template-file` extends `go-template`, and `templatefile` extends `template`. Nothing line-oriented shares a prefix with them, and a format kubectl does not accept never reaches here at all -- it exits with the error on stderr and no stdout to compress. This regex is a string literal in the shipped bundle rather than a comment the bundler strips, and `containers.ts` is hook-eager through the bash filter registry, so the shorter form is bytes on every install as well as the simpler statement of the rule. */
 const _KUBECTL_STRUCTURED_OUTPUT = /^(json|yaml|go-template|template)/
 
 /** The value of `-o`/`--output` in any of kubectl's four spellings -- separate, `=`-joined, or glued to the short flag -- lowercased, or an empty string when the flag is absent. */
@@ -489,9 +465,7 @@ export class KubectlFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// KubectlLogsFilter helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- KubectlLogsFilter helpers ---------------------------------------------------------------------------
 
 // HTTP access-log pattern: IP + HTTP method/path/status
 const _KUBE_ACCESS_LOG_RE =
@@ -500,11 +474,7 @@ const _KUBE_ACCESS_LOG_RE =
 // Stack-trace frame patterns (Java, Python, Go, Node)
 const _KUBE_STACKFRAME_RE = /^\s+(?:at\s+[\w.$<>]+\(|File "[^"]+", line \d+|goroutine \d+ \[|\s+\.\.\.)/
 
-// A Python traceback frame is TWO physical lines: a `File "...", line N, in func` header,
-// immediately followed by an indented source-snippet line (e.g. `    bar()`) that does NOT
-// itself match _KUBE_STACKFRAME_RE. Used by _collapseStackTraces to pair the two together so
-// MAX_FRAMES always lands on a frame boundary, never splitting a kept File line from its own
-// source line (or vice versa), and so "N more frames" counts real frames, not physical lines.
+// A Python traceback frame is TWO physical lines: a `File "...", line N, in func` header, immediately followed by an indented source-snippet line (e.g. `    bar()`) that does NOT itself match _KUBE_STACKFRAME_RE. Used by _collapseStackTraces to pair the two together so MAX_FRAMES always lands on a frame boundary, never splitting a kept File line from its own source line (or vice versa), and so "N more frames" counts real frames, not physical lines.
 const _PY_FILE_LINE_RE = /^\s+File "[^"]+", line \d+/
 
 // Pod/container prefix for --prefix and sidecar-style output
@@ -540,12 +510,7 @@ function _collapseStackTraces(lines: string[]): string[] {
   let i = 0
   while (i < lines.length) {
     if (_KUBE_STACKFRAME_RE.test(lines[i]!)) {
-      // Group contiguous stack-frame lines into logical frames rather than physical lines. A
-      // Python `File "...", line N` header absorbs its immediately-following indented
-      // source-snippet line into the same frame (see _PY_FILE_LINE_RE); `at ...` (Java) and
-      // `goroutine N [...]:` headers are standalone single-line frames. Without this pairing,
-      // the un-indented exception-summary line that always follows the last Python frame must
-      // NOT be absorbed, so absorption additionally requires the next line to be indented.
+      // Group contiguous stack-frame lines into logical frames rather than physical lines. A Python `File "...", line N` header absorbs its immediately-following indented source-snippet line into the same frame (see _PY_FILE_LINE_RE); `at ...` (Java) and `goroutine N [...]:` headers are standalone single-line frames. Without this pairing, the un-indented exception-summary line that always follows the last Python frame must NOT be absorbed, so absorption additionally requires the next line to be indented.
       const frames: string[][] = []
       let j = i
       while (j < lines.length && _KUBE_STACKFRAME_RE.test(lines[j]!)) {
@@ -663,9 +628,7 @@ function _collapseJsonBlobs(lines: string[], maxJsonLines = 5): string[] {
   return out
 }
 
-// ---------------------------------------------------------------------------
-// KubectlLogsFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- KubectlLogsFilter ---------------------------------------------------------------------------
 
 export class KubectlLogsFilter extends ToolFilter {
   readonly name = 'kubectl-logs'
@@ -710,9 +673,7 @@ export class KubectlLogsFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helm helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helm helpers ---------------------------------------------------------------------------
 
 // Release description boilerplate (first-word match)
 const _HELM_RELEASE_DESC_RE =
@@ -767,9 +728,7 @@ function _compressHelmTemplate(lines: string[]): string {
   return sections.join('\n')
 }
 
-// ---------------------------------------------------------------------------
-// HelmFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- HelmFilter ---------------------------------------------------------------------------
 
 export class HelmFilter extends ToolFilter {
   readonly name = 'helm'
@@ -798,9 +757,7 @@ export class HelmFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Exported registry Ordering is load-bearing: KubectlLogsFilter BEFORE KubectlFilter; DockerComposeFilter BEFORE DockerFilter.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Exported registry Ordering is load-bearing: KubectlLogsFilter BEFORE KubectlFilter; DockerComposeFilter BEFORE DockerFilter. ---------------------------------------------------------------------------
 
 export const kubectlLogsFilter = new KubectlLogsFilter()
 export const dockerComposeFilter = new DockerComposeFilter()

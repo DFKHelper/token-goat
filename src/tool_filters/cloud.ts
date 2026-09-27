@@ -1,8 +1,9 @@
-// Cloud / IaC filter family (Batch G): terraform/tofu/terragrunt, aws/aws-cli, gcloud, az, ansible, pulumi, cdk, vault, packer, nix, wrangler, hardhat, serverless/sls, fly/flyctl, forge, hardhat.
+// Cloud / IaC filter family (Batch G): terraform/tofu/terragrunt, ansible, pulumi, cdk, vault, packer, nix, wrangler, hardhat, serverless/sls, fly/flyctl and forge here, and the aws/aws-cli, gcloud and az filters from cloud_providers.ts, all registered in CLOUD_FILTERS.
 //
 // Ported faithfully from the Python bash_compress.py cloud family. Dispatch ordering note: AwsCliFilter must precede AwsFilter in CLOUD_FILTERS — both match `aws`/`aws2`, but AwsCliFilter is the more specific handler with CFN/S3 routing; AwsFilter is the simpler JSON-array fallback. Listing specific-before-generic preserves the Python registry order exactly.
 
 import { ToolFilter } from './base.js'
+import { awsCliFilter, awsFilter, azureCliFilter, gcloudFilter } from './cloud_providers.js'
 import {
   ERROR_SIGNAL_RE,
   headTailCompress,
@@ -10,12 +11,9 @@ import {
   pathName,
   pathStem,
   positionalArgs,
-  truncateTableRows,
 } from './helpers.js'
 
-// ---------------------------------------------------------------------------
-// Terraform regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Terraform regexes ---------------------------------------------------------------------------
 
 const _TF_REFRESH_RE =
   /^[a-z0-9_.[\]"-]+: (Refreshing state|Reading|Read complete|Still |Modifications complete)/
@@ -49,9 +47,7 @@ const _TF_SHOW_RESOURCE_HDR_RE =
 const _TF_SHOW_KEY_ATTR_RE =
   /^\s+(?:id|arn|name|region|account_id|bucket|type|instance_type|endpoint|address|hostname|dns_name|tags(?:_all)?)\s*=/
 
-// ---------------------------------------------------------------------------
-// TerraformFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TerraformFilter ---------------------------------------------------------------------------
 
 export class TerraformFilter extends ToolFilter {
   readonly name = 'terraform'
@@ -359,440 +355,7 @@ export class TerraformFilter extends ToolFilter {
 
 export const terraformFilter = new TerraformFilter()
 
-// ---------------------------------------------------------------------------
-// JSON array helpers shared by AwsCliFilter and AzureCliFilter
-// ---------------------------------------------------------------------------
-
-function _tryCompressJsonArray(text: string, threshold: number, keep: number): string | null {
-  const stripped = text.trim()
-  if (!stripped || (stripped[0] !== '{' && stripped[0] !== '[')) return null
-  let data: unknown
-  try {
-    data = JSON.parse(stripped)
-  } catch {
-    return null
-  }
-  let changed = false
-  if (Array.isArray(data) && data.length > threshold) {
-    const original = data.length
-    data = [...data.slice(0, keep), { __token_goat__: `${original} items (showing first ${keep})` }]
-    changed = true
-  } else if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
-    const obj = data as Record<string, unknown>
-    for (const key of Object.keys(obj)) {
-      const value = obj[key]
-      if (Array.isArray(value) && value.length > threshold) {
-        const original = value.length
-        obj[key] = [
-          ...value.slice(0, keep),
-          { __token_goat__: `${original} items (showing first ${keep})` },
-        ]
-        changed = true
-      }
-    }
-  }
-  if (!changed) return null
-  return JSON.stringify(data, null, 2)
-}
-
-// ---------------------------------------------------------------------------
-// AwsFilter  (simpler JSON list truncation — registered AFTER AwsCliFilter)
-// ---------------------------------------------------------------------------
-
-export class AwsFilter extends ToolFilter {
-  readonly name = 'aws'
-  override readonly binaries = new Set(['aws', 'aws2'])
-  override readonly errorPassthrough = true
-
-  protected override compressBody(
-    stdout: string,
-    stderr: string,
-    _exitCode: number,
-    _argv: string[],
-  ): string {
-    let text = stdout
-    const compressed = _tryCompressJsonArray(text, 20, 20)
-    if (compressed !== null) {
-      text = compressed
-    } else if (text.includes('\n') && text.includes('|')) {
-      // table output — use kubectl-style row truncation
-      text = _compressTable(text, 25)
-    }
-    if (stderr.trim()) {
-      text = text.trim()
-        ? `${text.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
-        : stderr
-    }
-    return text
-  }
-}
-
-export const awsFilter = new AwsFilter()
-
-// ---------------------------------------------------------------------------
-// AWS S3 transfer regexes
-// ---------------------------------------------------------------------------
-
-const _AWS_UPLOAD_RE = /^upload:\s+\S+\s+to\s+s3:\/\//i
-const _AWS_DOWNLOAD_RE = /^download:\s+s3:\/\//i
-// Every transfer type aws-cli can report, not just the two the progress regex used to swallow: its ResultPrinter renders one FAILURE_FORMAT of `{transfer_type} failed: ...`, so `aws s3 cp` between two buckets reports `copy failed:` and `rm`/`mv` report `delete failed:`/`move failed:`. Each of those four subcommands is routed to _compressS3Transfer (see isS3Transfer) -- a type matched here but not routed there would be an unreachable alternative, which is what `delete` was until `rm` was added.
-const _AWS_S3_TRANSFER_FAILED_RE = /^(?:upload|download|copy|delete|move)\s+failed:/i
-const _AWS_S3_PROGRESS_RE = /^(?:Completed\s+\d|\d+(?:\.\d+)?\s*(?:KiB|MiB|GiB|B)\/s|Calculating)/i
-
-// AWS CLI's documented global options that take a separate value token (as opposed to a
-// no-value boolean like --debug/--no-verify-ssl, or a `--flag=value` form already handled by
-// positionalArgs' own `-`-prefix filter). These are valid anywhere in the argv, including
-// before the subcommand (`aws --profile prod s3 cp ...`), so positionalArgs must skip both the
-// flag and its value token to keep positions[0]/[1] pointing at the real subcommand/action.
-const AWS_GLOBAL_VALUE_FLAGS = new Set([
-  '--profile',
-  '--region',
-  '--endpoint-url',
-  '--output',
-  '--query',
-  '--color',
-  '--ca-bundle',
-  '--cli-read-timeout',
-  '--cli-connect-timeout',
-  '--cli-binary-format',
-  '--cli-pager',
-])
-
-// ---------------------------------------------------------------------------
-// AwsCliFilter  (enhanced — registered BEFORE AwsFilter)
-// ---------------------------------------------------------------------------
-
-export class AwsCliFilter extends ToolFilter {
-  readonly name = 'aws-cli'
-  override readonly binaries = new Set(['aws', 'aws2'])
-  override readonly errorPassthrough = true
-
-  private readonly _JSON_ARRAY_THRESHOLD = 10
-  private readonly _JSON_ARRAY_KEEP = 3
-
-  protected override compressBody(
-    stdout: string,
-    stderr: string,
-    _exitCode: number,
-    argv: string[],
-  ): string {
-    const positionals = positionalArgs(argv.slice(1), AWS_GLOBAL_VALUE_FLAGS)
-    const isS3Transfer =
-      positionals.length >= 2 &&
-      positionals[0] === 's3' &&
-      // `rm` belongs here for the failure path, not the volume one: `aws s3 rm --recursive` reports `delete failed:` per object, and routing it anywhere else meant those lines were never counted. Its `delete:` success lines are not folded into a count -- only `upload:`/`download:` are -- so adding it drops nothing that used to survive.
-      (positionals[1] === 'cp' || positionals[1] === 'sync' || positionals[1] === 'mv' || positionals[1] === 'rm')
-    const isCfnEvents =
-      positionals.length >= 2 &&
-      positionals[0] === 'cloudformation' &&
-      positionals[1] === 'describe-stack-events'
-
-    let text = stdout
-    if (isS3Transfer) {
-      text = this._compressS3Transfer(text)
-    } else if (isCfnEvents) {
-      const compressed = this._compressCfnStackEvents(text)
-      if (compressed !== null) text = compressed
-    } else {
-      const compressed = _tryCompressJsonArray(
-        text,
-        this._JSON_ARRAY_THRESHOLD,
-        this._JSON_ARRAY_KEEP,
-      )
-      if (compressed !== null) {
-        text = compressed
-      } else if (text.includes('\n') && text.includes('|')) {
-        // `--output table` results (e.g. `aws ec2 describe-instances --output table`) are
-        // not JSON, so _tryCompressJsonArray never fires. AwsCliFilter always wins dispatch
-        // over AwsFilter for real aws commands (see CLOUD_FILTERS ordering), so this fallback
-        // must live here — AwsFilter's copy below is unreachable in practice.
-        text = _compressTable(text, 25)
-      }
-    }
-
-    if (stderr.trim()) {
-      text = text.trim()
-        ? `${text.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
-        : stderr
-    }
-    return text
-  }
-
-  private _compressS3Transfer(text: string): string {
-    const lines = text.split('\n')
-    const kept: string[] = []
-    let uploadCount = 0
-    let downloadCount = 0
-    let failedCount = 0
-    let progressDropped = 0
-    for (const line of lines) {
-      if (_AWS_UPLOAD_RE.test(line)) { uploadCount++; continue }
-      if (_AWS_DOWNLOAD_RE.test(line)) { downloadCount++; continue }
-      if (_AWS_S3_TRANSFER_FAILED_RE.test(line)) { failedCount++; kept.push(line); continue } // a failed transfer is always kept in full, never folded into the progress-line count, and counted in its own note -- the success counts alone read as a clean run, which is what made a dropped `upload failed:` line report the opposite of what happened
-      if (_AWS_S3_PROGRESS_RE.test(line)) { progressDropped++; continue }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, uploadCount, `uploaded ${uploadCount} file(s)`)
-    maybeNote(notes, downloadCount, `downloaded ${downloadCount} file(s)`)
-    maybeNote(notes, failedCount, `${failedCount} transfer(s) failed`)
-    maybeNote(notes, progressDropped, `dropped ${progressDropped} progress line(s)`)
-    this.emitNotes(kept, notes)
-    return this.finalize(kept)
-  }
-
-  private _compressCfnStackEvents(text: string): string | null {
-    const stripped = text.trim()
-    if (!stripped || stripped[0] !== '{') return null
-    let data: Record<string, unknown>
-    try {
-      data = JSON.parse(stripped) as Record<string, unknown>
-    } catch {
-      return null
-    }
-    const events = data['StackEvents']
-    if (!Array.isArray(events)) return null
-    if (events.length <= this._JSON_ARRAY_THRESHOLD) return null
-
-    const keptEvents: unknown[] = []
-    const inProgressRun = new Map<string, number>()
-    const lastResourceStatus = new Map<string, string>()
-
-    for (const event of events) {
-      if (typeof event !== 'object' || event === null || Array.isArray(event)) {
-        keptEvents.push(event)
-        continue
-      }
-      const ev = event as Record<string, unknown>
-      const resourceId = String(ev['LogicalResourceId'] ?? '')
-      const status = String(ev['ResourceStatus'] ?? '')
-      const isInProgress = status.endsWith('_IN_PROGRESS')
-
-      if (isInProgress) {
-        const prevStatus = lastResourceStatus.get(resourceId) ?? ''
-        if (prevStatus.endsWith('_IN_PROGRESS') && prevStatus === status) {
-          inProgressRun.set(resourceId, (inProgressRun.get(resourceId) ?? 0) + 1)
-          continue
-        }
-        const prevCount = inProgressRun.get(resourceId) ?? 0
-        inProgressRun.delete(resourceId)
-        if (prevCount) {
-          keptEvents.push({
-            __token_goat__: `${prevCount} repeated ${prevStatus} event(s) for ${resourceId} collapsed`,
-          })
-        }
-        keptEvents.push(event)
-      } else {
-        const prevCount = inProgressRun.get(resourceId) ?? 0
-        inProgressRun.delete(resourceId)
-        if (prevCount) {
-          const prevStatus = lastResourceStatus.get(resourceId) ?? 'IN_PROGRESS'
-          keptEvents.push({
-            __token_goat__: `${prevCount} repeated ${prevStatus} event(s) for ${resourceId} collapsed`,
-          })
-        }
-        keptEvents.push(event)
-      }
-      lastResourceStatus.set(resourceId, status)
-    }
-
-    // Flush remaining in-progress runs
-    for (const [resourceId, count] of inProgressRun.entries()) {
-      if (count) {
-        const prevStatus = lastResourceStatus.get(resourceId) ?? 'IN_PROGRESS'
-        keptEvents.push({
-          __token_goat__: `${count} repeated ${prevStatus} event(s) for ${resourceId} collapsed`,
-        })
-      }
-    }
-
-    data['StackEvents'] = keptEvents
-    return JSON.stringify(data, null, 2)
-  }
-}
-
-export const awsCliFilter = new AwsCliFilter()
-
-// ---------------------------------------------------------------------------
-// `--output table` row-truncation helper, used by both AwsCliFilter and
-// AwsFilter below.
-// ---------------------------------------------------------------------------
-
-/**
- * Truncate an `--output table`-shaped result to `maxRows` rows, with an
- * AWS-specific narrowing hint (`--query`/`--max-items`, not kubectl's
- * `--selector`/`-l` -- see {@link truncateTableRows}'s doc comment for why
- * that distinction is load-bearing here).
- */
-function _compressTable(text: string, maxRows = 10): string {
-  return truncateTableRows(text, maxRows, 'use --query or --max-items to narrow')
-}
-
-// ---------------------------------------------------------------------------
-// GcloudFilter
-// ---------------------------------------------------------------------------
-
-const _GCLOUD_SPINNER_RE = /^[⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s/
-const _GCLOUD_STATUS_RE = /^(?:Updated|Created|Deleted)\s+\[https?:\/\//i
-const _GCLOUD_API_ENABLE_RE =
-  /^(?:Enabling service|Waiting for async operation|Operation \[operation-)/i
-const _GCLOUD_CONTINUE_RE = /Do you want to continue/i
-const _GCLOUD_STRUCTURED_THRESHOLD = 20
-const _GCLOUD_STRUCTURED_CHARS = new Set(['{', ':', '[', ']', '-', '}'])
-// `gcloud ... list --format=yaml` prints one `---`-prefixed YAML document per
-// resource (real, documented gcloud printer behaviour), so 2+ separator lines
-// reliably means "multiple repeated resource blocks" -- the only shape this
-// filter should ever collapse. A single `describe`'s YAML document has none:
-// it's one coherent answer (status/zone/networkInterfaces/etc.), not noise.
-const _GCLOUD_DOC_SEPARATOR_RE = /^---\s*$/
-const _GCLOUD_MIN_REPEATED_BLOCKS = 2
-
-export class GcloudFilter extends ToolFilter {
-  readonly name = 'gcloud'
-  override readonly binaries = new Set(['gcloud'])
-  override readonly errorPassthrough = true
-
-  protected override compressBody(
-    stdout: string,
-    stderr: string,
-    _exitCode: number,
-    _argv: string[],
-  ): string {
-    let text = this._compressGcloud(stdout)
-    if (stderr.trim()) {
-      text = text.trim()
-        ? `${text.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
-        : stderr
-    }
-    return text
-  }
-
-  private _compressGcloud(text: string): string {
-    const lines = text.split('\n')
-    let kept: string[] = []
-    let spinnersDropped = 0
-    let apiEnableDropped = 0
-
-    for (const line of lines) {
-      if (_GCLOUD_SPINNER_RE.test(line)) { spinnersDropped++; continue }
-      if (_GCLOUD_API_ENABLE_RE.test(line)) { apiEnableDropped++; continue }
-      kept.push(line)
-    }
-
-    kept = this._maybeCollapseStructured(kept)
-
-    const notes: string[] = []
-    maybeNote(notes, spinnersDropped, `dropped ${spinnersDropped} spinner line(s)`)
-    maybeNote(notes, apiEnableDropped, `collapsed ${apiEnableDropped} API enablement line(s)`)
-    this.emitNotes(kept, notes)
-    return this.finalize(kept)
-  }
-
-  private _maybeCollapseStructured(lines: string[]): string[] {
-    const nonEmpty = lines.filter((ln) => ln.trim())
-    if (nonEmpty.length <= _GCLOUD_STRUCTURED_THRESHOLD) return lines
-
-    // Never collapse a single coherent YAML document (e.g. one `describe`'s
-    // status/zone/networkInterfaces/etc. -- the actual answer the command was
-    // run to retrieve). Only collapse genuinely repeated resource blocks, as
-    // produced by `gcloud ... list --format=yaml` for multiple resources.
-    const separatorCount = lines.filter((ln) => _GCLOUD_DOC_SEPARATOR_RE.test(ln)).length
-    if (separatorCount < _GCLOUD_MIN_REPEATED_BLOCKS) return lines
-
-    let structuredCount = 0
-    for (const ln of nonEmpty) {
-      if (
-        [...ln].some((ch) => _GCLOUD_STRUCTURED_CHARS.has(ch)) &&
-        !_GCLOUD_STATUS_RE.test(ln) &&
-        !_GCLOUD_CONTINUE_RE.test(ln)
-      ) {
-        structuredCount++
-      }
-    }
-    const ratio = nonEmpty.length > 0 ? structuredCount / nonEmpty.length : 0
-    if (ratio >= 0.7) {
-      return [
-        `[Resource description: ${nonEmpty.length} lines across ${separatorCount} resources (use --format=json to see full output)]`,
-      ]
-    }
-    return lines
-  }
-}
-
-export const gcloudFilter = new GcloudFilter()
-
-// ---------------------------------------------------------------------------
-// AzureCliFilter
-// ---------------------------------------------------------------------------
-
-const _AZ_PREVIEW_RE =
-  /^(?:Command group|The command|This command).*\bis in preview/i
-const _AZ_PROGRESS_JSON_RE =
-  /^\s*\{[^}]*"(?:status|percentComplete|provisioningState)"[^}]*\}\s*$/
-
-const _AZ_JSON_ARRAY_THRESHOLD = 10
-const _AZ_JSON_ARRAY_KEEP = 3
-
-export class AzureCliFilter extends ToolFilter {
-  readonly name = 'azure-cli'
-  override readonly binaries = new Set(['az'])
-  override readonly errorPassthrough = true
-
-  protected override compressBody(
-    stdout: string,
-    stderr: string,
-    _exitCode: number,
-    _argv: string[],
-  ): string {
-    let text = this._compressAz(stdout)
-    if (stderr.trim()) {
-      text = text.trim()
-        ? `${text.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
-        : stderr
-    }
-    return text
-  }
-
-  private _compressAz(text: string): string {
-    // Try JSON array compression first (whole document).
-    const compressed = _tryCompressJsonArray(text, _AZ_JSON_ARRAY_THRESHOLD, _AZ_JSON_ARRAY_KEEP)
-    if (compressed !== null) return compressed
-
-    const lines = text.split('\n')
-    const kept: string[] = []
-    let previewDropped = 0
-    let lastProgressStatus: string | null = null
-    let inProgressRun = false
-
-    for (const line of lines) {
-      if (_AZ_PREVIEW_RE.test(line)) { previewDropped++; continue }
-      if (_AZ_PROGRESS_JSON_RE.test(line)) {
-        lastProgressStatus = line.trim()
-        inProgressRun = true
-        continue
-      }
-      // Flush on exit from progress run
-      if (inProgressRun) {
-        if (lastProgressStatus) kept.push(lastProgressStatus)
-        inProgressRun = false
-        lastProgressStatus = null
-      }
-      kept.push(line)
-    }
-    if (inProgressRun && lastProgressStatus) kept.push(lastProgressStatus)
-
-    const notes: string[] = []
-    maybeNote(notes, previewDropped, `collapsed ${previewDropped} preview warning(s)`)
-    this.emitNotes(kept, notes)
-    return this.finalize(kept)
-  }
-}
-
-export const azureCliFilter = new AzureCliFilter()
-
-// ---------------------------------------------------------------------------
-// AnsibleFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AnsibleFilter ---------------------------------------------------------------------------
 
 const _ANSIBLE_STATUS_RE = /^(ok|changed|skipping|skipped|included):\s*\[/
 const _ANSIBLE_HEADER_RE = /^(PLAY|TASK|HANDLER|RUNNING HANDLER|META)(?:\s*\[|\s*RECAP)/
@@ -984,9 +547,7 @@ export class AnsibleFilter extends ToolFilter {
 
 export const ansibleFilter = new AnsibleFilter()
 
-// ---------------------------------------------------------------------------
-// PulumiFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PulumiFilter ---------------------------------------------------------------------------
 
 const _PULUMI_PROGRESS_RE =
   /^\s+[a-zA-Z0-9_./:-]+\s+\([^)]+\):\s+(?:creating|updating|deleting|replacing|refreshing|reading|configuring|waiting)\b/i
@@ -1042,9 +603,7 @@ export class PulumiFilter extends ToolFilter {
 
 export const pulumiFilter = new PulumiFilter()
 
-// ---------------------------------------------------------------------------
-// CdkFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CdkFilter ---------------------------------------------------------------------------
 
 const _CDK_ASSET_PROGRESS_RE =
   /^\s*(?:\[\s*\d+%\s*\]|\[asset\s|\[copy\s|\[zip\s|\bAsset\s+\S+\s+uploaded\b)/i
@@ -1103,9 +662,7 @@ export class CdkFilter extends ToolFilter {
 
 export const cdkFilter = new CdkFilter()
 
-// ---------------------------------------------------------------------------
-// VaultFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- VaultFilter ---------------------------------------------------------------------------
 
 const _VAULT_TABLE_DIVIDER_RE = /^\s*-{3,}(?:\s+-{3,})?\s*$/
 const _VAULT_LEASE_META_RE =
@@ -1195,9 +752,7 @@ export class VaultFilter extends ToolFilter {
 
 export const vaultFilter = new VaultFilter()
 
-// ---------------------------------------------------------------------------
-// PackerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PackerFilter ---------------------------------------------------------------------------
 
 const _PACKER_WAITING_RE =
   /^\s*(?:==>|)\s*[\w.-]+:\s+(?:Waiting\s+for\s+(?:SSH|WinRM|instance|AMI|connection)|Polling\s+for\s+|Retrying\s+in\s+\d+)/i
@@ -1267,9 +822,7 @@ export class PackerFilter extends ToolFilter {
 
 export const packerFilter = new PackerFilter()
 
-// ---------------------------------------------------------------------------
-// NixFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NixFilter ---------------------------------------------------------------------------
 
 const _NIX_BUILDING_RE =
   /^\s*(?:building\s+['"]?\/nix\/store\/|building\s+path\(s\):)/i
@@ -1348,9 +901,7 @@ export class NixFilter extends ToolFilter {
 
 export const nixFilter = new NixFilter()
 
-// ---------------------------------------------------------------------------
-// WranglerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WranglerFilter ---------------------------------------------------------------------------
 
 const _WRANGLER_ASSET_UPLOAD_RE =
   /^\s*(?:\+\s+\/\S+\s+\(\d+\s+bytes?\)|Uploading\s+asset\s+\/\S+|Uploading\s+\d+\s+assets?\s+to\s+\S+|No\s+cached\s+assets\s+found\.\s+Uploading\s+all\s+\d+|Diff\s+result:\s+\d+\s+added|↑\s+\S+\s+\(\d+\s+bytes?\))/i
@@ -1423,9 +974,7 @@ export class WranglerFilter extends ToolFilter {
 
 export const wranglerFilter = new WranglerFilter()
 
-// ---------------------------------------------------------------------------
-// HardhatFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- HardhatFilter ---------------------------------------------------------------------------
 
 const _HARDHAT_COMPILING_RE =
   /^\s*Compiling\s+\d+\s+(?:file[s]?\s+with|Solidity\s+file[s]?)/i
@@ -1508,9 +1057,7 @@ export class HardhatFilter extends ToolFilter {
 
 export const hardhatFilter = new HardhatFilter()
 
-// ---------------------------------------------------------------------------
-// ServerlessFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ServerlessFilter ---------------------------------------------------------------------------
 
 const _SLS_STEP_PROGRESS_RE =
   /^\s*Serverless:\s+(?:Packaging\s+service|Excluding\s+development\s+dependencies|Creating\s+Stack\.\.\.|Checking\s+Stack\s+create\s+progress|Stack\s+create\s+finished|Uploading\s+CloudFormation\s+file\s+to\s+S3|Uploading\s+artifacts|Uploading\s+service\s+\S+\.zip\s+file\s+to\s+S3|Validating\s+template|Updating\s+Stack\.\.\.|Checking\s+Stack\s+update\s+progress|Stack\s+update\s+finished|Executing\s+Changeset|Removing\s+old\s+service\s+artifacts\s+from\s+S3)/i
@@ -1582,9 +1129,7 @@ export class ServerlessFilter extends ToolFilter {
 
 export const serverlessFilter = new ServerlessFilter()
 
-// ---------------------------------------------------------------------------
-// FlyFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FlyFilter ---------------------------------------------------------------------------
 
 const _FLY_STEP_HEADER_RE =
   /^==>\s+(?:Releasing|Building|Creating|Validating|Updating|Destroying|Monitoring)/i
@@ -1671,9 +1216,7 @@ export class FlyFilter extends ToolFilter {
 
 export const flyFilter = new FlyFilter()
 
-// ---------------------------------------------------------------------------
-// ForgeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ForgeFilter ---------------------------------------------------------------------------
 
 const _FORGE_COMPILING_RE =
   /^\s*Compiling\s+\d+\s+(?:file[s]?\s+with|Solidity\s+file[s]?)|^\s*Solc\s+\S+\s+finished\s+in\s+\d/i
@@ -1760,9 +1303,7 @@ export class ForgeFilter extends ToolFilter {
 
 export const forgeFilter = new ForgeFilter()
 
-// ---------------------------------------------------------------------------
-// CLOUD_FILTERS — ordered: AwsCliFilter before AwsFilter (both match aws/aws2; AwsCliFilter is the more specific handler and must win). All others are single-binary so relative order only matters for readability.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CLOUD_FILTERS — ordered: AwsCliFilter before AwsFilter (both match aws/aws2; AwsCliFilter is the more specific handler and must win). All others are single-binary so relative order only matters for readability. ---------------------------------------------------------------------------
 
 export const CLOUD_FILTERS: ToolFilter[] = [
   // terraform/tofu/terragrunt — must come before any go-related fallback

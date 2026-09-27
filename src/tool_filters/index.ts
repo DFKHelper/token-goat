@@ -33,13 +33,17 @@ export {
 } from './containers.js'
 export {
   CLOUD_FILTERS,
-  TerraformFilter, AwsFilter, AwsCliFilter, GcloudFilter, AzureCliFilter,
+  TerraformFilter,
   AnsibleFilter, PulumiFilter, CdkFilter, VaultFilter, PackerFilter,
   NixFilter, WranglerFilter, HardhatFilter, ServerlessFilter, FlyFilter, ForgeFilter,
-  terraformFilter, awsFilter, awsCliFilter, gcloudFilter, azureCliFilter,
+  terraformFilter,
   ansibleFilter, pulumiFilter, cdkFilter, vaultFilter, packerFilter,
   nixFilter, wranglerFilter, hardhatFilter, serverlessFilter, flyFilter, forgeFilter,
 } from './cloud.js'
+export {
+  AwsFilter, AwsCliFilter, GcloudFilter, AzureCliFilter,
+  awsFilter, awsCliFilter, gcloudFilter, azureCliFilter,
+} from './cloud_providers.js'
 export {
   AI_CLI_FILTERS,
   aiderFilter,
