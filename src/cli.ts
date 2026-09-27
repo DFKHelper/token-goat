@@ -1325,6 +1325,26 @@ export function _applyFiltersAndPrint(
   return emit(result.join('\n'))
 }
 
+/** The text of the file a `bash-output`/`mcp-output --file` recall names: a regular file only, decoded, and with a dotenv file's values redacted, since either command will print a .env it is pointed at and every other path that serves a file's text redacts them (see dotenv_redact.ts). `mtimeMs` is what `--verify-last-write` measures a write's age against. */
+function readRecallFile(file: string): { text: string; mtimeMs: number } {
+  if (file.includes('\0')) {
+    throw new CliError('--file path contains a null byte')
+  }
+  if (!isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(file) && process.stdin.isTTY) {
+    throw new CliError('--file /dev/stdin requires piped input; redirect a file instead')
+  }
+  try {
+    const st = fs.statSync(file)
+    if (st.isFIFO() || st.isSocket()) {
+      throw new CliError(`--file '${file}' is a special file (FIFO or socket) — only regular files are supported`)
+    }
+    return { text: redactIfDotenv(file, decodeSource(fs.readFileSync(file))), mtimeMs: st.mtimeMs }
+  } catch (e) {
+    if (e instanceof CliError) throw e
+    throw new CliError((e as NodeJS.ErrnoException).code === 'ENOENT' ? `file not found: ${file}` : `cannot read file: ${file}`)
+  }
+}
+
 function cmdBashOutput(
   id: string | undefined,
   opts: {
@@ -1351,35 +1371,18 @@ function cmdBashOutput(
   const verifyThresholdSec = parseVerifyThreshold(opts.verifyLastWrite)
 
   if (opts.file !== undefined) {
-    if (opts.file.includes('\0')) {
-      throw new CliError('--file path contains a null byte')
-    }
-    if (!isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(opts.file) && process.stdin.isTTY) {
-      throw new CliError('--file /dev/stdin requires piped input; redirect a file instead')
-    }
-    let content: string
-    try {
-      const st = fs.statSync(opts.file)
-      if (st.isFIFO() || st.isSocket()) {
-        throw new CliError(`--file '${opts.file}' is a special file (FIFO or socket) — only regular files are supported`)
-      }
-      if (verifyThresholdSec !== undefined) {
-        const ageSec = Math.round((Date.now() - st.mtimeMs) / 1000)
-        if (ageSec > verifyThresholdSec) {
-          const msg = `stale write: '${opts.file}' was modified ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or no-op'd.`
-          if (opts.strict === true) {
-            throw new CliError(msg)
-          }
-          process.stderr.write(`[tg: stale-write] ${msg}\n`)
+    const { text, mtimeMs } = readRecallFile(opts.file)
+    if (verifyThresholdSec !== undefined) {
+      const ageSec = Math.round((Date.now() - mtimeMs) / 1000)
+      if (ageSec > verifyThresholdSec) {
+        const msg = `stale write: '${opts.file}' was modified ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or no-op'd.`
+        if (opts.strict === true) {
+          throw new CliError(msg)
         }
+        process.stderr.write(`[tg: stale-write] ${msg}\n`)
       }
-      // `bash-output --file` is a general "show me this file's text" recall path, so a caller can point it straight at a .env. Its values are secret by the file's nature; redact them here the same way every other read path does. See dotenv_redact.ts.
-      content = redactIfDotenv(opts.file, decodeSource(fs.readFileSync(opts.file)))
-    } catch (e) {
-      if (e instanceof CliError) throw e
-      throw new CliError(`cannot read file: ${opts.file}`)
     }
-    _applyFiltersAndPrint(opts.transcript === true ? extractTranscriptText(content) : content, opts, true, UNTRUSTED_TOOL_TAG)
+    _applyFiltersAndPrint(opts.transcript === true ? extractTranscriptText(text) : text, opts, true, UNTRUSTED_TOOL_TAG)
     return
   }
 
@@ -1464,22 +1467,7 @@ function cmdMcpOutput(
 ): void {
   let content: string
   if (opts.file !== undefined) {
-    if (opts.file.includes('\0')) {
-      throw new CliError('--file path contains a null byte')
-    }
-    if (!fs.existsSync(opts.file)) {
-      throw new CliError(`file not found: ${opts.file}`)
-    }
-    try {
-      const st = fs.statSync(opts.file)
-      if (st.isFIFO() || st.isSocket()) {
-        throw new CliError(`--file '${opts.file}' is a special file (FIFO or socket) — only regular files are supported`)
-      }
-      content = decodeSource(fs.readFileSync(opts.file))
-    } catch (e) {
-      if (e instanceof CliError) throw e
-      throw new CliError(`cannot read file: ${opts.file}`)
-    }
+    content = readRecallFile(opts.file).text
   } else if (id !== undefined) {
     if (!id.startsWith('mcp_')) {
       throw new CliError(`not an mcp-output id: ${id} (expected an id starting with 'mcp_')`)
