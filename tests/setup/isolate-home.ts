@@ -89,7 +89,7 @@ if (!process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']) {
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'false'
 }
 
-// Pin the three env vars that used to live only in the local pre-push hook (.lefthook-scripts/run-test.sh / wsl-test.sh), so a green local pre-push and a green CI run mean the same thing. Same "a test that sets its own value wins" pattern as TOKEN_GOAT_HOME/TOKEN_GOAT_EMBEDDINGS_ENABLED above: these are only defaults, applied before the test module graph imports anything that reads them.
+// Pin the two env vars that used to live only in the local pre-push hook (.lefthook-scripts/run-test.sh / wsl-test.sh), so a green local pre-push and a green CI run mean the same thing. Same "a test that sets its own value wins" pattern as TOKEN_GOAT_HOME/TOKEN_GOAT_EMBEDDINGS_ENABLED above: these are only defaults, applied before the test module graph imports anything that reads them.
 if (!process.env['TOKEN_GOAT_NO_WORKER_SPAWN']) {
   process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '1'
 }
@@ -103,7 +103,4 @@ if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
 // An install run by a spawned bundle would otherwise wire the native hook client whenever dist/native holds a binary, so the hook commands a test sees would depend on whether `npm run build:native` has run. Tests of the native form delete this and so run the shipping default.
 if (!process.env['TOKEN_GOAT_NATIVE_HOOKS']) {
   process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '0'
-}
-if (!process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB']) {
-  process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB'] = '99999'
 }

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Run the test suite on Linux via WSL to catch platform-specific failures.
-# Requires Node.js installed in WSL (Ubuntu). Skips gracefully if unavailable.
+# Run the test suite on Linux via WSL to catch platform-specific failures. Requires Node.js installed in WSL (Ubuntu). Skips gracefully if unavailable.
 set -euo pipefail
 
 if ! command -v wsl.exe &>/dev/null && ! wsl.exe --status &>/dev/null 2>&1; then
@@ -23,9 +22,7 @@ if [[ "$GIT_ROOT" =~ ^[A-Za-z]:/ ]]; then
 fi
 WSL_ROOT="$(echo "$GIT_ROOT" | sed 's|^/\([a-zA-Z]\)/|/mnt/\1/|')"
 
-# TOKEN_GOAT_NO_WORKER_SPAWN / TOKEN_GOAT_HARNESS_OVERRIDE / TOKEN_GOAT_MEMORY_PRESSURE_MB
-# are pinned by tests/setup/isolate-home.ts (vitest setupFiles) so local pre-push
-# and CI run under the same defaults. Don't re-export them here.
+# TOKEN_GOAT_NO_WORKER_SPAWN and TOKEN_GOAT_HARNESS_OVERRIDE are pinned by tests/setup/isolate-home.ts (vitest setupFiles) so local pre-push and CI run under the same defaults. Don't re-export them here.
 wsl.exe -d Ubuntu -- bash -l -c "
   set -euo pipefail
   cd '$WSL_ROOT'
