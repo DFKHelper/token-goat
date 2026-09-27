@@ -44,7 +44,7 @@ export function resolvePollIntervalMs(explicit?: number): number {
 }
 
 /** How old the drain-heartbeat marker (see drainHeartbeatPathFor) may get before hasFreshWorkerHeartbeat stops counting the pid it names as a running worker: 30x the 2 s default poll interval, a generous margin against a slow cycle on a large repo. */
-export const WORKER_HEARTBEAT_STALE_MS = 60_000
+const WORKER_HEARTBEAT_STALE_MS = 60_000
 const WORKER_HEARTBEAT_REFRESH_MS = 5_000
 const WORKER_STARTUP_GRACE_MS = 10_000
 
@@ -174,7 +174,7 @@ function pidFileIsWithinStartupGrace(dir: string): boolean {
   }
 }
 
-/** Parse and deduplicate dirty queue lines. Used by both getDirtyPathsFor and the rename-to-claim drain logic, and reused by hooks_index.getDirtyPaths so the informational pre-compact snapshot dedupes on the same case-folded key as the real reindex drain rather than an exact-string match that missed case-variant duplicates on Windows/macOS. */
+/** Parse and deduplicate dirty queue lines. Used by both getDirtyPathsFor and the rename-to-claim drain logic, so every reader of the queue (the informational pre-compact snapshot through hooks_index.getDirtyPaths, doctor's pending count) dedupes on the same case-folded key as the real reindex drain rather than an exact-string match that missed case-variant duplicates on Windows/macOS. */
 /** Marks a queue line whose path could not survive the plain one-path-per-line format. A raw line is an absolute normalized path, which always begins with a slash or a drive letter, so a leading `!` cannot collide with one. The decoder also requires what follows to parse as a JSON string, so a hand-written or legacy line that happens to start with `!` is left alone rather than discarded. */
 const ENCODED_LINE_MARKER = '!'
 
@@ -221,7 +221,7 @@ export function workerStampPath(dir: string = dataDir()): string {
   return path.join(dir, 'worker.stamp')
 }
 
-/** Read every queued dirty path for `dir`, deduplicated, in insertion order. Mirrors `hooks_index.getDirtyPaths` but is parameterised on the data dir so the detached worker (which may run with a different cwd) reads the same file. Returns `[]` when the queue file is absent. */
+/** Read every queued dirty path for `dir`, deduplicated, in insertion order. Parameterised on the data dir so the detached worker (which may run with a different cwd) reads the same file; `hooks_index.getDirtyPaths` is this for the default data dir. Returns `[]` when the queue file is absent. */
 export function getDirtyPathsFor(dir: string): string[] {
   let raw: string
   try {
@@ -913,14 +913,7 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
   ) {
     return false
   }
-  // Stale, dead, or unreadable: reclaim the slot.
-  if (existingPid !== null && pidAlive(existingPid) && existingPid !== pid && existingPid !== process.pid) {
-    try {
-      process.kill(existingPid, 'SIGTERM')
-    } catch {
-      // best-effort
-    }
-  }
+  // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, so a kill here lands on an unrelated process. A superseded daemon that is still running exits on its own at its next poll (see runWorkerLoop).
   try {
     fs.rmSync(pidPath, { force: true })
   } catch {
@@ -1099,7 +1092,7 @@ export async function runWorkerLoop(
   while (!shouldStop()) {
     // Self-terminate once this daemon's own data dir no longer exists: a caller that spawned a detached daemon against an ephemeral/scratch data dir (e.g. `token-goat index --walk` in a temp directory during dogfooding or a test run) and then deletes that directory without an explicit `worker stop` leaves the daemon with nothing left to poll -- `dirty.txt`/the pid file/global.db are all gone, so every subsequent drainOnce/cleanup call below is pure wasted work against a directory that will never come back. Without this check the daemon runs forever (confirmed in practice: 524 stray `--worker-daemon` processes accumulated over two weeks of dogfooding/test scratch-dir cleanup with no corresponding `worker stop`).
     if (!fs.existsSync(dir)) break
-    // Self-terminate once another daemon has taken over this data dir's pid file. claimWorkerPidFile's reclaim path SIGTERMs the prior daemon and then takes the pid file, but that SIGTERM is best-effort (a kill that fails, that lands on a reused pid, or a race in which the prior daemon outlives it): when it does not land, the superseded daemon otherwise keeps draining the same queue forever, because the existsSync check above never fires while the shared data dir still exists -- exactly how several stray daemons accumulate over successive sessions. Once we have observed the pid file naming our own pid, a later poll that finds it naming a *different* pid means we lost ownership, so exit and leave the current owner as the sole drainer. We only act on a concrete different pid, never on readPidFile returning null: null also covers a transient read failure or a mid-write empty file (pid-file replacement is not atomic to a concurrent reader), and treating that as lost ownership would let a single filesystem hiccup terminate the sole legitimate daemon -- a self-inflicted version of the very leak this check exists to stop. A genuinely removed pid file leaves us running until either fs.existsSync(dir) fires or a real successor writes its own pid, which is the safe direction.
+    // Self-terminate once another daemon has taken over this data dir's pid file. claimWorkerPidFile's reclaim path takes the pid file from a daemon whose heartbeat lease lapsed without signalling it (by then the pid may name an unrelated process), so this check is what retires a superseded daemon that is still running: without it that daemon keeps draining the same queue forever, because the existsSync check above never fires while the shared data dir still exists -- exactly how several stray daemons accumulate over successive sessions. Once we have observed the pid file naming our own pid, a later poll that finds it naming a *different* pid means we lost ownership, so exit and leave the current owner as the sole drainer. We only act on a concrete different pid, never on readPidFile returning null: null also covers a transient read failure or a mid-write empty file (pid-file replacement is not atomic to a concurrent reader), and treating that as lost ownership would let a single filesystem hiccup terminate the sole legitimate daemon -- a self-inflicted version of the very leak this check exists to stop. A genuinely removed pid file leaves us running until either fs.existsSync(dir) fires or a real successor writes its own pid, which is the safe direction.
     const pidOwner = readPidFile(dir)
     if (pidOwner === process.pid) ownedPidFile = true
     else if (ownedPidFile && pidOwner !== null) break
@@ -1182,7 +1175,7 @@ export async function runWorkerLoop(
 }
 
 /** Run the detached daemon's drain loop in the current (main-thread) process. Reads its poll interval and data dir from the `TG_WORKER_POLL_MS` / `TG_WORKER_DATA_DIR` env vars set by {@link startDetachedWorker} on the child it spawns, registers a SIGTERM handler for a clean exit, and starts {@link runWorkerLoop} without awaiting it -- the loop's own setTimeout chain keeps the event loop (and therefore the process) alive indefinitely. This must be called explicitly by the CLI entrypoint (`cli.ts`'s `run()`) when `--worker-daemon` is present in argv, BEFORE commander ever sees argv: `--worker-daemon` is not a registered commander option or command anywhere in `buildProgram`, so letting commander parse first makes it reject the flag as unknown and the freshly-spawned daemon child exits immediately. This is the sole trigger point for the daemon loop in the shipped CLI -- nothing else should call it, since {@link runWorkerLoop} would then be running twice against the same dirty queue. Registers a `process.on('exit', ...)` handler that clears this daemon's own pid file so any exit path other than a clean {@link stopWorker} call (the SIGTERM handler above, an uncaught exception, or the process simply crashing) doesn't leave a stale pid file behind forever. The handler only removes the file when it still names this exact process -- never unconditionally -- so a daemon that lost the {@link claimWorkerPidFile} startup race (and was killed as a duplicate) or was already stopped and superseded by a newer daemon can never clobber the *current* owner's pid file on its own delayed exit. */
-// Upper bound on how long a SIGTERM'd daemon waits for in-flight embedding calls to settle before exiting anyway. `claimWorkerPidFile` SIGTERMs a prior daemon whose heartbeat looks stale and then starts a replacement immediately -- an unbounded wait here would let a wedged embedding call (a hung model download, a stuck onnxruntime call) block that replacement from ever starting, trading one failure mode (dropped in-flight embeddings) for a worse one (no worker at all). Bounded, not zero: this is strictly better than the previous `process.exit(0)`, which drained nothing regardless of how fast the in-flight work actually was.
+// Upper bound on how long a SIGTERM'd daemon waits for in-flight embedding calls to settle before exiting anyway. `stopWorker` SIGTERMs a running daemon (`worker stop`, or ensureWorkerAlive retiring one that runs a superseded bundle) and expects it gone, but the handler does not stop runWorkerLoop -- an unbounded wait here would let a wedged embedding call (a hung model download, a stuck onnxruntime call) keep that daemon alive and draining after it was told to stop, trading one failure mode (dropped in-flight embeddings) for a worse one (a daemon that cannot be stopped). Bounded, not zero: this is strictly better than the previous `process.exit(0)`, which drained nothing regardless of how fast the in-flight work actually was.
 const SIGTERM_DRAIN_TIMEOUT_MS = 5_000
 
 /** Races {@link pendingEmbeddings} against `timeoutMs`, resolving as soon as either settles. Extracted from {@link runDetachedWorkerDaemon}'s SIGTERM handler so a test can drive it directly with a short bound: `pendingEmbeddings()` itself is never mocked here (that would be exactly the injected-seam trap CLAUDE.md's critical-path note warns this file has shipped broken behind before), only how long this function is willing to wait for it. */
@@ -1198,7 +1191,7 @@ export function runDetachedWorkerDaemon(): void {
   applyIndexingPriority()
   const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
   const safeInterval = resolvePollIntervalMs()
-  // A daemon replaced mid-batch (see claimWorkerPidFile's SIGTERM-a-stale-heartbeat path) used to drop every embedding call started via embedFileSerialized/indexFileEmbeddings that had not yet resolved: `pendingEmbeddings()` (tracking every such call in {@link inFlightEmbeddings}) existed for exactly this and had no caller anywhere in src/ -- the daemon exited before anything drained it. Awaiting it here, bounded by SIGTERM_DRAIN_TIMEOUT_MS above, gives in-flight embeds a real chance to finish and write their rows before the process dies rather than being silently abandoned. Guarded against a second SIGTERM re-entering mid-wait.
+  // A daemon stopped mid-batch (see stopWorker) used to drop every embedding call started via embedFileSerialized/indexFileEmbeddings that had not yet resolved: `pendingEmbeddings()` (tracking every such call in {@link inFlightEmbeddings}) existed for exactly this and had no caller anywhere in src/ -- the daemon exited before anything drained it. Awaiting it here, bounded by SIGTERM_DRAIN_TIMEOUT_MS above, gives in-flight embeds a real chance to finish and write their rows before the process dies rather than being silently abandoned. Guarded against a second SIGTERM re-entering mid-wait.
   let sigtermReceived = false
   process.on('SIGTERM', () => {
     if (sigtermReceived) return
