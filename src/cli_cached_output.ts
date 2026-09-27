@@ -245,12 +245,12 @@ function fenceToolFieldIfMatched(text: string): string {
   return fenceUntrustedContent(redacted, matches, UNTRUSTED_TOOL_TAG)
 }
 
-/** A queried MCP value with every string in it through {@link fenceToolFieldIfMatched}, and every key redacted, which is what the whole-envelope fence this replaced did to both. A key is left unfenced, as every other `--json` envelope leaves its keys, since `displaySafeJson` escapes the fence's own notice in a key. */
+/** A queried MCP value with every string in it, keys included, through {@link fenceToolFieldIfMatched}: each is redacted, which is what the whole-envelope fence this replaced did to both, and fenced on a scan hit. A fence cannot wrap a key in place, so a flagged key's fenced form is the key, its notice escaped by `displaySafeJson` as token-goat's markers are in every key. */
 function fenceJsonStrings(value: unknown): unknown {
   if (typeof value === 'string') return fenceToolFieldIfMatched(value)
   if (Array.isArray(value)) return value.map(fenceJsonStrings)
   if (value === null || typeof value !== 'object') return value
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [redactSecrets(k).text, fenceJsonStrings(v)]))
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [fenceToolFieldIfMatched(k), fenceJsonStrings(v)]))
 }
 
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.

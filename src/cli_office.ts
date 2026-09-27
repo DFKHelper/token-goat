@@ -262,7 +262,9 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
   if (opts.json === true) {
-    const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, fenceFileFieldIfMatched(r[i] ?? '')])))
+    // The header row is the sheet author's text as much as any cell, and it becomes every row's keys, so it goes through the same per-field fence once: a fence cannot wrap a key in place, so a flagged header's fenced form is the key.
+    const keys = result.header.map((h) => fenceFileFieldIfMatched(h))
+    const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '')])))
     const headTruncated = result.rows.length < result.totalRows
     const capped = guardJsonRows(rowsJson)
     const text = displaySafeJson(
