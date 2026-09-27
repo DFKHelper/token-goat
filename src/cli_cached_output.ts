@@ -6,7 +6,7 @@ import { getBashOutput } from './bash_output_cache.js'
 import { CliError, out } from './cli.js'
 import { requireNonNegativeInt } from './cli_dispatch.js'
 import { redactIfDotenv } from './dotenv_redact.js'
-import { UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
+import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
 import { queryJson } from './json_query.js'
 import { displaySafeJson } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
@@ -15,7 +15,7 @@ import { compileGuardedRegex } from './regex_guard.js'
 import { redactSecrets } from './secret_redact.js'
 import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
-import { fenceUntrusted } from './untrusted_fence.js'
+import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { decodeSource, isWindows } from './util.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
@@ -237,6 +237,22 @@ function extractJsonFromMcpOutput(text: string): unknown {
   }
 }
 
+/** Per-field variant for the `mcp-output --json-query --json` output, still gated on a scan hit. The printed form of the same query is fenced whole, by provenance; a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers. Same deliberate exception as `fenceFileFieldIfMatched` in cli_office.ts and `fenceGithubFieldIfMatched` in read_commands.ts. */
+function fenceToolFieldIfMatched(text: string): string {
+  const redacted = redactSecrets(text).text
+  const matches = scanAndRecord(redacted)
+  if (matches.length === 0) return redacted
+  return fenceUntrustedContent(redacted, matches, UNTRUSTED_TOOL_TAG)
+}
+
+/** A queried MCP value with every string in it through {@link fenceToolFieldIfMatched}, and every key redacted, which is what the whole-envelope fence this replaced did to both. A key is left unfenced, as every other `--json` envelope leaves its keys, since `displaySafeJson` escapes the fence's own notice in a key. */
+function fenceJsonStrings(value: unknown): unknown {
+  if (typeof value === 'string') return fenceToolFieldIfMatched(value)
+  if (Array.isArray(value)) return value.map(fenceJsonStrings)
+  if (value === null || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [redactSecrets(k).text, fenceJsonStrings(v)]))
+}
+
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
 export function cmdMcpOutput(
   id: string | undefined,
@@ -281,8 +297,11 @@ export function cmdMcpOutput(
 
     if (!queryResult.fanned) {
       const val = queryResult.items[0]
-      const formatted = opts.json === true ? displaySafeJson(val, 0) : displaySafeJson(val)
-      _applyFiltersAndPrint(formatted, printOpts, true, UNTRUSTED_TOOL_TAG)
+      if (opts.json === true) {
+        out(displaySafeJson(fenceJsonStrings(val), 0))
+        return
+      }
+      _applyFiltersAndPrint(displaySafeJson(val), printOpts, true, UNTRUSTED_TOOL_TAG)
       return
     }
 
@@ -291,12 +310,8 @@ export function cmdMcpOutput(
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
-      const capped = guardJsonRows(limited)
-      const jsonText = displaySafeJson(
-        { items: capped.items, truncated: capped.truncated || headTruncated || queryResult.truncated, totalCount },
-        0,
-      )
-      _applyFiltersAndPrint(jsonText, printOpts, true, UNTRUSTED_TOOL_TAG)
+      const capped = guardJsonRows(limited.map(fenceJsonStrings))
+      out(displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated || queryResult.truncated, totalCount }, 0))
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))
       if (headTruncated) {
