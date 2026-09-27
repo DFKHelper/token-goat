@@ -1,8 +1,4 @@
-/**
- * install --visualstudio: an MCP entry plus routing guidance for Visual Studio's Copilot agent, and no hooks.
- *
- * PROVENANCE: FORMAT-DERIVED. File locations, the `servers` root key and the `{type:"stdio", command, args}` entry shape are from https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers ; the instructions paths (`.github/copilot-instructions.md`, `%USERPROFILE%\copilot-instructions.md`) from https://learn.microsoft.com/en-us/visualstudio/ide/copilot-chat-context ; "no hooks" from https://docs.github.com/en/copilot/concepts/agents/hooks , which lists hooks only for Copilot cloud agent and Copilot CLI. The `mcpServers` fixture is Claude Code's project `.mcp.json` key, the one cli_mcp_audit.ts reads. No run inside a live Visual Studio is recorded.
- */
+/** install --visualstudio: an MCP entry plus routing guidance for Visual Studio's Copilot agent, and no hooks. PROVENANCE: FORMAT-DERIVED. File locations, the `servers` root key and the `{type:"stdio", command, args}` entry shape are from https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers ; the instructions paths (`.github/copilot-instructions.md`, `%USERPROFILE%\copilot-instructions.md`) from https://learn.microsoft.com/en-us/visualstudio/ide/copilot-chat-context ; "no hooks" from https://docs.github.com/en/copilot/concepts/agents/hooks , which lists hooks only for Copilot cloud agent and Copilot CLI. The `mcpServers` fixture is Claude Code's project `.mcp.json` key, the one cli_mcp_audit.ts reads. No run inside a live Visual Studio is recorded. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -26,7 +22,7 @@ import {
 import { installVscode, uninstallVscode, VSCODE_GUIDANCE_BEGIN, VSCODE_GUIDANCE_END, vscodeProjectMcpPath } from '../src/bridges/vscode_install.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from '../src/bridges_status.js'
 import { leftoverIntegrations } from '../src/cli.js'
-import { checkVisualStudio } from '../src/cli_doctor.js'
+import { checkVisualStudio } from '../src/cli_doctor_platforms.js'
 import { readMcpConfig } from '../src/cli_mcp_audit.js'
 import { BUNDLE } from './helpers/bundle.js'
 
@@ -38,10 +34,7 @@ let project: string
 const originalCwd = process.cwd()
 
 beforeEach(() => {
-  // Realpath'd: macOS `os.tmpdir()` is `/var/folders/...`, a symlink to `/private/var/folders/...`.
-  // This suite chdirs into the project, so the installer resolves its scope root through
-  // `process.cwd()` and gets the `/private` spelling, while the paths built from `root` kept the
-  // `/var` one. The two then compared unequal for a file that is the same file.
+  // Realpath'd: macOS `os.tmpdir()` is `/var/folders/...`, a symlink to `/private/var/folders/...`. This suite chdirs into the project, so the installer resolves its scope root through `process.cwd()` and gets the `/private` spelling, while the paths built from `root` kept the `/var` one. The two then compared unequal for a file that is the same file.
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-visualstudio-')))
   home = path.join(root, 'home')
   project = path.join(root, 'project')
@@ -208,11 +201,7 @@ describe('install --visualstudio -p (project scope)', () => {
   })
 })
 
-/**
- * Emulates Claude Code's `.mcp.json` validation, which it runs on every `<dir>\.mcp.json` from the cwd up to the drive root, so the user-scope file is read by every session under the home folder.
- *
- * PROVENANCE: FORMAT-DERIVED. Read off the installed Claude Code bundle `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` (minified; function `NBe`): the schema is `object({mcpServers: record(string, <server>)}).safeParse(configObject)` with `mcpServers` required, and a failing object that has `servers` and no `mcpServers` gets the fatal error 'Missing "mcpServers" — found "servers" instead. Claude Code reads MCP servers from the "mcpServers" key.' Each server value is a config object, so this emulation requires a record of objects.
- */
+/** Emulates Claude Code's `.mcp.json` validation, which it runs on every `<dir>\.mcp.json` from the cwd up to the drive root, so the user-scope file is read by every session under the home folder. PROVENANCE: FORMAT-DERIVED. Read off the installed Claude Code bundle `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` (minified; function `NBe`): the schema is `object({mcpServers: record(string, <server>)}).safeParse(configObject)` with `mcpServers` required, and a failing object that has `servers` and no `mcpServers` gets the fatal error 'Missing "mcpServers" — found "servers" instead. Claude Code reads MCP servers from the "mcpServers" key.' Each server value is a config object, so this emulation requires a record of objects. */
 function claudeCodeMcpJsonError(text: string): string | null {
   const config: unknown = JSON.parse(text)
   if (config === null || typeof config !== 'object' || Array.isArray(config)) return 'expected object'
@@ -330,16 +319,11 @@ describe('Visual Studio seeing token-goat in both .mcp.json and .vscode/mcp.json
     expect(dup?.message).toContain(vscodeProjectMcpPath(project))
   })
 
-  // The user and project paths are distinct spellings of one file whenever the project IS the home
-  // directory, which is ordinary for a solution opened straight out of `%USERPROFILE%`. Counting it
-  // twice made doctor tell the user to uninstall one of two registrations that were the same one,
-  // and following that advice removes the only entry they have. Provenance: HAND-DERIVED, the two
-  // spellings are built here rather than read back off the resolver.
+  // The user and project paths are distinct spellings of one file whenever the project IS the home directory, which is ordinary for a solution opened straight out of `%USERPROFILE%`. Counting it twice made doctor tell the user to uninstall one of two registrations that were the same one, and following that advice removes the only entry they have. Provenance: HAND-DERIVED, the two spellings are built here rather than read back off the resolver.
   it('does not report a duplicate when the user and project paths are two spellings of one file', () => {
     installVisualStudio()
     const userPath = visualStudioUserMcpPath()
-    // Same file, reached through a redundant `.` segment. Built by concatenation rather than
-    // path.join, which would collapse the segment on the spot and leave two identical strings.
+    // Same file, reached through a redundant `.` segment. Built by concatenation rather than path.join, which would collapse the segment on the spot and leave two identical strings.
     const sameFileOtherSpelling = `${path.dirname(userPath)}${path.sep}.${path.sep}${path.basename(userPath)}`
     expect(sameFileOtherSpelling).not.toBe(userPath)
     const result = checkVisualStudio([userPath, sameFileOtherSpelling])
@@ -412,12 +396,7 @@ describe('sharing .github/copilot-instructions.md with the VS Code and Copilot C
 })
 
 describe('uninstall deletes only a config file token-goat created', () => {
-  // Once token-goat's entry is walked back, the two cases are byte-identical: a file it created from
-  // nothing and a user's pre-existing empty stub both end up holding the same empty object. Emptiness
-  // is therefore not evidence of ownership, and deleting on that reasoning destroyed a user's file
-  // along with anything else in it. Creation has to be remembered instead.
-  // Provenance: HAND-DERIVED. `{"mcpServers": {}}` is Claude Code's own project stub shape, the one
-  // readMcpConfig reads and the one a developer plausibly already has; the rest is written for this test.
+  // Once token-goat's entry is walked back, the two cases are byte-identical: a file it created from nothing and a user's pre-existing empty stub both end up holding the same empty object. Emptiness is therefore not evidence of ownership, and deleting on that reasoning destroyed a user's file along with anything else in it. Creation has to be remembered instead. Provenance: HAND-DERIVED. `{"mcpServers": {}}` is Claude Code's own project stub shape, the one readMcpConfig reads and the one a developer plausibly already has; the rest is written for this test.
   it('leaves a user-authored .mcp.json in place, even though uninstall empties it', () => {
     const userOwned = visualStudioProjectMcpPath()
     fs.mkdirSync(path.dirname(userOwned), { recursive: true })
@@ -425,8 +404,7 @@ describe('uninstall deletes only a config file token-goat created', () => {
     installVisualStudio({ project: true })
     expect(uninstallVisualStudio({ project: true })).toBe(true)
     expect(fs.existsSync(userOwned), 'uninstall deleted a file token-goat never created').toBe(true)
-    // Survival anchor on the other half of the rule: our own entry really was removed, so this
-    // cannot pass by uninstall having done nothing at all.
+    // Survival anchor on the other half of the rule: our own entry really was removed, so this cannot pass by uninstall having done nothing at all.
     const after = JSON.parse(fs.readFileSync(userOwned, 'utf8')) as Record<string, unknown>
     expect((after['mcpServers'] as Record<string, unknown> | undefined)?.['token-goat']).toBeUndefined()
   })

@@ -6,12 +6,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  checkSecurityPosture,
-  envOverriddenSecuritySettings,
-  lockedEnvOverridableKeys,
-  runDoctor,
-} from '../src/cli_doctor.js'
+import { runDoctor } from '../src/cli_doctor.js'
+import { checkSecurityPosture, envOverriddenSecuritySettings, lockedEnvOverridableKeys } from '../src/cli_doctor_security.js'
 import {
   CONFIG_KEY_ENV_OVERRIDES,
   invalidateConfigCache,

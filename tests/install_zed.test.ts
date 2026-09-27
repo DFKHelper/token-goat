@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { installZed, isZedInstalled, uninstallZed, zedSettingsPath, zedShimPath } from '../src/bridges/zed_install.js'
-import { checkZed } from '../src/cli_doctor.js'
+import { checkZed } from '../src/cli_doctor_platforms.js'
 
 const savedAppData = process.env['APPDATA']
 const savedXdgConfig = process.env['XDG_CONFIG_HOME']
@@ -12,9 +12,7 @@ const savedHome = process.env['HOME']
 const savedUserProfile = process.env['USERPROFILE']
 let userDir: string
 
-// zedConfigDir() reads APPDATA directly on win32 and XDG_CONFIG_HOME/os.homedir() (HOME, with
-// USERPROFILE as the win32 fallback) everywhere else, so every one of these needs isolating --
-// same reasoning tests/install_vscode.test.ts documents for vscodeUserConfigDir().
+// zedConfigDir() reads APPDATA directly on win32 and XDG_CONFIG_HOME/os.homedir() (HOME, with USERPROFILE as the win32 fallback) everywhere else, so every one of these needs isolating -- same reasoning tests/install_vscode.test.ts documents for vscodeUserConfigDir().
 function isolateZedConfigDir(dir: string): void {
   process.env['APPDATA'] = dir
   process.env['XDG_CONFIG_HOME'] = dir
@@ -49,9 +47,7 @@ describe('Zed install writes a context_servers entry and a shim script', () => {
     const parsed = JSON.parse(fs.readFileSync(result.settingsPath, 'utf8')) as Record<string, unknown>
     const servers = parsed['context_servers'] as Record<string, unknown>
     const entry = servers['token-goat'] as Record<string, unknown>
-    // Provenance: HAND-DERIVED from this file's own header docblock, which cites the live
-    // process-tree trace (Zed.exe -> pwsh.exe -> cmd.exe -> node.exe mcp-serve) proving Zed
-    // accepts and runs exactly this two-key shape.
+    // Provenance: HAND-DERIVED from this file's own header docblock, which cites the live process-tree trace (Zed.exe -> pwsh.exe -> cmd.exe -> node.exe mcp-serve) proving Zed accepts and runs exactly this two-key shape.
     expect(Object.keys(entry).sort()).toEqual(['command', 'timeout'])
     expect(entry['command']).toBe(result.shimPath)
     expect(typeof entry['timeout']).toBe('number')
@@ -86,9 +82,7 @@ describe('Zed install merges surgically into an existing settings.json', () => {
   it('preserves a user comment, unrelated keys, and another context server entry', () => {
     const settingsPath = zedSettingsPath()
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
-    // Provenance: CAPTURE -- this is the exact byte shape dogfooded live against a real Zed
-    // settings.json during this feature's manual verification pass (comment + theme + a second
-    // context_servers entry alongside token-goat's).
+    // Provenance: CAPTURE -- this is the exact byte shape dogfooded live against a real Zed settings.json during this feature's manual verification pass (comment + theme + a second context_servers entry alongside token-goat's).
     const before = ['{', '  // user\'s own theme choice', '  "theme": "One Dark",', '  "context_servers": {', '    "some-other-server": {', '      "command": "/usr/local/bin/other-mcp",', '      "timeout": 5000', '    }', '  }', '}', ''].join('\n')
     fs.writeFileSync(settingsPath, before)
 

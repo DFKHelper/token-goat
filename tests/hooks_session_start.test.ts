@@ -22,7 +22,7 @@ const _testDataDir = tempConfigPath('tg-hooks-session-start-data')
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
-// symbol_body_probe.ts, not cli_doctor.ts: the hook imports the check from its own module so that cli_doctor's dependency graph stays off the hook path, and a spy on cli_doctor's re-export of it would watch a binding the hook never calls.
+// symbol_body_probe.ts hosts the check the hook calls, kept out of cli_doctor.ts so that module's dependency graph stays off the hook path.
 import * as symbolBodyProbe from '../src/symbol_body_probe.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'

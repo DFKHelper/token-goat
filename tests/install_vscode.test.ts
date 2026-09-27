@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { copilotHooksOwnersPath, installCopilotCli, isCopilotCliInstalled, readCopilotHooksOwners, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
 import { installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
-import { checkVscodeClaudeHooks, checkVscodeProjectMcp, checkVscodeUserScopeHooks } from '../src/cli_doctor.js'
+import { checkVscodeClaudeHooks, checkVscodeProjectMcp, checkVscodeUserScopeHooks } from '../src/cli_doctor_platforms.js'
 
 const savedAppData = process.env['APPDATA']
 const savedHome = process.env['HOME']
@@ -29,11 +29,7 @@ afterEach(() => {
   }
 })
 
-// vscodeUserConfigDir() derives the user-scope path from APPDATA on win32 but from
-// os.homedir() (which reads HOME on POSIX, USERPROFILE as its win32 fallback) everywhere
-// else, so isolating only APPDATA leaves POSIX runs writing into the real developer/CI-runner
-// home directory, where state from an earlier test in this file persists and pollutes later
-// ones (the "already registered" / stale "configured: true" failures this fixes).
+// vscodeUserConfigDir() derives the user-scope path from APPDATA on win32 but from os.homedir() (which reads HOME on POSIX, USERPROFILE as its win32 fallback) everywhere else, so isolating only APPDATA leaves POSIX runs writing into the real developer/CI-runner home directory, where state from an earlier test in this file persists and pollutes later ones (the "already registered" / stale "configured: true" failures this fixes).
 function isolateVscodeUserDir(userDir: string): void {
   process.env['APPDATA'] = userDir
   process.env['HOME'] = userDir
@@ -41,12 +37,7 @@ function isolateVscodeUserDir(userDir: string): void {
 }
 
 describe('VS Code uninstall leaves no residue, and never deletes a file it did not create', () => {
-  // Uninstall used to write back the entry-less config and stop there, leaving behind a file whose
-  // whole content was an empty `servers` object. The sibling Visual Studio bridge already dropped the
-  // empty key and removed what it had created; this is the same rule, including the half that matters
-  // most: emptiness is not evidence of ownership, so only a file this install created is deleted.
-  // Provenance: HAND-DERIVED. The `servers` root key and entry shape are the ones the install writes
-  // and the sibling tests in this file already assert; the user-authored stub is written for this test.
+  // Uninstall used to write back the entry-less config and stop there, leaving behind a file whose whole content was an empty `servers` object. The sibling Visual Studio bridge already dropped the empty key and removed what it had created; this is the same rule, including the half that matters most: emptiness is not evidence of ownership, so only a file this install created is deleted. Provenance: HAND-DERIVED. The `servers` root key and entry shape are the ones the install writes and the sibling tests in this file already assert; the user-authored stub is written for this test.
   it('removes an mcp.json it created once nothing of the user is left in it', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-residue-'))
     try {
@@ -70,8 +61,7 @@ describe('VS Code uninstall leaves no residue, and never deletes a file it did n
       installVscode({ project: true, projectRoot: project })
       expect(uninstallVscode({ project: true, projectRoot: project })).toBe(true)
       expect(fs.existsSync(mcpPath), 'uninstall deleted a file token-goat never created').toBe(true)
-      // Survival anchor on the other half: our own entry really was removed, so this cannot pass
-      // by uninstall having done nothing at all.
+      // Survival anchor on the other half: our own entry really was removed, so this cannot pass by uninstall having done nothing at all.
       const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>
       expect((after['servers'] as Record<string, unknown> | undefined)?.['token-goat']).toBeUndefined()
     } finally {
@@ -101,9 +91,7 @@ describe('VS Code uninstall leaves no residue, and never deletes a file it did n
   })
 
   it('stays quiet on a .vscode/mcp.json token-goat itself installed', () => {
-    // `install --vscode -p` writes the managed server into exactly this file, so a healthy
-    // project install must not read back as "deprecated" -- that would tell the user to delete
-    // a file their own install created.
+    // `install --vscode -p` writes the managed server into exactly this file, so a healthy project install must not read back as "deprecated" -- that would tell the user to delete a file their own install created.
     const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-mcp-managed-'))
     try {
       const vscodeDir = path.join(project, '.vscode')
@@ -139,8 +127,7 @@ describe('VS Code project-local install', () => {
       expect(guidance).toContain('user guidance')
       expect(guidance).toContain('servers root key')
       expect(guidance).toContain('cannot fold or trim what a built-in read returns')
-      // The decode contract: without it the model receives a compressed
-      // payload with no instruction to call retrieve_text and parrots the blob.
+      // The decode contract: without it the model receives a compressed payload with no instruction to call retrieve_text and parrots the blob.
       expect(guidance).toContain('retrieve_text')
       expect(installVscode({ project: true, projectRoot: project }).alreadyInstalled).toBe(true)
       expect(uninstallVscode({ project: true, projectRoot: project })).toBe(true)
@@ -215,9 +202,7 @@ describe('VS Code user-scope install (default, no --project)', () => {
         args: [path.join(process.cwd(), 'dist', 'token-goat.mjs'), 'mcp-serve'],
       })
       expect(uninstallVscode({ projectRoot: project })).toBe(true)
-      // Nothing of the user's was ever in this file: the install above created it, so uninstall gives
-      // the profile directory back as it found it instead of leaving an empty shell. This assertion
-      // used to read the file back and check the entry was gone, which the shell also satisfied.
+      // Nothing of the user's was ever in this file: the install above created it, so uninstall gives the profile directory back as it found it instead of leaving an empty shell. This assertion used to read the file back and check the entry was gone, which the shell also satisfied.
       expect(fs.existsSync(result.mcpPath)).toBe(false)
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
@@ -253,13 +238,7 @@ describe('VS Code user-scope install (default, no --project)', () => {
       expect(() => installVscode({ projectRoot: project })).toThrow(/already registered in VS Code project scope/)
       expect(fs.existsSync(vscodeUserMcpPath())).toBe(false)
 
-      // The reverse direction is now a MIGRATION, not an error, and the assertion below was
-      // changed with the behaviour rather than around a failure. `install --vscode` defaults to
-      // project scope because VS Code pins a user-scope hooks file to folders[0] of a multi-root
-      // workspace; refusing the first post-upgrade run of the command every existing user already
-      // types would make the new default a wall instead of an upgrade. Walking the user-scope
-      // install back is also what stops the two firing twice -- VS Code runs every hooks file it
-      // discovers, in both scopes (captured live, see src/vscode_duplicate.ts).
+      // The reverse direction is now a MIGRATION, not an error, and the assertion below was changed with the behaviour rather than around a failure. `install --vscode` defaults to project scope because VS Code pins a user-scope hooks file to folders[0] of a multi-root workspace; refusing the first post-upgrade run of the command every existing user already types would make the new default a wall instead of an upgrade. Walking the user-scope install back is also what stops the two firing twice -- VS Code runs every hooks file it discovers, in both scopes (captured live, see src/vscode_duplicate.ts).
       uninstallVscode({ project: true, projectRoot: project })
       installVscode({ projectRoot: project })
       const migrated = installVscode({ project: true, projectRoot: project })
@@ -283,9 +262,7 @@ describe('VS Code user-scope install (default, no --project)', () => {
 
 describe('vscodeDecoderConfigured (extension false-prompt regression)', () => {
   it('reports configured from a user-scope install with no workspace mcp.json and no projectRoot given', () => {
-    // This is the exact bug scenario: install --vscode defaults to user scope (9c220be7),
-    // so a correctly-installed user has no <project>/.vscode/mcp.json at all. A check that
-    // only reads the workspace file must not conclude "not configured" here.
+    // This is the exact bug scenario: install --vscode defaults to user scope (9c220be7), so a correctly-installed user has no <project>/.vscode/mcp.json at all. A check that only reads the workspace file must not conclude "not configured" here.
     const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-userdir-'))
     const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-user-project-'))
     isolateVscodeUserDir(userDir)
@@ -300,8 +277,7 @@ describe('vscodeDecoderConfigured (extension false-prompt regression)', () => {
   })
 
   it('detects a user-scope install even with no workspace folder open (no projectRoot passed)', () => {
-    // A user-scope install is workspace-independent -- it must be detectable with nothing
-    // to key a projectRoot off of at all, not just "no mcp.json inside this workspace".
+    // A user-scope install is workspace-independent -- it must be detectable with nothing to key a projectRoot off of at all, not just "no mcp.json inside this workspace".
     const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-nofolder-'))
     const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-nofolder-project-'))
     isolateVscodeUserDir(userDir)
@@ -450,16 +426,14 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     expect(checkVscodeUserScopeHooks(false, true)).toBeNull()
     expect(checkVscodeUserScopeHooks(false, false)).toBeNull()
 
-    // User scope alone still works, but VS Code pins it to folders[0], so it is blind past the
-    // first folder of a multi-root workspace. The fix is to move it.
+    // User scope alone still works, but VS Code pins it to folders[0], so it is blind past the first folder of a multi-root workspace. The fix is to move it.
     const userOnly = checkVscodeUserScopeHooks(true, false)
     expect(userOnly?.status).toBe('warn')
     expect(userOnly?.message).toContain('FIRST folder')
     expect(userOnly?.message).toContain('token-goat install --vscode')
     expect(userOnly?.message).not.toContain('twice')
 
-    // Both scopes: VS Code runs every hooks file it finds, so the fix is to remove one, and it must
-    // be the user-scope one -- removing the project copy would leave only the blind install.
+    // Both scopes: VS Code runs every hooks file it finds, so the fix is to remove one, and it must be the user-scope one -- removing the project copy would leave only the blind install.
     const both = checkVscodeUserScopeHooks(true, true)
     expect(both?.status).toBe('warn')
     expect(both?.message).toContain('twice')
@@ -468,15 +442,9 @@ describe('chat.useClaudeHooks double-fire detection', () => {
 })
 
 describe('a repository cannot make a user-scope install look at a file outside the project', () => {
-  // `install --vscode` writing only under the home directory is not the whole of user scope: the
-  // run still CONSULTS `<cwd>/.vscode/mcp.json`, to refuse registering token-goat in both scopes at
-  // once, and so does `mcp-status`. That path comes out of the working tree, so a repository can
-  // check `.vscode` in as a link and decide what those two read. The write-side guard is a no-op in
-  // user scope by design -- every file it protects is under the home directory -- so it never saw
-  // this, and the read happened before anything else could.
+  // `install --vscode` writing only under the home directory is not the whole of user scope: the run still CONSULTS `<cwd>/.vscode/mcp.json`, to refuse registering token-goat in both scopes at once, and so does `mcp-status`. That path comes out of the working tree, so a repository can check `.vscode` in as a link and decide what those two read. The write-side guard is a no-op in user scope by design -- every file it protects is under the home directory -- so it never saw this, and the read happened before anything else could.
   //
-  // A junction rather than a symlink: it is the one link Windows creates without elevation, and the
-  // whole point of the case is a repository doing this on the platform where UNC paths exist.
+  // A junction rather than a symlink: it is the one link Windows creates without elevation, and the whole point of the case is a repository doing this on the platform where UNC paths exist.
   function projectWithEscapingVscodeDir(prefix: string): { project: string; outside: string; mcp: string } {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}outside-`))
@@ -486,14 +454,12 @@ describe('a repository cannot make a user-scope install look at a file outside t
     return { project, outside, mcp }
   }
 
-  // Shaped the way `isManagedServer` recognises one, or the sabotage is inert and every assertion
-  // below passes for the wrong reason.
+  // Shaped the way `isManagedServer` recognises one, or the sabotage is inert and every assertion below passes for the wrong reason.
   function managedServerJson(): string {
     return JSON.stringify({ servers: { 'token-goat': { type: 'stdio', command: 'node', args: [path.join('anywhere', 'token-goat.mjs'), 'mcp-serve'] } } })
   }
 
-  // Removing the LINK, never what it points at: `rmSync(..., { recursive: true })` on a junction
-  // deletes the target's contents, which would make the cleanup the disclosure.
+  // Removing the LINK, never what it points at: `rmSync(..., { recursive: true })` on a junction deletes the target's contents, which would make the cleanup the disclosure.
   function removeDirLink(link: string): void {
     try {
       fs.unlinkSync(link)
@@ -507,13 +473,10 @@ describe('a repository cannot make a user-scope install look at a file outside t
     const { project, outside, mcp } = projectWithEscapingVscodeDir('.tg-vscode-escape-')
     isolateVscodeUserDir(userDir)
     try {
-      // The bytes behind the link say token-goat is already registered in project scope, which is
-      // what the install throws on when it reads them -- so a green assertion here is the read not
-      // happening, and the calibration below shows the same file inside the project really throws.
+      // The bytes behind the link say token-goat is already registered in project scope, which is what the install throws on when it reads them -- so a green assertion here is the read not happening, and the calibration below shows the same file inside the project really throws.
       expect(() => installVscode({ projectRoot: project })).not.toThrow()
       expect(vscodeDecoderConfigured().configured).toBe(true)
-      // And the file itself is untouched, which is the half that would have been a disclosure had
-      // it been a private file rather than a plausible config.
+      // And the file itself is untouched, which is the half that would have been a disclosure had it been a private file rather than a plausible config.
       expect(fs.readFileSync(mcp, 'utf8')).toBe(managedServerJson())
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
@@ -543,8 +506,7 @@ describe('a repository cannot make a user-scope install look at a file outside t
     isolateVscodeUserDir(userDir)
     try {
       const status = vscodeDecoderConfigured({ projectRoot: project })
-      // The link's target claims a managed server. Reported configured, `mcp-status` would be
-      // answering from a file the repository wrote outside the project.
+      // The link's target claims a managed server. Reported configured, `mcp-status` would be answering from a file the repository wrote outside the project.
       expect(status.configured).toBe(false)
       expect(status.checkedPaths).toEqual([vscodeUserMcpPath()])
     } finally {

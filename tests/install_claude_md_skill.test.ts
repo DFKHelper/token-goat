@@ -5,9 +5,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.claude/` (mirrors tests/install_codex.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.claude/` (mirrors tests/install_codex.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -29,7 +27,7 @@ import {
   uninstallSkill,
 } from '../src/install.js'
 import { CANONICAL_SKILL_MD } from '../src/canonical_skill.js'
-import { checkStrayClaudeMdBlocks } from '../src/cli_doctor.js'
+import { checkStrayClaudeMdBlocks } from '../src/cli_doctor_platforms.js'
 import { buildGuidanceBody } from '../src/bridges/guidance_block.js'
 
 let TMP: string
@@ -157,8 +155,7 @@ describe('installSkill', () => {
     // Names Claude Code's own read tools in the conflict-resolution clause.
     expect(content).toContain('Read, Grep, and Glob')
     expect(content).toContain('allowed-tools:')
-    // Real harness tool identifiers, NOT token-goat subcommands: loaders validate
-    // every entry against their tool registry and warn on each miss.
+    // Real harness tool identifiers, NOT token-goat subcommands: loaders validate every entry against their tool registry and warn on each miss.
     expect(content).toContain('  - Bash')
     expect(content).toContain('  - Read')
     expect(content).not.toContain('  - section')
@@ -270,8 +267,7 @@ describe('uninstallSkill', () => {
 })
 
 describe('findStrayClaudeMdBlocks', () => {
-  // Writes a markdown file under ~/.claude containing a real token-goat block, simulating a
-  // user tidying the block out of CLAUDE.md into a "reference" file.
+  // Writes a markdown file under ~/.claude containing a real token-goat block, simulating a user tidying the block out of CLAUDE.md into a "reference" file.
   const writeStray = (...segments: string[]): string => {
     installClaudeMd()
     const block = fs.readFileSync(claudeMdPath(), 'utf8')
@@ -320,9 +316,7 @@ describe('findStrayClaudeMdBlocks', () => {
     expect(findStrayClaudeMdBlocks()).not.toContain(buried)
   })
 
-  // Regression: a substring match flagged the pointer note left behind *after* correctly
-  // relocating a block back to CLAUDE.md -- the file was clean, but its prose named the
-  // marker, so doctor warned about it forever. Verbatim text that triggered it.
+  // Regression: a substring match flagged the pointer note left behind *after* correctly relocating a block back to CLAUDE.md -- the file was clean, but its prose named the marker, so doctor warned about it forever. Verbatim text that triggered it.
   it('does not flag prose that merely mentions the marker inline', () => {
     installClaudeMd()
     const p = path.join(TMP, '.claude', 'reference', 'tools.md')
