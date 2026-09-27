@@ -15,7 +15,7 @@ import { writeSessionManifest } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { hasPreciseSecret } from './secret_redact.js'
-import { countTextLines, harnessNumbersReadContent, isTruncatedReadDelivery, type NumberedRow, numberedRenderBytes, parseNumberedReadResult, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
+import { countTextLines, harnessNumbersReadContent, isTruncatedReadDelivery, type NumberedRow, numberedRenderBytes, parseReadDelivery, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat } from './stats.js'
@@ -182,7 +182,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
 
   const ids = getFileServedOutputs(normalized)
   if (ids.length === 0) return null
-  const parsed = parseNumberedReadResult(respText, readStartLine(event))
+  const parsed = parseReadDelivery(event, respText)
   if (parsed === null) return null
 
   // Composing a rewrite makes this handler the author of what the model reads, and every sibling that composes redacts first. Here the honest move is to decline instead: redacting would hand back less of the user's own file than a plain Read does today. Asked of the precise patterns only, never the recall-tuned catch-all: because declining passes the file through unredacted, a false positive here protects nothing and costs the whole rewrite -- the opposite of the asymmetry redactSecrets itself is tuned for.
@@ -255,7 +255,7 @@ function structuralFoldInputs(event: HookEvent, respText: string): { rows: reado
   if (readRequestedSliceWindow(event).isExplicitSlice) return null
   if (isTruncatedReadDelivery(event, respText)) return null
   if (hasPreciseSecret(respText)) return null
-  const parsed = parseNumberedReadResult(respText, readStartLine(event))
+  const parsed = parseReadDelivery(event, respText)
   if (parsed === null) return null
   const normalized = normalizePath(filePath)
   // Repo-relative, because the notices repeat this path and an absolute Windows path is most of one. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on.
@@ -315,7 +315,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain Read gives the user more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines, including its reason for asking only the precise patterns.
   if (hasPreciseSecret(respText)) return null
 
-  const parsed = parseNumberedReadResult(respText, readStartLine(event))
+  const parsed = parseReadDelivery(event, respText)
   if (parsed === null) return null
 
   // Repo-relative, because the notice repeats this path once per fold and an absolute Windows path is most of the notice: measured over 201 session transcripts, the absolute form costs 10.9 KB of notice against 9.0 KB relative. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on, and either way the notice stays a command that can be run as printed.

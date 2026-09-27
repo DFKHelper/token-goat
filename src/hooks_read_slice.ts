@@ -347,8 +347,20 @@ export interface ParsedReadResult {
   readonly trailer: string[]
 }
 
-/** Split a Read result into the `cat -n` block it delivered and the harness text around it. */
-export function parseNumberedReadResult(respText: string, firstLine = 1): ParsedReadResult | null {
+/** The rows a Read delivered, each carrying the file line it is. Where the harness numbers the text itself ({@link harnessNumbersReadContent}) every line is the file's own and is numbered by position, however it reads: a file line shaped like a numbered row (a TSV record, a captured `cat -n` listing inside a string) is still file text, and parsing it as a rendering handed each rewrite a slice of the file under the listing's own numbers, so a fold withheld listing rows beneath a notice naming a function body it delivered whole. */
+export function parseReadDelivery(event: HookEvent, respText: string): ParsedReadResult | null {
+  const firstLine = readStartLine(event)
+  return harnessNumbersReadContent(event) ? plainReadResult(respText, firstLine) : parseNumberedReadResult(respText, firstLine)
+}
+
+/** Every line of `respText` as a row of its own, numbered by position from `firstLine`. */
+function plainReadResult(respText: string, firstLine: number): ParsedReadResult | null {
+  if (respText === '') return null
+  return { header: [], rows: respText.split('\n').map((text, idx) => ({ no: firstLine + idx, text, raw: text })), trailer: [] }
+}
+
+/** Split a Read result into the `cat -n` block it delivered and the harness text around it, falling back to position when no line is numbered. */
+function parseNumberedReadResult(respText: string, firstLine: number): ParsedReadResult | null {
   const lines = respText.split('\n')
   const header: string[] = []
   const rows: NumberedRow[] = []
@@ -374,7 +386,5 @@ export function parseNumberedReadResult(respText: string, firstLine = 1): Parsed
   }
   for (; i < lines.length; i++) trailer.push(lines[i] ?? '')
   if (rows.length > 0) return { header, rows, trailer }
-  if (respText === '') return null
-  const plain = lines.map((text, idx) => ({ no: firstLine + idx, text, raw: text }))
-  return { header: [], rows: plain, trailer: [] }
+  return plainReadResult(respText, firstLine)
 }
