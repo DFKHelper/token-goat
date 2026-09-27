@@ -37,7 +37,7 @@ import { foldPath } from '../src/util.js'
 import { pathEqClause } from '../src/sql_path.js'
 import { tokenGoatHome } from '../src/disk_cache.js'
 
-vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
+vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), loadConfig: vi.fn() }))
 
 // tests/setup/isolate-home.ts pins TOKEN_GOAT_NO_WORKER_SPAWN='1' by default for the whole suite so an incidental ensureWorkerAlive call elsewhere never spawns a real daemon -- but this file's own tests deliberately exercise real startDetachedWorker/ensureWorkerAlive spawning (pid-file claiming, stale-pid replacement, real process lifecycle), so it opts back out here, same "a test that sets its own value wins" pattern documented in isolate-home.ts.
 process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '0'
