@@ -7,6 +7,7 @@ import { enqueueDirtyPathsSafe } from './hooks_index.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
+import { indexedPathSpellingIsStale } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDisplayRoot } from './project.js'
 import { getTrackedFiles } from './repomap.js'
@@ -200,7 +201,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     }
     scanned++
     lastScanned = file
-    const folded = foldPath(normalizePath(file))
+    const normalized = normalizePath(file)
+    const folded = foldPath(normalized)
     seenOnDisk.add(folded)
     const entry = indexed.get(folded)
 
@@ -220,6 +222,12 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     if (entry.embedSha === '' && chunked.has(folded)) {
       changed.push(file)
       embedStale++
+      continue
+    }
+
+    // A case-only rename leaves the bytes as they were, and `git mv` leaves the mtime too, so the checks below pass and the row keeps a spelling the file no longer has, which nothing else revisits: the drain and `token-goat index` correct it only for a file that reaches them. git spelling the path differently from the row is the cheap signal, compared below the project root so that a working directory typed in another case than the one the index was built from does not send the whole project back through the drain. The filesystem decides, as it does for those two (see indexedPathSpellingIsStale), because git keeps the old name until a rename is staged.
+    if (normalizePath(entry.filePath).slice(projectRoot.length) !== normalized.slice(projectRoot.length) && indexedPathSpellingIsStale(entry.filePath, file)) {
+      changed.push(file)
       continue
     }
 
