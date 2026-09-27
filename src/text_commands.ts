@@ -24,8 +24,6 @@ export { cmdTodo, cmdTrace, cmdLogfold }
 
 // ── Shared utilities ────────────────────────────────────────────────────────
 
-
-// Mirrors cli.ts's/read_commands.ts's requireNonNegativeInt (same regex-only-integer validation plus a sign check) so hot/recent/trace/logfold's row/frame/line limits get the same error behavior as every other --limit-style flag: a clean thrown error on a non-numeric or negative value instead of `Number.parseInt` silently producing NaN or a negative count, both of which fail the `> 0` guards these commands used to gate their `.slice()` calls with and so fell through to printing every entry unbounded instead of erroring or limiting.
 /** Split text into lines, normalizing CRLF. */
 function splitLines(text: string): string[] {
   return text.split(/\r?\n/)

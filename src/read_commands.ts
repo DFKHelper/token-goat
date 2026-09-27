@@ -404,7 +404,7 @@ function fenceGithubText(text: string): string {
   return fenceUntrusted(text, UNTRUSTED_GITHUB_TAG)
 }
 
-/** Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb. Same deliberate exception as `fenceFileFieldIfMatched` in cli.ts, and it needs the same wire-format decision to resolve. */
+/** Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb. Same deliberate exception as `fenceFileFieldIfMatched` in cli_office.ts, and it needs the same wire-format decision to resolve. */
 function fenceGithubFieldIfMatched(text: string): string {
   const matches = scanAndRecord(text)
   if (matches.length === 0) return text
@@ -1085,7 +1085,7 @@ async function readPdfBytes(file: string): Promise<Uint8Array> {
   return readPdfFileWithinBounds(file)
 }
 
-/** Thin async wrapper: reads the PDF off disk and extracts its text. Kept separate from the synchronous run*(opts): number handlers above because pdfjs-dist's parser is async; the caller (cli.ts's cmdPdfExtract) drives it through guard() (which supports async actions) rather than runExit (sync-only). Throws on error, matching this file's extractPdfText contract, rather than returning an exit code. */
+/** Thin async wrapper: reads the PDF off disk and extracts its text. Kept separate from the synchronous run*(opts): number handlers above because pdfjs-dist's parser is async; the caller (cli_office.ts's cmdPdfExtract) drives it through guard() (which supports async actions) rather than runExit (sync-only). Throws on error, matching this file's extractPdfText contract, rather than returning an exit code. */
 export async function runPdfExtractText(file: string, pagesSpec?: string, layout = false): Promise<string> {
   const result = await extractPdfText(await readPdfBytes(file), pagesSpec, layout)
   return result.text

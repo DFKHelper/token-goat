@@ -1,16 +1,4 @@
-/**
- * Regression: `token-goat video-chapters` (cmdVideoChapters in src/cli.ts) never called
- * recordStat, and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `video_chapters` entry
- * either. It advertises itself as a surgical-read alternative to a raw Read of a video file's
- * chapter/subtitle metadata (via ffprobe) -- the same "read replacement" shape as pdf-meta/
- * xlsx-sheets/docx-outline -- but its dashboard bucket in `token-goat stats --full` stayed
- * permanently zero regardless of real usage, the same class of registry/producer desync already
- * fixed for those siblings (see cli_doc_extract_stats.test.ts / project_runchanged_missing_stat
- * memory). Drives the real, unmocked `run()` CLI entrypoint (only `node:child_process`'s
- * `spawnSync` is mocked, standing in for ffprobe) and asserts a real stats row appears via
- * summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB
- * insert would not catch the original absence.
- */
+/** Regression: `token-goat video-chapters` (cmdVideoChapters in src/cli_office.ts) never called recordStat, and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `video_chapters` entry either. It advertises itself as a surgical-read alternative to a raw Read of a video file's chapter/subtitle metadata (via ffprobe) -- the same "read replacement" shape as pdf-meta/xlsx-sheets/docx-outline -- but its dashboard bucket in `token-goat stats --full` stayed permanently zero regardless of real usage, the same class of registry/producer desync already fixed for those siblings (see cli_doc_extract_stats.test.ts / project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint (only `node:child_process`'s `spawnSync` is mocked, standing in for ffprobe) and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -42,12 +30,7 @@ describe('`token-goat video-chapters` stat recording', () => {
   })
 
   it('records a video_chapters stat row through the real global stats DB', async () => {
-    // Dispatch on the ARGS, not on call order. `isFfprobeAvailable()` memoizes its result in a
-    // module-level variable, so whether the `-version` probe actually runs depends on whether
-    // anything already imported video_chapters.js in this fork -- and any other spawnSync on the
-    // `run()` path would shift a positional mock too. With mockReturnValueOnce chaining, a skipped
-    // or extra call handed the real chapter probe `{status: 0}` with no stdout, JSON.parse threw,
-    // recordStat never ran, and this test failed intermittently under full-suite load only.
+    // Dispatch on the ARGS, not on call order. `isFfprobeAvailable()` memoizes its result in a module-level variable, so whether the `-version` probe actually runs depends on whether anything already imported video_chapters.js in this fork -- and any other spawnSync on the `run()` path would shift a positional mock too. With mockReturnValueOnce chaining, a skipped or extra call handed the real chapter probe `{status: 0}` with no stdout, JSON.parse threw, recordStat never ran, and this test failed intermittently under full-suite load only.
     spawnSyncMock.mockReset()
     spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown) => {
       const argv = Array.isArray(args) ? (args as string[]) : []

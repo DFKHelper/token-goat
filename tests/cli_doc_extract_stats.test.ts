@@ -1,18 +1,4 @@
-/**
- * Regression: the document-extraction CLI commands defined via thin wrappers in src/cli.ts
- * (NOT src/read_commands.ts) -- pdf-extract, pdf-outline, pdf-meta, xlsx-sheets, xlsx-head,
- * xlsx-range, xlsx-query, pptx-outline, pptx-slide, pptx-notes, pptx-text, docx-outline,
- * docx-text, transcript-outline, transcript -- never called recordStat, and stats.ts's
- * KIND_TO_SOURCE/COMMAND_KINDS registry had no entries for any of them either. Every one of
- * these commands advertises itself as a surgical-read alternative to a raw Read, but their
- * dashboard buckets in `token-goat stats --full` were permanently zero regardless of real
- * usage -- the same class of registry/producer desync already fixed for
- * map_lookup/changed_lookup/csv_query/csv_profile/gdrive_sections (see
- * project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint
- * against real scratch fixture files for each format and asserts a real stats row appears via
- * summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB
- * insert would not catch the original absence.
- */
+/** Regression: the document-extraction CLI commands defined via thin wrappers in src/cli_office.ts (NOT src/read_commands.ts) -- pdf-extract, pdf-outline, pdf-meta, xlsx-sheets, xlsx-head, xlsx-range, xlsx-query, pptx-outline, pptx-slide, pptx-notes, pptx-text, docx-outline, docx-text, transcript-outline, transcript -- never called recordStat, and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no entries for any of them either. Every one of these commands advertises itself as a surgical-read alternative to a raw Read, but their dashboard buckets in `token-goat stats --full` were permanently zero regardless of real usage -- the same class of registry/producer desync already fixed for map_lookup/changed_lookup/csv_query/csv_profile/gdrive_sections (see project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint against real scratch fixture files for each format and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -26,8 +12,7 @@ import { summarize } from '../src/stats.js'
 import { buildDocxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
 
-// Minimal hand-authored single-page PDF (Helvetica text object), same fixture shape as
-// tests/helpers/matrix_cases.ts' MINIMAL_PDF.
+// Minimal hand-authored single-page PDF (Helvetica text object), same fixture shape as tests/helpers/matrix_cases.ts' MINIMAL_PDF.
 const MINIMAL_PDF = '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
   '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
@@ -36,10 +21,7 @@ const MINIMAL_PDF = '%PDF-1.4\n' +
   '5 0 obj\n<< /Length 44 >>\nstream\nBT /F1 24 Tf 20 100 Td (Hello PDF) Tj ET\nendstream\nendobj\n' +
   'trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n'
 
-// Same page/font/content objects as MINIMAL_PDF, plus an /Outlines catalog entry with one
-// bookmark item pointing at the page -- pdf-outline's own code path only calls recordStat once
-// pdfjs's getOutline() returns at least one entry, so the plain MINIMAL_PDF above (no bookmarks)
-// would only ever exercise the "no bookmarks in this PDF" early return.
+// Same page/font/content objects as MINIMAL_PDF, plus an /Outlines catalog entry with one bookmark item pointing at the page -- pdf-outline's own code path only calls recordStat once pdfjs's getOutline() returns at least one entry, so the plain MINIMAL_PDF above (no bookmarks) would only ever exercise the "no bookmarks in this PDF" early return.
 const PDF_WITH_OUTLINE = '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>\nendobj\n' +
   '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +

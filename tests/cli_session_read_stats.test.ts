@@ -1,15 +1,4 @@
-/**
- * Regression: `token-goat session-outline` and `token-goat session-slice` (cmdSessionOutline/
- * cmdSessionSlice in cli.ts) never called recordStat at all, and stats.ts's KIND_TO_SOURCE/
- * COMMAND_KINDS registry had no `session-outline`/`session-slice` entry either -- so their
- * dashboard buckets in `token-goat stats --full` were permanently zero regardless of real usage,
- * even though both commands' own descriptions advertise themselves as "instead of a raw Read"
- * (same class of registry/producer desync fixed for map_lookup/changed_lookup/csv_query/
- * brief_view, see project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI
- * entrypoint against a real scratch transcript and asserts a real stats row appears via
- * summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB
- * insert would not catch the original absence.
- */
+/** Regression: `token-goat session-outline` and `token-goat session-slice` (cmdSessionOutline/cmdSessionSlice in cli_session.ts) never called recordStat at all, and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `session-outline`/`session-slice` entry either -- so their dashboard buckets in `token-goat stats --full` were permanently zero regardless of real usage, even though both commands' own descriptions advertise themselves as "instead of a raw Read" (same class of registry/producer desync fixed for map_lookup/changed_lookup/csv_query/brief_view, see project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint against a real scratch transcript and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

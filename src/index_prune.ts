@@ -9,10 +9,6 @@ import { isUnderSystemTemp } from './project.js'
 import { pathEqClause } from './sql_path.js'
 import { foldPath, normalizePath } from './util.js'
 
-// Re-exported so the many callers and tests that have always imported the known-root writer from
-// this module keep working after it moved to known_roots.js -- the split was made to break an
-// import cycle, not to re-point every call site.
-
 type DbHandle = ReturnType<typeof getDb>
 
 // Remove every indexed row (symbols, refs, files), embedding chunk, and transient-read-failure counter for one file. Shared primitive the full reindex prune and any future vanished-file reconciliation both build on. Wrapped in a single transaction (mirroring upsertChunks' pattern in embeddings.ts) so a crash or thrown error between the deletes can never leave orphaned chunks/chunk_vectors rows for a files row that no longer exists -- nothing else ever cleans those up, since pruneDeletedFiles only iterates `SELECT DISTINCT path FROM files`, which the first delete alone (without the second) would already have removed the file from. The index_retries delete lives here rather than in deleteFileRows because parser.ts is one of the sources PARSER_FINGERPRINT digests, so a line added there costs every user a full reparse for a change that alters nothing a parse extracts -- and because a reindex, deleteFileRows' other caller, has already read the file successfully, which clears the counter anyway. Its rows are born on a failed read and cleared on a successful one, so a path still mid-streak when its file is deleted is the one case with no other way out.
@@ -22,20 +18,13 @@ export function removeFileFromIndex(db: DbHandle, filePath: string): void {
     deleteFileEmbeddings(db, filePath)
     db.prepare(`DELETE FROM index_retries WHERE ${pathEqClause('path')}`).run(foldPath(filePath))
   })
-  // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN,
-  // which takes a read snapshot first and only asks for the write lock at the first writing
-  // statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting
-  // the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright.
-  // This database is shared by the worker daemon, the hook processes and the CLI at once, so that
-  // is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
+  // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN, which takes a read snapshot first and only asks for the write lock at the first writing statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright. This database is shared by the worker daemon, the hook processes and the CLI at once, so that is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
   tx.immediate()
 }
 
 
 function foldedBounds(rootPrefix: string): { foldedRootPrefix: string; foldedPrefix: string } {
-  // Normalize before folding: foldPath only lowercases, and a row written from a raw OS path keeps
-  // its backslashes while every root arrives forward-slashed, so folding alone never matches the
-  // two -- the prefix scan comes back empty and every caller reports a clean nothing-to-do.
+  // Normalize before folding: foldPath only lowercases, and a row written from a raw OS path keeps its backslashes while every root arrives forward-slashed, so folding alone never matches the two -- the prefix scan comes back empty and every caller reports a clean nothing-to-do.
   const normalized = normalizePath(rootPrefix)
   const prefix = normalized.endsWith('/') ? normalized : `${normalized}/`
   return { foldedRootPrefix: foldPath(normalized), foldedPrefix: foldPath(prefix) }
@@ -62,10 +51,7 @@ function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
   for (const p of foldedPathsUnderRoot(rootPrefix, dbPath)) {
     let stillExists: boolean
     try {
-      // isFile, not mere existence: `files` rows are source files, and a path now occupied by a
-      // directory (or a symlink to one) means the indexed file is gone even though something answers
-      // at that path. Bare existence kept its symbols, references and embedding chunks in the index
-      // forever, with no event that could ever clear them.
+      // isFile, not mere existence: `files` rows are source files, and a path now occupied by a directory (or a symlink to one) means the indexed file is gone even though something answers at that path. Bare existence kept its symbols, references and embedding chunks in the index forever, with no event that could ever clear them.
       const st = fs.statSync(p, { throwIfNoEntry: false })
       stillExists = st !== undefined && st.isFile()
     } catch {
@@ -97,10 +83,7 @@ function removeFilesBestEffort(db: DbHandle, paths: string[]): string[] {
 
 // Same as removeFilesBestEffort, but re-checks disk existence immediately before each delete. findDeletablePaths' scan and this loop's deletes are not one atomic step -- across a large root the gap between "checked, file was gone" and "actually delete the row" can be wide enough for the file to be recreated and reindexed by a concurrent writer (an edit hook, a second worker/CLI invocation, a git checkout) in between. Without this recheck, deleteFileRows deletes unconditionally by path and would wipe that freshly-written row, silently losing the new content. This can only shrink the race window (down to the gap between this statSync and the delete itself), not eliminate it -- true atomicity would need a DB-level guard -- but it closes the far wider window that findDeletablePaths' full-scan-then-delete-all shape otherwise leaves open. Used only where "gone from disk" is the deletion trigger (pruneDeletedFiles, sweepKnownRoots's live-root branch); pruneSystemTempFiles intentionally does NOT use this since its rows are stale regardless of current disk existence.
 function removeDeletedFilesBestEffort(db: DbHandle, paths: string[]): string[] {
-  // Checked immediately before each delete, one path at a time. Filtering the whole list first and
-  // deleting afterwards left the first path's window open across every remaining stat AND every
-  // delete -- the full-scan-then-delete-all shape this exists to avoid, just one stage later. Now
-  // the window really is the gap between one path's stat and its own delete, as described above.
+  // Checked immediately before each delete, one path at a time. Filtering the whole list first and deleting afterwards left the first path's window open across every remaining stat AND every delete -- the full-scan-then-delete-all shape this exists to avoid, just one stage later. Now the window really is the gap between one path's stat and its own delete, as described above.
   const removed: string[] = []
   for (const p of paths) {
     let gone: boolean
@@ -129,22 +112,9 @@ export function pruneDeletedFiles(rootPrefix: string, dbPath: string = globalDbP
   return removeDeletedFilesBestEffort(db, findDeletablePaths(rootPrefix, dbPath)).length
 }
 
-/**
- * Remove every indexed row under a newly excluded root, whether or not the files still exist.
- *
- * `token-goat project exclude <path>` stopped future indexing but left whatever was already
- * indexed exactly where it was, so a directory of credentials excluded after a first index stayed
- * readable through `symbol` indefinitely. Existence-based pruning cannot do this job: the files
- * are still on disk, which is the whole point -- they are excluded, not deleted. Same shape as
- * {@link pruneSystemTempFiles}, whose rows are also stale regardless of what is on disk.
- *
- * Refuses a root shallow enough to span a drive, for the reason {@link isTooShallowToPrune} gives.
- * Returns the paths removed.
- */
+/** Remove every indexed row under a newly excluded root, whether or not the files still exist. `token-goat project exclude <path>` stopped future indexing but left whatever was already indexed exactly where it was, so a directory of credentials excluded after a first index stayed readable through `symbol` indefinitely. Existence-based pruning cannot do this job: the files are still on disk, which is the whole point -- they are excluded, not deleted. Same shape as {@link pruneSystemTempFiles}, whose rows are also stale regardless of what is on disk. Refuses a root shallow enough to span a drive, for the reason {@link isTooShallowToPrune} gives. Returns the paths removed. */
 export function pruneBlockedRoot(rootPrefix: string, dbPath: string = globalDbPath()): string[] {
-  // The caller is a CLI argument run through path.resolve, so on Windows it arrives with
-  // backslashes while every stored path is normalized. foldPath only lowercases, so without this
-  // the prefix match silently finds nothing and the command reports a clean purge of zero files.
+  // The caller is a CLI argument run through path.resolve, so on Windows it arrives with backslashes while every stored path is normalized. foldPath only lowercases, so without this the prefix match silently finds nothing and the command reports a clean purge of zero files.
   const normalized = normalizePath(rootPrefix)
   if (isTooShallowToPrune(normalized)) return []
   return removeFilesBestEffort(getDb(dbPath), foldedPathsUnderRoot(normalized, dbPath))
@@ -168,35 +138,12 @@ export function pruneSystemTempFiles(dbPath: string = globalDbPath()): string[] 
   return removeFilesBestEffort(db, findSystemTempFiles(dbPath))
 }
 
-/**
- * Every distinct `chunks.file_path` with no matching row in `files`, without deleting anything.
- *
- * Chunks are only ever written after their file's `files` row exists (the worker indexes
- * synchronously first, then fires the embed), so a chunk without a file row is always damage --
- * a crash between the two deletes in an older, non-transactional `removeFileFromIndex`, a prune
- * racing a lagging embed for a path just deleted, or any other half-applied removal.
- *
- * Such a row is unreachable by every existing prune, because {@link allIndexedPaths} enumerates
- * `SELECT DISTINCT path FROM files`: once the file row is gone, no sweep can even name the path,
- * so {@link pruneDeletedFiles}, {@link pruneBlockedRoot} and {@link pruneSystemTempFiles} all
- * report a clean nothing-to-do while the chunk keeps its text and its vector and keeps being
- * served by `semantic`. Only `reclaim --rebuild`, which wipes the entire index, cleared them.
- */
+/** Every distinct `chunks.file_path` with no matching row in `files`, without deleting anything. Chunks are only ever written after their file's `files` row exists (the worker indexes synchronously first, then fires the embed), so a chunk without a file row is always damage -- a crash between the two deletes in an older, non-transactional `removeFileFromIndex`, a prune racing a lagging embed for a path just deleted, or any other half-applied removal. Such a row is unreachable by every existing prune, because {@link allIndexedPaths} enumerates `SELECT DISTINCT path FROM files`: once the file row is gone, no sweep can even name the path, so {@link pruneDeletedFiles}, {@link pruneBlockedRoot} and {@link pruneSystemTempFiles} all report a clean nothing-to-do while the chunk keeps its text and its vector and keeps being served by `semantic`. Only `reclaim --rebuild`, which wipes the entire index, cleared them. */
 export function findOrphanedChunkPaths(dbPath: string = globalDbPath()): string[] {
   return orphanedChunkGroups(getDb(dbPath)).map((g) => g.representative)
 }
 
-/**
- * One orphaned file, with every raw `chunks.file_path` spelling that belongs to it.
- *
- * Grouped by folded-and-normalized path rather than by raw spelling for two separate reasons.
- * Reporting: on a case-insensitive filesystem `C:/x.ts` and `c:/x.ts` are one file, and counting
- * both made `project prune` claim two files where it had cleared one. Deletion: {@link
- * deleteFileEmbeddings} folds the spelling it is handed but does not normalize it, so a row
- * written with backslashes and a row written with forward slashes are two different deletes even
- * though they are the same file. Deleting only the representative would leave the other spelling
- * behind, and it would come back as an orphan on every future sweep, forever.
- */
+/** One orphaned file, with every raw `chunks.file_path` spelling that belongs to it. Grouped by folded-and-normalized path rather than by raw spelling for two separate reasons. Reporting: on a case-insensitive filesystem `C:/x.ts` and `c:/x.ts` are one file, and counting both made `project prune` claim two files where it had cleared one. Deletion: {@link deleteFileEmbeddings} folds the spelling it is handed but does not normalize it, so a row written with backslashes and a row written with forward slashes are two different deletes even though they are the same file. Deleting only the representative would leave the other spelling behind, and it would come back as an orphan on every future sweep, forever. */
 function orphanedChunkGroups(db: DbHandle): Array<{ representative: string; spellings: string[] }> {
   const known = new Set(
     (db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>).map((r) =>
@@ -215,21 +162,7 @@ function orphanedChunkGroups(db: DbHandle): Array<{ representative: string; spel
   return [...byFolded.values()]
 }
 
-/**
- * Paths with a transient-read-failure counter whose file is no longer on disk.
- *
- * Exactly the same unreachability as {@link findOrphanedChunkPaths}, arrived at from the other
- * direction. Every path-scoped prune enumerates `SELECT DISTINCT path FROM files`, and the whole
- * point of keeping these counters out of `files` is that a path which has never been indexed has
- * no row there -- so a counter for a file that was never successfully read is invisible to all of
- * them, and its row would outlive the file forever. {@link removeFileFromIndex} covers the other
- * case, a path that was indexed before it started failing.
- *
- * Existence is checked one path at a time and re-checked immediately before each delete, for the
- * reason {@link removeDeletedFilesBestEffort} gives: a counter belongs to a file that exists but
- * cannot be read right now, so deleting on a stale observation would hand a still-locked file a
- * fresh retry budget on every sweep and let the worker hammer it indefinitely.
- */
+/** Paths with a transient-read-failure counter whose file is no longer on disk. Exactly the same unreachability as {@link findOrphanedChunkPaths}, arrived at from the other direction. Every path-scoped prune enumerates `SELECT DISTINCT path FROM files`, and the whole point of keeping these counters out of `files` is that a path which has never been indexed has no row there -- so a counter for a file that was never successfully read is invisible to all of them, and its row would outlive the file forever. {@link removeFileFromIndex} covers the other case, a path that was indexed before it started failing. Existence is checked one path at a time and re-checked immediately before each delete, for the reason {@link removeDeletedFilesBestEffort} gives: a counter belongs to a file that exists but cannot be read right now, so deleting on a stale observation would hand a still-locked file a fresh retry budget on every sweep and let the worker hammer it indefinitely. */
 export function findDeadRetryPaths(dbPath: string = globalDbPath()): string[] {
   const rows = getDb(dbPath).prepare('SELECT path FROM index_retries').all() as Array<{ path: string }>
   return rows.map((r) => r.path).filter(pathIsGone)
@@ -261,19 +194,7 @@ export function pruneDeadRetryRows(dbPath: string = globalDbPath()): string[] {
   return removed
 }
 
-/**
- * Delete the chunks and vectors {@link findOrphanedChunkPaths} finds. Returns the paths cleared.
- *
- * The scan and the deletes run inside one `BEGIN IMMEDIATE` transaction, taking the write lock
- * before reading rather than after. Reading first and deleting after -- the shape {@link
- * removeDeletedFilesBestEffort} is stuck with, because its condition lives on disk where no
- * database lock can cover it -- leaves a window in which another process reindexes a path this
- * one just observed as orphaned, restoring its `files` row and rewriting its chunks, and then
- * this delete wipes the live rows it never looked at. That window is real here: the worker fires
- * embeddings without awaiting them, so a rewrite can land at any moment. This condition lives
- * entirely in the same database as the delete, so unlike the disk case it can simply be made
- * atomic instead of merely narrowed.
- */
+/** Delete the chunks and vectors {@link findOrphanedChunkPaths} finds. Returns the paths cleared. The scan and the deletes run inside one `BEGIN IMMEDIATE` transaction, taking the write lock before reading rather than after. Reading first and deleting after -- the shape {@link removeDeletedFilesBestEffort} is stuck with, because its condition lives on disk where no database lock can cover it -- leaves a window in which another process reindexes a path this one just observed as orphaned, restoring its `files` row and rewriting its chunks, and then this delete wipes the live rows it never looked at. That window is real here: the worker fires embeddings without awaiting them, so a rewrite can land at any moment. This condition lives entirely in the same database as the delete, so unlike the disk case it can simply be made atomic instead of merely narrowed. */
 export function pruneOrphanedChunks(dbPath: string = globalDbPath()): string[] {
   const db = getDb(dbPath)
   const removed: string[] = []
@@ -283,9 +204,7 @@ export function pruneOrphanedChunks(dbPath: string = globalDbPath()): string[] {
         for (const spelling of group.spellings) deleteFileEmbeddings(db, spelling)
         removed.push(group.representative)
       } catch {
-        // Best-effort, same contract as removeFilesBestEffort: one path's failure must not abort
-        // the rest. Caught here rather than allowed to propagate, so one bad row cannot roll back
-        // every good delete in the batch.
+        // Best-effort, same contract as removeFilesBestEffort: one path's failure must not abort the rest. Caught here rather than allowed to propagate, so one bad row cannot roll back every good delete in the batch.
       }
     }
   })
@@ -293,31 +212,7 @@ export function pruneOrphanedChunks(dbPath: string = globalDbPath()): string[] {
   return removed
 }
 
-/**
- * Delete vectors whose `chunks` row is gone.
- *
- * Two writers create them, both deliberately: `deleteFileEmbeddings` makes its vector delete
- * conditional on `chunk_vectors` being usable but its chunk delete unconditional, and
- * `purgeDotenvEmbeddings` catches a failed vector delete and clears the chunk row regardless. Both
- * are right to -- leaking a chunk row is worse than leaking a vector, since the chunk row is what
- * every scoped query reads. But the leftover vector is then unreachable by every other sweep in
- * this file and in embeddings.ts: `pruneOrphanedChunks`, `pruneDeletedFiles`, `resetAllEmbeddings`
- * and `resetEmbeddingsForKinds` all take their population from `chunks` or `files` rows, which for
- * an orphan are by definition already deleted. Only a full `reclaimIndex({rebuild: true})` -- which
- * truncates every derived table for every project on the machine -- clears them today.
- *
- * Unreclaimed, they cost twice. They inflate the on-disk `chunk_vectors` size that `doctor` reports
- * without being able to attribute, and every KNN pass spends candidate slots on rows that join to
- * nothing: `fetchScopedHits` drops them silently, so the loss is invisible at every surface. The
- * leak is monotonic and has no ceiling, which is why this runs on the same schedule as the others
- * rather than waiting for a rebuild someone has to ask for.
- *
- * Point-deletes by rowid rather than `rowid IN (subquery)`, for the `xBestIndex` reason
- * `deleteFileEmbeddings` documents: a subquery is opaque to the vec0 planner and degrades to a scan
- * of the whole index. The whole body is wrapped in one try, which is also the usability probe --
- * an install without sqlite-vec throws `no such table` or `no such module: vec0` on the first
- * statement, and has no vectors to reclaim either way.
- */
+/** Delete vectors whose `chunks` row is gone. Two writers create them, both deliberately: `deleteFileEmbeddings` makes its vector delete conditional on `chunk_vectors` being usable but its chunk delete unconditional, and `purgeDotenvEmbeddings` catches a failed vector delete and clears the chunk row regardless. Both are right to -- leaking a chunk row is worse than leaking a vector, since the chunk row is what every scoped query reads. But the leftover vector is then unreachable by every other sweep in this file and in embeddings.ts: `pruneOrphanedChunks`, `pruneDeletedFiles`, `resetAllEmbeddings` and `resetEmbeddingsForKinds` all take their population from `chunks` or `files` rows, which for an orphan are by definition already deleted. Only a full `reclaimIndex({rebuild: true})` -- which truncates every derived table for every project on the machine -- clears them today. Unreclaimed, they cost twice. They inflate the on-disk `chunk_vectors` size that `doctor` reports without being able to attribute, and every KNN pass spends candidate slots on rows that join to nothing: `fetchScopedHits` drops them silently, so the loss is invisible at every surface. The leak is monotonic and has no ceiling, which is why this runs on the same schedule as the others rather than waiting for a rebuild someone has to ask for. Point-deletes by rowid rather than `rowid IN (subquery)`, for the `xBestIndex` reason `deleteFileEmbeddings` documents: a subquery is opaque to the vec0 planner and degrades to a scan of the whole index. The whole body is wrapped in one try, which is also the usability probe -- an install without sqlite-vec throws `no such table` or `no such module: vec0` on the first statement, and has no vectors to reclaim either way. */
 export function pruneOrphanedVectors(dbPath: string = globalDbPath()): number {
   const db = getDb(dbPath)
   try {
@@ -342,8 +237,7 @@ export const KNOWN_ROOT_MISSING_GRACE_MS = 7 * 24 * 60 * 60 * 1000
 
 // A live root should only ever lose a handful of files between sweeps under normal churn. If a sweep would delete more than this fraction of a *reachable* root's indexed rows in one pass, that's far more likely to mean a mount point/subdirectory inside the root went offline than that the files were actually deleted -- flag instead of deleting so a human can confirm before the rows are gone for good. Does not apply to a root confirmed gone past the grace period above: full deletion there is the correct, intended outcome.
 const ANOMALY_PRUNE_RATIO = 0.5
-// Paired with the ratio above so a small project losing e.g. 2 of its 3 files to normal editing
-// churn never gets flagged as an anomaly -- only a genuinely large, suspicious drop does.
+// Paired with the ratio above so a small project losing e.g. 2 of its 3 files to normal editing churn never gets flagged as an anomaly -- only a genuinely large, suspicious drop does.
 const ANOMALY_MIN_COUNT = 20
 
 export interface KnownRootsSweepResult {
@@ -358,38 +252,7 @@ export interface KnownRootsSweepResult {
   readonly prunedDeadRetryPaths: readonly string[]
 }
 
-/**
- * Auto-prune every known project root's dead file rows, safely, on a schedule.
- *
- * Before this, {@link pruneDeletedFiles} only ever ran via the manual `token-goat index [path]`
- * CLI command -- nothing periodic existed, so a shared `global.db` could (and did) accumulate
- * hundreds of dead rows indefinitely with no automatic recovery. This closes that gap while
- * preserving the safety properties manual pruning already had:
- *
- *  - A root that's merely unreachable this instant (sleeping external disk, disconnected network
- *    share, a drive not yet remounted) is never pruned on first sight -- {@link
- *    KNOWN_ROOT_MISSING_GRACE_MS} must elapse across sweeps before it's treated as genuinely
- *    gone, at which point every row under it is deleted (correct: the root itself no longer
- *    exists) and its {@link recordKnownRoot} tracking row is removed too, so known_roots doesn't
- *    accumulate dead entries forever.
- *  - A root that IS reachable but would still lose an anomalously large fraction of its rows in
- *    one pass ({@link ANOMALY_PRUNE_RATIO} / {@link ANOMALY_MIN_COUNT}) is flagged, not pruned --
- *    that pattern means a mount point/subdirectory inside the root went offline, not that the
- *    files were actually deleted, and blindly pruning would wipe real index rows for content
- *    that's simply unreachable right now.
- *
- * Called from the worker daemon's existing periodic-sweep loop ({@link runWorkerLoop} in
- * worker.ts) on a long cadence -- see KNOWN_ROOTS_SWEEP_INTERVAL_MS there, and on demand from
- * `token-goat project prune`. Never throws.
- *
- * With `dryRun`, every branch below reaches the same decision and writes nothing: no row is
- * deleted, no grace timestamp is stamped or cleared, and the two orphan passes are skipped
- * because they mutate unconditionally. The result then reports what a real sweep would do.
- * `prunedRows` is a count of rows found deletable rather than of deletes performed, which is the
- * same number the real pass writes except where the recheck-before-delete in
- * {@link removeDeletedFilesBestEffort} catches a file recreated in between -- so it is an upper
- * bound, and the preview says "would" for exactly that reason.
- */
+/** Auto-prune every known project root's dead file rows, safely, on a schedule. Before this, {@link pruneDeletedFiles} only ever ran via the manual `token-goat index [path]` CLI command -- nothing periodic existed, so a shared `global.db` could (and did) accumulate hundreds of dead rows indefinitely with no automatic recovery. This closes that gap while preserving the safety properties manual pruning already had: - A root that's merely unreachable this instant (sleeping external disk, disconnected network share, a drive not yet remounted) is never pruned on first sight -- {@link KNOWN_ROOT_MISSING_GRACE_MS} must elapse across sweeps before it's treated as genuinely gone, at which point every row under it is deleted (correct: the root itself no longer exists) and its {@link recordKnownRoot} tracking row is removed too, so known_roots doesn't accumulate dead entries forever. - A root that IS reachable but would still lose an anomalously large fraction of its rows in one pass ({@link ANOMALY_PRUNE_RATIO} / {@link ANOMALY_MIN_COUNT}) is flagged, not pruned -- that pattern means a mount point/subdirectory inside the root went offline, not that the files were actually deleted, and blindly pruning would wipe real index rows for content that's simply unreachable right now. Called from the worker daemon's existing periodic-sweep loop ({@link runWorkerLoop} in worker.ts) on a long cadence -- see KNOWN_ROOTS_SWEEP_INTERVAL_MS there, and on demand from `token-goat project prune`. Never throws. With `dryRun`, every branch below reaches the same decision and writes nothing: no row is deleted, no grace timestamp is stamped or cleared, and the two orphan passes are skipped because they mutate unconditionally. The result then reports what a real sweep would do. `prunedRows` is a count of rows found deletable rather than of deletes performed, which is the same number the real pass writes except where the recheck-before-delete in {@link removeDeletedFilesBestEffort} catches a file recreated in between -- so it is an upper bound, and the preview says "would" for exactly that reason. */
 export function sweepKnownRoots(
   dbPath: string = globalDbPath(),
   opts?: { now?: number; missingGraceMs?: number; dryRun?: boolean },
@@ -408,18 +271,12 @@ export function sweepKnownRoots(
   const flaggedRoots: string[] = []
 
   for (const { root, first_missing_ms: firstMissingMs } of roots) {
-    // Defense in depth: recordKnownRoot never writes a too-shallow root, but a hand-edited or
-    // otherwise corrupted known_roots row must still never reach a drive-wide prune.
+    // Defense in depth: recordKnownRoot never writes a too-shallow root, but a hand-edited or otherwise corrupted known_roots row must still never reach a drive-wide prune.
     if (isTooShallowToPrune(root)) continue
 
     let reachable: boolean
     try {
-      // isDirectory, not mere existence. A project root replaced by a regular file answers
-      // existsSync, so the live-root branch below ran against a root whose every indexed child is
-      // missing: the anomaly ratio hit 100%, the root was flagged instead of pruned, and it stayed
-      // flagged on every later sweep. The rows were then unreachable by any code path -- the
-      // missing-root grace that would have pruned them is skipped precisely because the root
-      // "exists".
+      // isDirectory, not mere existence. A project root replaced by a regular file answers existsSync, so the live-root branch below ran against a root whose every indexed child is missing: the anomaly ratio hit 100%, the root was flagged instead of pruned, and it stayed flagged on every later sweep. The rows were then unreachable by any code path -- the missing-root grace that would have pruned them is skipped precisely because the root "exists".
       reachable = fs.statSync(root, { throwIfNoEntry: false })?.isDirectory() === true
     } catch {
       reachable = false
@@ -457,14 +314,9 @@ export function sweepKnownRoots(
     prunedRoots.push(root)
   }
 
-  // Unscoped, like pruneSystemTempFiles: an orphaned chunk has no file row, so it belongs to no
-  // known root and no per-root branch above could ever reach it. Runs last so any file row the
-  // loop just deleted has already released its chunks through removeFileFromIndex's transaction,
-  // leaving only genuinely half-applied leftovers for this pass to clear.
+  // Unscoped, like pruneSystemTempFiles: an orphaned chunk has no file row, so it belongs to no known root and no per-root branch above could ever reach it. Runs last so any file row the loop just deleted has already released its chunks through removeFileFromIndex's transaction, leaving only genuinely half-applied leftovers for this pass to clear.
   const prunedOrphanChunkPaths = dryRun ? findOrphanedChunkPaths(dbPath) : pruneOrphanedChunks(dbPath)
-  // After the chunk sweep, not before: that pass deletes chunk rows, and any vector it could not
-  // delete alongside them becomes an orphan this pass then collects in the same run.
-  // No read-only counterpart exists for the vector pass, and inventing one would restate sqlite-vec's own join rather than share it. A preview reports 0 and says so at the call site rather than guessing a number.
+  // After the chunk sweep, not before: that pass deletes chunk rows, and any vector it could not delete alongside them becomes an orphan this pass then collects in the same run. No read-only counterpart exists for the vector pass, and inventing one would restate sqlite-vec's own join rather than share it. A preview reports 0 and says so at the call site rather than guessing a number.
   const prunedOrphanVectors = dryRun ? 0 : pruneOrphanedVectors(dbPath)
   // Unscoped for the same reason as the chunk sweep, and for a sharper one: a retry counter's whole purpose is to name a path that has no `files` row, so no per-root branch above could reach it even in principle. Runs after the loop so a path the loop just removed has already had its counter dropped by removeFileFromIndex, leaving only counters for files that were never indexed at all.
   const prunedDeadRetryPaths = dryRun ? findDeadRetryPaths(dbPath) : pruneDeadRetryRows(dbPath)
@@ -485,10 +337,7 @@ export interface ProjectIndexConsumer {
   fileCount: number
 }
 
-/**
- * Top project roots by indexed file count in the database.
- * Used by doctor to name the heaviest projects contributing to an oversized global.db.
- */
+/** Top project roots by indexed file count in the database. Used by doctor to name the heaviest projects contributing to an oversized global.db. */
 export function findTopIndexedProjects(dbPath: string = globalDbPath(), limit = 3): ProjectIndexConsumer[] {
   try {
     const db = getDb(dbPath)
