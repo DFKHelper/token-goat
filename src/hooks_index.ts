@@ -11,7 +11,7 @@ import { resolveIndexPath } from './paths.js'
 import { isUnderSystemTemp } from './project.js'
 import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
-import { appendDirtyQueuePaths, dirtyQueuePathFor, ensureWorkerAlive, parseDirtyQueueLines } from './worker.js'
+import { appendDirtyQueuePaths, dirtyQueuePathFor, ensureWorkerAlive, getDirtyPathsFor } from './worker.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
 export function dirtyQueuePath(): string {
@@ -50,7 +50,7 @@ export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResol
     // Fail-soft: the file write/reparse already landed either way, just not reindexed until the next `token-goat index` or edit touches this file again.
     return
   }
-  // Every caller of this function just queued work for the background worker to drain -- `hooks_edit.ts` was the only site that ever nudged a dead worker back to life after doing so, so a session driven entirely through the Bash hook's rewrite enqueues (`hooks_bash.ts`), the stale-read self-heal (`read_commands.ts::healStaleIndex`), or a plain CLI append (`cli.ts`, `fold_delivery.ts`, `reconcile.ts`) could fill the dirty queue with nothing running to drain it. Calling it here, at the one choke point every enqueue path already funnels through, covers all of them at once instead of repeating the same nudge at each call site. `ensureWorkerAlive` already gates on `TOKEN_GOAT_NO_WORKER_SPAWN` and rate-limits itself internally, so this is cheap (and test-safe) on every call after the first in a given window.
+  // Every caller of this function just queued work for the background worker to drain -- `hooks_edit.ts` was the only site that ever nudged a dead worker back to life after doing so, so a session driven entirely through the Bash hook's rewrite enqueues (`hooks_bash_post.ts`), the stale-read self-heal (`read_commands.ts::healStaleIndex`), or a plain CLI append (`cli.ts`, `fold_delivery.ts`, `reconcile.ts`) could fill the dirty queue with nothing running to drain it. Calling it here, at the one choke point every enqueue path already funnels through, covers all of them at once instead of repeating the same nudge at each call site. `ensureWorkerAlive` already gates on `TOKEN_GOAT_NO_WORKER_SPAWN` and rate-limits itself internally, so this is cheap (and test-safe) on every call after the first in a given window.
   try {
     ensureWorkerAlive()
   } catch {
@@ -60,14 +60,7 @@ export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResol
 
 /** Return every queued dirty path, in insertion order, deduplicated. Returns an empty array when the queue file does not exist. Blank lines (from a trailing newline or a partial write) are skipped. Duplicates are collapsed so a file edited several times is reindexed once. */
 export function getDirtyPaths(): string[] {
-  const queuePath = dirtyQueuePath()
-  let raw: string
-  try {
-    raw = fs.readFileSync(queuePath, 'utf8')
-  } catch {
-    return []
-  }
-  return parseDirtyQueueLines(raw)
+  return getDirtyPathsFor(dataDir())
 }
 
 /** Remove the dirty queue file. Idempotent: a missing file is a no-op rather than an error, so callers can clear unconditionally after draining. */

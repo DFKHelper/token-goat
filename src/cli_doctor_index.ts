@@ -7,7 +7,7 @@ import { findSystemTempFiles, findTopIndexedProjects, type ProjectIndexConsumer 
 import { displaySafeText } from './paths.js'
 import { isUnderSystemTemp } from './project.js'
 import { projectScopeClause } from './sql_path.js'
-import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
+import { getDirtyPathsFor, isWorkerRunning } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { loadConfig } from './config.js'
 import { isEmbedFresh, oversizeEmbedSha } from './parser.js'
@@ -341,18 +341,9 @@ export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorRe
 /** Backlog size above which a nonzero dirty-queue is worth flagging even when the worker is running -- large enough that normal churn (a big rebase, a branch switch) never trips it, small enough to catch a genuinely stalled drain before every surgical-read command in the project is serving stale data. */
 const DIRTY_QUEUE_BACKLOG_WARN_THRESHOLD = 500
 
-/** Check the health of the dirty-reindex queue: how many files are pending, and -- when the worker is running -- whether it's actually still completing drain cycles or has gone quiet without exiting (deadlock, stuck lock, crash loop that keeps restarting the pid but never reaching the end of drainOnce). A worker that's simply not running is already reported by the 'Worker' check; this check focuses on backlog size and on distinguishing "alive" from "actually draining". */
+/** Check the health of the dirty-reindex queue: how many files are pending, counted the way the worker drains them (deduplicated), and whether the backlog is large enough to suggest a stalled drain. Whether the worker is alive and still draining is isWorkerRunning's heartbeat lease, which the 'Worker' check reports too: a loop that stops completing drain cycles lets its lease lapse, so it reads as not running here rather than as a separate stuck state. */
 export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
-  let pendingCount = 0
-  try {
-    const raw = fs.readFileSync(dirtyQueuePathFor(dataDir), 'utf8')
-    pendingCount = raw
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0).length
-  } catch {
-    // No queue file yet -- nothing pending.
-  }
+  const pendingCount = getDirtyPathsFor(dataDir).length
 
   if (pendingCount > DIRTY_QUEUE_BACKLOG_WARN_THRESHOLD) {
     return {
@@ -365,21 +356,5 @@ export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
   if (!isWorkerRunning(dataDir)) {
     return { name: 'Dirty queue', status: 'ok', message: `${pendingCount} file(s) pending (worker not running)` }
   }
-
-  let heartbeatAgeMs: number | null = null
-  try {
-    heartbeatAgeMs = Date.now() - fs.statSync(drainHeartbeatPathFor(dataDir)).mtimeMs
-  } catch {
-    // No heartbeat yet -- worker may not have completed its first drain cycle since starting; not itself a fault.
-  }
-
-  if (heartbeatAgeMs !== null && heartbeatAgeMs > WORKER_HEARTBEAT_STALE_MS) {
-    return {
-      name: 'Dirty queue',
-      status: 'warn',
-      message: `worker process is running but hasn't completed a drain cycle in ${Math.round(heartbeatAgeMs / 1000)}s -- possibly deadlocked or stuck; check the worker error log`,
-    }
-  }
-
   return { name: 'Dirty queue', status: 'ok', message: `${pendingCount} file(s) pending, worker actively draining` }
 }

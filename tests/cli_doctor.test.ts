@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkHookShim, checkGlobalMcpConfig, checkMcpProcessHealth, isTokenGoatResidentProcess, checkSymbolBodySize, checkCompactionChannel, checkHookLatency, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkHookShim, checkCompactionChannel, checkHookLatency, checkTsCompiler, checkTreeSitter, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
 import { checkDbExists, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkDirtyQueueHealth, dbCategoryBreakdown } from '../src/cli_doctor_index.js'
-import { processListOutput } from '../src/cli_doctor_process.js'
+import { checkMcpProcessHealth, isTokenGoatResidentProcess, processListOutput, readWindowsProcesses, type ProcessInfo } from '../src/cli_doctor_process.js'
+import { checkGlobalMcpConfig } from '../src/cli_doctor_platforms.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { recordCreatedConfig, takeCreatedConfig } from '../src/bridges/created_configs.js'
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
@@ -21,7 +22,7 @@ import { normalizePath } from '../src/paths.js'
 import { GLOBAL_SCHEMA_SQL } from '../src/stats.js'
 import { PARSER_FINGERPRINT } from '../src/parser_fingerprint.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
-import { OVERSIZED_BODY_PROBE_SQL } from '../src/cli_doctor.js'
+import { checkSymbolBodySize, OVERSIZED_BODY_PROBE_SQL } from '../src/symbol_body_probe.js'
 import { PACKAGE_NAME, VERSION } from '../src/version.js'
 import { defaultConfig, invalidateConfigCache, loadConfig, saveConfig, type Config } from '../src/config.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
@@ -915,6 +916,16 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('ok')
       expect(result.message).toContain('2 file(s) pending')
       expect(result.message).toContain('worker not running')
+    })
+
+    // Regression: this check counted raw queue lines while the worker drains the deduplicated set, so a file edited three times with no worker running read as three files pending, and a burst of edits to a few files could trip the backlog warning. HAND-DERIVED: three queue lines naming two files.
+    it('counts a file queued more than once as one pending file, the way the worker drains it', () => {
+      const queuePath = dirtyQueuePathFor(tempDir)
+      fs.mkdirSync(path.dirname(queuePath), { recursive: true })
+      fs.writeFileSync(queuePath, 'a.ts\na.ts\nb.ts\n')
+
+      const result = checkDirtyQueueHealth(tempDir)
+      expect(result.message).toContain('2 file(s) pending')
     })
 
     it('warns when the backlog exceeds the threshold, even with the worker running', () => {
