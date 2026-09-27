@@ -62,7 +62,7 @@ let _globQueries = new Map<string, number>()
 let _lastTabContext: string | null = null // fingerprint of the block, never the block; see setLastTabContext
 let _seenImageHashes: string[] = []
 
-/** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's duplicate-brief detection: the original prompt text (before any briefing/advisory the * pre-hook appends) and when it was recorded. */
+/** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's duplicate-brief detection: the original prompt text (before any briefing/advisory the pre-hook appends) and when it was recorded. */
 export interface OutstandingAgentSpawn {
   readonly prompt: string
   readonly ts: number
@@ -183,7 +183,7 @@ export function recordSymbolRead(filePath: string, symbol: string): void {
   _files.set(key, { ...prev, symbols_read })
 }
 
-/** Snapshot of each file's readCount exactly as it was at hydration time, before this process Snapshot of each file's readCount exactly as it was at hydration time, before this process made any changes. session_store.ts's merge uses this to compute how many *new* reads this process actually contributed since its own load, rather than assuming the larger of the two counters reflects every read that ever happened -- two concurrent processes that both start * from the same on-disk count and each record one genuine read must sum to two, not one. from the same on-disk count and each record one genuine read must sum to two, not one. */
+/** Snapshot of each file's readCount exactly as it was at hydration time, before this process made any changes. session_store.ts's merge uses this to compute how many *new* reads this process actually contributed since its own load, rather than assuming the larger of the two counters reflects every read that ever happened -- two concurrent processes that both start from the same on-disk count and each record one genuine read must sum to two, not one. */
 export function filesReadCountAtLoad(): ReadonlyMap<string, number> {
   return _filesAtLoad
 }
@@ -313,7 +313,7 @@ function webFetchKey(url: string, prompt: string): string {
   return [redactSecrets(url).text, redactSecrets(prompt).text, digest].join(WEB_FETCH_KEY_SEP)
 }
 
-/** Index a web-fetch result: (`url`, `prompt`) -> `cacheId`, so two WebFetch calls to the same * url with different prompts are tracked separately instead of clobbering each other. */
+/** Index a web-fetch result: (`url`, `prompt`) -> `cacheId`, so two WebFetch calls to the same url with different prompts are tracked separately instead of clobbering each other. */
 export function recordWebFetch(url: string, prompt: string, cacheId: string): void {
   _webFetches.set(webFetchKey(url, prompt), cacheId)
 }
@@ -417,7 +417,7 @@ export function recordSeenImage(hash: string): void {
 /** Upper bound on outstanding Agent-spawn prompts tracked per session; oldest recorded first once exceeded, mirroring MAX_RANGES_PER_FILE's cap-then-evict shape. A long session that spawns many subagents must not grow this list unboundedly. */
 export const MAX_OUTSTANDING_AGENT_SPAWNS = 30
 
-/** Record that an Agent-tool spawn with `prompt` (the original prompt text, before any briefing/advisory is appended) is now outstanding this session. Caps the tracked list at * {@link MAX_OUTSTANDING_AGENT_SPAWNS}, evicting the oldest entries first. */
+/** Record that an Agent-tool spawn with `prompt` (the original prompt text, before any briefing/advisory is appended) is now outstanding this session. Caps the tracked list at {@link MAX_OUTSTANDING_AGENT_SPAWNS}, evicting the oldest entries first. */
 export function recordOutstandingAgentSpawn(prompt: string): void {
   // Redact before storing: this prompt lands in SerializedSession.outstandingAgentSpawns and, on a later hooks_agent_spawn.ts truncateForWarning read, is echoed back model-ward -- a raw secret pasted into a spawned agent's prompt must never survive into either surface.
   _outstandingAgentSpawns.push({ prompt: redactSecrets(prompt).text, ts: Date.now() })
@@ -431,23 +431,23 @@ export function getOutstandingAgentSpawns(): ReadonlyArray<OutstandingAgentSpawn
   return _outstandingAgentSpawns
 }
 
-/** Remove the outstanding entry whose tracked prompt is a prefix of `finishedPrompt` -- prefix, Remove the outstanding entry whose tracked prompt is a prefix of `finishedPrompt` -- prefix, not exact equality, because preAgentHandler's rewriteInput only ever appends text (briefing/advisory) after the original prompt tracked here, so a completed spawn's actual tool_input prompt always starts with the tracked original. Removes the oldest match first (the * earliest still-outstanding entry with that prefix) and is a no-op if none match. earliest still-outstanding entry with that prefix) and is a no-op if none match. */
+/** Remove the outstanding entry whose tracked prompt is a prefix of `finishedPrompt` -- prefix, not exact equality, because preAgentHandler's rewriteInput only ever appends text (briefing/advisory) after the original prompt tracked here, so a completed spawn's actual tool_input prompt always starts with the tracked original. Removes the oldest match first (the earliest still-outstanding entry with that prefix) and is a no-op if none match. */
 export function removeOutstandingAgentSpawn(finishedPrompt: string): void {
   const idx = _outstandingAgentSpawns.findIndex((e) => finishedPrompt.startsWith(e.prompt))
   if (idx !== -1) _outstandingAgentSpawns.splice(idx, 1)
 }
 
-/** A stable identity key for one outstanding-spawn entry (prompt + record timestamp), used by session_store.ts's merge to tell entries apart even when two distinct spawns share identical * prompt text. */
+/** A stable identity key for one outstanding-spawn entry (prompt + record timestamp), used by session_store.ts's merge to tell entries apart even when two distinct spawns share identical prompt text. */
 export function outstandingAgentSpawnKey(prompt: string, ts: number): string {
   return `${prompt} ${ts}`
 }
 
-/** Snapshot of outstanding Agent-spawn entries exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to compute which entries * this process explicitly removed (see {@link consumedOutstandingAgentSpawnKeys}). */
+/** Snapshot of outstanding Agent-spawn entries exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to compute which entries this process explicitly removed (see {@link consumedOutstandingAgentSpawnKeys}). */
 export function outstandingAgentSpawnsAtLoad(): ReadonlyArray<OutstandingAgentSpawn> {
   return _outstandingAgentSpawnsAtLoad
 }
 
-/** Keys (see {@link outstandingAgentSpawnKey}) present at load but removed (consumed by {@link removeOutstandingAgentSpawn}) since -- tombstones for session_store.ts's merge, mirroring * {@link consumedPendingLargeFileHintKeys} for the same removal-is-not-a-union-op reason. */
+/** Keys (see {@link outstandingAgentSpawnKey}) present at load but removed (consumed by {@link removeOutstandingAgentSpawn}) since -- tombstones for session_store.ts's merge, mirroring {@link consumedPendingLargeFileHintKeys} for the same removal-is-not-a-union-op reason. */
 export function consumedOutstandingAgentSpawnKeys(): string[] {
   const currentKeys = new Set(_outstandingAgentSpawns.map((e) => outstandingAgentSpawnKey(e.prompt, e.ts)))
   const consumed: string[] = []
@@ -478,12 +478,12 @@ export function clearCurlDownload(url: string): void {
   _curlDownloads.delete(curlDownloadKey(url))
 }
 
-/** Snapshot of curl-download entries exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to compute which entries this process * explicitly cleared (see {@link consumedCurlDownloadKeys}). */
+/** Snapshot of curl-download entries exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to compute which entries this process explicitly cleared (see {@link consumedCurlDownloadKeys}). */
 export function curlDownloadsAtLoad(): ReadonlyMap<string, string> {
   return _curlDownloadsAtLoad
 }
 
-/** URLs present at load but cleared (consumed by {@link clearCurlDownload}) since -- tombstones for session_store.ts's merge, mirroring {@link consumedPendingLargeFileHintKeys} for the same * removal-is-not-a-union-op reason. */
+/** URLs present at load but cleared (consumed by {@link clearCurlDownload}) since -- tombstones for session_store.ts's merge, mirroring {@link consumedPendingLargeFileHintKeys} for the same removal-is-not-a-union-op reason. */
 export function consumedCurlDownloadKeys(): string[] {
   const consumed: string[] = []
   for (const url of _curlDownloadsAtLoad.keys()) {

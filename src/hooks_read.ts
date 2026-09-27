@@ -101,7 +101,7 @@ function diffHintCredit(counterfactualBytes: number, body: string): number | nul
   return credit
 }
 
-/** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually Forward-slashed path of `target` relative to `root`, or null when `target` is not actually inside `root`. A bare `!rel.startsWith('..')` check (the previous form of this guard, at both cross-session-manifest call sites below) is not sufficient on Windows: when `root` and `target` are on different drive letters, `path.relative` returns `target`'s own absolute path unchanged rather than a `..`-prefixed relative path (this is documented Node behavior, not a bug in path.relative), so a file on an unrelated drive silently passed the guard and got written into (or matched against) the project's cross-session read-dedup manifest as if it were a real in-project relative path -- leaking an out-of-project absolute path into a manifest meant to hold only project-relative paths. Mirrors pack.ts's `isPathWithinRoot` * guard, which already includes the `!path.isAbsolute(rel)` check this lacked. guard, which already includes the `!path.isAbsolute(rel)` check this lacked. */
+/** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually inside `root`. A bare `!rel.startsWith('..')` check (the previous form of this guard, at both cross-session-manifest call sites below) is not sufficient on Windows: when `root` and `target` are on different drive letters, `path.relative` returns `target`'s own absolute path unchanged rather than a `..`-prefixed relative path (this is documented Node behavior, not a bug in path.relative), so a file on an unrelated drive silently passed the guard and got written into (or matched against) the project's cross-session read-dedup manifest as if it were a real in-project relative path -- leaking an out-of-project absolute path into a manifest meant to hold only project-relative paths. Mirrors pack.ts's `isPathWithinRoot` guard, which already includes the `!path.isAbsolute(rel)` check this lacked. */
 export function relPathWithinRoot(root: string, target: string): string | null {
   const rel = path.relative(root, target).replace(/\\/g, '/')
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null
@@ -230,7 +230,7 @@ function indexedHintNames(opts: Parameters<typeof querySymbols>[0]): string[] {
     .slice(0, HINT_NAME_COUNT)
 }
 
-/** Generate extension-aware surgical-read hint for a file, gated on hints.min_file_lines_for_hint — files below the threshold return '' since a surgical-read * suggestion isn't worth the noise for a file that's already small enough to read whole. */
+/** Generate extension-aware surgical-read hint for a file, gated on hints.min_file_lines_for_hint — files below the threshold return '' since a surgical-read suggestion isn't worth the noise for a file that's already small enough to read whole. */
 function surgicalHint(filePath: string, basename: string, lineCount: number, fileContent?: string): string {
   if (lineCount < loadConfig().hints.min_file_lines_for_hint) return ''
 
