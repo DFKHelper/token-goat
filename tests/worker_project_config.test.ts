@@ -11,7 +11,8 @@ import { closeAllDbs, getDb } from '../src/db.js'
 import { DEFAULT_DIM, isAvailable, setPipelineFnForTesting } from '../src/embeddings.js'
 import { disabledEmbedSha } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { drainOnce, parseDirtyQueueLines, pendingEmbeddings, runWorkerLoop } from '../src/worker.js'
+import { drainOnce, pendingEmbeddings, runWorkerLoop } from '../src/worker.js'
+import { parseDirtyQueueLines } from '../src/dirty_queue.js'
 
 const EMBEDDINGS_OFF = '[indexing]\nembeddings_enabled = false\n'
 

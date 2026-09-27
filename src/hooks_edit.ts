@@ -19,7 +19,7 @@ import { isUnderSystemTemp } from './project.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { compactPathFor, markCompactStale } from './doc_compact.js'
-import { ensureWorkerAlive } from './worker.js'
+import { ensureWorkerAlive } from './worker_lifecycle.js'
 import type { HookOutput } from './types.js'
 
 /** post_tool_use handler for Write/Edit/NotebookEdit. Records the edit in the session cache and enqueues the normalized path for reindexing. A missing path (malformed payload — `file_path` for Write/Edit, `notebook_path` for NotebookEdit) is tolerated — the call passes through without touching the queue. Returns a context hint for markdown/rst files suggesting the token-goat section command for re-reading. */

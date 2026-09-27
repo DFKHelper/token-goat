@@ -31,7 +31,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 import { spawn } from 'node:child_process'
-import { WorkerDataDirUnwritableError, ensureWorkerAlive, startDetachedWorker, workerPidPath } from '../src/worker.js'
+import { WorkerDataDirUnwritableError, ensureWorkerAlive, startDetachedWorker, workerPidPath } from '../src/worker_lifecycle.js'
 import { checkWorker } from '../src/cli_doctor.js'
 
 let dir: string

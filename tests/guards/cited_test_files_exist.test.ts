@@ -1,28 +1,4 @@
-/**
- * Every test file a guard's doc comment cites must exist.
- *
- * A guard's docstring is where it says which half of its subject it does NOT check and who checks
- * the rest: `storage_dirs_are_hardened` said "the POSIX mode itself is asserted at runtime by
- * `tests/data_dir_private.test.ts`", and that file has never existed. Nothing was red, because a
- * citation is prose -- and prose that names a delivered check is worse than an admitted gap, since
- * it reads as a decision someone already made. Two audit rounds read past it. The real file was
- * `tests/data_dir_permissions.test.ts`, four characters away.
- *
- * Scope is deliberately narrow, to keep the false-positive rate at zero rather than merely low:
- * only doc-comment lines (`*`-prefixed) in `tests/guards/**`, where a cited test file is load-
- * bearing evidence for a claim the guard makes about its own coverage. A whole-repo scan was
- * measured first and rejected: 22 of 515 citations do not resolve, nearly all of them synthetic
- * fixture names inside test data (`tests/foo.test.ts`), which is a 4% noise rate on a check whose
- * whole value is that a hit means something. Off-ramp: if this ever starts flagging citations that
- * are correct as written, narrow the pattern or delete the file -- a citation check that has to be
- * argued with is not worth its own maintenance.
- *
- * PROVENANCE: CAPTURE. Both sides are read from disk at run time -- the citations out of the guard
- * sources, the existence out of the filesystem -- so neither is a transcription that can agree with
- * a stale belief.
- *
- * I/O: reads `tests/guards/**\/*.ts` and stats the paths they name. No network, spawn, or write.
- */
+/** Every test file a guard's doc comment cites must exist. A guard's docstring is where it says which half of its subject it does NOT check and who checks the rest: `storage_dirs_are_hardened` said "the POSIX mode itself is asserted at runtime by `tests/data_dir_private.test.ts`", and that file has never existed. Nothing was red, because a citation is prose -- and prose that names a delivered check is worse than an admitted gap, since it reads as a decision someone already made. Two audit rounds read past it. The real file was `tests/data_dir_permissions.test.ts`, four characters away. Scope is deliberately narrow, to keep the false-positive rate at zero rather than merely low: only doc-comment lines in `tests/guards/**`, `*`-prefixed or a whole doc comment folded onto one `/** ... *\/` line, where a cited test file is load-bearing evidence for a claim the guard makes about its own coverage. Reading only the `*`-prefixed kind let the repository's one-line comment convention hide each citation as its file was folded, 43 live against 20 seen, until one more fold took the population under its floor. A whole-repo scan was measured first and rejected: 22 of 515 citations do not resolve, nearly all of them synthetic fixture names inside test data (`tests/foo.test.ts`), which is a 4% noise rate on a check whose whole value is that a hit means something. Off-ramp: if this ever starts flagging citations that are correct as written, narrow the pattern or delete the file -- a citation check that has to be argued with is not worth its own maintenance. PROVENANCE: CAPTURE. Both sides are read from disk at run time -- the citations out of the guard sources, the existence out of the filesystem -- so neither is a transcription that can agree with a stale belief. I/O: reads `tests/guards/**\/*.ts` and stats the paths they name. No network, spawn, or write. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,12 +17,11 @@ function citations(): string[] {
   const out = new Set<string>()
   const self = path.basename(fileURLToPath(import.meta.url))
   for (const name of fs.readdirSync(HERE).sort()) {
-    // Self-exclusion, not tidiness: this file's own docstring quotes the broken citation it was
-    // written for, so scanning itself would make the guard permanently red about its own prose.
+    // Self-exclusion, not tidiness: this file's own docstring quotes the broken citation it was written for, so scanning itself would make the guard permanently red about its own prose.
     if (!name.endsWith('.ts') || name === self) continue
     const src = fs.readFileSync(path.join(HERE, name), 'utf8')
     for (const line of src.split('\n')) {
-      if (!/^\s*\*/.test(line)) continue
+      if (!/^\s*(\/\*\*|\*)/.test(line)) continue
       for (const m of line.matchAll(CITATION_RE)) out.add(`${name} -> ${m[0]}`)
     }
   }
@@ -58,7 +33,7 @@ describe('a guard docstring cites no test file that does not exist', () => {
     pinnedPopulation({
       what: 'test files cited in guard doc comments',
       items: citations(),
-      floor: 20, // measured 33 live (raise this to 9999 and read the count out of the failure)
+      floor: 40, // measured 43 live (raise this to 9999 and read the count out of the failure)
       ceiling: 80,
       mustInclude: ['storage_dirs_are_hardened.test.ts -> tests/data_dir_permissions.test.ts'],
     })

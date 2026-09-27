@@ -5,25 +5,9 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  claimWorkerPidFile,
-  cleanupWorkerStateFiles,
-  currentDaemonStamp,
-  dirtyQueuePathFor,
-  drainHeartbeatPathFor,
-  drainOnce,
-  ensureWorkerAlive,
-  getDirtyPathsFor,
-  isWorkerRunning,
-  pendingEmbeddings,
-  processDirtyBatch,
-  clearRetryCount,
-  resolvePollIntervalMs,
-  runWorkerLoop,
-  stopWorker,
-  workerPidPath,
-  workerStampPath,
-} from '../src/worker.js'
+import { cleanupWorkerStateFiles, drainOnce, pendingEmbeddings, processDirtyBatch, clearRetryCount, runWorkerLoop } from '../src/worker.js'
+import { dirtyQueuePathFor, getDirtyPathsFor } from '../src/dirty_queue.js'
+import { claimWorkerPidFile, currentDaemonStamp, drainHeartbeatPathFor, ensureWorkerAlive, isWorkerRunning, resolvePollIntervalMs, stopWorker, workerPidPath, workerStampPath } from '../src/worker_lifecycle.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
 import { recordKnownRoot } from '../src/known_roots.js'

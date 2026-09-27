@@ -9,7 +9,8 @@ import { loadConfig } from '../src/config.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import * as parserModule from '../src/parser.js'
-import { drainOnce, getDirtyPathsFor, pendingEmbeddings } from '../src/worker.js'
+import { drainOnce, pendingEmbeddings } from '../src/worker.js'
+import { getDirtyPathsFor } from '../src/dirty_queue.js'
 
 vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), loadConfig: vi.fn() }))
 
