@@ -1,15 +1,6 @@
-// Regression guard: a non-numeric --limit/--top CLI arg (e.g. "abc") parses to NaN via
-// Number.parseInt, and several commands bind that limit straight into a SQL `LIMIT ?`
-// parameter. SQLite rejects a NaN bind with an opaque "datatype mismatch" error
-// instead of a clean, actionable CLI validation error. Drive the real run() entry so this
-// exercises the actual command wiring, not just the parsing helper in isolation.
+// Regression guard: a non-numeric --limit/--top CLI arg (e.g. "abc") parses to NaN via Number.parseInt, and several commands bind that limit straight into a SQL `LIMIT ?` parameter. SQLite rejects a NaN bind with an opaque "datatype mismatch" error instead of a clean, actionable CLI validation error. Drive the real run() entry so this exercises the actual command wiring, not just the parsing helper in isolation.
 //
-// The same root cause -- a numeric flag parsed with a bare `Number.parseInt` instead of
-// being routed through the shared `requireInt` validator -- also affected `grep --max-lines`,
-// `call-chain --depth`, and `pack`/`context-for --budget`. Each of those flags feeds a
-// comparison or `.slice()` call that is silently a no-op against NaN (`x > NaN` is always
-// false, `arr.slice(0, NaN)` returns `[]`), so an invalid value used to fail open (silently
-// suppressing output or skipping the enforcement check) instead of erroring.
+// The same root cause -- a numeric flag parsed with a bare `Number.parseInt` instead of being routed through the shared `requireInt` validator -- also affected `grep --max-lines`, `call-chain --depth`, and `pack`/`context-for --budget`. Each of those flags feeds a comparison or `.slice()` call that is silently a no-op against NaN (`x > NaN` is always false, `arr.slice(0, NaN)` returns `[]`), so an invalid value used to fail open (silently suppressing output or skipping the enforcement check) instead of erroring.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -99,14 +90,7 @@ describe('non-numeric --max-lines validation on grep', () => {
   })
 })
 
-// Regression guard (task #105): a negative --max-lines is a *finite* number, so it sailed
-// straight past a NaN-only check. Array.prototype.slice treats a negative end index as
-// "count back from the end" rather than "cap at N", so hits.slice(0, maxLines) with a
-// negative maxLines silently drops elements off the *end* instead of capping the front, and
-// the "N more lines omitted" message computes hits.length - maxLines -- adding the negative
-// value's magnitude instead of subtracting it -- producing an omitted-count larger than the
-// total number of matches that ever existed. --max-lines 0 is equally nonsensical: it silently
-// discards every match without ever surfacing that the flag value itself is unusable.
+// Regression guard (task #105): a negative --max-lines is a *finite* number, so it sailed straight past a NaN-only check. Array.prototype.slice treats a negative end index as "count back from the end" rather than "cap at N", so hits.slice(0, maxLines) with a negative maxLines silently drops elements off the *end* instead of capping the front, and the "N more lines omitted" message computes hits.length - maxLines -- adding the negative value's magnitude instead of subtracting it -- producing an omitted-count larger than the total number of matches that ever existed. --max-lines 0 is equally nonsensical: it silently discards every match without ever surfacing that the flag value itself is unusable.
 describe('negative/zero --max-lines validation on grep (task #105)', () => {
   it('rejects a negative --max-lines instead of producing a nonsensical truncation message', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-grep-negmaxlines-'))
@@ -120,9 +104,7 @@ describe('negative/zero --max-lines validation on grep (task #105)', () => {
       captureStderr()
       const code = await runCli(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', '-1'])
       expect(code).toBe(1)
-      // Pre-fix: hits.slice(0, -1) on 3 matches silently drops the last one and then reports
-      // "... (4 more lines omitted)" -- more than the 3 matches that exist in total. Post-fix
-      // this is rejected before runGrep ever executes, so no matches are printed at all.
+      // Pre-fix: hits.slice(0, -1) on 3 matches silently drops the last one and then reports "... (4 more lines omitted)" -- more than the 3 matches that exist in total. Post-fix this is rejected before runGrep ever executes, so no matches are printed at all.
       expect(stdout.join('')).not.toContain('UNIQUE_GREP_MATCH_TOKEN')
       expect(stderr.join('')).toContain('--max-lines')
     } finally {
@@ -183,8 +165,7 @@ describe('non-numeric --min-lines validation on skeleton and outline', () => {
     captureStdout()
     const code = await runCli(['skeleton', 'src/cli.ts', '--min-lines', 'abc'])
     expect(code).toBe(1)
-    // Pre-fix this would print "# Skeleton: src/cli.ts  (0 symbols, 0 lines)" with exit 0
-    // Post-fix it errors and contains --min-lines in stderr
+    // Pre-fix this would print "# Skeleton: src/cli.ts  (0 symbols, 0 lines)" with exit 0 Post-fix it errors and contains --min-lines in stderr
     expect(stdout.join('')).not.toContain('symbols')
     expect(stderr.join('')).toContain('--min-lines')
   })
@@ -194,39 +175,24 @@ describe('non-numeric --min-lines validation on skeleton and outline', () => {
     captureStdout()
     const code = await runCli(['outline', 'src/cli.ts', '--min-lines', 'abc'])
     expect(code).toBe(1)
-    // Pre-fix this would print "# Outline: src/cli.ts  (0 symbols)" with exit 0
-    // Post-fix it errors and contains --min-lines in stderr
+    // Pre-fix this would print "# Outline: src/cli.ts  (0 symbols)" with exit 0 Post-fix it errors and contains --min-lines in stderr
     expect(stdout.join('')).not.toContain('symbols')
     expect(stderr.join('')).toContain('--min-lines')
   })
 })
 
-// Regression guard: unlike a non-numeric value (caught above), a negative --limit/--top is a
-// *finite* number, so it sailed straight past the NaN-only check the fixes above added. Two
-// different downstream sinks turn that "valid-looking" negative number into a silent cap bypass
-// instead of an error:
+// Regression guard: unlike a non-numeric value (caught above), a negative --limit/--top is a *finite* number, so it sailed straight past the NaN-only check the fixes above added. Two different downstream sinks turn that "valid-looking" negative number into a silent cap bypass instead of an error:
 //
-//   - `symbol`/`refs` (and `find`/`callers`/`types`/`semantic`) bind --limit straight into a SQL
-//     `... LIMIT ?`. SQLite treats a negative LIMIT bind as "no limit at all" (LIMIT -1 returns
-//     every row; LIMIT 0 correctly returns zero), so `--limit -1` silently dumps the entire
-//     matching set instead of capping it -- the exact large-context-burn outcome these row caps
-//     exist to prevent.
-//   - `tokens` (and other --top consumers) feed --top into `entries.slice(0, top)`. JS's
-//     `.slice(0, -1)` means "everything except the last element", not "nothing" -- a negative
-//     --top silently reinterprets as a near-complete, confusingly-truncated result instead of
-//     erroring.
+// - `symbol`/`refs` (and `find`/`callers`/`types`/`semantic`) bind --limit straight into a SQL `... LIMIT ?`. SQLite treats a negative LIMIT bind as "no limit at all" (LIMIT -1 returns every row; LIMIT 0 correctly returns zero), so `--limit -1` silently dumps the entire matching set instead of capping it -- the exact large-context-burn outcome these row caps exist to prevent. - `tokens` (and other --top consumers) feed --top into `entries.slice(0, top)`. JS's `.slice(0, -1)` means "everything except the last element", not "nothing" -- a negative --top silently reinterprets as a near-complete, confusingly-truncated result instead of erroring.
 //
-// requireNonNegativeInt() closes both: it rejects any strictly-negative value with a clean
-// CliError before it ever reaches the SQL bind or the .slice() call. Zero is still accepted
-// (SQLite and .slice() both correctly return nothing for a 0 cap).
+// requireNonNegativeInt() closes both: it rejects any strictly-negative value with a clean CliError before it ever reaches the SQL bind or the .slice() call. Zero is still accepted (SQLite and .slice() both correctly return nothing for a 0 cap).
 describe('negative --limit/--top validation', () => {
   it('rejects a negative --limit on `symbol` instead of dumping every matching row', async () => {
     const db = getDb(globalDbPath())
     const stmt = db.prepare(
       'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
     )
-    // More rows than `symbol`'s sane default --limit of 20, so an unclamped negative --limit
-    // (SQLite's LIMIT -1 == unlimited) would observably return all of them instead of erroring.
+    // More rows than `symbol`'s sane default --limit of 20, so an unclamped negative --limit (SQLite's LIMIT -1 == unlimited) would observably return all of them instead of erroring.
     const rowCount = 30
     for (let i = 0; i < rowCount; i++) {
       stmt.run(`fixture-neg-limit-symbol-${i}.ts`, 'fixtureNegLimitSymbol', 'function', 1, 2, 'function fixtureNegLimitSymbol() {}', '')
@@ -236,8 +202,7 @@ describe('negative --limit/--top validation', () => {
     captureStderr()
     const code = await runCli(['symbol', 'fixtureNegLimitSymbol', '--limit', '-1', '--json'])
     expect(code).toBe(1)
-    // Pre-fix this would print a 30-element JSON array of matches; post-fix nothing is printed
-    // because requireNonNegativeInt throws before querySymbols ever runs.
+    // Pre-fix this would print a 30-element JSON array of matches; post-fix nothing is printed because requireNonNegativeInt throws before querySymbols ever runs.
     expect(stdout.join('')).not.toContain('fixtureNegLimitSymbol')
     expect(stderr.join('')).toContain('--limit')
   })
@@ -274,8 +239,7 @@ describe('negative --limit/--top validation', () => {
       // Absolute paths so expandGlobs() uses them as-is regardless of process.cwd().
       const code = await runCli(['tokens', fileA, fileB, fileC, '--top', '-1', '--json'])
       expect(code).toBe(1)
-      // Pre-fix, entries.slice(0, -1) on 3 entries silently returns the first 2 (all but the
-      // last) and exits 0 instead of erroring.
+      // Pre-fix, entries.slice(0, -1) on 3 entries silently returns the first 2 (all but the last) and exits 0 instead of erroring.
       expect(stdout.join('')).not.toContain('fixture-neg-top')
       expect(stderr.join('')).toContain('--top')
     } finally {
@@ -284,12 +248,7 @@ describe('negative --limit/--top validation', () => {
   })
 })
 
-// Regression guard: `compress --max-tokens` was bare-parsed via
-// `parseInt(opts.maxTokens, 10) || 0`, so a non-numeric value ("abc") silently mapped to 0
-// ("no cap") instead of erroring, and a negative value passed the parse but was silently
-// treated as "no cap" too by the `> 0` check downstream in bash_runner.ts. Route it through the
-// same requireNonNegativeInt validator used for --limit/--top/--head/--tail elsewhere in this
-// file so invalid input errors clearly instead of silently disabling the cap.
+// Regression guard: `compress --max-tokens` was bare-parsed via `parseInt(opts.maxTokens, 10) || 0`, so a non-numeric value ("abc") silently mapped to 0 ("no cap") instead of erroring, and a negative value passed the parse but was silently treated as "no cap" too by the `> 0` check downstream in bash_runner.ts. Route it through the same requireNonNegativeInt validator used for --limit/--top/--head/--tail elsewhere in this file so invalid input errors clearly instead of silently disabling the cap.
 describe('non-numeric/negative --max-tokens validation on compress', () => {
   it('rejects a non-numeric --max-tokens with a clean error instead of silently disabling the cap', async () => {
     captureStderr()
@@ -306,11 +265,7 @@ describe('non-numeric/negative --max-tokens validation on compress', () => {
   })
 })
 
-// Regression guard: `bash-output --file`'s --head/--tail parsing used a bare Number.parseInt
-// check that only accepted a strictly-positive result, so a non-numeric value ("abc") and an
-// explicit --head 0 both silently fell back to the default (30/80) instead of erroring or
-// honoring the 0. Route --head/--tail through the same requireNonNegativeInt validator as
-// symbol/semantic/csv-query so invalid input errors cleanly and an explicit 0 is honored.
+// Regression guard: `bash-output --file`'s --head/--tail parsing used a bare Number.parseInt check that only accepted a strictly-positive result, so a non-numeric value ("abc") and an explicit --head 0 both silently fell back to the default (30/80) instead of erroring or honoring the 0. Route --head/--tail through the same requireNonNegativeInt validator as symbol/semantic/csv-query so invalid input errors cleanly and an explicit 0 is honored.
 describe('bash-output --head/--tail validation', () => {
   it('rejects a non-numeric --head with a clean error instead of silently using the default', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-bashoutput-head-'))
@@ -365,12 +320,7 @@ describe('bash-output --head/--tail validation', () => {
   })
 })
 
-// Regression guard: `stats --window-days` was bare-parsed via
-// `opts.windowDays ? parseInt(opts.windowDays, 10) : 30`, so a value with trailing garbage
-// ("30abc") parsed to 30 and was silently accepted instead of erroring, inconsistent with the
-// strict requireInt-style validation used by the other flags fixed in this file. Route it
-// through requireNonNegativeInt so trailing-garbage input errors cleanly instead of silently
-// truncating.
+// Regression guard: `stats --window-days` was bare-parsed via `opts.windowDays ? parseInt(opts.windowDays, 10) : 30`, so a value with trailing garbage ("30abc") parsed to 30 and was silently accepted instead of erroring, inconsistent with the strict requireInt-style validation used by the other flags fixed in this file. Route it through requireNonNegativeInt so trailing-garbage input errors cleanly instead of silently truncating.
 describe('stats --window-days validation', () => {
   it('rejects trailing garbage instead of silently truncating to the numeric prefix', async () => {
     captureStderr()
@@ -380,26 +330,9 @@ describe('stats --window-days validation', () => {
   })
 })
 
-// Regression guard: cmdWaste's --top flag was the only --top-style flag in the CLI parsed via
-// requirePositiveInt instead of requireNonNegativeInt, contradicting the documented convention
-// (cli.ts's requireNonNegativeInt comment: "Zero is fine ... so only strictly-negative is
-// rejected") that every other --top/--limit/--head/--tail flag follows, and that
-// waste.ts::topExpensiveCalls's own `.slice(0, n)` call handles correctly for n=0. So
-// `waste --top 0` threw "--top must be a positive number" instead of returning zero top calls
-// like the analogous `tokens --top 0` / `impact --top 0` / etc. do.
+// Regression guard: cmdWaste's --top flag was the only --top-style flag in the CLI parsed via requirePositiveInt instead of requireNonNegativeInt, contradicting the documented convention (cli_dispatch.ts's requireNonNegativeInt comment: "Zero is fine ... so only strictly-negative is rejected") that every other --top/--limit/--head/--tail flag follows, and that waste.ts::topExpensiveCalls's own `.slice(0, n)` call handles correctly for n=0. So `waste --top 0` threw "--top must be a positive number" instead of returning zero top calls like the analogous `tokens --top 0` / `impact --top 0` / etc. do.
 describe('waste --top 0 validation', () => {
-  // Without --transcript, cmdWaste resolves the project root to this repo's real cwd and
-  // findLatestTranscript (waste.ts) falls back to os.homedir()/.claude/projects/<slug>, which
-  // isolate-home.ts's setup does NOT sandbox (it isolates TOKEN_GOAT_HOME and the platform data
-  // dir, not os.homedir() outside its darwin branch). On a machine actively running Claude Code
-  // against this repo -- i.e. any real dogfooding session, including the one that authored this
-  // fix -- that resolves to the developer's own live, actively-growing session transcript
-  // (observed at 76 MB and climbing), read synchronously and parsed line-by-line on every call.
-  // Unloaded that alone took ~6.7s; under full-suite parallel-fork contention that's enough
-  // margin to blow the 30s test timeout, attributed to the `await runCli(...)` call itself
-  // (a timeout, not an assertion failure) -- this reproduced the reported flake's code frame.
-  // A synthetic, isolated, single-line transcript makes these --top-parsing tests hermetic and
-  // fast regardless of what the host machine's real Claude Code session looks like.
+  // Without --transcript, cmdWaste resolves the project root to this repo's real cwd and findLatestTranscript (waste.ts) falls back to os.homedir()/.claude/projects/<slug>, which isolate-home.ts's setup does NOT sandbox (it isolates TOKEN_GOAT_HOME and the platform data dir, not os.homedir() outside its darwin branch). On a machine actively running Claude Code against this repo -- i.e. any real dogfooding session, including the one that authored this fix -- that resolves to the developer's own live, actively-growing session transcript (observed at 76 MB and climbing), read synchronously and parsed line-by-line on every call. Unloaded that alone took ~6.7s; under full-suite parallel-fork contention that's enough margin to blow the 30s test timeout, attributed to the `await runCli(...)` call itself (a timeout, not an assertion failure) -- this reproduced the reported flake's code frame. A synthetic, isolated, single-line transcript makes these --top-parsing tests hermetic and fast regardless of what the host machine's real Claude Code session looks like.
   let transcriptDir: string
   let transcriptPath: string
 
@@ -433,11 +366,7 @@ describe('waste --top 0 validation', () => {
 })
 
 
-// Regression guard: cmdRecall's --limit flag was parsed via requirePositiveInt instead of
-// requireNonNegativeInt, contradicting every other --limit flag in this file and
-// recall_index.ts::searchRecall's downstream use (limit binds directly into a SQL LIMIT ?
-// clause -- LIMIT 0 is valid SQL and just returns zero rows, no special-casing needed). So
-// `recall --limit 0` threw "--limit must be a positive number" instead of returning zero hits.
+// Regression guard: cmdRecall's --limit flag was parsed via requirePositiveInt instead of requireNonNegativeInt, contradicting every other --limit flag in this file and recall_index.ts::searchRecall's downstream use (limit binds directly into a SQL LIMIT ? clause -- LIMIT 0 is valid SQL and just returns zero rows, no special-casing needed). So `recall --limit 0` threw "--limit must be a positive number" instead of returning zero hits.
 describe('recall --limit 0 validation', () => {
   it('accepts --limit 0 like every other --limit flag instead of requiring a strictly-positive value', async () => {
     captureStderr()

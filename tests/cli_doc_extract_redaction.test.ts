@@ -1,9 +1,4 @@
-// Regression: the document-extraction CLI commands (pdf-outline, xlsx-head, and siblings) fenced
-// extracted document text for prompt injection (tests/cli_doc_extract_fencing.test.ts) but never
-// redacted it -- a credential embedded in a spreadsheet cell or a PDF bookmark title reached the
-// model raw. Fixed at the two shared choke points every one of these commands funnels through:
-// src/cli.ts's fenceFileText and fenceFileFieldIfMatched. Drives the real, unmocked run() CLI
-// entrypoint against real scratch fixture files, mirroring cli_doc_extract_fencing.test.ts.
+// Regression: the document-extraction CLI commands (pdf-outline, xlsx-head, and siblings) fenced extracted document text for prompt injection (tests/cli_doc_extract_fencing.test.ts) but never redacted it -- a credential embedded in a spreadsheet cell or a PDF bookmark title reached the model raw. Fixed at the two shared choke points every one of these commands funnels through: src/cli_office.ts's fenceFileText and fenceFileFieldIfMatched. Drives the real, unmocked run() CLI entrypoint against real scratch fixture files, mirroring cli_doc_extract_fencing.test.ts.
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -14,9 +9,7 @@ import ExcelJS from 'exceljs'
 import { run } from '../src/cli.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
-// FORMAT-DERIVED: AKIA + 16 alphanumeric chars is exactly the shape src/secret_redact.ts's
-// aws_access_key pattern matches (/AKIA[0-9A-Z]{16}/g). The literal value is AWS's own public
-// documentation example key (used throughout AWS SDK docs as a placeholder), not a real credential.
+// FORMAT-DERIVED: AKIA + 16 alphanumeric chars is exactly the shape src/secret_redact.ts's aws_access_key pattern matches (/AKIA[0-9A-Z]{16}/g). The literal value is AWS's own public documentation example key (used throughout AWS SDK docs as a placeholder), not a real credential.
 const SECRET = 'AKIAIOSFODNN7EXAMPLE'
 
 function buildPdfWithOutlineTitle(title: string): Buffer {
