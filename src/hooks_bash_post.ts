@@ -252,6 +252,8 @@ async function maybeCollapseIdenticalRead(
           if (priced(fenced)) rewrite = { text: fenced, reason: 'code bodies folded', kind: 'bash_compress:body-fold', detail: foldDetail(fileKey, folded.folds) }
         }
       }
+      // Either fold withholds lines the model has never been shown, from a delivery whose whole window is already on record as served when it is a `sed`/`awk` range, which preBashHandler records before the command runs, or a `head`, which recordBashFileReadsForSessionCache records as lines 1..n before this rewrite is chosen. The Read a comment-fold notice names would then be refused as lines already read, so take the record back, file-wide for the reason forgetPersistedLineRangeReads gives. A `cat` is on record as a whole-file read instead, and a `tail` as no range at all.
+      if (rewrite !== null && (extractLineRangeRead(cmd) !== null || extractHeadFile(cmd) !== null)) resetFileLineRanges(fileKey)
     }
 
     // Exactly what the model was shown, never what the command printed. A later read of this file is matched against this copy, so storing a rewrite the net-benefit gate went on to decline would record lines as withheld that the reader actually received.
