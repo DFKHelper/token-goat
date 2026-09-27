@@ -1,8 +1,4 @@
-/**
- * The 4KB uncompressed-output hint as the model receives it: through the built bundle's relay, which scrubs unsafe suggestions after the handler returns.
- *
- * Provenance: CAPTURE. The quoted command is the shape that produced 60 of 75 recorded emissions of this hint reading "run with 'token-goat (command omitted: the path contains shell metacharacters)" in real transcripts, with the `bash-output` pointer cut off. The own-command case replays the real output of the bundle's `read` command, the shape that drew the same gutted hint in those transcripts. The payload is the PostToolUse shape Claude Code sends for Bash.
- */
+/** The 4KB uncompressed-output hint as the model receives it: through the built bundle's relay, which scrubs unsafe suggestions after the handler returns. Provenance: CAPTURE. The quoted command is the shape that produced 60 of 75 recorded emissions of this hint reading "run with 'token-goat (command omitted: the path contains shell metacharacters)" in real transcripts, with the `bash-output` pointer cut off. The own-command case replays the real output of the bundle's `read` command, the shape that drew the same gutted hint in those transcripts. The payload is the PostToolUse shape Claude Code sends for Bash. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -36,7 +32,7 @@ describe('large uncompressed output hint', () => {
   })
 
   it('stays silent on token-goat\'s own commands', () => {
-    const targets = ['src/hooks_bash.ts@1370-1405', 'src/hooks_bash.ts@1406-1440']
+    const targets = ['src/hooks_bash_post.ts@648-683', 'src/hooks_bash_post.ts@684-718']
     const stdout = targets.map((t) => spawnSync(process.execPath, [BUNDLE, 'read', t], { cwd: ROOT, encoding: 'utf-8', env }).stdout).join('')
     expect(stdout.length).toBeGreaterThan(4096)
     // Calibration: the same real output under a foreign command does draw the hint, so silence below is the own-command exemption and not a filter rewriting the output first.

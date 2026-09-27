@@ -1,16 +1,4 @@
-/**
- * Structural folding on the shell read surface (hooks_bash.ts `foldShellReadStructure`).
- *
- * The Read hook already replaces a large untargeted whole-file delivery with a structural view of it: a heading tree for a document, a declaration skeleton for source. The identical bytes arriving as the stdout of `cat <file>` got none of that. These tests pin the two halves of closing that gap: the fold fires on the shapes whose stdout genuinely IS the file, and it declines on every shape where it is not.
- *
- * FIXTURE PROVENANCE
- *
- * The two payload files are CAPTURE: this repository's own `src/read_commands.ts` and `CLAUDE.arch.md`, copied byte-for-byte into a scratch project for the run. They are real files a reader really cats, not content shaped to the matcher.
- *
- * Every must-not-drop list is HAND-DERIVED: the surviving lines are computed from the payload by a rule written here (a line beginning `export function`, a line beginning `## `) that shares nothing with the tree-sitter extraction or the markdown heading scanner the implementation uses. A ratio assertion alone would pass on an over-collapse -- over-collapsing improves a ratio -- so each one is paired with the list.
- *
- * The scratch project is a temp directory reached through RELATIVE commands on purpose. `classifyCatPath` declines any path that spells out a temp location, so `cat /tmp/x/big.ts` would be rejected before any of this ran and every test here would pass by not reaching the code under test.
- */
+/** Structural folding on the shell read surface (hooks_bash_post.ts `foldShellReadStructure`). The Read hook already replaces a large untargeted whole-file delivery with a structural view of it: a heading tree for a document, a declaration skeleton for source. The identical bytes arriving as the stdout of `cat <file>` got none of that. These tests pin the two halves of closing that gap: the fold fires on the shapes whose stdout genuinely IS the file, and it declines on every shape where it is not. FIXTURE PROVENANCE The two payload files are CAPTURE: this repository's own `src/read_commands.ts` and `CLAUDE.arch.md`, copied byte-for-byte into a scratch project for the run. They are real files a reader really cats, not content shaped to the matcher. Every must-not-drop list is HAND-DERIVED: the surviving lines are computed from the payload by a rule written here (a line beginning `export function`, a line beginning `## `) that shares nothing with the tree-sitter extraction or the markdown heading scanner the implementation uses. A ratio assertion alone would pass on an over-collapse -- over-collapsing improves a ratio -- so each one is paired with the list. The scratch project is a temp directory reached through RELATIVE commands on purpose. `classifyCatPath` declines any path that spells out a temp location, so `cat /tmp/x/big.ts` would be rejected before any of this ran and every test here would pass by not reaching the code under test. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -19,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { BUNDLE } from './helpers/bundle.js'
 import { makeHookEvent } from './helpers/hook-event.js'

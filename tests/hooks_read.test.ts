@@ -2556,7 +2556,7 @@ content here` },
     }
   })
 
-  it('points the .improve-state-*.json re-read deny at a remedy that actually works — hooks_bash.ts exempts these files from every bash-output extraction site (isOrchestratorStateFile), so a bare `bash-output <id>` can never resolve to a cached entry', () => {
+  it('points the .improve-state-*.json re-read deny at a remedy that actually works — bash_extractors.ts exempts these files from every bash-output extraction site (isOrchestratorStateFile), so a bare `bash-output <id>` can never resolve to a cached entry', () => {
     const p = path.join(os.tmpdir(), '.improve-state-bugfixing.json')
     fs.writeFileSync(p, JSON.stringify({ phase: 'bugfixing' }))
     tmpFiles.push(p)

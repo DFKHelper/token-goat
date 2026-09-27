@@ -27,7 +27,7 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrustedSpans(',
 ]
 
-/** Emit sites that substitute without fencing, each with the reason. Keyed `file.ts::function`. Two classes, and the difference is worth stating because only one of them is settled. (a) There is nothing to separate. Either the emitted block carries no words of token-goat's, so there is no second voice for the model to mistake, or it carries nothing BUT token-goat's words, so there are no third-party bytes to delimit. Both are closed questions. (b) Our text and theirs are interleaved by construction: an elision marker sits between the lines it replaced, so there is no cut point that puts our voice outside a tag. Wrapping the whole body in ONE call would run the marker neutraliser over token-goat's own markers and hand the model `&#91;token-goat: 40 lines elided]` -- our voice, mangled, which is the same defect the Bash cap notice produced before it was moved outside the tag. That is solved, and the fix is `fenceUntrustedSpans`. It takes the body already split into spans, each marked with whether token-goat wrote it, and runs the neutraliser on the others and on nothing else. Authorship is positional -- declared by the producer that emitted the span -- and never recognised from the text, because a rule that spotted our markers by their spelling would exempt a forged one just as readily. Both `hooks_bash.ts` elision sites fence through it now and are no longer listed below. The three that remain are OPEN, and what keeps them open is not a missing mechanism. It is the round-trip risk: an untrusted span containing the literal `[token-goat` comes back escaped, and these three feed the surfaces a model is most likely to copy back into a file (a read the editor round-trips, a subagent report, a browser block carrying data URLs). The Bash sites do not have that property, which is why they went first. See CLAUDE.arch.md, "Decision, 2026-09-04", for the measurement and the reopen condition. */
+/** Emit sites that substitute without fencing, each with the reason. Keyed `file.ts::function`. Two classes, and the difference is worth stating because only one of them is settled. (a) There is nothing to separate. Either the emitted block carries no words of token-goat's, so there is no second voice for the model to mistake, or it carries nothing BUT token-goat's words, so there are no third-party bytes to delimit. Both are closed questions. (b) Our text and theirs are interleaved by construction: an elision marker sits between the lines it replaced, so there is no cut point that puts our voice outside a tag. Wrapping the whole body in ONE call would run the marker neutraliser over token-goat's own markers and hand the model `&#91;token-goat: 40 lines elided]` -- our voice, mangled, which is the same defect the Bash cap notice produced before it was moved outside the tag. That is solved, and the fix is `fenceUntrustedSpans`. It takes the body already split into spans, each marked with whether token-goat wrote it, and runs the neutraliser on the others and on nothing else. Authorship is positional -- declared by the producer that emitted the span -- and never recognised from the text, because a rule that spotted our markers by their spelling would exempt a forged one just as readily. Both `hooks_bash_post.ts` elision sites fence through it now and are no longer listed below. The three that remain are OPEN, and what keeps them open is not a missing mechanism. It is the round-trip risk: an untrusted span containing the literal `[token-goat` comes back escaped, and these three feed the surfaces a model is most likely to copy back into a file (a read the editor round-trips, a subagent report, a browser block carrying data URLs). The Bash sites do not have that property, which is why they went first. See CLAUDE.arch.md, "Decision, 2026-09-04", for the measurement and the reopen condition. */
 const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
   [
     'hooks_common.ts::emitRewriteIfChanged',
@@ -45,7 +45,7 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
   ],
   // (a) nothing to separate
   [
-    'hooks_bash.ts::maybeStripAnsiOnly',
+    'hooks_bash_post.ts::maybeStripAnsiOnly',
     'Emits the command bytes minus terminal escapes and nothing else: no marker, no pointer, no ' +
       'summary. Fencing it prices ~123 bytes into a rewrite whose entire saving is the escape ' +
       'bytes, so the gate declines and the raw output ships unfenced regardless.',
@@ -110,7 +110,7 @@ function srcFiles(): readonly string[] {
       .filter((f) => f.endsWith('.ts'))
       .map((f) => path.join(SRC_DIR, f)),
     floor: 150,
-    mustInclude: ['hooks_bash.ts', 'hooks_common.ts'],
+    mustInclude: ['hooks_bash_post.ts', 'hooks_common.ts'],
   })
 }
 
@@ -148,7 +148,7 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
         'this guard would pass against a codebase with no fencing at all.',
     ).not.toEqual([])
     // The site the whole rule came from. If this one stops being found, the search is broken in a way an aggregate count cannot show.
-    expect(sites.map((s) => s.key)).toContain('hooks_bash.ts::maybeCompressCompoundOutput')
+    expect(sites.map((s) => s.key)).toContain('hooks_bash_post.ts::maybeCompressCompoundOutput')
   })
 
   // Per name, not in aggregate: a stale exemption key matches nothing and narrows the guard silently while every other check stays green.

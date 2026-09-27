@@ -71,7 +71,7 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     {
       bucket: 'redacts-before-truncating',
       reason:
-        'Calls redactSecrets(JSON.stringify(toolInput)).text.slice(0, 120) -- redacts the full ' +
+        'Calls redactSerializedJson(JSON.stringify(toolInput)).text.slice(0, 120) -- redacts the full ' +
         'string before ever slicing it, so only placeholder text can be cut. This is defect 26; ' +
         'see tests/mcp_cache.test.ts for the straddling-key regression.',
     },
@@ -289,7 +289,7 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     {
       bucket: 'caller-refuses-any-secret-shaped-input-before-reaching-here',
       reason:
-        'Both call sites in hooks_bash.ts sit inside functions that already returned null on ' +
+        'Both call sites in hooks_bash_post.ts sit inside functions that already returned null on ' +
         '`redactSecrets(output).count > 0` earlier in the same function body, so this only ever ' +
         'clips text already proven to carry no secret-shaped fragment.',
     },

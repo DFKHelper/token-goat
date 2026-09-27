@@ -249,7 +249,7 @@ describe('call streak through the real relay (clock pinned to captured timings)'
     const pre = JSON.parse(await at(t + 254, 'pre_tool_use', bashPre(ctx, GREP_MISS_COMMAND))) as { hookSpecificOutput?: { updatedInput?: { command?: string } } }
     const wrapped = pre.hookSpecificOutput?.updatedInput?.command
     expect(wrapped, 'the pre-hook must really rewrite the grep, or this proves nothing').toMatch(/^token-goat compress /)
-    // FORMAT-DERIVED: the post event carries the command that ran, which is the wrapper: postBashHandler (src/hooks_bash.ts) unwraps it for the same reason. `token-goat compress` exits 1 with a bare newline on no match (dogfooded against the built bundle), which is Claude Code's bare `Exit code 1`.
+    // FORMAT-DERIVED: the post event carries the command that ran, which is the wrapper: postBashHandler (src/hooks_bash_post.ts) unwraps it for the same reason. `token-goat compress` exits 1 with a bare newline on no match (dogfooded against the built bundle), which is Claude Code's bare `Exit code 1`.
     const failure = await at(t + 380, 'post_tool_use_failure', bashGrepMissFailure(ctx, wrapped))
     expect(contextOf(failure)).toBe(BRAKE_LINE)
   })

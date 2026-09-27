@@ -1,30 +1,4 @@
-/**
- * Body folding on the shell read surface (hooks_bash.ts `foldShellReadBodies`).
- *
- * The Read hook has folded first reads for a while; a shell read of the same file got nothing.
- * Measured over 814 session transcripts, 15.61 MB of source arrives through `cat`, `head` and
- * `sed -n` rather than through the Read tool, and it is a first-read surface: the elision beside
- * this rule needs an earlier delivery to withhold against, and a first read has none.
- *
- * The one rule that could not be carried over from the Read path is its safety rule. There, any
- * read carrying offset or limit is declined as already surgical. Here 14.61 MB of that 15.61 MB is
- * a range, so the same exemption would exempt the surface. What makes a range safe instead is
- * `planBodyFolds` requiring a span's declaration to be among the delivered rows -- the case pinned
- * by `window sitting inside one symbol` below, and in isolation by
- * tests/code_fold_window_containment.test.ts.
- *
- * Fixture provenance:
- *   - The folded content is a real repo source file, read from disk and indexed by the real
- *     `indexFileSync`, so the spans are whatever the shipping parser writes rather than a
- *     hand-written span list that would agree with the matcher by construction. Line numbers are
- *     never hardcoded: every window below is computed from `querySymbols` at run time, so the file
- *     can grow without silently turning these into tests of an empty window.
- *   - The PostToolUse payload shape is FORMAT-DERIVED from `src/hook_registry.ts::serializeOutput`,
- *     the same provenance and caveat recorded by `bash_served_line_elision.test.ts`.
- *   - The command names a real repo file because the read extractors deliberately exempt temp paths
- *     (`hooks_bash.ts::isTempPath`), so a fixture under os.tmpdir() is classified as "not a file
- *     read" and every case here would pass by never running the code at all.
- */
+/** Body folding on the shell read surface (hooks_bash_post.ts `foldShellReadBodies`). The Read hook has folded first reads for a while; a shell read of the same file got nothing. Measured over 814 session transcripts, 15.61 MB of source arrives through `cat`, `head` and `sed -n` rather than through the Read tool, and it is a first-read surface: the elision beside this rule needs an earlier delivery to withhold against, and a first read has none. The one rule that could not be carried over from the Read path is its safety rule. There, any read carrying offset or limit is declined as already surgical. Here 14.61 MB of that 15.61 MB is a range, so the same exemption would exempt the surface. What makes a range safe instead is `planBodyFolds` requiring a span's declaration to be among the delivered rows -- the case pinned by `window sitting inside one symbol` below, and in isolation by tests/code_fold_window_containment.test.ts. Fixture provenance: - The folded content is a real repo source file, read from disk and indexed by the real `indexFileSync`, so the spans are whatever the shipping parser writes rather than a hand-written span list that would agree with the matcher by construction. Line numbers are never hardcoded: every window below is computed from `querySymbols` at run time, so the file can grow without silently turning these into tests of an empty window. - The PostToolUse payload shape is FORMAT-DERIVED from `src/hook_registry.ts::serializeOutput`, the same provenance and caveat recorded by `bash_served_line_elision.test.ts`. - The command names a real repo file because the read extractors deliberately exempt temp paths (`bash_extractors.ts::isTempPath`), so a fixture under os.tmpdir() is classified as "not a file read" and every case here would pass by never running the code at all. */
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import * as path from 'node:path'
@@ -33,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { BODY_FOLD_KEEP_LINES } from '../src/fold_delivery.js'
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { querySymbols } from '../src/index_reader.js'
 import { indexFileSync } from '../src/parser.js'
@@ -53,11 +27,7 @@ const TARGET_ABS = normalizePath(path.join(REPO, TARGET_REL))
 const SOURCE = readFileSync(TARGET_ABS, 'utf-8')
 const LINES = SOURCE.split('\n')
 
-/**
- * The whole file, spelled as a command that reaches this path.
- *
- * `cat src/x.ts` does not. The pre-hook denies a bare source-file `cat` outright (hooks_bash.ts, the `loads the entire file into context` branch), and on the way back MONITORING_COMMAND_PATTERNS claims the same shape and routes it to the recall cache, so it never reaches the read collapse at all. That is the 1.00 MB whole-file slice of the surface and it is already answered upstream; the 14.61 MB this rule is aimed at arrives as `head` and `sed -n`.
- */
+/** The whole file, spelled as a command that reaches this path. `cat src/x.ts` does not. The pre-hook denies a bare source-file `cat` outright (hooks_bash.ts, the `loads the entire file into context` branch), and on the way back MONITORING_COMMAND_PATTERNS claims the same shape and routes it to the recall cache, so it never reaches the read collapse at all. That is the 1.00 MB whole-file slice of the surface and it is already answered upstream; the 14.61 MB this rule is aimed at arrives as `head` and `sed -n`. */
 const WHOLE_FILE_CMD = `head -n ${LINES.length} ${TARGET_REL}`
 
 /** What `sed -n 'lo,hip' file` prints, computed from the range rather than from the code under test. */
@@ -75,11 +45,7 @@ function longestSpan(): { name: string; lineStart: number; lineEnd: number } {
   return { name: best.name, lineStart: best.lineStart, lineEnd: best.lineEnd }
 }
 
-/**
- * A line from deep inside `span` that appears exactly once in the whole file.
- *
- * The fixture is this repository's own `src/code_fold.ts`, so any line picked by position alone can be duplicated by an unrelated edit elsewhere in that file, and a "must not appear" assertion then answers about the wrong copy: it reads as a passing fold while the fold under test does nothing. This one happened for real, when a second short function ending `return folds` was added and the surviving copy came from a span too short to fold at all. Throwing when no unique line exists is deliberate, since silently falling back to a duplicated one is the failure this exists to prevent.
- */
+/** A line from deep inside `span` that appears exactly once in the whole file. The fixture is this repository's own `src/code_fold.ts`, so any line picked by position alone can be duplicated by an unrelated edit elsewhere in that file, and a "must not appear" assertion then answers about the wrong copy: it reads as a passing fold while the fold under test does nothing. This one happened for real, when a second short function ending `return folds` was added and the surviving copy came from a span too short to fold at all. Throwing when no unique line exists is deliberate, since silently falling back to a duplicated one is the failure this exists to prevent. */
 function deepUniqueBodyLine(span: { lineStart: number; lineEnd: number }): string {
   const counts = new Map<string, number>()
   for (const line of LINES) counts.set(line, (counts.get(line) ?? 0) + 1)
@@ -145,10 +111,7 @@ describe('postBashHandler: body folding on a shell read', () => {
     expect(out.hookType).toBe('rewriteOutput')
     const body = delivered(out, text)
     expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}@${span.lineStart}"`)
-    // The window starts at the declaration, so it survives; the notice replaces only what follows it.
-    // The body is fenced: splicing our own fold notice in makes this a substitution, not a pass-through,
-    // so the declaration is the first line INSIDE the tag rather than the first line overall. Anchored on
-    // the open tag rather than a fixed offset, so rewording the preamble cannot silently re-break this.
+    // The window starts at the declaration, so it survives; the notice replaces only what follows it. The body is fenced: splicing our own fold notice in makes this a substitution, not a pass-through, so the declaration is the first line INSIDE the tag rather than the first line overall. Anchored on the open tag rather than a fixed offset, so rewording the preamble cannot silently re-break this.
     const bodyLines = body.split('\n')
     const openTagAt = bodyLines.indexOf(`<${UNTRUSTED_TOOL_TAG}>`)
     expect(openTagAt, 'the fenced rewrite lost its open tag').toBeGreaterThanOrEqual(0)

@@ -1,14 +1,6 @@
-// A compound command is never wrapped by the pre-hook -- correctly, since its shell operators would
-// break the `compress -c` argument -- so it arrives at the post hook, where the bytes are already
-// captured and no shell is involved. Until pipelineShapeFilter existed, every one of those got
-// `filterByName('generic')` no matter what produced it. Measured on real commands in this repo, a
-// family filter cuts 40-91% more than generic on the same bytes, so the pre-hook's decline was
-// landing here as generic-only compression across the largest tool surface there is.
+// A compound command is never wrapped by the pre-hook -- correctly, since its shell operators would break the `compress -c` argument -- so it arrives at the post hook, where the bytes are already captured and no shell is involved. Until pipelineShapeFilter existed, every one of those got `filterByName('generic')` no matter what produced it. Measured on real commands in this repo, a family filter cuts 40-91% more than generic on the same bytes, so the pre-hook's decline was landing here as generic-only compression across the largest tool surface there is.
 //
-// What these tests pin is SELECTION, and specifically that it stays narrow. Handing a family filter
-// input it was not written for is the over-collapse failure mode, where dropping the lines you
-// needed improves the ratio and so reads as a better result -- which is why the ratio assertions
-// below are paired with a must-not-drop line in every case.
+// What these tests pin is SELECTION, and specifically that it stays narrow. Handing a family filter input it was not written for is the over-collapse failure mode, where dropping the lines you needed improves the ratio and so reads as a better result -- which is why the ratio assertions below are paired with a must-not-drop line in every case.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 
@@ -18,17 +10,12 @@ vi.mock('../src/stats.js', async (importOriginal) => {
   return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) }
 })
 
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import { isFullRecallCommand } from '../src/hooks_bash_commands.js'
 import { recordStat } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-// PROVENANCE: CAPTURE. The line shape is real `grep -rn "export function" src/util.ts` output run in
-// this repository on 2026-09-08 (`29:export function sleepSync(ms: number): void {`, 62 lines). The
-// path prefix and the repetition are synthetic so the body clears the compression floor; the FORMAT
-// -- `path:lineno:text` with no colour codes -- is the captured part, and it is the part the grep
-// filter matches on. Reading that format off the filter's own regex would prove only that the filter
-// agrees with itself.
+// PROVENANCE: CAPTURE. The line shape is real `grep -rn "export function" src/util.ts` output run in this repository on 2026-09-08 (`29:export function sleepSync(ms: number): void {`, 62 lines). The path prefix and the repetition are synthetic so the body clears the compression floor; the FORMAT -- `path:lineno:text` with no colour codes -- is the captured part, and it is the part the grep filter matches on. Reading that format off the filter's own regex would prove only that the filter agrees with itself.
 const GREP_LINES = Array.from(
   { length: 400 },
   (_v, i) => `src/util.ts:${i + 1}:export function helper${i}(ms: number): void {`,
@@ -77,9 +64,7 @@ describe('post-hook filter selection for a piped command', () => {
     const body = await runAndGetBody('grep -rn "export function" src | head -200')
     expect(compressFilters(), 'a pass-through pipeline must not fall back to generic').toContain('grep')
     expect(compressFilters()).not.toContain('generic')
-    // The grep filter summarises matches rather than listing them, which is its shipped behaviour for
-    // a bare grep too. So the anchor is not a matched line but the caller's route back to one: the file
-    // that matched and how many times. A body that lost those would be a count of nothing.
+    // The grep filter summarises matches rather than listing them, which is its shipped behaviour for a bare grep too. So the anchor is not a matched line but the caller's route back to one: the file that matched and how many times. A body that lost those would be a count of nothing.
     expect(body, 'must still name the file that matched').toContain('src/util.ts')
     expect(body, 'must still carry the match count').toContain('400')
   })
@@ -97,20 +82,13 @@ describe('post-hook filter selection for a piped command', () => {
   })
 
   it('selects the family filter through a `2>&1 | tail` pipeline rather than shearing on the redirect', async () => {
-    // `2>&1` contains an `&`, which the shared segment splitter treats as an operator, so this
-    // spelling split into a bare-digit remnant that read as an unknown stage and fell back to
-    // generic. The redirect is stripped before the split now, the same way the line-range
-    // extractor already handles it for the same splitter.
+    // `2>&1` contains an `&`, which the shared segment splitter treats as an operator, so this spelling split into a bare-digit remnant that read as an unknown stage and fell back to generic. The redirect is stripped before the split now, the same way the line-range extractor already handles it for the same splitter.
     await runAndGetBody('grep -rn "export function" src 2>&1 | tail -200')
     expect(compressFilters(), 'a trailing 2>&1 must not shear the segment walk').toContain('grep')
     expect(compressFilters()).not.toContain('generic')
   })
 
-  // PROVENANCE: HAND-DERIVED. The three spellings come from the POSIX redirection grammar and bash's
-  // `&>` extension, not from token-goat's matchers. The test above passes only because the caller
-  // deletes the literal string ` 2>&1` before splitting, so it covers one spelling of a family: these
-  // are the siblings that deletion never named, and each one used to shear the same way. `>&2` is the
-  // common one -- any command that writes a note to stderr on the way into a pipe.
+  // PROVENANCE: HAND-DERIVED. The three spellings come from the POSIX redirection grammar and bash's `&>` extension, not from token-goat's matchers. The test above passes only because the caller deletes the literal string ` 2>&1` before splitting, so it covers one spelling of a family: these are the siblings that deletion never named, and each one used to shear the same way. `>&2` is the common one -- any command that writes a note to stderr on the way into a pipe.
   it('selects the family filter through the redirection spellings a literal 2>&1 strip never covered', async () => {
     for (const redirect of ['>&2', '1>&2', '&>>/dev/null']) {
       ;(recordStat as unknown as { mockClear: () => void }).mockClear()
@@ -121,31 +99,16 @@ describe('post-hook filter selection for a piped command', () => {
     }
   })
 
-  // NOT COVERED, deliberately, and measured rather than assumed: a piped TEST or BUILD run (`npx
-  // vitest run 2>&1 | tail -40`) never reaches maybeCompressCompoundOutput at all, because
-  // postBashHandler routes it by `isBuildCommand` into the cache branch first. Per command the
-  // gap looks worth closing -- the vitest filter takes 13,738 bytes to 168, keeping the failure
-  // pointer and both verdict lines, where generic leaves 6,685. The pool is what kills it: across
-  // 229,200 real Bash calls, piped build commands are 331 calls and 0.15 MB, against 19.24 MB for
-  // the pass-through pipelines this file does cover. A ratio that good on a pool that small buys
-  // nothing, so the branch boundary stays where it is.
+  // NOT COVERED, deliberately, and measured rather than assumed: a piped TEST or BUILD run (`npx vitest run 2>&1 | tail -40`) never reaches maybeCompressCompoundOutput at all, because postBashHandler routes it by `isBuildCommand` into the cache branch first. Per command the gap looks worth closing -- the vitest filter takes 13,738 bytes to 168, keeping the failure pointer and both verdict lines, where generic leaves 6,685. The pool is what kills it: across 229,200 real Bash calls, piped build commands are 331 calls and 0.15 MB, against 19.24 MB for the pass-through pipelines this file does cover. A ratio that good on a pool that small buys nothing, so the branch boundary stays where it is.
 
   it('keeps the generic filter when a downstream stage can reshape the bytes', async () => {
-    // `sort` is deliberately absent from PIPELINE_PASSTHROUGH_HEADS: it reorders, and `sort -u`
-    // removes. The first stage no longer describes what reached the model, so the family filter
-    // for it is the wrong answer even though `grep` is right there in the command.
+    // `sort` is deliberately absent from PIPELINE_PASSTHROUGH_HEADS: it reorders, and `sort -u` removes. The first stage no longer describes what reached the model, so the family filter for it is the wrong answer even though `grep` is right there in the command.
     await runAndGetBody('grep -rn "export function" src | sort')
     expect(compressFilters(), 'a reshaping stage must fall back').toContain('generic')
     expect(compressFilters()).not.toContain('grep')
   })
 
-  // PROVENANCE: HAND-DERIVED. The two commands below are constructed from the separator sets themselves,
-  // not from any capture: the mixture guard checked `&&`, `||` and `;` while splitShellSegments breaks on
-  // five characters, and the two it adds are exactly a newline and a bare `&`. Both spellings therefore
-  // reached the segment walk as though they were one pipeline, and both trailing stages (`cat`, `sed`)
-  // are ordinary commands whose bytes the first command's family filter was never written for. The
-  // assertions are must-not-drop lines from the second command rather than a ratio, because over-collapse
-  // is the failure mode here and it makes the ratio look better, not worse.
+  // PROVENANCE: HAND-DERIVED. The two commands below are constructed from the separator sets themselves, not from any capture: the mixture guard checked `&&`, `||` and `;` while splitShellSegments breaks on five characters, and the two it adds are exactly a newline and a bare `&`. Both spellings therefore reached the segment walk as though they were one pipeline, and both trailing stages (`cat`, `sed`) are ordinary commands whose bytes the first command's family filter was never written for. The assertions are must-not-drop lines from the second command rather than a ratio, because over-collapse is the failure mode here and it makes the ratio look better, not worse.
   it('keeps the generic filter when a newline or a bare & hides a second command behind the pipe', async () => {
     const twoCommands = GREP_LINES + '\nCHANGELOG-MARKER-LINE unreleased entry\n'
     const newlineBody = await runAndGetBody('grep -rn "export function" src | head -200\ncat CHANGELOG.md', twoCommands)
@@ -177,15 +140,12 @@ describe('post-hook filter selection for a piped command', () => {
     const family = await runAndGetBody('grep -rn "export function" src | head -200')
     ;(recordStat as unknown as { mockClear: () => void }).mockClear()
     const generic = await runAndGetBody('grep -rn "export function" src | sort')
-    // A ratio floor on its own is not a guard -- over-collapsing improves it -- so the survival
-    // anchor is asserted on the smaller body, which is the one with something to prove.
+    // A ratio floor on its own is not a guard -- over-collapsing improves it -- so the survival anchor is asserted on the smaller body, which is the one with something to prove.
     expect(family.length, 'the family filter must beat generic on identical bytes').toBeLessThan(generic.length)
     expect(family, 'and must still name where the matches are').toContain('src/util.ts')
   })
 
-  // Regression: `token-goat bash-output <id> --full` is the model's own request for a prior full
-  // delivery back verbatim. Piping or chaining it (`| head -300`) fell through to the generic
-  // pipeline path above and got recompressed into a fresh, smaller pointer instead of surviving.
+  // Regression: `token-goat bash-output <id> --full` is the model's own request for a prior full delivery back verbatim. Piping or chaining it (`| head -300`) fell through to the generic pipeline path above and got recompressed into a fresh, smaller pointer instead of surviving.
   it('never recompresses a piped or chained `bash-output <id> --full` recall', async () => {
     const result = await postBashHandler(makePostBashEvent('token-goat bash-output abc123 --full | head -300', GREP_LINES))
     expect(result.hookType, 'a full recall must reach the model unrewritten').toBe('pass')

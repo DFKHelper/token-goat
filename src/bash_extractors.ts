@@ -1220,7 +1220,7 @@ export function stripLeadingAssignments(cmd: string): string {
 }
 
 /** True when the command itself switches Bash compression off: `TOKEN_GOAT_BASH_COMPRESS=0` (or `false`/`no`/`off`) as a leading assignment of any simple command in it, including after `export`, `env` and its flags, `time`, `do`, or an opening `(`, or PowerShell's `$env:TOKEN_GOAT_BASH_COMPRESS = 0`. The hooks read their own environment, which an inline prefix never reaches, so this is the only place that prefix is seen at all. One segment is enough for the whole command: in the shell the assignment scopes the variable to one stage of a pipeline, but whoever wrote it asked for the output uncompressed, and the output the hook would compress is the whole pipeline's. */
-export function commandOptsOutOfCompression(cmd: string): boolean {
+function commandOptsOutOfCompression(cmd: string): boolean {
   if (!cmd.toUpperCase().includes(COMPRESS_OPT_OUT_VAR)) return false
   const optsOut = (value: string | undefined): boolean => value !== undefined && FALSY_ENV_VALUES.has(value.trim().toLowerCase())
   // A heredoc body is text being written or fed to a program, not commands: a README line reading `TOKEN_GOAT_BASH_COMPRESS=0 cmd` asks for nothing.
@@ -1231,6 +1231,11 @@ export function commandOptsOutOfCompression(cmd: string): boolean {
     if (walkCommandPrefix(words, ASSIGNMENT_PREFIX_WORDS).assignments.some(({ name, value }) => name === COMPRESS_OPT_OUT_VAR && optsOut(value))) return true
   }
   return false
+}
+
+/** Whether compression is switched off for this command, by the hook's own environment or by the command's own `TOKEN_GOAT_BASH_COMPRESS=0` prefix. Takes the raw command: the one the extractors match has had its leading assignments stripped, that prefix among them. */
+export function compressionOptedOut(rawCmd: string): boolean {
+  return process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0' || commandOptsOutOfCompression(rawCmd)
 }
 
 /** curl flags whose next word is a value rather than the request target. A URL sitting in one of these is not what curl fetches -- `-H 'Referer: https://cdn…'` and `-A 'Bot https://bot…'` both carry one -- so the target has to be picked by argument position, not by "first URL in the string". */

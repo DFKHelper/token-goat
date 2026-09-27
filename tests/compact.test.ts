@@ -46,7 +46,7 @@ import { invalidateConfigCache } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
 import { importSessionState, recordBashOutput, recordFileEdit, recordFileRead, recordWebFetch, type FileEntry } from '../src/session.js'
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler } from '../src/hooks_bash_post.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 /** Build a minimal {@link FileEntry} for SessionCacheObject.files fixtures. */

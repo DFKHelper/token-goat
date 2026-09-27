@@ -500,7 +500,7 @@ describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regr
 })
 
 describe('computeBashFingerprints coverage for common monitored commands (M46 regression)', () => {
-  // The last four are FORMAT-DERIVED from each package manager's shipped source on this machine: npm's docs/content/commands/npm-test.md runs the package's "test" script, pnpm 10.33.0's help lists `test` as doing the same, and yarn 1.22.22's lib/cli.js hands a command it does not recognize to `run`, so `yarn test` is `yarn run test`. hooks_bash.ts stores a failing run of each for `token-goat failures`, and an entry stored with no fingerprint is never stale.
+  // The last four are FORMAT-DERIVED from each package manager's shipped source on this machine: npm's docs/content/commands/npm-test.md runs the package's "test" script, pnpm 10.33.0's help lists `test` as doing the same, and yarn 1.22.22's lib/cli.js hands a command it does not recognize to `run`, so `yarn test` is `yarn run test`. hooks_bash_post.ts stores a failing run of each for `token-goat failures`, and an entry stored with no fingerprint is never stale.
   it.each(['pytest', 'vitest run', 'jest', 'go test ./...', 'eslint src', 'ruff check', 'npm run build', 'git push origin main', 'tsc', 'npx tsc', 'make', 'cargo build', 'dotnet build', 'mvn package', 'vite build', 'npm test', 'yarn test', 'yarn run test', 'pnpm test'])(
     'computes a git fingerprint for %s and flags it stale once a tracked file is edited',
     async (cmd) => {

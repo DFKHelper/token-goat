@@ -1,45 +1,4 @@
-/**
- * Behavioral guard on "text token-goat authors for the model is redacted"
- * (CLAUDE.arch.md's Security Boundaries).
- *
- * `postAgentHandler` in `hooks_agent_spawn.ts` shipped building its compacted envelope from the
- * RAW subagent report while the sibling `storeMcpOutput` call on the very next line redacted the
- * same string for disk. One source, two destinations, one sanitized: a credential a subagent
- * pasted into its report was scrubbed in the cache and intact in the model's context. That is the
- * seventh instance of the redaction-bypass class this repo has found, and the fourth where the
- * bypassing path sat inside a function whose other path did the right thing.
- *
- * A `pass` result is out of scope by construction: it means the harness's own untouched tool
- * result reaches the model, which token-goat neither authored nor can alter. The invariant worth
- * guarding is narrower and absolute -- whenever token-goat REPLACES a tool result with text it
- * composed itself (`rewriteOutput`), that text must not carry a credential.
- *
- * Why this is behavioral rather than structural, deliberately: the obvious static version --
- * "every function reaching `rewriteOutput` must also reach `redactSecrets`" -- was built and
- * measured first, and flags three files today, of which at least `hooks_bash.ts` is provably a
- * false positive. Its compression rewrite IS redacted, inside `compressOutput()` in another
- * module, which the same-file transitive-call analysis the sibling fence guard uses cannot see.
- * Silencing that needs a hand-maintained suppression list, which is precisely the invisible-
- * omission failure mode `third_party_content_reaches_fence.test.ts`'s header exists to avoid.
- * Firing the real handlers and reading what they actually emit has no such blind spot: it does not
- * care which module the redaction lives in, only whether it happened.
- *
- * Population is derived from the hook registry, never enumerated here. `toolMatcherFor` reports
- * every tool name with a registered `post_tool_use` handler, so a new hook joins this guard the
- * same turn it calls `registerHook`, with nobody needing to remember.
- *
- * Disclosed scope limit, stated rather than quietly accepted: a handler only gets checked on the
- * fixtures below, so one that returns `pass` for all of them contributes nothing. This proves the
- * handlers that DO rewrite keep redacting; it does not prove a handler that rewrites only under
- * some condition these fixtures never reach would redact there too.
- *
- * That limit is not hypothetical -- it has bitten twice. Grep sat in this guard's population while
- * carrying a real leak, because the fixture gave it one match per file and its fold only engages
- * when a file has two. ExitPlanMode contributed nothing until its fixture was made a genuine plan
- * echo. Both were invisible because the pass/fail signal aggregated: the other handlers' rewrites
- * kept the floor satisfied. So the assertion at the end pins the exact SET of tools that reached a
- * rewrite, not just a count -- a handler dropping out of coverage now fails by name.
- */
+/** Behavioral guard on "text token-goat authors for the model is redacted" (CLAUDE.arch.md's Security Boundaries). `postAgentHandler` in `hooks_agent_spawn.ts` shipped building its compacted envelope from the RAW subagent report while the sibling `storeMcpOutput` call on the very next line redacted the same string for disk. One source, two destinations, one sanitized: a credential a subagent pasted into its report was scrubbed in the cache and intact in the model's context. That is the seventh instance of the redaction-bypass class this repo has found, and the fourth where the bypassing path sat inside a function whose other path did the right thing. A `pass` result is out of scope by construction: it means the harness's own untouched tool result reaches the model, which token-goat neither authored nor can alter. The invariant worth guarding is narrower and absolute -- whenever token-goat REPLACES a tool result with text it composed itself (`rewriteOutput`), that text must not carry a credential. Why this is behavioral rather than structural, deliberately: the obvious static version -- "every function reaching `rewriteOutput` must also reach `redactSecrets`" -- was built and measured first, and flags three files today, of which at least `hooks_bash_post.ts` is provably a false positive. Its compression rewrite IS redacted, inside `compressOutput()` in another module, which the same-file transitive-call analysis the sibling fence guard uses cannot see. Silencing that needs a hand-maintained suppression list, which is precisely the invisible- omission failure mode `third_party_content_reaches_fence.test.ts`'s header exists to avoid. Firing the real handlers and reading what they actually emit has no such blind spot: it does not care which module the redaction lives in, only whether it happened. Population is derived from the hook registry, never enumerated here. `toolMatcherFor` reports every tool name with a registered `post_tool_use` handler, so a new hook joins this guard the same turn it calls `registerHook`, with nobody needing to remember. Disclosed scope limit, stated rather than quietly accepted: a handler only gets checked on the fixtures below, so one that returns `pass` for all of them contributes nothing. This proves the handlers that DO rewrite keep redacting; it does not prove a handler that rewrites only under some condition these fixtures never reach would redact there too. That limit is not hypothetical -- it has bitten twice. Grep sat in this guard's population while carrying a real leak, because the fixture gave it one match per file and its fold only engages when a file has two. ExitPlanMode contributed nothing until its fixture was made a genuine plan echo. Both were invisible because the pass/fail signal aggregated: the other handlers' rewrites kept the floor satisfied. So the assertion at the end pins the exact SET of tools that reached a rewrite, not just a count -- a handler dropping out of coverage now fails by name. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -90,12 +49,7 @@ const FILLER = Array.from(
   (_, i) => `npm WARN deprecated pkg-${i}@1.0.0: no longer supported, use another package`,
 ).join('\n')
 
-/**
- * The plan body `ExitPlanMode` echoes back. It has to be both long enough to clear that handler's
- * net-benefit floor and byte-identical to the `plan` tool input, or the handler declines to rewrite
- * and the tool contributes nothing to this guard -- which is what it did until the credential was
- * moved into the pre-marker region below, the only part its rewrite actually keeps.
- */
+/** The plan body `ExitPlanMode` echoes back. It has to be both long enough to clear that handler's net-benefit floor and byte-identical to the `plan` tool input, or the handler declines to rewrite and the tool contributes nothing to this guard -- which is what it did until the credential was moved into the pre-marker region below, the only part its rewrite actually keeps. */
 const PLAN_BODY = Array.from(
   { length: 40 },
   (_, i) => `step ${i}: do the thing carefully and completely, with enough text to matter`,
@@ -104,17 +58,7 @@ const PLAN_BODY = Array.from(
 /** A fenced block long enough for the agent-report handler's fence collapse to engage. */
 const FENCE = '```\n' + 'a filler line of captured build output, long enough to collapse\n'.repeat(90) + '```\n'
 
-/**
- * Response shapes to try per tool, each as a two-call sequence under one session id.
- *
- * The pair is not padding. The poll-diff handlers (`BashOutput`, `TaskOutput`) pass their FIRST
- * sight of a task through untouched and only rewrite once they have a prior snapshot to diff
- * against, so a single call leaves their entire rewrite branch unexercised -- verified by mutating
- * `hooks_bashoutput.ts`'s redaction away and watching a one-call version of this guard stay green.
- * The first call seeds a clean snapshot; the second appends the credential, so it lands in the
- * delta the handler composes. Handlers with no poll state simply see the same shape twice, and
- * both results are checked either way.
- */
+/** Response shapes to try per tool, each as a two-call sequence under one session id. The pair is not padding. The poll-diff handlers (`BashOutput`, `TaskOutput`) pass their FIRST sight of a task through untouched and only rewrite once they have a prior snapshot to diff against, so a single call leaves their entire rewrite branch unexercised -- verified by mutating `hooks_bashoutput.ts`'s redaction away and watching a one-call version of this guard stay green. The first call seeds a clean snapshot; the second appends the credential, so it lands in the delta the handler composes. Handlers with no poll state simply see the same shape twice, and both results are checked either way. */
 function responseShapePairs(): { first: Record<string, unknown>; second: Record<string, unknown> }[] {
   const clean = `starting the build\n${FILLER}\n`
   const withSecret = `${clean}export AWS_ACCESS_KEY_ID=${SECRET}\n${FILLER}\n`

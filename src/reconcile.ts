@@ -1,14 +1,4 @@
-/**
- * Catch-up reconciliation: detect index drift caused by edits token-goat never saw.
- *
- * Every existing freshness mechanism in this repo is driven by an in-session hook. The Edit hook enqueues what the agent edits (`hooks_edit.ts`); the Bash post-hook enqueues what head-moving git commands rewrite and what in-place shell rewrites touch (`hooks_bash.ts`); the per-file `staleWarning`/`healStaleIndex` pair in `read_commands.ts` reparses a file the moment a command names it. Between them, drift caused *during* a session is covered well.
- *
- * None of them can see drift that happened while no hook was running: a `git pull` in another terminal, an edit from an IDE or a second agent session, a codegen or build step invoked outside the harness, or a worker that exited with paths still queued. Nothing reconciles that on the way back in, and the commands most likely to be asked first -- `semantic`, `symbol` by name, `find`, `refs`, `callers`, `arch`, `dead` -- never name a file, so the per-file heal never fires for them. They answer from whatever rows exist, and a stale answer is indistinguishable from a correct one.
- *
- * This module closes that by sweeping the tracked-file set once and enqueueing anything whose on-disk content no longer matches its indexed fingerprint. It is deliberately cause-agnostic: rather than enumerate the ways drift can happen and add a detector per cause, it compares the two things that must agree and repairs the difference, so a cause nobody anticipated is covered by the same code.
- *
- * Cost discipline: `mtime` is checked first and the content hash is computed only for files whose mtime moved, so the steady-state cost is one `stat` per tracked file and zero reads. A file whose mtime moved but whose content did not (the common `git checkout` round-trip) costs one read and is correctly left alone. The whole sweep is bounded by a wall-clock budget and never throws, because its main caller is a session-start hook.
- */
+/** Catch-up reconciliation: detect index drift caused by edits token-goat never saw. Every existing freshness mechanism in this repo is driven by an in-session hook. The Edit hook enqueues what the agent edits (`hooks_edit.ts`); the Bash post-hook enqueues what head-moving git commands rewrite and what in-place shell rewrites touch (`hooks_bash_post.ts`); the per-file `staleWarning`/`healStaleIndex` pair in `read_commands.ts` reparses a file the moment a command names it. Between them, drift caused *during* a session is covered well. None of them can see drift that happened while no hook was running: a `git pull` in another terminal, an edit from an IDE or a second agent session, a codegen or build step invoked outside the harness, or a worker that exited with paths still queued. Nothing reconciles that on the way back in, and the commands most likely to be asked first -- `semantic`, `symbol` by name, `find`, `refs`, `callers`, `arch`, `dead` -- never name a file, so the per-file heal never fires for them. They answer from whatever rows exist, and a stale answer is indistinguishable from a correct one. This module closes that by sweeping the tracked-file set once and enqueueing anything whose on-disk content no longer matches its indexed fingerprint. It is deliberately cause-agnostic: rather than enumerate the ways drift can happen and add a detector per cause, it compares the two things that must agree and repairs the difference, so a cause nobody anticipated is covered by the same code. Cost discipline: `mtime` is checked first and the content hash is computed only for files whose mtime moved, so the steady-state cost is one `stat` per tracked file and zero reads. A file whose mtime moved but whose content did not (the common `git checkout` round-trip) costs one read and is correctly left alone. The whole sweep is bounded by a wall-clock budget and never throws, because its main caller is a session-start hook. */
 import * as fs from 'node:fs'
 
 import { globalDbPath } from './constants.js'
@@ -101,11 +91,7 @@ export interface RunReconcileOptions {
   json?: boolean
 }
 
-/**
- * CLI entrypoint for `token-goat reconcile`. Returns the process exit code.
- *
- * Exit code is 0 whether or not drift was found: finding drift is this command succeeding, not failing, and a nonzero code would break `token-goat reconcile && <next step>` on exactly the runs where the reconciliation did its job.
- */
+/** CLI entrypoint for `token-goat reconcile`. Returns the process exit code. Exit code is 0 whether or not drift was found: finding drift is this command succeeding, not failing, and a nonzero code would break `token-goat reconcile && <next step>` on exactly the runs where the reconciliation did its job. */
 export function runReconcile(opts: RunReconcileOptions = {}): number {
   const raw = reconcileProject(opts)
 
@@ -169,11 +155,7 @@ export function isReconcileClean(r: ReconcileResult): boolean {
   return r.changed.length === 0 && r.added.length === 0 && r.removed.length === 0
 }
 
-/**
- * Sweep `cwd`'s tracked files against the index and enqueue whatever drifted.
- *
- * Deletions are enqueued rather than handled separately: the worker's drain reconciles a deletion when the removed path is the one enqueued, so one queue and one drainer cover all three drift kinds instead of a second removal path that could disagree with the first.
- */
+/** Sweep `cwd`'s tracked files against the index and enqueue whatever drifted. Deletions are enqueued rather than handled separately: the worker's drain reconciles a deletion when the removed path is the one enqueued, so one queue and one drainer cover all three drift kinds instead of a second removal path that could disagree with the first. */
 export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const cwd = opts.cwd ?? process.cwd()
   const budgetMs = opts.budgetMs ?? DEFAULT_RECONCILE_BUDGET_MS
@@ -277,8 +259,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
         removed.length = 0
         break
       }
-      // The stat is the whole check. `seenOnDisk` is filled from `git ls-files`, so on its own it says "not tracked", which is a different question from "not on disk" for every row the incremental path wrote: `token-goat index` lists tracked files only, but a file reaches the index whenever the agent reads or edits it, gitignored or merely not `git add`ed yet. Measured on this repository's own index, 228 of its 1,628 rows were untracked and all 228 were live on disk -- 201 under `scratch/`, 12 under `.claude/`, 5 under `node_modules/`, the rest loose files nobody had staged. Without this stat each sweep reported all of them as deletions and queued them for removal, the next read put them straight back, and the next sweep removed them again -- churn that never settles, and precisely the live-file removal the paragraph above calls the one mistake that destroys working index rows.
-      // Only the two codes that actually mean "gone" count as a deletion; every other failure means "cannot tell", and a row nobody can stat is left exactly as it is. The stat above answers the deletion question for every row in the index now that nothing else bounds this pass -- in a root git cannot enumerate that is 100% of rows, where it used to be only the untracked ones inside a repo (228 of 1,628 here). So a permission-denied path, or an unreachable network or removable drive, would otherwise hand the whole root's index to the removal queue on a single sweep, which is the one outcome this pass must never produce.
+      // The stat is the whole check. `seenOnDisk` is filled from `git ls-files`, so on its own it says "not tracked", which is a different question from "not on disk" for every row the incremental path wrote: `token-goat index` lists tracked files only, but a file reaches the index whenever the agent reads or edits it, gitignored or merely not `git add`ed yet. Measured on this repository's own index, 228 of its 1,628 rows were untracked and all 228 were live on disk -- 201 under `scratch/`, 12 under `.claude/`, 5 under `node_modules/`, the rest loose files nobody had staged. Without this stat each sweep reported all of them as deletions and queued them for removal, the next read put them straight back, and the next sweep removed them again -- churn that never settles, and precisely the live-file removal the paragraph above calls the one mistake that destroys working index rows. Only the two codes that actually mean "gone" count as a deletion; every other failure means "cannot tell", and a row nobody can stat is left exactly as it is. The stat above answers the deletion question for every row in the index now that nothing else bounds this pass -- in a root git cannot enumerate that is 100% of rows, where it used to be only the untracked ones inside a repo (228 of 1,628 here). So a permission-denied path, or an unreachable network or removable drive, would otherwise hand the whole root's index to the removal queue on a single sweep, which is the one outcome this pass must never produce.
       try {
         fs.statSync(entry.filePath)
       } catch (err) {
