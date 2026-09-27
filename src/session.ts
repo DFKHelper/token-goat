@@ -74,7 +74,7 @@ let _outstandingAgentSpawns: OutstandingAgentSpawn[] = []
 // Snapshot of _outstandingAgentSpawns at hydration time, so session_store.ts's merge can tell "this process explicitly removed an entry that was here at load" apart from "this process never saw it" -- a plain disk-union merge (like the other pair-list fields use) would silently resurrect a removed entry from the pre-update disk snapshot, since removal, unlike every other field here, is not a monotonic set-union operation. Mirrors pendingLargeFileHintsAtLoad's role for the exact same class of problem.
 let _outstandingAgentSpawnsAtLoad: OutstandingAgentSpawn[] = []
 
-// Command hashes (same key space as _bashOutputs, i.e. the stripped-command hash used by recordBashOutput/getBashOutputId) for which a store call overwrote an already-present entry this session -- i.e. an older cached run under this exact key was beaten by a newer one. Used only by hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw transcript copies that are provably superseded by the surviving cached id.
+// Command hashes (same key space as _bashOutputs, i.e. the directory-scoped key hooks_bash_commands.ts::bashRecallKey builds for recordBashOutput/getBashOutputId) for which a store call overwrote an already-present entry this session -- i.e. an older cached run under this exact key was beaten by a newer one. Used only by hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw transcript copies that are provably superseded by the surviving cached id.
 let _bashReruns = new Set<string>()
 
 // url -> saved file path for curl -o download dedup (Item 2).
@@ -104,6 +104,12 @@ let _pendingLargeFileHints = new Map<string, number>()
 
 // Snapshot of `_pendingLargeFileHints` at hydration time, so `consumedPendingLargeFileHintKeys` can tell "this process resolved it" apart from "this process never saw it" — session_store.ts's merge needs that distinction to avoid resurrecting a resolved hint from a stale disk read.
 let _pendingLargeFileHintsAtLoad = new Map<string, number>()
+
+// tool_use_id -> the cwd a Bash call's pre hook saw, which is the directory the call started in. Claude Code's main-thread PostToolUse carries the directory a `cd` left the shell in instead, so the post hook reads the start back from here: resolving the command's cd against the landed directory applies it twice.
+let _bashStartCwds = new Map<string, string>()
+
+// Snapshot of `_bashStartCwds` at hydration time, for the removal-is-not-a-union-op reason `_curlDownloadsAtLoad` gives: the post hook's take must stick against a stale disk read.
+let _bashStartCwdsAtLoad = new Map<string, string>()
 
 // The generated session id, made once per process for when `CLAUDE_CODE_SESSION_ID` is unset.
 let _sessionId: string | null = null
@@ -302,6 +308,41 @@ export function consumedPendingLargeFileHintKeys(): string[] {
 /** Snapshot of pending large-file hints exactly as they were at hydration time, before this process made any changes. session_store.ts's merge uses this to tell "this process merely carried the key from load, untouched" apart from "this process genuinely added or updated it": an untouched key must defer to the freshest disk read instead of being blindly resurrected if another process legitimately removed it in the meantime. */
 export function pendingLargeFileHintsAtLoad(): ReadonlyMap<string, number> {
   return _pendingLargeFileHintsAtLoad
+}
+
+/** Cap on start directories held for Bash calls whose post hook has not run; a call the harness never finished would otherwise keep its entry for the rest of the session. */
+export const MAX_BASH_START_CWDS = 32
+
+/** Record `cwd`, the directory Bash call `toolUseId` starts in, for the post hook of the same call. Past {@link MAX_BASH_START_CWDS} the oldest entry goes. */
+export function recordBashStartCwd(toolUseId: string, cwd: string): void {
+  _bashStartCwds.delete(toolUseId)
+  _bashStartCwds.set(toolUseId, cwd)
+  for (const oldest of _bashStartCwds.keys()) {
+    if (_bashStartCwds.size <= MAX_BASH_START_CWDS) break
+    _bashStartCwds.delete(oldest)
+  }
+}
+
+/** Consume and return the directory Bash call `toolUseId` started in, or null when no pre hook recorded one for it. */
+export function takeBashStartCwd(toolUseId: string): string | null {
+  const cwd = _bashStartCwds.get(toolUseId)
+  if (cwd === undefined) return null
+  _bashStartCwds.delete(toolUseId)
+  return cwd
+}
+
+/** Start directories exactly as they were at hydration time, which session_store.ts's merge compares against the way it uses {@link curlDownloadsAtLoad}. */
+export function bashStartCwdsAtLoad(): ReadonlyMap<string, string> {
+  return _bashStartCwdsAtLoad
+}
+
+/** tool_use_ids present at load but taken or evicted since: tombstones for session_store.ts's merge, as {@link consumedCurlDownloadKeys} is for downloads. */
+export function consumedBashStartCwdKeys(): string[] {
+  const consumed: string[] = []
+  for (const key of _bashStartCwdsAtLoad.keys()) {
+    if (!_bashStartCwds.has(key)) consumed.push(key)
+  }
+  return consumed
 }
 
 /** Field separator inside the composite webFetch session-state key. */
@@ -645,6 +686,8 @@ export interface SerializedSession {
   fileServedOutputs?: Array<[string, string[]]>
   cliReads?: string[]
   pendingLargeFileHints?: Array<[string, number]>
+  /** tool_use_id -> the directory that Bash call started in, held from its pre hook to its post hook. See `_bashStartCwds`. */
+  bashStartCwds?: Array<[string, string]>
   grepQueries?: Array<[string, number]>
   globQueries?: Array<[string, number]>
   outstandingAgentSpawns?: Array<[string, number]>
@@ -672,6 +715,7 @@ export function exportSessionState(): SerializedSession {
     ...(_fileServedOutputs.size > 0 ? { fileServedOutputs: Array.from(_fileServedOutputs.entries()) } : {}),
     cliReads: Array.from(_cliReads),
     pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
+    ...(_bashStartCwds.size > 0 ? { bashStartCwds: Array.from(_bashStartCwds.entries()) } : {}),
     grepQueries: Array.from(_grepQueries.entries()),
     globQueries: Array.from(_globQueries.entries()),
     outstandingAgentSpawns: _outstandingAgentSpawns.map((e) => [e.prompt, e.ts]),
@@ -703,6 +747,8 @@ export function importSessionState(s: SerializedSession): void {
   _cliReads = new Set(s.cliReads ?? [])
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
   _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
+  _bashStartCwds = new Map(s.bashStartCwds ?? [])
+  _bashStartCwdsAtLoad = new Map(_bashStartCwds)
   _grepQueries = new Map(s.grepQueries ?? [])
   _globQueries = new Map(s.globQueries ?? [])
   _outstandingAgentSpawns = (s.outstandingAgentSpawns ?? []).map(([prompt, ts]) => ({ prompt, ts }))
@@ -730,6 +776,8 @@ registerReset(() => {
   _cliReads = new Set()
   _pendingLargeFileHints = new Map()
   _pendingLargeFileHintsAtLoad = new Map()
+  _bashStartCwds = new Map()
+  _bashStartCwdsAtLoad = new Map()
   _grepQueries = new Map()
   _globQueries = new Map()
   _outstandingAgentSpawns = []

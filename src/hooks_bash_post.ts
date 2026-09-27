@@ -6,7 +6,7 @@ import { contextOutput, emitRewrite, passOutput, extractToolResponseField, OUTPU
 import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
-import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
+import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
 import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -34,8 +34,8 @@ import {
   stripCdPrefix,
   stripCommandPrefix,
   resolveCdHintPath,
-  cdPrefixCwd,
-  stripOutputPipeline,
+  commandRunDir,
+  bashRecallKey,
   extractCommand,
   isHeadMovingGitCommand,
   ORIG_HEAD_ELIGIBLE_GIT_RE,
@@ -193,7 +193,7 @@ function fenceRewriteWithinCap(spans: readonly FenceSpan[]): string {
 
 async function maybeCollapseIdenticalRead(
   cmd: string,
-  rawCmd: string,
+  runDir: string | null,
   optedOut: boolean,
   output: string,
   exitCode: number | null,
@@ -211,8 +211,8 @@ async function maybeCollapseIdenticalRead(
 
   // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the session, but this rewrite's whole claim is that the model already holds these bytes -- which is only true if the earlier read happened in THIS conversation. Keying on the session's own per-file index (serialized per session id, and cleared on compaction) rather than on the blob cache alone is what makes the claim true: a first read in a fresh session finds nothing here and passes through whole, even when an identical body from yesterday is still sitting in the blob cache.
   //
-  // Keyed by file rather than by command, because the measured waste is not one command repeated: it is several spellings of overlapping reads of one file, which hash differently and return different bytes. Newest first, since a later body is the more likely container and stopping at the first hit bounds how many blobs get read. Against the directory a leading `cd DIR` actually leaves the shell in, not this hook's own cwd: `cd docs` then a read of `README.md` is a different file from the `README.md` beside it, and two files can hold identical text. `cmd` arrives with the prefix already stripped, so the raw form is what still knows where the shell went.
-  const fileKey = resolveIndexPath(filePath, cdPrefixCwd(rawCmd, cwd ?? process.cwd()))
+  // Keyed by file rather than by command, because the measured waste is not one command repeated: it is several spellings of overlapping reads of one file, which hash differently and return different bytes. Newest first, since a later body is the more likely container and stopping at the first hit bounds how many blobs get read. Against the directory the command ran in, which a leading `cd DIR` moves: `cd docs` then a read of `README.md` is a different file from the `README.md` beside it, and two files can hold identical text. `cmd` arrives with that prefix already stripped, so the caller resolves the directory from the raw command (see postBashHandler's runDir).
+  const fileKey = resolveIndexPath(filePath, runDir ?? process.cwd())
   const priorIds = getFileServedOutputs(fileKey)
   let containerId: string | null = null
   let identical = false
@@ -226,7 +226,7 @@ async function maybeCollapseIdenticalRead(
     break
   }
 
-  const sessionKey = shortFingerprint(stripOutputPipeline(cmd))
+  const sessionKey = bashRecallKey(cmd, runDir)
   if (containerId === null) {
     // Nothing served this session contains these lines whole. That is not the same as nothing having been served: a read overlapping an earlier one without nesting inside it lands here too, and used to ship every already-seen line again. Withhold just those stretches, then cache what was actually delivered so a later read is matched against what the model saw rather than what the command printed.
     const elided = elideServedShellLines(cmd, output, priorIds)
@@ -257,7 +257,7 @@ async function maybeCollapseIdenticalRead(
     }
 
     // Exactly what the model was shown, never what the command printed. A later read of this file is matched against this copy, so storing a rewrite the net-benefit gate went on to decline would record lines as withheld that the reader actually received.
-    const storedId = await storeBashOutput(cmd, rewrite?.text ?? output, exitCode ?? 0, cwd)
+    const storedId = await storeBashOutput(cmd, rewrite?.text ?? output, exitCode ?? 0, runDir)
     recordBashOutput(sessionKey, storedId, originalBytes)
     // A persisted result reached the model as a 2 KB preview, so none of it counts as served: a later overlapping read withheld against it would point at lines the model never saw, and a recall of a body this size is persisted and previewed all over again.
     if (!persisted) recordFileServedOutput(fileKey, storedId)
@@ -545,9 +545,9 @@ function forgetPersistedLineRangeReads(rawCmd: string, cmd: string, cwd: string 
   }
 }
 
-// Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen. Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one. extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record. Every path resolves against the directory a leading `cd DIR &&` prefix leaves the shell in, the key the pre-hook gives a `sed` range and maybeCollapseIdenticalRead gives the same read: keyed on the hook's own cwd, `cd sub && head -n 40 x.ts` put lines 1..40 on record against ./x.ts, so a Read of ./x.ts was refused as already read while sub/x.ts, the file shown, had no record.
-function recordBashFileReadsForSessionCache(cmd: string, rawCmd: string, cwd: string | null): void {
-  const base = cdPrefixCwd(rawCmd, cwd ?? process.cwd())
+// Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen. Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one. extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record. Every path resolves against `runDir`, the directory the command ran in (see postBashHandler), which is where a leading `cd DIR &&` prefix leaves the shell: the key the pre-hook gives a `sed` range and maybeCollapseIdenticalRead gives the same read: keyed on the hook's own cwd, `cd sub && head -n 40 x.ts` put lines 1..40 on record against ./x.ts, so a Read of ./x.ts was refused as already read while sub/x.ts, the file shown, had no record.
+function recordBashFileReadsForSessionCache(cmd: string, runDir: string | null): void {
+  const base = runDir ?? process.cwd()
   const resolve = (p: string) => resolveIndexPath(p, base)
 
   const gcTail = extractGetContentTail(cmd)
@@ -599,7 +599,7 @@ async function maybeEmitLargeUncompressedHint(
   optedOut: boolean,
   output: string,
   exitCode: number | null,
-  cwd: string | null,
+  runDir: string | null,
   isUnwrapped: boolean,
   event: HookEvent,
   ansiResult: HookOutput | null,
@@ -619,7 +619,8 @@ async function maybeEmitLargeUncompressedHint(
   if (wasHintShown(key)) return null
   markHintShown(key)
   recordStat('session_hint', 0, 0)
-  const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+  // Under the directory the command ran in, as the cache branch stores the same output: under the hook's cwd instead, a later run of the same command there would find this copy and read it as its own prior run.
+  const id = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
   const kb = Math.round(outputBytes / 1024)
   // The recall pointer leads and each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of it took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion. The suggestion is a command to run, so it keeps the leading assignments `cmd` dropped: `FOO=1 build` suggested back as `build` would run without FOO.
   const runCmd = stripCdPrefix(rawCmd)
@@ -644,6 +645,11 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const output = extractBashOutput(event)
     const exitCode = extractExitCode(event.raw)
     const cwd = getCwd(event) ?? null
+    // The directory the call started in, which the pre hook saw and held under this call's id. Claude Code's main thread reports the directory a `cd` left the shell in here, so resolving the command's own `cd` against this hook's cwd applies it twice. A call with no pre hook on record falls back to this hook's cwd, which is where the call started whenever the shell does not move: a subagent, or a cd out of the working directories, which the harness resets.
+    const toolUseId = event.raw['tool_use_id']
+    const startCwd = (typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null) ?? cwd
+    // The directory the command ran in: every cached output below is keyed, stored and fingerprinted against it, so the pre hook, which derives the same directory from the same command and its own cwd, recalls a run only where it happened.
+    const runDir = commandRunDir(rawCmd, startCwd)
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
     const resp = event.raw['tool_response']
@@ -653,7 +659,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
     if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
-      const gitDir = cwd ?? process.cwd()
+      const gitDir = runDir ?? process.cwd()
       let diffBase = 'HEAD@{1}'
       if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
         const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
@@ -676,26 +682,26 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Working-tree rewrites that never move HEAD, so the block above cannot see them: `git restore`, `git stash pop|apply`, and the plain shell in-place writes (`sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`). Same staleness failure class, one gap over -- none of these go through the Edit tool either, so before this nothing enqueued them and every surgical read kept serving pre-mutation content. See enqueueNonHeadMovingRewrites.
     if (exitCode === null || exitCode === 0) {
-      enqueueNonHeadMovingRewrites(cmd, rawCmd, cwd ?? process.cwd())
+      enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd())
     }
 
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
     const curlDl = extractCurlDownload(cmd)
     if (curlDl !== null && (exitCode === null || exitCode === 0)) {
-      const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, cdPrefixCwd(rawCmd, cwd ?? process.cwd()))
+      const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, runDir ?? process.cwd())
       if (existsSync(resolvedOutputPath)) {
         recordCurlDownload(curlDl.url, resolvedOutputPath)
       }
     }
 
     // Feed the pre-hook's own file-path extractors into the session read-cache so a file dumped through Bash (cat/head/Get-Content) is no longer invisible to a later Read's dedup hint. Whole-file dumps record a full read; partial dumps (head/tail/-Tail/-First) record only what was actually shown, so a later Read is never falsely told the whole file was already seen. A persisted result reached the model as a 2 KB preview, so it records no read at all, and the ranges the pre-hook recorded for it come back out.
-    if (persisted) forgetPersistedLineRangeReads(rawCmd, cmd, cwd)
-    else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, rawCmd, cwd)
+    if (persisted) forgetPersistedLineRangeReads(rawCmd, cmd, startCwd)
+    else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, runDir)
 
     // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
 
     // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
-    const tgRead = extractTgSurgicalRead(cmd, cwd)
+    const tgRead = extractTgSurgicalRead(cmd, runDir)
     if (tgRead !== null && (exitCode === null || exitCode === 0)) {
       recordCliRead(tgRead.sub + '::' + tgRead.spec)
       // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
@@ -713,8 +719,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
     if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-      const ghCacheHash = shortFingerprint(stripOutputPipeline(cmd))
-      const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+      const ghCacheHash = bashRecallKey(cmd, runDir)
+      const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
       recordBashOutput(ghCacheHash, ghCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
@@ -729,8 +735,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (ghView !== null && (exitCode === null || exitCode === 0) && !wasHintShown(GH_VIEW_BATCH_HINT_KEY)) {
       markHintShown(GH_VIEW_BATCH_HINT_KEY)
       if (Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-        const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
-        recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), ghViewId, Buffer.byteLength(output, 'utf-8'))
+        const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
+        recordBashOutput(bashRecallKey(cmd, runDir), ghViewId, Buffer.byteLength(output, 'utf-8'))
       }
       recordStat('session_hint', 0, 0)
       return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
@@ -738,8 +744,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Failing test-runner advisory: nudge toward `token-goat failures` instead of the caller scrolling the raw dump. Covers pytest/jest/vitest/go test/cargo test plus the npm/yarn/pnpm script wrappers, including bare `npm test`, which the build/monitoring cache patterns above deliberately exclude as too generic to cache on every green run -- so those commands never get a cached id from the blocks below, and this is the only place that stores one for them. Cache the output here (even for the runners the later blocks would otherwise cache) so the returned id is always real, then return before falling into the later cache logic to avoid a duplicate store under the same key. Gated on a genuine non-zero exit (never on exitCode === null, unlike the git-mutation and gh-api paths above, since an unknown exit code here would silently repeat this hint on every ambiguous run) and on the shared cache_min_bytes floor, same as the other advisory caches in this handler.
     if (isTestRunnerCommand(cmd) && exitCode !== null && exitCode !== 0 && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-      const testFailHash = shortFingerprint(stripOutputPipeline(cmd))
-      const testFailId = await storeBashOutput(cmd, output, exitCode, cwd)
+      const testFailHash = bashRecallKey(cmd, runDir)
+      const testFailId = await storeBashOutput(cmd, output, exitCode, runDir)
       recordBashOutput(testFailHash, testFailId, Buffer.byteLength(output, 'utf-8'))
       recordStat('session_hint', 0, 0)
       return contextOutput(`[token-goat] Tests failed. Run \`token-goat bash-output ${testFailId} | token-goat failures\` to see just the failing blocks instead of the full output.`)
@@ -747,8 +753,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above). Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints (HEAD sha + `git status --porcelain` hash), not a separate mechanism.
     if (isScopedGitStatusOrDiffStatCommand(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-      const gitScopedCacheHash = shortFingerprint(stripOutputPipeline(cmd))
-      const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+      const gitScopedCacheHash = bashRecallKey(cmd, runDir)
+      const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
       recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
@@ -760,11 +766,11 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
-    // A whole-file dump goes to the file-read branch even when a monitoring pattern also names it, and one does: MONITORING_COMMAND_PATTERNS carries `cat <file>.(ts|py|go|...)`, so every `cat` of a SOURCE file was classified as a monitored command and routed past this branch entirely, while the same `cat` of a document -- which no monitoring pattern names -- fell into it and folded normally. That left the whole first-read fold below unreachable for exactly the files it was written for. The branch still caches the output under the same key the monitoring path would (shortFingerprint(stripOutputPipeline(cmd)), see maybeCollapseIdenticalRead), so recall by id is unaffected; what a source-file read gives up is the cross-run delta summary, in exchange for the stronger identical/contained collapse the same branch already applies to every other file read. The diversion is gated on pureFileReadPath alone. An additional whole-file SHAPE test was tried here on the theory that pureFileReadPath would also admit `tail -f app.log`, the live-log shape monitoring exists to summarise; measured against 15 fold controls and 6 monitoring shapes it changed no outcome, so it was dropped rather than kept as an unfalsifiable second opinion. Re-deciding the path's identity at this site is how a repo ends up with two parsers disagreeing: that check stays inside isWholeFileDump, where the fold weighs it against the on-disk size.
+    // A whole-file dump goes to the file-read branch even when a monitoring pattern also names it, and one does: MONITORING_COMMAND_PATTERNS carries `cat <file>.(ts|py|go|...)`, so every `cat` of a SOURCE file was classified as a monitored command and routed past this branch entirely, while the same `cat` of a document -- which no monitoring pattern names -- fell into it and folded normally. That left the whole first-read fold below unreachable for exactly the files it was written for. The branch still caches the output under the same key the monitoring path would (bashRecallKey, see maybeCollapseIdenticalRead), so recall by id is unaffected; what a source-file read gives up is the cross-run delta summary, in exchange for the stronger identical/contained collapse the same branch already applies to every other file read. The diversion is gated on pureFileReadPath alone. An additional whole-file SHAPE test was tried here on the theory that pureFileReadPath would also admit `tail -f app.log`, the live-log shape monitoring exists to summarise; measured against 15 fold controls and 6 monitoring shapes it changed no outcome, so it was dropped rather than kept as an unfalsifiable second opinion. Re-deciding the path's identity at this site is how a repo ends up with two parsers disagreeing: that check stays inside isWholeFileDump, where the fold weighs it against the on-disk size.
     const isFileRead = pureFileReadPath(cmd) !== null
     if (isFileRead || (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd))) {
       // A plain file read reaches here and, before this branch existed, left with nothing: no cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger suppresses. Re-reading the same unchanged file therefore cost its full body every time. Collapse the byte-identical repeat first, since it is strictly cheaper than compressing a body the model has already been given verbatim.
-      const identical = await maybeCollapseIdenticalRead(cmd, rawCmd, optedOut, output, exitCode, cwd, cacheMinBytes, persisted)
+      const identical = await maybeCollapseIdenticalRead(cmd, runDir, optedOut, output, exitCode, cwd, cacheMinBytes, persisted)
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap for compression) or an unwrapped single command gets its already-captured output compressed here. File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression. Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
       if (!isFileRead && (!isUnwrapped || !isCompressibleSingleCommand(cmd))) {
@@ -778,7 +784,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
       const ansiStripped = optedOut ? null : maybeStripAnsiOnly(output)
-      const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, cwd, isUnwrapped, event, ansiStripped)
+      const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiStripped)
       if (largeHint !== null) return largeHint
       return ansiStripped ?? passOutput()
     }
@@ -786,12 +792,11 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return passOutput()
 
     // For curl GET commands, key the cache on the URL so that the same endpoint fetched with different downstream pipes (| jq vs | python3) shares a single cache entry.
-    const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)
-    const simpleHash = shortFingerprint(cacheKey)
+    const simpleHash = isCurlGetCommand(cmd) ? shortFingerprint(extractCurlUrl(cmd) ?? cmd) : bashRecallKey(cmd, runDir)
     // Item F: cross-run delta folding. Capture whatever was cached under this exact command's id BEFORE storeBashOutput overwrites it — the id is stable per normalized command (commandHash), so a hit here means this exact command already ran and cached output earlier. storeBashOutput always still runs unconditionally below: the full new output stays cached and recallable via `bash-output <id>` regardless of whether a delta hint fires: the delta is an additive summary, never a replacement for the underlying data.
-    const priorId = await commandHash(cmd, cwd)
+    const priorId = await commandHash(cmd, runDir)
     const priorEntry = getBashOutput(priorId)
-    const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+    const id = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
     if (priorEntry !== null) {
       // Item G: a store call just overwrote an already-present cached entry under this exact key -- record it so hooks_compact.ts's SAFE_TO_DISCARD manifest section can name the now-superseded prior run as provably safe to drop from context.
@@ -807,7 +812,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (curlHtmlFold !== null) return curlHtmlFold
     // Deliberately after the delta hint, which keeps its existing priority: a hook returns one channel, and the delta is only reachable on a rerun whose output actually changed. Every other cached command -- including the colourised build runs `isBuildCommand` routes here -- reaches this line, so this is where most escape bytes are removed.
     const ansiOnly = optedOut ? null : maybeStripAnsiOnly(output)
-    const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, cwd, isUnwrapped, event, ansiOnly)
+    const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiOnly)
     if (largeHint !== null) return largeHint
     if (ansiOnly !== null) return ansiOnly
   } catch {

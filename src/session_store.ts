@@ -8,7 +8,7 @@ import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, saniti
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
-import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -240,6 +240,7 @@ function coerce(raw: unknown): SerializedSession {
     cliReads,
     bashReruns,
     pendingLargeFileHints,
+    bashStartCwds: asStringPairs(o['bashStartCwds']),
     grepQueries,
     globQueries,
     outstandingAgentSpawns,
@@ -357,6 +358,19 @@ function mergeCurlDownloads(
   return Array.from(merged.entries())
 }
 
+/** Merge two views of Bash start directories the way {@link mergeCurlDownloads} merges downloads, so a post hook's take sticks against a stale disk read and an entry merely carried from load defers to disk, then keep the newest {@link MAX_BASH_START_CWDS}. */
+function mergeBashStartCwds(disk: Array<[string, string]>, mem: Array<[string, string]>): Array<[string, string]> {
+  const merged = new Map(disk)
+  for (const key of consumedBashStartCwdKeys()) merged.delete(key)
+  const atLoad = bashStartCwdsAtLoad()
+  for (const [toolUseId, cwd] of mem) {
+    if (atLoad.get(toolUseId) === cwd) continue
+    merged.set(toolUseId, cwd)
+  }
+  const entries = Array.from(merged.entries())
+  return entries.length > MAX_BASH_START_CWDS ? entries.slice(entries.length - MAX_BASH_START_CWDS) : entries
+}
+
 /** Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below, this is NOT a plain set-union: removal (the post-hook clearing a completed spawn) must actually stick, so a plain disk-union would silently resurrect an entry this process just removed from the pre-update disk snapshot. Start from disk, drop anything this process explicitly removed (see consumedOutstandingAgentSpawnKeys), then overlay only the entries this process newly added (present in mem but not in its own load-time snapshot) -- an entry merely carried over unchanged defers to disk. Finally cap to MAX_OUTSTANDING_AGENT_SPAWNS, dropping the oldest entries first, same oldest-evicted shape as recordOutstandingAgentSpawn's own local cap. */
 function mergeOutstandingAgentSpawns(
   disk: Array<[string, number]>,
@@ -412,6 +426,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
+    bashStartCwds: mergeBashStartCwds(disk.bashStartCwds ?? [], mem.bashStartCwds ?? []),
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
     globQueries: mergePairs(disk.globQueries ?? [], mem.globQueries ?? []),
     outstandingAgentSpawns: mergeOutstandingAgentSpawns(disk.outstandingAgentSpawns ?? [], mem.outstandingAgentSpawns ?? []),
