@@ -531,7 +531,7 @@ auto_trigger_multiplier = 2.0
         saveSessionState('notes-session')
 
         const manifest = buildManifest('notes-session', projectDir)
-        const note = manifest.indexOf('- **registry**: 118615 and 118623 are the same brand under two ids')
+        const note = manifest.search(/- \*\*registry\*\* \(set \d+s ago\): 118615 and 118623 are the same brand under two ids/)
         expect(note, 'the note must survive the character cap').toBeGreaterThan(-1)
         expect(manifest.indexOf('/proj/src/edited.ts')).toBeLessThan(note)
         expect(note).toBeLessThan(manifest.indexOf('### Read files'))

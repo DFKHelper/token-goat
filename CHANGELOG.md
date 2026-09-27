@@ -13,6 +13,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Changed
 
 - **Installed hook entries written by an older token-goat show in `doctor` as outdated for every harness, and `install` rewrites them.** This covers entries without the exit-code suffix and the Grok form described under Fixed.
+- **Project notes show how long ago they were set, and the oldest make room first.** `note set` records when each note was set. The notes block at session start and in the compaction manifest lists the newest first, as `- **key** (set 3h ago): value`, and `note list` shows the same age. At the 30-note limit, a new key replaces the note set longest ago, and when the block reaches its size limit it stops at the first note that does not fit, so the notes left out are always the oldest, and the closing line counts every one of them. Notes saved by an earlier version have no time, show no age, and count as the oldest.
 
 ### Security
 
@@ -27,6 +28,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **Notes named `__proto__`, `constructor`, `toString` or `hasOwnProperty` work like any other note.** `note set __proto__ ...` saved nothing, and `note get` answered with `[object Object]`. `note get constructor` printed `function Object() { [native code] }` for a note that was never set. A new note named `constructor`, `toString` or `hasOwnProperty` did not count toward the 30-note limit, so the file could grow past it. `note list --json` now includes a `__proto__` note too.
 - **Grok hooks on Windows run.** The Node form of each Grok hook entry was a PowerShell parse error, so every Grok hook did nothing and reported nothing. The entry is now a call-operator line. Reinstall with `token-goat install --grok` to rewrite the entries.
 - **Hook entries that Codex, Grok and Copilot CLI run through PowerShell keep the command's exit code.** A nonzero exit used to be collapsed to success on the way out, and an entry whose binary was missing exited 0. Both now exit with the right code, and a missing binary exits 1.
 - **A hook server no longer retires itself in the middle of a request.** A status contact arriving while a request was running was judged by that request's swapped-in environment, so a caller without `TOKEN_GOAT_HOOK_SERVER` set could make a server started with it read itself as disabled and exit. Whether the server is enabled is now decided only between requests.

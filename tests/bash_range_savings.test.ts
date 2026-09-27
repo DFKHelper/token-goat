@@ -1,28 +1,4 @@
-/**
- * A line-range hint may only spend context when its own proposal is measurably cheaper than the
- * read it objects to.
- *
- * FIXTURE PROVENANCE
- *
- * The standing reason for the gate is CAPTURE, from the shipped global binary on 2026-09-20 in
- * this repository:
- *   sed -n '1,30p' CHANGELOG.md | wc -c                   -> 10572
- *   token-goat section "CHANGELOG.md::Unreleased" | wc -c  -> 15150
- * The proposal the old hint made was 43% larger than the read it objected to. Those two numbers are
- * a measurement of one day's CHANGELOG.md and are recorded here rather than asserted: the file is
- * rewritten at every release, so pinning its byte count would fail on the edit rather than on the
- * defect, and re-capturing it each time turns the check into a rubber stamp. What the tests below
- * assert instead is the invariant the capture was evidence for, which holds at any file size: the
- * gate's own accounting of the requested window matches the bytes on disk, and the regions it would
- * substitute cost more than the window they replace.
- *
- * SED_WINDOW_LINES is CAPTURE: the mean `sed -n 'N,Mp'` window across 50,033 range reads mined from
- * 3,525 real Claude Code transcripts on this machine (191,710 Bash tool_use commands) was 47.2
- * lines, p50 30, p90 100. 43 is the concrete window from the session that prompted this work.
- *
- * The region-span comparisons are HAND-DERIVED: computed here from the file on disk and the
- * index's own line spans, independently of the gate's arithmetic.
- */
+/** A line-range hint may only spend context when its own proposal is measurably cheaper than the read it objects to. FIXTURE PROVENANCE The standing reason for the gate is CAPTURE, from the shipped global binary on 2026-09-20 in this repository: sed -n '1,30p' CHANGELOG.md | wc -c                   -> 10572 token-goat section "CHANGELOG.md::Unreleased" | wc -c  -> 15150 The proposal the old hint made was 43% larger than the read it objected to. Those two numbers are a measurement of one day's CHANGELOG.md and are recorded here rather than asserted: the file is rewritten at every release, so pinning its byte count would fail on the edit rather than on the defect, and re-capturing it each time turns the check into a rubber stamp. What the tests below assert instead is the invariant the capture was evidence for, which holds at any file size: the gate's own accounting of the requested window matches the bytes on disk, and the regions it would substitute cost more than the window they replace. SED_WINDOW_LINES is CAPTURE: the mean `sed -n 'N,Mp'` window across 50,033 range reads mined from 3,525 real Claude Code transcripts on this machine (191,710 Bash tool_use commands) was 47.2 lines, p50 30, p90 100. 43 is the concrete window from the session that prompted this work. The region-span comparisons are HAND-DERIVED: computed here from the file on disk and the index's own line spans, independently of the gate's arithmetic. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -108,7 +84,10 @@ describe('a range hint must price its own replacement', () => {
   })
 
   it('names the specific region, never just the file', () => {
-    const sub = rangeSubstituteFor('src/paths.ts', process.cwd(), [[130, 140]])
+    // A window 5 to 15 lines into normalizePath's body, located on disk rather than pinned to line numbers any edit above it would move.
+    const start = fs.readFileSync('src/paths.ts', 'utf8').split('\n').findIndex((l) => l.startsWith('export function normalizePath(')) + 1
+    expect(start).toBeGreaterThan(0)
+    const sub = rangeSubstituteFor('src/paths.ts', process.cwd(), [[start + 5, start + 15]])
     expect(sub).not.toBeNull()
     expect(sub!.commands.length).toBeGreaterThan(0)
     for (const c of sub!.commands) {
@@ -143,8 +122,7 @@ describe('a range hint must price its own replacement', () => {
   })
 
   it('still warns when the lines were already served this session, which owes nothing to pricing', () => {
-    // Also the positive control for the two "emits nothing" cases above: it proves this same handler, on this same file, in this same run, does still reach a context output -- so their `pass` is the gate declining and not the whole path being inert.
-    // Through `sed`, whose ranges the pre-hook records itself; `head`'s ledger entry is written by the post-hook once the command has actually succeeded, which this pre-hook-only test never reaches.
+    // Also the positive control for the two "emits nothing" cases above: it proves this same handler, on this same file, in this same run, does still reach a context output -- so their `pass` is the gate declining and not the whole path being inert. Through `sed`, whose ranges the pre-hook records itself; `head`'s ledger entry is written by the post-hook once the command has actually succeeded, which this pre-hook-only test never reaches.
     preBashHandler(preBashEvent(`sed -n '1,40p' CHANGELOG.md`))
     const second = preBashHandler(preBashEvent(`sed -n '1,30p' CHANGELOG.md`))
     expect(second.hookType).toBe('context')

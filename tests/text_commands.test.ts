@@ -1,14 +1,4 @@
-/**
- * Regression tests for the todo / trace / logfold / lockdeps / note / hot / recent / ignores
- * CLI commands. Every test drives the REAL registered command via the built bundle so the
- * injected-seam trap cannot hide a broken default path.
- *
- * Mutation-verify targets (three non-trivial helpers):
- *   1. logfold fold counter — break normalizeVolatile so near-identical lines do NOT collapse;
- *      the (xN) assertion fails; restore from scratchpad backup confirms recovery.
- *   2. hot cross-file aggregation — break += to last-wins; multi-session total test fails; restore.
- *   3. todo string-literal exclusion — break isInsideStringLiteral; a quoted TODO appears; restore.
- */
+/** Regression tests for the todo / trace / logfold / lockdeps / note / hot / recent / ignores CLI commands. Every test drives the REAL registered command via the built bundle so the injected-seam trap cannot hide a broken default path. Mutation-verify targets (three non-trivial helpers): 1. logfold fold counter — break normalizeVolatile so near-identical lines do NOT collapse; the (xN) assertion fails; restore from scratchpad backup confirms recovery. 2. hot cross-file aggregation — break += to last-wins; multi-session total test fails; restore. 3. todo string-literal exclusion — break isInsideStringLiteral; a quoted TODO appears; restore. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -29,12 +19,7 @@ interface RunResult {
 
 let tmpDir: string
 
-// Batched against one long-lived bundle process, which costs 3.2ms per call against 218ms for a
-// spawn -- the command itself is free, so a spawn here is ~215ms of Node evaluating the bundle.
-// Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a
-// stdin stream, and quietly dropping the input would make a `trace` assertion pass for the wrong
-// reason. tests/batch_serve_equivalence.test.ts pins that the batched path and the spawned path
-// produce identical stdout, stderr and status.
+// Batched against one long-lived bundle process, which costs 3.2ms per call against 218ms for a spawn -- the command itself is free, so a spawn here is ~215ms of Node evaluating the bundle. Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a stdin stream, and quietly dropping the input would make a `trace` assertion pass for the wrong reason. tests/batch_serve_equivalence.test.ts pins that the batched path and the spawned path produce identical stdout, stderr and status.
 async function run(
   args: string[],
   opts: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {},
@@ -267,9 +252,7 @@ describe('trace command', () => {
     expect(parsed.tracebacks[0]?.frames.length).toBe(1)
   })
 
-  // Regression: a non-numeric or negative --keep value fell through Number.parseInt's NaN
-  // (NaN > 0 is false) or the sign check, so the `keepN > 0` guard silently disabled trimming
-  // instead of erroring, printing every frame unbounded.
+  // Regression: a non-numeric or negative --keep value fell through Number.parseInt's NaN (NaN > 0 is false) or the sign check, so the `keepN > 0` guard silently disabled trimming instead of erroring, printing every frame unbounded.
   it('--keep abc errors instead of silently printing every frame', async () => {
     const multi = [
       'Traceback (most recent call last):',
@@ -349,11 +332,7 @@ describe('trace command', () => {
     expect(frames[1]?.context).toBe('do_something()')
   })
 
-  // Regression: a block whose frames were ALL non-project rendered as a bare "Traceback (most
-  // recent call last):" header with zero frames under it, which is indistinguishable from a block
-  // that genuinely carried nothing -- the reader cannot tell "this failure is entirely in
-  // dependency/runtime code" from "trace lost the frames", and the honest answer is the one that
-  // stops them re-reading the raw traceback.
+  // Regression: a block whose frames were ALL non-project rendered as a bare "Traceback (most recent call last):" header with zero frames under it, which is indistinguishable from a block that genuinely carried nothing -- the reader cannot tell "this failure is entirely in dependency/runtime code" from "trace lost the frames", and the honest answer is the one that stops them re-reading the raw traceback.
   it('names the dropped frame count when every frame in a block was filtered out as non-project (plural)', async () => {
     const allForeign = [
       'Traceback (most recent call last):',
@@ -370,9 +349,7 @@ describe('trace command', () => {
     expect(r.stdout).toContain('ConnectionError: refused')
   })
 
-  // The count==1 branch has its own noun/verb pair; asserting only the plural above would let
-  // "all 1 frames were filtered out" ship, which reads as a bug in the tool rather than a report
-  // about the traceback.
+  // The count==1 branch has its own noun/verb pair; asserting only the plural above would let "all 1 frames were filtered out" ship, which reads as a bug in the tool rather than a report about the traceback.
   it('agrees the noun and verb with the count when exactly one frame was filtered out as non-project (singular)', async () => {
     const oneForeign = [
       'Traceback (most recent call last):',
@@ -386,18 +363,14 @@ describe('trace command', () => {
     expect(r.stdout).not.toContain('all 1 frames')
   })
 
-  // The notice must stay off the happy path: a block that kept frames already shows them, and an
-  // unconditional notice would claim frames were dropped on every ordinary traceback.
+  // The notice must stay off the happy path: a block that kept frames already shows them, and an unconditional notice would claim frames were dropped on every ordinary traceback.
   it('does not emit the non-project notice for a block that kept at least one project frame', async () => {
     const r = await run(['trace'], { input: SAMPLE_TRACEBACK, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).not.toContain('filtered out as non-project')
   })
 
-  // Regression: `--keep N` sliced the surviving project frames down to the last N and said nothing
-  // about the rest, so the output read as the complete project-frame set when it was not -- and the
-  // frames it dropped are the OUTER ones, i.e. the call path that led to the failure, which is the
-  // one thing `trace` exists to show. Six project frames kept down to two must name the four gone.
+  // Regression: `--keep N` sliced the surviving project frames down to the last N and said nothing about the rest, so the output read as the complete project-frame set when it was not -- and the frames it dropped are the OUTER ones, i.e. the call path that led to the failure, which is the one thing `trace` exists to show. Six project frames kept down to two must name the four gone.
   const SIX_PROJECT_FRAMES = [
     'Traceback (most recent call last):',
     '  File "app/main.py", line 1, in fn1',
@@ -419,16 +392,14 @@ describe('trace command', () => {
     const r = await run(['trace', '--keep', '2'], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('...(4 more frames elided; use a higher --keep to see more)')
-    // The notice sits above the frames because the elision happened there -- the kept frames are
-    // the innermost two, so an appended note would point at the wrong end of the call chain.
+    // The notice sits above the frames because the elision happened there -- the kept frames are the innermost two, so an appended note would point at the wrong end of the call chain.
     expect(r.stdout.indexOf('elided')).toBeLessThan(r.stdout.indexOf('app/db.py'))
     expect(r.stdout).toContain('app/driver.py')
     expect(r.stdout).not.toContain('app/main.py')
     expect(r.stdout).toContain('ValueError: boom')
   })
 
-  // The count==1 branch has its own noun; asserting only the plural above would let "1 more frames
-  // elided" ship, which reads as a bug in the tool rather than a report about the traceback.
+  // The count==1 branch has its own noun; asserting only the plural above would let "1 more frames elided" ship, which reads as a bug in the tool rather than a report about the traceback.
   it('agrees the noun with the count when --keep drops exactly one frame (singular)', async () => {
     const r = await run(['trace', '--keep', '5'], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
@@ -436,8 +407,7 @@ describe('trace command', () => {
     expect(r.stdout).not.toContain('1 more frames')
   })
 
-  // --keep >= the frame count drops nothing, so an unconditional notice would claim an elision that
-  // never happened. Both the exactly-equal boundary and the over-count case must stay silent.
+  // --keep >= the frame count drops nothing, so an unconditional notice would claim an elision that never happened. Both the exactly-equal boundary and the over-count case must stay silent.
   it('emits no elision notice when --keep is at or above the project frame count', async () => {
     for (const keep of ['6', '99']) {
       const r = await run(['trace', '--keep', keep], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
@@ -447,10 +417,7 @@ describe('trace command', () => {
     }
   })
 
-  // A block can lose frames to the non-project filter AND then be truncated by --keep. The two
-  // notices must never both fire: --keep only slices when frames.length > keepN with keepN >= 1, so
-  // a truncated block always keeps at least one frame and can never also be the filtered-to-empty
-  // case. Assert each state prints its own notice and not the other's.
+  // A block can lose frames to the non-project filter AND then be truncated by --keep. The two notices must never both fire: --keep only slices when frames.length > keepN with keepN >= 1, so a truncated block always keeps at least one frame and can never also be the filtered-to-empty case. Assert each state prints its own notice and not the other's.
   it('does not emit contradictory notices when non-project filtering and --keep truncation both apply', async () => {
     const mixed = [
       'Traceback (most recent call last):',
@@ -472,8 +439,7 @@ describe('trace command', () => {
     expect(r.stdout).toContain('app/db.py')
     expect(r.stdout).not.toContain('client.py')
 
-    // The mirror state: every frame is non-project, so the filter notice fires and the --keep
-    // notice must stay silent even though --keep was passed.
+    // The mirror state: every frame is non-project, so the filter notice fires and the --keep notice must stay silent even though --keep was passed.
     const allForeignWithKeep = [
       'Traceback (most recent call last):',
       '  File "/usr/lib/python3/site-packages/pkg/a.py", line 1, in a',
@@ -488,8 +454,7 @@ describe('trace command', () => {
     expect(r2.stdout).not.toContain('elided')
   })
 
-  // The elision notice is a plain-text-renderer concern only; --json is frozen this cycle, so the
-  // payload must stay byte-identical to what the same input produced before the notice existed.
+  // The elision notice is a plain-text-renderer concern only; --json is frozen this cycle, so the payload must stay byte-identical to what the same input produced before the notice existed.
   it('leaves --json output unchanged when --keep truncates', async () => {
     const r = await run(['trace', '--keep', '2', '--json'], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
@@ -590,9 +555,7 @@ describe('trace command', () => {
   ].join('\n')
 
   it('parses a Node/V8 stack trace into the expected TraceBlock/TraceFrame shape', async () => {
-    // cmdTrace filters every frame through isProjectFrame before printing (node:internal/...
-    // gets dropped -- covered separately below), so only the project-owned frame is expected
-    // to survive here; the with-func parse itself is asserted directly.
+    // cmdTrace filters every frame through isProjectFrame before printing (node:internal/... gets dropped -- covered separately below), so only the project-owned frame is expected to survive here; the with-func parse itself is asserted directly.
     const r = await run(['trace', '--json'], { input: SAMPLE_NODE, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }>; exception: string }> }
@@ -688,8 +651,7 @@ describe('trace command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }> }> }
     const frames = parsed.tracebacks[0]?.frames ?? []
-    // Pre-fix: the loop broke on frame 2's missing `at` line, so frame 3 (my_crate::main) was
-    // silently dropped -- only frames 0 and 1 would be present here.
+    // Pre-fix: the loop broke on frame 2's missing `at` line, so frame 3 (my_crate::main) was silently dropped -- only frames 0 and 1 would be present here.
     expect(frames.map((f) => f.func)).toContain('my_crate::main')
     expect(frames.find((f) => f.func === 'my_crate::main')).toMatchObject({ file: 'src/main.rs', lineNo: 10 })
   })
@@ -722,9 +684,7 @@ describe('trace command', () => {
   ].join('\n')
 
   it('parses a JVM exception into the expected TraceBlock/TraceFrame shape, including a Caused by chain as its own block', async () => {
-    // No out-of-project frame here (that's covered separately below) -- cmdTrace filters every
-    // frame through isProjectFrame before printing, so a frame this test doesn't want dropped
-    // must itself resolve as project-owned.
+    // No out-of-project frame here (that's covered separately below) -- cmdTrace filters every frame through isProjectFrame before printing, so a frame this test doesn't want dropped must itself resolve as project-owned.
     const shapeOnly = [
       'Exception in thread "main" java.lang.NullPointerException: Cannot invoke "String.length()" because "s" is null',
       '\tat com.example.MyClass.doWork(MyClass.java:42)',
@@ -814,9 +774,7 @@ describe('trace command', () => {
   ].join('\n')
 
   it('parses a .NET exception into the expected TraceBlock/TraceFrame shape', async () => {
-    // No out-of-project frame here (that's covered separately below) -- cmdTrace filters every
-    // frame through isProjectFrame before printing, so a frame this test doesn't want dropped
-    // must itself resolve as project-owned.
+    // No out-of-project frame here (that's covered separately below) -- cmdTrace filters every frame through isProjectFrame before printing, so a frame this test doesn't want dropped must itself resolve as project-owned.
     const shapeOnly = [
       'Unhandled exception. System.NullReferenceException: Object reference not set to an instance of an object.',
       '   at MyApp.Program.DoWork() in Program.cs:line 42',
@@ -896,8 +854,7 @@ describe('logfold command', () => {
   })
 
   it('--tail N restricts input to last N lines', async () => {
-    // Letters, not bare integers, so this fixture stays independent of the bare-integer
-    // normalization rule (which would otherwise fold "line 7"/"line 8"/"line 9" together).
+    // Letters, not bare integers, so this fixture stays independent of the bare-integer normalization rule (which would otherwise fold "line 7"/"line 8"/"line 9" together).
     const letters = 'abcdefghij'.split('')
     const lines = letters.map((c) => `line ${c}`).join('\n')
     const r = await run(['logfold', '--tail', '3'], { input: lines })
@@ -906,9 +863,7 @@ describe('logfold command', () => {
     expect(r.stdout).not.toContain('line a')
   })
 
-  // Regression: a non-numeric or negative --tail value fell through Number.parseInt's NaN
-  // (Number.isFinite(NaN) is false) or the sign check, so the guard silently skipped the
-  // slice, printing every line unbounded instead of erroring.
+  // Regression: a non-numeric or negative --tail value fell through Number.parseInt's NaN (Number.isFinite(NaN) is false) or the sign check, so the guard silently skipped the slice, printing every line unbounded instead of erroring.
   it('--tail abc errors instead of silently printing every line', async () => {
     const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n')
     const r = await run(['logfold', '--tail', 'abc'], { input: lines })
@@ -928,12 +883,7 @@ describe('logfold command', () => {
     const r = await run(['logfold', '--json'], { input })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { lines: Array<{ text: string; count: number }> }
-    // Pin the exact fold result -- length > 0 plus "some entry has count > 1" would still
-    // pass if the fold logic grouped the wrong lines together or miscounted, as long as
-    // some entry happened to end up with count > 1.
-    // The trailing newline no longer contributes a phantom `{ text: '', count: 1 }` row: it was
-    // an artifact of splitLines, and it made `--tail N` spend one of its N places on a blank line
-    // while the disclosure line counted real lines only.
+    // Pin the exact fold result -- length > 0 plus "some entry has count > 1" would still pass if the fold logic grouped the wrong lines together or miscounted, as long as some entry happened to end up with count > 1. The trailing newline no longer contributes a phantom `{ text: '', count: 1 }` row: it was an artifact of splitLines, and it made `--tail N` spend one of its N places on a blank line while the disclosure line counted real lines only.
     expect(parsed.lines).toEqual([{ text: 'hello', count: 2 }])
   })
 
@@ -974,9 +924,7 @@ describe('logfold command', () => {
     ].join('\n')
     const r = await run(['logfold'], { input })
     expect(r.status, r.stderr).toBe(0)
-    // Each pair differs only in a value covered by an earlier rule plus a bare integer -- all
-    // three pairs should fold to (x2), which only happens if IP/UUID/HEX are still normalized
-    // (otherwise the differing IP/UUID/HEX text alone would keep each pair distinct).
+    // Each pair differs only in a value covered by an earlier rule plus a bare integer -- all three pairs should fold to (x2), which only happens if IP/UUID/HEX are still normalized (otherwise the differing IP/UUID/HEX text alone would keep each pair distinct).
     const x2Count = (r.stdout.match(/\(x2\)/g) ?? []).length
     expect(x2Count).toBe(3)
   })
@@ -1016,8 +964,7 @@ describe('logfold command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = await run(['logfold', '--fold-repeats', '--json'], { input })
     const lines = (JSON.parse(parsed.stdout) as { lines: Array<{ text: string; count: number }> }).lines
-    // The trailing newline no longer yields an extra empty line from the raw split, so only the
-    // two real distinct keys appear.
+    // The trailing newline no longer yields an extra empty line from the raw split, so only the two real distinct keys appear.
     expect(lines).toEqual([
       { text: 'boom', count: 3 },
       { text: 'noise', count: 2 },
@@ -1340,8 +1287,7 @@ describe('lockdeps command', () => {
       deps: Array<{ name: string; version: string; kind: string }>
     }
     expect(parsed.format).toBe('pnpm')
-    // Version is the clean semver, not the peer-suffixed key. Matching the (also-cleaned)
-    // importer version, it is correctly classified 'direct'.
+    // Version is the clean semver, not the peer-suffixed key. Matching the (also-cleaned) importer version, it is correctly classified 'direct'.
     expect(parsed.deps).toContainEqual({ name: '@testing-library/react', version: '13.4.0', kind: 'direct' })
     // The nested peer (react-dom) is stripped of its own peer suffix too, and is transitive.
     expect(parsed.deps).toContainEqual({ name: 'react-dom', version: '18.2.0', kind: 'transitive' })
@@ -1574,12 +1520,7 @@ describe('lockdeps command', () => {
       fs.rmSync(dir, { recursive: true, force: true })
     })
 
-    // Regression: the root "" packages entry's optionalDependencies map was silently omitted
-    // from both parsePackageLockJson's allDirect set and buildNpmEdges's directNames set, so a
-    // package declared only as optional (e.g. fsevents) was misclassified as 'transitive' by the
-    // default dump, and excluded as a possible source in --package's reverse ("depended on by
-    // direct deps") lookup -- even though it is genuinely one of the project's own top-level
-    // dependencies, exactly like dependencies/devDependencies already are.
+    // Regression: the root "" packages entry's optionalDependencies map was silently omitted from both parsePackageLockJson's allDirect set and buildNpmEdges's directNames set, so a package declared only as optional (e.g. fsevents) was misclassified as 'transitive' by the default dump, and excluded as a possible source in --package's reverse ("depended on by direct deps") lookup -- even though it is genuinely one of the project's own top-level dependencies, exactly like dependencies/devDependencies already are.
     it('treats a root-level optionalDependencies entry as direct, same as dependencies/devDependencies', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-'))
       const lockPath = path.join(dir, 'package-lock.json')
@@ -1644,6 +1585,37 @@ describe('note command', () => {
     expect(r.stdout).toContain('k2')
   })
 
+  it('list shows how long ago each note was set', async () => {
+    // HAND-DERIVED: a note set moments before the list reads as some seconds old; the spawned binary runs on the real clock, so the count itself is not pinned.
+    await run(['note', 'set', 'aged', 'just now'], { env: noteEnv, cwd: ROOT })
+    const r = await run(['note', 'list'], { env: noteEnv, cwd: ROOT })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/^aged \(set \d+s ago\) = just now$/m)
+  })
+
+  it('sets, gets and lists a note keyed __proto__', async () => {
+    // HAND-DERIVED: `__proto__` passes the key rule `note set` applies, and a plain object drops it on assignment.
+    const rSet = await run(['note', 'set', '__proto__', 'kept'], { env: noteEnv, cwd: ROOT })
+    expect(rSet.status, rSet.stderr).toBe(0)
+    const rGet = await run(['note', 'get', '__proto__'], { env: noteEnv, cwd: ROOT })
+    expect(rGet.status, rGet.stderr).toBe(0)
+    expect(rGet.stdout).toBe('kept\n')
+    const rList = await run(['note', 'list'], { env: noteEnv, cwd: ROOT })
+    expect(rList.stdout).toMatch(/^__proto__ \(set \d+s ago\) = kept$/m)
+    const rJson = await run(['note', 'list', '--json'], { env: noteEnv, cwd: ROOT })
+    const parsed = JSON.parse(rJson.stdout) as Record<string, string>
+    expect(Object.hasOwn(parsed, '__proto__')).toBe(true)
+    expect(parsed['__proto__']).toBe('kept')
+  })
+
+  it('get reports an Object.prototype name that was never set as not found', async () => {
+    // HAND-DERIVED: no note named constructor is ever set in this suite, so the only thing a lookup can find under that name is Object.prototype.constructor.
+    const r = await run(['note', 'get', 'constructor'], { env: noteEnv, cwd: ROOT })
+    expect(r.stdout).not.toContain('function Object')
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('Key not found: constructor')
+  })
+
   it('list --json emits parseable structured output', async () => {
     const r = await run(['note', 'list', '--json'], { env: noteEnv, cwd: ROOT })
     expect(r.status, r.stderr).toBe(0)
@@ -1699,18 +1671,10 @@ describe('hot command', () => {
         fs.mkdirSync(path.join(projRoot, '.git'))
         const sessDir = path.join(hotData, 'sessions')
         fs.mkdirSync(sessDir, { recursive: true })
-        // Recorded session paths are stored pre-normalized by the real hook path
-        // (normalizePath in paths.ts), matching the format findProject's own
-        // canonicalize()/foldPath() output uses -- reuse normalizePath itself for the fixture
-        // rather than hand-rolling a slash-flip + drive-lowercase (that reimplementation
-        // already caused a Windows-CI-only failure once before, see commit 442f42d3: a runner
-        // whose %TEMP% is pinned to its 8.3 short form, e.g. GitHub's windows-latest
-        // RUNNER~1, needs the same short-name expansion normalizePath performs, which a
-        // hand-rolled version silently skips).
+        // Recorded session paths are stored pre-normalized by the real hook path (normalizePath in paths.ts), matching the format findProject's own canonicalize()/foldPath() output uses -- reuse normalizePath itself for the fixture rather than hand-rolling a slash-flip + drive-lowercase (that reimplementation already caused a Windows-CI-only failure once before, see commit 442f42d3: a runner whose %TEMP% is pinned to its 8.3 short form, e.g. GitHub's windows-latest RUNNER~1, needs the same short-name expansion normalizePath performs, which a hand-rolled version silently skips).
         const projRootNorm = normalizePath(projRoot)
         const realFile = `${projRootNorm}/real.ts`
-        // Same path as projRoot but with its basename's case flipped -- a distinct directory on
-        // a case-sensitive filesystem, and must NOT match under --project there.
+        // Same path as projRoot but with its basename's case flipped -- a distinct directory on a case-sensitive filesystem, and must NOT match under --project there.
         const upperRootNorm = `${projRootNorm.slice(0, projRootNorm.lastIndexOf('/'))}/${path.basename(projRootNorm).toUpperCase()}`
         const otherFile = `${upperRootNorm}/other-unrelated.ts`
         fs.writeFileSync(
@@ -1820,9 +1784,7 @@ describe('hot command', () => {
     }
   })
 
-  // Regression: a zero, non-numeric, or negative --limit value fell through Number.parseInt's
-  // NaN (NaN > 0 is false) or the sign check, so the `limit > 0` guard silently skipped the
-  // slice, printing every entry unbounded instead of erroring or applying the limit.
+  // Regression: a zero, non-numeric, or negative --limit value fell through Number.parseInt's NaN (NaN > 0 is false) or the sign check, so the `limit > 0` guard silently skipped the slice, printing every entry unbounded instead of erroring or applying the limit.
   it('--limit 0/abc/-5 all error instead of silently printing every entry', async () => {
     const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-badlimit-'))
     try {
@@ -1845,10 +1807,7 @@ describe('hot command', () => {
         expect(r.status, `--limit ${bad}`).not.toBe(0)
         expect(r.stderr).toContain('--limit')
       }
-      // --limit 0 must be rejected, not silently sliced to an empty result -- a
-      // .slice(0, 0) would print "No session read data found." even though read data
-      // genuinely exists (the files written above), a false-clean claim about the cache's
-      // contents. Matches runFind's own --limit validation for the same failure mode.
+      // --limit 0 must be rejected, not silently sliced to an empty result -- a .slice(0, 0) would print "No session read data found." even though read data genuinely exists (the files written above), a false-clean claim about the cache's contents. Matches runFind's own --limit validation for the same failure mode.
       const zero = await run(['hot', '--limit', '0', '--json'], { env: isolatedEnv(hotData) })
       expect(zero.status, zero.stderr).not.toBe(0)
       expect(zero.stderr).toContain('--limit')
@@ -1857,10 +1816,7 @@ describe('hot command', () => {
     }
   })
 
-  // Regression: --project filtering totals down to zero entries printed the same "No session
-  // read data found." notice as the genuinely-empty-cache case, wrongly claiming no read data
-  // exists at all when read data exists but none of it falls under this project root. Same
-  // empty-vs-filtered-store distinction runNoteList makes for --stale-only.
+  // Regression: --project filtering totals down to zero entries printed the same "No session read data found." notice as the genuinely-empty-cache case, wrongly claiming no read data exists at all when read data exists but none of it falls under this project root. Same empty-vs-filtered-store distinction runNoteList makes for --stale-only.
   it('--project filtering to zero entries names the total instead of claiming no data exists at all', async () => {
     const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-projempty-'))
     const projRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-projemptyroot-'))
@@ -1904,9 +1860,7 @@ describe('recent command', () => {
     expect(Array.isArray(parsed.entries)).toBe(true)
   })
 
-  // Regression: a non-numeric or negative n argument fell through Number.parseInt's NaN
-  // (NaN > 0 is false) or the sign check, so the `n > 0 ? n : 20` fallback silently defaulted
-  // to printing (up to) every entry instead of erroring.
+  // Regression: a non-numeric or negative n argument fell through Number.parseInt's NaN (NaN > 0 is false) or the sign check, so the `n > 0 ? n : 20` fallback silently defaulted to printing (up to) every entry instead of erroring.
   it('recent abc errors instead of silently falling back to the default limit', async () => {
     const r = await run(['recent', 'abc'])
     expect(r.status).not.toBe(0)
@@ -1914,18 +1868,13 @@ describe('recent command', () => {
   })
 
   it('recent -5 errors instead of silently falling back to the default limit', async () => {
-    // `--` forces commander to treat "-5" as the positional n argument rather than an
-    // unrecognized option flag, so this exercises requireNonNegativeInt's sign check.
+    // `--` forces commander to treat "-5" as the positional n argument rather than an unrecognized option flag, so this exercises requireNonNegativeInt's sign check.
     const r = await run(['recent', '--', '-5'])
     expect(r.status).not.toBe(0)
     expect(r.stderr).toContain('recent')
   })
 
-  // A limit of 0 would slice the sorted entries list down to zero and print "No files read in
-  // this session yet." -- an absolute claim about the session's contents -- even when files were
-  // genuinely read. Reject explicitly instead of silently rendering that false-clean result,
-  // matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
-  // validation for the same failure mode.
+  // A limit of 0 would slice the sorted entries list down to zero and print "No files read in this session yet." -- an absolute claim about the session's contents -- even when files were genuinely read. Reject explicitly instead of silently rendering that false-clean result, matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
   it('recent 0 errors instead of silently reporting an empty session', async () => {
     const r = await run(['recent', '0'])
     expect(r.status).not.toBe(0)
@@ -1958,14 +1907,7 @@ describe('ignores command', () => {
     expect(parsed.walkMode).toBe('git')
   })
 
-  // Regression: `map`/`todo`/`conflicts`/`hot --project` all walk the filesystem directly via
-  // baseline.ts's walkProject, which never consults git ls-files/.gitignore and never excludes
-  // .env/*.d.ts (that filtering exists only in walk_index.ts's isWalkExcluded, wired to nothing
-  // but `token-goat index --walk`). The old report claimed ".gitignore exclusions are active"
-  // (git mode) and ".env, .env.*, *.d.ts" are "built-in exclusions" (non-git mode) as if those
-  // applied to every walk-based command -- false for map/todo/conflicts/hot in both modes. The
-  // report must scope those claims to `token-goat index` specifically and surface the one
-  // exclusion set (SKIP_DIRS) that genuinely applies to every walkProject-based command.
+  // Regression: `map`/`todo`/`conflicts`/`hot --project` all walk the filesystem directly via baseline.ts's walkProject, which never consults git ls-files/.gitignore and never excludes .env/*.d.ts (that filtering exists only in walk_index.ts's isWalkExcluded, wired to nothing but `token-goat index --walk`). The old report claimed ".gitignore exclusions are active" (git mode) and ".env, .env.*, *.d.ts" are "built-in exclusions" (non-git mode) as if those applied to every walk-based command -- false for map/todo/conflicts/hot in both modes. The report must scope those claims to `token-goat index` specifically and surface the one exclusion set (SKIP_DIRS) that genuinely applies to every walkProject-based command.
   it('scopes the gitignore/.env claims to `index`, not every walk-based command', async () => {
     const r = await run(['ignores', '--json'], { cwd: ROOT })
     expect(r.status, r.stderr).toBe(0)
@@ -1977,26 +1919,18 @@ describe('ignores command', () => {
     // SKIP_DIRS is the only exclusion map/todo/conflicts/hot actually apply, in every mode.
     expect(parsed.skipDirs).toContain('node_modules')
     expect(parsed.skipDirs).toContain('.git')
-    // .env/*.d.ts filtering is real, but only for `token-goat index --walk` -- never reported
-    // as a blanket non-git-mode guarantee.
+    // .env/*.d.ts filtering is real, but only for `token-goat index --walk` -- never reported as a blanket non-git-mode guarantee.
     expect(parsed.walkIndexBuiltinExclusions).toContain('.env')
     expect(parsed.walkIndexBuiltinExclusions).toContain('*.d.ts')
     expect(parsed.indexRespectsGitignore).toBe(true)
 
     const text = (await run(['ignores'], { cwd: ROOT })).stdout
-    // The human-readable report must name `token-goat index` explicitly wherever it claims
-    // gitignore/.env/.d.ts exclusion, so it never reads as a guarantee about every command.
+    // The human-readable report must name `token-goat index` explicitly wherever it claims gitignore/.env/.d.ts exclusion, so it never reads as a guarantee about every command.
     expect(text).toContain('token-goat index')
     expect(text).toContain('map/todo/conflicts')
   })
 
-  // Regression: worker.blocked_roots is only ever consulted by cli.ts's cmdIndex (`token-goat
-  // index`/`index --walk`) and worker.ts's drain loop, both via isUnderBlockedRoot -- neither
-  // baseline.ts's walkProject nor any of its callers (map/todo/conflicts/hot --project) ever
-  // check it. The old report printed "Blocked roots (config): <paths>" as an unscoped, bare
-  // fact directly beneath the map/todo/conflicts exclusion explanation, misleadingly implying
-  // those commands honor it too. Prove the claim is false first (a blocked root's file still
-  // surfaces via `todo`), then require the report to name which commands actually enforce it.
+  // Regression: worker.blocked_roots is only ever consulted by cli.ts's cmdIndex (`token-goat index`/`index --walk`) and worker.ts's drain loop, both via isUnderBlockedRoot -- neither baseline.ts's walkProject nor any of its callers (map/todo/conflicts/hot --project) ever check it. The old report printed "Blocked roots (config): <paths>" as an unscoped, bare fact directly beneath the map/todo/conflicts exclusion explanation, misleadingly implying those commands honor it too. Prove the claim is false first (a blocked root's file still surfaces via `todo`), then require the report to name which commands actually enforce it.
   it('scopes the "Blocked roots" claim to the commands that actually enforce it (todo still sees a blocked-root file)', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ignores-blocked-'))
     const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ignores-blocked-proj-'))
@@ -2008,16 +1942,14 @@ describe('ignores command', () => {
       const exclude = await run(['project', 'exclude', proj], { cwd: proj, env })
       expect(exclude.status, exclude.stderr).toBe(0)
 
-      // The blocked root is real (config.toml now has it), but `todo` (a walkProject-based
-      // command) never consults blocked_roots, so the marker still surfaces.
+      // The blocked root is real (config.toml now has it), but `todo` (a walkProject-based command) never consults blocked_roots, so the marker still surfaces.
       const todoResult = await run(['todo', src], { cwd: proj, env })
       expect(todoResult.status, todoResult.stderr).toBe(0)
       expect(todoResult.stdout).toContain('TODO')
 
       const text = (await run(['ignores'], { cwd: proj, env })).stdout
       expect(text).toContain(proj)
-      // The claim must name the commands that genuinely enforce blocked_roots (index / worker),
-      // not read as a bare, unscoped guarantee sitting right below the map/todo/conflicts line.
+      // The claim must name the commands that genuinely enforce blocked_roots (index / worker), not read as a bare, unscoped guarantee sitting right below the map/todo/conflicts line.
       expect(text).toMatch(/Blocked roots.*(index|worker)/i)
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
@@ -2028,8 +1960,7 @@ describe('ignores command', () => {
 
 describe('isProjectFrame path boundary check', () => {
   it('does not match sibling directories with similar names (regression: path boundary bug with startsWith)', async () => {
-    // Bug: if project root is /tmp/abc, a frame from /tmp/abc-fork/file.py should NOT match
-    // because startsWith("/tmp/abc") on "/tmp/abc-fork/file.py" returns true without boundary check.
+    // Bug: if project root is /tmp/abc, a frame from /tmp/abc-fork/file.py should NOT match because startsWith("/tmp/abc") on "/tmp/abc-fork/file.py" returns true without boundary check.
     const sibling = tmpDir + '-fork'
     const traceback = [
       'Traceback (most recent call last):',
@@ -2040,8 +1971,7 @@ describe('isProjectFrame path boundary check', () => {
     const r = await run(['trace', '--json'], { input: traceback, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }> }> }
-    // The fork path should NOT be treated as a project frame (0 frames)
-    // If the bug exists, this will fail and show 1 frame instead of 0
+    // The fork path should NOT be treated as a project frame (0 frames) If the bug exists, this will fail and show 1 frame instead of 0
     expect(parsed.tracebacks[0]?.frames.length).toBe(0)
   })
 
