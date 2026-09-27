@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { cmdIndex } from '../src/cli.js'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { DEFAULT_DIM, isAvailable, setPipelineFnForTesting } from '../src/embeddings.js'
 import { disabledEmbedSha } from '../src/parser.js'
@@ -147,5 +148,25 @@ describe.skipIf(!canRunSweep)('the idle sweep, run from the temp directory', () 
     expect(queuedOff, 'the sweep queued a file its own project keeps unembedded').toBe(false)
     expect(row(FLAT).embed_sha).toBe(disabledEmbedSha(row(FLAT).sha))
     expect(row(MONO).embed_sha).toBe(disabledEmbedSha(row(MONO).sha))
+  })
+})
+
+describe('`token-goat index` and the worker drain', () => {
+  // The foreground index read `embeddings_enabled` from the project its working directory is in and the drain from the file's own, so run inside a monorepo package, or from outside the repository, the two stamped the same unchanged file differently and each undid the other.
+  it.each([
+    ['inside the package', () => path.join(TMP, 'mono', 'packages', 'app')],
+    ['from outside the repository', () => os.tmpdir()],
+  ])('reach the same verdict for a monorepo package file when the index runs %s', async (_where, cwd) => {
+    cwdSpy.mockReturnValue(cwd())
+    await cmdIndex(path.join(TMP, 'mono', 'packages', 'app'), { walk: true, dbPath: DB_PATH })
+    const foreground = row(MONO).embed_sha
+
+    cwdSpy.mockReturnValue(os.tmpdir())
+    queue(MONO)
+    drainOnce(TMP)
+    await pendingEmbeddings()
+
+    expect(foreground, 'the configuration at the repository root turns embeddings off').toBe(disabledEmbedSha(row(MONO).sha))
+    expect(row(MONO).embed_sha, 'the drain re-decided the file the index had just stamped').toBe(foreground)
   })
 })

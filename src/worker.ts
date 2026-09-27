@@ -192,7 +192,7 @@ registerReset(() => {
   inFlightEmbeddings.clear()
 })
 
-/** Run {@link indexFileEmbeddings} for `absPath`, serialized against any other in-flight embed call for the same path (see {@link inFlightEmbeddings}) AND capped globally across all files by {@link acquireEmbedSlot}/{@link makeReleaseEmbedSlot}. Errors are swallowed (mirrors the `.catch(() => undefined)` the direct call used before this wrapper existed) so one failed embed never breaks the chain for the next caller. `configRoot` is the file's own project ({@link configRootOf}), applied at dispatch rather than here because a queued call dispatches after this function has returned. */
+/** Run {@link indexFileEmbeddings} for `absPath`, serialized against any other in-flight embed call for the same path (see {@link inFlightEmbeddings}) AND capped globally across all files by {@link acquireEmbedSlot}/{@link makeReleaseEmbedSlot}. Errors are swallowed (mirrors the `.catch(() => undefined)` the direct call used before this wrapper existed) so one failed embed never breaks the chain for the next caller. `configRoot` is the file's own project ({@link embedPolicyResolver}), applied at dispatch rather than here because a queued call dispatches after this function has returned. */
 function embedFileSerialized(absPath: string, dbPath: string, sha: string, configRoot: string): Promise<unknown> {
   const key = foldPath(absPath)
   const prior = inFlightEmbeddings.get(key)
@@ -277,22 +277,32 @@ function requeueDirtyPath(dir: string, absPath: string): void {
   if (bumpAndCheckRetry(dir, absPath)) appendToDirtyQueue(dir, absPath)
 }
 
-/** {@link configProjectRootFor} of `absPath`'s directory, remembered in `memo`: a batch holds many files per directory, and every level of the walk probes nine project markers. */
-function configRootOf(absPath: string, memo: Map<string, string>): string {
-  const dir = path.dirname(absPath)
-  let root = memo.get(dir)
-  if (root === undefined) {
-    root = configProjectRootFor(dir)
-    memo.set(dir, root)
+/** Answers, for a file, which project's configuration decides whether it is embedded and what that configuration decides: `indexing.embeddings_enabled` from the `.token-goat.toml` that {@link configProjectRootFor} picks for the file's directory. Never the working directory's: the daemon runs in the temp directory and `token-goat index` runs wherever it was typed, and deciding by the working directory made the index and the drain stamp one file two ways, each undoing the other. The drain, the backlog sweep and cmdIndex all decide through one of these, built once per drain, sweep cycle or index run: each directory is walked once, since every level of the walk probes nine project markers, and each root's configuration is read once, and a `.token-goat.toml` added, removed or edited is seen by the next one. */
+export function embedPolicyResolver(): (absPath: string) => { configRoot: string; embeddingsEnabled: boolean } {
+  const roots = new Map<string, string>()
+  const enabled = new Map<string, boolean>()
+  return (absPath) => {
+    const dir = path.dirname(absPath)
+    let configRoot = roots.get(dir)
+    if (configRoot === undefined) {
+      configRoot = configProjectRootFor(dir)
+      roots.set(dir, configRoot)
+    }
+    let embeddingsEnabled = enabled.get(configRoot)
+    if (embeddingsEnabled === undefined) {
+      // Partial-config defensiveness for tests that mock loadConfig with a `{ worker: {...} }` shape: default to enabled, config.ts's own default.
+      embeddingsEnabled = loadConfig(configRoot).indexing?.embeddings_enabled ?? true
+      enabled.set(configRoot, embeddingsEnabled)
+    }
+    return { configRoot, embeddingsEnabled }
   }
-  return root
 }
 
 /** Build the index callback the drain loop uses by default: parse each changed file and write its symbol/ref rows into the index DB at `dbPath`. A parse or read failure on one file is swallowed so a single bad file never aborts the batch or crashes the drain loop -- but the failure is logged to {@link workerErrorLogPath} and signalled via the {@link INDEX_FAILED} sentinel so `processDirtyBatch` never counts it as a successful index. The file's `files.sha` row is left exactly as it was before this attempt, so if the file is ever touched again the sha-gate below will not match its (still un-indexed) content and a reindex will be retried automatically. */
 export function makeIndexer(dbPath: string): (absPath: string, sha: string) => unknown {
   const dir = path.dirname(dbPath)
-  // Per indexer, which drainOnce builds once per drain: one walk per directory, and a `.token-goat.toml` added or removed is seen by the next drain.
-  const configRoots = new Map<string, string>()
+  // Per indexer, which drainOnce builds once per drain.
+  const embedPolicy = embedPolicyResolver()
   return (absPath, sha) => {
     try {
       // Register this file's project root as sweepable before any gate below can skip the file: a drain that finds everything fresh still proves the project has rows worth sweeping. See recordKnownRootThrottled.
@@ -304,9 +314,8 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
         removeFileFromIndex(getDb(dbPath), absPath)
         return true
       }
-      // Same reason as the identical call in cli.ts's cmdIndex: files.embed_sha encodes the content but not the embedding stack that produced the vectors, so the gate below reads a file embedded by a previous model or inference runtime as fresh and returns "nothing to do". ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision. It has to run before getFileEntry below, not beside the gate that consults the result: the reset clears each affected file's embed_sha, and once `entry` holds a row that clearing can no longer be seen. Memoized per database per process, so this costs one Set lookup per drained file after the first. embeddingsEnabled/depsAvailable are hoisted here from beside the gate for the same ordering reason; see their comments there. The file's own project decides this, not the daemon's working directory, which is the temp directory (see runDetachedWorkerDaemon): `embeddings_enabled` is a setting a project's `.token-goat.toml` may turn off for that project alone. The other indexing keys read here are locked against project files, so the user config answers them either way.
-      const configRoot = configRootOf(absPath, configRoots)
-      const embeddingsEnabled = loadConfig(configRoot).indexing?.embeddings_enabled ?? true
+      // Same reason as the identical call in cli.ts's cmdIndex: files.embed_sha encodes the content but not the embedding stack that produced the vectors, so the gate below reads a file embedded by a previous model or inference runtime as fresh and returns "nothing to do". ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision. It has to run before getFileEntry below, not beside the gate that consults the result: the reset clears each affected file's embed_sha, and once `entry` holds a row that clearing can no longer be seen. Memoized per database per process, so this costs one Set lookup per drained file after the first. embeddingsEnabled/depsAvailable are hoisted here from beside the gate for the same ordering reason; see their comments there. The file's own project decides whether it is embedded, by the rule `token-goat index` uses too (see embedPolicyResolver), never the daemon's working directory, which is the temp directory (see runDetachedWorkerDaemon). The other indexing keys this function reads through loadConfig() with no root, `max_chunks_per_file` just below among them, are right from any root only because each is in PROJECT_LOCKED_KEYS, so no project file can set one; a key a project may set has to be read from `configRoot`.
+      const { configRoot, embeddingsEnabled } = embedPolicy(absPath)
       const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
       if (depsAvailable) {
         ensureEmbeddingProvenance(getDb(dbPath))
@@ -597,17 +606,14 @@ function requeueStaleEmbeddings(dir: string, cursor: string): string | null {
   const maxChunks = indexing?.max_chunks_per_file ?? 0
   const rows = db.prepare('SELECT path, sha, embed_sha FROM files WHERE path > ? ORDER BY path LIMIT ?').all(cursor, EMBED_BACKLOG_SCAN) as Array<{ path: string; sha: string; embed_sha: string | null }>
   const owed: string[] = []
-  const configRoots = new Map<string, string>()
-  // Per project root, so a project with every file stamped `disabled:` costs one config read per cycle rather than one per row.
-  const embedsOff = new Map<string, boolean>()
+  // One per cycle, so a project with every file stamped `disabled:` costs one config read per cycle rather than one per row.
+  const embedPolicy = embedPolicyResolver()
   let resumeAfter: string | null = null
   for (const row of rows) {
     resumeAfter = row.path
     if (isUnderSystemTemp(row.path) || isEmbedFresh(row.embed_sha ?? undefined, row.sha, true, true, symbolOnlyKb, maxChunks)) continue
     // A project whose `.token-goat.toml` turns embeddings off owes none, for the reason this sweep does not run while they are off everywhere: queuing its files would only stamp them `disabled:`, which answers `semantic` as the stamp it replaces does. Reading the setting from the daemon's working directory instead re-embedded every file `token-goat index` had just stamped disabled in that project.
-    const configRoot = configRootOf(row.path, configRoots)
-    if (!embedsOff.has(configRoot)) embedsOff.set(configRoot, loadConfig(configRoot).indexing?.embeddings_enabled === false)
-    if (embedsOff.get(configRoot) === true) continue
+    if (!embedPolicy(row.path).embeddingsEnabled) continue
     // The drain prunes a queued path that is not on disk, and a file on a drive that is only unmounted is not on disk either; deciding that a root is gone is sweepKnownRoots' job, behind its grace period.
     if (fileIsAbsent(row.path)) continue
     owed.push(row.path)
