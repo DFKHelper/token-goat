@@ -1,11 +1,4 @@
-/**
- * Unit tests for `dep_docs.ts` (`token-goat dep-docs <package>`).
- *
- * Runs against a real installed package in this repo's own `node_modules` (commander,
- * a direct dependency — see package.json) so README/package.json/types resolution is
- * exercised against the real thing, not just synthetic fixtures, plus a synthetic
- * fixture package for the not-found/truncation/edge-case paths that need controlled input.
- */
+/** Unit tests for `dep_docs.ts` (`token-goat dep-docs <package>`). Runs against a real installed package in this repo's own `node_modules` (commander, a direct dependency — see package.json) so README/package.json/types resolution is exercised against the real thing, not just synthetic fixtures, plus a synthetic fixture package for the not-found/truncation/edge-case paths that need controlled input. */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
@@ -16,7 +9,8 @@ vi.mock('../src/config.js', () => ({
   loadConfig: vi.fn(),
 }))
 
-import { runDepDocs, extractDtsOutline, setTsModuleForTesting } from '../src/dep_docs.js'
+import { runDepDocs, extractDtsOutline } from '../src/dep_docs.js'
+import { setTsModuleForTesting } from '../src/ts_compiler.js'
 import { loadConfig } from '../src/config.js'
 import { ROOT } from './helpers/bundle.js'
 
@@ -153,10 +147,7 @@ describe('runDepDocs — README truncation (overflow guard)', () => {
 })
 
 describe('runDepDocs — JSON overflow guard shares ONE budget across README + declarations', () => {
-  // Regression target: guardReadmeField and guardDeclarationRows each capped their own field
-  // against the FULL overflow_guard.max_tokens budget independently, so a package with both an
-  // oversized README and enough declarations could emit a combined JSON payload up to ~2x the
-  // configured ceiling -- exactly the unbounded-output failure the guard exists to prevent.
+  // Regression target: guardReadmeField and guardDeclarationRows each capped their own field against the FULL overflow_guard.max_tokens budget independently, so a package with both an oversized README and enough declarations could emit a combined JSON payload up to ~2x the configured ceiling -- exactly the unbounded-output failure the guard exists to prevent.
   const DECL_COUNT = 10
   const dtsSource = Array.from({ length: DECL_COUNT }, (_, i) => `export const item${i}: string;`).join('\n')
 
@@ -201,9 +192,7 @@ describe('runDepDocs — JSON overflow guard shares ONE budget across README + d
       }
       expect(parsed.readme?.truncated).toBe(true)
       expect(parsed.declarations?.totalCount).toBe(DECL_COUNT)
-      // Under a correctly shared budget, the README alone consumes nearly all of it, leaving the
-      // declaration list capped hard (well short of all 10 items) -- not sized as if it still had
-      // the full 300-token budget to itself.
+      // Under a correctly shared budget, the README alone consumes nearly all of it, leaving the declaration list capped hard (well short of all 10 items) -- not sized as if it still had the full 300-token budget to itself.
       expect(parsed.declarations?.truncated).toBe(true)
       expect(parsed.declarations!.items.length).toBeLessThan(DECL_COUNT)
     } finally {
@@ -273,15 +262,7 @@ describe('runDepDocs — @types/<package> companion resolution', () => {
   })
 })
 
-// Regression: resolveTypesLocation's @types/<pkg> entry resolution only ever tried appending
-// '.d.ts' to the resolved entry name (from `types`/`typings`/`main`, in that priority order) --
-// unlike the bundled-types `declared` resolution a few lines above it in the same function,
-// which also tries swapping a trailing .js/.ts/.mjs/.cjs extension for .d.ts. A companion @types
-// package whose package.json has no explicit `types`/`typings` field (falls back to `main`) and
-// whose `main` points at a non-"index" .js file (e.g. "main": "foo.js") never found the real
-// sibling "foo.d.ts": the append-only guess produced "foo.js.d.ts" (never exists), and the
-// hardcoded final fallback only ever tries "index.d.ts" (also absent here), so types silently
-// resolved to null even though "foo.d.ts" was sitting right there.
+// Regression: resolveTypesLocation's @types/<pkg> entry resolution only ever tried appending '.d.ts' to the resolved entry name (from `types`/`typings`/`main`, in that priority order) -- unlike the bundled-types `declared` resolution a few lines above it in the same function, which also tries swapping a trailing .js/.ts/.mjs/.cjs extension for .d.ts. A companion @types package whose package.json has no explicit `types`/`typings` field (falls back to `main`) and whose `main` points at a non-"index" .js file (e.g. "main": "foo.js") never found the real sibling "foo.d.ts": the append-only guess produced "foo.js.d.ts" (never exists), and the hardcoded final fallback only ever tries "index.d.ts" (also absent here), so types silently resolved to null even though "foo.d.ts" was sitting right there.
 describe('runDepDocs — @types/<package> companion resolution falls back to package.json "main" with a non-index .js entry', () => {
   let dir: string
 
@@ -295,8 +276,7 @@ describe('runDepDocs — @types/<package> companion resolution falls back to pac
 
     const typesDir = path.join(dir, 'node_modules', '@types', 'legacy-js-pkg2')
     fs.mkdirSync(typesDir, { recursive: true })
-    // No `types`/`typings` field -- forces the `main`-fallback path. `main` names a non-"index"
-    // .js entry, whose real declaration sibling is "foo.d.ts", not "index.d.ts".
+    // No `types`/`typings` field -- forces the `main`-fallback path. `main` names a non-"index" .js entry, whose real declaration sibling is "foo.d.ts", not "index.d.ts".
     fs.writeFileSync(typesDir + '/package.json', JSON.stringify({ name: '@types/legacy-js-pkg2', main: 'foo.js' }))
     fs.writeFileSync(typesDir + '/foo.d.ts', 'export declare function doThing2(x: string): number;\n')
   })

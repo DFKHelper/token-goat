@@ -1,29 +1,5 @@
-/**
- * `token-goat dep-docs <package>` — surgical read for an installed npm dependency.
- *
- * Same "narrow slice instead of a whole-file/whole-directory dump" philosophy as
- * `symbol`/`read`/`section`/`outline`/`skeleton` (see `read_commands.ts`), applied to the
- * question "how do I use this library" instead of "what does this file contain". Rather than an
- * agent doing a raw Read/Grep sweep across `node_modules/<package>/`'s README, `package.json`,
- * and type declarations, this extracts exactly the three things that are cheap and reliable to
- * pull from an arbitrary installed package:
- *
- * 1. The README (most npm packages document their API there).
- * 2. A handful of `package.json` fields worth surfacing (description, version, entry points).
- * 3. If a `.d.ts` file is resolvable (bundled in the package, or via a companion
- *    `@types/<package>` install), a compact one-line-per-declaration signature outline of its
- *    top-level exported declarations — mirrors `read_commands.ts::runSkeleton`'s one-line-per-
- *    symbol format (kind + name + first line of body/signature), not a full-body dump.
- *
- * Uses the `typescript` compiler API the same way `ts_refs.ts` does: lazily `require`d so a
- * missing/broken install degrades to "no declaration outline" instead of throwing, and never
- * gets statically bundled into `dist/token-goat.mjs` (see `esbuild.config.mjs`'s
- * `EXTERNAL_NATIVE_DEPS`). Unlike `ts_refs.ts`, no `ts.Program`/type checker is needed here —
- * `.d.ts` declarations never contain bodies, so a single `ts.createSourceFile` syntactic parse of
- * the one file is enough to list its top-level exports.
- */
+/** `token-goat dep-docs <package>` — surgical read for an installed npm dependency. Same "narrow slice instead of a whole-file/whole-directory dump" philosophy as `symbol`/`read`/`section`/`outline`/`skeleton` (see `read_commands.ts`), applied to the question "how do I use this library" instead of "what does this file contain". Rather than an agent doing a raw Read/Grep sweep across `node_modules/<package>/`'s README, `package.json`, and type declarations, this extracts exactly the three things that are cheap and reliable to pull from an arbitrary installed package: 1. The README (most npm packages document their API there). 2. A handful of `package.json` fields worth surfacing (description, version, entry points). 3. If a `.d.ts` file is resolvable (bundled in the package, or via a companion `@types/<package>` install), a compact one-line-per-declaration signature outline of its top-level exported declarations — mirrors `read_commands.ts::runSkeleton`'s one-line-per-symbol format (kind + name + first line of body/signature), not a full-body dump. Takes the `typescript` compiler API from `ts_compiler.ts`, as `ts_refs.ts` does, so a missing/broken install degrades to "no declaration outline" instead of throwing, and it never gets statically bundled into `dist/token-goat.mjs`. Unlike `ts_refs.ts`, no `ts.Program`/type checker is needed here — `.d.ts` declarations never contain bodies, so a single `ts.createSourceFile` syntactic parse of the one file is enough to list its top-level exports. */
 
-import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { displaySafeText, displaySafeJson } from './paths.js'
@@ -33,33 +9,7 @@ import { loadConfig } from './config.js'
 import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { suggestPackageNames } from './util_suggest.js'
-
-const _require = createRequire(import.meta.url)
-
-let _ts: typeof TsModule | null = null
-let _tsLoadAttempted = false
-// `undefined` = no override (use the real lazy-loaded module); `null` or a module = forced
-// value. Mirrors `ts_refs.ts`'s `_tsOverride`, letting tests exercise the "typescript is
-// unavailable" fallback deterministically without uninstalling the package.
-let _tsOverride: typeof TsModule | null | undefined = undefined
-
-function loadTs(): typeof TsModule | null {
-  if (_tsOverride !== undefined) return _tsOverride
-  if (!_tsLoadAttempted) {
-    _tsLoadAttempted = true
-    try {
-      _ts = _require('typescript') as typeof TsModule
-    } catch {
-      _ts = null
-    }
-  }
-  return _ts
-}
-
-/** Test-only: force the `typescript` module resolution. Pass `undefined` to clear the override. */
-export function setTsModuleForTesting(mod: typeof TsModule | null | undefined): void {
-  _tsOverride = mod
-}
+import { loadTs } from './ts_compiler.js'
 
 // ---- filesystem helpers -------------------------------------------------------
 
@@ -189,8 +139,7 @@ function resolveTypesLocation(pkgDir: string, pkgJson: Record<string, unknown>, 
     }
   }
 
-  // Common convention: an `index.d.ts` sitting beside the main entry with no explicit
-  // "types"/"typings" field declaring it.
+  // Common convention: an `index.d.ts` sitting beside the main entry with no explicit "types"/"typings" field declaring it.
   const main = typeof pkgJson['main'] === 'string' ? (pkgJson['main'] as string) : 'index.js'
   const mainDts = path.join(pkgDir, main.replace(/\.[cm]?js$/, '.d.ts'))
   if (fileExists(mainDts)) return { path: mainDts, source: 'bundled' }
@@ -208,13 +157,7 @@ function resolveTypesLocation(pkgDir: string, pkgJson: Record<string, unknown>, 
         (typeof typesPkgJson['types'] === 'string' ? typesPkgJson['types'] : undefined) ??
         (typeof typesPkgJson['main'] === 'string' ? typesPkgJson['main'] : undefined) ??
         'index.d.ts'
-      // Same three-candidate strategy as the bundled-types `declared` resolution above: an
-      // entry falling back to `main` commonly names a .js/.mjs/.cjs/.ts sibling of the real
-      // .d.ts (e.g. "main": "foo.js" whose real declaration file is "foo.d.ts"), not a name
-      // that already ends in .d.ts or that .d.ts can simply be appended to -- appending alone
-      // produced the non-existent "foo.js.d.ts" and silently fell through to a hardcoded
-      // "index.d.ts" guess that is equally wrong for a non-"index" main, reporting no types
-      // found even though the real declaration file was sitting right there.
+      // Same three-candidate strategy as the bundled-types `declared` resolution above: an entry falling back to `main` commonly names a .js/.mjs/.cjs/.ts sibling of the real .d.ts (e.g. "main": "foo.js" whose real declaration file is "foo.d.ts"), not a name that already ends in .d.ts or that .d.ts can simply be appended to -- appending alone produced the non-existent "foo.js.d.ts" and silently fell through to a hardcoded "index.d.ts" guess that is equally wrong for a non-"index" main, reporting no types found even though the real declaration file was sitting right there.
       const entryCandidates = [entry, entry.endsWith('.d.ts') ? entry : `${entry}.d.ts`, entry.replace(/\.[cm]?[jt]s$/, '.d.ts')]
       for (const c of entryCandidates) {
         const entryPath = path.join(typesPkgDir, c)
@@ -368,10 +311,7 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     (dtsContent !== null ? Buffer.byteLength(dtsContent, 'utf8') : 0)
 
   if (opts.json === true) {
-    // README and declarations share ONE overflow_guard.max_tokens budget for the combined JSON
-    // payload (matching the text path's single trimToBudget() pass over the whole assembled
-    // string, src/dep_docs.ts below). Budgeting each field against the full max_tokens
-    // independently would let their combined output run up to ~2x the configured ceiling.
+    // README and declarations share ONE overflow_guard.max_tokens budget for the combined JSON payload (matching the text path's single trimToBudget() pass over the whole assembled string, src/dep_docs.ts below). Budgeting each field against the full max_tokens independently would let their combined output run up to ~2x the configured ceiling.
     const cfg = loadConfig()
     const maxTokens = cfg.overflow_guard.max_tokens
     const readmeField = readmeFile !== null ? guardReadmeField(readmeRaw, maxTokens) : null

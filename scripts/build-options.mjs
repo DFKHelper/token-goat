@@ -21,7 +21,7 @@ export const EXTERNAL_NATIVE_DEPS = [
   'onnxruntime-node',
   // Not a native addon either, but tesseract.js's Node entrypoint resolves its worker script and tesseract.js-core's WASM binary via on-disk paths relative to its own package directory at runtime -- bundling it into token-goat.mjs would break those relative lookups, and per the comment above would also defeat graceful degradation on installs that skip optional deps (see image_ocr.ts's loadTesseract).
   'tesseract.js',
-  // Not a native addon, but the same "optionalDependencies entry must not get statically inlined" reasoning applies: the full TypeScript compiler (ts_refs.ts's lazily-`require`d type-resolved `refs` tier) is multiple MB of pure JS. Bundling it would both bloat dist/token-goat.mjs for every install and, per the comment above, defeat graceful degradation on installs that skip optional deps.
+  // Not a native addon, but the same "optionalDependencies entry must not get statically inlined" reasoning applies: the full TypeScript compiler (ts_compiler.ts's lazily-`require`d module, behind the type-resolved `refs` tier and the `dep-docs` declaration outline) is multiple MB of pure JS. Bundling it would both bloat dist/token-goat.mjs for every install and, per the comment above, defeat graceful degradation on installs that skip optional deps.
   'typescript',
 ]
 
