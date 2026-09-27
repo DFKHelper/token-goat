@@ -1,18 +1,4 @@
-/**
- * Regression: `installVscode` guards the project<->user default-scope flip via
- * `otherScopeHasManagedServer` (src/bridges/vscode_install.ts), throwing if the other
- * scope already holds a managed entry. `uninstallVscode` had no equivalent check, so a
- * user with a project-scope registration who ran a bare `token-goat uninstall --vscode`
- * (now defaulting to user scope) got a silent success: the user-scope mcp.json is absent
- * so nothing is removed there, but `stripDelimitedBlock` on the copilot-instructions file
- * still succeeds, so `removed` comes back `true` and the CLI reports success -- while the
- * project-scope server registration, the thing actually launching token-goat, survives
- * untouched.
- *
- * Fix: `cmdUninstall` (src/cli.ts) now checks `otherScopeHasManagedServer` after running
- * the requested-scope uninstall and prints a NOTE pointing at the surviving scope, rather
- * than silently reporting unqualified success.
- */
+/** Regression: `installVscode` guards the project<->user default-scope flip via `otherScopeHasManagedServer` (src/bridges/vscode_install.ts), throwing if the other scope already holds a managed entry. `uninstallVscode` had no equivalent check, so a user with a project-scope registration who ran a bare `token-goat uninstall --vscode` (now defaulting to user scope) got a silent success: the user-scope mcp.json is absent so nothing is removed there, but `stripDelimitedBlock` on the copilot-instructions file still succeeds, so `removed` comes back `true` and the CLI reports success -- while the project-scope server registration, the thing actually launching token-goat, survives untouched. Fix: `cmdUninstall` (src/cli_install.ts) now checks `otherScopeHasManagedServer` after running the requested-scope uninstall and prints a NOTE pointing at the surviving scope, rather than silently reporting unqualified success. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -81,10 +67,7 @@ describe('token-goat uninstall --vscode cross-scope detection', () => {
     expect(fs.readFileSync(projectMcpPath, 'utf8')).toContain('token-goat')
 
     process.chdir(project)
-    // `uninstall --vscode --user` targets the user scope, which was never populated, mirroring
-    // the reported scenario exactly. This used to be the bare command's own default; --vscode now
-    // defaults to project scope (VS Code pins a user-scope hook to folders[0]), so the opt-out
-    // flag is what selects the scope this case is about.
+    // `uninstall --vscode --user` targets the user scope, which was never populated, mirroring the reported scenario exactly. This used to be the bare command's own default; --vscode now defaults to project scope (VS Code pins a user-scope hook to folders[0]), so the opt-out flag is what selects the scope this case is about.
     const code = await runCli(['uninstall', '--vscode', '--user'])
     expect(code).toBe(0)
 
@@ -93,8 +76,7 @@ describe('token-goat uninstall --vscode cross-scope detection', () => {
 
     const output = stdout.join('')
     expect(output).toMatch(/still registered in VS Code project scope/)
-    // The remedy names the bare command rather than --project: project scope is now what a bare
-    // "uninstall --vscode" targets.
+    // The remedy names the bare command rather than --project: project scope is now what a bare "uninstall --vscode" targets.
     expect(output).toContain('"token-goat uninstall --vscode" to remove it too')
   })
 

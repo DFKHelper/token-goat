@@ -152,7 +152,7 @@ const NEUTRALIZERS: readonly string[] = [
   'renderValue(',
   // The `--json` counterpart: it walks the value and neutralizes the leaf strings and keys BEFORE serializing, so the escape lands inside a JSON string where it survives a round-trip intact. Escaping the serialized text instead would corrupt the document, which is why the rule is stated as "serialize through this helper" rather than "escape the output of JSON.stringify".
   'displaySafeJson(',
-  // A module-local wrapper in cli.ts, listed on the same reasoning as the fence wrappers below: it escapes every path it interpolates, so a call site handing it a project-derived path is covered by it. Pinned to that shape by an assertion further down, because a wrapper listed here that stopped escaping would exempt its call sites while printing raw paths.
+  // A module-local wrapper in cli_install.ts, listed on the same reasoning as the fence wrappers below: it escapes every path it interpolates, so a call site handing it a project-derived path is covered by it. Pinned to that shape by an assertion further down, because a wrapper listed here that stopped escaping would exempt its call sites while printing raw paths.
   'projectHooksCommitNote(',
 ]
 
@@ -249,14 +249,14 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
 /** Sites where the matched value is token-goat's OWN vocabulary rather than anything the project supplied, so there is nothing to neutralize. This is a separate map from ESCAPING_NOT_OWED on purpose. That map says "untrusted, but handled another way"; this one says "not untrusted in the first place". Collapsing them would let the weaker claim borrow the stronger one's reason, which is exactly how a false exemption reads as a decision somebody made. The bar for an entry here is that the value is a literal in token-goat's own source or an enum it defines, and that a reader can confirm it without leaving the file. */
 const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
   [
-    'cli.ts:removal.label',
+    'cli_install.ts:removal.label',
     "token-goat's own integration names ('Codex CLI integration', 'pi extension' and siblings), " +
       'string literals in the `removals` array declared a few lines above the print in this same ' +
       'file. Nothing outside the binary feeds them: the --codex/--vscode flags select WHICH ' +
       'literal prints, never what it says.',
   ],
   [
-    'cli.ts:leftover.label',
+    'cli_install.ts:leftover.label',
     "token-goat's own integration names again, the same literals in the `candidates` array that " +
       'leftoverIntegrations builds its result from. The flag printed beside each one is likewise ' +
       "a literal ('--codex' and siblings) from that array, so the whole sentence is token-goat " +

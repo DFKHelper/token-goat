@@ -21,7 +21,7 @@ import {
 } from '../src/bridges/visualstudio_install.js'
 import { installVscode, uninstallVscode, VSCODE_GUIDANCE_BEGIN, VSCODE_GUIDANCE_END, vscodeProjectMcpPath } from '../src/bridges/vscode_install.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from '../src/bridges_status.js'
-import { leftoverIntegrations } from '../src/cli.js'
+import { leftoverIntegrations } from '../src/cli_install.js'
 import { checkVisualStudio } from '../src/cli_doctor_platforms.js'
 import { readMcpConfig } from '../src/cli_mcp_audit.js'
 import { BUNDLE } from './helpers/bundle.js'
