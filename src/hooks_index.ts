@@ -35,21 +35,21 @@ export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?
   enqueueDirtyPathsSafe([filePath], opts)
 }
 
-/** Batch form of {@link enqueueDirtyPathSafe}: the same `resolveIndexPath` + `isUnderSystemTemp` filter over the whole array, then one queue append and one `ensureWorkerAlive()` for the set rather than one of each per path. `reconcileProject` fans a whole sweep's changed/added/removed set through here. Calling the single-path form in a loop made the append cost grow with the queue it was filling. */
-export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResolved?: boolean }): void {
+/** Batch form of {@link enqueueDirtyPathSafe}: the same `resolveIndexPath` + `isUnderSystemTemp` filter over the whole array, then one queue append and one `ensureWorkerAlive()` for the set rather than one of each per path. `reconcileProject` fans a whole sweep's changed/added/removed set through here. Calling the single-path form in a loop made the append cost grow with the queue it was filling. Returns how many paths reached the queue, which is fewer than were passed whenever the temp-dir filter dropped some and zero when the append failed: a caller reporting a count reports what the worker will drain, not what it offered. */
+export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResolved?: boolean }): number {
+  const resolved: string[] = []
   try {
-    const resolved: string[] = []
     for (const filePath of filePaths) {
       const r = opts?.alreadyResolved === true ? filePath : resolveIndexPath(filePath)
       // A path under the OS temp dir is dropped without disqualifying the rest of the batch, and an all-temp batch takes the same early return the single-path form always has: nothing was queued, so there is nothing to wake a worker for.
       if (isUnderSystemTemp(r)) continue
       resolved.push(r)
     }
-    if (resolved.length === 0) return
+    if (resolved.length === 0) return 0
     appendDirtyPaths(resolved)
   } catch {
     // Fail-soft: the file write/reparse already landed either way, just not reindexed until the next `token-goat index` or edit touches this file again.
-    return
+    return 0
   }
   // Every caller of this function just queued work for the background worker to drain -- `hooks_edit.ts` was the only site that ever nudged a dead worker back to life after doing so, so a session driven entirely through the Bash hook's rewrite enqueues (`hooks_bash_post.ts`), the stale-read self-heal (`read_commands.ts::healStaleIndex`), or a plain CLI append (`cli.ts`, `fold_delivery.ts`, `reconcile.ts`) could fill the dirty queue with nothing running to drain it. Calling it here, at the one choke point every enqueue path already funnels through, covers all of them at once instead of repeating the same nudge at each call site. `ensureWorkerAlive` already gates on `TOKEN_GOAT_NO_WORKER_SPAWN` and rate-limits itself internally, so this is cheap (and test-safe) on every call after the first in a given window.
   try {
@@ -57,6 +57,7 @@ export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResol
   } catch {
     // Best-effort, same as hooks_edit.ts's own call: a healthcheck failure must never turn a successful enqueue into a thrown error.
   }
+  return resolved.length
 }
 
 /** Return every queued dirty path, in insertion order, deduplicated. Returns an empty array when the queue file does not exist. Blank lines (from a trailing newline or a partial write) are skipped. Duplicates are collapsed so a file edited several times is reindexed once. */
