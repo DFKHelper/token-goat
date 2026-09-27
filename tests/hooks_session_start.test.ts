@@ -187,7 +187,7 @@ describe('sessionStartHandler', () => {
       const result = await sessionStartHandler(makeEvent(projectDir))
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
-        expect(result.context).toContain('- **registry**: 118615 and 118623 are the same brand under two ids')
+        expect(result.context).toMatch(/^- \*\*registry\*\* \(set \d+s ago\): 118615 and 118623 are the same brand under two ids$/m)
         expect(result.context).toContain('`token-goat note set <key> "<finding>"`; notes come back at every session start.')
       }
     } finally {
@@ -205,7 +205,7 @@ describe('sessionStartHandler', () => {
       saveConfig(cfg)
       invalidateConfigCache()
       const result = await sessionStartHandler(makeEvent(projectDir))
-      expect(result).toEqual({ hookType: 'context', context: '### Project notes (`token-goat note set <key> "<finding>"`)\n- **registry**: kept' })
+      expect(result).toEqual({ hookType: 'context', context: expect.stringMatching(/^### Project notes \(`token-goat note set <key> "<finding>"`\)\n- \*\*registry\*\* \(set \d+s ago\): kept$/) })
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true })
     }

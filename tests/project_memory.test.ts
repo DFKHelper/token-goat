@@ -249,10 +249,11 @@ describe('project_memory', () => {
       expect(result!.length).toBeLessThanOrEqual(4000);
     });
 
-    it('should sort entries alphabetically', () => {
-      setEntry('test', 'zebra', 'z');
-      setEntry('test', 'apple', 'a');
-      setEntry('test', 'mango', 'm');
+    it('should sort undated entries alphabetically', () => {
+      // HAND-DERIVED: a file with no set times, written out of order. setEntry now dates every note and dated notes print newest first, so the alphabetical order this pins is the one undated notes keep.
+      const p = memoryPath('test');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, 'zebra = "z"\napple = "a"\nmango = "m"\n', 'utf-8');
       const result = buildInjection('test');
       const appleIdx = result?.indexOf('apple') ?? -1;
       const mangoIdx = result?.indexOf('mango') ?? -1;
@@ -272,8 +273,10 @@ describe('project_memory', () => {
     });
 
     it('sorts numeric-string keys alphabetically, not by JS numeric-key enumeration order (regression: buildInjection relied on raw Object.entries() order, which JS reorders "9"/"10" ascending numerically regardless of insertion order, diverging from setEntry\'s eviction logic which assumes alphabetical iteration)', () => {
-      setEntry('test', '10', 'ten');
-      setEntry('test', '9', 'nine');
+      // HAND-DERIVED: undated, so the order under test is the ordinal one; a dated pair would print newest first instead.
+      const p = memoryPath('test');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, '10 = "ten"\n9 = "nine"\n', 'utf-8');
       const result = buildInjection('test');
       const tenIdx = result?.indexOf('**10**') ?? -1;
       const nineIdx = result?.indexOf('**9**') ?? -1;
@@ -389,7 +392,7 @@ describe('project_memory', () => {
       setEntry('shown', 'registry', 'two ids, one brand');
       lockedReads.path = memoryPath('shown');
       lockedReads.remaining = 1;
-      expect(buildInjection('shown')).toContain('- **registry**: two ids, one brand');
+      expect(buildInjection('shown')).toMatch(/^- \*\*registry\*\* \(set \d+s ago\): two ids, one brand$/m);
     });
   });
 
@@ -416,6 +419,244 @@ describe('project_memory', () => {
         // With correct enforcement, recently-added late-sorting entries should be kept (The exact behavior depends on the eviction policy, but at least it shouldn't silently drop all entries that sort after position 30.)
         expect(hasLatestEntry).toBe(true);
       }
+    });
+  });
+
+  // HAND-DERIVED: KEY_RE admits every one of these names, so each is a key `note set` accepts from the command line. `__proto__` is dropped by a plain object on assignment; `constructor`, `toString` and `hasOwnProperty` answer `in` through Object.prototype.
+  describe('keys named after Object.prototype members', () => {
+    const writeRaw = (hash: string, content: string): void => {
+      const p = memoryPath(hash);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content, 'utf-8');
+    };
+
+    it('stores, reads back, shows and unsets a note keyed __proto__', () => {
+      setEntry('proto', '__proto__', 'kept');
+      setEntry('proto', 'other', 'also kept');
+      const entries = loadEntries('proto');
+      expect(Object.hasOwn(entries, '__proto__')).toBe(true);
+      expect(entries['__proto__']).toBe('kept');
+      expect(Object.keys(entries).sort()).toEqual(['__proto__', 'other']);
+      expect(buildInjection('proto')).toMatch(/^- \*\*__proto__\*\* \(set \d+s ago\): kept$/m);
+      unsetEntry('proto', '__proto__');
+      expect(loadEntries('proto')).toEqual({ other: 'also kept' });
+      expect(Object.hasOwn(loadEntries('proto'), '__proto__')).toBe(false);
+    });
+
+    it.each(['constructor', 'toString', 'hasOwnProperty'])('counts %s as a new key at capacity and evicts to stay at 30', (key) => {
+      // HAND-DERIVED: 30 undated notes u00..u29; the new key is not among them, so the alphabetically last undated note, u29, makes room.
+      writeRaw('proto-cap', Array.from({ length: 30 }, (_, i) => `u${String(i).padStart(2, '0')} = "v${i}"`).join('\n') + '\n');
+      setEntry('proto-cap', key, 'x');
+      const entries = loadEntries('proto-cap');
+      expect(Object.keys(entries)).toHaveLength(30);
+      expect(Object.hasOwn(entries, key)).toBe(true);
+      expect(entries[key]).toBe('x');
+      expect(Object.hasOwn(entries, 'u29')).toBe(false);
+    });
+  });
+
+  // Every fixture below is HAND-DERIVED: the set times are chosen here and the expected survivor, omission and age are computed from those times by hand, never read off the implementation. Only Date is faked, so the notes lock and the atomic write keep their real timers.
+  describe('notes carry the time they were set', () => {
+    const T0 = Date.parse('2026-01-01T00:00:00.000Z');
+    const MINUTE = 60_000;
+    const at = (ms: number): void => { vi.setSystemTime(ms); };
+    const writeRaw = (hash: string, content: string): void => {
+      const p = memoryPath(hash);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content, 'utf-8');
+    };
+    const readRaw = (hash: string): string => fs.readFileSync(memoryPath(hash), 'utf-8');
+    const noteLines = (injection: string | null): string[] => (injection ?? '').split('\n').filter((l) => l.startsWith('- **'));
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('evicts the oldest-set note at capacity, not the alphabetically last one', () => {
+      // HAND-DERIVED: m-oldest is set first (T0) and sorts neither first nor last; k00..k27 follow one minute apart; zz-current is set last, making 30. The 31st key must push out m-oldest, and zz-current, the note set most recently before it, must survive.
+      at(T0);
+      setEntry('evict', 'm-oldest', 'set first');
+      for (let i = 0; i < 28; i++) {
+        at(T0 + (i + 1) * MINUTE);
+        setEntry('evict', `k${String(i).padStart(2, '0')}`, `v${i}`);
+      }
+      at(T0 + 29 * MINUTE);
+      setEntry('evict', 'zz-current', 'set most recently');
+      expect(Object.keys(loadEntries('evict'))).toHaveLength(30);
+
+      at(T0 + 30 * MINUTE);
+      setEntry('evict', 'new-key', 'the 31st');
+      const entries = loadEntries('evict');
+      expect(Object.keys(entries)).toHaveLength(30);
+      expect(entries['zz-current']).toBe('set most recently');
+      expect(entries['new-key']).toBe('the 31st');
+      expect(entries['m-oldest']).toBeUndefined();
+      expect(entries['k00']).toBe('v0');
+    });
+
+    it('setting a key again refreshes its time, so it is no longer the oldest', () => {
+      // HAND-DERIVED: a is set at T0 and again at T0+2m, b at T0+1m; the file must carry a's second time, and b becomes the oldest.
+      at(T0);
+      setEntry('refresh', 'a', 'first');
+      at(T0 + MINUTE);
+      setEntry('refresh', 'b', 'second');
+      at(T0 + 2 * MINUTE);
+      setEntry('refresh', 'a', 'again');
+      const raw = readRaw('refresh');
+      expect(raw).toBe('# set 2026-01-01T00:02:00.000Z\na = "again"\n# set 2026-01-01T00:01:00.000Z\nb = "second"\n');
+    });
+
+    it('puts the newest-set notes first so the size cap omits the oldest', () => {
+      // HAND-DERIVED: 20 notes of 290 characters render about 320 characters each, 6,400 in all, well past the 4,000 cap, so only the first dozen fit. a-old sorts first alphabetically but was set first; zz-recent sorts last but was set last.
+      const value = 'x'.repeat(290);
+      at(T0);
+      setEntry('order', 'a-old', value);
+      for (let i = 0; i < 18; i++) {
+        at(T0 + (i + 1) * MINUTE);
+        setEntry('order', `b${String(i).padStart(2, '0')}`, value);
+      }
+      at(T0 + 19 * MINUTE);
+      setEntry('order', 'zz-recent', value);
+      at(T0 + 20 * MINUTE);
+
+      const injection = buildInjection('order');
+      expect(injection).not.toBeNull();
+      expect(injection!.length).toBeLessThanOrEqual(4000);
+      expect(injection).toContain('omitted');
+      const lines = noteLines(injection);
+      expect(lines[0]).toMatch(/^- \*\*zz-recent\*\* \(set 1m ago\): x+$/);
+      expect(lines[1]).toMatch(/^- \*\*b17\*\* \(set 2m ago\): x+$/);
+      expect(injection).not.toContain('**a-old**');
+    });
+
+    it('marks each note with its age at injection time', () => {
+      // HAND-DERIVED: set at T0, injected 3h05m later, which reads as 3h; a second note set 2 days before the injection reads as 2d.
+      at(T0);
+      setEntry('age', 'k', 'v');
+      at(T0 + 2 * 60 * MINUTE);
+      setEntry('age', 'j', 'w');
+      at(T0 + 2 * 60 * MINUTE + 2 * 24 * 60 * MINUTE);
+      expect(noteLines(buildInjection('age'))).toEqual(['- **j** (set 2d ago): w', '- **k** (set 2d ago): v']);
+      at(T0 + (3 * 60 + 5) * MINUTE);
+      expect(noteLines(buildInjection('age'))).toEqual(['- **j** (set 1h ago): w', '- **k** (set 3h ago): v']);
+    });
+
+    it('keeps the cap with age markers present, counting them in the total', () => {
+      // HAND-DERIVED: 40 notes of 122 characters exceed 4,000 characters with or without the markers; the markers only make each line longer. Injected 100 days and 40 minutes after the first, every note is between 100d01m and 100d40m old, so each reads 100d.
+      for (let i = 0; i < 40; i++) {
+        at(T0 + i * MINUTE);
+        setEntry('cap', `key${i}`, 'x'.repeat(122));
+      }
+      at(T0 + (100 * 24 * 60 + 40) * MINUTE);
+      const injection = buildInjection('cap');
+      expect(injection).toContain('(set 100d ago)');
+      expect(injection).toContain('omitted');
+      expect(injection!.length).toBeLessThanOrEqual(4000);
+    });
+
+    it('reads a hand-written file with no times as before: undated, alphabetical, no age marker', () => {
+      // HAND-DERIVED: the legacy shape, one key = "value" line per note with no comments, written out of order.
+      writeRaw('legacy', 'b = "two"\na = "one"\nc = "three"\n');
+      expect(loadEntries('legacy')).toEqual({ a: 'one', b: 'two', c: 'three' });
+      expect(noteLines(buildInjection('legacy'))).toEqual(['- **a**: one', '- **b**: two', '- **c**: three']);
+    });
+
+    it('evicts the alphabetically last undated note from a legacy file at capacity, as before', () => {
+      // HAND-DERIVED: 30 undated notes u00..u29; with no times to compare, the tie-break is the old rule, so u29 goes.
+      writeRaw('legacy-full', Array.from({ length: 30 }, (_, i) => `u${String(i).padStart(2, '0')} = "v${i}"`).join('\n') + '\n');
+      at(T0);
+      setEntry('legacy-full', 'new', 'n');
+      const entries = loadEntries('legacy-full');
+      expect(Object.keys(entries)).toHaveLength(30);
+      expect(entries['u29']).toBeUndefined();
+      expect(entries['u28']).toBe('v28');
+      expect(entries['new']).toBe('n');
+    });
+
+    it('counts an undated note as older than any dated one', () => {
+      // HAND-DERIVED: zz-dated carries a time and sorts last; u00..u28 carry none. The undated u28 is evicted, not the dated note.
+      writeRaw('mixed', '# set 2026-01-01T00:00:00.000Z\nzz-dated = "d"\n' + Array.from({ length: 29 }, (_, i) => `u${String(i).padStart(2, '0')} = "v${i}"`).join('\n') + '\n');
+      at(T0 + MINUTE);
+      setEntry('mixed', 'new', 'n');
+      const entries = loadEntries('mixed');
+      expect(entries['zz-dated']).toBe('d');
+      expect(entries['u28']).toBeUndefined();
+      expect(entries['u27']).toBe('v27');
+    });
+
+    it('applies a time comment to the next entry only, and treats an unparseable time as undated', () => {
+      // HAND-DERIVED: a is dated; b follows a with no comment of its own; c's comment is not a date; d's comment is some other remark.
+      writeRaw('scope', '# set 2026-01-01T00:00:00.000Z\na = "1"\nb = "2"\n# set not-a-date\nc = "3"\n# a remark\nd = "4"\n');
+      at(T0 + 5 * MINUTE);
+      expect(noteLines(buildInjection('scope'))).toEqual(['- **a** (set 5m ago): 1', '- **b**: 2', '- **c**: 3', '- **d**: 4']);
+    });
+
+    it('writes only lines an older binary parses: comments and key = "value" entries', () => {
+      // HAND-DERIVED: the regex and the skip rule are the older parseTOML's own, copied here so a change to the current parser cannot move them. Any other line shape lands in its unparsed list and makes every later update of the file refuse.
+      const OLD_ENTRY = /^([A-Za-z0-9_-]+)\s*=\s*"(.*)"\s*$/;
+      at(T0);
+      setEntry('compat', 'plain', 'value');
+      setEntry('compat', 'quoted', 'say "hi"');
+      setEntry('compat', 'path', 'C:\\Users\\name');
+      setEntry('compat', 'multi', 'line1\nline2\r\nline3');
+      const lines = readRaw('compat').split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+      expect(lines.filter((l) => l.startsWith('# set '))).toHaveLength(4);
+      for (const line of lines) {
+        expect(line.startsWith('#') || OLD_ENTRY.test(line), line).toBe(true);
+      }
+    });
+
+    it('round-trips quotes, backslashes and newlines with the time comment present', () => {
+      // HAND-DERIVED: each value exercises one escape; "a\\nb" is a literal backslash followed by n and must not come back as a newline.
+      const values: Record<string, string> = { quoted: 'say "hi"', path: 'C:\\Users\\name', escaped: 'a\\nb', multi: 'line1\nline2\r\nline3' };
+      at(T0);
+      for (const [k, v] of Object.entries(values)) setEntry('roundtrip', k, v);
+      expect(readRaw('roundtrip')).toContain('# set 2026-01-01T00:00:00.000Z\nquoted = "say \\"hi\\""\n');
+      expect(loadEntries('roundtrip')).toEqual(values);
+    });
+
+    it('stops at the first note that does not fit, so no older note is shown in place of a newer one', () => {
+      // HAND-DERIVED: every note is injected 1d old, so each line is `- **<key>** (set 1d ago): <value>`. The header is 59 characters. f00..f11 have 3-character keys and 286-character values: 24 + 286 = 310 characters, 311 with the newline, 3,732 for twelve, 3,791 with the header, leaving 209 of the 4,000. `long` (4 + 4 + 2 + 13 + 2 + 300 = 325, 326 with the newline) does not fit. `short` (27, 28 with the newline) would, but it is older than `long`, so it must not be shown. The trailer for the 2 notes left out is 62 characters, 63 with the newline, and fits in the 209 without removing any line.
+      at(T0);
+      setEntry('stop', 'short', 's');
+      at(T0 + MINUTE);
+      setEntry('stop', 'long', 'y'.repeat(300));
+      for (let i = 0; i < 12; i++) {
+        at(T0 + (i + 2) * MINUTE);
+        setEntry('stop', `f${String(i).padStart(2, '0')}`, 'x'.repeat(286));
+      }
+      at(T0 + (24 * 60 + 20) * MINUTE);
+      const injection = buildInjection('stop')!;
+      const lines = injection.split('\n');
+      expect(lines).toHaveLength(14);
+      expect(lines.slice(1, 13).map((l) => l.slice(0, 7))).toEqual(Array.from({ length: 12 }, (_, i) => `- **f${String(11 - i).padStart(2, '0')}`));
+      expect(injection).not.toContain('**long**');
+      expect(injection).not.toContain('**short**');
+      expect(lines[13]).toBe('- (+2 more memory entries omitted)');
+      expect(injection.length).toBeLessThanOrEqual(4000);
+    });
+
+    it('counts notes past the 30 shown in the omitted trailer', () => {
+      // HAND-DERIVED: a hand-edited file can hold more than setEntry keeps. 35 undated one-character notes are far under the size cap, so exactly 30 are listed (u00..u29, ordinal order) and the other 5 are counted.
+      writeRaw('over-cap', Array.from({ length: 35 }, (_, i) => `u${String(i).padStart(2, '0')} = "v"`).join('\n') + '\n');
+      const lines = (buildInjection('over-cap') ?? '').split('\n');
+      expect(noteLines(lines.join('\n'))).toHaveLength(30);
+      expect(lines[30]).toBe('- **u29**: v');
+      expect(lines[31]).toBe('- (+5 more memory entries omitted)');
+    });
+
+    it('keeps the other notes\' times when one note is unset', () => {
+      // HAND-DERIVED: a at T0, b at T0+1m; removing b must leave a's time on disk.
+      at(T0);
+      setEntry('unset-times', 'a', '1');
+      at(T0 + MINUTE);
+      setEntry('unset-times', 'b', '2');
+      unsetEntry('unset-times', 'b');
+      expect(readRaw('unset-times')).toBe('# set 2026-01-01T00:00:00.000Z\na = "1"\n');
     });
   });
 });

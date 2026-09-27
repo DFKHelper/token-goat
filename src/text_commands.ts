@@ -1,9 +1,4 @@
-/**
- * Text-processing and session/index/config CLI commands (Family C2).
- *
- * Commands: todo, trace, logfold, lockdeps (pure text), note, hot, recent, ignores
- * (session/index/config integration).
- */
+/** Text-processing and session/index/config CLI commands (Family C2). Commands: todo, trace, logfold, lockdeps (pure text), note, hot, recent, ignores (session/index/config integration). */
 
 import * as fs from 'fs'
 import * as path from 'path'
@@ -13,9 +8,10 @@ import { load as loadYaml } from 'js-yaml'
 import { SKIP_DIRS } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
+import { ownGet } from './own_lookup.js'
 import { displaySafeText, toDisplayPath, displaySafeJson } from './paths.js'
 import { findProject, getDisplayRoot } from './project.js'
-import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
+import { clearAll, loadDatedEntries, loadEntries, noteAgeLabel, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
 import { foldPath, requireNonNegativeStrictInt } from './util.js'
 import { suggestPackageNames } from './util_suggest.js'
@@ -29,12 +25,7 @@ export { cmdTodo, cmdTrace, cmdLogfold }
 // ── Shared utilities ────────────────────────────────────────────────────────
 
 
-// Mirrors cli.ts's/read_commands.ts's requireNonNegativeInt (same regex-only-integer
-// validation plus a sign check) so hot/recent/trace/logfold's row/frame/line limits get the
-// same error behavior as every other --limit-style flag: a clean thrown error on a non-numeric
-// or negative value instead of `Number.parseInt` silently producing NaN or a negative count,
-// both of which fail the `> 0` guards these commands used to gate their `.slice()` calls with
-// and so fell through to printing every entry unbounded instead of erroring or limiting.
+// Mirrors cli.ts's/read_commands.ts's requireNonNegativeInt (same regex-only-integer validation plus a sign check) so hot/recent/trace/logfold's row/frame/line limits get the same error behavior as every other --limit-style flag: a clean thrown error on a non-numeric or negative value instead of `Number.parseInt` silently producing NaN or a negative count, both of which fail the `> 0` guards these commands used to gate their `.slice()` calls with and so fell through to printing every entry unbounded instead of erroring or limiting.
 /** Split text into lines, normalizing CRLF. */
 function splitLines(text: string): string[] {
   return text.split(/\r?\n/)
@@ -62,10 +53,7 @@ const LOCK_PRIORITY = [
 function findLockfile(startPath: string): { file: string; others: string[] } | null {
   const stat = fs.statSync(startPath, { throwIfNoEntry: false })
   if (stat !== undefined && stat.isFile()) {
-    // An explicit lockfile path is the caller's actual choice -- honor it
-    // directly instead of falling through to a directory-based priority
-    // search, which would silently discard it in favor of whatever
-    // LOCK_PRIORITY picks from its containing directory.
+    // An explicit lockfile path is the caller's actual choice -- honor it directly instead of falling through to a directory-based priority search, which would silently discard it in favor of whatever LOCK_PRIORITY picks from its containing directory.
     return { file: startPath, others: [] }
   }
   const dir = stat !== undefined && stat.isDirectory() ? startPath : path.dirname(startPath)
@@ -100,9 +88,7 @@ interface V1PackageLockDependency {
   dependencies?: Record<string, V1PackageLockDependency>
 }
 
-// npm v1 lockfiles (lockfileVersion: 1, npm 5/6) have no `packages` map; deps instead
-// live in a nested `dependencies` tree. Recursively flatten it into the same DepEntry
-// shape the v2/v3 `packages` path produces, so downstream output is format-agnostic.
+// npm v1 lockfiles (lockfileVersion: 1, npm 5/6) have no `packages` map; deps instead live in a nested `dependencies` tree. Recursively flatten it into the same DepEntry shape the v2/v3 `packages` path produces, so downstream output is format-agnostic.
 function collectV1Dependencies(
   deps: Record<string, V1PackageLockDependency>,
   isDirect: boolean,
@@ -126,11 +112,7 @@ function parsePackageLockJson(content: string): DepEntry[] {
     return deps
   }
   const pkgs = raw.packages ?? {}
-  // optionalDependencies must count as direct the same as dependencies/devDependencies -- an
-  // npm v2/v3 lockfile's root "" entry carries all three sibling maps (mirrors package.json's
-  // own three top-level dependency fields), and parsePnpmLock's rootSections handling already
-  // folds pnpm's equivalent root optionalDependencies into its direct-version set below. Omitting
-  // it here mislabeled any package declared only as optional (e.g. fsevents) as 'transitive'.
+  // optionalDependencies must count as direct the same as dependencies/devDependencies -- an npm v2/v3 lockfile's root "" entry carries all three sibling maps (mirrors package.json's own three top-level dependency fields), and parsePnpmLock's rootSections handling already folds pnpm's equivalent root optionalDependencies into its direct-version set below. Omitting it here mislabeled any package declared only as optional (e.g. fsevents) as 'transitive'.
   const directDeps =
     (pkgs[''] as { dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown>; optionalDependencies?: Record<string, unknown> } | undefined) ?? {}
   const allDirect = new Set([
@@ -143,11 +125,7 @@ function parsePackageLockJson(content: string): DepEntry[] {
     if (key === '') continue
     const name = key.split('node_modules/').pop() ?? key
     const version = (val as { version?: string }).version ?? ''
-    // A package is genuinely direct only when its own key IS the top-level `node_modules/<name>`
-    // entry, not merely when its bare name happens to match a direct dependency's name. Checking
-    // allDirect.has(name) alone mislabels a nested transitive dependency as direct whenever a
-    // deeper package (e.g. node_modules/some-lib/node_modules/semver) pulls in a different
-    // version of a package that also happens to be a top-level direct dependency (semver).
+    // A package is genuinely direct only when its own key IS the top-level `node_modules/<name>` entry, not merely when its bare name happens to match a direct dependency's name. Checking allDirect.has(name) alone mislabels a nested transitive dependency as direct whenever a deeper package (e.g. node_modules/some-lib/node_modules/semver) pulls in a different version of a package that also happens to be a top-level direct dependency (semver).
     const isTopLevel = key === `node_modules/${name}`
     deps.push({ name, version, kind: isTopLevel && allDirect.has(name) ? 'direct' : 'transitive' })
   }
@@ -210,10 +188,7 @@ function parsePipfileLock(content: string): DepEntry[] {
     default?: Record<string, { version?: string }>
     develop?: Record<string, { version?: string }>
   }
-  // Pipfile.lock's default/develop sections list the full resolved set (direct and
-  // transitive alike) with no dependency-edge data to tell them apart -- same limitation
-  // as parseTomlPackages/parseYarnLock/parseRequirementsTxt below, all of which correctly
-  // report 'unknown' rather than guessing 'direct' for every entry.
+  // Pipfile.lock's default/develop sections list the full resolved set (direct and transitive alike) with no dependency-edge data to tell them apart -- same limitation as parseTomlPackages/parseYarnLock/parseRequirementsTxt below, all of which correctly report 'unknown' rather than guessing 'direct' for every entry.
   const deps: DepEntry[] = []
   for (const [name, meta] of Object.entries(raw.default ?? {})) {
     deps.push({ name, version: (meta.version ?? '').replace(/^==/, ''), kind: 'unknown' })
@@ -227,29 +202,9 @@ function parsePipfileLock(content: string): DepEntry[] {
 function parseRequirementsTxt(content: string): DepEntry[] {
   const deps: DepEntry[] = []
   for (const raw of splitLines(content)) {
-    // A whole-line comment (line starts with '#', ignoring leading whitespace) is never a
-    // requirement spec, even when its text happens to mention "#egg=" -- e.g. a doc comment
-    // giving a VCS-install example. Skip it before the egg-fragment recovery below gets a
-    // chance to treat that mention as a real dependency (regression from the #104 fix, which
-    // applied the recovery unconditionally to every raw line).
+    // A whole-line comment (line starts with '#', ignoring leading whitespace) is never a requirement spec, even when its text happens to mention "#egg=" -- e.g. a doc comment giving a VCS-install example. Skip it before the egg-fragment recovery below gets a chance to treat that mention as a real dependency (regression from the #104 fix, which applied the recovery unconditionally to every raw line).
     if (/^\s*#/.test(raw)) continue
-    // A VCS direct reference (git+https://..., hg+..., etc.) legally uses '#' as a URL-fragment
-    // delimiter for '#egg=<name>', not a comment marker -- stripping at the first '#' truncates
-    // the URL and leaves the name-capture regex below matching the URL scheme ("git") instead of
-    // the real package name. Recover the name from the fragment before the generic comment-strip
-    // would otherwise discard it.
-    // Only apply the egg-fragment recovery when the line itself IS the VCS spec (starts
-    // with a VCS scheme, optionally behind pip's editable-install flag). An ordinary pinned
-    // dependency with a trailing inline comment that merely mentions "#egg=" (e.g. documenting
-    // an alternate install method) must not have its real spec discarded and replaced by a
-    // fabricated dependency parsed from the comment.
-    // The optional `-e `/`--editable[= ]` prefix covers pip's editable-install form
-    // (`-e git+https://github.com/x/y.git#egg=y`) -- pip's own documentation recommends this
-    // exact shape for a VCS dependency, making it at least as common as the non-editable form
-    // already handled above. Without it, the line falls through to the generic `line.startsWith('-')`
-    // guard below (added to skip pip flag lines like `-r other.txt`), which also matches `-e ...`
-    // and silently drops the whole dependency -- not just its egg name, the entry itself never
-    // appears in `lockdeps`'s output at all.
+    // A VCS direct reference (git+https://..., hg+..., etc.) legally uses '#' as a URL-fragment delimiter for '#egg=<name>', not a comment marker -- stripping at the first '#' truncates the URL and leaves the name-capture regex below matching the URL scheme ("git") instead of the real package name. Recover the name from the fragment before the generic comment-strip would otherwise discard it. Only apply the egg-fragment recovery when the line itself IS the VCS spec (starts with a VCS scheme, optionally behind pip's editable-install flag). An ordinary pinned dependency with a trailing inline comment that merely mentions "#egg=" (e.g. documenting an alternate install method) must not have its real spec discarded and replaced by a fabricated dependency parsed from the comment. The optional `-e `/`--editable[= ]` prefix covers pip's editable-install form (`-e git+https://github.com/x/y.git#egg=y`) -- pip's own documentation recommends this exact shape for a VCS dependency, making it at least as common as the non-editable form already handled above. Without it, the line falls through to the generic `line.startsWith('-')` guard below (added to skip pip flag lines like `-r other.txt`), which also matches `-e ...` and silently drops the whole dependency -- not just its egg name, the entry itself never appears in `lockdeps`'s output at all.
     const eggMatch = /^\s*(?:-e\s+|--editable[\s=]+)?(?:git|hg|svn|bzr)\+.*#egg=([A-Za-z0-9_.-]+)/.exec(raw)
     if (eggMatch !== null) {
       deps.push({ name: eggMatch[1] ?? '', version: '', kind: 'unknown' })
@@ -257,11 +212,7 @@ function parseRequirementsTxt(content: string): DepEntry[] {
     }
     const line = raw.split('#')[0]?.trim() ?? ''
     if (!line || line.startsWith('-')) continue
-    // The optional `[extras]` (e.g. `requests[security]`, `celery[redis]`, `uvicorn[standard]`)
-    // sits between the name and the version operator, so it must be consumed explicitly or the
-    // version-capture group never reaches the `==`/`>=` that follows -- dropping the version for
-    // every extras-qualified requirement. The operator class must also include `~` for PEP 440's
-    // `~=` compatible-release operator, another idiomatic form whose version was silently lost.
+    // The optional `[extras]` (e.g. `requests[security]`, `celery[redis]`, `uvicorn[standard]`) sits between the name and the version operator, so it must be consumed explicitly or the version-capture group never reaches the `==`/`>=` that follows -- dropping the version for every extras-qualified requirement. The operator class must also include `~` for PEP 440's `~=` compatible-release operator, another idiomatic form whose version was silently lost.
     const m = /^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*(?:[>=!~<]+\s*([^\s,;]+))?/.exec(line)
     if (m !== null) {
       deps.push({ name: m[1] ?? '', version: m[2] ?? '', kind: 'unknown' })
@@ -270,20 +221,9 @@ function parseRequirementsTxt(content: string): DepEntry[] {
   return deps
 }
 
-// A pnpm-lock.yaml `packages` key is `name@version` (scoped: `@scope/name@version`), optionally
-// prefixed with a leading `/` (lockfileVersion < 9's key style) and/or suffixed with one or more
-// `(peerName@peerVersion)` parenthetical groups recording which peer-dependency resolution this
-// particular package variant was built against (e.g. `react-redux@8.1.0(react@18.2.0)`). Both
-// must be stripped before splitting on the version-separating `@`, and a scoped name's own
-// leading `@` must be skipped over when searching for that separator or `@scope/name@1.0.0`
-// mis-splits at the scope's `@` instead of the real one.
+// A pnpm-lock.yaml `packages` key is `name@version` (scoped: `@scope/name@version`), optionally prefixed with a leading `/` (lockfileVersion < 9's key style) and/or suffixed with one or more `(peerName@peerVersion)` parenthetical groups recording which peer-dependency resolution this particular package variant was built against (e.g. `react-redux@8.1.0(react@18.2.0)`). Both must be stripped before splitting on the version-separating `@`, and a scoped name's own leading `@` must be skipped over when searching for that separator or `@scope/name@1.0.0` mis-splits at the scope's `@` instead of the real one.
 //
-// lockfileVersion 9 NESTS peer suffixes when a peer itself has peers, e.g.
-// `@testing-library/react@13.4.0(react-dom@18.2.0(react@18.2.0))(react@18.2.0)`. A single
-// `/(\([^()]*\))+$/` regex can't strip that -- `[^()]*` cannot span the inner `(`, so it removed
-// only the last group and left `(react-dom@18.2.0(react@18.2.0))` fused into the version. Walk
-// the trailing balanced parenthetical groups from the end instead: a semver version never
-// contains parens, so every back-to-back balanced `(...)` group at the tail is peer metadata.
+// lockfileVersion 9 NESTS peer suffixes when a peer itself has peers, e.g. `@testing-library/react@13.4.0(react-dom@18.2.0(react@18.2.0))(react@18.2.0)`. A single `/(\([^()]*\))+$/` regex can't strip that -- `[^()]*` cannot span the inner `(`, so it removed only the last group and left `(react-dom@18.2.0(react@18.2.0))` fused into the version. Walk the trailing balanced parenthetical groups from the end instead: a semver version never contains parens, so every back-to-back balanced `(...)` group at the tail is peer metadata.
 function stripPnpmPeerSuffix(value: string): string {
   let end = value.length
   while (end > 0 && value[end - 1] === ')') {
@@ -304,9 +244,7 @@ function stripPnpmPeerSuffix(value: string): string {
   return value.slice(0, end)
 }
 
-// Legacy pnpm (`lockfileVersion` < 6) suffixes a resolved version with `_<peerSpec>` instead of
-// the modern `(peerName@peerVersion)` parenthetical form, e.g. `1.0.0_react@16.0.0`. Semver
-// versions never contain `_`, so truncating at the first one is safe.
+// Legacy pnpm (`lockfileVersion` < 6) suffixes a resolved version with `_<peerSpec>` instead of the modern `(peerName@peerVersion)` parenthetical form, e.g. `1.0.0_react@16.0.0`. Semver versions never contain `_`, so truncating at the first one is safe.
 function stripPnpmLegacyPeerHash(value: string): string {
   const idx = value.indexOf('_')
   return idx === -1 ? value : value.slice(0, idx)
@@ -317,13 +255,7 @@ function splitPnpmPackageKey(rawKey: string): { name: string; version: string } 
   const scoped = key.startsWith('@')
   const nameSearchStart = scoped ? key.indexOf('/') : 0
   if (scoped && nameSearchStart === -1) return null
-  // Legacy (lockfileVersion < 6) keys are slash-separated (`/lodash/4.17.21`,
-  // `/@babel/core/7.12.10_@babel+core@7.12.10`) rather than `@`-separated, and their optional
-  // `_<peerSpec>` suffix can itself contain an `@` -- so an `@`-first search can mis-split a
-  // legacy key at that embedded `@` instead of falling through to the slash-based parse below.
-  // Checking for an *additional* `/` past the scope's own first `/` (or, for an unscoped name,
-  // any `/` at all) distinguishes the two styles unambiguously: neither modern key style ever
-  // contains a second `/` before its version.
+  // Legacy (lockfileVersion < 6) keys are slash-separated (`/lodash/4.17.21`, `/@babel/core/7.12.10_@babel+core@7.12.10`) rather than `@`-separated, and their optional `_<peerSpec>` suffix can itself contain an `@` -- so an `@`-first search can mis-split a legacy key at that embedded `@` instead of falling through to the slash-based parse below. Checking for an *additional* `/` past the scope's own first `/` (or, for an unscoped name, any `/` at all) distinguishes the two styles unambiguously: neither modern key style ever contains a second `/` before its version.
   const additionalSlashIdx = key.indexOf('/', nameSearchStart + 1)
   if (additionalSlashIdx !== -1) {
     const name = key.slice(0, additionalSlashIdx)
@@ -339,11 +271,7 @@ function splitPnpmPackageKey(rawKey: string): { name: string; version: string } 
   return { name, version }
 }
 
-// Collects name -> resolved version (peer-suffix stripped, matching splitPnpmPackageKey's own
-// stripping of `packages` keys) from one importer dependency section
-// (`dependencies`/`devDependencies`/`optionalDependencies`). lockfileVersion 6+ shapes each entry
-// as `{ specifier: '^1.0.0', version: '1.0.0' }`; legacy (`lockfileVersion` < 6) root dependency
-// sections instead use a bare resolved-version string directly, e.g. `{ lodash: '4.17.21' }`.
+// Collects name -> resolved version (peer-suffix stripped, matching splitPnpmPackageKey's own stripping of `packages` keys) from one importer dependency section (`dependencies`/`devDependencies`/`optionalDependencies`). lockfileVersion 6+ shapes each entry as `{ specifier: '^1.0.0', version: '1.0.0' }`; legacy (`lockfileVersion` < 6) root dependency sections instead use a bare resolved-version string directly, e.g. `{ lodash: '4.17.21' }`.
 function collectPnpmDirectVersions(section: unknown, out: Map<string, string>): void {
   if (section === null || typeof section !== 'object') return
   for (const [name, val] of Object.entries(section as Record<string, unknown>)) {
@@ -356,16 +284,7 @@ function collectPnpmDirectVersions(section: unknown, out: Map<string, string>): 
   }
 }
 
-// pnpm-lock.yaml has real edge data (unlike yarn.lock/TOML/Pipfile.lock's flat resolved sets),
-// so direct-vs-transitive is derived precisely: a `packages` entry counts as 'direct' only when
-// its own name AND resolved version match a root-project dependency, not merely by name -- a
-// package can legitimately appear at one resolved version as a direct dependency and at another
-// as a transitive one (e.g. via peer-dependency-driven duplicate resolution), and a name-only
-// match would mislabel the transitive variant too.
-// lockfileVersion >= 9 nests every workspace project's dependency sections under `importers`,
-// keyed by project path relative to the lockfile ('.' for the root/only project in a
-// non-workspace repo); lockfileVersion < 9 has `dependencies`/`devDependencies` directly at the
-// document root instead, with no `importers` wrapper at all.
+// pnpm-lock.yaml has real edge data (unlike yarn.lock/TOML/Pipfile.lock's flat resolved sets), so direct-vs-transitive is derived precisely: a `packages` entry counts as 'direct' only when its own name AND resolved version match a root-project dependency, not merely by name -- a package can legitimately appear at one resolved version as a direct dependency and at another as a transitive one (e.g. via peer-dependency-driven duplicate resolution), and a name-only match would mislabel the transitive variant too. lockfileVersion >= 9 nests every workspace project's dependency sections under `importers`, keyed by project path relative to the lockfile ('.' for the root/only project in a non-workspace repo); lockfileVersion < 9 has `dependencies`/`devDependencies` directly at the document root instead, with no `importers` wrapper at all.
 function parsePnpmLock(content: string): DepEntry[] {
   let raw: unknown
   try {
@@ -413,12 +332,7 @@ function parseLockFile(filePath: string): { deps: DepEntry[]; format: string } {
 
 // ── lockdeps --package (single-package query) ────────────────────────────────
 
-// name -> declared direct-dependency names, plus the set of top-level/direct project
-// dependency names. Only npm's lockfile (v1 nested `dependencies`, or v2/v3 `packages`)
-// actually records edges between packages -- the other formats this file parses
-// (yarn.lock, poetry/uv/Cargo's `[[package]]` TOML blocks, Pipfile.lock, requirements.txt)
-// are flattened here into name/version/kind only, with no graph data to walk. Returns null
-// for any format where edge extraction isn't implemented.
+// name -> declared direct-dependency names, plus the set of top-level/direct project dependency names. Only npm's lockfile (v1 nested `dependencies`, or v2/v3 `packages`) actually records edges between packages -- the other formats this file parses (yarn.lock, poetry/uv/Cargo's `[[package]]` TOML blocks, Pipfile.lock, requirements.txt) are flattened here into name/version/kind only, with no graph data to walk. Returns null for any format where edge extraction isn't implemented.
 function buildNpmEdges(content: string): { edges: Map<string, string[]>; directNames: Set<string> } | null {
   const raw = JSON.parse(content) as {
     packages?: Record<
@@ -437,9 +351,7 @@ function buildNpmEdges(content: string): { edges: Map<string, string[]>; directN
     const directNames = new Set(Object.keys(raw.dependencies))
     const walk = (deps: Record<string, V1PackageLockDependency>): void => {
       for (const [name, val] of Object.entries(deps)) {
-        // First occurrence wins: a name can recur at deeper nesting with a different
-        // resolved version (diamond dependency); this query reports one declared edge
-        // set per name, not per lockfile path.
+        // First occurrence wins: a name can recur at deeper nesting with a different resolved version (diamond dependency); this query reports one declared edge set per name, not per lockfile path.
         if (!edges.has(name)) edges.set(name, val.dependencies !== undefined ? Object.keys(val.dependencies) : [])
         if (val.dependencies !== undefined) walk(val.dependencies)
       }
@@ -450,10 +362,7 @@ function buildNpmEdges(content: string): { edges: Map<string, string[]>; directN
 
   const pkgs = raw.packages
   if (pkgs === undefined) return null
-  // Same optionalDependencies gap as parsePackageLockJson's allDirect above: without it, a
-  // package declared only as optional at the project root is excluded from directNames and so
-  // never appears as a possible source in findReverseDirectDeps's "depended on by direct deps"
-  // DFS, even though it is genuinely one of the project's own top-level dependencies.
+  // Same optionalDependencies gap as parsePackageLockJson's allDirect above: without it, a package declared only as optional at the project root is excluded from directNames and so never appears as a possible source in findReverseDirectDeps's "depended on by direct deps" DFS, even though it is genuinely one of the project's own top-level dependencies.
   const rootEntry = pkgs[''] as
     | { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; optionalDependencies?: Record<string, string> }
     | undefined
@@ -474,8 +383,7 @@ function buildNpmEdges(content: string): { edges: Map<string, string[]>; directN
   return { edges, directNames }
 }
 
-// DFS from each top-level/direct project dependency, checking whether `target` is reachable
-// through the declared-edge graph. Cycle-safe via a per-source `seen` set.
+// DFS from each top-level/direct project dependency, checking whether `target` is reachable through the declared-edge graph. Cycle-safe via a per-source `seen` set.
 function findReverseDirectDeps(target: string, edges: Map<string, string[]>, directNames: Set<string>): string[] {
   const result: string[] = []
   for (const direct of directNames) {
@@ -506,9 +414,7 @@ function cmdLockdepsPackage(lockfile: string, format: string, deps: DepEntry[], 
     throw new Error(`Package '${query}' not found in ${lockfile}${hint}`)
   }
 
-  // A package can resolve to more than one version across a lockfile's nested node_modules
-  // tree; prefer the top-level/direct pin as "the" version and surface the rest via
-  // otherVersions rather than silently picking an arbitrary transitive copy.
+  // A package can resolve to more than one version across a lockfile's nested node_modules tree; prefer the top-level/direct pin as "the" version and surface the rest via otherVersions rather than silently picking an arbitrary transitive copy.
   const primary = matches.find((d) => d.kind === 'direct') ?? (matches[0] as DepEntry)
   const otherVersions = [...new Set(matches.filter((d) => d.version !== primary.version).map((d) => d.version))]
 
@@ -589,16 +495,16 @@ export function cmdNote(
 
   if (act === 'list') {
     const hash = resolveProjectHash()
-    const entries = loadEntries(hash)
     if (opts.json === true) {
-      process.stdout.write(displaySafeJson(entries) + '\n')
+      process.stdout.write(displaySafeJson(loadEntries(hash)) + '\n')
     } else {
-      const pairs = Object.entries(entries)
+      const pairs = Object.entries(loadDatedEntries(hash))
       if (pairs.length === 0) {
         process.stdout.write('(no notes set)\n')
       } else {
-        for (const [k, v] of pairs) {
-          process.stdout.write(`${k} = ${v}\n`)
+        const now = Date.now()
+        for (const [k, note] of pairs) {
+          process.stdout.write(`${k}${noteAgeLabel(note, now)} = ${note.value}\n`)
         }
       }
     }
@@ -616,7 +522,7 @@ export function cmdNote(
     if (key === undefined) throw new Error('note get requires a key')
     const hash = resolveProjectHash()
     const entries = loadEntries(hash)
-    const v = entries[key]
+    const v = ownGet(entries, key)
     if (v === undefined) throw new Error(`Key not found: ${key}`)
     process.stdout.write(v + '\n')
     return
@@ -649,13 +555,7 @@ interface HotEntry {
   readCount: number
 }
 
-// Aggregates by foldPath(path) (a no-op on case-sensitive filesystems, see util.ts), not the raw
-// path string -- normalizePath (paths.ts) only lowercases the drive-letter prefix, so the same
-// physical file read under two different literal casings across separate sessions (e.g. a Read
-// tool call typed with different capitalization) would otherwise land in two distinct map entries
-// on a case-insensitive filesystem, splitting/undercounting its true readCount and potentially
-// dropping it out of the --limit-bounded top-N results entirely. The first-seen raw casing is
-// kept as the display path, matching cmdHot's --project filter's existing foldPath usage below.
+// Aggregates by foldPath(path) (a no-op on case-sensitive filesystems, see util.ts), not the raw path string -- normalizePath (paths.ts) only lowercases the drive-letter prefix, so the same physical file read under two different literal casings across separate sessions (e.g. a Read tool call typed with different capitalization) would otherwise land in two distinct map entries on a case-insensitive filesystem, splitting/undercounting its true readCount and potentially dropping it out of the --limit-bounded top-N results entirely. The first-seen raw casing is kept as the display path, matching cmdHot's --project filter's existing foldPath usage below.
 function loadAllSessionReadCounts(): Map<string, { path: string; readCount: number }> {
   const sessionsDir = path.join(tokenGoatHome(), 'sessions')
   const totals = new Map<string, { path: string; readCount: number }>()
@@ -692,11 +592,7 @@ function loadAllSessionReadCounts(): Map<string, { path: string; readCount: numb
 
 export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean }): void {
   const limit = opts.limit !== undefined ? requireNonNegativeStrictInt('--limit', opts.limit) : 20
-  // --limit 0 would slice the sorted entries list down to zero and print "No session read data
-  // found." -- an absolute claim about the cache's contents -- even when read history genuinely
-  // exists. Reject explicitly instead of silently rendering that false-clean result, matching
-  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation
-  // for the same failure mode.
+  // --limit 0 would slice the sorted entries list down to zero and print "No session read data found." -- an absolute claim about the cache's contents -- even when read history genuinely exists. Reject explicitly instead of silently rendering that false-clean result, matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
   if (opts.limit !== undefined && limit === 0) {
     throw new Error(`--limit must be a positive number, got: "${opts.limit}"`)
   }
@@ -708,37 +604,26 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   if (opts.project === true) {
     const project = findProject(process.cwd())
     if (project !== null) {
-      // foldPath (not a bare .toLowerCase()) so the case-fold is gated on isCaseInsensitiveFs()
-      // and respects the TOKEN_GOAT_CASE_INSENSITIVE_FS test override, matching isProjectFrame's
-      // own case handling above -- a raw .toLowerCase() always folds regardless of platform,
-      // wrongly treating two differently-cased directories as the same path on a case-sensitive
-      // filesystem (e.g. this project's own Linux CI runner).
+      // foldPath (not a bare .toLowerCase()) so the case-fold is gated on isCaseInsensitiveFs() and respects the TOKEN_GOAT_CASE_INSENSITIVE_FS test override, matching isProjectFrame's own case handling above -- a raw .toLowerCase() always folds regardless of platform, wrongly treating two differently-cased directories as the same path on a case-sensitive filesystem (e.g. this project's own Linux CI runner).
       const root = foldPath(project.root)
       entries = entries.filter((e) => isPathUnderRoot(foldPath(e.path), root))
     }
   }
 
   entries.sort((a, b) => b.readCount - a.readCount)
-  // Counted after the --project filter above and before the cap, so it states the number of rows
-  // this invocation could have returned. Counting before the filter would report a total for a
-  // different set than the one being paged -- the shape of an accounting defect this repo has
-  // shipped more than once.
+  // Counted after the --project filter above and before the cap, so it states the number of rows this invocation could have returned. Counting before the filter would report a total for a different set than the one being paged -- the shape of an accounting defect this repo has shipped more than once.
   const eligibleCount = entries.length
   entries = entries.slice(0, limit)
   const truncated = entries.length < eligibleCount
 
   if (opts.json === true) {
-    // Already an object payload, so the flag goes in-band where `hot --json | jq` can see it. The
-    // bare-array listings elsewhere cannot do this without breaking their consumers.
+    // Already an object payload, so the flag goes in-band where `hot --json | jq` can see it. The bare-array listings elsewhere cannot do this without breaking their consumers.
     process.stdout.write(displaySafeJson({ entries, truncated, totalCount: eligibleCount }) + '\n')
     return
   }
 
   if (entries.length === 0) {
-    // Distinguish "read data exists but none of it falls under this project root" from "no read
-    // data recorded at all" -- same empty-vs-filtered-store distinction runNoteList makes for
-    // --stale-only, so --project finding nothing doesn't read as "no session read data exists"
-    // when data just lives elsewhere.
+    // Distinguish "read data exists but none of it falls under this project root" from "no read data recorded at all" -- same empty-vs-filtered-store distinction runNoteList makes for --stale-only, so --project finding nothing doesn't read as "no session read data exists" when data just lives elsewhere.
     if (opts.project === true && preProjectCount > 0) {
       const noun = preProjectCount === 1 ? 'file' : 'files'
       process.stdout.write(`No session read data under this project root (${preProjectCount} ${noun} recorded outside it).\n`)
@@ -768,11 +653,7 @@ interface RecentEntry {
 
 export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): void {
   const n = nStr !== undefined ? requireNonNegativeStrictInt('recent', nStr) : 20
-  // A limit of 0 would slice the sorted entries list down to zero and print "No files read in
-  // this session yet." -- an absolute claim about the session's contents -- even when files were
-  // genuinely read. Reject explicitly instead of silently rendering that false-clean result,
-  // matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
-  // validation for the same failure mode.
+  // A limit of 0 would slice the sorted entries list down to zero and print "No files read in this session yet." -- an absolute claim about the session's contents -- even when files were genuinely read. Reject explicitly instead of silently rendering that false-clean result, matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
   if (nStr !== undefined && n === 0) {
     throw new Error(`recent: limit must be a positive number, got: "${nStr}"`)
   }
@@ -805,29 +686,16 @@ export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): v
 
 interface IgnoresReport {
   walkMode: 'git' | 'non-git'
-  // Scoped to `token-goat index` specifically -- it alone resolves files via getTrackedFiles()
-  // (git ls-files in git mode, so .gitignore is genuinely honored there). `map`/`todo`/
-  // `conflicts`/`hot --project` all resolve files via baseline.ts's walkProject instead, which
-  // never shells out to git and so never consults .gitignore regardless of walkMode -- see
-  // skipDirs below for what those commands actually exclude.
+  // Scoped to `token-goat index` specifically -- it alone resolves files via getTrackedFiles() (git ls-files in git mode, so .gitignore is genuinely honored there). `map`/`todo`/ `conflicts`/`hot --project` all resolve files via baseline.ts's walkProject instead, which never shells out to git and so never consults .gitignore regardless of walkMode -- see skipDirs below for what those commands actually exclude.
   indexRespectsGitignore: boolean
-  // Scoped to `token-goat index --walk` specifically (walk_index.ts's isWalkExcluded) -- the
-  // only place `.env`/`.d.ts` filtering is wired in. `map`/`todo`/`conflicts`/`hot --project`
-  // never call it and so never exclude these files, in git mode or non-git mode alike.
+  // Scoped to `token-goat index --walk` specifically (walk_index.ts's isWalkExcluded) -- the only place `.env`/`.d.ts` filtering is wired in. `map`/`todo`/`conflicts`/`hot --project` never call it and so never exclude these files, in git mode or non-git mode alike.
   walkIndexBuiltinExclusions: string[]
-  // The one exclusion genuinely shared by every walkProject-based command (map/todo/conflicts/
-  // hot --project), in git mode and non-git mode alike -- baseline.ts's SKIP_DIRS plus hidden
-  // (dot-prefixed) directories, neither of which is gitignore- or git-status-aware.
+  // The one exclusion genuinely shared by every walkProject-based command (map/todo/conflicts/ hot --project), in git mode and non-git mode alike -- baseline.ts's SKIP_DIRS plus hidden (dot-prefixed) directories, neither of which is gitignore- or git-status-aware.
   skipDirs: string[]
-  // Enforced only by `token-goat index`/`index --walk` (cli.ts's cmdIndex) and the worker's
-  // drain loop (worker.ts), both via isUnderBlockedRoot -- never consulted by walkProject, so
-  // map/todo/conflicts/hot --project ignore it entirely.
+  // Enforced only by `token-goat index`/`index --walk` (cli.ts's cmdIndex) and the worker's drain loop (worker.ts), both via isUnderBlockedRoot -- never consulted by walkProject, so map/todo/conflicts/hot --project ignore it entirely.
   blockedRoots: string[]
   excludeTests: boolean
-  // `.tokengoatignore` is read in exactly one place: cmdPack. It never reaches the index, the
-  // worker, or any walk-based command. Reported so the answer is on screen rather than inferred
-  // from its absence -- the file is named "ignore", so a reader keeping a directory out of the
-  // index reaches for it first and is silently wrong.
+  // `.tokengoatignore` is read in exactly one place: cmdPack. It never reaches the index, the worker, or any walk-based command. Reported so the answer is on screen rather than inferred from its absence -- the file is named "ignore", so a reader keeping a directory out of the index reaches for it first and is silently wrong.
   packIgnorePatterns: number
 }
 
@@ -860,19 +728,12 @@ export function cmdIgnores(opts: { json?: boolean }): void {
       `token-goat index --walk: built-in exclusions ${walkIndexBuiltinExclusions.join(', ')}.\n`,
     )
   }
-  // map/todo/conflicts/hot --project all resolve files via a raw filesystem walk (baseline.ts's
-  // walkProject), never via git ls-files -- they never see .gitignore or the index --walk
-  // exclusions above, in git mode or non-git mode alike. The only exclusion they genuinely share
-  // is SKIP_DIRS plus hidden (dot-prefixed) directories.
+  // map/todo/conflicts/hot --project all resolve files via a raw filesystem walk (baseline.ts's walkProject), never via git ls-files -- they never see .gitignore or the index --walk exclusions above, in git mode or non-git mode alike. The only exclusion they genuinely share is SKIP_DIRS plus hidden (dot-prefixed) directories.
   process.stdout.write(
     `map/todo/conflicts (and hot --project) ignore neither .gitignore nor ${walkIndexBuiltinExclusions.join(', ')} in either mode -- ` +
       `they only skip: ${report.skipDirs.join(', ')} (and hidden directories).\n`,
   )
-  // worker.blocked_roots is only ever consulted by `token-goat index`/`index --walk` (cli.ts's
-  // cmdIndex) and the worker's drain loop (worker.ts), both via isUnderBlockedRoot -- baseline.ts's
-  // walkProject (and so map/todo/conflicts/hot --project) never checks it. Name the enforcing
-  // commands explicitly so this line can't be misread as applying to the walk-based commands
-  // described immediately above it.
+  // worker.blocked_roots is only ever consulted by `token-goat index`/`index --walk` (cli.ts's cmdIndex) and the worker's drain loop (worker.ts), both via isUnderBlockedRoot -- baseline.ts's walkProject (and so map/todo/conflicts/hot --project) never checks it. Name the enforcing commands explicitly so this line can't be misread as applying to the walk-based commands described immediately above it.
   if (cfg.worker.blocked_roots.length > 0) {
     process.stdout.write(`Blocked roots (config, enforced by token-goat index / index --walk / worker only): ${cfg.worker.blocked_roots.join(', ')}\n`)
   } else {

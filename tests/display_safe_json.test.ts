@@ -1,23 +1,4 @@
-/**
- * `--json` reports neutralize token-goat's spoken markers without breaking the JSON contract.
- *
- * THE PRECEDENT THIS REPLACES: every `--json` branch used to serialize raw, on the reasoning that
- * escaping would corrupt the values a consumer parses back. That reasoning is sound for a machine
- * consumer and unsound for a model consumer, and both read this output -- sub-512-byte CLI output
- * reaches the model through `postBashHandler`, and every CLI report is also an MCP tool result. So
- * a forged `[tg]` in a string value arrived wearing the prefix token-goat puts on a deny.
- *
- * FIXTURE PROVENANCE: HAND-DERIVED. The marker spellings are read off the product's own contract
- * for what it must neutralize (`neutralizeSpokenMarkers` escapes `[tg]` and `[token-goat`), and the
- * expected `&#91;` spelling is that function's documented output. The expected JSON is computed here
- * from the input by hand -- `JSON.parse` of the produced text is compared against a value written
- * out independently -- so nothing agrees with the implementation by construction.
- *
- * THE TRAP THESE ARE WRITTEN AGAINST: "output must not contain the raw marker" passes when the
- * producer simply dropped the value. Every case below therefore also asserts the ESCAPED form is
- * present and that the surrounding real content survived, so an emptied or over-escaped report
- * fails just as loudly as an unescaped one.
- */
+/** `--json` reports neutralize token-goat's spoken markers without breaking the JSON contract. THE PRECEDENT THIS REPLACES: every `--json` branch used to serialize raw, on the reasoning that escaping would corrupt the values a consumer parses back. That reasoning is sound for a machine consumer and unsound for a model consumer, and both read this output -- sub-512-byte CLI output reaches the model through `postBashHandler`, and every CLI report is also an MCP tool result. So a forged `[tg]` in a string value arrived wearing the prefix token-goat puts on a deny. FIXTURE PROVENANCE: HAND-DERIVED. The marker spellings are read off the product's own contract for what it must neutralize (`neutralizeSpokenMarkers` escapes `[tg]` and `[token-goat`), and the expected `&#91;` spelling is that function's documented output. The expected JSON is computed here from the input by hand -- `JSON.parse` of the produced text is compared against a value written out independently -- so nothing agrees with the implementation by construction. THE TRAP THESE ARE WRITTEN AGAINST: "output must not contain the raw marker" passes when the producer simply dropped the value. Every case below therefore also asserts the ESCAPED form is present and that the surrounding real content survived, so an emptied or over-escaped report fails just as loudly as an unescaped one. */
 import { describe, expect, it } from 'vitest'
 
 import { displaySafeJson } from '../src/paths.js'
@@ -44,8 +25,7 @@ describe('displaySafeJson neutralizes leaves while staying valid JSON', () => {
   })
 
   it('escapes a marker sitting in an object KEY, which is where a hostile lockfile or namespace puts it', () => {
-    // npm permits an arbitrary string as a packages key, and an XML author picks the namespace
-    // prefix as freely as the URI. A value-only pass would leave both raw.
+    // npm permits an arbitrary string as a packages key, and an XML author picks the namespace prefix as freely as the URI. A value-only pass would leave both raw.
     const text = displaySafeJson({ namespaces: { [FORGED]: 'http://example.test/ns', ok: 'ORDINARY_VALUE' } })
 
     expect(text).toContain('&#91;tg]')
@@ -75,10 +55,7 @@ describe('displaySafeJson neutralizes leaves while staying valid JSON', () => {
   })
 
   it('leaves token-goat\'s OWN fence preamble alone, so the neutralizer does not mangle our voice', () => {
-    // `recall --json` puts an already-fenced snippet in a string value. That span carries the
-    // `[token-goat: ...]` preamble token-goat wrote, and its interior was neutralized on the way in.
-    // Escaping it here would be the same defect this function exists to prevent, pointed the other
-    // way -- our voice, mangled -- which is why the leaf transform skips a fenced region whole.
+    // `recall --json` puts an already-fenced snippet in a string value. That span carries the `[token-goat: ...]` preamble token-goat wrote, and its interior was neutralized on the way in. Escaping it here would be the same defect this function exists to prevent, pointed the other way -- our voice, mangled -- which is why the leaf transform skips a fenced region whole.
     const fenced = fenceUntrustedFileContent('some quoted file bytes')
     const parsed = JSON.parse(displaySafeJson({ snippet: fenced })) as { snippet: string }
 
@@ -95,8 +72,7 @@ describe('displaySafeJson neutralizes leaves while staying valid JSON', () => {
   })
 
   it('changes nothing about a payload that carries no marker at all', () => {
-    // The overwhelmingly common case. A transform that quietly rewrote ordinary reports would be a
-    // far worse regression than the one being fixed, and would not otherwise show up here.
+    // The overwhelmingly common case. A transform that quietly rewrote ordinary reports would be a far worse regression than the one being fixed, and would not otherwise show up here.
     const payload = { items: ['a', 'b'], nested: { n: 1, flag: true, nothing: null }, empty: [] }
 
     expect(JSON.parse(displaySafeJson(payload))).toEqual(payload)
@@ -104,16 +80,20 @@ describe('displaySafeJson neutralizes leaves while staying valid JSON', () => {
   })
 
   it('honours the compact indent the one-line report sites use', () => {
-    // The `--json` sites split two ways: indented documents and single-line ones. Both must keep
-    // the shape they had, or every consumer diffing this output sees churn.
+    // The `--json` sites split two ways: indented documents and single-line ones. Both must keep the shape they had, or every consumer diffing this output sees churn.
     expect(displaySafeJson({ a: 1 }, 0)).toBe('{"a":1}')
     expect(displaySafeJson({ a: 1 })).toBe('{\n  "a": 1\n}')
   })
 
   it('leaves a value that serializes itself to do so', () => {
-    // Walking a Date's own properties would hand JSON.stringify a different document than it was
-    // given: `{}` instead of an ISO string.
+    // Walking a Date's own properties would hand JSON.stringify a different document than it was given: `{}` instead of an ISO string.
     const when = new Date('2020-01-02T03:04:05.000Z')
     expect(JSON.parse(displaySafeJson({ when })) as { when: string }).toEqual({ when: '2020-01-02T03:04:05.000Z' })
+  })
+
+  it('keeps a key named __proto__, whatever its value', () => {
+    // HAND-DERIVED: `note set __proto__ ...` stores a note under that name, and `note list --json` prints it through here. JSON.parse makes `__proto__` an ordinary own key, so the input and the expected text are both written out by hand.
+    const input = JSON.parse('{"__proto__":"kept","nested":{"__proto__":{"a":1}}}') as unknown
+    expect(displaySafeJson(input, 0)).toBe('{"__proto__":"kept","nested":{"__proto__":{"a":1}}}')
   })
 })
