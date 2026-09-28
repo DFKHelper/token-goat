@@ -27,6 +27,8 @@ paths = [
   # Build and coverage output, reproducible from source.
   '''^dist/''',
   '''^coverage/''',
+  # Agent worktrees nested in the checkout: git-ignored full copies of this repository, whose fixtures sit beneath a path the root anchors above cannot match. A commit made inside one runs this scan from that worktree's own top level, so its content is still checked where it can be committed.
+  '''^\.claude/worktrees/''',
 ]
 
 # The changelog describes what the redactor learned to recognize, which means it quotes armored
