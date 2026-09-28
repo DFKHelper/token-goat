@@ -36,7 +36,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/parser_types.ts`](src/parser_types.ts) | Shared types: `SymbolEntry`, `RefEntry`, `FileIndexEntry`, `Language` union (27 values plus `unknown`), `EXTENSION_LANGUAGE`, `FILENAME_LANGUAGE`, `detectLanguage()` |
 | [`src/parser.ts`](src/parser.ts) | Tree-sitter orchestration and all symbol/ref/section extraction. Inline tree-sitter extractors for TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, and C/C++; regex/pattern extractors (inline) for Markdown, JSON, YAML, TOML, CSS, and Dockerfile; regex adapters (from `src/languages/registry.ts`, reached through the dynamic `loadRegexExtractors()` so hooks never compile them) for C#, PHP, HTML, Liquid, Kotlin, GraphQL, SQL, INI, Makefile, Proto, and `.env`. Main entry points: `indexFileSync()` (sync, called by worker drain), `parseFile()` (async, calls `parseContent()` then `writeParseResult()`) |
 | [`src/reconcile.ts`](src/reconcile.ts) | Catch-up reconciliation: detect index drift caused by edits token-goat never saw. |
-| [`src/worker.ts`](src/worker.ts) | Dirty-queue consumer — `runWorkerLoop()` polls every 2000 ms by default (`resolvePollIntervalMs()` in `worker_lifecycle.ts`); `drainOnce()` calls `processDirtyBatch()`, which SHA-checks each dirty file then calls `makeIndexer(dbPath)` (production default: `globalDbPath()`); can run as a Node.js Worker Thread or as a detached child process. Also runs periodic housekeeping in the same loop: snapshot cleanup and a daily `sweepKnownRoots()` pass (see `index_prune.ts`) that prunes dead file rows for known project roots |
+| [`src/worker.ts`](src/worker.ts) | Dirty-queue consumer — `runWorkerLoop()` sleeps up to 2000 ms between drains by default (`resolvePollIntervalMs()` in `worker_lifecycle.ts`), and `queue_waker.ts` ends that sleep as soon as a producer appends to the queue; `drainOnce()` calls `processDirtyBatch()`, which SHA-checks each dirty file then calls `makeIndexer(dbPath)` (production default: `globalDbPath()`); can run as a Node.js Worker Thread or as a detached child process. Also runs periodic housekeeping in the same loop: snapshot cleanup and a daily `sweepKnownRoots()` pass (see `index_prune.ts`) that prunes dead file rows for known project roots |
 
 **Storage and Database**
 
@@ -489,6 +489,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/process_priority.ts`](src/process_priority.ts) | Scheduling priority for the processes that index. |
 | [`src/process_util.ts`](src/process_util.ts) | Process and OS execution utilities. |
 | [`src/purge.ts`](src/purge.ts) | `uninstall --purge`: delete everything token-goat has written to disk. |
+| [`src/queue_waker.ts`](src/queue_waker.ts) | Ends the worker's between-drain sleep when another process appends to `queue/dirty.txt` (fs.watch on the queue directory, timer fallback); the worker's own requeues keep their pacing. |
 | [`src/query_limits.ts`](src/query_limits.ts) | The sentinel that means "no cap" in a `LIMIT ?` bound parameter. |
 | [`src/recall_index.ts`](src/recall_index.ts) | Cross-cache full-text search index for `token-goat recall`. |
 | [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |
@@ -562,7 +563,7 @@ All index data and stats live in a single `global.db`. [`src/db.ts`](src/db.ts) 
 | `sessions/{session_id}.json` | Per-session state persisted across hook processes by [`src/session_store.ts`](src/session_store.ts) (loaded/saved in [`src/relay.ts`](src/relay.ts)): file reads, edits, web-fetch index, bash-output index, curl downloads, shown hints |
 | `projects/{hash}/sessions/` | Session manifest JSON files written by [`src/compact.ts`](src/compact.ts) for the PreCompact hook |
 | `projects/{hash}_memory.toml` | Project-scoped key-value memory written by [`src/project_memory.ts`](src/project_memory.ts) |
-| `queue/dirty.txt` | Append-only list of edited file paths; drained by `worker.ts` every 2 s |
+| `queue/dirty.txt` | Append-only list of edited file paths; drained by `worker.ts` as soon as a producer appends (an fs.watch on `queue/`), with the 2 s poll as the fallback |
 | `queue/pending.txt` | Dirty-queue snapshot written by [`src/hooks_index.ts::preCompactIndexHandler`](src/hooks_index.ts) before compact |
 | `images/` | Shrunk image cache (LRU-evicted, written by [`src/image_shrink.ts`](src/image_shrink.ts)) |
 | `skills/` | Skill body/compact cache keyed by `(session, name, content_sha)` ([`src/skill_cache.ts`](src/skill_cache.ts)) |

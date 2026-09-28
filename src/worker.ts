@@ -25,6 +25,7 @@ import { sweepCacheRoots } from './disk_cache.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 import { registerReset } from './reset.js'
 import { appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
+import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
 import { appendWorkerErrorLog, readPidFile, resolvePollIntervalMs, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
@@ -266,7 +267,9 @@ function bumpAndCheckRetry(dir: string, absPath: string): boolean {
 // The worker's own append to the queue under `dir`, the one processDirtyBatch/drainOnce were given (an isolated dir under test). Best-effort: if the write fails, the path is lost for this cycle, but the failure is still captured via logTransientReadFailure above. Returns whether the paths reached the queue, for a caller that can keep them and try again.
 function appendToDirtyQueue(dir: string, ...absPaths: string[]): boolean {
   try {
-    return appendDirtyQueuePaths(dir, absPaths)
+    const appended = appendDirtyQueuePaths(dir, absPaths)
+    if (appended) noteOwnQueueWrite(dir)
+    return appended
   } catch {
     return false
   }
@@ -647,6 +650,8 @@ export async function runWorkerLoop(
   let disabledStampsSeen = disabledStampCount()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
   let ownedPidFile = false
+  // Ends each cycle's sleep early when a hook or command appends to the queue, so an edit is indexed within milliseconds rather than up to a poll interval later; the interval stays the fallback wherever the watch cannot run. See createQueueWaker. Every step of a cycle catches its own errors, so the loop leaves only through its exits below, each of which reaches the close.
+  const waker = createQueueWaker(dir)
   while (!shouldStop()) {
     // Self-terminate once this daemon's own data dir no longer exists: a caller that spawned a detached daemon against an ephemeral/scratch data dir (e.g. `token-goat index --walk` in a temp directory during dogfooding or a test run) and then deletes that directory without an explicit `worker stop` leaves the daemon with nothing left to poll -- `dirty.txt`/the pid file/global.db are all gone, so every subsequent drainOnce/cleanup call below is pure wasted work against a directory that will never come back. Without this check the daemon runs forever (confirmed in practice: 524 stray `--worker-daemon` processes accumulated over two weeks of dogfooding/test scratch-dir cleanup with no corresponding `worker stop`).
     if (!fs.existsSync(dir)) break
@@ -728,8 +733,9 @@ export async function runWorkerLoop(
       }
     }
     if (shouldStop()) break
-    await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs))
+    await waker.sleep(pollIntervalMs)
   }
+  waker.close()
 }
 
 /** Run the detached daemon's drain loop in the current (main-thread) process. Reads its poll interval and data dir from the `TG_WORKER_POLL_MS` / `TG_WORKER_DATA_DIR` env vars set by worker_lifecycle.ts::startDetachedWorker on the child it spawns, registers a SIGTERM handler for a clean exit, and starts {@link runWorkerLoop} without awaiting it -- the loop's own setTimeout chain keeps the event loop (and therefore the process) alive indefinitely. This must be called explicitly by the CLI entrypoint (`cli.ts`'s `run()`) when `--worker-daemon` is present in argv, BEFORE commander ever sees argv: `--worker-daemon` is not a registered commander option or command anywhere in `buildProgram`, so letting commander parse first makes it reject the flag as unknown and the freshly-spawned daemon child exits immediately. This is the sole trigger point for the daemon loop in the shipped CLI -- nothing else should call it, since {@link runWorkerLoop} would then be running twice against the same dirty queue. Registers a `process.on('exit', ...)` handler that clears this daemon's own pid file so any exit path other than a clean worker_lifecycle.ts::stopWorker call (the SIGTERM handler above, an uncaught exception, or the process simply crashing) doesn't leave a stale pid file behind forever. The handler only removes the file when it still names this exact process -- never unconditionally -- so a daemon that lost the worker_lifecycle.ts::claimWorkerPidFile startup race (and was killed as a duplicate) or was already stopped and superseded by a newer daemon can never clobber the *current* owner's pid file on its own delayed exit. */
