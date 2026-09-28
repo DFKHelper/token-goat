@@ -11,13 +11,12 @@ import { buildUnrestrictedSpawnAdvisory } from '../src/hooks_agent_spawn.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 /**
- * The unrestricted-spawn advisory must never fire under Copilot CLI. Two independent reasons,
- * both recorded in src/bridges/copilot_cli.ts from the shipping 1.0.80 bundle: post_tool_use
- * additionalContext is dropped on Copilot's JS path (so the advisory would be emitted into a
- * void while still burning the once-per-session hint budget and recording a session_hint stat
- * for text nobody received), and the advisory's content is Claude Code's Task schema -- Copilot's
- * own task tool carries no subagent_type argument, so the absent-field trigger would misclassify
- * every Copilot task spawn as an untyped general-purpose spawn even if the channel delivered.
+ * The unrestricted-spawn advisory must never fire under Copilot CLI. The advisory's content is
+ * Claude Code's Task schema, and Copilot's own task tool carries agent_type rather than
+ * subagent_type (CAPTURE: toolArgs {description, prompt, agent_type, name} in
+ * tests/fixtures/copilot_cli_1_0_88/C4a-004-preToolUse-task.json), so the absent-field trigger would
+ * misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the
+ * reason: post_tool_use additionalContext reaches the model on Copilot 1.0.88 (tg-captures C1a).
  *
  * This lives in its own file rather than tests/hooks_agent_spawn.test.ts because getHarnessName()
  * memoizes on first dispatch: the sibling file's earlier tests would pin the ambient harness for

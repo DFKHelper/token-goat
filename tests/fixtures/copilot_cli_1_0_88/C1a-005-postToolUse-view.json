@@ -1,0 +1,1 @@
+{"sessionId":"62b82fb1-ebf4-4b58-9707-dfa6cb74553d","timestamp":1790610646561,"cwd":"{{PROJ}}","toolName":"view","toolArgs":{"path":"{{PROJ}}\\sample.txt"},"toolResult":{"resultType":"success","textResultForLlm":"alpha line one\nbeta line two\ngamma line three\n"},"traceparent":"00-2247ae42ad9bb91ee168e83361606a39-daa82400840bfcb6-01"}

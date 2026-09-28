@@ -32,6 +32,7 @@ import {
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
 import { HOOK_EVENTS } from '../src/types.js'
+import { copilotCapture } from './fixtures/copilot_cli_1_0_88.js'
 
 let TMP: string
 let origCwd: string
@@ -840,34 +841,23 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBe('you already read this file')
   })
 
-  it('folds postToolUse context into modifiedResult.textResultForLlm when toolResult has textResultForLlm', () => {
+  // CAPTURE: the payload is Copilot CLI 1.0.88's own postToolUse stdin (tests/fixtures/copilot_cli_1_0_88/C1a-005-postToolUse-view.json, from %TEMP%/tg-captures/C1a/raw/005-postToolUse-view.json). The wire request logged for that run (C1a/wire/process-1790610634435-80680-req-02.json) shows an additionalContext returned alone reaching the model once, appended to the tool output. C1c (wire process-1790610673052-2280-req-02.json) shows modifiedResult and additionalContext returned together each reaching it once. So a hint that also rode inside modifiedResult arrived twice.
+  it('sends a hint through additionalContext alone, with no modifiedResult copy, because Copilot 1.0.88 appends additionalContext to the tool output itself', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
       cwd,
       JSON.stringify({ hookSpecificOutput: { additionalContext: 'you already read this file' } }),
     )
-    const stdout = runShim(
-      'postToolUse',
-      JSON.stringify({
-        sessionId: 's1',
-        cwd: '/tmp',
-        toolName: 'read',
-        toolArgs: {},
-        toolResult: { textResultForLlm: 'file contents here' },
-      }),
-      cwd,
-      env,
-    )
+    const payload = copilotCapture('C1a-005-postToolUse-view', { proj: cwd })
+    const stdout = runShim('postToolUse', JSON.stringify(payload), cwd, env)
     const parsed = JSON.parse(stdout)
     expect(parsed.additionalContext).toBe('you already read this file')
-    expect(parsed.modifiedResult).toEqual({
-      resultType: 'success',
-      textResultForLlm: 'file contents here\n\n[token-goat: you already read this file]',
-    })
+    expect(parsed.modifiedResult, 'a hint-only response must not also hand the tool text back with the hint folded in').toBeUndefined()
+    expect(stdout.split('you already read this file').length - 1, 'the hint is emitted exactly once').toBe(1)
   })
 
-  // PROVENANCE: FORMAT-DERIVED. copilot-sdk/types.d.ts declares `export type ToolResult = string | ToolResultObject` in 1.0.80 through 1.0.88, so a bare string is a result shape the harness's own union admits. Without this branch the string form leaves the fold with no body, and the hint is lost on the one channel that reaches the model here.
-  it('reads a bare-string toolResult as the body to fold the hint into', () => {
+  // HAND-DERIVED: a bare-string toolResult, which copilot-sdk/types.d.ts's `ToolResult = string | ToolResultObject` admits. It must not become the body of a modifiedResult either.
+  it('emits no modifiedResult for a hint on a bare-string toolResult', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
       cwd,
@@ -879,10 +869,9 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       cwd,
       env,
     )
-    expect(JSON.parse(stdout).modifiedResult).toEqual({
-      resultType: 'success',
-      textResultForLlm: 'file contents here\n\n[token-goat: you already read this file]',
-    })
+    const parsed = JSON.parse(stdout)
+    expect(parsed.modifiedResult).toBeUndefined()
+    expect(parsed.additionalContext).toBe('you already read this file')
   })
 
   it('translates a postToolUse rewriteOutput (hookSpecificOutput.updatedToolOutput) into modifiedResult', () => {
@@ -902,8 +891,8 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBeUndefined()
   })
 
-  // CAPTURE: the fold target and the dropped field are both read off Copilot CLI's shipping app.js 1.0.80 -- postToolExecution (offset 2043150) applies modifiedResult in place and never forwards additionalContext, and that event's native return payload (offset 1793926) has no additional_contexts key. So textResultForLlm is the only assertion here that proves delivery; asserting additionalContext alone proves our shim emits a field the harness throws away, which is what the previous version of this test did while the hint was being lost.
-  it('folds the hint into the rewritten body when a postToolUse response carries both, because additionalContext is dropped on this path', () => {
+  // CAPTURE: C1c (%TEMP%/tg-captures/C1c, marker response responses/postToolUse.view.json, wire process-1790610673052-2280-req-02.json) returned modifiedResult and additionalContext together. The model saw the modifiedResult text, a blank line, `Tool "view" succeeded. Additional guidance from postToolUse hooks:` and the additionalContext, each once. Copilot does the joining, so the rewritten body goes out as it is.
+  it('keeps a rewritten body and its hint in their own fields when a postToolUse response carries both', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
       cwd,
@@ -911,14 +900,10 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
         hookSpecificOutput: { updatedToolOutput: 'compressed body', additionalContext: 'a hint' },
       }),
     )
-    const stdout = runShim(
-      'postToolUse',
-      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'read', toolArgs: {}, toolResult: {} }),
-      cwd,
-      env,
-    )
+    const payload = copilotCapture('C1a-005-postToolUse-view', { proj: cwd })
+    const stdout = runShim('postToolUse', JSON.stringify(payload), cwd, env)
     const parsed = JSON.parse(stdout)
-    expect(parsed.modifiedResult).toEqual({ resultType: 'success', textResultForLlm: 'compressed body\n\n[token-goat: a hint]' })
+    expect(parsed.modifiedResult).toEqual({ resultType: 'success', textResultForLlm: 'compressed body' })
     expect(parsed.additionalContext).toBe('a hint')
   })
 

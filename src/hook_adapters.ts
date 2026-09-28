@@ -330,7 +330,7 @@ function copilotContext(resp: unknown): string | undefined {
   return undefined
 }
 
-function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown, originalToolArgs: object, payload: unknown): Record<string, unknown> {
+function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown, originalToolArgs: object): Record<string, unknown> {
   if (copilotEvent === 'preToolUse') {
     const hso = resp && get(resp, 'hookSpecificOutput')
     const denied = resp && (get(resp, 'decision') === 'block' || (hso && get(hso, 'permissionDecision') === 'deny'))
@@ -356,15 +356,7 @@ function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown
     const updatedToolOutput = hso && get(hso, 'updatedToolOutput')
     const context = copilotContext(resp)
     const out: Record<string, unknown> = {}
-    const rawResult = payload && get(payload, 'toolResult')
-    const llmText = get(rawResult, 'textResultForLlm')
-    const llmTextSnake = get(rawResult, 'text_result_for_llm')
-    const originalText = typeof rawResult === 'string' ? rawResult : rawResult && (typeof llmText === 'string' ? llmText : typeof llmTextSnake === 'string' ? llmTextSnake : undefined)
-    const rewritten = typeof updatedToolOutput === 'string'
-    const body = rewritten ? updatedToolOutput : typeof originalText === 'string' ? originalText : undefined
-    if (typeof body === 'string' && (rewritten || context)) {
-      out['modifiedResult'] = { resultType: 'success', textResultForLlm: context ? body + '\n\n[token-goat: ' + context + ']' : body }
-    }
+    if (typeof updatedToolOutput === 'string') out['modifiedResult'] = { resultType: 'success', textResultForLlm: updatedToolOutput }
     if (context) out['additionalContext'] = context
     return out
   }
@@ -448,13 +440,13 @@ async function copilotRun(req: AdapterRequest, io: AdapterIo): Promise<string> {
   } catch {
     return '{}'
   }
-  return JSON.stringify(copilotTranslate(copilotEvent, resp, toolName, originalToolArgs, payload))
+  return JSON.stringify(copilotTranslate(copilotEvent, resp, toolName, originalToolArgs))
 }
 
 const copilotCli: Adapter = {
   unknown: '{}',
   events: Object.keys(COPILOT_TO_TG_EVENT),
-  lost: (event) => JSON.stringify(copilotTranslate(event, {}, undefined, {}, undefined)),
+  lost: (event) => JSON.stringify(copilotTranslate(event, {}, undefined, {})),
   async run(req, io) {
     try {
       return done(await copilotRun(req, io))
