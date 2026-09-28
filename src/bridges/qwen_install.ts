@@ -43,30 +43,33 @@ export function qwenSettingsPath(): string {
   return path.join(os.homedir(), '.qwen', 'settings.json')
 }
 
-function readQwenSettings(p: string, opts: { strict?: boolean } = {}): QwenSettings {
+function readQwenSettings(p: string, opts: { strict?: boolean; command?: 'install' | 'uninstall' } = {}): QwenSettings {
+  const refuse = (problem: string, detail?: string): QwenSettingsParseError =>
+    new QwenSettingsParseError(
+      (opts.command === 'uninstall'
+        ? `Qwen Code settings file '${p}' is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
+        : `Qwen Code settings file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+    )
   let raw: string
   try {
     raw = fs.readFileSync(p, 'utf8')
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    // Only an absent file is the "nothing installed yet" case; see install.ts's readSettings.
+    if (opts.strict === true && code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse('exists but cannot be read', code ?? extractErrorMessage(e))
     return {}
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch (e) {
-    if (opts.strict === true) {
-      throw new QwenSettingsParseError(
-        `Qwen Code settings file '${p}' exists but contains invalid JSON. Fix or back up the file before running install. (${extractErrorMessage(e)})`,
-      )
-    }
+    if (opts.strict === true) throw refuse('exists but contains invalid JSON', extractErrorMessage(e))
     return {}
   }
   if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
     return parsed as QwenSettings
   }
-  if (opts.strict === true) {
-    throw new QwenSettingsParseError(`Qwen Code settings file '${p}' does not contain a JSON object at the top level. Fix or back up the file before running install.`)
-  }
+  if (opts.strict === true) throw refuse('does not contain a JSON object at the top level')
   return {}
 }
 
@@ -139,7 +142,8 @@ export function installQwen(): QwenInstallResult {
 
 export function uninstallQwen(): boolean {
   const p = qwenSettingsPath()
-  const settings = readQwenSettings(p)
+  // Strict, as install reads it: a file that is there but cannot be read or parsed may still hold token-goat's hooks, so uninstall stops with it and its backups as they were.
+  const settings = readQwenSettings(p, { strict: true, command: 'uninstall' })
   const removed = settings.hooks !== undefined && stripOwnHooksFromMap(settings.hooks, isQwenTokenGoatCommand)
   return finishHookUninstall(p, settings, removed)
 }

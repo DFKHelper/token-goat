@@ -17,7 +17,7 @@ import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
 import { hasCreatedConfig, recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './bridges/created_configs.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, hookExecPartsFor, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -172,8 +172,16 @@ function anyScopeReferencesShim(
   if (referencesIn(alreadyStripped)) return true
   for (const scope of ['user', 'project'] as const) {
     if (scope === currentScope) continue
-    // A scope whose settings file is missing, unreadable, or malformed is treated as not referencing the shim: uninstall must stay best-effort rather than abort on someone else's broken JSON.
-    if (referencesIn(readSettings(settingsPath(scope)).hooks)) return true
+    let other: Settings
+    try {
+      other = readSettings(settingsPath(scope), { strict: true })
+    } catch (e) {
+      // A scope whose settings file is there but cannot be read or parsed may still name the shim, so it keeps it: deleting the shim leaves every hook such a file wires erroring on every tool call once the file is fixed, where keeping it leaves one generated file behind. Either way this uninstall goes on rather than abort on someone else's broken JSON.
+      if (e instanceof SettingsParseError) return true
+      throw e
+    }
+    // A scope with no settings file names nothing.
+    if (referencesIn(other.hooks)) return true
   }
   return false
 }
@@ -205,37 +213,39 @@ interface Settings {
   [key: string]: unknown
 }
 
-/** Thrown by {@link readSettings} in strict mode when the settings file exists but isn't parseable JSON, or parses to something other than a JSON object. A caller about to overwrite the file (installHooks) must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single JSON typo in the user's settings.json gets clobbered on write. */
+/** Thrown by {@link readSettings} in strict mode when the settings file exists but cannot be read, isn't parseable JSON, or parses to something other than a JSON object. A caller about to overwrite the file (installHooks) or strip it (uninstallHooks) must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single JSON typo in the user's settings.json gets clobbered on write, or the shim its hooks still run is deleted from under them. */
 export class SettingsParseError extends Error {}
 
-/** Parse the settings file at `p`. A missing file always yields `{}` -- that's the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but fails to parse (or parses to something other than a JSON object) throws {@link SettingsParseError} instead of returning `{}`, so a caller about to overwrite the file can tell "genuinely empty" apart from "corrupt, do not touch." Non-strict callers (read-only, or a no-op on corrupt) keep the old lenient `{}` fallback. */
-function readSettings(p: string, opts: { strict?: boolean } = {}): Settings {
+/** Parse the settings file at `p`. A missing file always yields `{}` -- that's the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but cannot be read, fails to parse, or parses to something other than a JSON object throws {@link SettingsParseError} instead of returning `{}`, so a caller about to overwrite or strip the file can tell "genuinely empty" apart from "corrupt, do not touch"; `opts.command` names the command the message tells the user to run again. Non-strict callers (read-only, or a no-op on corrupt) keep the old lenient `{}` fallback. */
+function readSettings(p: string, opts: { strict?: boolean; command?: 'install' | 'uninstall' } = {}): Settings {
+  // Worded for the command that stopped: install has written nothing yet, and uninstall has removed nothing, neither the shim this file's hooks may run nor the file's backups.
+  const refuse = (problem: string, detail?: string): SettingsParseError =>
+    new SettingsParseError(
+      (opts.command === 'uninstall'
+        ? `settings file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name and the file's backups; fix the file and run uninstall again.`
+        : `settings file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+    )
   let raw: string
   try {
     raw = fs.readFileSync(p, 'utf8')
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    // Only an absent file is the "nothing installed yet" case. One that is there but cannot be read (a directory, a permission, another process's lock) is refused in strict mode like one that does not parse: read as empty, install went on writing until backing the file up failed with a raw file-system error, and uninstall would delete the shim its hooks may run.
+    if (opts.strict === true && code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse('exists but cannot be read', code ?? extractErrorMessage(e))
     return {}
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch {
-    if (opts.strict === true) {
-      throw new SettingsParseError(
-        `settings file '${p}' exists but contains invalid JSON. Fix or back up the file before running install.`,
-      )
-    }
+    if (opts.strict === true) throw refuse('exists but contains invalid JSON')
     // Corrupt JSON: do not clobber it silently — but for our read we treat it as empty so callers can decide. (installHooks rewrites the whole file.)
     return {}
   }
   if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
     return parsed as Settings
   }
-  if (opts.strict === true) {
-    throw new SettingsParseError(
-      `settings file '${p}' does not contain a JSON object at the top level. Fix or back up the file before running install.`,
-    )
-  }
+  if (opts.strict === true) throw refuse('does not contain a JSON object at the top level')
   return {}
 }
 
@@ -365,7 +375,8 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
 
 function uninstallHooksScoped(scope: HookScope): boolean {
   const p = settingsPath(scope)
-  const settings = readSettings(p)
+  // Strict, as install reads it: a file that is there but cannot be read or parsed may still wire hooks that run the shim, so uninstall stops here with the file, the shim and the file's backups as they were, rather than read it as holding no hooks and delete what those hooks run.
+  const settings = readSettings(p, { strict: true, command: 'uninstall' })
   // A file with no `hooks` map reads as an empty one rather than ending the uninstall here: the shim, its directory and the file's backups below are token-goat's own litter whether or not an earlier uninstall, or the user, already took the entries out.
   const hooks = settings.hooks ?? {}
   const removed = stripOwnHooksFromMap(hooks, isTokenGoatHookCommand)
