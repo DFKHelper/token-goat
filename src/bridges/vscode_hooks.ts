@@ -15,10 +15,13 @@ export function vscodeToolName(event: HookEvent | undefined): string | undefined
 
 const SHRINK_PREFIX = 'token-goat-shrink-'
 const MATERIALIZED_MAX_AGE_MS = 60 * 60 * 1000
+let lastMaterializedSweepAtMs = 0
 
-/** Delete this mechanism's own temp copies older than an hour; the prefix confines the sweep to files it wrote. */
+/** Delete this mechanism's own temp copies older than an hour; the prefix confines the sweep to files it wrote. Throttled per process, as MATERIALIZE_SHRUNK_IMAGE_JS is: a one-shot hook process sweeps on its one call, and the resident hook server sweeps at most hourly instead of listing the temp dir on every image. */
 function pruneMaterialized(): void {
   const now = Date.now()
+  if (now - lastMaterializedSweepAtMs < MATERIALIZED_MAX_AGE_MS) return
+  lastMaterializedSweepAtMs = now
   try {
     const dir = os.tmpdir()
     for (const file of fs.readdirSync(dir)) {
@@ -36,7 +39,7 @@ function pruneMaterialized(): void {
   }
 }
 
-/** Write the shrunk image in an image-shrink context ("<summary>\ndata:image/<fmt>;base64,<data>") to a temp file. Typed twin of materializeShrunkImage in shrink_block.ts. The file name comes from pid, time and a random UUID, never from the source image's name, and the suffix's character class admits no path separator. Returns undefined when the context is not a shrink payload or the write fails. */
+/** Write the shrunk image in an image-shrink context ("<summary>\ndata:image/<fmt>;base64,<data>") to a temp file, for the hosts that can only point a read at another path: VS Code's agent (image_shrink.ts) and the Copilot CLI adapter the hook server runs (hook_adapters.ts). Typed twin of materializeShrunkImage in shrink_block.ts, the copy the installed shims embed. The file name comes from pid, time and a random UUID, never from the source image's name, and the suffix's character class admits no path separator. Returns undefined when the context is not a shrink payload or the write fails. */
 export function materializeShrunkImageFile(context: string): string | undefined {
   const idx = context.indexOf('data:image/')
   if (idx === -1) return undefined
