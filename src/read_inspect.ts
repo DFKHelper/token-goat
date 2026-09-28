@@ -1,4 +1,3 @@
-import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import {
@@ -19,7 +18,7 @@ import { getNote, isNoteStale, listNotes, WHOLE_FILE_NOTE_SYMBOL } from './notes
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { emitGuarded, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes, healStaleResultFiles } from './read_commands.js'
+import { emitGuarded, fileExists, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes, healStaleResultFiles } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
 import { fileConfinementRefusal } from './read_spec.js'
@@ -42,15 +41,6 @@ import {
   requireNonNegativeStrictInt,
 } from './util.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
-
-function fileExists(p: string): boolean {
-  try {
-    fs.statSync(p)
-    return true
-  } catch {
-    return false
-  }
-}
 
 export interface ZipListCliOptions {
   file: string
