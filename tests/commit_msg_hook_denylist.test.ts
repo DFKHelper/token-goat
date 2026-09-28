@@ -9,7 +9,14 @@ import { ROOT } from './helpers/bundle.js'
 /** The commit-msg hook refuses a message naming anything on the confidential denylist, matched without regard to case and as a literal string. It matched each listed name with `grep -qi -F`, and the grep that ships with Git for Windows (GNU grep 3.0) aborts with exit 134 on that flag pair. Inside an `if` the abort read as "no match", so on Windows every listed name passed the hook. These run the real script under the real bash against a temp denylist, with HOME and USERPROFILE pointed at the temp dir so the script's fallback can never reach a real list. HAND-DERIVED: every name below is invented for this file, and each expected verdict follows from the name and the message alone. */
 
 const SCRIPT = path.join(ROOT, '.lefthook-scripts', 'check-commit-msg.sh').replace(/\\/g, '/')
-const BASH = process.platform === 'win32' ? resolveWindowsBash() : 'bash'
+/** Git for Windows' `bin\bash.exe` is a launcher that puts Git's own `mingw64\bin` and `usr\bin` at the front of PATH before starting `usr\bin\bash.exe`, so a stub prepended to PATH never runs under it. CAPTURE: CI's test-windows job on 6593e34f resolved that launcher from the runner's PATH and the grep-failure case below got exit 0, while this machine resolves `usr\bin\bash.exe` and passed. The hook itself runs under whatever bash lefthook finds; only the stub needs the real shell. */
+function directBash(bash: string | null): string | null {
+  if (bash === null || !/[\\/]git[\\/]bin[\\/]bash\.exe$/i.test(bash)) return bash
+  const direct = path.join(path.dirname(path.dirname(bash)), 'usr', 'bin', 'bash.exe')
+  return fs.existsSync(direct) ? direct : bash
+}
+
+const BASH = process.platform === 'win32' ? directBash(resolveWindowsBash()) : 'bash'
 
 let tmp: string
 
