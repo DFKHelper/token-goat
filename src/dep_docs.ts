@@ -2,7 +2,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { displaySafeText, displaySafeJson } from './paths.js'
+import { dirExists, displaySafeText, displaySafeJson } from './paths.js'
 import type TsModule from 'typescript'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
@@ -10,24 +10,9 @@ import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { suggestPackageNames } from './util_suggest.js'
 import { loadTs } from './ts_compiler.js'
+import { fileExists } from './read_commands.js'
 
 // ---- filesystem helpers -------------------------------------------------------
-
-function dirExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isDirectory()
-  } catch {
-    return false
-  }
-}
-
-function fileExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile()
-  } catch {
-    return false
-  }
-}
 
 function readFileTextOrNull(p: string): string | null {
   try {

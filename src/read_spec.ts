@@ -1,4 +1,3 @@
-import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { loadConfig } from './config.js'
 import { globalDbPath } from './constants.js'
@@ -10,7 +9,7 @@ import { resolveLineRegions, type LineRegion } from './line_regions.js'
 export { resolveLineRegions, type LineRegion } from './line_regions.js'
 import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
-import { findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, readFileText, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
+import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, readFileText, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
@@ -20,14 +19,6 @@ import {
   rankSimilarNames,
 } from './read_suggest.js'
 import { countNoun, foldPath } from './util.js'
-
-function fileExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile()
-  } catch {
-    return false
-  }
-}
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 

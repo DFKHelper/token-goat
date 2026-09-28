@@ -82,7 +82,17 @@ const GREP_MAX_LINES = 200
 
 // ---- helpers ----------------------------------------------------------------
 
-function fileExists(p: string): boolean {
+/** True when `p` names a regular file, following a symlink. The read commands share this one check for "is there a document here to read": a directory, a missing path and one stat cannot examine are all answered "Could not read" rather than getting as far as a read that fails on them. A check that means anything at the path uses {@link pathExists}. */
+export function fileExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** True when stat sees anything at `p`, a directory included: a search path that may be a directory, a PDF path whose bounded reader refuses a non-regular file by name, and a path validated as absent that must still be absent. */
+function pathExists(p: string): boolean {
   try {
     fs.statSync(p)
     return true
@@ -163,7 +173,7 @@ function verifyPinnedIdentity(p: string, pinned: string): void {
 
 /** Verifies a target pinned as {@link ABSENT_PIN} is STILL absent from disk. Throws {@link ConfinementIdentityError} when something now exists at `p` -- the create-after- validated-absent race the negative pin exists to catch (an attacker names an in-root path that does not exist yet, waits for the gate to validate it as absent-but-in-root, then creates an out-of-root symlink there before the read runs). Returns normally when still absent, which the caller then treats exactly like the pre-existing "no pin recorded" missing-file path. */
 function verifyStillAbsent(p: string): void {
-  if (fileExists(p)) {
+  if (pathExists(p)) {
     throw new ConfinementIdentityError(
       `refused: "${p}" was created after being validated as absent (validated missing, now present). ` +
         'Something was created at this path between the confinement check and the read, so the read was not performed.',
@@ -810,7 +820,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
 
 /** The bytes of a PDF the caller named, refused when the file alone is past the input bound. */
 async function readPdfBytes(file: string): Promise<Uint8Array> {
-  if (!fileExists(file)) {
+  if (!pathExists(file)) {
     throw new Error(`Could not read: ${file}`)
   }
   return readPdfFileWithinBounds(file)
@@ -1083,7 +1093,7 @@ export function runGrep(opts: GrepOptions): number {
   }
 
   for (const searchPath of searchPaths) {
-    if (!fileExists(searchPath)) {
+    if (!pathExists(searchPath)) {
       emitErr(`Path not found: ${searchPath}`)
       return 1
     }
