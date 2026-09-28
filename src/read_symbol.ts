@@ -13,13 +13,11 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, rankSimilarNames } from './read_suggest.js'
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
-import { fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, largestFileSize, recordReadStat, resolveBody, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
+import { DELETED_TAG, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, largestFileSize, recordReadStat, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
 
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
 const SYMBOL_PREVIEW_LINES = 5
 
-// What `staleWarning`'s DELETED banner says, as a suffix rather than a banner, for surfaces that render one line per match and cannot put a whole-output warning at the top without it applying to every hit. Shares the '⚠ DELETED' prefix so callers (and tests) have one marker to look for.
-const DELETED_TAG = '⚠ DELETED: file no longer on disk'
 
 // The STALE counterpart of DELETED_TAG, for a result row whose file changed on disk and whose reindex was attempted and failed. A per-row suffix for the same reason DELETED_TAG is one: a bare `symbol NAME` spans every indexed project, so one hit can be current and the next one not.
 const STALE_TAG = '⚠ STALE: file changed on disk and could not be reindexed'
@@ -136,7 +134,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const preFilterCount = sweep.scanned
   const unordered = sweep.kept.slice(0, effectiveLimit)
   // An exact-name lookup asks where a thing is defined, and `file_path, line_start` answers it by alphabet: `const { ambigProbeFn } = await import('../src/thing.js')` in scripts/ sorts ahead of the real function in src/ purely because "scripts" precedes "src", so the first block a caller reads is an import statement rather than the body it went looking for. Sink the rows that only re-bind an imported name, keeping the query's own order within each group so the existing tie-breaks and paging behaviour are untouched. Nothing is dropped -- every candidate still prints, so a misjudged row costs one position and never an answer, which is the reason this reorders rather than filters. `--grep` listings are deliberately excluded: those are a browse of many different names, where file order is the useful one.
-  const results = opts.name === undefined ? unordered : stableSortImportBindsLast(unordered)
+  const results = sinkGoneRows(opts.name === undefined ? unordered : stableSortImportBindsLast(unordered), (s) => s.filePath)
 
   const hiddenByExcludeTests = sweep.hiddenByExcludeTests
 
