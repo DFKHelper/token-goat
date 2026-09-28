@@ -27,7 +27,13 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 const bases: string[] = []
 afterEach(() => {
-  for (const d of bases.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  for (const d of bases.splice(0)) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+    } catch {
+      // Best effort, as in tests/worker_daemon_e2e.test.ts: on a loaded Windows runner a just-killed daemon's handles (or a scanner's) can outlive the retries, and a leftover temp directory is not what this test measures.
+    }
+  }
 })
 
 describe('an edit wakes the detached worker (built bundle)', () => {
@@ -75,6 +81,8 @@ describe('an edit wakes the detached worker (built bundle)', () => {
         const until = Date.now() + 5000
         while (pidAlive(stopped) && Date.now() < until) await sleep(50)
         if (pidAlive(stopped)) process.kill(stopped, 'SIGKILL')
+        const killed = Date.now() + 5000
+        while (pidAlive(stopped) && Date.now() < killed) await sleep(50)
       }
     }
   }, 60_000)
