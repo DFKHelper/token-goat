@@ -15,9 +15,9 @@ import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
-import { removeCreatedBackups } from './bridges/created_configs.js'
+import { hasCreatedConfig, recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './bridges/created_configs.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, hookExecPartsFor, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -287,7 +287,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
   const scriptPath = claudeHookScriptPath()
   // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at `~/.claude/hooks/token-goat-shim.cjs` (see uninstallHooks' anyScopeReferencesShim) -- so this write is declared user scope explicitly rather than inheriting the project confinement, which would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the user's own directory, and a dotfiles symlink pointing it elsewhere is the setup bridges/project_scope_guard.ts deliberately allows.
   const scriptChanged = withInstallScope(undefined, () => {
-    ensureDirSync(path.dirname(scriptPath))
+    ensureDirRecordingCreation(path.dirname(scriptPath))
     const forwarderChanged = writeIfDifferent(claudeLegacyHookScriptPath(), legacyShimForwarder('{}'))
     const scriptChanged = writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
     return scriptChanged || forwarderChanged
@@ -366,9 +366,8 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
 function uninstallHooksScoped(scope: HookScope): boolean {
   const p = settingsPath(scope)
   const settings = readSettings(p)
-  const hooks = settings.hooks
-  if (hooks === undefined) return false
-
+  // A file with no `hooks` map reads as an empty one rather than ending the uninstall here: the shim, its directory and the file's backups below are token-goat's own litter whether or not an earlier uninstall, or the user, already took the entries out.
+  const hooks = settings.hooks ?? {}
   const removed = stripOwnHooksFromMap(hooks, isTokenGoatHookCommand)
 
   // Remove the generated shim too, mirroring bridges/codex_install.ts -- but ONLY once no scope still points at it. Unlike Codex, which has a single config location, token-goat has two scopes that share one home-scoped shim: deleting it on `uninstall --project` while a user-scope install is still wired would leave every user-scope hook invoking a file that no longer exists, failing silently on every tool call. Checked after the strip above so this scope's own now-removed entries don't count as a reason to keep it.
@@ -376,20 +375,43 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   let removedScript = false
   if (!anyScopeReferencesShim([scriptPath, claudeLegacyHookScriptPath()], scope, hooks)) {
     // Declared USER scope explicitly, exactly as the matching write in installHooksScoped is: the shim lives at `~/.claude/hooks/token-goat-shim.cjs` and is shared by both scopes, so under a project-scope uninstall the ambient confinement would refuse to remove it. Removal has to be symmetric with the write or `uninstall --project` leaves the file it installed behind -- which is what the built-bundle matrix caught the first time this was routed through the scope-checked helper without the wrapper. Already-absent is not an error, which is exactly removeFileInScope's contract.
-    removedScript = withInstallScope(undefined, () => [scriptPath, claudeLegacyHookScriptPath()].map((p) => removeFileInScope(p)).some(Boolean))
+    removedScript = withInstallScope(undefined, () => {
+      const removedAny = [scriptPath, claudeLegacyHookScriptPath()].map((p) => removeFileInScope(p)).some(Boolean)
+      removeCreatedIfEmpty(path.dirname(scriptPath))
+      return removedAny
+    })
   }
 
-  if (!removed) return removedScript
-
-  saveUninstalledHookSettings(p, settings)
-  return true
+  return finishHookUninstall(p, settings, removed) || removedScript
 }
 
-/** Write back a JSON settings file whose token-goat hook entries were just stripped, dropping a `hooks` map left empty, then delete the timestamped backups token-goat made of the file: they are its own litter, so they leave with it. The Claude Code, Gemini CLI and Qwen Code uninstalls all end here. */
-export function saveUninstalledHookSettings(p: string, settings: { hooks?: Record<string, unknown> }): void {
-  if (settings.hooks !== undefined && Object.keys(settings.hooks).length === 0) delete settings.hooks
-  writeJsonSettings(p, settings)
+/** The end of every JSON-settings hook uninstall, whatever it found. When `removed` says token-goat's entries were just stripped from `settings`, the file is written back, dropping a `hooks` map left empty. Either way the timestamped backups token-goat made of the file are deleted: they are its own litter, so they leave with it, including when an earlier uninstall or the user already took the entries out. The Claude Code, Gemini CLI and Qwen Code uninstalls all end here and return what this returns, which is `removed`. */
+export function finishHookUninstall(p: string, settings: { hooks?: Record<string, unknown> }, removed: boolean): boolean {
+  if (removed) {
+    if (settings.hooks !== undefined && Object.keys(settings.hooks).length === 0) delete settings.hooks
+    writeJsonSettings(p, settings)
+  }
   removeCreatedBackups(p)
+  return removed
+}
+
+/** `ensureDirSync`, recording `dir` in the created-configs ledger when this call is what brought it into being, so uninstall can take away a directory token-goat's install made and leave one that was already there. */
+function ensureDirRecordingCreation(dir: string): void {
+  const existed = fs.existsSync(dir)
+  ensureDirSync(dir)
+  if (!existed) recordCreatedConfig(dir)
+}
+
+/** Delete `target`, an empty directory or a file holding nothing but whitespace, when the created-configs ledger says a token-goat install created it, and forget the entry once it is gone. Anything else stays: a directory or file the user made, however empty, and one token-goat made that now holds anything at all. Emptiness alone is not evidence either way, which is why the ledger is asked first. */
+function removeCreatedIfEmpty(target: string): void {
+  if (!hasCreatedConfig(target)) return
+  let removed = false
+  try {
+    removed = fs.lstatSync(target).isDirectory() ? removeEmptyDirInScope(target) : fs.readFileSync(target, 'utf8').trim() === '' && removeFileInScope(target)
+  } catch {
+    // Already gone, unreadable, or not a plain file or directory: nothing is removed, and the entry stays for a later uninstall.
+  }
+  if (removed) takeCreatedConfig(target)
 }
 
 /** Are token-goat hooks installed in `scope`? True only when every mapped event key carries a *current-format* token-goat hook command — a legacy-only entry does not count, since it is dead on this build, and a partial install (some events wired, some not) reads as not installed so {@link installHooks} will top up the missing entries. */
@@ -492,13 +514,18 @@ export interface ClaudeMdInstallResult {
 /** Add or refresh the token-goat block in `~/.claude/CLAUDE.md`, preserving any existing content. */
 export function installClaudeMd(): ClaudeMdInstallResult {
   const p = claudeMdPath()
+  const existed = fs.existsSync(p)
   const changed = writeClaudeMdBlock(p)
+  if (!existed) recordCreatedConfig(p)
   return { path: p, alreadyInstalled: !changed }
 }
 
-/** Remove the token-goat block from `~/.claude/CLAUDE.md`, leaving the rest of the file intact. */
+/** Remove the token-goat block from `~/.claude/CLAUDE.md`, leaving the rest of the file intact, and the file itself when {@link installClaudeMd} created it and nothing but the block was ever in it. */
 export function uninstallClaudeMd(): boolean {
-  return stripClaudeMdBlock(claudeMdPath())
+  const p = claudeMdPath()
+  const stripped = stripClaudeMdBlock(p)
+  removeCreatedIfEmpty(p)
+  return stripped
 }
 
 /** Find token-goat marker blocks sitting in some markdown file *other* than `~/.claude/CLAUDE.md`. The block is plain markdown in a file the user is explicitly told they own and edit, so relocating it into a tidier "reference" file is a natural thing to do -- and it silently breaks: {@link installClaudeMd} and {@link uninstallClaudeMd} both resolve the single hardcoded {@link claudeMdPath}, so a relocated copy is never refreshed (it freezes at whatever version was current when it moved) and never removed on uninstall. Worse, the next install sees CLAUDE.md missing its block and appends a fresh one, leaving the guidance duplicated across two files with only one of them live. Detection only -- callers report; nothing here edits or deletes a user's file. Matches a real block, not a mention of one: both markers must appear on their own lines. Prose that references `<!-- token-goat-begin -->` inline -- a pointer explaining where the managed block actually lives, which is exactly what a user is told to leave behind after relocating one -- would otherwise be flagged forever as the very thing it documents. Bounded walk: skips `node_modules`/`.git`, caps depth, and ignores symlinked directories (`Dirent.isDirectory()` is false for a symlink), so it cannot loop. */
@@ -586,20 +613,25 @@ export function installSkill(): SkillInstallResult {
   }
   const skillContent = skillMdContent()
   if (existing === skillContent) return { path: p, alreadyInstalled: true }
+  ensureDirRecordingCreation(path.dirname(skillDir()))
   ensureDirSync(skillDir())
   backupFile(p)
   atomicWriteText(p, skillContent)
   return { path: p, alreadyInstalled: false }
 }
 
-/** Remove the token-goat skill directory entirely. */
+/** Remove the token-goat skill directory entirely, then the `skills` directory holding it when {@link installSkill} created that and nothing else lives in it. */
 export function uninstallSkill(): boolean {
   const dir = skillDir()
-  if (!fs.existsSync(dir)) return false
-  // The directory removal below takes SKILL.md's own timestamped backups with it; this only drops the now-dangling ledger entries for them, mirroring uninstallHooks's cleanup.
-  removeCreatedBackups(skillPath())
-  // Written out rather than routed through a helper because no helper fits: this is a RECURSIVE DIRECTORY removal and `removeFileInScope` is deliberately file-only. The check is the same one the write helpers make. It is a no-op in the user scope this path actually runs in, and that is the point -- it stops a future project-scoped skill directory being deleted through a checked-in directory symlink without anyone having to notice this line again.
-  assertWriteInScope(dir)
-  fs.rmSync(dir, { recursive: true, force: true })
-  return true
+  const present = fs.existsSync(dir)
+  if (present) {
+    // The directory removal below takes SKILL.md's own timestamped backups with it; this only drops the now-dangling ledger entries for them, mirroring uninstallHooks's cleanup.
+    removeCreatedBackups(skillPath())
+    // Written out rather than routed through a helper because no helper fits: this is a RECURSIVE DIRECTORY removal and `removeFileInScope` is deliberately file-only. The check is the same one the write helpers make. It is a no-op in the user scope this path actually runs in, and that is the point -- it stops a future project-scoped skill directory being deleted through a checked-in directory symlink without anyone having to notice this line again.
+    assertWriteInScope(dir)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+  // Whether or not the skill directory was still there: an empty `skills` directory this install created is litter either way.
+  removeCreatedIfEmpty(path.dirname(dir))
+  return present
 }
