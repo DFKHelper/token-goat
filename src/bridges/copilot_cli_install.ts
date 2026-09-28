@@ -11,6 +11,7 @@ import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHo
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
+import { copilotCliUserRoot } from '../copilot_home.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
@@ -49,12 +50,7 @@ interface CopilotCliConfig {
   hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>>
 }
 
-/** The user-scope Copilot directory. Copilot CLI documents `COPILOT_HOME` as replacing `~/.copilot` wholesale for both hooks and instructions ("If `COPILOT_HOME` is set, create the file in `$COPILOT_HOME/hooks/`" -- https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks). Ignoring it is a silent total failure rather than a degraded one: install reports success, writes a valid config to `~/.copilot`, and Copilot never reads that path, so every hook simply never fires and nothing surfaces the mismatch. Blank/whitespace is treated as unset, matching how an exported-but-empty variable behaves everywhere else. */
-export function copilotCliUserRoot(): string {
-  const override = process.env['COPILOT_HOME']
-  if (override !== undefined && override.trim() !== '') return path.resolve(override)
-  return path.join(os.homedir(), '.copilot')
-}
+export { copilotCliUserRoot }
 
 export function copilotCliUserHooksDir(): string {
   return path.join(copilotCliUserRoot(), 'hooks')

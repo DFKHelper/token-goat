@@ -109,7 +109,7 @@ function safeSessionFragment(sessionId: string): string {
   return result.slice(0, 16)
 }
 
-function safeSkillName(skillName: string): string | null {
+export function safeSkillName(skillName: string): string | null {
   if (!skillName || skillName.length > 128) return null
   if (!/^[A-Za-z0-9_:-]+$/.test(skillName)) return null
   return skillName.replace(/[^a-zA-Z0-9_:-]/g, '_')
