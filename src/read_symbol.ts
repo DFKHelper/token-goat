@@ -3,7 +3,8 @@
 import { isIgnoredIndexPath } from './baseline.js'
 import { querySymbols, queryRefCounts, countSymbols, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { formatSymbolLocation } from './indexed_source.js'
-import { resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
+import { toDisplayPath, displaySafeJson } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { globalDbPath } from './constants.js'
 import { compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, isTestFile } from './util.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
@@ -78,13 +79,13 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const { root: confinedRoot, denial: projectDenial } = resolveProjectConfinement(opts.projectRoot)
   if (projectDenial !== null) return { text: projectDenial, code: 1 }
   if (confinedRoot !== null && opts.file !== undefined) {
-    const fileDenial = confinementRefusal('--file', resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd()), confinedRoot)
+    const fileDenial = confinementRefusal('--file', resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd()), confinedRoot)
     if (fileDenial !== null) return { text: fileDenial, code: 1 }
   }
 
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.file !== undefined) {
-    queryOpts.filePath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
+    queryOpts.filePath = resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd())
     // Self-heal before querying so a stale index serves fresh data instead of a warning.
     healStaleIndex(queryOpts.filePath)
   }
@@ -263,7 +264,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
         : ''
     return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
   })
-  const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
+  const warning = opts.file !== undefined ? staleWarning(resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
   const text = guardText(warning + blocks.join('\n\n'), 'symbol')
   recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
   // Under a client-side filter the sweep walked every row in scope, so its kept count is the exact total rather than a floor.

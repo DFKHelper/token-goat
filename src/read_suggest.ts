@@ -1,7 +1,8 @@
 import * as fs from 'node:fs'
 
 import { querySymbols } from './index_reader.js'
-import { displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, toDisplayPath } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import { readFileText } from './read_commands.js'
 import { parseYamlDocument } from './read_structured_data.js'
@@ -144,7 +145,7 @@ export function formatBareNameSpecError(command: string, name: string, projectRo
 export function formatCrossFileLead(command: string, name: string, excludeFilePath: string, projectRoot?: string): string {
   const rootDir = projectRoot ?? process.cwd()
   const matches = querySymbols({ name, limit: 50, rootDir })
-  const excludeResolved = resolveIndexPath(excludeFilePath, rootDir)
+  const excludeResolved = resolveSpecPath(excludeFilePath, rootDir)
   const seen = new Set<string>()
   const specs: string[] = []
   for (const m of matches) {

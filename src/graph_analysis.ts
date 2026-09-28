@@ -3,7 +3,8 @@
 import * as fs from 'node:fs'
 
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
-import { displaySafeText, toDisplayPath, displaySafeJson, resolveIndexPath } from './paths.js'
+import { displaySafeText, toDisplayPath, displaySafeJson } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
@@ -138,7 +139,7 @@ export interface TestForOptions {
 export interface TestForEntry { testFile: string; testFunctions: string[] }
 
 export function runTestFor(opts: TestForOptions): number {
-  const filePath = resolveIndexPath(opts.file)
+  const filePath = resolveSpecPath(opts.file)
   const symbols = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
 
   if (!fs.existsSync(opts.file) && symbols.length === 0) {

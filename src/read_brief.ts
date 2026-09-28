@@ -1,9 +1,5 @@
-import {
-  displaySafeJson,
-  displaySafeText,
-  resolveIndexPath,
-  toDisplayPath,
-} from './paths.js'
+import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import {
   compileGrepMatcher,
   countNoun,
@@ -194,7 +190,7 @@ export function runBriefMulti(file: string, symbols: string[], opts: BriefOption
   }
 
   // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see BriefOptions.suppressStat).
-  const fullSourceBytes = sumFileSizes([resolveIndexPath(file, opts.projectRoot ?? process.cwd())])
+  const fullSourceBytes = sumFileSizes([resolveSpecPath(file, opts.projectRoot ?? process.cwd())])
   const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
@@ -220,7 +216,7 @@ export function runBriefCrossFile(pairs: { file: string; symbol: string }[], opt
     textBlocks.push(`${key}:\n${sub.text}`)
   }
 
-  const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveIndexPath(f, opts.projectRoot ?? process.cwd())))
+  const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveSpecPath(f, opts.projectRoot ?? process.cwd())))
   const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }

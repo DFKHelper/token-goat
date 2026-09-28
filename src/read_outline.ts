@@ -1,7 +1,8 @@
 /** Outline and skeleton command handlers. Implements token-goat skeleton and token-goat outline, extracting symbol maps without loading full bodies, with multi-file support and filtering. */
 
 import type { SymbolEntry } from './parser_types.js'
-import { resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
+import { toDisplayPath, displaySafeJson } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { querySymbols, countSymbols, queryRefCounts } from './index_reader.js'
 import { SKELETON_SYMBOL_CAP, globalDbPath } from './constants.js'
 import { compileGrepMatcher, filtersFilteredToEmptyNotice, countNoun } from './util.js'
@@ -69,7 +70,7 @@ export function prepareSymbolListing(
   file: string,
   opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
 ): { kind: 'confined'; text: string } | { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined; totalLines: number } {
-  const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+  const resolved = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
   const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) return { kind: 'confined', text: confined }
   if (opts.forceRefresh === true) {

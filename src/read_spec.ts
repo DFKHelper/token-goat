@@ -7,7 +7,8 @@ import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
 import { resolveLineRegions, type LineRegion } from './line_regions.js'
 export { resolveLineRegions, type LineRegion } from './line_regions.js'
-import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, readFileText, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { emitErr } from './emit.js'
@@ -174,7 +175,7 @@ export function runLineRegion(
   const { file, start, end } = range
   if (start < 1) return { text: `Invalid line range: start must be >= 1 (got ${start})`, code: 1 }
   if (end < start) return { text: `Invalid line range: end (${end}) is before start (${start})`, code: 1 }
-  const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+  const resolved = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
   const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) return { text: confined, code: 1 }
   const text = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
@@ -319,7 +320,7 @@ export function confinementRefusal(label: string, resolved: string, root: string
 export function fileConfinementRefusal(label: string, file: string, projectRoot: string | undefined): string | null {
   const { root, denial } = resolveProjectConfinement(projectRoot)
   if (denial !== null) return denial
-  return confinementRefusal(label, resolveIndexPath(file, projectRoot ?? process.cwd()), root)
+  return confinementRefusal(label, resolveSpecPath(file, projectRoot ?? process.cwd()), root)
 }
 
 /** `#id` is the CSS-selector spelling an agent reaches for; accept it as a spelling of the html_id symbol name in read/section/symbol alike, for html files only. */
@@ -335,7 +336,7 @@ export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectR
   const anchorSymbol = anchorMatch !== null ? anchorMatch[1]! : rawSymbol
   const lineAnchor = anchorMatch !== null ? parseInt(anchorMatch[2]!, 10) : undefined
 
-  const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
+  const resolved = resolveSpecPath(file, projectRoot ?? process.cwd())
   const symbol = stripHtmlIdSpelling(anchorSymbol, resolved)
   const confined = fileConfinementRefusal('This file', file, projectRoot)
   if (confined !== null) return { kind: 'confined', message: confined }
@@ -456,7 +457,7 @@ export function resolveSymbolSpecOrEmitError(
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
     const crossFileLead = formatCrossFileLead(commandName, symbol, file, projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
-    const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
+    const resolved = resolveSpecPath(file, projectRoot ?? process.cwd())
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
     const closes = rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))

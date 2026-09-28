@@ -7,7 +7,8 @@ import { refBlindKindVerdict } from './graph_commands.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { querySymbols, queryRefs, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { detectLanguageOfFile, type RefEntry } from './parser_types.js'
-import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import { DELETED_TAG, emitGuarded, fileIsGone, findSpecSeparator, guardJsonRows, guardText, recordReadStat, sinkGoneRows, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
@@ -145,7 +146,7 @@ interface CollectedRefs {
 function collectRefs(symName: string, defFile: string | undefined, opts: RefsOptions): CollectedRefs {
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
   // `defFile` (the `file` in `file::symbol`) names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only. Resolved to the absolute path the index stores, since a relative spelling matches no definition and silently skips the typed tier.
-  const defFileHint = defFile !== undefined ? resolveIndexPath(defFile, opts.projectRoot ?? process.cwd()) : undefined
+  const defFileHint = defFile !== undefined ? resolveSpecPath(defFile, opts.projectRoot ?? process.cwd()) : undefined
   // --grep needs the same full-headroom query as --exclude-tests, since it also filters the resolved set client-side (on filePath) AFTER the query -- slicing to the requested limit before it runs would silently under-return by letting non-matching refs occupy slots ahead of the cutoff.
   if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
   else if (opts.limit !== undefined) queryOpts.limit = opts.limit
@@ -294,7 +295,7 @@ export function runRefs(opts: RefsOptions): number {
   }
   if (confinedRoot !== null) {
     for (const file of refsSpecFiles(opts.spec)) {
-      const denial = confinementRefusal('This file', resolveIndexPath(file, opts.projectRoot ?? process.cwd()), confinedRoot)
+      const denial = confinementRefusal('This file', resolveSpecPath(file, opts.projectRoot ?? process.cwd()), confinedRoot)
       if (denial !== null) {
         emitErr(denial)
         return 1

@@ -6,7 +6,8 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, countRefs, searchSymbolsFts } from './index_reader.js'
-import { resolveIndexPath, toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
+import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import {
   REF_BLIND_DEF_PROBE_LIMIT,
@@ -73,7 +74,7 @@ export function runCallers(opts: CallersOptions): number {
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const { name, file } = parseGraphSymbolSpec(opts.symbol)
-  const fileHint = file !== undefined ? resolveIndexPath(file, rootDir) : undefined
+  const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
   if (fileHint !== undefined && querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${name}' not found in '${file}'`)
     return 1
@@ -198,7 +199,7 @@ export function runCallChain(opts: CallChainOptions): number {
   const maxDepth = opts.depth ?? 8
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const { name, file } = parseGraphSymbolSpec(opts.symbol)
-  const fileHint = file !== undefined ? resolveIndexPath(file, rootDir) : undefined
+  const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
 
   if (fileHint !== undefined) {
     if (querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
@@ -316,7 +317,7 @@ export function runImpact(opts: ImpactOptions): number {
   const DEPTH_CAP = 8
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const { name: rootName, file } = parseGraphSymbolSpec(opts.symbol)
-  const fileHint = file !== undefined ? resolveIndexPath(file, rootDir) : undefined
+  const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
   if (fileHint !== undefined && querySymbols({ name: rootName, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${rootName}' not found in '${file}'`)
     return 1

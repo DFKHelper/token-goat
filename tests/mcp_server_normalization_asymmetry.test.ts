@@ -1,12 +1,4 @@
-/**
- * The MCP confinement gate must refuse a target that only looks in-root once it has been normalized. Both the spelling the gate measures and the spelling the reader will use have to land inside the root.
- *
- * `confineTargets` documents one half of this rule: forward the caller's argument byte-for-byte, so a normalisation step in the gate cannot validate a different string than the one that gets read. That stops the gate being LOOSER than the reader. The reverse was reachable and unguarded. `normalizePath` rewrites the WSL mount form `/mnt/c/x` to `c:/x` on EVERY platform -- deliberately, because a WSL process emits that form while running on Linux (see `shellMountToWindowsPath` in src/paths.ts, whose comment states the WSL branch is unconditional for exactly that reason). On POSIX, `c:/x` is a RELATIVE path. So the gate resolved `/mnt/c/Users/victim/.ssh/id_rsa` to `<root>/c:/Users/victim/.ssh/id_rsa`, found it comfortably under the root, and approved it, while the handler forwarded the untouched absolute original and the reader opened the real file. The identity pin was no help: it was keyed on the spelling the gate had invented, so the read's own key missed and the lookup degraded silently to an unpinned raw read.
- *
- * POSIX-only by construction, not by convenience: on Windows `c:/x` is drive-absolute, so the rewrite is a no-op for containment there and the case cannot be built. CI runs ubuntu-latest and macos-latest, so this executes on two of the three platforms.
- *
- * PROVENANCE: CAPTURE. Every call goes through the live MCP server over an in-memory transport, so the assertions are on the response a client actually receives, and the rewrite the attack depends on is read off `normalizePath` at run time rather than assumed.
- */
+/** The MCP confinement gate must refuse a target that only looks in-root once it has been normalized. Both the spelling the gate measures and the spelling the reader will use have to land inside the root. `confineTargets` documents one half of this rule: forward the caller's argument byte-for-byte, so a normalisation step in the gate cannot validate a different string than the one that gets read. That stops the gate being LOOSER than the reader. The reverse was reachable and unguarded. `normalizePath` rewrites the WSL mount form `/mnt/c/x` to `c:/x` on EVERY platform -- deliberately, because a WSL process emits that form while running on Linux (see `shellMountToWindowsPath` in src/paths.ts, whose comment states the WSL branch is unconditional for exactly that reason). On POSIX, `c:/x` is a RELATIVE path. So the gate resolved `/mnt/c/Users/victim/.ssh/id_rsa` to `<root>/c:/Users/victim/.ssh/id_rsa`, found it comfortably under the root, and approved it, while the handler forwarded the untouched absolute original and the reader opened the real file. The identity pin was no help: it was keyed on the spelling the gate had invented, so the read's own key missed and the lookup degraded silently to an unpinned raw read. POSIX-only by construction, not by convenience: on Windows `c:/x` is drive-absolute, so the rewrite is a no-op for containment there and the case cannot be built. CI runs ubuntu-latest and macos-latest, so this executes on two of the three platforms. PROVENANCE: CAPTURE. Every call goes through the live MCP server over an in-memory transport, so the assertions are on the response a client actually receives, and the rewrite the attack depends on is read off `normalizePath` at run time rather than assumed. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -76,6 +68,58 @@ describe('a target that is only in-root after normalization is refused', () => {
       await client.close()
       await server.close()
     }
+  })
+
+  describe('a ~/ target, which the readers expand to the home directory', () => {
+    let fakeHome: string
+    const saved: Record<string, string | undefined> = {}
+    beforeEach(() => {
+      // HAND-DERIVED: a home directory that is not under the project root, holding a heading the canary sits under.
+      fakeHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-tilde-home-')))
+      fs.writeFileSync(path.join(fakeHome, 'secret.md'), `# H\n\n${CANARY}\n`)
+      for (const k of ['HOME', 'USERPROFILE']) saved[k] = process.env[k]
+      process.env['HOME'] = fakeHome
+      process.env['USERPROFILE'] = fakeHome
+    })
+    afterEach(() => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+      fs.rmSync(fakeHome, { recursive: true, force: true })
+    })
+
+    async function call(calls: { name: string; arguments: Record<string, unknown> }[]): Promise<string[]> {
+      const server = await createMcpServer()
+      const client = new Client({ name: 'test-client', version: '0.0.1' })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+      try {
+        const out: string[] = []
+        for (const c of calls) out.push(textOf(await client.callTool(c)))
+        return out
+      } finally {
+        await client.close()
+        await server.close()
+      }
+    }
+
+    it('is refused as outside the root rather than measured as a directory named ~ inside it', async () => {
+      const texts = await call([
+        { name: 'section', arguments: { spec: '~/secret.md::H', projectRoot } },
+        { name: 'read', arguments: { spec: '~/secret.md::H', projectRoot } },
+        { name: 'outline', arguments: { file: '~/secret.md', projectRoot } },
+      ])
+      for (const text of texts) {
+        expect(text, 'a ~/ target was gated as <root>/~/... while the reader opened the home directory').not.toContain(CANARY)
+        expect(text).toContain('is outside the project root')
+      }
+    })
+
+    it('is admitted when the home directory is the project root', async () => {
+      const [text] = await call([{ name: 'section', arguments: { spec: '~/secret.md::H', projectRoot: fakeHome } }])
+      expect(text).toContain(CANARY)
+    })
   })
 
   it('still admits an ordinary in-root file, so the extra check is not a blanket refusal', async () => {
