@@ -27,6 +27,18 @@ vi.mock('../src/index_health.js', () => ({
   suggestedIndexCommand: vi.fn(() => 'token-goat index .'),
 }))
 
+// A `symbol` miss reads the project's names and JSON/YAML files with two statements of its own rather than through querySymbols, so on the `:memory:` path below they would find nothing. Answered here from the same querySymbols stub every test in this file already seeds, so a miss sees the rows the test put in scope. The real statements are covered against a real index in tests/symbol_miss_work_budget.test.ts.
+vi.mock('../src/symbol_scan.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+  const reader = await import('../src/index_reader.js')
+  const inScope = (rootDir: string): Array<{ name: string; filePath: string }> => reader.querySymbols({ rootDir, limit: -1 })
+  return {
+    ...actual,
+    projectSymbolNames: vi.fn((rootDir: string) => [...new Set(inScope(rootDir).map((s) => s.name))]),
+    projectStructuredFiles: vi.fn((rootDir: string) => [...new Set(inScope(rootDir).map((s) => s.filePath).filter((f) => /\.(json|ya?ml)$/i.test(f)))].sort()),
+  }
+})
+
 vi.mock('../src/section_reader.js', () => ({
   readSection: vi.fn(() => null),
   listSections: vi.fn(() => []),
@@ -344,16 +356,16 @@ describe('read_commands', () => {
       expect(text).toContain('no files indexed for this project')
     })
 
-    it('leaves --json output on a miss unchanged by the Did you mean suggestion', () => {
-      //
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // A --json miss is the empty envelope every other zero-result branch of this command emits, so `symbol NAME --json | jq` parses; the prose suggestion stays out of it.
+    it('answers a --json miss with the empty result envelope and no Did you mean prose', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name !== undefined) return []
         return [{ name: 'runSymbol', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '', parent: '' }]
       })
       const { text, code } = runSymbol({ name: 'runSymbo', json: true })
-      expect(code).toBe(1)
-      expect(text).toBe(`No matches for 'runSymbo'`)
+      expect(code).toBe(0)
+      expect(JSON.parse(text)).toEqual({ items: [], truncated: false, totalCount: 0 })
     })
 
     it('returns 0 and prints symbols when found', () => {

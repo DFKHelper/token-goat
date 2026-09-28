@@ -9,9 +9,9 @@ import { globalDbPath } from './constants.js'
 import { compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, isTestFile } from './util.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry } from './parser_types.js'
-import { forEachSymbol } from './symbol_scan.js'
+import { forEachSymbol, projectStructuredFiles } from './symbol_scan.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
-import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, rankSimilarNames } from './read_suggest.js'
+import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNote, nearSymbolNames } from './read_suggest.js'
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { DELETED_TAG, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
@@ -164,45 +164,43 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
 
   if (results.length === 0) {
+    // The same empty payload every other zero-result branch of this command emits, so a miss parses: `symbol NAME --json | jq` used to receive the prose line below, on stderr, with exit 1. None of the text-mode diagnosis runs for it -- a JSON caller reads `totalCount`, not prose.
+    if (opts.json === true) {
+      return { text: displaySafeJson({ items: [], truncated: false, totalCount: 0 }), code: 0 }
+    }
     let text = `No matches for '${opts.name ?? opts.grep ?? '*'}'`
-    // Resolved once here, before the near-name scan, because both the `Try: semantic` fallback and the trailing empty-index note need the answer -- and the fallback needs it to decide whether to print at all. Still only paid after the query already came back empty, and only in text mode: --json's zero-result string isn't real JSON either way (see the comment below), so appending prose to it wouldn't gain anything and would look like an attempt at a JSON field.
-    const emptyIndexRoot = opts.json !== true ? (opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })) : null
-    const indexEmpty = emptyIndexRoot !== null && isIndexEmptyForProject(globalDbPath(), emptyIndexRoot)
-    // --json callers parse this string as an error message, not human-facing prose -- keep it byte-identical to before and only append the suggestion in text mode.
-    if (opts.name !== undefined && emptyIndexRoot !== null) {
-      // Same near-name mechanism as `find`: scan the index and match by case-insensitive substring in either direction, so a typo'd or partial name still gets a cheap next step instead of dead-ending into a full-file Read or a wide Grep.
+    // Resolved once here, before the near-name ranking, because both the `Try: semantic` fallback and the trailing empty-index note need the answer -- and the fallback needs it to decide whether to print at all. Still only paid after the query already came back empty.
+    const emptyIndexRoot = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+    const indexEmpty = isIndexEmptyForProject(globalDbPath(), emptyIndexRoot)
+    if (opts.name !== undefined) {
+      // Same near-name mechanism as `find`: match the project's names by case-insensitive substring in either direction, so a typo'd or partial name still gets a cheap next step instead of dead-ending into a full-file Read or a wide Grep.
       const rootDir = emptyIndexRoot
-      // Walked in full rather than fetched as one capped page: a cap is applied by SQLite, ahead of the name tests below, so a symbol that sorts past it is reported as absent by the very branch whose job is to say it is present but out of scope. Only names, distinct paths and exact hits are retained, none of which grows with the project's symbol count. See src/symbol_scan.ts.
-      const exactMatches: SymbolEntry[] = []
-      const allNames = new Set<string>()
-      const structuredFileSet = new Set<string>()
-      forEachSymbol({ rootDir }, (s) => {
-        allNames.add(s.name)
-        structuredFileSet.add(s.filePath)
-        if (s.name === opts.name) exactMatches.push(s)
-      })
-      // An EXACT name match in this scan cannot be a typo: the caller spelled the symbol correctly and the lookup above only came back empty because a scope filter (--kind/--file) narrowed it away. Reporting that as "Did you mean: alphaOne" for the query `alphaOne` prints a correction byte-identical to what was typed, and pairs it with a "No matches" line that reads as proof the symbol does not exist -- so the caller concludes it is absent and falls back to a full Read. Name the scope that hid it instead.
+      // Each question below is its own narrow query rather than one visit over every row. That visit, a forEachSymbol walk, cost 187 s of SQLite time on a 546,394-symbol project, all of it in 55 OFFSET pages that each sorted every row in scope with its body (see src/symbol_scan.ts::projectSymbolNames), while none of these answers needs a body or a complete row. The exact-name one is an indexed `name = ?` lookup with no cap problem: it is scoped to the same project and asks for the same name, so every row it could miss past its limit is one the count below still reports.
+      const exactMatches = querySymbols({ name: opts.name, rootDir, limit: DIDYOUMEAN_LIMIT })
+      // An EXACT name match in the project cannot be a typo: the caller spelled the symbol correctly and the lookup above only came back empty because a scope filter (--kind/--file) narrowed it away. Reporting that as "Did you mean: alphaOne" for the query `alphaOne` prints a correction byte-identical to what was typed, and pairs it with a "No matches" line that reads as proof the symbol does not exist -- so the caller concludes it is absent and falls back to a full Read. Name the scope that hid it instead.
       if (exactMatches.length > 0) {
-        const shown = exactMatches.slice(0, DIDYOUMEAN_LIMIT)
-        const where = shown.map((s) => `${s.kind} at ${formatSymbolLocation(toDisplayPath(rootDir, s.filePath), s.lineStart)}`).join('; ')
-        const more = exactMatches.length > shown.length ? ` (+${exactMatches.length - shown.length} more)` : ''
+        const total = exactMatches.length < DIDYOUMEAN_LIMIT ? exactMatches.length : countSymbols({ name: opts.name, rootDir })
+        const where = exactMatches.map((s) => `${s.kind} at ${formatSymbolLocation(toDisplayPath(rootDir, s.filePath), s.lineStart)}`).join('; ')
+        const more = total > exactMatches.length ? ` (+${total - exactMatches.length} more)` : ''
         const flags = [opts.kind !== undefined ? '--kind' : null, opts.file !== undefined ? '--file' : null].filter((f): f is string => f !== null)
         const widen = flags.length > 0 ? `drop ${flags.join('/')} to see it` : 'widen the search scope to see it'
         text += `\n'${opts.name}' IS indexed (${where}${more}) -- ${widen}`
       } else {
-        // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
-        const candidates = rankSimilarNames([...allNames], opts.name)
-        text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
+        const near = nearSymbolNames(opts.name, rootDir)
+        // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step, and it is the one left when the ranking was skipped for size.
+        const semanticHint = indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
+        if (near.skipped) text += `\n${nearNamesSkippedNote()}${semanticHint}`
+        else text += near.candidates.length > 0 ? `\n${didYouMean(near.candidates)}` : semanticHint
       }
-      // Appended in BOTH branches on purpose: the didYouMean case is exactly the one that needs correcting, since a near-name suggestion ("Did you mean: sql" for `better-sqlite3`) reads as a confident answer and points away from the real one. Candidate files come from the scan already in hand above, so this costs no extra DB round trip.
-      const structuredFiles = [...structuredFileSet].sort()
+      // Appended in BOTH branches on purpose: the didYouMean case is exactly the one that needs correcting, since a near-name suggestion ("Did you mean: sql" for `better-sqlite3`) reads as a confident answer and points away from the real one.
+      const structuredFiles = projectStructuredFiles(rootDir)
       const hit = findStructuredKeyPath(opts.name, structuredFiles)
       if (hit !== null) {
         const display = toDisplayPath(rootDir, hit.filePath)
         text += `\n'${opts.name}' is a key in ${display} at ${hit.dotPath} -- JSON/YAML keys below the top level are not symbols; read it with: token-goat ${hit.command} ${display} '${hit.dotPath}'`
       }
     }
-    if (indexEmpty && emptyIndexRoot !== null) {
+    if (indexEmpty) {
       text += `\n${emptyIndexMessage(emptyIndexRoot)}`
     }
     return { text, code: 1 }

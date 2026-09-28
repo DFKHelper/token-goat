@@ -6,7 +6,7 @@ import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import { readFileText } from './read_commands.js'
 import { parseYamlDocument } from './read_structured_data.js'
-import { forEachSymbol } from './symbol_scan.js'
+import { SUGGEST_NAME_BUDGET, projectSymbolNames } from './symbol_scan.js'
 import { foldPath } from './util.js'
 
 export const DIDYOUMEAN_LIMIT = 5
@@ -110,12 +110,22 @@ export function didYouMeanLines(candidates: string[]): string[] {
   return lines
 }
 
+/** The near names a miss on `name` should offer from `rootDir`, or `skipped` when the project has more distinct names than {@link SUGGEST_NAME_BUDGET}. Ranked over every name in the project rather than a capped page of rows: a near-name suggestion drawn from the alphabetically first slice of a large project proposes whatever happens to sort early, which reads as the closest match and points away from the real one. For the same reason a project past the budget gets no ranking at all rather than a ranking of the names read so far. */
+export function nearSymbolNames(name: string, rootDir: string): { skipped: false; candidates: string[] } | { skipped: true } {
+  const names = projectSymbolNames(rootDir, SUGGEST_NAME_BUDGET)
+  if (names === null) return { skipped: true }
+  return { skipped: false, candidates: rankSimilarNames(names, name) }
+}
+
+/** What a miss prints in place of "Did you mean" when {@link nearSymbolNames} skipped the ranking, so the absence of a suggestion is not read as "nothing is close". */
+export function nearNamesSkippedNote(): string {
+  return `Near-name suggestions skipped: this project indexes more than ${SUGGEST_NAME_BUDGET.toLocaleString('en-US')} distinct symbol names, too many to rank on a miss.`
+}
+
 export function unknownSymbolSuggestion(name: string, rootDir: string): string {
-  // Ranked over every name in the project rather than a capped page of rows: a near-name suggestion drawn from the alphabetically first slice of a large project proposes whatever happens to sort early, which reads as the closest match and points away from the real one. Only the distinct names are retained, so the cost is the project's vocabulary rather than its symbol count.
-  const names = new Set<string>()
-  forEachSymbol({ rootDir }, (s) => names.add(s.name))
-  const candidates = rankSimilarNames([...names], name)
-  return candidates.length > 0 ? `\n${didYouMean(candidates)}` : ''
+  const near = nearSymbolNames(name, rootDir)
+  if (near.skipped) return `\n${nearNamesSkippedNote()}`
+  return near.candidates.length > 0 ? `\n${didYouMean(near.candidates)}` : ''
 }
 
 export function formatBareNameSpecError(command: string, name: string, projectRoot?: string): string {
