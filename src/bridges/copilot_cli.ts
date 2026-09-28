@@ -409,6 +409,12 @@ async function main() {
   if (typeof (payload && payload.prompt) === 'string' && payload.prompt !== '') {
     canonical.prompt = payload.prompt
   }
+  // subagentStop only: the subagent's final answer arrives as response (Copilot CLI 1.0.88,
+  // tg-captures C4a-013). Forwarded under Claude Code's name for the same text,
+  // last_assistant_message, which both subagent_stop handlers read. Unforwarded, they saw ''.
+  if (typeof (payload && payload.response) === 'string' && payload.response !== '') {
+    canonical.last_assistant_message = payload.response
+  }
   let originalToolArgs = {}
   if (toolName) {
     originalToolArgs = parseMaybeJsonObject(payload && payload.toolArgs)
@@ -583,6 +589,14 @@ function translate(copilotEvent, resp, toolName, originalToolArgs) {
     if (resp && resp.decision === 'block') {
       const reason = (resp && resp.reason) || 'blocked by token-goat'
       return { decision: 'block', reason: reason }
+    }
+    // subagentStop also takes modifiedResponse, which replaces the subagent's answer in the
+    // parent's task result and in the model request built from it (Copilot CLI 1.0.88,
+    // tg-captures C4a: the marker a hook returned there was all the parent's model saw).
+    const stopHso = resp && resp.hookSpecificOutput
+    const modifiedResponse = stopHso && stopHso.updatedToolOutput
+    if (copilotEvent === 'subagentStop' && typeof modifiedResponse === 'string') {
+      return { modifiedResponse: modifiedResponse }
     }
     return { decision: 'allow' }
   }
