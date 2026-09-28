@@ -5,7 +5,7 @@ import { statSync } from 'node:fs'
 
 import { getCwd, getFilePaths } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
-import { registerHook } from './hook_registry.js'
+import { registerHook, sessionStateKey } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
 import { applyHintTracking, classifyEditHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
@@ -15,6 +15,7 @@ import { recordKnownRootThrottled } from './known_roots.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, resolveIndexPath } from './paths.js'
 import { extractErrorMessage } from './util.js'
 import { recordFileEdit } from './session.js'
+import { readShapeOf, recordReadShape } from './read_shape.js'
 import { isUnderSystemTemp } from './project.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
@@ -37,6 +38,7 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
 function recordEditedFile(event: HookEvent, filePath: string): string {
   const normalized = normalizePath(filePath)
   recordFileEdit(normalized)
+  bookEditAfterPartialRead(event, normalized)
   // The index keys on the absolute path and the worker drains from its own directory, so a relative path (pi's edit and write tools take one) is resolved against the directory the harness ran the tool in before it is queued: left relative, the drain found no such file, read it as a deletion of a path no row carries, and the edit was never indexed.
   const indexPath = resolveIndexPath(filePath, getCwd(event) ?? process.cwd())
   // Nothing under the OS system temp dir should ever become a permanent index citizen -- see isUnderSystemTemp's docstring for the concrete pollution this prevents; skip both the dirty-queue enqueue and the known-root recording.
@@ -98,6 +100,19 @@ function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
   }
 
   return passOutput()
+}
+
+/** Book an edit of a file whose last Read handed the model only part of it (read_shape.ts), with the shape of that Read and the editing tool. An Edit keeps the record, since the model still has not seen what the Read withheld; a Write clears it, since the model has just supplied every line of the file itself. Best-effort: a lost measurement never affects the edit. */
+function bookEditAfterPartialRead(event: HookEvent, normalized: string): void {
+  try {
+    const stateKey = sessionStateKey(event)
+    const shape = readShapeOf(stateKey, normalized)
+    if (shape === null) return
+    recordStat('edit_after_fold', 0, 0, undefined, `last_read=${shape} tool=${event.toolName ?? 'unknown'}`)
+    if (event.toolName === 'Write') recordReadShape(stateKey, normalized, null)
+  } catch {
+    // See the doc comment above.
+  }
 }
 
 /** Public wrapper: intercepts every `context` (hint) output from {@link postEditHandlerInner} for efficacy tracking/suppression — see hint_stats.ts's module doc comment. */

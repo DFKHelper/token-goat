@@ -17,6 +17,7 @@ import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/i
 import { hasPreciseSecret } from './secret_redact.js'
 import { countTextLines, harnessNumbersReadContent, isTruncatedReadDelivery, type NumberedRow, numberedRenderBytes, parseReadDelivery, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
+import { type ReadShape, recordReadShape } from './read_shape.js'
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
@@ -380,7 +381,35 @@ export function postReadHandler(event: HookEvent): HookOutput {
   const deliveredRaw = outlined?.deliveredRaw ?? skeletoned?.deliveredRaw ?? folded?.deliveredRaw ?? null
   if (deliveredRaw !== null) forgetFoldedWindow(event)
   recordReadAsServedOutput(event, deliveredRaw)
+  recordLastReadShape(event, respText, outlined !== null ? 'outline' : skeletoned !== null ? 'skeleton' : folded !== null ? 'fold' : null)
   return rewrite ?? out
+}
+
+/** Keep how much of the file this Read handed over, for postEditHandler to book an Edit that follows a partial one (read_shape.ts). A rewrite names itself; otherwise a harness truncation, then a window that stops short of the file, the latter decided from the response's own placement of the window (`startLine`, `numLines`, `totalLines`) when it carries one, since a window asked for past the end still delivers the whole file, and from the request alone when it does not. Elided lines are not a shortfall: they were withheld because the model already holds them. */
+function recordLastReadShape(event: HookEvent, respText: string, rewrite: ReadShape | null): void {
+  try {
+    const filePath = getFilePath(event)
+    if (filePath === undefined) return
+    const normalized = normalizePath(filePath)
+    if (isImagePath(normalized)) return
+    let shape = rewrite
+    if (shape === null && isTruncatedReadDelivery(event, respText)) shape = 'truncated'
+    if (shape === null && readRequestedSliceWindow(event).isExplicitSlice && windowCoversFile(event) !== true) shape = 'partial'
+    recordReadShape(sessionStateKey(event), normalized, shape)
+  } catch {
+    // best-effort; a lost measurement never affects the completed Read
+  }
+}
+
+/** Whether the response places its window over the whole file, or `undefined` when it carries no placement. */
+function windowCoversFile(event: HookEvent): boolean | undefined {
+  const resp = event.raw['tool_response'] as Record<string, unknown> | null
+  const file = resp?.['file'] as Record<string, unknown> | null
+  const start = file?.['startLine']
+  const num = file?.['numLines']
+  const total = file?.['totalLines']
+  if (typeof start !== 'number' || typeof num !== 'number' || typeof total !== 'number') return undefined
+  return start <= 1 && start + num - 1 >= total
 }
 
 /** Take back the line range a ranged Read put on record before a fold withheld part of it. preReadHandler records the requested window as served before the Read runs, so it cannot know a fold will withhold some of it, and the range re-read deny then refuses the very `Read offset/limit` a comment-fold notice names as "Lines A..B ... was already read this session" for lines the model was never shown. The whole file's ranges go, not just this window's, for the reason hooks_bash_post.ts's forgetPersistedLineRangeReads gives: session_store.ts merges ranges as a union and only a file-level removal survives the merge. A whole-file Read records no range, so it has none of its own to take back. */
