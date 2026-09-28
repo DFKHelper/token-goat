@@ -66,4 +66,21 @@ describe('parser-fingerprint.mjs arguments', () => {
     expect(check.stdout).toContain(`parser fingerprint up to date (${PARSER_FINGERPRINT})`)
     expect(check.stdout).toContain(`embed fingerprint up to date (${EMBED_FINGERPRINT})`)
   })
+
+  // CAPTURE: CI's test-macos job on 6593e34f, where os.tmpdir() is under /var, a link to /private/var, and the case above got exit 0 for `--chek` because the script took itself for imported. A directory link reproduces that on every platform: a junction on Windows, which needs no symlink privilege, and a symlink elsewhere.
+  it('acts when run through a linked directory', () => {
+    const link = `${dir}-link`
+    fs.symlinkSync(dir, link, process.platform === 'win32' ? 'junction' : 'dir')
+    try {
+      const res = spawnSync(process.execPath, [path.join(link, 'scripts', 'parser-fingerprint.mjs'), '--chek'], { cwd: link, encoding: 'utf8' })
+      expect(res.status, res.stdout + res.stderr).toBe(2)
+      expect(res.stderr).toContain('--chek')
+      const check = spawnSync(process.execPath, [path.join(link, 'scripts', 'parser-fingerprint.mjs'), '--check'], { cwd: link, encoding: 'utf8' })
+      expect(check.stdout).toContain(`parser fingerprint up to date (${PARSER_FINGERPRINT})`)
+    } finally {
+      // Removes the link, never what it points at: a junction is a directory entry to Windows, a symlink a file entry elsewhere.
+      if (process.platform === 'win32') fs.rmdirSync(link)
+      else fs.unlinkSync(link)
+    }
+  })
 })
