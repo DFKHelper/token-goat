@@ -1,4 +1,4 @@
-// `token-goat index` (manual run) used to print nothing at all until the very end, which looks hung on a real terminal when parsing + embedding a large repo takes minutes. cmdIndex now writes a throttled progress line to stderr, gated by the exact _useRichStats rule stats.ts already uses for rich vs plain output (NO_COLOR wins, only isTTY===true or an explicit FORCE_COLOR counts as rich; every non-TTY stdout, including a pipe/file/agent harness, stays plain). This file proves: (1) the byte-identical stdout regression never happens regardless of TTY state, (2) progress only appears on stderr when the rich-terminal gate is on, (3) it stays silent under CI/pipe/NO_COLOR, (4) NO_COLOR wins even on a real TTY (mirroring _useRichStats itself), matching the documented "skip-to-green blind spot" lesson: the TTY-on path gets its own assertion, never only a skipIf.
+// `token-goat index` (manual run) used to print nothing at all until the very end, which looks hung on a real terminal when parsing + embedding a large repo takes minutes. cmdIndex now writes a throttled progress line to stderr, gated by the exact _useRichStats rule stats_report.ts already uses for rich vs plain output (NO_COLOR wins, only isTTY===true or an explicit FORCE_COLOR counts as rich; every non-TTY stdout, including a pipe/file/agent harness, stays plain). This file proves: (1) the byte-identical stdout regression never happens regardless of TTY state, (2) progress only appears on stderr when the rich-terminal gate is on, (3) it stays silent under CI/pipe/NO_COLOR, (4) NO_COLOR wins even on a real TTY (mirroring _useRichStats itself), matching the documented "skip-to-green blind spot" lesson: the TTY-on path gets its own assertion, never only a skipIf.
 
 import * as fs from 'fs'
 import * as os from 'os'
@@ -116,8 +116,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     expect(stdout).toMatch(/^Indexed \d+ files? into the symbol index\.\n?$/)
     // At least one progress repaint was written to stderr, carrying the done/total shape.
     expect(stderr).toMatch(/\d+\/2 files/)
-    // The last thing written to stderr before the process moved on must be a line-clear (carriage
-    // return followed by spaces then another carriage return), not a dangling progress fragment.
+    // The last thing written to stderr before the process moved on must be a line-clear (carriage return followed by spaces then another carriage return), not a dangling progress fragment.
     expect(stderr.endsWith('\r')).toBe(true)
     try {
       fs.rmSync(dir, { recursive: true, force: true })

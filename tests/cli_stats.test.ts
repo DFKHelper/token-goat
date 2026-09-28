@@ -17,6 +17,9 @@ vi.mock('../src/stats.js', () => ({
     by_source: { hook: { events: 3, tokens_saved: 42, bytes_saved: 100 } },
     window_days: _windowDays ?? 30,
   }),
+}))
+
+vi.mock('../src/stats_report.js', () => ({
   renderStats: () => { process.stdout.write('MOCK_FULL_STATS\n') },
   renderShortStats: (opts?: { force?: boolean }) => {
     process.stdout.write(opts?.force === true ? 'MOCK_SHORT_STATS_FORCED\n' : 'MOCK_SHORT_STATS\n')
