@@ -113,6 +113,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/compact.ts`](src/compact.ts) | `buildManifest()` / `buildManifestAdaptive()` — load the session JSON cache and produce a structured PreCompact manifest; `computeAdaptiveBudget()` scales the token budget by session age and edit density |
 | [`src/resume.ts`](src/resume.ts) | Post-compact recovery resume logic |
 | [`src/session_audit.ts`](src/session_audit.ts) | Corpus-wide session audit: streams every Claude Code transcript (JSONL) under a corpus root (default `~/.claude/projects`) and reports where the tokens actually went. |
+| [`src/session_audit_report.ts`](src/session_audit_report.ts) | Plain-text rendering of the summary `session_audit.ts` builds, for `token-goat session-audit`. The `--json` form prints that same summary without passing through here. |
 | [`src/session_read.ts`](src/session_read.ts) | Surgical reads over Claude Code's own session JSONL transcripts (files like `~/.claude/projects/<project-slug>/<session-id>.jsonl`). |
 | [`src/session_store_schema.ts`](src/session_store_schema.ts) | Session store and database schema catalog, discovery, and runtime error diagnostics. |
 | [`src/session_store.ts`](src/session_store.ts) | Persists session state across the per-tool-call hook processes: `loadSessionState()` / `saveSessionState()` (one JSON per session under `sessions/`), wired into [`src/relay.ts`](src/relay.ts). Fail-soft + merge-on-save |

@@ -1,18 +1,4 @@
-/**
- * Coverage for `token-goat session-audit` (src/session_audit.ts): corpus-wide token attribution
- * over Claude Code JSONL transcripts. The fixture below is hand-written JSONL literals and every
- * expected number is derived by hand from those literals, independently of the implementation:
- * usage totals are the arithmetic sums of the usage objects written into the fixture, byte counts
- * are counted off the literal strings, and est-token values are chars/3+1 computed on paper
- * (12 bytes -> 5, 16 -> 6, 35 -> 12, 3 -> 2, 5 -> 2).
- *
- * The load-bearing case is usage deduplication: Claude Code writes one JSONL line per streamed
- * content block, and every line of one API response repeats the same message.id and usage
- * (confirmed empirically: 24,610 assistant lines, 13,263 unique ids in one real transcript).
- * The fixture carries two lines sharing msg_A: summed per line the input total would be 1,200;
- * counted per response it is 600. The distinct-id control (msg_A + msg_B => apiCalls 2) guards
- * the over-fix direction: dedup keyed on anything coarser than message.id would collapse them.
- */
+/** Coverage for `token-goat session-audit` (src/session_audit.ts): corpus-wide token attribution over Claude Code JSONL transcripts. The fixture below is hand-written JSONL literals and every expected number is derived by hand from those literals, independently of the implementation: usage totals are the arithmetic sums of the usage objects written into the fixture, byte counts are counted off the literal strings, and est-token values are chars/3+1 computed on paper (12 bytes -> 5, 16 -> 6, 35 -> 12, 3 -> 2, 5 -> 2). The load-bearing case is usage deduplication: Claude Code writes one JSONL line per streamed content block, and every line of one API response repeats the same message.id and usage (confirmed empirically: 24,610 assistant lines, 13,263 unique ids in one real transcript). The fixture carries two lines sharing msg_A: summed per line the input total would be 1,200; counted per response it is 600. The distinct-id control (msg_A + msg_B => apiCalls 2) guards the over-fix direction: dedup keyed on anything coarser than message.id would collapse them. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -20,7 +6,8 @@ import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import type { EstimatedAttribution, MeasuredUsage } from '../src/session_audit.js'
-import { auditSessionCorpus, computeCalibration, formatSessionAudit, listCorpusTranscripts } from '../src/session_audit.js'
+import { auditSessionCorpus, computeCalibration, listCorpusTranscripts } from '../src/session_audit.js'
+import { formatSessionAudit } from '../src/session_audit_report.js'
 import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
 
 const L1 = '{"type":"assistant","message":{"id":"msg_A","role":"assistant","usage":{"input_tokens":100,"cache_creation_input_tokens":200,"cache_read_input_tokens":300,"output_tokens":40},"content":[{"type":"text","text":"Hello world!"}]}}'
@@ -213,29 +200,8 @@ describe('session-audit via the built bundle', () => {
   })
 })
 
-/**
- * Attachment-kind census fixture, derived by hand from the literals below, independently of the
- * implementation. Call sequence (main lane): A1 at call 0, C1, A2 at call 1, C2, compact boundary
- * (flushes A1: 5 tok x 2 calls = 10, A2: 4 tok x 1 = 4), A3 at call 2 (identical to A1), H2 at
- * call 2, C3, end of file (flushes A3: 5 x 1 = 5, H2: 1 x 1 = 1). Sidechain lane: SA at side call
- * 0, S1, end of file (flushes SA: 2 tok x 1 side call = 2). The sidechain attachment is the lane
- * control: merged into the main call sequence it would sit at main call 0 and flush at the main
- * boundary as 2 tok x 2 calls = 4, not 2. Visible bytes
- * deep-sum every string in the visible fields, so A2's block discriminator value "text" counts (6
- * content + 4 = 10). Est-tokens are bytes/3+1 on paper: 12 -> 5, 10 -> 4, 3 -> 2, 2 -> 1. Billed
- * equivalents on paper: round(1.25 x est + 0.1 x reread) = 14, 5, 3, 1.
- */
-/**
- * Sidechain-lane and Read-interception fixture, expected values derived by hand from the
- * literals. Lane 1: first usage 100+900+0 = 1000 prefix tokens, 2 distinct calls, brief
- * "please do X" = 11 bytes; billed-equiv on paper: round(1000 x (1.25 + 0.1 x 1)) = 1350.
- * Lane 2 carries no usage at all: it must count in laneFiles but stay OUT of every mean
- * (counting it as prefix 0 would drag meanFirstCallPrefixTokens to 500). Reads, main file:
- * R1 is a 52-byte divert message (counted); R2 is a 12,000-byte full serve (counted, and its
- * trailing marker-like text must not divert it because it is over the size cap); R3 is a
- * 5-byte ordinary result (neither); R4 is a 3,000-byte body mentioning a token-goat command
- * (neither: over the divert cap, under the full-serve floor).
- */
+/** Attachment-kind census fixture, derived by hand from the literals below, independently of the implementation. Call sequence (main lane): A1 at call 0, C1, A2 at call 1, C2, compact boundary (flushes A1: 5 tok x 2 calls = 10, A2: 4 tok x 1 = 4), A3 at call 2 (identical to A1), H2 at call 2, C3, end of file (flushes A3: 5 x 1 = 5, H2: 1 x 1 = 1). Sidechain lane: SA at side call 0, S1, end of file (flushes SA: 2 tok x 1 side call = 2). The sidechain attachment is the lane control: merged into the main call sequence it would sit at main call 0 and flush at the main boundary as 2 tok x 2 calls = 4, not 2. Visible bytes deep-sum every string in the visible fields, so A2's block discriminator value "text" counts (6 content + 4 = 10). Est-tokens are bytes/3+1 on paper: 12 -> 5, 10 -> 4, 3 -> 2, 2 -> 1. Billed equivalents on paper: round(1.25 x est + 0.1 x reread) = 14, 5, 3, 1. */
+/** Sidechain-lane and Read-interception fixture, expected values derived by hand from the literals. Lane 1: first usage 100+900+0 = 1000 prefix tokens, 2 distinct calls, brief "please do X" = 11 bytes; billed-equiv on paper: round(1000 x (1.25 + 0.1 x 1)) = 1350. Lane 2 carries no usage at all: it must count in laneFiles but stay OUT of every mean (counting it as prefix 0 would drag meanFirstCallPrefixTokens to 500). Reads, main file: R1 is a 52-byte divert message (counted); R2 is a 12,000-byte full serve (counted, and its trailing marker-like text must not divert it because it is over the size cap); R3 is a 5-byte ordinary result (neither); R4 is a 3,000-byte body mentioning a token-goat command (neither: over the divert cap, under the full-serve floor). */
 describe('sidechain lane and read interception census', () => {
   const DIVERT_TEXT = 'a.md was already read this session. Use the cache.'
   const R_USE = (id: string): string => `{"type":"assistant","message":{"id":"msg_ru_${id}","role":"assistant","content":[{"type":"tool_use","id":"${id}","name":"Read","input":{"file_path":"a.md"}}]}}`
@@ -348,24 +314,7 @@ describe('attachment kind census', () => {
   })
 })
 
-/**
- * Bash fire-rate and Read first/repeat census fixture, expected values derived by hand from the
- * inputs below, independently of the implementation. Bash: b1 is 2,000 bytes unmarked (untouched;
- * head "rg" after stripping the FOO=1 env assignment, the cd prefix, the quoted Windows path, and
- * .exe); b2 carries a literal [token-goat: marker (marked, 34 bytes); b3 is 4 bytes (small); b4 is
- * 1,500 bytes mentioning token-goat WITHOUT a bracket marker (untouched, head "node"): the
- * over-match control for the marker regex; b5 is 1,100 bytes untouched behind a NEWLINE-separated
- * cd prefix (head "npm", not "cd"). Est-tokens on paper (floor(bytes/3)+1): 2,000 ->
- * 667, 1,500 -> 501, 1,100 -> 367, sum 1,535. Residency: b1 lands at main call 0, two usage calls then a compact
- * boundary flush it at 667 x 2 = 1,334; a third usage call follows the boundary (the flush-timing
- * control: settling b1 at end of file instead would score 667 x 3 = 2,001); b4 and b5 land at call
- * 3 and flush at end of file for 0. Billed equiv: round(1.25 x 1,535 + 0.1 x 1,334) = 2,052. Reads: rr1 is a first full serve (10,300 B);
- * rr2 re-targets the same path under a different spelling and case with offset/limit (repeat,
- * paging, 10,250 B); rr3 repeats it whole after a second compact boundary (a hooked whole-file
- * repeat that is nonetheless correct by design: compaction evicted the content, 10,400 B); rr9's
- * tool_use carries no file_path (path unknown, 10,240 B). A token-goat hook_success line makes both repeats count as hooked.
- * The lane's sibling agent-t1.meta.json carries agentType "coder" (prefix 40+0+10 = 50).
- */
+/** Bash fire-rate and Read first/repeat census fixture, expected values derived by hand from the inputs below, independently of the implementation. Bash: b1 is 2,000 bytes unmarked (untouched; head "rg" after stripping the FOO=1 env assignment, the cd prefix, the quoted Windows path, and .exe); b2 carries a literal [token-goat: marker (marked, 34 bytes); b3 is 4 bytes (small); b4 is 1,500 bytes mentioning token-goat WITHOUT a bracket marker (untouched, head "node"): the over-match control for the marker regex; b5 is 1,100 bytes untouched behind a NEWLINE-separated cd prefix (head "npm", not "cd"). Est-tokens on paper (floor(bytes/3)+1): 2,000 -> 667, 1,500 -> 501, 1,100 -> 367, sum 1,535. Residency: b1 lands at main call 0, two usage calls then a compact boundary flush it at 667 x 2 = 1,334; a third usage call follows the boundary (the flush-timing control: settling b1 at end of file instead would score 667 x 3 = 2,001); b4 and b5 land at call 3 and flush at end of file for 0. Billed equiv: round(1.25 x 1,535 + 0.1 x 1,334) = 2,052. Reads: rr1 is a first full serve (10,300 B); rr2 re-targets the same path under a different spelling and case with offset/limit (repeat, paging, 10,250 B); rr3 repeats it whole after a second compact boundary (a hooked whole-file repeat that is nonetheless correct by design: compaction evicted the content, 10,400 B); rr9's tool_use carries no file_path (path unknown, 10,240 B). A token-goat hook_success line makes both repeats count as hooked. The lane's sibling agent-t1.meta.json carries agentType "coder" (prefix 40+0+10 = 50). */
 describe('bash filter fire-rate and read repeat census', () => {
   const use = (id: string, name: string, input: Record<string, unknown>): string => JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
   const result = (id: string, content: string): string => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
