@@ -1614,6 +1614,32 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rMissing.status).not.toBe(0)
   },
 
+  'listing-size': () => {
+    const proj = mkIsolated('tg-matrix-listing-size-')
+    const transcript = path.join(proj, 'fake-session.jsonl')
+    // Attachment shapes as Claude Code writes them (see tests/listing_size.test.ts for provenance).
+    const lines = [
+      { type: 'attachment', attachment: { type: 'skill_listing', content: '- alpha: Short.\n- beta: A longer description\nover two lines.', skillCount: 2, isInitial: true, names: [] } },
+      { type: 'attachment', attachment: { type: 'agent_listing_delta', addedTypes: ['coder'], addedLines: ['- coder: Writes code.'], removedTypes: [], isInitial: true, showConcurrencyNote: true } },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+
+    const r = run(['listing-size', transcript])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/Skills: 2 listed, .* sent once/)
+    expect(r.stdout).toMatch(/Agents: 1 listed/)
+    expect(r.stdout).toMatch(/^\s+\d+ B .* beta$/m)
+
+    const rj = run(['listing-size', transcript, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { skills: { entries: Array<{ name: string }> }; agents: { injections: number } }
+    expect(parsed.skills.entries.map((e) => e.name)).toEqual(['beta', 'alpha'])
+    expect(parsed.agents.injections).toBe(1)
+
+    const rMissing = run(['listing-size', 'no-such-session-id', '--project', proj])
+    expect(rMissing.status).not.toBe(0)
+  },
+
   'session-slice': () => {
     const proj = mkIsolated('tg-matrix-session-slice-')
     const transcript = path.join(proj, 'fake-session.jsonl')

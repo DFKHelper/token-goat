@@ -34,7 +34,7 @@ export function generateCompactHelp(): string {
     '  session-schema, mcp-audit, audit',
     '',
     'Skills: skill-body, skill-compact, skill-list, skill-size, skill-history,',
-    '  skill-diff, skill-section',
+    '  skill-diff, skill-section, listing-size',
     '',
     'Compression: compress-text, retrieve, handoff-create, handoff-resolve,',
     '  compress, recall, bash-output, web-output, mcp-output, bench',

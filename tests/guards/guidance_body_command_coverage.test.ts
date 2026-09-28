@@ -57,6 +57,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'hint-stats', reason: SESSION_REASON },
   { command: 'statusline', reason: SESSION_REASON },
   { command: 'session-outline', reason: SESSION_REASON },
+  { command: 'listing-size', reason: SESSION_REASON },
   { command: 'session-slice', reason: SESSION_REASON },
   { command: 'mcp-audit', reason: SESSION_REASON },
   { command: 'session-audit', reason: SESSION_REASON },

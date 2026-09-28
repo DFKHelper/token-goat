@@ -33,7 +33,7 @@ const ENVELOPE_COMMANDS = [
 /** Commands that support `--json` but legitimately emit a non-row-list payload (a scalar report, a keyed object, a per-file map). Listed by name rather than detected, because "is this payload conceptually a list of rows?" is a design decision, not something derivable from the manifest. */
 const NON_ENVELOPE_JSON_COMMANDS = [
   'read', 'brief', 'section', 'map', 'bridges-status', 'commands', 'stats', 'doctor',
-  'context-stats', 'bootstrap-audit', 'waste', 'audit', 'session-outline', 'session-slice', 'session-audit', 'mcp-audit',
+  'context-stats', 'bootstrap-audit', 'waste', 'audit', 'session-outline', 'session-slice', 'session-audit', 'listing-size', 'mcp-audit',
   'recall', 'hint-stats', 'statusline', 'exports', 'imports', 'find', 'grep', 'skill-list',
   'skill-history', 'call-chain', 'impact', 'deps', 'scope', 'similar', 'context-for', 'search',
   'coverage-gaps', 'arch', 'blame', 'ask', 'tokens', 'budget', 'failures', 'todo', 'trace',
