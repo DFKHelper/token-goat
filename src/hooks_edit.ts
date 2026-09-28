@@ -14,7 +14,7 @@ import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, resolveIndexPath } from './paths.js'
 import { extractErrorMessage } from './util.js'
-import { recordFileEdit } from './session.js'
+import { getCompactedAt, markHintShown, recordFileEdit, wasHintShown } from './session.js'
 import { readShapeOf, recordReadShape } from './read_shape.js'
 import { isUnderSystemTemp } from './project.js'
 import { recordStat } from './stats.js'
@@ -84,6 +84,9 @@ function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
     } catch {
       // best-effort; treat as eligible for the hint below on stat failure
     }
+    // Once per file per compaction epoch: the hint names the same command every time the same file is edited, so a second copy tells the model nothing the first did not while the first is still in context (one session carried the CHANGELOG.md hint 17 times). A compaction takes the earlier copy out of context, so the epoch is part of the key.
+    const repeatKey = `edit-section-hint:${normalized}:${getCompactedAt()}`
+    if (wasHintShown(repeatKey)) return passOutput()
     if (!meetsSavingsFloor(editedSize)) {
       // The file was edited, it is markdown, and a `section` hint was composable from it, so price is the only thing that stopped this one -- the same decision declineUnpriced records for bash redirects, in the category that emits more hints than any other and had never recorded a refusal.
       logSuppressedDetection('edit_reread_suggest', event.sessionId, normalized)
@@ -92,6 +95,7 @@ function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
       const escapedPath = displaySafePath(normalized).replace(/`/g, '\\`').replace(/"/g, '\\"')
       // The index row for this file was just queued stale, so hintTarget reads the heading off the written file's first bytes. The path goes in as the correlator, so hint-stats credits a `section` on any heading of it, as it did when this printed a placeholder.
       const heading = hintTarget(normalized, 'section', { placeholder: 'HeadingName' })
+      markHintShown(repeatKey)
       return contextOutput(
         leadWithCommand('token-goat section "' + escapedPath + '::' + heading.name + '"', 'to re-read a specific section rather than the full file', displaySafePath(editedBasename) + ' was edited.'),
         [escapedPath],
