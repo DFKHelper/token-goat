@@ -63,6 +63,8 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/embed_tokenizer.ts': 'embedding tokenizer, part of the embed_sha-gated pipeline',
   'src/embed_runtime.ts': 'chooses and loads the inference runtime the embedding model runs on; reached only through the embedding pipeline, never by an extractor',
   'src/pinned_file.ts': 'pinned-digest download and shared-cache copy for the embedding model weights and the runtime binary, never reached by an extractor',
+  'src/embed_runtime_web.ts': 'places, downloads and starts the WebAssembly inference runtime for the embedding model, never reached by an extractor',
+  'src/pinned_fetch.ts': 'hashing, shared-cache copy and download behind pinned_file.ts, never reached by an extractor',
   'src/embed_fingerprint.ts': 'the generated EMBED_FINGERPRINT digest constant, folded into embeddingProvenance() by src/embeddings.ts; a files.embed_sha concern, not files.parser_sha',
   'src/embedding_boundaries.ts': 'buildEmbeddingBoundaries derives embedding chunk boundaries (files.embed_sha) from already-written symbol/heading rows; reached from parser.ts only via its re-export, never by indexFileSync\'s symbol/ref extraction. Hashed by EMBED_FINGERPRINT instead, see tests/guards/embed_fingerprint_covers_embedding_sources.test.ts',
   'src/embed_stamp.ts': 'resolves which EMBED_FINGERPRINT digest a path\'s extraction kind carries, so a re-embed can be scoped to one document format; a files.embed_sha concern that reads no source and extracts nothing',
