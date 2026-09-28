@@ -2,7 +2,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
+import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
@@ -234,6 +234,9 @@ export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   const legacyScriptPath = path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE)
   // Read before the config is written, so a legacy file with no sidecar is still credited to Copilot.
   const owners = readCopilotHooksOwners(hooksDir)
+  // Recorded when this call makes them, so releasing the last owner can take away a hooks directory, and the `.github` or Copilot home above it, that only token-goat's files were ever in.
+  ensureDirRecordingCreation(path.dirname(hooksDir))
+  ensureDirRecordingCreation(hooksDir)
 
   // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the hook config itself needs any change (mirrors installCodex()). Both the primary .cjs shim (immune to "type": "module" in package.json) and the .js forwarder (for running sessions with cached .js hook commands) are written.
   const scriptChanged = writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
@@ -270,6 +273,7 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   const scriptRemoved = removeFileInScope(path.join(hooksDir, HOOKS_SCRIPT_FILE))
   const legacyScriptRemoved = removeFileInScope(path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE))
   const ownersRemoved = removeFileInScope(ownersPath)
+  removeCreatedIfEmpty(hooksDir)
   return configRemoved || scriptRemoved || legacyScriptRemoved || ownersRemoved
 }
 
@@ -281,9 +285,15 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
   const instructionsPath = copilotCliInstructionsPath(opts)
   // First, because it is the one step that refuses: a `token-goat` MCP entry token-goat did not write stops the install before the hooks or the instructions are touched, rather than leaving a half-installed integration behind the error.
   const userScope = opts.local !== true
+  // Checked before the MCP step, which is the first write and makes the Copilot home when there is none.
+  const scopeDir = path.dirname(instructionsPath)
+  const scopeDirExisted = fs.existsSync(scopeDir)
   const mcpChanged = userScope ? installCopilotMcpServer() : false
+  if (!scopeDirExisted && fs.existsSync(scopeDir)) recordCreatedConfig(scopeDir)
   const hooks = installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
+  const instructionsExisted = fs.existsSync(instructionsPath)
   const instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
+  if (!instructionsExisted) recordCreatedConfig(instructionsPath)
 
   return {
     configPath: hooks.configPath,
@@ -302,14 +312,18 @@ function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
 function uninstallCopilotCliScopeInner(opts: CopilotCliScopeOptions): boolean {
   // The hooks file stays while `install --vscode` still relies on it; see CopilotHooksOwner.
   let removedAny = releaseCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
-  // The instructions file is user-owned: strip only the delimited block and preserve everything else, never unlink the whole file (mirrors codex uninstall).
-  if (stripCopilotInstructionsBlock(copilotCliInstructionsPath(opts))) {
+  // The instructions file is user-owned: strip only the delimited block and preserve everything else. The file itself goes only when this machine's install created it and the block was all that was ever in it (mirrors uninstallClaudeMd).
+  const instructionsPath = copilotCliInstructionsPath(opts)
+  if (stripCopilotInstructionsBlock(instructionsPath)) {
     removedAny = true
   }
+  removeCreatedIfEmpty(instructionsPath)
   // Copilot reads MCP servers only from the user-scope file, so only the user-scope sweep removes the entry, and `uninstall --copilot --local` leaves it.
   if (opts.local !== true && uninstallCopilotMcpServer()) {
     removedAny = true
   }
+  // Last, after the hooks, the instructions file and the MCP config have had their turn: the `.github` directory or Copilot home that held them goes only if install created it and nothing is left in it.
+  removeCreatedIfEmpty(path.dirname(instructionsPath))
   return removedAny
 }
 
