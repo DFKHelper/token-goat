@@ -1,59 +1,18 @@
-/**
- * Surgical reads over Claude Code's own session JSONL transcripts (files
- * like `~/.claude/projects/<project-slug>/<session-id>.jsonl`). Backs
- * `token-goat session-outline` and `token-goat session-slice`.
- *
- * Transcript discovery/format matches `waste.ts` and `resume.ts`, which
- * already parse this same file for cost attribution and resume packets:
- * one JSON object per line, chronological. Not every line is a
- * conversational turn -- real transcripts interleave `custom-title`,
- * `mode`, `attachment`, `file-history-snapshot`, `system`, and other
- * bookkeeping event types alongside `user`/`assistant` message lines
- * (confirmed empirically against real transcripts). Only lines with
- * `type` `user` or `assistant` and a `message.content` field count as a
- * "turn" here; turn numbers are 1-based positions in that filtered
- * sequence, not raw line numbers, so `--range` stays stable and compact
- * even though the underlying file may have many more non-turn lines.
- *
- * `message.content` is either a plain string (a simple text message) or an
- * array of blocks (`text`, `thinking`, `tool_use`, `tool_result`, ...) --
- * unlike `waste.ts`'s `parseTranscript`, which only looks at array-content
- * lines (it only needs tool_use/tool_result), this module also has to
- * summarize plain-string turns for the outline.
- *
- * Read line-by-line via `readline` rather than `fs.readFileSync` +
- * `.split('\n')` (waste.ts's approach): these transcripts are explicitly
- * the multi-MB case this feature exists to make cheaper to inspect, so
- * avoiding one whole-file string allocation is worth the small deviation
- * from waste.ts's simpler (but for this use case, more expensive) pattern.
- */
+/** Surgical reads over Claude Code's own session JSONL transcripts (files like `~/.claude/projects/<project-slug>/<session-id>.jsonl`). Backs `token-goat session-outline` and `token-goat session-slice`. Transcript discovery/format matches `waste.ts` and `resume.ts`, which already parse this same file for cost attribution and resume packets: one JSON object per line, chronological. Not every line is a conversational turn -- real transcripts interleave `custom-title`, `mode`, `attachment`, `file-history-snapshot`, `system`, and other bookkeeping event types alongside `user`/`assistant` message lines (confirmed empirically against real transcripts). Only lines with `type` `user` or `assistant` and a `message.content` field count as a "turn" here; turn numbers are 1-based positions in that filtered sequence, not raw line numbers, so `--range` stays stable and compact even though the underlying file may have many more non-turn lines. `message.content` is either a plain string (a simple text message) or an array of blocks (`text`, `thinking`, `tool_use`, `tool_result`, ...) -- unlike `waste.ts`'s `parseTranscript`, which only looks at array-content lines (it only needs tool_use/tool_result), this module also has to summarize plain-string turns for the outline. Read line-by-line via `readline` rather than `fs.readFileSync` + `.split('\n')` (waste.ts's approach): these transcripts are explicitly the multi-MB case this feature exists to make cheaper to inspect, so avoiding one whole-file string allocation is worth the small deviation from waste.ts's simpler (but for this use case, more expensive) pattern. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as readline from 'node:readline'
 
 import { estimateTokens } from './compact.js'
-import { projectTranscriptsDir, findLatestTranscript, safeStringify, extractResultText } from './waste.js'
+import { projectTranscriptsDir } from './claude_config_dir.js'
+import { findLatestTranscript, safeStringify, extractResultText } from './waste.js'
 import { resolveProjectRoot } from './project.js'
 import { displaySafeText } from './paths.js'
 
 // ---- resolution -----------------------------------------------------------
 
-/**
- * Resolve a `session-id-or-path` argument (or, when omitted, "the current
- * session") to an on-disk transcript path.
- *
- * Precedence:
- *  1. `arg` is an existing file path -> used directly.
- *  2. `arg` looks like a session id -> `<projectTranscriptsDir>/<arg>.jsonl`
- *     (also tried with `arg` already carrying a `.jsonl` suffix).
- *  3. `arg` omitted -> the most-recently-modified `*.jsonl` transcript in
- *     the resolved project's transcripts dir (same "current session"
- *     resolution `waste.ts`'s `runWasteCommand` already uses when
- *     `--transcript` is not passed).
- *
- * Returns null when nothing resolves; never throws.
- */
+/** Resolve a `session-id-or-path` argument (or, when omitted, "the current session") to an on-disk transcript path. Precedence: 1. `arg` is an existing file path -> used directly. 2. `arg` looks like a session id -> `<projectTranscriptsDir>/<arg>.jsonl` (also tried with `arg` already carrying a `.jsonl` suffix). 3. `arg` omitted -> the most-recently-modified `*.jsonl` transcript in the resolved project's transcripts dir (same "current session" resolution `waste.ts`'s `runWasteCommand` already uses when `--transcript` is not passed). Returns null when nothing resolves; never throws. */
 export function resolveSessionTranscript(arg?: string, opts: { project?: string } = {}): string | null {
   if (arg !== undefined && arg !== '') {
     if (fs.existsSync(arg) && fs.statSync(arg).isFile()) return arg
@@ -177,17 +136,7 @@ interface StreamedTurn {
   blocks: SessionBlock[]
 }
 
-/**
- * Stream a transcript line-by-line, yielding one entry per valid turn -- blank lines,
- * malformed JSON, and non-user/assistant lines are silently skipped, mirroring
- * `toTurnBlocks`' null-return contract. Never loads the whole file into memory at once.
- * Shared iteration core for `buildSessionOutline` and `sliceSessionTurns`, which otherwise
- * differ only in what each does with a valid turn (and `sliceSessionTurns` additionally stops
- * early once past its turn range). `rl.close()` and `input.destroy()` both run in `finally` so
- * an early `break` in a `for await` consumer (which invokes this generator's `return()`) still
- * releases the stream -- `readline.close()` alone does not destroy the underlying input stream,
- * so without the explicit destroy the fs read handle/fd would linger until GC.
- */
+/** Stream a transcript line-by-line, yielding one entry per valid turn -- blank lines, malformed JSON, and non-user/assistant lines are silently skipped, mirroring `toTurnBlocks`' null-return contract. Never loads the whole file into memory at once. Shared iteration core for `buildSessionOutline` and `sliceSessionTurns`, which otherwise differ only in what each does with a valid turn (and `sliceSessionTurns` additionally stops early once past its turn range). `rl.close()` and `input.destroy()` both run in `finally` so an early `break` in a `for await` consumer (which invokes this generator's `return()`) still releases the stream -- `readline.close()` alone does not destroy the underlying input stream, so without the explicit destroy the fs read handle/fd would linger until GC. */
 async function* streamTurns(transcriptPath: string): AsyncGenerator<StreamedTurn> {
   const input = fs.createReadStream(transcriptPath, { encoding: 'utf8' })
   const rl = readline.createInterface({ input, crlfDelay: Infinity })
@@ -215,10 +164,7 @@ async function* streamTurns(transcriptPath: string): AsyncGenerator<StreamedTurn
   }
 }
 
-/**
- * Stream a transcript line-by-line, building the compact per-turn outline.
- * Never loads the whole file into memory at once.
- */
+/** Stream a transcript line-by-line, building the compact per-turn outline. Never loads the whole file into memory at once. */
 export async function buildSessionOutline(transcriptPath: string): Promise<SessionOutlineTurn[]> {
   const out: SessionOutlineTurn[] = []
   for await (const t of streamTurns(transcriptPath)) {
@@ -235,12 +181,7 @@ export async function buildSessionOutline(transcriptPath: string): Promise<Sessi
   return out
 }
 
-/**
- * Stream a transcript line-by-line, collecting the full block content for
- * every turn whose 1-based turn number falls in `[startTurn, endTurn]`
- * (inclusive, same locators `buildSessionOutline` assigns). Stops reading
- * once past `endTurn` rather than draining the whole file.
- */
+/** Stream a transcript line-by-line, collecting the full block content for every turn whose 1-based turn number falls in `[startTurn, endTurn]` (inclusive, same locators `buildSessionOutline` assigns). Stops reading once past `endTurn` rather than draining the whole file. */
 export async function sliceSessionTurns(
   transcriptPath: string,
   startTurn: number,

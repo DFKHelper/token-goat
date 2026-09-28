@@ -4,9 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import type * as NodeOs from 'node:os'
 
-// vi.mock is hoisted -- wrap homedir so projectTranscriptsDir/findLatestTranscript resolve
-// against an isolated fake home instead of the real developer machine's
-// ~/.claude/projects/, which this test must never read from or write into.
+// vi.mock is hoisted -- wrap homedir so projectTranscriptsDir/findLatestTranscript resolve against an isolated fake home instead of the real developer machine's ~/.claude/projects/, which this test must never read from or write into.
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -15,6 +13,7 @@ vi.mock('node:os', async (importOriginal) => {
   }
 })
 
+import { projectTranscriptsDir } from '../src/claude_config_dir.js'
 import {
   assistantOutputCost,
   buildWasteReport,
@@ -22,7 +21,6 @@ import {
   findLatestTranscript,
   neverTouchedAgain,
   parseTranscript,
-  projectTranscriptsDir,
   readFileLines,
   repeatedUncompressedBashCommands,
   tokensByFile,
@@ -89,8 +87,7 @@ function estimateTokensFixture(text: string): number {
 
 describe('projectTranscriptsDir / findLatestTranscript', () => {
   it('slugifies every non-alphanumeric character of the resolved project root', () => {
-    // Build a genuinely absolute path on any platform (OS root + segments) rather than
-    // hardcoding a Windows drive letter, which resolves as relative-to-cwd on POSIX.
+    // Build a genuinely absolute path on any platform (OS root + segments) rather than hardcoding a Windows drive letter, which resolves as relative-to-cwd on POSIX.
     const input = path.join(path.parse(process.cwd()).root, 'Projects', 'my-app')
     const dir = projectTranscriptsDir(input)
     expect(dir).toContain(path.join('.claude', 'projects'))
@@ -103,8 +100,7 @@ describe('projectTranscriptsDir / findLatestTranscript', () => {
   })
 
   it('picks the most-recently-modified .jsonl transcript', () => {
-    // os.homedir() is mocked to fakeHome (see beforeEach), so this resolves under an
-    // isolated temp directory, not the real developer machine's ~/.claude/projects/.
+    // os.homedir() is mocked to fakeHome (see beforeEach), so this resolves under an isolated temp directory, not the real developer machine's ~/.claude/projects/.
     const projectRoot = path.join(tempDir, 'proj')
     fs.mkdirSync(projectRoot, { recursive: true })
     const transcriptsDir = projectTranscriptsDir(projectRoot)
@@ -127,8 +123,7 @@ describe('readFileLines', () => {
   it('reassembles lines and multi-byte characters split across the 1 MiB chunk boundary', () => {
     const CHUNK = 1 << 20
     const file = path.join(tempDir, 'chunked.txt')
-    // A run of single-byte filler that ends a few bytes before the first chunk boundary, so the
-    // following multi-byte character straddles it and the line containing it spans two reads.
+    // A run of single-byte filler that ends a few bytes before the first chunk boundary, so the following multi-byte character straddles it and the line containing it spans two reads.
     const filler = 'a'.repeat(CHUNK - 3)
     fs.writeFileSync(file, `${filler}étail\nsecond\nno-trailing-newline`, 'utf8')
 
@@ -191,17 +186,12 @@ describe('cost aggregation', () => {
     const costs = costPerCall(parseTranscript(transcript))
     const byTool = tokensByTool(costs)
     expect(byTool[0]?.key).toBe('Read')
-    // Pin the exact deterministic estimateTokens() value for the 30-char Bash result instead of
-    // just ">0", so a regression in the token-estimate formula (still non-zero) is caught too.
+    // Pin the exact deterministic estimateTokens() value for the 30-char Bash result instead of just ">0", so a regression in the token-estimate formula (still non-zero) is caught too.
     expect(byTool.find((t) => t.key === 'Bash')?.tokens).toBe(11)
     expect(byTool[0]?.tokens).toBeGreaterThan(byTool.find((t) => t.key === 'Bash')?.tokens ?? 0)
   })
 
-  // Regression: costPerCall used compact.ts's estimateTokens, which counts raw text.length with
-  // no ANSI stripping -- a colorized Bash result (git diff --color, a color-forcing test runner,
-  // etc.) inflated its token estimate by the escape-sequence bytes, skewing which calls the
-  // report flags as expensive. overflow_guard.ts's estimateTokens strips ANSI first for exactly
-  // this reason; costPerCall now uses that copy instead.
+  // Regression: costPerCall used compact.ts's estimateTokens, which counts raw text.length with no ANSI stripping -- a colorized Bash result (git diff --color, a color-forcing test runner, etc.) inflated its token estimate by the escape-sequence bytes, skewing which calls the report flags as expensive. overflow_guard.ts's estimateTokens strips ANSI first for exactly this reason; costPerCall now uses that copy instead.
   it('estimates tokens from ANSI-stripped result text, not raw escape-code-inflated length', () => {
     const plain = 'x'.repeat(300)
     const ansiWrapped = `\x1b[32m${plain}\x1b[0m`
@@ -227,15 +217,11 @@ describe('cost aggregation', () => {
     const byFile = tokensByFile(costs)
     expect(byFile).toHaveLength(1)
     expect(byFile[0]?.key).toBe('/a.ts')
-    // Pin the exact sum of both calls' estimateTokens() values (90-char Read + 2-char Edit)
-    // instead of just ">0", so a regression that dropped one call's contribution (still
-    // non-zero) is caught too.
+    // Pin the exact sum of both calls' estimateTokens() values (90-char Read + 2-char Edit) instead of just ">0", so a regression that dropped one call's contribution (still non-zero) is caught too.
     expect(byFile[0]?.tokens).toBe(32)
   })
 
-  // Regression: FILE_PATH_TOOLS omitted MultiEdit, even though hooks_edit.ts registers it
-  // identically to Edit/Write and it carries the same file_path field. tokensByFile silently
-  // dropped every MultiEdit call's cost from the per-file breakdown instead of attributing it.
+  // Regression: FILE_PATH_TOOLS omitted MultiEdit, even though hooks_edit.ts registers it identically to Edit/Write and it carries the same file_path field. tokensByFile silently dropped every MultiEdit call's cost from the per-file breakdown instead of attributing it.
   it('tokensByFile also aggregates MultiEdit calls, keyed by file_path', () => {
     const transcript = writeFixture(tempDir, [
       toolUseLine('t1', 'MultiEdit', { file_path: '/b.ts', edits: [{ old_string: 'x', new_string: 'y' }] }),
@@ -249,11 +235,7 @@ describe('cost aggregation', () => {
     expect(byFile[0]?.tokens).toBe(34)
   })
 
-  // Regression: extractFilePath only read `file_path`, but NotebookEdit's real wire field is
-  // `notebook_path` (see hooks_common.ts's getFilePath) -- so every NotebookEdit call's
-  // filePath came back null and tokensByFile silently dropped its token cost from the
-  // per-file breakdown instead of attributing it, the same class of gap already fixed for
-  // MultiEdit above.
+  // Regression: extractFilePath only read `file_path`, but NotebookEdit's real wire field is `notebook_path` (see hooks_common.ts's getFilePath) -- so every NotebookEdit call's filePath came back null and tokensByFile silently dropped its token cost from the per-file breakdown instead of attributing it, the same class of gap already fixed for MultiEdit above.
   it('tokensByFile also aggregates NotebookEdit calls, keyed by notebook_path', () => {
     const transcript = writeFixture(tempDir, [
       toolUseLine('t1', 'NotebookEdit', { notebook_path: '/c.ipynb', new_source: 'print(1)' }),
@@ -401,14 +383,12 @@ describe('parseTranscript / assistantTurns', () => {
 
 describe('assistantOutputCost', () => {
   it('computes generatedTokens and the resend ceiling by hand on a 3-turn fixture', () => {
-    // Turn sizes chosen so estimateTokens (max(1, floor(len/3)+1)) yields distinct, easy values:
-    // len 2 -> 1 tok, len 5 -> 2 tok, len 8 -> 3 tok.
+    // Turn sizes chosen so estimateTokens (max(1, floor(len/3)+1)) yields distinct, easy values: len 2 -> 1 tok, len 5 -> 2 tok, len 8 -> 3 tok.
     const turns = [1, 2, 3]
     const result = assistantOutputCost(turns)
     expect(result.turnCount).toBe(3)
     expect(result.generatedTokens).toBe(6) // 1 + 2 + 3
-    // Hand-computed resend ceiling: turn i resent on each of the (turnCount-1-i) LATER turns.
-    // turn0: 1 tok * 2 later turns = 2; turn1: 2 tok * 1 later turn = 2; turn2: 3 tok * 0 later turns = 0.
+    // Hand-computed resend ceiling: turn i resent on each of the (turnCount-1-i) LATER turns. turn0: 1 tok * 2 later turns = 2; turn1: 2 tok * 1 later turn = 2; turn2: 3 tok * 0 later turns = 0.
     expect(result.resendCeilingTokens).toBe(4) // 2 + 2 + 0
   })
 
@@ -436,10 +416,7 @@ describe('buildWasteReport', () => {
 
     const report = await buildWasteReport(transcript, { topN: 5 })
     expect(report.transcriptPath).toBe(transcript)
-    // Pin the exact deterministic values instead of just ">0"/">0": totalTokens is the sum of
-    // all three calls' estimateTokens() (300+100+100-char results), tokensByTool has exactly
-    // 2 distinct tool names (Read, Bash), and topCalls with topN:5 against only 3 calls returns
-    // all 3 (slice caps at the available count, not the requested N).
+    // Pin the exact deterministic values instead of just ">0"/">0": totalTokens is the sum of all three calls' estimateTokens() (300+100+100-char results), tokensByTool has exactly 2 distinct tool names (Read, Bash), and topCalls with topN:5 against only 3 calls returns all 3 (slice caps at the available count, not the requested N).
     expect(report.totalTokens).toBe(169)
     expect(report.tokensByTool.length).toBe(2)
     expect(report.topCalls.length).toBe(3)

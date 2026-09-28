@@ -110,6 +110,12 @@ export function bashRecallKey(cmd: string, runDir: string | null): string {
   return shortFingerprint(runDir === null ? base : `${normalizePath(runDir)}\x00${base}`)
 }
 
+/** A Bash call as its output is cached: `rawCmd` is the command reported with any `token-goat compress` wrapper unwrapped, `cmd` that command past its subshell group, cd prefix and leading assignments, and `runDir` the directory it ran in, reached from the directory the call started in. The post hook stores a call's output under `cmd` and `runDir`, and the waste report looks a transcript's call up through this same function, so the two agree on every wrapped, cd-prefixed or assignment-prefixed spelling. */
+export function resolveBashCall(reported: string, startCwd: string | null): { rawCmd: string; cmd: string; runDir: string | null } {
+  const rawCmd = unwrapCompressCommand(reported) ?? reported
+  return { rawCmd, cmd: stripCommandPrefix(rawCmd), runDir: commandRunDir(rawCmd, startCwd) }
+}
+
 /** Strips a command's downstream pipeline and trailing redirections, returning the base command. Used to key the bash-output cache so that the same build/test command run with different downstream filters (`| tail -40` vs `| grep ERROR`) or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET commands are keyed on their URL. Splits on the first top-level pipe operator (`|`), ignoring `|` inside single or double quotes and the `||` logical-OR operator, then removes trailing stream redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.). */
 export function stripOutputPipeline(cmd: string): string {
   let inSingle = false

@@ -10,7 +10,7 @@ import { preBashHandler } from '../src/hooks_bash.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { getFileLineRanges, wasFileReadThisSession } from '../src/session.js'
-import { projectTranscriptsDir } from '../src/waste.js'
+import { projectTranscriptsDir } from '../src/claude_config_dir.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')

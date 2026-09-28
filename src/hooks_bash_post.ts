@@ -28,13 +28,12 @@ import * as path from 'node:path'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { isInsideRoot } from './path_containment.js'
-import { projectTranscriptsDir } from './waste.js'
+import { projectTranscriptsDir } from './claude_config_dir.js'
 import { MAX_CAPTURE_BYTES } from './bash_runner.js'
 import {
   stripCdPrefix,
-  stripCommandPrefix,
   resolveCdHintPath,
-  commandRunDir,
+  resolveBashCall,
   bashRecallKey,
   extractCommand,
   isHeadMovingGitCommand,
@@ -318,6 +317,7 @@ async function maybeCompressCompoundOutput(
   output: string,
   exitCode: number | null,
   cwd: string | null,
+  runDir: string | null,
   cacheMinBytes: number,
   isUnwrapped = false,
 ): Promise<HookOutput | null> {
@@ -336,8 +336,8 @@ async function maybeCompressCompoundOutput(
   }
   if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
   if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
-  // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used.
-  const shaped = pipelineShapeFilter(cmd, cwd) ?? (isUnwrapped ? detectFromCommand(cmd, cwd ?? undefined) ?? null : null)
+  // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used. Both lookups find a package-manager script's runner in the directory the command ran in, not the event's cwd, which for a subagent is where the call started whatever its cd did; the store below stays on the event's cwd (loop-ledger DL-43).
+  const shaped = pipelineShapeFilter(cmd, runDir) ?? (isUnwrapped ? detectFromCommand(cmd, runDir ?? undefined) ?? null : null)
   const useShaped = shaped !== null && !cfg.disabled_filters.includes(shaped.filter.name)
   const filter = useShaped ? shaped.filter : filterByName('generic')
   if (filter === null) return null
@@ -638,18 +638,16 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const rawCmdRaw = extractCommand(event)
     if (rawCmdRaw === undefined) return passOutput()
-    // If the pre-hook rewrote this into a `token-goat compress` wrapper, recover the original command so the cache keys on it (matching the pre-hook hash).
+    // True when the call ran as written, not inside a `token-goat compress` wrapper the pre hook rewrote it into.
     const isUnwrapped = unwrapCompressCommand(rawCmdRaw) === null
-    const rawCmd = unwrapCompressCommand(rawCmdRaw) ?? rawCmdRaw
-    const cmd = stripCommandPrefix(rawCmd)
     const output = extractBashOutput(event)
     const exitCode = extractExitCode(event.raw)
     const cwd = getCwd(event) ?? null
     // The directory the call started in, which the pre hook saw and held under this call's id. Claude Code's main thread reports the directory a `cd` left the shell in here, so resolving the command's own `cd` against this hook's cwd applies it twice. A call with no pre hook on record falls back to this hook's cwd, which is where the call started whenever the shell does not move: a subagent, or a cd out of the working directories, which the harness resets.
     const toolUseId = event.raw['tool_use_id']
     const startCwd = (typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null) ?? cwd
-    // The directory the command ran in: every cached output below is keyed, stored and fingerprinted against it, so the pre hook, which derives the same directory from the same command and its own cwd, recalls a run only where it happened.
-    const runDir = commandRunDir(rawCmd, startCwd)
+    // The command the pre hook saw, recovered from a `token-goat compress` wrapper it rewrote the call into, and the directory the command ran in: every cached output below is keyed, stored and fingerprinted against them, so the pre hook, which derives the same directory from the same command and its own cwd, recalls a run only where it happened.
+    const { rawCmd, cmd, runDir } = resolveBashCall(rawCmdRaw, startCwd)
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
     const resp = event.raw['tool_response']
@@ -760,7 +758,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`) that ran directly is compressed here on post-hook.
     if (isUnwrapped && /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd)) {
-      const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
+      const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, cwd, runDir, cacheMinBytes, isUnwrapped)
       if (unwrappedCompressed !== null) return unwrappedCompressed
     }
 
@@ -774,7 +772,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap for compression) or an unwrapped single command gets its already-captured output compressed here. File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression. Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
       if (!isFileRead && (!isUnwrapped || !isCompressibleSingleCommand(cmd))) {
-        const compound = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, cwd, cacheMinBytes, isUnwrapped)
+        const compound = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, cwd, runDir, cacheMinBytes, isUnwrapped)
         if (compound !== null) return compound
       }
       // A file read stays out of the generic list entirely, including the two-or-more-file compound shape `pureFileReadPath` itself declines to name (a single `filePath` has nowhere to put a second file): it already has its own per-file served store above, and letting a `sed`/`awk` range read's content leak into the session-wide list here is how a second, unrelated file that happens to share text with the first gets a stretch of itself withheld on the strength of a read of a DIFFERENT file -- exactly what the per-file scoping above exists to prevent.

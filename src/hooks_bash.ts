@@ -131,7 +131,8 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
     filterName = 'passthrough'
   } else {
     const gateCmd = stripTrailingStderrRedirect(cmd)
-    const detected = detectFromCommand(gateCmd, getCwd(event))
+    // A package-manager script is looked up in the directory the command runs in, where preBashHandlerInner keys its cached output, not the hook's cwd a cd prefix leaves behind: a workspace's packages can name different runners for one `npm test`.
+    const detected = detectFromCommand(gateCmd, commandRunDir(rawCmd, getCwd(event) ?? null) ?? undefined)
     if (detected !== null) {
       filterName = detected.filter.name
     } else if (isCompressibleSingleCommand(gateCmd)) {
@@ -725,7 +726,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools. isBuildCommand's patterns are prefix-anchored so a trailing `2>&1` never breaks them, but detectFromCommand rejects any redirect outright (hasRedirect) — so a command recognized only via detectFromCommand (e.g. `npm test`, resolved through its package-manager-script dispatch, not a BUILD_COMMAND_PATTERNS entry) needs the same trailing-`2>&1` allowance maybeCompressRewrite applies below, or it never reaches that function at all.
-  if (!isBuildCommand(cmd) && detectFromCommand(stripTrailingStderrRedirect(cmd), preHookCwd ?? undefined) === null) return passOutput()
+  if (!isBuildCommand(cmd) && detectFromCommand(stripTrailingStderrRedirect(cmd), runDir ?? undefined) === null) return passOutput()
 
   // Derive the same command hash used by the session store.
   const cmdHash = bashRecallKey(cmd, runDir)

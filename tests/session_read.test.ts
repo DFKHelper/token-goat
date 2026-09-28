@@ -5,9 +5,7 @@ import * as path from 'node:path'
 import type * as NodeOs from 'node:os'
 import type * as NodeFs from 'node:fs'
 
-// vi.mock is hoisted -- wrap homedir so projectTranscriptsDir/resolveSessionTranscript resolve
-// against an isolated fake home instead of the real developer machine's
-// ~/.claude/projects/, which this test must never read from or write into.
+// vi.mock is hoisted -- wrap homedir so projectTranscriptsDir/resolveSessionTranscript resolve against an isolated fake home instead of the real developer machine's ~/.claude/projects/, which this test must never read from or write into.
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -16,9 +14,7 @@ vi.mock('node:os', async (importOriginal) => {
   }
 })
 
-// vi.mock is hoisted -- wrap createReadStream as a transparent passthrough spy (delegates to the
-// real implementation) so one test below can assert streamTurns' finally block actually destroys
-// the underlying stream on an early break, without altering real behavior for any other test.
+// vi.mock is hoisted -- wrap createReadStream as a transparent passthrough spy (delegates to the real implementation) so one test below can assert streamTurns' finally block actually destroys the underlying stream on an early break, without altering real behavior for any other test.
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof NodeFs>()
   return {
@@ -35,7 +31,7 @@ import {
   resolveSessionTranscript,
   sliceSessionTurns,
 } from '../src/session_read.js'
-import { projectTranscriptsDir } from '../src/waste.js'
+import { projectTranscriptsDir } from '../src/claude_config_dir.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -52,10 +48,7 @@ beforeEach(() => {
   homedirMock.mockReturnValue(fakeHome)
   projectRoot = path.join(tempDir, 'proj')
   fs.mkdirSync(projectRoot, { recursive: true })
-  // resolveSessionTranscript resolves --project through resolveProjectRoot (same as
-  // cli_waste.ts's runWasteCommand) before slugifying it into a transcripts dir, so the
-  // fixture must be written under that resolved root's dir, not the raw tempDir path
-  // (resolveProjectRoot's canonicalize() can normalize drive-letter casing on Windows).
+  // resolveSessionTranscript resolves --project through resolveProjectRoot (same as cli_waste.ts's runWasteCommand) before slugifying it into a transcripts dir, so the fixture must be written under that resolved root's dir, not the raw tempDir path (resolveProjectRoot's canonicalize() can normalize drive-letter casing on Windows).
   transcriptsDir = projectTranscriptsDir(resolveProjectRoot({ project: projectRoot }))
   fs.mkdirSync(transcriptsDir, { recursive: true })
 })
@@ -132,10 +125,7 @@ describe('resolveSessionTranscript', () => {
     expect(resolveSessionTranscript('does-not-exist', { project: projectRoot })).toBeNull()
   })
 
-  // Regression (mutation-testing gap): a session id passed with an already-present `.jsonl`
-  // suffix (not a literal existing path relative to cwd, so it falls through to id resolution)
-  // must resolve to `<id>.jsonl`, not `<id>.jsonl.jsonl`. A mutation always appending the suffix
-  // unconditionally still passed the full suite, since the only bare-id case tested omits it.
+  // Regression (mutation-testing gap): a session id passed with an already-present `.jsonl` suffix (not a literal existing path relative to cwd, so it falls through to id resolution) must resolve to `<id>.jsonl`, not `<id>.jsonl.jsonl`. A mutation always appending the suffix unconditionally still passed the full suite, since the only bare-id case tested omits it.
   it('resolves a session id that already carries the .jsonl suffix without doubling it', () => {
     const file = writeFixture(fixtureLines(), 'xyz-456.jsonl')
     expect(resolveSessionTranscript('xyz-456.jsonl', { project: projectRoot })).toBe(file)
@@ -164,8 +154,7 @@ describe('buildSessionOutline', () => {
     expect(resultTurn?.preview.length).toBeLessThan(200)
     expect(resultTurn?.preview).not.toContain('export const X = 1\nexport const X = 1\nexport const X = 1')
 
-    // Exact per-turn tokens/bytes/lineNumber from the fixed fixtureLines() fixture -- pins the
-    // real computed values instead of just checking each is nonzero.
+    // Exact per-turn tokens/bytes/lineNumber from the fixed fixtureLines() fixture -- pins the real computed values instead of just checking each is nonzero.
     expect(turns.map((t) => ({ tokens: t.tokens, bytes: t.bytes, lineNumber: t.lineNumber }))).toEqual([
       { tokens: 32, bytes: 93, lineNumber: 3 },
       { tokens: 72, bytes: 215, lineNumber: 4 },
@@ -223,9 +212,7 @@ describe('sliceSessionTurns', () => {
   })
 
   it('destroys the underlying read stream, not just the readline interface, on an early break', async () => {
-    // Regression: streamTurns' `finally` block only called rl.close(), which does not itself
-    // destroy the fs.ReadStream backing it -- an early `break` (any range ending before the
-    // transcript's last turn, like this 1-1 slice) left the file's read handle/fd open until GC.
+    // Regression: streamTurns' `finally` block only called rl.close(), which does not itself destroy the fs.ReadStream backing it -- an early `break` (any range ending before the transcript's last turn, like this 1-1 slice) left the file's read handle/fd open until GC.
     const file = writeFixture(fixtureLines())
     const createReadStreamSpy = vi.mocked(fs.createReadStream)
     createReadStreamSpy.mockClear()
@@ -253,11 +240,7 @@ describe('parseTurnRange', () => {
     expect(() => parseTurnRange('abc')).toThrow(/invalid --range spec/)
   })
 
-  // Regression (mutation-testing gap): turns are 1-based (see streamTurns' doc comment), so a
-  // spec of "0" must be rejected the same way an inverted range is -- silently accepting it
-  // would functionally coincide with start=1 (since no turn is ever 0), masking a user's typo
-  // as if it had been interpreted correctly. A mutation dropping the `start < 1` half of the
-  // guard (keeping only `end < start`) still passed the full suite.
+  // Regression (mutation-testing gap): turns are 1-based (see streamTurns' doc comment), so a spec of "0" must be rejected the same way an inverted range is -- silently accepting it would functionally coincide with start=1 (since no turn is ever 0), masking a user's typo as if it had been interpreted correctly. A mutation dropping the `start < 1` half of the guard (keeping only `end < start`) still passed the full suite.
   it('rejects a spec starting at turn 0', () => {
     expect(() => parseTurnRange('0')).toThrow(/invalid --range spec/)
     expect(() => parseTurnRange('0-5')).toThrow(/invalid --range spec/)
@@ -281,12 +264,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).toContain('export const X = 1')
   })
 
-  // Regression (mutation-testing gap): toSessionBlock prefers a block's `text` field over its
-  // `thinking` field when (unusually) both are present as strings on the same raw block -- the
-  // `thinking` assignment is guarded by `block.text === undefined` specifically so it never
-  // clobbers a `text` value already set. A mutation dropping that guard (unconditionally
-  // overwriting from `thinking` whenever present) still passed the full suite, since no fixture
-  // exercises a block carrying both fields at once.
+  // Regression (mutation-testing gap): toSessionBlock prefers a block's `text` field over its `thinking` field when (unusually) both are present as strings on the same raw block -- the `thinking` assignment is guarded by `block.text === undefined` specifically so it never clobbers a `text` value already set. A mutation dropping that guard (unconditionally overwriting from `thinking` whenever present) still passed the full suite, since no fixture exercises a block carrying both fields at once.
   it('prefers a block\'s text field over thinking when a raw block improbably carries both', async () => {
     const file = writeFixture([
       {
@@ -302,10 +280,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('internal reasoning')
   })
 
-  // Regression (mutation-testing gap): toTurnBlocks' `role` falls back to the line's `type`
-  // (user/assistant) when `message.role` is missing or non-string, so a malformed line still
-  // gets a sane role instead of `undefined`. A mutation dropping that fallback (using
-  // `m['role']` directly) still passed the full suite, since no fixture omits `role`.
+  // Regression (mutation-testing gap): toTurnBlocks' `role` falls back to the line's `type` (user/assistant) when `message.role` is missing or non-string, so a malformed line still gets a sane role instead of `undefined`. A mutation dropping that fallback (using `m['role']` directly) still passed the full suite, since no fixture omits `role`.
   it('falls back to the line type as role when message.role is missing', async () => {
     const file = writeFixture([
       { type: 'user', message: { content: 'no role field here' } },
@@ -315,10 +290,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
-  // Regression (mutation-testing gap): truncate's length check is `> max`, so a string exactly
-  // `max` chars long must pass through untouched (no ellipsis) -- only strings *longer* than max
-  // get cut. A mutation to `>= max` still passed the full suite, since no fixture pins the exact
-  // 140-char (PREVIEW_MAX) boundary.
+  // Regression (mutation-testing gap): truncate's length check is `> max`, so a string exactly `max` chars long must pass through untouched (no ellipsis) -- only strings *longer* than max get cut. A mutation to `>= max` still passed the full suite, since no fixture pins the exact 140-char (PREVIEW_MAX) boundary.
   it('previews a turn whose text is exactly 140 chars long without truncating it', async () => {
     const file = writeFixture([
       { type: 'user', message: { role: 'user', content: 'x'.repeat(140) } },
@@ -333,11 +305,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(formatSessionSlice([])).toBe('(no turns in range)')
   })
 
-  // Regression (mutation-testing gap): formatBlock's default branch (any block `type` other than
-  // text/thinking/tool_use/tool_result -- e.g. a future/unrecognized content-block type) renders
-  // `[<type>]` so the slice still shows *something* identifying the block rather than silently
-  // dropping it. A mutation returning '' from that branch instead still passed the full suite,
-  // since no existing fixture exercises a block type outside the four named cases.
+  // Regression (mutation-testing gap): formatBlock's default branch (any block `type` other than text/thinking/tool_use/tool_result -- e.g. a future/unrecognized content-block type) renders `[<type>]` so the slice still shows *something* identifying the block rather than silently dropping it. A mutation returning '' from that branch instead still passed the full suite, since no existing fixture exercises a block type outside the four named cases.
   it('renders an unrecognized block type as a labeled placeholder, not silently dropped', () => {
     const text = formatSessionSlice([
       { turn: 1, lineNumber: 1, role: 'assistant', blocks: [{ type: 'image' }] },
@@ -345,10 +313,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).toContain('[image]')
   })
 
-  // Regression (mutation-testing gap): formatBlock's tool_result case only appends "for <id>"
-  // when the block actually carries a toolUseId; a mutation that appended it unconditionally
-  // (rendering "for undefined" on a tool_result missing tool_use_id) still passed the full
-  // suite, since no fixture exercises a tool_result block without that field.
+  // Regression (mutation-testing gap): formatBlock's tool_result case only appends "for <id>" when the block actually carries a toolUseId; a mutation that appended it unconditionally (rendering "for undefined" on a tool_result missing tool_use_id) still passed the full suite, since no fixture exercises a tool_result block without that field.
   it('omits the "for <id>" suffix on a tool_result block with no toolUseId', () => {
     const text = formatSessionSlice([
       { turn: 1, lineNumber: 1, role: 'user', blocks: [{ type: 'tool_result', resultText: 'ok' }] },
@@ -357,10 +322,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
-  // Regression (mutation-testing gap): formatBlock's tool_use case falls back to '?' when the
-  // block has no name, so a malformed tool_use block still renders a labeled placeholder instead
-  // of the literal string "undefined". A mutation dropping the `?? '?'` fallback still passed the
-  // full suite, since no fixture exercises a tool_use block missing its name in a slice.
+  // Regression (mutation-testing gap): formatBlock's tool_use case falls back to '?' when the block has no name, so a malformed tool_use block still renders a labeled placeholder instead of the literal string "undefined". A mutation dropping the `?? '?'` fallback still passed the full suite, since no fixture exercises a tool_use block missing its name in a slice.
   it('renders a nameless tool_use block as "[tool_use: ?]", not "undefined"', () => {
     const text = formatSessionSlice([
       { turn: 1, lineNumber: 1, role: 'assistant', blocks: [{ type: 'tool_use', input: {} }] },
@@ -369,11 +331,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
-  // Regression (mutation-testing gap): formatSessionSlice only pushes a formatted block's text
-  // when it is non-empty (`text.length > 0`), so a block that formats to '' (e.g. a text block
-  // with an empty string) contributes no stray blank line to the slice. A mutation always
-  // pushing the formatted text, empty or not, still passed the full suite, since no fixture
-  // exercises a block that formats to an empty string.
+  // Regression (mutation-testing gap): formatSessionSlice only pushes a formatted block's text when it is non-empty (`text.length > 0`), so a block that formats to '' (e.g. a text block with an empty string) contributes no stray blank line to the slice. A mutation always pushing the formatted text, empty or not, still passed the full suite, since no fixture exercises a block that formats to an empty string.
   it('skips a block that formats to empty content instead of inserting a stray blank line', () => {
     const text = formatSessionSlice([
       {
@@ -389,11 +347,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text.split('\n')).toEqual(['--- Turn 1 [user] (line 1) ---', 'hello'])
   })
 
-  // Regression (mutation-testing gap): toSessionBlock defaults a content block's `type` to
-  // 'unknown' when the raw block has no `type` field at all, so formatBlock's default case
-  // renders a stable `[unknown]` placeholder instead of leaking the literal string "undefined".
-  // A mutation dropping that fallback (`b['type'] as string`) still passed the full suite, since
-  // no fixture exercises a content block missing its `type` field.
+  // Regression (mutation-testing gap): toSessionBlock defaults a content block's `type` to 'unknown' when the raw block has no `type` field at all, so formatBlock's default case renders a stable `[unknown]` placeholder instead of leaking the literal string "undefined". A mutation dropping that fallback (`b['type'] as string`) still passed the full suite, since no fixture exercises a content block missing its `type` field.
   it('labels a content block with no type field as [unknown], not "undefined"', async () => {
     const file = writeFixture([
       { type: 'assistant', message: { role: 'assistant', content: [{ foo: 'bar' }] } },
@@ -403,11 +357,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
-  // Regression (mutation-testing gap): previewForBlocks falls back to the literal string
-  // '(empty)' when a turn's blocks match none of the tool_result/text/thinking/tool_use cases
-  // it looks for, so the outline still shows *something* for that turn instead of a blank
-  // preview. A mutation returning '' from that fallback still passed the full suite, since no
-  // fixture exercises a turn whose only block is an unrecognized/contentless type.
+  // Regression (mutation-testing gap): previewForBlocks falls back to the literal string '(empty)' when a turn's blocks match none of the tool_result/text/thinking/tool_use cases it looks for, so the outline still shows *something* for that turn instead of a blank preview. A mutation returning '' from that fallback still passed the full suite, since no fixture exercises a turn whose only block is an unrecognized/contentless type.
   it('previews a turn with no recognized content as "(empty)", not a blank preview', async () => {
     const file = writeFixture([
       { type: 'assistant', message: { role: 'assistant', content: [{ type: 'image' }] } },
@@ -416,11 +366,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).toContain('(empty)')
   })
 
-  // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must
-  // not appear in the outline's tool-calls list at all. A mutation removing the
-  // `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it
-  // surfaces as an empty `[tools: ]` tag, since Array.join renders an undefined element as ''),
-  // since no fixture exercises a nameless tool_use block.
+  // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must not appear in the outline's tool-calls list at all. A mutation removing the `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it surfaces as an empty `[tools: ]` tag, since Array.join renders an undefined element as ''), since no fixture exercises a nameless tool_use block.
   it('omits a nameless tool_use block from the outline\'s tool-calls tag entirely', async () => {
     const file = writeFixture([
       {
@@ -435,11 +381,7 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('[tools:')
   })
 
-  // Regression (mutation-testing gap): previewForBlocks' `toolUse.name ?? 'tool'` fallback exists
-  // for the same malformed-input case above -- a nameless tool_use block, when it is the only
-  // block present (so it drives the preview, not just the tool-calls tag), must render the
-  // generic label 'tool(...)' rather than the literal string 'undefined(...)'. A mutation
-  // dropping the `?? 'tool'` fallback still passed the full suite.
+  // Regression (mutation-testing gap): previewForBlocks' `toolUse.name ?? 'tool'` fallback exists for the same malformed-input case above -- a nameless tool_use block, when it is the only block present (so it drives the preview, not just the tool-calls tag), must render the generic label 'tool(...)' rather than the literal string 'undefined(...)'. A mutation dropping the `?? 'tool'` fallback still passed the full suite.
   it('previews a nameless tool_use block as "tool(...)" rather than "undefined(...)"', async () => {
     const file = writeFixture([
       {
