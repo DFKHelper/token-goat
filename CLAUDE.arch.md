@@ -111,6 +111,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
+| [`src/compact_dropped.ts`](src/compact_dropped.ts) | The paths a compaction summary left out, kept beside the session so the resume packet can name them. |
 | [`src/compact.ts`](src/compact.ts) | `buildManifest()` / `buildManifestAdaptive()` — load the session JSON cache and produce a structured PreCompact manifest; `computeAdaptiveBudget()` scales the token budget by session age and edit density |
 | [`src/resume.ts`](src/resume.ts) | Post-compact recovery resume logic |
 | [`src/session_audit_report.ts`](src/session_audit_report.ts) | Plain-text rendering of the summary `session_audit.ts` builds, for `token-goat session-audit`. The `--json` form prints that same summary without passing through here. |
@@ -493,8 +494,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/process_priority.ts`](src/process_priority.ts) | Scheduling priority for the processes that index. |
 | [`src/process_util.ts`](src/process_util.ts) | Process and OS execution utilities. |
 | [`src/purge.ts`](src/purge.ts) | `uninstall --purge`: delete everything token-goat has written to disk. |
-| [`src/queue_waker.ts`](src/queue_waker.ts) | Ends the worker's between-drain sleep when another process appends to `queue/dirty.txt` (fs.watch on the queue directory, timer fallback); the worker's own requeues keep their pacing. |
 | [`src/query_limits.ts`](src/query_limits.ts) | The sentinel that means "no cap" in a `LIMIT ?` bound parameter. |
+| [`src/queue_waker.ts`](src/queue_waker.ts) | Ends the worker's between-drain sleep when another process appends to `queue/dirty.txt` (fs.watch on the queue directory, timer fallback); the worker's own requeues keep their pacing. |
 | [`src/recall_index.ts`](src/recall_index.ts) | Cross-cache full-text search index for `token-goat recall`. |
 | [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |
 | [`src/regex_guard.ts`](src/regex_guard.ts) | Refusing a regular expression that can stall the process that runs it. |

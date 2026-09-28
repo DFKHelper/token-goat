@@ -9,12 +9,19 @@ import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { listSkills, getSkillFilePath, extractChecklistSection } from './skill_cache.js'
 import { renderWebFetchRow } from './manifest.js'
+import { readCompactDroppedPaths } from './compact_dropped.js'
 
 export const MAX_RESUME_TOKENS = 2000
 export const MAX_RESUME_CHARS = MAX_RESUME_TOKENS * 4
 
 /** How many of a session's most recent web fetches the packet names. Eight matches the top-files-read cap: one line each, and a session that fetched more than eight pages has almost certainly moved on from the first ones. */
 const MAX_RESUME_WEB_FETCHES = 8
+
+/** How many left-out files the packet lists beyond the ones its own sections already mark. The manifest samples 64 paths; a summary that dropped most of them is better answered by `token-goat compact-manifest` than by a long list here, and the cap keeps the sections after this one inside MAX_RESUME_CHARS. */
+const MAX_RESUME_DROPPED = 16
+
+/** Row suffix for a file the latest compaction summary did not mention. */
+const DROPPED_MARK = ' (not in the compaction summary)'
 
 // Mirrors the Python predecessor's `_SKILL_MAX_COUNT`/`_SKILL_MAX_CHARS_EACH` (resume.py):
 // how many recently-loaded skills to surface, and how many characters of each one's checklist
@@ -82,6 +89,13 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
     // fail-soft: skill lookup must never block the rest of the resume packet
   }
 
+  // Which of the manifest's paths the latest compaction summary left out (postCompactHandler writes it; PostCompact runs before SessionStart(compact)). Compared in displaySafePath form, which is how the manifest records the paths it printed.
+  const dropped = new Set(readCompactDroppedPaths(sessionId))
+  const row = (p: string): string => {
+    const shown = displaySafePath(p)
+    return dropped.delete(shown) ? `- ${shown}${DROPPED_MARK}` : `- ${shown}`
+  }
+
   const editedPaths = filesArr
     .filter((f) => f['wasEdited'] === true)
     .map((f) => (typeof f['path'] === 'string' ? f['path'] : ''))
@@ -89,7 +103,7 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
     .slice(0, 10)
   if (editedPaths.length > 0) {
     lines.push('## Edited files')
-    for (const p of editedPaths) lines.push(`- ${displaySafePath(p)}`)
+    for (const p of editedPaths) lines.push(row(p))
     lines.push('')
   }
 
@@ -101,7 +115,16 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
     .filter(Boolean)
   if (topRead.length > 0) {
     lines.push('## Top files read')
-    for (const p of topRead) lines.push(`- ${displaySafePath(p)}`)
+    for (const p of topRead) lines.push(row(p))
+    lines.push('')
+  }
+
+  // What is left was dropped by the summary and is named nowhere above, so without this the packet would not mention it at all.
+  if (dropped.size > 0) {
+    const rest = [...dropped]
+    lines.push('## Also not in the compaction summary')
+    for (const p of rest.slice(0, MAX_RESUME_DROPPED)) lines.push(`- ${p}`)
+    if (rest.length > MAX_RESUME_DROPPED) lines.push(`- ... and ${rest.length - MAX_RESUME_DROPPED} more`)
     lines.push('')
   }
 

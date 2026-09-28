@@ -18,6 +18,7 @@ import { normalizePath } from './paths.js'
 import { BUDGET_ESCALATION_MARKER, MANIFEST_PREAMBLE, MANIFEST_RECOVERY_PREAMBLE, buildManifest, manifestPrintedPaths, summaryBudgetDirective } from './manifest.js'
 import { dropsPreCompactContext } from './harness_channels.js'
 import { MAX_PENDING_CONTEXT_BYTES, queuePendingContext } from './pending_context.js'
+import { recordCompactDroppedPaths } from './compact_dropped.js'
 
 /**
  * pre_compact handler: hand the session manifest to the model that writes the compaction summary.
@@ -88,11 +89,14 @@ export function postCompactHandler(event: HookEvent): HookOutput {
   const cwd = normalizePath(getCwd(event) ?? process.cwd())
   const spell = (p: string): string => foldPath(p.replaceAll('\\', '/'))
   const haystack = spell(summary)
-  const survived = sample.filter((p) => {
+  const kept = sample.filter((p) => {
     const rel = path.relative(cwd, p)
     const forms = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) ? [p, rel] : [p]
     return forms.some((f) => haystack.includes(spell(f)))
-  }).length
+  })
+  const survived = kept.length
+  // The count goes to the ledger; the names go to the resume packet, which is the one place the model coming out of this compaction can learn which files the summary forgot. No summary field means nothing was checked, so any earlier list is cleared rather than carried forward as this compaction's.
+  recordCompactDroppedPaths(sessionStateKey(event), typeof raw === 'string' ? sample.filter((p) => !kept.includes(p)) : null)
   const trigger = typeof event.raw['trigger'] === 'string' ? event.raw['trigger'] : 'unknown'
   const budget = loadConfig().compact_assist.summary_budget_chars
   // Characters against characters: the directive asks for a character count, so a summary carrying non-ASCII would overrun a byte comparison it never actually broke. `bytes` stays byte-length because the token estimate is derived from it.
