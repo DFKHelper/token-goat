@@ -1,16 +1,9 @@
-/**
- * CLI handler for ``token-goat stats``.
- *
- * Thin layer over the aggregation logic in ``stats.ts``.  Adds:
- * - ``writeRaw`` — bypass any buffering and write directly to stdout
- * - ``renderTopSessionFiles`` — pull the in-memory session read-counts and
- *   format the top-N most-read files as a brief nudge
- * - ``runStats`` — the CLI entry-point wiring flags to the stats module
- */
+/** CLI handler for ``token-goat stats``. Thin layer over the aggregation logic in ``stats.ts``.  Adds: - ``writeRaw`` — bypass any buffering and write directly to stdout - ``renderTopSessionFiles`` — pull the in-memory session read-counts and format the top-N most-read files as a brief nudge - ``runStats`` — the CLI entry-point wiring flags to the stats module */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { summarize, renderStats, renderShortStats, type StatsSummary } from './stats.js'
+import { summarize, type StatsSummary } from './stats.js'
+import { renderStats, renderShortStats } from './stats_report.js'
 import { renderHookLatencyStats } from './hook_latency.js'
 import { sessionsDir } from './sessions_dir.js'
 import { getSessionFiles } from './session.js'
@@ -26,9 +19,7 @@ export function writeRaw(text: string): void {
   process.stdout.write(ensureNewline(payload))
 }
 
-/** Filter to entries read more than once, sort by count descending, and take the top N.
- * Shared by {@link renderTopSessionFiles} and {@link renderTopSessionFilesFromDisk}, which
- * each do their own source-specific extraction into {path, count} pairs before ranking. */
+/** Filter to entries read more than once, sort by count descending, and take the top N. Shared by {@link renderTopSessionFiles} and {@link renderTopSessionFilesFromDisk}, which each do their own source-specific extraction into {path, count} pairs before ranking. */
 function rankByReadCount(entries: Array<{ path: string; count: number }>, topN: number): Array<{ path: string; count: number }> {
   return entries
     .filter((e) => e.count > 1)
@@ -47,13 +38,7 @@ function formatTopFiles(ranked: Array<{ path: string; count: number }>): string 
   return lines.join('\n')
 }
 
-/**
- * Return a plain-text summary of the top N most-read files in the current
- * session.  Uses the in-memory session state (``getSessionFiles``).
- *
- * Returns an empty string when no file has been read more than once — single-
- * access sessions produce no actionable nudge.  Fail-soft: errors return "".
- */
+/** Return a plain-text summary of the top N most-read files in the current session.  Uses the in-memory session state (``getSessionFiles``). Returns an empty string when no file has been read more than once — single-access sessions produce no actionable nudge.  Fail-soft: errors return "". */
 export function renderTopSessionFiles(topN: number = 5): string {
   try {
     const sessionFiles = getSessionFiles()
@@ -66,9 +51,7 @@ export function renderTopSessionFiles(topN: number = 5): string {
   }
 }
 
-/**
- * Return the top-N most-read files from the most recently modified session JSON on disk (used when the in-process session state is empty, e.g. when ``stats`` is invoked as a standalone command). Reads {@link sessionsDir}, the same directory session_store.ts writes to; `overrideSessionsDir` exists for tests only.
- */
+/** Return the top-N most-read files from the most recently modified session JSON on disk (used when the in-process session state is empty, e.g. when ``stats`` is invoked as a standalone command). Reads {@link sessionsDir}, the same directory session_store.ts writes to; `overrideSessionsDir` exists for tests only. */
 export function renderTopSessionFilesFromDisk(topN: number = 5, overrideSessionsDir?: string): string {
   try {
     const dir = overrideSessionsDir ?? sessionsDir()
@@ -117,11 +100,7 @@ export interface StatsOptions {
   homeDir?: string
   /** Show the full breakdown (by source/command/day) instead of just totals. */
   full?: boolean
-  /**
-   * Force the rich short KPI view even when stdout isn't a TTY (e.g. piped). Without this, a
-   * non-interactive caller (every AI agent invocation) silently falls back to the flat
-   * plain-text totals dump with no way to opt into the richer view.
-   */
+  /** Force the rich short KPI view even when stdout isn't a TTY (e.g. piped). Without this, a non-interactive caller (every AI agent invocation) silently falls back to the flat plain-text totals dump with no way to opt into the richer view. */
   short?: boolean
   /** Explain how local savings estimates are calculated. */
   methodology?: boolean
@@ -161,17 +140,7 @@ function renderMethodology(json = false): void {
 
 /** Run the ``token-goat stats`` command. */
 
-/**
- * The object `stats --json` prints.
- *
- * Spelled out field by field rather than emitting the summary directly, because the JSON shape is a
- * published surface that `src/vscode_savings.ts` and any script a user has written both parse: a
- * field renamed inside StatsSummary must not silently rename itself on the wire. The cost of that
- * choice is that this is a whitelist, so a new summary field ships dead here unless it is added --
- * which is exactly what happened to `counts`, caught only by running the built binary rather than by
- * any of the 11,000 tests. The guard in tests/stats_json_payload_covers_summary.test.ts now fails on
- * the next omission instead.
- */
+/** The object `stats --json` prints. Spelled out field by field rather than emitting the summary directly, because the JSON shape is a published surface that `src/vscode_savings.ts` and any script a user has written both parse: a field renamed inside StatsSummary must not silently rename itself on the wire. The cost of that choice is that this is a whitelist, so a new summary field ships dead here unless it is added -- which is exactly what happened to `counts`, caught only by running the built binary rather than by any of the 11,000 tests. The guard in tests/stats_json_payload_covers_summary.test.ts now fails on the next omission instead. */
 export function statsJsonPayload(summary: StatsSummary): Record<string, unknown> {
   return {
     total_events: summary.total_events,
@@ -210,9 +179,7 @@ export function runStats(opts: StatsOptions = {}): void {
   if (opts.homeDir !== undefined) {
     renderOpts.homeDir = opts.homeDir
   }
-  // `--short` always wins: it exists specifically to force the short KPI view regardless of
-  // `--full` or TTY status. Otherwise bare `stats` shows totals only; `--full` gates the
-  // existing rich/plain breakdown.
+  // `--short` always wins: it exists specifically to force the short KPI view regardless of `--full` or TTY status. Otherwise bare `stats` shows totals only; `--full` gates the existing rich/plain breakdown.
   if (opts.short === true) {
     renderShortStats({ ...renderOpts, force: true })
   } else if (opts.full === true) {

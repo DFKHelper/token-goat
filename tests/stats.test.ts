@@ -7,8 +7,6 @@ import { closeAllDbs, getDb } from '../src/db.js'
 import { dataDirForHome, globalDbPath } from '../src/constants.js'
 import {
   summarize,
-  renderStats as _renderStats,
-  renderShortStats as _renderShortStats,
   kindToSource,
   recordStat,
   toLocalDateKey,
@@ -25,31 +23,17 @@ import {
   GLOBAL_SCHEMA_SQL,
   rollupAndPruneStats,
   pruneTestIsolationLeakRows,
-  _useRichStats,
 } from '../src/stats.js'
+import { renderStats as _renderStats, renderShortStats as _renderShortStats, _useRichStats } from '../src/stats_report.js'
 
-/**
- * A `stats` table standing on production's own DDL rather than a copy of it.
- *
- * `GLOBAL_SCHEMA_SQL` is exported for exactly this, and its comment says why: a restated schema
- * drifts from the real one silently, and a test running against a schema production no longer has
- * proves nothing. This file used to restate it twenty-three times.
- */
+/** A `stats` table standing on production's own DDL rather than a copy of it. `GLOBAL_SCHEMA_SQL` is exported for exactly this, and its comment says why: a restated schema drifts from the real one silently, and a test running against a schema production no longer has proves nothing. This file used to restate it twenty-three times. */
 function openStatsDb(dbPath: string): Database {
   const db = new Database(dbPath)
   db.exec(GLOBAL_SCHEMA_SQL)
   return db
 }
 
-/**
- * A throwaway HOME with the platform's real data directory created inside it, plus the
- * `global.db` path `--home-dir` will look for there.
- *
- * The layout comes from `dataDirForHome` instead of being spelled out per platform. That branch
- * has been hand-copied and left to drift once already (see tests/constants.test.ts, which pins the
- * layout), and tests/content_store.test.ts records what the copy costs: hardcoding the win32 shape
- * passes on Windows and leaves every stat assertion reading zero on macOS and Linux.
- */
+/** A throwaway HOME with the platform's real data directory created inside it, plus the `global.db` path `--home-dir` will look for there. The layout comes from `dataDirForHome` instead of being spelled out per platform. That branch has been hand-copied and left to drift once already (see tests/constants.test.ts, which pins the layout), and tests/content_store.test.ts records what the copy costs: hardcoding the win32 shape passes on Windows and leaves every stat assertion reading zero on macOS and Linux. */
 function makeStatsHome(prefix: string): { customHome: string; dbPath: string } {
   const customHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   const homeDataDir = dataDirForHome(customHome)
@@ -257,16 +241,11 @@ describe('stats', () => {
     })
 
     it('buckets an evening-local timestamp into the local day, not the later UTC day it rolls into', () => {
-      // Regression test for a bug where stats appeared to happen "tomorrow": summarize() used
-      // to derive dateKey via toISOString() (always UTC), so any event recorded in the evening
-      // in a negative UTC-offset zone (UTC is already past local midnight) got bucketed into
-      // the next calendar day. Etc/GMT+5 is a fixed UTC-5 zone with no DST, so this is
-      // deterministic regardless of the host machine's real timezone.
+      // Regression test for a bug where stats appeared to happen "tomorrow": summarize() used to derive dateKey via toISOString() (always UTC), so any event recorded in the evening in a negative UTC-offset zone (UTC is already past local midnight) got bucketed into the next calendar day. Etc/GMT+5 is a fixed UTC-5 zone with no DST, so this is deterministic regardless of the host machine's real timezone.
       const originalTz = process.env['TZ']
       process.env['TZ'] = 'Etc/GMT+5'
       try {
-        // 2026-01-16T03:00:00Z == 2026-01-15T22:00:00 local (UTC-5): local day is the 15th,
-        // UTC day is already the 16th.
+        // 2026-01-16T03:00:00Z == 2026-01-15T22:00:00 local (UTC-5): local day is the 15th, UTC day is already the 16th.
         const ts = Math.floor(Date.UTC(2026, 0, 16, 3, 0, 0) / 1000)
 
         const dbPath = path.join(tempDir, 'test.db')
@@ -310,8 +289,7 @@ describe('stats', () => {
 
       expect(summary.total_events).toBe(1)
       expect(summary.by_kind['image_shrink']).toBeUndefined()
-      // Pin the real aggregated bucket content instead of just presence, so a regression that
-      // aggregated the wrong row into this bucket (still "defined") is caught too.
+      // Pin the real aggregated bucket content instead of just presence, so a regression that aggregated the wrong row into this bucket (still "defined") is caught too.
       expect(summary.by_kind['symbol_read']).toEqual({ events: 1, bytes_saved: 200, tokens_saved: 50 })
     })
 
@@ -369,8 +347,7 @@ describe('stats', () => {
         expect(importsCmd.bytes_saved).toBe(240)
       }
 
-      // Pin the exact aggregated bucket -- only one 'imports' row was inserted -- instead of
-      // just presence, so a regression that double-counted the row into SOURCE_READ is caught.
+      // Pin the exact aggregated bucket -- only one 'imports' row was inserted -- instead of just presence, so a regression that double-counted the row into SOURCE_READ is caught.
       expect(summary.by_source[SOURCE_READ]).toEqual({ events: 1, bytes_saved: 240, tokens_saved: 60 })
       expect(summary.by_source[SOURCE_OTHER]).toBeUndefined()
     })
@@ -396,8 +373,7 @@ describe('stats', () => {
         expect(depDocsCmd.bytes_saved).toBe(360)
       }
 
-      // Pin the exact aggregated bucket -- only one 'dep_docs' row was inserted -- instead of
-      // just presence, so a regression that double-counted the row into SOURCE_READ is caught.
+      // Pin the exact aggregated bucket -- only one 'dep_docs' row was inserted -- instead of just presence, so a regression that double-counted the row into SOURCE_READ is caught.
       expect(summary.by_source[SOURCE_READ]).toEqual({ events: 1, bytes_saved: 360, tokens_saved: 90 })
       expect(summary.by_source[SOURCE_OTHER]).toBeUndefined()
     })
@@ -419,11 +395,7 @@ describe('stats', () => {
   })
 
   describe('renderStats', () => {
-    // These two tests used to reimplement the "No stats recorded yet" / formatted-summary
-    // logic inline instead of calling the real renderStats() -- so they always passed
-    // regardless of what renderStats() actually does, providing zero coverage of the
-    // production code path. Route through a homeDir-threaded temp DB and the real
-    // _renderStats(), matching the pattern the other tests in this describe block use.
+    // These two tests used to reimplement the "No stats recorded yet" / formatted-summary logic inline instead of calling the real renderStats() -- so they always passed regardless of what renderStats() actually does, providing zero coverage of the production code path. Route through a homeDir-threaded temp DB and the real _renderStats(), matching the pattern the other tests in this describe block use.
     it('prints "No stats recorded yet" when empty', () => {
       const { customHome, dbPath } = makeStatsHome('tg-home-empty-')
       const db = openStatsDb(dbPath)
@@ -449,9 +421,7 @@ describe('stats', () => {
       expect(output).toContain('No stats recorded yet')
     })
 
-    // Regression: a stat row that exists but falls outside the --window-days cutoff used to
-    // render byte-identical to "no stats ever recorded" -- the empty-vs-filtered-store trap
-    // (see runDead's --exclude-tests handling) applied to the time-window filter.
+    // Regression: a stat row that exists but falls outside the --window-days cutoff used to render byte-identical to "no stats ever recorded" -- the empty-vs-filtered-store trap (see runDead's --exclude-tests handling) applied to the time-window filter.
     it('distinguishes "outside window" from "never recorded" when a stat exists before the cutoff', () => {
       const { customHome, dbPath } = makeStatsHome('tg-home-outside-window-')
       const db = openStatsDb(dbPath)
@@ -486,8 +456,7 @@ describe('stats', () => {
       expect(output).toContain('1 recorded outside this window')
     })
 
-    // --window-days 1 is a reachable flag value, and the window label used to read "last 1 days".
-    // A 30-day assertion passes whether or not the singular branch works, so pin count==1 directly.
+    // --window-days 1 is a reachable flag value, and the window label used to read "last 1 days". A 30-day assertion passes whether or not the singular branch works, so pin count==1 directly.
     it('renders "last 1 day", not "last 1 days", when --window-days is 1', () => {
       const { customHome, dbPath } = makeStatsHome('tg-home-window-one-')
       const db = openStatsDb(dbPath)
@@ -578,8 +547,7 @@ describe('stats', () => {
         fs.rmSync(customHome, { recursive: true, force: true })
       }
 
-      // Without homeDir threading, this would read the (empty, isolated) default
-      // global DB and print "No stats recorded yet." instead of the seeded row.
+      // Without homeDir threading, this would read the (empty, isolated) default global DB and print "No stats recorded yet." instead of the seeded row.
       expect(output).not.toContain('No stats recorded yet')
       expect(output).toContain('Total events:   1')
       expect(output).toContain('Tokens saved:   1000')
@@ -589,8 +557,7 @@ describe('stats', () => {
       const { customHome, dbPath } = makeStatsHome('tg-home-hints-')
       const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
-      // Only hint kinds -- no symbol_lookup/read_replacement/outline/etc -- so
-      // by_command stays empty while by_source[hint] is non-zero.
+      // Only hint kinds -- no symbol_lookup/read_replacement/outline/etc -- so by_command stays empty while by_source[hint] is non-zero.
       db.prepare(
         'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
       ).run(now, 'session_hint', 100, 500)
@@ -599,9 +566,7 @@ describe('stats', () => {
       let output = ''
       const originalLog = console.log
       const origIsTty = process.stdout.isTTY
-      // Force the plain-text (non-TTY) render path deterministically -- ambient
-      // TTY detection varies by shell/CI runner and must not decide which code
-      // path this test exercises.
+      // Force the plain-text (non-TTY) render path deterministically -- ambient TTY detection varies by shell/CI runner and must not decide which code path this test exercises.
       Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       console.log = (msg: string) => {
         output += msg + '\n'
@@ -724,8 +689,7 @@ describe('stats', () => {
 
       const origIsTty = process.stdout.isTTY
       const origNoColor = process.env['NO_COLOR']
-      // The key assertion: isTTY is explicitly false, simulating an agent invoking through a
-      // pipe (no TTY at all) -- exactly the case `--short`/`force` exists to unblock.
+      // The key assertion: isTTY is explicitly false, simulating an agent invoking through a pipe (no TTY at all) -- exactly the case `--short`/`force` exists to unblock.
       Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       delete process.env['NO_COLOR']
 
@@ -781,8 +745,7 @@ describe('stats', () => {
         closeAllDbs()
         fs.rmSync(customHome, { recursive: true, force: true })
       }
-      // NO_COLOR wins over force -- the flat plain-text totals path (_renderShortTotals), not
-      // the rich KPI renderer.
+      // NO_COLOR wins over force -- the flat plain-text totals path (_renderShortTotals), not the rich KPI renderer.
       expect(output).toContain('Total events:   1')
       expect(output).toContain('--full')
     })
@@ -854,10 +817,7 @@ describe('stats', () => {
     })
   })
 
-  // S2 regression: `stats` had no retention policy at all (411,208 rows / ~54 MB with indexes
-  // measured on one real install) -- rollupAndPruneStats aggregates old rows into
-  // stats_daily_rollup and deletes them, and summarize() folds the rollup back in so a
-  // long --window-days report keeps its totals even after the raw rows are gone.
+  // S2 regression: `stats` had no retention policy at all (411,208 rows / ~54 MB with indexes measured on one real install) -- rollupAndPruneStats aggregates old rows into stats_daily_rollup and deletes them, and summarize() folds the rollup back in so a long --window-days report keeps its totals even after the raw rows are gone.
   describe('rollupAndPruneStats', () => {
     it('aggregates rows older than retentionDays into stats_daily_rollup and deletes them, keeping recent rows raw', () => {
       const dbPath = path.join(tempDir, 'rollup-test.db')
@@ -916,17 +876,7 @@ describe('stats', () => {
     })
   })
 
-  // CAPTURE: read via `sqlite3 -readonly` off a real install's global.db. Before
-  // constants.ts's homeFallbackOrGuard started refusing to resolve DATA_DIR against the real
-  // home directory inside a Vitest worker, a Python test harness resolved the real
-  // LOCALAPPDATA/global.db anyway and wrote against it -- ~6,472 rows dated 2026-06-03 through
-  // 06-22, in exactly the two shapes below (image_shrink/large_read_redirect rows naming a
-  // pytest tempdir, hint_backoff_suppressed/session_hint_suppressed/indexed_cat_deny/
-  // indexed_cat_advisory rows naming the literal fixture path /fake/...). A real session can
-  // produce both shapes too (reading pytest's own output, or a project with a fake/ directory),
-  // so the fix keys the DELETE on the leak's actual fingerprint instead: tg_version IS NULL (every
-  // real row after that column shipped carries one) and ts inside the measured 2026-06-03..06-22
-  // window (1780406895..1782119331), never on shape alone.
+  // CAPTURE: read via `sqlite3 -readonly` off a real install's global.db. Before constants.ts's homeFallbackOrGuard started refusing to resolve DATA_DIR against the real home directory inside a Vitest worker, a Python test harness resolved the real LOCALAPPDATA/global.db anyway and wrote against it -- ~6,472 rows dated 2026-06-03 through 06-22, in exactly the two shapes below (image_shrink/large_read_redirect rows naming a pytest tempdir, hint_backoff_suppressed/session_hint_suppressed/indexed_cat_deny/ indexed_cat_advisory rows naming the literal fixture path /fake/...). A real session can produce both shapes too (reading pytest's own output, or a project with a fake/ directory), so the fix keys the DELETE on the leak's actual fingerprint instead: tg_version IS NULL (every real row after that column shipped carries one) and ts inside the measured 2026-06-03..06-22 window (1780406895..1782119331), never on shape alone.
   describe('pruneTestIsolationLeakRows (test-isolation-leak cleanup)', () => {
     it('deletes only rows matching both the leak window and a NULL tg_version, leaving a real session\'s same-shaped rows alone', () => {
       const dbPath = path.join(tempDir, 'prune-leak-test.db')
@@ -966,12 +916,7 @@ describe('stats', () => {
     })
   })
 
-  // A per-process open (getGlobalDb via migrateGlobalSchema, which every hook invocation runs
-  // exactly once since each is its own process) must never run this DELETE -- it used to, making
-  // an unindexed-by-detail full scan of the whole stats table part of the hot path with no
-  // further effect once the leak was gone. Only the throttled maintenance pass (recordStat ->
-  // maybeRunStatsMaintenance, the same gate rollupAndPruneStats and pruneHintEmissions share)
-  // should ever run it.
+  // A per-process open (getGlobalDb via migrateGlobalSchema, which every hook invocation runs exactly once since each is its own process) must never run this DELETE -- it used to, making an unindexed-by-detail full scan of the whole stats table part of the hot path with no further effect once the leak was gone. Only the throttled maintenance pass (recordStat -> maybeRunStatsMaintenance, the same gate rollupAndPruneStats and pruneHintEmissions share) should ever run it.
   describe('pruneTestIsolationLeakRows wiring (throttled maintenance only, never per-process schema setup)', () => {
     it('a fresh per-process db open leaves a leak-shaped row alone; the throttled maintenance pass removes it', () => {
       const db = getDb(globalDbPath())

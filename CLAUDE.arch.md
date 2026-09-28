@@ -48,7 +48,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/db.ts`](src/db.ts) | SQLite connection cache (`getDb()`/`closeDb()`/`closeAllDbs()`); `initConnection()` applies WAL, `SCHEMA_SQL` (files/symbols/refs/chunks), `FTS_SQL` (symbols_fts FTS5 virtual table plus sync triggers), and optional sqlite-vec `chunk_vectors` table |
 | [`src/index_reader.ts`](src/index_reader.ts) | Query layer over the index DB: `querySymbols()`, `queryRefs()`, `getFileEntry()`, `searchSymbolsFts()` |
 | [`src/section_reader.ts`](src/section_reader.ts) | Section/heading extraction (`readSection()`, `listAllSections()`) for `token-goat section` |
-| [`src/stats.ts`](src/stats.ts) | Stats aggregation from the `stats` table in `global.db`; `summarize()`, `renderStats()` |
+| [`src/stats.ts`](src/stats.ts) | The `stats` table in `global.db`: `recordStat()` writes a row, `summarize()` aggregates them; the report itself is rendered by `stats_report.ts` |
+| [`src/stats_report.ts`](src/stats_report.ts) | Renders `token-goat stats` from a `summarize()` result: `renderStats()` / `renderShortStats()` print plain text to a pipe and the rich ANSI panel (`render/stats_renderer.ts`) to a terminal. Kept apart from `stats.ts` so the hooks, which record a stat on nearly every call, never load the renderer |
 
 **Embeddings and Semantic Search**
 

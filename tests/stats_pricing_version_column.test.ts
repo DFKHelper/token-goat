@@ -1,17 +1,4 @@
-/**
- * Regression (#defect-4): `summarize()` used to sum every row into `total_tokens_saved`
- * without ever reading `tg_version`, so rows priced under an older/different pricing
- * formula were added to current-formula rows as though they were commensurable, and the
- * headline number never disclosed that it was a mixed-era sum. `tg_version` is NULL for the
- * overwhelming majority of all-time rows on a real ledger, so excluding non-current rows
- * from the headline would discard nearly the whole figure rather than fix anything -- the
- * chosen fix keeps the sum and discloses the mix instead of silently presenting it as
- * single-formula.
- *
- * Provenance: HAND-DERIVED. Rows and expected bucket totals are computed by hand, matching
- * the existing `HARNESS_UNRECORDED` test's structure in tests/stats_harness_column.test.ts
- * (the same disclosure shape, for the `harness` column) rather than read out of summarize().
- */
+/** Regression (#defect-4): `summarize()` used to sum every row into `total_tokens_saved` without ever reading `tg_version`, so rows priced under an older/different pricing formula were added to current-formula rows as though they were commensurable, and the headline number never disclosed that it was a mixed-era sum. `tg_version` is NULL for the overwhelming majority of all-time rows on a real ledger, so excluding non-current rows from the headline would discard nearly the whole figure rather than fix anything -- the chosen fix keeps the sum and discloses the mix instead of silently presenting it as single-formula. Provenance: HAND-DERIVED. Rows and expected bucket totals are computed by hand, matching the existing `HARNESS_UNRECORDED` test's structure in tests/stats_harness_column.test.ts (the same disclosure shape, for the `harness` column) rather than read out of summarize(). */
 import { describe, it, expect, afterEach } from 'vitest'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
@@ -22,11 +9,11 @@ import { closeAllDbs } from '../src/db.js'
 import { dataDirForHome } from '../src/constants.js'
 import {
   summarize,
-  renderShortStats,
   GLOBAL_SCHEMA_SQL,
   PRICING_VERSION_UNRECORDED,
   hasMixedPricingEras,
 } from '../src/stats.js'
+import { renderShortStats } from '../src/stats_report.js'
 import { statsJsonPayload } from '../src/cli_stats.js'
 
 function makeHome(prefix: string): { customHome: string; dbPath: string } {
