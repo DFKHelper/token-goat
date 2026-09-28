@@ -294,6 +294,25 @@ export function fileIsGone(absPath: string): boolean {
   return fileIsAbsent(absPath)
 }
 
+/** What {@link DELETED_WARNING} says, as a suffix rather than a banner, for surfaces that render one line per match (`symbol`, `refs`) and cannot put a banner above a single row. */
+export const DELETED_TAG = '⚠ DELETED: file no longer on disk'
+
+/** Stable reorder that moves rows whose file is gone from disk after every live row, keeping each group's incoming order. Rows outlive their file for as long as sweepKnownRoots' missing-root grace (a deleted worktree looks like an unmounted disk), and a deleted checkout named `proj-wt/` sorts ahead of `proj/` because `-` precedes `/`, so without this the first answer a caller read was the dead copy. Nothing is dropped: the gone rows still print, tagged {@link DELETED_TAG}. */
+export function sinkGoneRows<T>(rows: readonly T[], pathOf: (row: T) => string): T[] {
+  const gone = new Map<string, boolean>()
+  const isGone = (row: T): boolean => {
+    const p = pathOf(row)
+    let g = gone.get(p)
+    if (g === undefined) {
+      g = fileIsGone(p)
+      gone.set(p, g)
+    }
+    return g
+  }
+  const live = rows.filter((r) => !isGone(r))
+  return live.length === rows.length ? [...rows] : [...live, ...rows.filter(isGone)]
+}
+
 /** Returns the STALE_WARNING line (plus trailing newline) when `resolvedPath`'s current on-disk SHA-256 differs from the SHA-256 stamped on its `files` row at the time it was last indexed, the DELETED_WARNING line when the file is gone from disk entirely, or '' when they match, the file isn't indexed, or the file is present but momentarily unreadable. Cheap by design: a single fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/skeleton/symbol lookup. */
 export function staleWarning(resolvedPath: string): string {
   const entry = getFileEntry(resolvedPath)
@@ -362,10 +381,16 @@ export function healStaleResultFiles(filePaths: readonly string[]): { healed: bo
 export function warnIfFilesStale(filePaths: readonly string[]): void {
   const checked = new Set<string>()
   let staleCount = 0
+  let goneCount = 0
   for (const raw of filePaths) {
     if (checked.size >= STALE_CHECK_FILE_CAP) break
     if (checked.has(raw)) continue
     checked.add(raw)
+    // A gone file is not "changed on disk", and no reindex can make a repeat current: it would only delete the rows. Counted apart so the note below says what is true of it.
+    if (fileIsGone(raw)) {
+      goneCount++
+      continue
+    }
     if (staleWarning(raw) === '') continue
     staleCount++
     // healStaleIndex is best-effort for ordinary parse/I/O failures already; only a detected between-check-and-use path swap (ConfinementIdentityError) is meant to escape it, and that is a real security-relevant condition this wrapper must not paper over either.
@@ -376,6 +401,9 @@ export function warnIfFilesStale(filePaths: readonly string[]): void {
       ? 'the index is read-only this run, so these results are from the older version.'
       : 'a reindex just ran, so a repeat of this command will reflect the current version.'
     console.warn(`token-goat: ${countNoun(staleCount, 'file')} behind these results changed on disk since the index last saw ${staleCount === 1 ? 'it' : 'them'} -- ${after}`)
+  }
+  if (goneCount > 0) {
+    console.warn(`token-goat: ${countNoun(goneCount, 'file')} behind these results ${goneCount === 1 ? 'is' : 'are'} no longer on disk -- results from ${goneCount === 1 ? 'it' : 'them'} are what the index last saw.`)
   }
 }
 

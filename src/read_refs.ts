@@ -10,7 +10,7 @@ import { detectLanguageOfFile, type RefEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
-import { emitGuarded, findSpecSeparator, guardJsonRows, guardText, recordReadStat, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
+import { DELETED_TAG, emitGuarded, fileIsGone, findSpecSeparator, guardJsonRows, guardText, recordReadStat, sinkGoneRows, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
 import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement } from './read_spec.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
@@ -40,6 +40,11 @@ function refsDisplayPath(p: string): string {
   return toDisplayPath(getDisplayRoot(), p)
 }
 
+/** The per-row DELETED suffix `symbol` prints, for a reference whose file is gone from disk (a deleted worktree's rows survive sweepKnownRoots' missing-root grace), so a caller never edits a call site that no longer exists. */
+function goneSuffix(filePath: string): string {
+  return fileIsGone(filePath) ? `  ${DELETED_TAG}` : ''
+}
+
 function refGrepFilter(grep: string | undefined): ((r: RefEntry) => boolean) | undefined {
   if (grep === undefined) return undefined
   const matches = compileGrepMatcher(grep)
@@ -48,14 +53,14 @@ function refGrepFilter(grep: string | undefined): ((r: RefEntry) => boolean) | u
 
 /** JSON reference rows as emitted: `-C` windows attached first (they read from disk, so they need the raw absolute path), then `filePath` rewritten to the same display spelling the text rows use -- root-relative and reproducible rather than absolute and specific to one machine's drive-letter casing, matching what outline/skeleton `--json` already do. */
 function refsJsonItems<T extends RefEntry>(items: T[], contextLines: number): (T & { contextLines?: SourceContextLine[] })[] {
-  return withContextLines(items, contextLines).map((r) => ({ ...r, filePath: refsDisplayPath(r.filePath) }))
+  return withContextLines(items, contextLines).map((r) => ({ ...r, filePath: refsDisplayPath(r.filePath), ...(fileIsGone(r.filePath) ? { deleted: true } : {}) }))
 }
 
 /** One reference rendered as `path:line: <enclosing symbol>` (today's line, always emitted verbatim), optionally followed by its `-C` source window. Shared by all three `refs` rendering paths (single, multi-symbol, cross-file) so `-C` cannot drift between them. */
 function renderRefLines(ref: RefEntry, contextLines: number, indent = '  '): string[] {
   const displayPath = refsDisplayPath(ref.filePath)
   // The path and the one-line context are repo-chosen text quoted into token-goat's own listing row. The `-C` window below is file content and is deliberately left as it is: that is the payload the reader asked for, and this file's read output is unfenced by design.
-  const base = `${indent}${displaySafeText(displayPath)}:${ref.line}: ${displaySafeText(ref.context)}`
+  const base = `${indent}${displaySafeText(displayPath)}:${ref.line}: ${displaySafeText(ref.context)}${goneSuffix(ref.filePath)}`
   const window = buildContextWindow(ref.filePath, ref.line, contextLines)
   if (window === null) return [base]
   return [base, ...renderContextWindow(displayPath, ref.line, window, '', `${indent}  `)]
@@ -168,6 +173,8 @@ function collectRefs(symName: string, defFile: string | undefined, opts: RefsOpt
   // The typed-tier filter is a client-side filter over the same window as --exclude-tests/--grep, so a query where it alone dropped rows reports a floor whenever that window was finite: see refsTotal's doc comment.
   const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
   const filteredTotal = clientFiltered ? results.length : undefined
+  // Ahead of the page slice, so a page cut short keeps the live call sites and lets the dead ones fall off the end: see sinkGoneRows.
+  results = sinkGoneRows(results, (r) => r.filePath)
   if (clientFiltered && opts.top === undefined) results = results.slice(0, opts.limit ?? 100)
   return { queryOpts, defFileHint, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal }
 }
@@ -418,6 +425,8 @@ function runRefsSingle(opts: RefsOptions): number {
 interface FileRefCount {
   readonly file: string
   readonly count: number
+  /** Set only in `--top --json` output, and only when the file is gone from disk (same key `symbol --json` uses). */
+  readonly deleted?: true
 }
 
 /** `--exclude-tests`: drops references whose call site is a test file, per {@link isTestFile}. Callers must query unbounded so this runs BEFORE any `--limit`/`--top` slicing, or the flag silently under-returns by letting suppressed test refs occupy slots ahead of the cutoff -- and no finite headroom is sufficient, since the rows are ordered alphabetically rather than by relevance. */
@@ -442,7 +451,7 @@ function renderTopFilesSummary(refs: RefEntry[], topN: number, suppressed?: numb
   const shown = grouped.slice(0, topN)
   const suppressedNote = suppressed !== undefined && suppressed > 0 ? ` (${excludeTestsHiddenNote(suppressed)})` : ''
   const lines = [`${countNoun(refs.length, 'reference')} across ${countNoun(grouped.length, 'file')} (showing top ${shown.length})${suppressedNote}`]
-  for (const { file, count } of shown) lines.push(`  ${count}  ${refsDisplayPath(file)}`)
+  for (const { file, count } of shown) lines.push(`  ${count}  ${refsDisplayPath(file)}${goneSuffix(file)}`)
   const omittedFiles = grouped.length - shown.length
   if (omittedFiles > 0) {
     const shownRefs = shown.reduce((sum, g) => sum + g.count, 0)
@@ -463,7 +472,7 @@ function topFilesJsonPayload(refs: RefEntry[], topN: number): RefsTopJsonEntry {
   const grouped = groupRefsByFile(refs)
   const shown = grouped.slice(0, topN)
   // Same display spelling as the text `--top` summary this envelope mirrors -- see refsDisplayPath.
-  return { fileCounts: shown.map((g) => ({ ...g, file: refsDisplayPath(g.file) })), totalFiles: grouped.length, totalRefs: refs.length, shown: shown.length }
+  return { fileCounts: shown.map((g) => ({ ...g, file: refsDisplayPath(g.file), ...(fileIsGone(g.file) ? { deleted: true } : {}) })), totalFiles: grouped.length, totalRefs: refs.length, shown: shown.length }
 }
 
 type RefsJsonEntry = { items: RefEntry[]; truncated: boolean; totalCount: number } | RefsTopJsonEntry
@@ -481,7 +490,7 @@ function renderCallerGroups(refs: RefEntry[], contextLines = 0): string[] {
   const lines: string[] = []
   for (const [file, fileRefs] of byFile) {
     const displayPath = refsDisplayPath(file)
-    lines.push(`${displaySafeText(displayPath)}:`)
+    lines.push(`${displaySafeText(displayPath)}:${goneSuffix(file)}`)
     for (const ref of fileRefs) {
       lines.push(`  :${ref.line}  ${ref.context !== '' ? displaySafeText(ref.context) : '(module scope)'}`)
       const window = buildContextWindow(file, ref.line, contextLines)
