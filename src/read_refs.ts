@@ -11,7 +11,7 @@ import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
-import { DELETED_TAG, emitGuarded, fileIsGone, findSpecSeparator, guardJsonRows, guardText, recordReadStat, sinkGoneRows, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
+import { DELETED_TAG, emitGuarded, fileIsGone, findSpecSeparator, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, recordReadStat, sinkGoneRows, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
 import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement } from './read_spec.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
@@ -154,7 +154,11 @@ function collectRefs(symName: string, defFile: string | undefined, opts: RefsOpt
   const rootDir = refsRootDir(opts)
   if (rootDir !== undefined) queryOpts.rootDir = rootDir
 
-  const scanned = queryRefs(queryOpts)
+  // The spec's defining file is the one file this command names up front, so it heals before the query the way `read`/`symbol` heal theirs: a call added to it out of band has no row yet, and no row can lead the query to it afterwards.
+  if (defFileHint !== undefined && !fileIsGone(defFileHint)) healStaleIndex(defFileHint)
+  let scanned = queryRefs(queryOpts)
+  // The other files are found only by querying, so heal what the query hit and ask once more: answering from the rows already fetched would print pre-edit line numbers (or a call that is gone) under a note saying a repeat would be current. A file whose reparse failed stays stale and warnIfFilesStale still warns about it.
+  if (healStaleResultFiles(scanned.map((r) => r.filePath)).healed) scanned = queryRefs(queryOpts)
   // How full the query window came back, and how big that window was, so a client-side filter drawn from a window that filled can report its count as a floor rather than as a total. See {@link refsTotal}.
   const preScanCount = scanned.length
   const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT

@@ -29,6 +29,7 @@ import { runSemantic } from '../src/read_semantic.js'
 import { runRefs } from '../src/read_refs.js'
 import { runAsk } from '../src/graph_commands.js'
 import { cmdTrace } from '../src/text_commands.js'
+import { captureStdout } from './helpers/capture-stdout.js'
 
 let root: string
 let origCwd: string
@@ -53,7 +54,8 @@ function capturedWarnings(): string {
 }
 
 describe('stale-index warning reaches multi-file answer commands', () => {
-  it('runRefs warns and self-heals when the referenced file changed out of band', () => {
+  // refs heals the files its query hit and then asks again, so the fresh rows are the answer and there is nothing left to warn about; the warning for a reparse that fails is pinned in refs_heals_then_requeries.test.ts.
+  it('runRefs self-heals when the referenced file changed out of band, and answers from the healed rows', () => {
     const defFile = join(root, 'refstale_def9k.ts')
     const callerFile = join(root, 'refstale_caller9k.ts')
     writeFileSync(defFile, 'export function refStaleTarget9k(): number {\n  return 1\n}\n')
@@ -64,9 +66,15 @@ describe('stale-index warning reaches multi-file answer commands', () => {
     // Genuine staleness: edit the CALLING file directly on disk, bypassing the dirty queue, so its row's sha no longer matches its current bytes.
     writeFileSync(callerFile, "import { refStaleTarget9k } from './refstale_def9k.js'\n// touched\nrefStaleTarget9k()\n")
 
-    const code = runRefs({ spec: `${defFile}::refStaleTarget9k` })
+    let code = -1
+    const out = captureStdout(() => {
+      code = runRefs({ spec: `${defFile}::refStaleTarget9k` })
+    })
     expect(code).toBe(0)
-    expect(capturedWarnings(), 'refs served a stale caller row with no warning').toMatch(/changed on disk/)
+    // HAND-DERIVED: the inserted comment line moves the call from line 2 to line 3.
+    expect(out).toMatch(/refstale_caller9k\.ts:3:/)
+    expect(out).not.toMatch(/refstale_caller9k\.ts:2:/)
+    expect(capturedWarnings()).not.toMatch(/changed on disk/)
 
     const resolvedCaller = normalizePath(callerFile)
     expect(getFileEntry(resolvedCaller)?.sha).toBe(fingerprintFile(resolvedCaller))

@@ -88,7 +88,8 @@ describe('stale_served counter', () => {
     ])
   })
 
-  it('refs books one stale event for a caller that changed on disk, and one per answer rather than per file', () => {
+  // refs now heals the callers it hit and asks again, so a reparse that succeeds leaves nothing stale to book; the booking for a reparse that fails (one per answer, not per file) is pinned in refs_heals_then_requeries.test.ts, which can force that failure.
+  it('refs books nothing for callers that changed on disk, because it heals them before answering', () => {
     const def = indexedModule('refdef_7q.ts', 'staleServedTarget7q')
     const callerA = join(root, 'refcaller_a7q.ts')
     const callerB = join(root, 'refcaller_b7q.ts')
@@ -106,7 +107,7 @@ describe('stale_served counter', () => {
       out.mockRestore()
     }
 
-    expect(newRows(before)).toEqual(['stale_served:stale refs'])
+    expect(newRows(before)).toEqual([])
   })
 
   it('books nothing when the file on disk still matches its index rows', () => {
