@@ -332,9 +332,10 @@ const SILENT: Script = async (c, f) => {
 // ---------- setup ----------
 
 beforeAll(() => {
-  const base =fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-native-client-')))
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-native-client-')))
   const dataDir = dataDirForHome(base)
-  const tmp = path.join(base, 'tmp')
+  // The data directory's socket path is too long here, so every endpoint moves to `token-goat-<uid>` under this temp directory, which has to be short for that path to fit the ~104-byte Unix socket limit. Under the run's own temp root it is not on macOS: CAPTURE, CI's test-macos job on 6593e34f bound `/private/var/folders/36/.../T/tg-run-wJAHtZ/tg-native-client-d7NKZn/tmp/token-goat-501/c78dd622d3d3e0ab-0.sock`, 137 bytes, and 31 cases failed with EADDRINUSE. A real macOS temp directory leaves about 87.
+  const tmp = WIN ? path.join(base, 'tmp') : fs.realpathSync.native(fs.mkdtempSync('/tmp/tgn-'))
   const proj = path.join(base, 'proj')
   const fakeBundle = path.join(base, 'fake-dist')
   for (const d of [dataDir, tmp, path.join(proj, 'src'), fakeBundle]) fs.mkdirSync(d, { recursive: true })
@@ -355,6 +356,7 @@ afterAll(async () => {
   const deadline = Date.now() + 10_000
   while ((await slotStatus(endpoint, sb.key)) !== undefined && Date.now() < deadline) await sleep(100)
   fs.rmSync(sb.base, { recursive: true, force: true })
+  fs.rmSync(sb.tmp, { recursive: true, force: true })
 }, 30_000)
 
 // ---------- the real server ----------
