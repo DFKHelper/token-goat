@@ -1,9 +1,7 @@
 /** What each harness's hook shim decides around a token-goat hook call, in TypeScript, for the resident hook server's harness-aware protocol (HARNESS_PROTOCOL_VERSION in hook_ipc.ts). A client speaking it carries no harness logic: it names the harness and the event argument it was run with, and the server answers with exactly the stdout bytes and exit code that harness's installed Node shim would have produced. The shims (src/bridges/claudecode.ts, codex.ts, grok.ts, kimi.ts, copilot_cli.ts) keep their own embedded copies, because an installed shim reaches the server through the v1 client, which returns the relay's raw output and leaves the translation to the shim; translating twice is not harmless (a Grok deny answered twice becomes an allow). Nothing but tests/native_hook_adapter_equivalence.test.ts holds the two copies together: it runs every installed shim and this module on the same payloads and requires identical bytes, so a change to either side belongs in both. */
 import * as crypto from 'node:crypto'
-import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
 
+import { materializeShrunkImageFile } from './bridges/vscode_hooks.js'
 import { COPILOT_CLI_TOOL_NAME_MAP } from './copilot_tool_names.js'
 import { ownGet } from './own_lookup.js'
 import { foldToolName } from './tool_name_fold.js'
@@ -323,47 +321,6 @@ function stableFallbackSessionId(cwd: unknown): string {
   return 'copilot-' + crypto.createHash('sha256').update(key).digest('hex').slice(0, 16)
 }
 
-const MATERIALIZED_SHRINK_MAX_AGE_MS = 60 * 60 * 1000
-let lastMaterializedShrinkSweepAtMs = 0
-
-/** MATERIALIZE_SHRUNK_IMAGE_JS's sweep (src/bridges/shrink_block.ts). A shim sweeps once per process, which is once per call; the server sweeps at most hourly, and the sweep changes no output. */
-function pruneMaterializedShrinks(): void {
-  const now = Date.now()
-  if (now - lastMaterializedShrinkSweepAtMs < MATERIALIZED_SHRINK_MAX_AGE_MS) return
-  lastMaterializedShrinkSweepAtMs = now
-  try {
-    const dir = os.tmpdir()
-    for (const file of fs.readdirSync(dir)) {
-      if (!file.startsWith('token-goat-shrink-')) continue
-      const full = path.join(dir, file)
-      try {
-        const st = fs.statSync(full)
-        if (st.isFile() && now - st.mtimeMs > MATERIALIZED_SHRINK_MAX_AGE_MS) fs.unlinkSync(full)
-      } catch {
-        // one bad stat or unlink must not abort the sweep
-      }
-    }
-  } catch {
-    // a readdir failure must never break the materialization
-  }
-}
-
-/** MATERIALIZE_SHRUNK_IMAGE_JS's materializeShrunkImage: the shrunk image in a shrink payload, written to a fresh owner-only temp file whose name derives from nothing in the payload but its format subtype. */
-function materializeShrunkImage(context: string): string | undefined {
-  const idx = context.indexOf('data:image/')
-  if (idx === -1) return undefined
-  const match = /^data:image\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(context.slice(idx).trim())
-  if (!match) return undefined
-  try {
-    pruneMaterializedShrinks()
-    const file = path.join(os.tmpdir(), `token-goat-shrink-${process.pid}-${Date.now()}-${crypto.randomUUID()}.${match[1]}`)
-    fs.writeFileSync(file, Buffer.from(match[2] ?? '', 'base64'), { mode: 0o600 })
-    return file
-  } catch {
-    return undefined
-  }
-}
-
 function copilotContext(resp: unknown): string | undefined {
   const hso = resp && get(resp, 'hookSpecificOutput')
   const context = get(hso, 'additionalContext')
@@ -388,7 +345,7 @@ function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown
     if (updated && typeof updated === 'object') {
       out['modifiedArgs'] = updated
     } else if (shrinkPayload && (toolName === 'view' || foldToolName(toolName) === 'view')) {
-      const shrunkPath = materializeShrunkImage(context)
+      const shrunkPath = materializeShrunkImageFile(context)
       if (shrunkPath) out['modifiedArgs'] = Object.assign({}, originalToolArgs, { path: shrunkPath })
     }
     if (context && !shrinkPayload) out['additionalContext'] = context
