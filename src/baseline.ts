@@ -244,7 +244,8 @@ export function buildProjectMap(
 /** Render a {@link ProjectMap} to a human-readable block. Compact mode emits a single language summary line and a short symbol list; the full form adds a recent-files section and per-symbol locations. Compact output is strictly fewer lines than the full form for the same map. */
 export function formatProjectMap(map: ProjectMap, compact = false): string {
   const lines: string[] = []
-  const rel = path.basename(map.rootDir)
+  // The folder name and the recent-file paths are the repository's own, so they go through displaySafeText like the symbol lines below: this block reaches the model outside any fence, as the `map` output and in the subagent-start briefing on the context channel.
+  const rel = displaySafeText(path.basename(map.rootDir))
 
   lines.push(`# Project map: ${rel}`)
   // A capped walk cannot prove its file count is the whole population, so it ships as a floor rather than as a bare number no reader can tell apart from a completed walk. Same reasoning collectWalkIndexFiles (walk_index.ts) already applies to the identical ceiling in its refusal message.
@@ -274,7 +275,7 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
     lines.push('')
     lines.push('## Recent files')
     for (const f of map.recentFiles) {
-      lines.push(`- ${f}`)
+      lines.push(`- ${displaySafeText(f)}`)
     }
   }
 

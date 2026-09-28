@@ -175,6 +175,33 @@ function briefingRoot(event: HookEvent): string | null {
   return process.cwd()
 }
 
+/** True when the hooks file this call came through also wires the harness's subagent-start hook, which delivers the spawn briefing into the subagent's own context. The briefing then stays out of the spawning tool call, whose rewritten arguments the parent keeps in its history. Read from the file rather than assumed from the version, because a hooks file written before the key existed is only rewritten by the next install. */
+export function subagentStartWired(): boolean {
+  const harness = getHarnessName()
+  // Both names spelled out as the shim sets them (copilot_cli.ts), the VS Code one being vscode_duplicate.ts's VSCODE_HOOKS_DIR_ENV: importing that module put it in the hook entry's eager chunk set past dist_chunks_deduped's ceiling. The shim-driven "unrewritten once wired" tests in copilot_subagent_start.test.ts fail if either drifts.
+  const dirVar = harness === 'copilot_cli' ? 'TOKEN_GOAT_COPILOT_HOOKS_DIR' : harness === 'vscode' ? 'TOKEN_GOAT_VSCODE_HOOKS_DIR' : undefined
+  const dir = dirVar === undefined ? undefined : process.env[dirVar]
+  if (dir === undefined || dir === '') return false
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(dir, 'token-goat.json'), 'utf8')) as { hooks?: Record<string, unknown> }
+    const entries = config.hooks?.[harness === 'vscode' ? 'SubagentStart' : 'subagentStart']
+    return Array.isArray(entries) && entries.length > 0
+  } catch {
+    return false
+  }
+}
+
+/** subagent_start: the spawn briefing as context for the subagent being started. Copilot CLI 1.0.88 prepends a subagentStart additionalContext to the subagent's prompt (capture C4a); VS Code 1.137 passes SubagentStart's hookSpecificOutput.additionalContext to the subagent request (extension.js executeSubagentStartHook). */
+function subagentStartHandler(event: HookEvent): HookOutput {
+  try {
+    const root = getCwd(event) ?? (getHarnessName() === 'vscode' ? null : process.cwd())
+    const briefing = buildSubagentBriefing(root).trim()
+    return briefing ? contextOutput(briefing) : passOutput()
+  } catch {
+    return passOutput()
+  }
+}
+
 function isAgentTool(toolName: string | undefined): boolean {
   return toolName === 'Agent' || toolName === 'task' || toolName === 'Task'
 }
@@ -194,7 +221,8 @@ function preAgentHandler(event: HookEvent): HookOutput {
     const duplicateOf = findDuplicateOutstandingPrompt(prompt)
     recordOutstandingAgentSpawn(prompt)
 
-    const briefing = buildSubagentBriefing(briefingRoot(event))
+    // Delivered by subagentStartHandler instead when that hook is wired, so it never lands in the parent's copy of the call.
+    const briefing = subagentStartWired() ? '' : buildSubagentBriefing(briefingRoot(event))
     const advisory = duplicateOf
       ? `\n\n&#91;token-goat] A similar subagent spawn already appears to be outstanding this session (prompt starts: "${neutralizeSpokenMarkers(truncateForWarning(duplicateOf, 80))}"). This is advisory only -- proceeding is fine if intentional.`
       : ''
@@ -593,6 +621,7 @@ function postAgentHandler(event: HookEvent): HookOutput {
   }
 }
 
+registerHook('subagent_start', subagentStartHandler)
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'Agent' })
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'task' })
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'Task' })

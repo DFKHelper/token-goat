@@ -79,6 +79,8 @@ export const VSCODE_HOOK_FILE_EVENT_KEYS: readonly string[] = [
   'agentStop',
   'subagentStop',
   'errorOccurred',
+  // Not in that camelCase table. VS Code 1.137's Copilot-format parser falls back to accepting a key already spelled as one of its own hook types (workbench.desktop.main.js: `iut(key) ?? eut(key)`), and its subagent-start hook is reachable only that way; the installer writes it while VS Code owns the file (copilot_cli_install.ts VSCODE_ONLY_HOOK_EVENTS).
+  'SubagentStart',
 ]
 
 /** The hooks directory VS Code's agent reads for this scope. Both entries are on VS Code's own hook-source list in workbench.desktop.main.js (1.136.0): `.github/hooks` in the workspace and `~/.copilot/hooks` for the user. VS Code expands that `~/` against the user's home directory, not COPILOT_HOME, so the user scope ignores COPILOT_HOME here even though Copilot CLI honors it; when COPILOT_HOME is unset the two are the same directory and share one hooks file. */

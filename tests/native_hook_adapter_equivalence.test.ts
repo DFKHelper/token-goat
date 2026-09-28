@@ -149,6 +149,11 @@ beforeAll(async () => {
   for (const h of HARNESSES) {
     const res = cli(['install', ...INSTALL_FLAG[h]])
     expect(res.status, `install ${h}: ${res.stderr}`).toBe(0)
+    if (h === 'copilot_cli') {
+      // VS Code shares this hooks file at user scope, and while it owns the file the installer adds the keys only VS Code reads (SubagentStart), which the VS Code payload cases drive.
+      const vs = cli(['install', '--vscode', '--user'])
+      expect(vs.status, `install --vscode --user: ${vs.stderr}`).toBe(0)
+    }
     sb.wired[h] = wiredEvents(h)
   }
   key = await startServer()
@@ -267,6 +272,8 @@ const ANCHORS: Record<string, { stdout: string | RegExp; exit?: number }> = {
   'copilot_cli|edit failure (old_str not found)': { stdout: /^\{"additionalContext":"\[token-goat\] Edit failed: string not found in notes\.md/ },
   'copilot_cli|view, remapped to Read with path to file_path': { stdout: /notes\.md::/ },
   'copilot_cli|agent stop': { stdout: '{"decision":"allow"}' },
+  'copilot_cli|subagent start': { stdout: /^\{"additionalContext":"## Session briefing/ },
+  'copilot_cli|VS Code SubagentStart through the Copilot hooks file': { stdout: /^\{"hookSpecificOutput":\{"hookEventName":"SubagentStart","additionalContext":"## Session briefing/ },
   'copilot_cli|VS Code read_file through the Copilot hooks file': { stdout: /^\{"hookSpecificOutput":\{"hookEventName":"PreToolUse"/ },
 }
 

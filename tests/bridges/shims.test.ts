@@ -155,6 +155,7 @@ describe('CODEX_HOOK_SCRIPT hookEventName casing (regression: the shim previousl
     post_compact: 'PostCompact',
     user_prompt_submit: 'UserPromptSubmit',
     subagent_stop: 'SubagentStop',
+    subagent_start: 'SubagentStart',
     session_start: 'SessionStart',
     post_tool_use_failure: 'PostToolUseFailure',
   }

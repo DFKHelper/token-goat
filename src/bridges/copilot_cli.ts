@@ -17,10 +17,13 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
-// HOOK_EVENTS). Only these eight have a token-goat handler; every other real
-// Copilot event (sessionEnd, subagentStart, errorOccurred, notification,
-// permissionRequest) is left unimplemented
-// rather than guessed at, and falls through to the default no-op below.
+// HOOK_EVENTS). Only these nine have a token-goat handler; every other real
+// Copilot event (sessionEnd, errorOccurred, notification, permissionRequest)
+// is left unimplemented rather than guessed at, and falls through to the
+// default no-op below. subagentStart answers with the spawn briefing as
+// additionalContext, which Copilot CLI 1.0.88 prepends to the subagent's own
+// prompt (capture C4a), so the briefing no longer rides a rewrite of the
+// parent's task call and stays out of the parent's history.
 // postToolUseFailure is the newest of the eight and the only one whose channel
 // costs tokens instead of saving them: it fires instead of postToolUse when a
 // tool result is a failure, and accepts only additionalContext back --
@@ -50,6 +53,18 @@ const COPILOT_TO_TG_EVENT = {
   subagentStop: 'subagent_stop',
   userPromptSubmitted: 'user_prompt_submit',
   postToolUseFailure: 'post_tool_use_failure',
+  subagentStart: 'subagent_start',
+}
+
+// Keys only VS Code reads. VS Code 1.137 parses this same hooks file and
+// accepts a key either from its camelCase Copilot table, which has no
+// subagentStart, or when the key is already its own PascalCase hook type
+// (workbench.desktop.main.js: iut(key) ?? eut(key)). So VS Code's subagent
+// hook needs the key spelled SubagentStart. A Copilot CLI payload arriving on
+// one of these keys is answered with nothing, so a Copilot build that also
+// honored the PascalCase spelling could not brief a subagent twice.
+const VSCODE_ONLY_TO_TG_EVENT = {
+  SubagentStart: 'subagent_start',
 }
 
 // Copilot built-in tool name -> token-goat internal tool name. Confirmed via
@@ -273,6 +288,9 @@ async function tryInProcess(entryPath, tgEvent, canonical, harness) {
     // user-scope copy from a project-scope one -- the two files are byte-identical and so are
     // their payloads. vscode_duplicate.ts needs it to stand the redundant copy down.
     if (harness === 'vscode') process.env.TOKEN_GOAT_VSCODE_HOOKS_DIR = __dirname
+    // Whether this hooks file wires subagentStart decides where a subagent's spawn briefing goes
+    // (hooks_agent_spawn.ts subagentStartWired), and only this directory says which file that is.
+    else process.env.TOKEN_GOAT_COPILOT_HOOKS_DIR = __dirname
     const served = await tryServer(entryPath, tgEvent, canonical)
     if (served !== undefined) return served
     const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
@@ -329,7 +347,8 @@ async function main() {
   const copilotEvent = process.argv[2] || ''
 
   // ownGet, not a bare lookup: the map is a plain object literal, so eight keys it never declares ('constructor', 'toString', '__proto__' and the rest of Object.prototype) come back truthy and sail past the check below. tgEvent is then a Function, and 'token-goat hook ' + tgEvent is concatenated into a shell command string by the fallback at the bottom of this shim. No member of Object.prototype stringifies with a shell metacharacter, so this was a failed spawn rather than a second command -- but argv reaching a shell string through a gate that reads like it stops it is the shape worth closing, not the payload that happened to be harmless. The four shims built on shim_common.ts validate against a closed Set, which has no equivalent hole.
-  const tgEvent = ownGet(COPILOT_TO_TG_EVENT, copilotEvent)
+  const vscodeOnly = ownGet(VSCODE_ONLY_TO_TG_EVENT, copilotEvent)
+  const tgEvent = ownGet(COPILOT_TO_TG_EVENT, copilotEvent) || vscodeOnly
   if (!tgEvent) {
     process.stdout.write('{}')
     return
@@ -353,6 +372,10 @@ async function main() {
 
   if (isVscodePayload(payload)) {
     process.stdout.write(await relayVscode(process.argv[3], tgEvent, payload))
+    return
+  }
+  if (vscodeOnly) {
+    process.stdout.write('{}')
     return
   }
 
@@ -452,7 +475,7 @@ async function main() {
           timeout: 3000,
           killSignal: 'SIGKILL',
           maxBuffer: 32 * 1024 * 1024,
-          env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
+          env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),
         })
       : spawnSync('token-goat hook ' + tgEvent, {
           input: JSON.stringify(canonical),
@@ -462,7 +485,7 @@ async function main() {
           timeout: 3000,
           killSignal: 'SIGKILL',
           maxBuffer: 32 * 1024 * 1024,
-          env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
+          env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),
         })
     if (res.status !== 0 || !res.stdout) {
       process.stdout.write('{}')
@@ -540,10 +563,11 @@ function translate(copilotEvent, resp, toolName, originalToolArgs) {
     return {}
   }
 
-  if (copilotEvent === 'sessionStart') {
-    // sessionStart has no tool result to modify -- only additionalContext applies, and it's the
-    // one channel that reaches the model before it picks its first read tool, so this is where
-    // the routing reminder has to land.
+  if (copilotEvent === 'sessionStart' || copilotEvent === 'subagentStart') {
+    // Neither event has a tool result to modify, so only additionalContext applies. sessionStart's
+    // is the one channel that reaches the model before it picks its first read tool, so the routing
+    // reminder lands there. subagentStart's is prepended to the subagent's own prompt (Copilot CLI
+    // 1.0.88, capture C4a), which is where the spawn briefing belongs.
     const context = extractContext(resp)
     if (context) return { additionalContext: context }
     return {}

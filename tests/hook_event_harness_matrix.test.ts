@@ -106,14 +106,15 @@ function copilotCliEvents(): HookEventName[] {
   return extractKnownEvents(m[1], 'src/bridges/copilot_cli.ts COPILOT_TO_TG_EVENT')
 }
 
-/** VS Code reads the same hooks file as Copilot CLI but only fires the keys in VSCODE_HOOK_FILE_EVENT_KEYS (src/bridges/vscode_install.ts, from VS Code 1.136.0's hook-type table), so its events are the COPILOT_TO_TG_EVENT entries whose key VS Code knows. */
+/** VS Code reads the same hooks file as Copilot CLI but only fires the keys in VSCODE_HOOK_FILE_EVENT_KEYS (src/bridges/vscode_install.ts, from VS Code 1.136.0's hook-type table plus the PascalCase keys its 1.137 parser accepts), so its events are the COPILOT_TO_TG_EVENT and VSCODE_ONLY_TO_TG_EVENT entries whose key VS Code knows. */
 function vscodeEvents(): HookEventName[] {
   const src = readSrc('bridges/copilot_cli.ts')
   const m = src.match(/const COPILOT_TO_TG_EVENT = \{\r?\n([\s\S]*?)\r?\n\}/)
-  if (!m || m[1] === undefined) {
-    throw new Error('COPILOT_TO_TG_EVENT not found in src/bridges/copilot_cli.ts -- update the matrix derivation')
+  const only = src.match(/const VSCODE_ONLY_TO_TG_EVENT = \{\r?\n([\s\S]*?)\r?\n\}/)
+  if (!m || m[1] === undefined || !only || only[1] === undefined) {
+    throw new Error('COPILOT_TO_TG_EVENT or VSCODE_ONLY_TO_TG_EVENT not found in src/bridges/copilot_cli.ts -- update the matrix derivation')
   }
-  const kept = m[1].split(/\r?\n/).filter((line) => {
+  const kept = `${m[1]}\n${only[1]}`.split(/\r?\n/).filter((line) => {
     const key = /^\s*(\w+):/.exec(line)?.[1]
     return key !== undefined && VSCODE_HOOK_FILE_EVENT_KEYS.includes(key)
   })
@@ -175,8 +176,9 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
     'subagent_stop',
     'user_prompt_submit',
     'post_tool_use_failure',
+    'subagent_start',
   ],
-  vscode: ['session_start', 'pre_tool_use', 'post_tool_use', 'stop', 'subagent_stop', 'user_prompt_submit'],
+  vscode: ['session_start', 'pre_tool_use', 'post_tool_use', 'stop', 'subagent_stop', 'user_prompt_submit', 'subagent_start'],
   visualstudio: [],
   generic: [...HOOK_EVENTS],
 }

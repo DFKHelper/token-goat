@@ -171,17 +171,18 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows an 8/10 score for copilot_cli and claudecode, 6/10 for kimi, 5/10 for codex/grok/qwen, 3/10 for opencode/gemini/openclaw/pi', () => {
+  it('shows a 9/11 score for copilot_cli, 8/11 for claudecode, 6/11 for kimi and vscode, 5/11 for codex/grok/qwen, 3/11 for opencode/gemini/openclaw/pi', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    // copilot_cli and claudecode both wire post_tool_use_failure, their own event on both harnesses. copilot_cli also wires stop via its agentStop mapping, which claudecode's settings.json wiring does not; claudecode's edge is post_compact, which no other harness has a confirmed equivalent event for.
-    expect(text).toMatch(/copilot_cli\s+.*\s8\/10/)
-    expect(text).toMatch(/claudecode\s+.*\s8\/10/)
-    expect(text).toMatch(/kimi\s+.*\s6\/10/)
+    // copilot_cli and claudecode both wire post_tool_use_failure, their own event on both harnesses. copilot_cli also wires stop via its agentStop mapping, which claudecode's settings.json wiring does not; claudecode's edge is post_compact, which no other harness has a confirmed equivalent event for. subagent_start is wired only on copilot_cli and vscode, the two harnesses whose subagent-start hook was shown to deliver the briefing into the subagent.
+    expect(text).toMatch(/copilot_cli\s+.*\s9\/11/)
+    expect(text).toMatch(/claudecode\s+.*\s8\/11/)
+    expect(text).toMatch(/kimi\s+.*\s6\/11/)
+    expect(text).toMatch(/vscode\s+.*\s6\/11/)
     for (const harness of ['codex', 'grok', 'qwen']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/10`))
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/11`))
     }
     for (const harness of ['opencode', 'gemini', 'openclaw', 'pi']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/10`))
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/11`))
     }
   })
 })

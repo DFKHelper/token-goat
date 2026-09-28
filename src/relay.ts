@@ -68,7 +68,8 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
 
   // agent_id (Claude Code's subagent-invocation id) is present only when this hook fired inside a subagent call; undefined on the main thread. camelCase fallback mirrors sessionId's harness-tolerance above.
   const rawAgentId = obj['agent_id'] ?? obj['agentId']
-  const agentId = typeof rawAgentId === 'string' && rawAgentId !== '' ? rawAgentId : undefined
+  // Except on subagent_start, which runs on the parent's behalf before the new agent exists: VS Code names that new agent in agent_id, and keying on it would read and write state no other hook of the parent ever sees.
+  const agentId = eventName !== 'subagent_start' && typeof rawAgentId === 'string' && rawAgentId !== '' ? rawAgentId : undefined
 
   // traceparent / tracestate: W3C Trace Context headers from Claude Code / OTel spans or environment.
   const rawTraceparent =

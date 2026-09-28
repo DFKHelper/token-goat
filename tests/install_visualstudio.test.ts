@@ -438,7 +438,7 @@ describe('doctor, bridges-status and uninstall reporting', () => {
   it('bridges-status has a visualstudio row that wires no hook event and says why', () => {
     const row = BRIDGE_CAPABILITY_MATRIX.find((r) => r.harness === 'visualstudio')
     expect(row?.implemented.size).toBe(0)
-    expect(formatBridgesStatus()).toMatch(/visualstudio\s+.*\s0\/10/)
+    expect(formatBridgesStatus()).toMatch(/visualstudio\s+.*\s0\/11/)
     const json = bridgesStatusToJson().find((r) => r.harness === 'visualstudio')
     expect(Object.values(json?.events ?? { x: true }).every((v) => !v)).toBe(true)
     expect(json?.reasons['pre_tool_use']).toContain('no agent hooks')

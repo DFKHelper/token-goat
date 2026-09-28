@@ -160,6 +160,8 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
   post_compact: 'PostCompact',
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
+  // Wired for Copilot CLI (`subagentStart`) and VS Code (`SubagentStart`) only; hooks_agent_spawn.ts's subagentStartHandler answers it with the spawn briefing as additionalContext, which both harnesses read.
+  subagent_start: 'SubagentStart',
   session_start: 'SessionStart',
   // Claude Code sends a failed tool call here rather than to PostToolUse, and its PostToolUseFailure output schema accepts hookSpecificOutput.additionalContext (captured and read from claude.exe 2.1.281); install.ts HOOK_EVENT_MAP registers it.
   post_tool_use_failure: 'PostToolUseFailure',
