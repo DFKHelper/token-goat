@@ -310,7 +310,7 @@ export async function cmdInstall(opts: {
     if (copilotResult.alreadyInstalled) {
       out(`Copilot CLI integration already installed → ${copilotResult.configPath}`)
     } else {
-      out(`Installed token-goat Copilot CLI integration → ${copilotResult.configPath}, ${copilotResult.scriptPath}, ${copilotResult.instructionsPath}`)
+      out(`Installed token-goat Copilot CLI integration → ${[copilotResult.configPath, copilotResult.scriptPath, copilotResult.instructionsPath, ...(copilotResult.mcpConfigPath !== undefined ? [copilotResult.mcpConfigPath] : [])].join(', ')}`)
     }
     if (opts.local === true) out(projectHooksCommitNote([copilotResult.configPath], copilotResult.configPath))
     printBridgeVerificationNotice('copilot_cli')

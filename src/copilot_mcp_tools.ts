@@ -38,7 +38,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { copilotCliMcpToolsDir, copilotCliUserRoot } from './bridges/copilot_cli_install.js'
+import { copilotCliMcpToolsDir, copilotCliUserRoot } from './copilot_home.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 
 /**

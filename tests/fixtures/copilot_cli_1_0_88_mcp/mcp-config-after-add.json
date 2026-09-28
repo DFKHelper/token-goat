@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "other": {
+      "tools": [
+        "*"
+      ],
+      "type": "local",
+      "command": "echo",
+      "args": [
+        "hi"
+      ]
+    },
+    "token-goat": {
+      "tools": [
+        "*"
+      ],
+      "type": "local",
+      "command": "C:/Program Files/nodejs/node.exe",
+      "args": [
+        "C:/x/dist/token-goat.mjs",
+        "mcp-serve"
+      ]
+    }
+  }
+}

@@ -14,7 +14,7 @@ import {
   unusedMcpServers,
   type CopilotWasteReport,
 } from './copilot_waste.js'
-import { copilotCliMcpToolsDir } from './bridges/copilot_cli_install.js'
+import { copilotCliMcpToolsDir } from './copilot_home.js'
 import { countNoun } from './util.js'
 import { formatBytes, formatTokenEstimate } from './resident_context.js'
 import { estimateTokensFromLength } from './overflow_guard.js'

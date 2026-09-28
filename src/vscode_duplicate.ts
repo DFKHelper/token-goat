@@ -44,7 +44,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
+import { readCopilotHooksOwners } from './bridges/copilot_hooks_owners.js'
 import { hasCreatedConfig } from './bridges/created_configs.js'
 import { dataDir } from './constants.js'
 import type { HookEvent } from './hook_registry.js'

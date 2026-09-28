@@ -411,18 +411,7 @@ Installing the extension is an alternative to `install --vscode`, not an additio
 
 If the extension is running somewhere that contribution did not take effect, it falls back to calling `token-goat mcp-status --vscode` (add `-p`/`--project` for the workspace scope too) to check whether `mcp.json` already configures the decoder, and offers to run `install --vscode` if not — the same path resolver `install`/`uninstall` write against, so the two can never drift on where `mcp.json` lives or what key name it looks for.
 
-**Copilot CLI** — add it to `~/.copilot/mcp-config.json`:
-
-```json
-{
-  "mcpServers": {
-    "token-goat": {
-      "command": "token-goat",
-      "args": ["mcp-serve"]
-    }
-  }
-}
-```
+**Copilot CLI**: `token-goat install --copilot` registers the server in `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`), in the same shape `copilot mcp add` writes, and `copilot mcp list` shows it. `token-goat uninstall --copilot` removes it and leaves your other servers alone. A `token-goat` entry you wrote by hand from an older version of this README is replaced on install.
 
 **Caveat.** Registering the server does not force any harness to prefer it. Unlike the hook-based bridges elsewhere in this project — which intercept a `Read`/`Grep`/`Glob` call before it reaches the model and can redirect or deny it outright — an MCP tool is just one more option in the harness's own tool-selection decision. Copilot (or any other MCP-aware client) decides for itself whether to call token-goat's `read` tool or fall back to its own built-in file-read tool; there is no interception mechanism for MCP the way there is for hooks. In VS Code the agent hooks from `install --vscode` do see the built-in reads: they can deny a repeated read, add a hint, and shrink an image before `view_image` loads it. VS Code gives hooks no way to change a tool's result, though, so there is no folding of what a read returns and no compression of a tool's output after it runs. Terminal output is not compressed in VS Code either: elsewhere token-goat does that by rewriting the command before it runs, but VS Code does not tell the hook which shell will run the command, so rewriting it safely is not possible.
 

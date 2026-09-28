@@ -1,7 +1,6 @@
 /** Platform and harness integration diagnostics for token-goat doctor. Checks configuration and health across VS Code, Visual Studio, Zed, Cursor, global MCP configuration, and stray CLAUDE.md blocks. */
 
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { cursorManagedEntry } from './bridges/cursor_install.js'
@@ -9,15 +8,12 @@ import { findStrayClaudeMdBlocks, type HookEventGaps } from './install.js'
 import { hasManagedServer, isResidueServersJson } from './bridges/mcp_servers_json.js'
 import { visualStudioManagedEntry } from './bridges/visualstudio_install.js'
 import { zedManagedEntry } from './bridges/zed_install.js'
+import { copilotMcpConfigPath } from './bridges/copilot_mcp_install.js'
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText, normalizePath } from './paths.js'
 
 export function globalMcpConfigPath(): string {
-  const copilotHome = process.env['COPILOT_HOME']
-  const root = copilotHome !== undefined && copilotHome.trim() !== ''
-    ? path.resolve(copilotHome)
-    : path.join(os.homedir(), '.copilot')
-  return path.join(root, 'mcp-config.json')
+  return copilotMcpConfigPath()
 }
 
 export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): DoctorResult {
