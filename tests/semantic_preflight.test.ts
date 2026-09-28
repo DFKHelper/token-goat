@@ -39,7 +39,8 @@ describe('checkEmbeddingPreflight', () => {
     const res = await runSemantic('', { preflight: true })
     expect(res.text).toContain('Semantic embedding status:')
     expect(res.text).toContain('Config (indexing.embeddings_enabled):')
-    expect(res.text).toContain('ONNX runtime (onnxruntime-node):')
+    // The dev tree installs onnxruntime-node (a devDependency), and embed_runtime.ts prefers it whenever it resolves, so this is the runtime the line names here. HAND-DERIVED from package.json devDependencies and chooseRuntime().
+    expect(res.text).toMatch(/ONNX runtime \(onnxruntime-node\): (available \(\d+\.\d+\.\d+\)|unavailable)/)
   })
 
   it('runSemantic --preflight --json returns valid json with status fields', async () => {
@@ -49,5 +50,9 @@ describe('checkEmbeddingPreflight', () => {
     expect(parsed).toHaveProperty('available')
     expect(parsed).toHaveProperty('configEnabled')
     expect(parsed).toHaveProperty('runtimeAvailable')
+    // Which build runs the model, and on the WebAssembly one whether its binary is on disk yet; null on the native binding, which has none.
+    expect(['onnxruntime-node', 'onnxruntime-web']).toContain(parsed.runtime)
+    expect(parsed.runtimeBinaryPresent === null || typeof parsed.runtimeBinaryPresent === 'boolean').toBe(true)
+    expect(parsed.runtimeBinaryPresent === null).toBe(parsed.runtime === 'onnxruntime-node')
   })
 })

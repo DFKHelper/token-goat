@@ -1,4 +1,4 @@
-/** Semantic search: chunking, embedding, storage and the search itself. The embedding backend lives in embed_model.ts (the model, verified and run) and embed_tokenizer.ts (the text, cut into the pieces it was trained on). It is optional: with the inference runtime absent, everything here degrades to empty results rather than throwing, and `semantic` answers on its keyword half alone. */
+/** Semantic search: chunking, embedding, storage and the search itself. The embedding backend lives in embed_model.ts (the model, verified and run), embed_runtime.ts (the ONNX Runtime build that runs it) and embed_tokenizer.ts (the text, cut into the pieces it was trained on). It can be unavailable: with no inference runtime that will start, everything here degrades to empty results rather than throwing, and `semantic` answers on its keyword half alone. */
 
 import type { SqliteDatabase, SqliteStatement } from './sqlite_driver.js'
 
@@ -8,13 +8,11 @@ import {
   DEFAULT_MODEL,
   EmbeddingModel,
   PINNED_MODEL_REVISION,
-  isRuntimeAvailable,
-  runtimeLoadError,
-  runtimeVersion,
   checkEmbeddingPreflight,
   type EmbeddingPreflightResult,
   type EmbeddingPreflightStatus,
 } from './embed_model.js'
+import { activeRuntime, isRuntimeAvailable, runtimeLoadError, runtimeVersion } from './embed_runtime.js'
 import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
@@ -222,14 +220,7 @@ function getExtractor(modelName: string): Promise<FeatureExtractor> {
   return extractorPromise
 }
 
-/**
- * Embed a batch of texts to fixed-dimension semantic vectors. Uses the pinned bge-small-en-v1.5 checkpoint on onnxruntime-node (384-dimensional output).
- *
- * @param texts - Strings to embed. Empty array returns empty array.
- * @param modelName - HuggingFace model identifier (default: bge-small-en-v1.5).
- * @returns List of embedding vectors, one per input string.
- * @throws Error if transformer is not available or dimension mismatch occurs.
- */
+/** Embed a batch of texts to fixed-dimension semantic vectors. Uses the pinned bge-small-en-v1.5 checkpoint on ONNX Runtime (384-dimensional output); which build runs it is embed_runtime.ts's decision. @param texts - Strings to embed. Empty array returns empty array. @param modelName - HuggingFace model identifier (default: bge-small-en-v1.5). @returns List of embedding vectors, one per input string. @throws Error if transformer is not available or dimension mismatch occurs. */
 export async function embedTexts(
   texts: string[],
   modelName: string = DEFAULT_MODEL,
@@ -292,12 +283,7 @@ export async function embedTexts(
   return vecs
 }
 
-/**
- * Pack a float vector into the binary format expected by sqlite-vec (IEEE 754). Uses Float32Array for efficiency, mirroring Python's array.tobytes().
- *
- * @param vec - Array of floats to pack.
- * @returns Binary representation suitable for storage in vec0 table.
- */
+/** Pack a float vector into the binary format expected by sqlite-vec (IEEE 754). Uses Float32Array for efficiency, mirroring Python's array.tobytes(). @param vec - Array of floats to pack. @returns Binary representation suitable for storage in vec0 table. */
 export function packVec(vec: number[]): Buffer {
   const view = new Float32Array(vec.length)
   for (const [i, val] of vec.entries()) {
@@ -574,13 +560,7 @@ export function chunkFile(
   return chunks
 }
 
-/**
- * Insert chunks into the database with computed embeddings. Upserts chunks in the index, computing and storing their embeddings in the chunk_vectors table.
- *
- * @param db - SQLite database connection.
- * @param chunks - Array of chunks to insert.
- * @throws Error if embeddings are not available or insertion fails.
- */
+/** Insert chunks into the database with computed embeddings. Upserts chunks in the index, computing and storing their embeddings in the chunk_vectors table. @param db - SQLite database connection. @param chunks - Array of chunks to insert. @throws Error if embeddings are not available or insertion fails. */
 // Insert one chunk vector. sqlite-vec's vec0 chunk_vectors table declares rowid as a strict INTEGER PRIMARY KEY that rejects a plain JS number ("Only integers are allowed for primary key values"); the rowid must be coerced to BigInt. Centralizing the insert keeps that binding rule in one place so upsertChunks and its tests cannot drift from it.
 export function insertChunkVector(
   stmt: SqliteStatement,
@@ -773,17 +753,7 @@ export function fetchScopedExactHits(
   return hits
 }
 
-/**
- * Search for semantically similar chunks using vector similarity. Embeds the query, over-fetches candidates from chunk_vectors, and re-ranks with verbatim boosting and generated-path penalties before truncating to topK.
- *
- * @param db - SQLite database connection.
- * @param query - Search query string.
- * @param topK - Number of results to return (default: 8).
- * @param modelName - Model to use for embedding (default: bge-small-en-v1.5).
- * @param maxDistance - Distance threshold; results above this are dropped (default: 1.2).
- * @param rootDir - When provided, scope results to chunks whose file_path lives under this project root (see {@link BACKFILL_MULTIPLIER} for how this is enforced against sqlite-vec's partition-less `chunk_vectors` table). `global.db` is a single machine-wide index shared across every project ever indexed (constants.ts), so callers that mean "search the current project" MUST pass this.
- * @returns Array of SearchHit objects, sorted by distance (best first).
- */
+/** Search for semantically similar chunks using vector similarity. Embeds the query, over-fetches candidates from chunk_vectors, and re-ranks with verbatim boosting and generated-path penalties before truncating to topK. @param db - SQLite database connection. @param query - Search query string. @param topK - Number of results to return (default: 8). @param modelName - Model to use for embedding (default: bge-small-en-v1.5). @param maxDistance - Distance threshold; results above this are dropped (default: 1.2). @param rootDir - When provided, scope results to chunks whose file_path lives under this project root (see {@link BACKFILL_MULTIPLIER} for how this is enforced against sqlite-vec's partition-less `chunk_vectors` table). `global.db` is a single machine-wide index shared across every project ever indexed (constants.ts), so callers that mean "search the current project" MUST pass this. @returns Array of SearchHit objects, sorted by distance (best first). */
 export async function searchSemantic(
   db: SqliteDatabase,
   query: string,
@@ -872,13 +842,7 @@ export function rerankHits(hits: SearchHit[], query: string, topK: number): Sear
   return scored.slice(0, topK).map((entry) => ({ ...entry.hit, adjustedDistance: entry.adjusted }))
 }
 
-/**
- * Merge consecutive hits from the same file whose line ranges overlap or are close. When a function spans multiple chunks, merging prevents output from being dominated by one large function.
- *
- * @param hits - Array of search hits.
- * @param proximity - Lines within which to consider hits as "nearby" (default: 20).
- * @returns Merged array of hits, re-sorted by rerank score (adjustedDistance) when present, falling back to raw distance otherwise.
- */
+/** Merge consecutive hits from the same file whose line ranges overlap or are close. When a function spans multiple chunks, merging prevents output from being dominated by one large function. @param hits - Array of search hits. @param proximity - Lines within which to consider hits as "nearby" (default: 20). @returns Merged array of hits, re-sorted by rerank score (adjustedDistance) when present, falling back to raw distance otherwise. */
 export function mergeNearbyHits(
   hits: SearchHit[],
   proximity: number = 20,
@@ -966,15 +930,7 @@ export function mergeNearbyHits(
   return merged
 }
 
-/**
- * Index a single file, computing and storing embeddings.
- *
- * @param db - SQLite database connection.
- * @param filePath - Relative path to the file.
- * @param content - File content.
- * @param boundaries - Optional structural cut points (symbol or section ranges) to snap chunking to instead of the plain sliding window - see chunkFile.
- * @returns Number of chunks created and indexed.
- */
+/** Index a single file, computing and storing embeddings. @param db - SQLite database connection. @param filePath - Relative path to the file. @param content - File content. @param boundaries - Optional structural cut points (symbol or section ranges) to snap chunking to instead of the plain sliding window - see chunkFile. @returns Number of chunks created and indexed. */
 export async function indexFile(
   db: SqliteDatabase,
   filePath: string,
@@ -1017,17 +973,12 @@ function chunkVectorsTableExists(db: SqliteDatabase): boolean {
   return usable
 }
 
-/** Are BOTH optional embedding dependencies present on this connection: the onnxruntime-node model ({@link isAvailable}) AND a usable sqlite-vec `chunk_vectors` table ({@link chunkVectorsTableExists})? A real embed needs both -- upsertChunks reports `'unavailable'` when either is missing. Freshness gates (worker.ts/cli.ts) use this to decide whether an `unavailable:`-marked embed_sha must trigger a re-embed (deps now present) or can still be treated as fresh (deps still absent, so re-embedding would just re-skip). */
+/** Are BOTH optional embedding dependencies present on this connection: the model on an ONNX Runtime build that can start ({@link isAvailable}) AND a usable sqlite-vec `chunk_vectors` table ({@link chunkVectorsTableExists})? A real embed needs both -- upsertChunks reports `'unavailable'` when either is missing. Freshness gates (worker.ts/cli.ts) use this to decide whether an `unavailable:`-marked embed_sha must trigger a re-embed (deps now present) or can still be treated as fresh (deps still absent, so re-embedding would just re-skip). */
 export function embeddingsDepsAvailable(db: SqliteDatabase): boolean {
   return isAvailable() && chunkVectorsTableExists(db)
 }
 
-/**
- * Delete all embeddings for a file. Removes stale entries when a file is modified or deleted.
- *
- * @param db - SQLite database connection.
- * @param filePath - Relative path to the file.
- */
+/** Delete all embeddings for a file. Removes stale entries when a file is modified or deleted. @param db - SQLite database connection. @param filePath - Relative path to the file. */
 export function deleteFileEmbeddings(
   db: SqliteDatabase,
   filePath: string,
@@ -1102,9 +1053,9 @@ function resetEmbeddingsForKinds(db: SqliteDatabase, kinds: ReadonlySet<string>)
   return paths.length
 }
 
-/** Which runtime computes the vectors, at which version -- see the note above on why that is the half of the stamp that moves, and why it is keyed to major.minor. `runtimeVersion()` answers 'unknown' if it cannot find the installed package's manifest, and two installs that both fail that read stamp the same string and are then treated as one stack. That is a real hole and a narrow one: reaching it means the runtime loaded from somewhere with no manifest above it, and every caller is already behind {@link isAvailable}, which only passes once it has loaded. */
+/** Which runtime computes the vectors, at which version -- see the note above on why that is the half of the stamp that moves, and why it is keyed to major.minor. The runtime's name is in it as well as its version: the native binding and the bundled WebAssembly build (see embed_runtime.ts) get separate stamps even at the same version, because their vectors were measured bit-identical on win32-x64 only, and treating them as one space anywhere else would be an unmeasured assumption. Switching between them discards and rebuilds the vectors, which is the safe direction. For the native binding, `runtimeVersion()` answers 'unknown' if it cannot find the installed package's manifest, and two installs that both fail that read stamp the same string and are then treated as one stack. That is a real hole and a narrow one: reaching it means the runtime loaded from somewhere with no manifest above it, and every caller is already behind {@link isAvailable}, which only passes once it has loaded. */
 function backendId(): string {
-  return `onnxruntime-node@${majorMinor(runtimeVersion())}`
+  return `${activeRuntime()}@${majorMinor(runtimeVersion())}`
 }
 
 /** The first two components of a version, or the whole thing when it has no second component. */
@@ -1128,19 +1079,29 @@ export function ensureEmbeddingProvenance(
   modelName: string = DEFAULT_MODEL,
 ): void {
   if (_provenanceChecked.has(db)) return
-  _provenanceChecked.add(db)
 
   const current = embeddingProvenance(modelName)
   const stored = db.prepare('SELECT provenance FROM embedding_provenance WHERE id = 1').pluck().get() as
     | string
     | undefined
-  if (stored === current) return
+  if (stored === current) {
+    _provenanceChecked.add(db)
+    return
+  }
 
   const keepVectors = stored !== undefined && vectorSpaceOf(stored) === vectorSpaceOf(current)
-  const cleared = stored !== undefined && keepVectors ? resetStaleChunking(db, stored, current) : resetAllEmbeddings(db, false)
-  db.prepare(
-    'INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET provenance = excluded.provenance',
-  ).run(current)
+  // The reset and the stamp commit together or not at all: a failure between them (SQLITE_BUSY past busy_timeout is the ordinary one, with the worker, the hooks and the CLI all writing this database) would otherwise discard vectors under a stamp that still names the old stack. The helpers' own transactions nest inside this one as savepoints.
+  const cleared = db
+    .transaction(() => {
+      const count = stored !== undefined && keepVectors ? resetStaleChunking(db, stored, current) : resetAllEmbeddings(db, false)
+      db.prepare(
+        'INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET provenance = excluded.provenance',
+      ).run(current)
+      return count
+    })
+    .immediate()
+  // Remembered only once the stamp is written. Recorded before the work, one failed write left this connection answering "already checked" for its whole life, and a long-lived worker then ranked this stack's query vectors against the previous stack's stored ones indefinitely.
+  _provenanceChecked.add(db)
 
   if (cleared > 0 && !keepVectors) {
     console.warn(
@@ -1153,12 +1114,7 @@ export function ensureEmbeddingProvenance(
 
 // ============================================================================ Internal helpers ============================================================================
 
-/**
- * Extract query tokens (identifiers) for verbatim boosting.
- *
- * @param query - Query string.
- * @returns Normalized set of tokens.
- */
+/** Extract query tokens (identifiers) for verbatim boosting. @param query - Query string. @returns Normalized set of tokens. */
 function _extractQueryTokens(query: string): Set<string> {
   const tokens = new Set<string>()
   const matches = query.matchAll(_TOKEN_RE)
@@ -1171,12 +1127,7 @@ function _extractQueryTokens(query: string): Set<string> {
   return tokens
 }
 
-/**
- * Check if a file path is in a generated/build directory.
- *
- * @param filePath - Relative file path.
- * @returns True if any segment is a known generated directory.
- */
+/** Check if a file path is in a generated/build directory. @param filePath - Relative file path. @returns True if any segment is a known generated directory. */
 function _isGeneratedPath(filePath: string): boolean {
   const segments = filePath.split(/[/\\]+/)
   for (const seg of segments) {
@@ -1187,12 +1138,7 @@ function _isGeneratedPath(filePath: string): boolean {
   return false
 }
 
-/**
- * Path-priority similarity multiplier applied before final ranking (rerankHits): archival/ superseded paths (archive/, plans/, CHANGELOG*, *.bak, ...) get semantic.archive_weight; general docs/markdown paths get the milder semantic.docs_weight; live source gets 1 (no change). Values are in (0, 1] -- < 1 pushes a hit down in rank (applied as a divisor against distance, since distance is the inverse of similarity) without ever excluding it, so a genuinely much better archival match can still beat a mediocre source match. Weights are configurable and a weight of 1.0 fully disables that tier's penalty (e.g. for a project with a genuinely live `plans/` directory).
- *
- * @param filePath - Relative or absolute file path of the hit.
- * @returns Similarity multiplier in (0, 1] to apply (as a divisor on distance) to the hit.
- */
+/** Path-priority similarity multiplier applied before final ranking (rerankHits): archival/ superseded paths (archive/, plans/, CHANGELOG*, *.bak, ...) get semantic.archive_weight; general docs/markdown paths get the milder semantic.docs_weight; live source gets 1 (no change). Values are in (0, 1] -- < 1 pushes a hit down in rank (applied as a divisor against distance, since distance is the inverse of similarity) without ever excluding it, so a genuinely much better archival match can still beat a mediocre source match. Weights are configurable and a weight of 1.0 fully disables that tier's penalty (e.g. for a project with a genuinely live `plans/` directory). @param filePath - Relative or absolute file path of the hit. @returns Similarity multiplier in (0, 1] to apply (as a divisor on distance) to the hit. */
 // Returns an ADDITIVE distance penalty in [0, 1), derived from the configured weight. It is deliberately not applied as a divisor: `distance - boost` goes negative whenever a near-verbatim hit scores below _MAX_VERBATIM_BOOST, and dividing a negative number by a weight < 1 makes it *more* negative, so the penalty would silently become a bonus for exactly the strongest matches. Adding matches how _GENERATED_PATH_PENALTY already works here and stays monotone across the whole range.
 function _pathPriorityPenalty(filePath: string): number {
   const segments = filePath.split(/[/\\]+/)

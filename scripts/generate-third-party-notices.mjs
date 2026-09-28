@@ -35,8 +35,21 @@ function packageOf(input) {
   return parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0]
 }
 
-/** Every third-party package the shipping build inlines, sorted. `write: false` because this only needs the metafile: the generator must never be able to overwrite a real dist/ as a side effect of describing it. */
+/** `node_modules/a/node_modules/b/dist/x.js` -> `node_modules/a/node_modules/b`: the directory of the package the input belongs to, which is not always `node_modules/<name>`. A nested copy is a different release of the same name (onnxruntime-web carries its own onnxruntime-common 1.30.0 while the top level holds 1.14.0), and its manifest and notice are the ones that describe the code the bundle took. */
+function packageDirOf(input) {
+  const normalized = input.replaceAll('\\', '/')
+  const marker = normalized.lastIndexOf('node_modules/')
+  const name = packageOf(input)
+  return name === null ? null : normalized.slice(0, marker + 'node_modules/'.length + name.length)
+}
+
+/** Every third-party package the shipping build inlines, sorted. */
 export async function bundledPackages(repoRoot = process.cwd()) {
+  return [...new Set((await bundledPackageDirs(repoRoot)).map((p) => p.name))].sort()
+}
+
+/** Every third-party package directory the shipping build inlines code from, sorted by name and then directory. `write: false` because this only needs the metafile: the generator must never be able to overwrite a real dist/ as a side effect of describing it. */
+export async function bundledPackageDirs(repoRoot = process.cwd()) {
   const pkg = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'))
   const result = await esbuild.build({
     absWorkingDir: repoRoot,
@@ -56,12 +69,14 @@ export async function bundledPackages(repoRoot = process.cwd()) {
     define: buildDefines(pkg),
   })
 
-  const names = new Set()
+  const dirs = new Map()
   for (const input of Object.keys(result.metafile.inputs)) {
     const name = packageOf(input)
-    if (name !== null) names.add(name)
+    if (name !== null) dirs.set(packageDirOf(input), name)
   }
-  return [...names].sort()
+  return [...dirs]
+    .map(([dir, name]) => ({ name, dir }))
+    .sort((a, b) => (a.name === b.name ? (a.dir < b.dir ? -1 : 1) : a.name < b.name ? -1 : 1))
 }
 
 /** The notice text for one package: its own LICENSE file when it ships one. A handful of packages carry the notice in the head of their source file instead of in a separate file (`omggif` is the one here). Falling back to that leading comment block keeps the obligation met from the package's own text, rather than from a license template this repository chose on the package's behalf -- which would be this project asserting someone else's copyright line. */
@@ -74,22 +89,39 @@ function noticeText(dir) {
   const mainPath = path.join(dir, main)
   if (!existsSync(mainPath)) return ''
 
+  return leadingComment(readFileSync(mainPath, 'utf8'))
+}
+
+/** The comment a file opens with, as plain text: a run of `//` lines, or one `/* ... *\/` block (the `/*!` banner a minifier keeps is the common case), after an optional `"use strict"` directive. ONNX Runtime's packages ship no LICENSE file and carry their notice this way, one form in each. Empty when the file opens with code. */
+function leadingComment(source) {
+  const lines = source.split(/\r?\n/)
+  let i = 0
+  if (/^\s*['"]use strict['"];?\s*$/.test(lines[0] ?? '')) i = 1
+  if ((lines[i] ?? '').startsWith('/*')) {
+    const block = []
+    for (; i < lines.length; i++) {
+      const done = lines[i].includes('*/')
+      block.push(lines[i].replace(/\*\/.*$/, '').replace(/^\s*\/\*!?\s?/, '').replace(/^\s*\* ?/, ''))
+      if (done) break
+    }
+    return block.join('\n').trim()
+  }
   const head = []
-  for (const line of readFileSync(mainPath, 'utf8').split(/\r?\n/)) {
-    if (!line.startsWith('//')) break
-    head.push(line.replace(/^\/\/ ?/, ''))
+  for (; i < lines.length; i++) {
+    if (!lines[i].startsWith('//')) break
+    head.push(lines[i].replace(/^\/\/ ?/, ''))
   }
   return head.join('\n').trim()
 }
 
 /** The whole document, as it should appear on disk. */
 export async function renderNotices(repoRoot = process.cwd()) {
-  const names = await bundledPackages(repoRoot)
+  const packages = await bundledPackageDirs(repoRoot)
 
   const sections = []
   const unexpected = []
-  for (const name of names) {
-    const dir = path.join(repoRoot, 'node_modules', ...name.split('/'))
+  for (const { name, dir: relativeDir } of packages) {
+    const dir = path.join(repoRoot, ...relativeDir.split('/'))
     const pkg = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'))
     const license = typeof pkg.license === 'string' ? pkg.license : ''
     if (!PERMISSIVE.has(license)) unexpected.push(`${name} (${license === '' ? 'no license field' : license})`)
@@ -113,7 +145,7 @@ export async function renderNotices(repoRoot = process.cwd()) {
     '',
     `Token-Goat itself is licensed separately: see [LICENSE](LICENSE). This file covers only other people's code.`,
     '',
-    `\`dist/\` is a bundle. Building it copies the source of the ${names.length} packages below into the`,
+    `\`dist/\` is a bundle. Building it copies the source of the ${packages.length} packages below into the`,
     'shipped files, so their copyright and permission notices travel with this package and are',
     'reproduced here in full.',
     '',

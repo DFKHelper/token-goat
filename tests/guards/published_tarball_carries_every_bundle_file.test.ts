@@ -25,8 +25,8 @@ function packedPaths(): string[] {
 describe('the published tarball', () => {
   it('carries every entry file and every chunk the build emits', () => {
     const packed = new Set(packedPaths())
-    // FORMAT-DERIVED from scripts/build-options.mjs (ENTRY_POINTS, emitted as `[name].mjs`, and CJS_CLIENT, emitted again as `[name].cjs`) and the launcher esbuild.config.mjs writes as dist/token-goat.mjs. The client is named twice because the shim template (src/bridges/shim_try_server.ts) loads the `.cjs` and the launcher loads the `.mjs`.
-    const entries = ['token-goat.mjs', 'token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs', 'token-goat-hook-client.cjs']
+    // FORMAT-DERIVED from scripts/build-options.mjs (ENTRY_POINTS, emitted as `[name].mjs`, and CJS_CLIENT, emitted again as `[name].cjs`) and the launcher esbuild.config.mjs writes as dist/token-goat.mjs. The client is named twice because the shim template (src/bridges/shim_try_server.ts) loads the `.cjs` and the launcher loads the `.mjs`. FORMAT-DERIVED from esbuild.config.mjs too: the WebAssembly runtime's glue module, copied beside the chunks because ONNX Runtime loads it by URL rather than through the bundle.
+    const entries = ['token-goat.mjs', 'token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs', 'token-goat-hook-client.cjs', 'ort-wasm-simd-threaded.mjs']
     const chunks = pinnedPopulation({ what: 'dist/ chunks', items: fs.readdirSync(path.join(ROOT, 'dist')).filter((f) => f.startsWith('token-goat-chunk-') && f.endsWith('.mjs')), floor: 5 })
     const missing = [...entries, ...chunks].map((f) => `dist/${f}`).filter((p) => !packed.has(p))
     expect(missing).toEqual([])

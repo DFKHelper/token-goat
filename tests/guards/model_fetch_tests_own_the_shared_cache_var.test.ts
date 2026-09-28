@@ -1,20 +1,4 @@
-/**
- * A test that asserts on which model files get downloaded has to control the shared model cache,
- * because a cache hit is precisely the absence of a download.
- *
- * `TOKEN_GOAT_MODEL_CACHE_DIR` lets `ensureModelFiles` satisfy a file from a directory that
- * outlives the data root, which is what stops CI refetching the 32 MB weights once per worker.
- * The cost of that is a new way for the environment to change what a test observes:
- * tests/embed_model.test.ts checks the exact URL list `ensureModelFiles` requests, and with the
- * variable exported it saw one fewer request and failed all ten of its cases. It failed only
- * where the variable is set, which is CI and not a developer machine, so the suite was green
- * locally and red on the very platform the change existed to speed up.
- *
- * Neither `tests/setup/isolate-home.ts` nor a blanket delete can fix this: CI has to keep the
- * variable live during the run or the sharing does nothing. So the obligation belongs to each
- * test that reasons about downloads, and this guard is what makes the obligation visible when
- * somebody adds the next one.
- */
+/** A test that asserts on which model files get downloaded has to control the shared model cache, because a cache hit is precisely the absence of a download. `TOKEN_GOAT_MODEL_CACHE_DIR` lets `ensureModelFiles` satisfy a file from a directory that outlives the data root, which is what stops CI refetching the 32 MB weights once per worker. The cost of that is a new way for the environment to change what a test observes: tests/embed_model.test.ts checks the exact URL list `ensureModelFiles` requests, and with the variable exported it saw one fewer request and failed all ten of its cases. It failed only where the variable is set, which is CI and not a developer machine, so the suite was green locally and red on the very platform the change existed to speed up. Neither `tests/setup/isolate-home.ts` nor a blanket delete can fix this: CI has to keep the variable live during the run or the sharing does nothing. So the obligation belongs to each test that reasons about downloads, and this guard is what makes the obligation visible when somebody adds the next one. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -38,8 +22,8 @@ function filesDrivingEnsureModelFiles(): string[] {
       }
       if (!entry.name.endsWith('.test.ts')) continue
       const source = fs.readFileSync(full, 'utf8')
-      // The import is what proves the file drives the real function rather than merely naming it in prose.
-      if (/^import[^;]*\bensureModelFiles\b/m.test(source)) {
+      // The import is what proves the file drives the real function rather than merely naming it in prose. The WebAssembly runtime's binary is fetched through the same variable, so a test driving that fetch carries the same obligation. (Neither function is named in this comment: the pattern's `[^;]*` runs on from this file's own imports, and would count this guard as a driver.)
+      if (/^import[^;]*\b(?:ensureModelFiles|ensureWasmBinary)\b/m.test(source)) {
         out.push(path.relative(TESTS, full).split(path.sep).join('/'))
       }
     }
@@ -51,10 +35,10 @@ function filesDrivingEnsureModelFiles(): string[] {
 describe('tests that observe model downloads control the shared model cache', () => {
   it('has every such test either clear the variable or set it deliberately', () => {
     const drivers = pinnedPopulation({
-      what: `test files importing ensureModelFiles, which is what makes ${VAR} able to change their result`,
+      what: `test files importing ensureModelFiles or ensureWasmBinary, which is what makes ${VAR} able to change their result`,
       items: filesDrivingEnsureModelFiles(),
-      floor: 2,
-      mustInclude: ['embed_model.test.ts', 'embed_model_shared_cache.test.ts'],
+      floor: 3,
+      mustInclude: ['embed_model.test.ts', 'embed_model_shared_cache.test.ts', 'embed_runtime_pins.test.ts'],
     })
 
     const unguarded = drivers.filter((rel) => {

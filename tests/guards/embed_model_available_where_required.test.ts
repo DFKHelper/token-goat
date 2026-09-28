@@ -1,17 +1,4 @@
-/**
- * A skipped test reports success.
- *
- * Seven test files gate their real-embedding cases on `modelFilesPresent()`, so `npm test` never
- * downloads the 33 MB of weights and stays offline by default. The same gate means the test run no
- * longer populates CI's model cache as a side effect of running, which it used to be the only thing
- * doing: with nothing else placing the weights, a cold cache would stay cold, the save step's
- * "is it worth saving" check would find no `.onnx`, and the whole population would skip on every
- * platform forever without one red run anywhere.
- *
- * So this guard asserts the two halves that have to stay true together: every CI job that restores
- * the model cache also has a step that places the model, ordered before the test step; and wherever
- * the workflow declares the weights are required, they are actually present, so those tests run.
- */
+/** A skipped test reports success. Seven test files gate their real-embedding cases on `modelFilesPresent()`, so `npm test` never downloads the 33 MB of weights and stays offline by default. The same gate means the test run no longer populates CI's model cache as a side effect of running, which it used to be the only thing doing: with nothing else placing the weights, a cold cache would stay cold, the save step's "is it worth saving" check would find no `.onnx`, and the whole population would skip on every platform forever without one red run anywhere. So this guard asserts the two halves that have to stay true together: every CI job that restores the model cache also has a step that places the model, ordered before the test step; and wherever the workflow declares the weights are required, they are actually present, so those tests run. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -21,6 +8,7 @@ import { load as loadYaml } from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 
 import { modelFilesPresent } from '../../src/embed_model.js'
+import { wasmBinaryPresent } from '../../src/embed_runtime.js'
 
 import { pinnedPopulation } from './population.js'
 
@@ -145,6 +133,11 @@ describe('the model-gated tests can still be run somewhere', () => {
       `${REQUIRE_VAR}=1, so the warm step was supposed to have placed the pinned embedding model, but the gate the ` +
         `${gated.length} model-gated test files read still says it is absent. Every one of them is skipping here, and ` +
         `a skipped test reports success.`,
+    ).toBe(true)
+    // The bundled-runtime tests gate on the runtime binary as well, and the same warm step places it.
+    expect(
+      wasmBinaryPresent(),
+      `${REQUIRE_VAR}=1, but the WebAssembly runtime binary the warm step places is absent, so every test that runs the bundled runtime is skipping here.`,
     ).toBe(true)
   })
 })

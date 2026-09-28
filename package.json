@@ -98,6 +98,7 @@
     "lefthook": "^2.1.10",
     "omggif": "^1.0.10",
     "onnxruntime-node": "^1.27.0",
+    "onnxruntime-web": "1.30.0",
     "sharp": "^0.35.3",
     "smol-toml": "^1.8.0",
     "tsx": "^4.23.12",

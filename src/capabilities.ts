@@ -26,7 +26,7 @@ export interface Capability {
 }
 
 /** Every module in `src/` that can open a network socket, by design. The guard test derives the same set from the source tree and fails if the two disagree, so a new feature that reaches the network cannot ship without being classified here first. That is the difference between an inventory and a list somebody remembered to update. */
-export const EGRESS_MODULES: readonly string[] = ['webfetch.ts', 'embed_model.ts', 'image_ocr.ts', 'screenshot.ts', 'cli_upgrade.ts']
+export const EGRESS_MODULES: readonly string[] = ['webfetch.ts', 'embed_model.ts', 'embed_runtime.ts', 'pinned_file.ts', 'image_ocr.ts', 'screenshot.ts', 'cli_upgrade.ts']
 
 /** Every module in `src/` that opens a socket only to a named pipe or Unix socket on this machine. The same guard test holds each to endpoints `hook_ipc.ts::endpointFor` names, which is what keeps it out of {@link EGRESS_MODULES}. */
 export const LOCAL_IPC_MODULES: readonly string[] = ['hook_client.ts', 'hook_server.ts']
@@ -58,6 +58,14 @@ export function collectCapabilities(config: Config = loadConfig()): Capability[]
       enabled: online,
       controlledBy: 'network.offline',
       enforcedAt: 'src/embed_model.ts',
+    },
+    {
+      id: 'network.embedding_runtime_download',
+      kind: 'egress',
+      what: 'Downloads the WebAssembly inference runtime once from registry.npmjs.org, so embeddings run without a native package.',
+      enabled: online,
+      controlledBy: 'network.offline',
+      enforcedAt: 'src/embed_runtime.ts',
     },
     {
       id: 'network.ocr_data_download',

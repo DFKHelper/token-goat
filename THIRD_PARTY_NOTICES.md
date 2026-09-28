@@ -2,7 +2,7 @@
 
 Token-Goat itself is licensed separately: see [LICENSE](LICENSE). This file covers only other people's code.
 
-`dist/` is a bundle. Building it copies the source of the 23 packages below into the
+`dist/` is a bundle. Building it copies the source of the 26 packages below into the
 shipped files, so their copyright and permission notices travel with this package and are
 reproduced here in full.
 
@@ -284,6 +284,24 @@ THIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRE
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+## entities 7.0.1
+
+License: BSD-2-Clause
+
+```text
+Copyright (c) Felix Böhm
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ## html-to-text 10.0.1
 
 License: MIT
@@ -521,6 +539,25 @@ IN THE SOFTWARE.
 omggif is a JavaScript implementation of a GIF 89a encoder and decoder,
 including animation and compression.  It does not rely on any specific
 underlying system, so should run in the browser, Node, or Plask.
+```
+
+## onnxruntime-common 1.30.0
+
+License: MIT
+
+```text
+Copyright (c) Microsoft Corporation. All rights reserved.
+Licensed under the MIT License.
+```
+
+## onnxruntime-web 1.30.0
+
+License: MIT
+
+```text
+ONNX Runtime Web v1.30.0
+Copyright (c) Microsoft Corporation. All rights reserved.
+Licensed under the MIT License.
 ```
 
 ## parseley 0.13.1

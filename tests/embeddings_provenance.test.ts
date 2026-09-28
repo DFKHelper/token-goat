@@ -254,6 +254,55 @@ describe('ensureEmbeddingProvenance()', () => {
     ).toBe(1)
   })
 
+  /** Make the stamp write throw once, the way SQLITE_BUSY past busy_timeout does when the worker, the hooks and the CLI all write global.db at once. PROVENANCE: HAND-DERIVED -- the failure is injected at the one statement that writes the stamp; its message is SQLite's own text for SQLITE_BUSY (FORMAT-DERIVED, https://www.sqlite.org/rescode.html#busy), which nothing here matches on. */
+  function failStampWriteOnce(db: ReturnType<typeof getDb>): void {
+    const realPrepare = db.prepare.bind(db)
+    let failed = false
+    vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      if (!failed && sql.includes('INSERT INTO embedding_provenance')) {
+        failed = true
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' })
+      }
+      return realPrepare(sql)
+    })
+  }
+
+  it('checks again on the next call when the stamp write failed, instead of remembering a check that never finished', () => {
+    // The memo used to be recorded before the reset and the stamp write, so one failed write left the connection answering "already checked" for its whole life: a long-lived worker then ranked this stack's query vectors against the previous stack's stored ones indefinitely, with the stamp still naming the old stack.
+    const dbPath = path.join(TMP, 'busy-recheck.db')
+    seedIndex(dbPath, { 'a.ts': 2 })
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?)').run(
+      embeddingProvenance().replace(/\/onnxruntime-(?:node|web)@[^/]+\//, '/onnxruntime-node@0.0/'),
+    )
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    failStampWriteOnce(db)
+
+    expect(() => ensureEmbeddingProvenance(db)).toThrow(/database is locked/)
+    ensureEmbeddingProvenance(db)
+
+    expect(storedProvenance(dbPath)).toBe(embeddingProvenance())
+    expect(chunkCount(dbPath)).toBe(0)
+    expect(embedShaOf(dbPath, 'a.ts')).toBeNull()
+  })
+
+  it('discards nothing when the stamp write fails, so vectors are never dropped under a stamp that still names the old stack', () => {
+    const dbPath = path.join(TMP, 'busy-rollback.db')
+    seedIndex(dbPath, { 'a.ts': 3 })
+    const db = getDb(dbPath)
+    const old = embeddingProvenance().replace(/\/onnxruntime-(?:node|web)@[^/]+\//, '/onnxruntime-node@0.0/')
+    expect(old, 'the rewrite must change the vector-space half, or this test checks a no-op').not.toBe(embeddingProvenance())
+    db.prepare('INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?)').run(old)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    failStampWriteOnce(db)
+
+    expect(() => ensureEmbeddingProvenance(db)).toThrow(/database is locked/)
+
+    expect(storedProvenance(dbPath)).toBe(old)
+    expect(chunkCount(dbPath)).toBe(3)
+    expect(embedShaOf(dbPath, 'a.ts')).toBe('sha-of-a.ts')
+  })
+
   it('refuses a second provenance row rather than silently tracking two answers', () => {
     const dbPath = path.join(TMP, 'single.db')
     const db = getDb(dbPath)

@@ -8,7 +8,8 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { emitErr } from './emit.js'
-import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, checkEmbeddingPreflight, type EmbeddingPreflightResult, type SearchHit } from './embeddings.js'
+import { ORT_WEB_WASM, RUNTIME_UNAVAILABLE_ADVICE } from './embed_runtime.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, embeddingBackendLoadError, checkEmbeddingPreflight, type EmbeddingPreflightResult, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
@@ -157,7 +158,10 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       `Semantic embedding status: ${preflight.status.toUpperCase()}`,
       `  Summary: ${preflight.summary}`,
       `  Config (indexing.embeddings_enabled): ${preflight.configEnabled ? 'enabled' : 'disabled'}`,
-      `  ONNX runtime (onnxruntime-node): ${preflight.runtimeAvailable ? 'available' : 'missing'}`,
+      `  ONNX runtime (${preflight.runtime}): ${preflight.runtimeAvailable ? `available (${preflight.runtimeVersion})` : 'unavailable'}`,
+      ...(preflight.runtimeBinaryPresent === null
+        ? []
+        : [`  Runtime binary (${ORT_WEB_WASM.name}, ~14 MB): ${preflight.runtimeBinaryPresent ? 'downloaded' : 'not downloaded yet, fetched once on first use'}`]),
       `  Model files (~34 MB): ${preflight.modelFilesPresent ? 'present' : 'missing'}`,
       `  In-memory session: ${preflight.modelWarmed ? 'ready / warmed' : 'not loaded'}`,
       `  Project coverage: ${preflight.embeddedFiles}/${countNoun(preflight.indexedFiles, 'file')} (${preflight.coveragePercent}%)`,
@@ -180,8 +184,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
 
   if (embeddingsEnabled && !embeddingModelAvailable()) {
     console.warn(
-      'Matching on meaning is off (onnxruntime-node is not installed); these results come from keyword search alone. ' +
-        'Install it with: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)',
+      `Matching on meaning is off (${embeddingBackendLoadError()?.message ?? 'the inference runtime could not start'}); these results come from keyword search alone. ${RUNTIME_UNAVAILABLE_ADVICE}`,
     )
   } else if (!embeddingsEnabled) {
     console.warn(
