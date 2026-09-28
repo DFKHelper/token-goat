@@ -266,3 +266,32 @@ describe('postEditHandler — stable-doc compact staleness marking', () => {
     expect(isCompactFresh(compactPath, src)).toBe(true)
   })
 })
+
+describe('postEditHandler — section hint repeats', () => {
+  // HAND-DERIVED from a transcript measurement: across one week of this machine's Claude Code sessions, the same `CHANGELOG.md was edited` hint was injected 17 times in one session with identical text, the largest exact repeat token-goat put into context.
+  it('gives the section hint for one markdown file once per session, not on every edit', () => {
+    expect(postEditHandler(editEvent('/project/CHANGELOG.md')).hookType).toBe('context')
+    expect(postEditHandler(editEvent('/project/CHANGELOG.md')).hookType).toBe('pass')
+    expect(postEditHandler(editEvent('/project/CHANGELOG.md', 'Write')).hookType).toBe('pass')
+  })
+
+  it('still gives it for a different markdown file in the same session', () => {
+    expect(postEditHandler(editEvent('/project/CHANGELOG.md')).hookType).toBe('context')
+    expect(postEditHandler(editEvent('/project/README.md')).hookType).toBe('context')
+  })
+
+  it('gives it again after a compaction, which takes the earlier hint out of context', () => {
+    expect(postEditHandler(editEvent('/project/CHANGELOG.md')).hookType).toBe('context')
+    session.markCompacted(Date.now() + 1000)
+    expect(postEditHandler(editEvent('/project/CHANGELOG.md')).hookType).toBe('context')
+  })
+
+  it('still records the edit and queues the reindex when the hint is withheld', () => {
+    postEditHandler(editEvent('/project/CHANGELOG.md'))
+    clearDirtyQueue()
+    postEditHandler(editEvent('/project/CHANGELOG.md'))
+    const queued = getDirtyPaths()
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatch(/\/project\/CHANGELOG\.md$/)
+  })
+})
