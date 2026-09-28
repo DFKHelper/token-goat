@@ -109,6 +109,8 @@ import {
   getCompactAnySession,
   getCompactAnySessionSync,
   pruneSkillOutputs,
+  sessionOutputBodyBytes,
+  listOutputs,
 } from '../src/skill_cache.js'
 import * as fs from 'fs/promises'
 import * as path from 'path'
@@ -856,6 +858,33 @@ describe('hasSessionOutput', () => {
     expect(await hasSessionOutput(sessionId, 'ralph-loop')).toBe(false)
     expect(await hasSessionOutput(sessionId, 'ralph-loop-extended')).toBe(true)
   })
+
+  // HAND-DERIVED: session ids and body chosen for this test. The body is stored once (the dedup is kept), and each later session that stores the same body still records its own load.
+  it('records a load for every session that stores a deduped body, and only for those sessions', async () => {
+    const first = await storeOutput('sess-first', 'shared', 'Identical body')
+    const second = await storeOutput('sess-second', 'shared', 'Identical body')
+    expect(second!.outputId).toBe(first!.outputId)
+    expect((await fs.readdir(tempDir)).filter((f) => f.endsWith('.txt'))).toHaveLength(1)
+
+    expect(await hasSessionOutput('sess-first', 'shared')).toBe(true)
+    expect(await hasSessionOutput('sess-second', 'shared')).toBe(true)
+    expect(await hasSessionOutput('sess-third', 'shared')).toBe(false)
+    expect(await sessionOutputBodyBytes('sess-second', 'shared')).toBe(Buffer.byteLength('Identical body', 'utf-8'))
+    // The load record is not a stored output: listing and the per-session skill list stay one entry.
+    expect(await listOutputs()).toHaveLength(1)
+  })
+
+  // HAND-DERIVED: the shared body's files are removed by hand, as clean-cache or a second process's prune would, while the load record stays. A load with no body left to recall must not count, or the deny would point at a cached body that is gone.
+  it('does not count a load record whose shared body has been removed', async () => {
+    const first = await storeOutput('sess-first', 'shared', 'Identical body')
+    await storeOutput('sess-second', 'shared', 'Identical body')
+    await fs.rm(path.join(tempDir, `${first!.outputId}.meta`))
+    await fs.rm(path.join(tempDir, `${first!.outputId}.txt`))
+    expect((await fs.readdir(tempDir)).filter((f) => f.endsWith('.load'))).toHaveLength(1)
+
+    expect(await hasSessionOutput('sess-second', 'shared')).toBe(false)
+    expect(await sessionOutputBodyBytes('sess-second', 'shared')).toBeNull()
+  })
 })
 
 describe('getCompactAnySession / getCompactAnySessionSync', () => {
@@ -937,6 +966,21 @@ describe('pruneSkillOutputs', () => {
 
     const files = await fs.readdir(tempDir)
     expect(files.some((f) => f.startsWith(meta!.outputId))).toBe(false)
+  })
+
+  // HAND-DERIVED: session ids and body chosen for this test. A second session's load of a deduped body is recorded as a small load record pointing at the shared body; once that body is evicted, the record must go with it, or hasSessionOutput would report a load whose cached body no longer exists.
+  it('removes a session load record whose shared body was evicted', async () => {
+    const meta = await storeOutput('sess-owner', 'skill', 'Shared body')
+    await storeOutput('sess-other', 'skill', 'Shared body')
+    expect(await hasSessionOutput('sess-other', 'skill')).toBe(true)
+    expect((await fs.readdir(tempDir)).filter((f) => f.endsWith('.load'))).toHaveLength(1)
+
+    pruneSkillOutputs(0, 365 * 24 * 3600 * 1000)
+
+    const files = await fs.readdir(tempDir)
+    expect(files.some((f) => f.startsWith(meta!.outputId))).toBe(false)
+    expect(files.filter((f) => f.endsWith('.load'))).toEqual([])
+    expect(await hasSessionOutput('sess-other', 'skill')).toBe(false)
   })
 
   it('returns 0 when the skills dir does not exist', () => {

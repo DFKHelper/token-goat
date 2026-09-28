@@ -221,6 +221,25 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     expect(delta).toBe(PER_FILE_COUNTERFACTUAL_CEILING);
   });
 
+  // Regression: storeOutput dedups an identical body across sessions and used to return the first session's entry without recording anything for the second, so the reload deny fired only in the first session that ever loaded the skill. Every later session re-injected the whole body on a repeat load.
+  // HAND-DERIVED: two session ids and one body chosen for this test; the expected deny follows from the rule that a repeat load in the same session is denied, independent of the cache layout.
+  it('denies a repeat load in a second session that loaded the same body the first session cached', async () => {
+    const body = 'Shared body for ollama, byte-identical in both sessions.';
+    await runHook(skillPostEvent('ollama', body, 'sess-first'));
+    // Session two's first load passes: it has not loaded the skill yet, even though the body is cached.
+    expect((await runHook(skillPreEvent('ollama', 'sess-second'))).hookType).toBe('pass');
+    await runHook(skillPostEvent('ollama', body, 'sess-second'));
+
+    const before = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+    const pre = await runHook(skillPreEvent('ollama', 'sess-second'));
+    expect(pre.hookType).toBe('deny');
+    if (pre.hookType === 'deny') expect(pre.message).toContain('already loaded this session');
+    const delta = (summarize(30).by_kind['session_hint']?.bytes_saved ?? 0) - before
+    expect(delta).toBe(Buffer.byteLength(body, 'utf-8'));
+    // A third session that never loaded it is still not denied.
+    expect((await runHook(skillPreEvent('ollama', 'sess-third'))).hookType).toBe('pass');
+  });
+
   it('does not deny a different skill that was not loaded this session', async () => {
     await runHook(skillPostEvent('ollama', 'Body for ollama.', 'sess-dup2'));
     const pre = await runHook(skillPreEvent('codex', 'sess-dup2'));
