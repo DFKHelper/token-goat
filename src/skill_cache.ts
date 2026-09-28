@@ -9,7 +9,9 @@
  * - Skill bodies can be tens of KB. Inlining into session JSON bloats round trips.
  * - CLI retrieval can stream the file directly without re-parsing JSON.
  * - Retention is simple to bound by total bytes via LRU eviction.
- * - Cross-session dedup: the same skill body reuses the existing file.
+ * - Cross-session dedup: the same skill body reuses the existing file. A later
+ *   session that loads that body writes only a small `<its outputId>.load` record
+ *   naming the shared body, so the load still counts as that session's own.
  */
 
 import * as fs from 'fs/promises'
@@ -127,6 +129,51 @@ function sessionSkillPrefix(sessionId: string, skillName: string): string {
 
 export function outputIdFor(sessionId: string, skillName: string, contentSha: string): string {
   return `${sessionSkillPrefix(sessionId, skillName)}${contentSha}`
+}
+
+/** File extension of a session load record: see {@link SkillLoadRecord}. */
+const LOAD_RECORD_EXT = '.load'
+
+/** One session's load of a skill whose body another session already stored. storeOutput keeps one copy of an identical body across sessions, so the second session's load writes this record under its own outputId instead of a second body. Without it the second session had no entry carrying its own fragment, and the reload deny, which asks "did this session load the skill", fired only in the first session that ever loaded it. */
+interface SkillLoadRecord {
+  readonly loadId: string
+  readonly skillName: string
+  readonly contentSha: string
+  readonly bodyOutputId: string
+  readonly bodyBytes: number
+  readonly ts: number
+}
+
+function readLoadRecordsSync(dir: string): SkillLoadRecord[] {
+  const records: SkillLoadRecord[] = []
+  let files: string[]
+  try {
+    files = readdirSync(dir)
+  } catch {
+    return records
+  }
+  for (const file of files) {
+    if (!file.endsWith(LOAD_RECORD_EXT)) continue
+    try {
+      const parsed = JSON.parse(readFileSync(resolve(dir, file), 'utf-8')) as Omit<SkillLoadRecord, 'loadId'>
+      if (typeof parsed.skillName !== 'string' || typeof parsed.bodyOutputId !== 'string') continue
+      records.push({ ...parsed, loadId: file.slice(0, -LOAD_RECORD_EXT.length) })
+    } catch {
+      continue
+    }
+  }
+  return records
+}
+
+/** Every load of *name* by the session whose safe fragment is *safeSession*, as `{ bodyBytes, ts }`: the session's own stored outputs, plus its load records whose shared body is still stored. A record whose body was evicted is not a load this session can recall, so it is skipped rather than reported. */
+async function sessionLoads(safeSession: string, name: string): Promise<Array<{ bodyBytes: number; ts: number }>> {
+  const metas = await listOutputs()
+  const own = metas.filter(m => m.skillName === name && m.outputId.startsWith(`${safeSession}-`))
+  const storedIds = new Set(metas.map(m => m.outputId))
+  const recorded = readLoadRecordsSync(skillOutputsDir()).filter(
+    r => r.skillName === name && r.loadId.startsWith(`${safeSession}-`) && storedIds.has(r.bodyOutputId),
+  )
+  return [...own, ...recorded].map(e => ({ bodyBytes: e.bodyBytes, ts: e.ts }))
 }
 
 // Yields [index, trimmed-line] for every line of `lines` outside a fenced code block (fence
@@ -327,8 +374,8 @@ export async function listOutputs(): Promise<SkillMeta[]> {
  * Return true when a skill body for *skillName* was already cached under
  * *sessionId* earlier this session (a stored outputId carries this session's
  * fragment and name). The pre-skill hook uses this to advise recall over a
- * wasteful full re-load. Cross-session dedup may suppress a same-session meta,
- * so a miss is conservative (no false-positive advisories), never a false hit.
+ * wasteful full re-load. A body another session stored first counts through this
+ * session's load record (see {@link SkillLoadRecord}), so the dedup no longer hides a load.
  */
 export async function hasSessionOutput(sessionId: string, skillName: string): Promise<boolean> {
   try {
@@ -340,9 +387,7 @@ export async function hasSessionOutput(sessionId: string, skillName: string): Pr
     // match a differently-named skill whose outputId happens to start with the same
     // literal text (e.g. 'ralph-loop-extended'). Comparing the structured field instead
     // of the flattened filename eliminates that class of collision entirely.
-    const safeSession = safeSessionFragment(sessionId)
-    const metas = await listOutputs()
-    return metas.some(m => m.skillName === name && m.outputId.startsWith(`${safeSession}-`))
+    return (await sessionLoads(safeSessionFragment(sessionId), name)).length > 0
   } catch {
     return false
   }
@@ -365,9 +410,7 @@ export async function sessionOutputBodyBytes(sessionId: string, skillName: strin
     if (!sessionId) return null
     const name = safeSkillName(skillName)
     if (!name) return null
-    const safeSession = safeSessionFragment(sessionId)
-    const metas = await listOutputs()
-    const matches = metas.filter(m => m.skillName === name && m.outputId.startsWith(`${safeSession}-`))
+    const matches = await sessionLoads(safeSessionFragment(sessionId), name)
     if (matches.length === 0) return null
     matches.sort((a, b) => b.ts - a.ts)
     return matches[0]!.bodyBytes
@@ -423,14 +466,25 @@ export async function storeOutput(
     if (!name) return null
 
     const sha = contentHash(body)
-    const existing = await findCrossSessionEntry(skillName, sha)
-    if (existing) {
-      return existing
-    }
-
     const outId = outputIdFor(sessionId, skillName, sha)
     const dir = skillOutputsDir()
     const ts = Date.now()
+    const existing = await findCrossSessionEntry(skillName, sha)
+    if (existing) {
+      // The body is already stored, by this session or another. Another session's copy is reused, and this session records its own load of it so the reload deny sees this session loaded the skill.
+      if (existing.outputId !== outId && sessionId) {
+        const record: Omit<SkillLoadRecord, 'loadId'> = {
+          skillName: name,
+          contentSha: sha,
+          bodyOutputId: existing.outputId,
+          bodyBytes: Buffer.byteLength(body, 'utf-8'),
+          ts,
+        }
+        await atomicWriteText(resolve(dir, `${outId}${LOAD_RECORD_EXT}`), JSON.stringify(record, null, 2))
+      }
+      return existing
+    }
+
     // bodyBytes is deliberately the RAW pre-redaction size, not what actually lands on disk: it
     // feeds sessionOutputBodyBytes, whose only consumer (preSkillHandler's session_hint deny
     // credit) prices "the load that didn't happen" -- and a real reload's live path
@@ -1001,6 +1055,16 @@ export function pruneSkillOutputs(
       kept.sort((a, b) => a.ts - b.ts)
       for (const entry of kept.slice(0, kept.length - maxCount)) {
         removeEntry(entry.outputId)
+      }
+    }
+
+    // A session load record goes when its shared body is gone or it has aged out. It is not an entry of its own, so it neither counts toward maxCount nor adds to the returned count.
+    for (const record of readLoadRecordsSync(dir)) {
+      if (record.ts >= cutoff && existsSync(resolve(dir, `${record.bodyOutputId}.meta`))) continue
+      try {
+        unlinkSync(resolve(dir, `${record.loadId}${LOAD_RECORD_EXT}`))
+      } catch {
+        // already gone
       }
     }
   } catch {
