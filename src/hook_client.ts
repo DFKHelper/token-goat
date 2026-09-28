@@ -32,7 +32,7 @@ import {
 const HANDSHAKE_TIMEOUT_MS = 150
 /** Total time spent finding a server before giving up and falling back; a fallback costs about 100ms, so waiting longer than this never pays. */
 const FIND_BUDGET_MS = 300
-/** A dispatched request that has not answered by now is failed open. Matches the hook relay's own queue wait. */
+/** A dispatched hook request that has not answered by now is failed open. Matches the hook relay's own queue wait. A CLI request has no such limit (see attempt). */
 const RESPONSE_TIMEOUT_MS = 120_000
 /** How long `status` and `stop` keep asking a slot whose handshake timed out. */
 const CONTROL_WAIT_MS = 10_000
@@ -80,7 +80,8 @@ function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs:
           if (!frameFits(frame)) return finish({ kind: 'oversize' })
           dispatched = true
           clearTimeout(timer)
-          timer = setTimeout(() => finish({ kind: 'lost' }), RESPONSE_TIMEOUT_MS)
+          // A CLI command waits for its answer however long it runs. The server cannot abandon a command it has started (the work is synchronous and nothing interrupts it), so giving up here only made the caller run the same command a second time beside it, on the same index, never faster (a 342.8 s `symbol` miss on a large project was 120 s of waiting here and then the whole command again). A server that dies mid-command still closes the connection, which reads as lost below, and the caller still runs it itself.
+          if (request.kind !== 'cli') timer = setTimeout(() => finish({ kind: 'lost' }), RESPONSE_TIMEOUT_MS)
           socket.write(frame)
           return
         }
@@ -168,7 +169,7 @@ export async function relayViaServer(event: string, input: string | object, harn
   }
 }
 
-/** Read-only commands a server may answer on the CLI's behalf. Each reads its arguments and the index, writes to stdout, and never reads stdin, so running one in a warm process is indistinguishable from running it in a fresh one, and re-running one after a lost reply is harmless. */
+/** Read-only commands a server may answer on the CLI's behalf. Each reads its arguments and the index, writes to stdout, and never reads stdin, so running one in a warm process is indistinguishable from running it in a fresh one, and re-running one after a lost reply is harmless. A reply is lost only when the server fails (the connection drops, or the answer does not authenticate), never because the command is slow: the client waits for a slow one rather than start it again beside the server's run. */
 export const WARM_CLI_COMMANDS: ReadonlySet<string> = new Set([
   'answer',
   'brief',
