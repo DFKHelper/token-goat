@@ -277,6 +277,12 @@ const COPILOT_TO_TG_EVENT: Readonly<Record<string, string>> = {
   subagentStop: 'subagent_stop',
   userPromptSubmitted: 'user_prompt_submit',
   postToolUseFailure: 'post_tool_use_failure',
+  subagentStart: 'subagent_start',
+}
+
+/** Hooks-file keys only VS Code reads (the shim's VSCODE_ONLY_TO_TG_EVENT); a Copilot CLI payload on one is answered with nothing. */
+const VSCODE_ONLY_TO_TG_EVENT: Readonly<Record<string, string>> = {
+  SubagentStart: 'subagent_start',
 }
 
 const FOLDED_COPILOT_TOOL_TO_TG: Record<string, string> = {}
@@ -360,7 +366,7 @@ function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown
     if (context) out['additionalContext'] = context
     return out
   }
-  if (copilotEvent === 'postToolUseFailure' || copilotEvent === 'sessionStart' || copilotEvent === 'userPromptSubmitted') {
+  if (copilotEvent === 'postToolUseFailure' || copilotEvent === 'sessionStart' || copilotEvent === 'subagentStart' || copilotEvent === 'userPromptSubmitted') {
     const context = copilotContext(resp)
     return context ? { additionalContext: context } : {}
   }
@@ -392,7 +398,8 @@ async function copilotRelayVscode(tgEvent: string, payload: object, scriptDir: s
 
 async function copilotRun(req: AdapterRequest, io: AdapterIo): Promise<string> {
   const copilotEvent = req.event
-  const tgEvent = ownGet(COPILOT_TO_TG_EVENT, copilotEvent)
+  const vscodeOnly = ownGet(VSCODE_ONLY_TO_TG_EVENT, copilotEvent)
+  const tgEvent = ownGet(COPILOT_TO_TG_EVENT, copilotEvent) ?? vscodeOnly
   if (!tgEvent) return '{}'
   let payload: unknown
   try {
@@ -403,6 +410,7 @@ async function copilotRun(req: AdapterRequest, io: AdapterIo): Promise<string> {
   if (payload !== null && typeof payload === 'object' && typeof get(payload, 'hook_event_name') === 'string' && get(payload, 'toolName') === undefined) {
     return copilotRelayVscode(tgEvent, payload, req.scriptDir, io)
   }
+  if (vscodeOnly !== undefined) return '{}'
   const toolName = payload && get(payload, 'toolName')
   const workingDirectory = payload && (get(payload, 'workingDirectory') || get(payload, 'cwd'))
   const canonical: Record<string, unknown> = {
@@ -433,6 +441,8 @@ async function copilotRun(req: AdapterRequest, io: AdapterIo): Promise<string> {
     if (typeof text === 'string') canonical['tool_response'] = text
   }
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'copilot_cli'
+  if (req.scriptDir !== undefined) process.env['TOKEN_GOAT_COPILOT_HOOKS_DIR'] = req.scriptDir
+  else delete process.env['TOKEN_GOAT_COPILOT_HOOKS_DIR']
   const stdout = await io.relay(tgEvent, viaJson(canonical))
   let resp: unknown
   try {
@@ -445,7 +455,7 @@ async function copilotRun(req: AdapterRequest, io: AdapterIo): Promise<string> {
 
 const copilotCli: Adapter = {
   unknown: '{}',
-  events: Object.keys(COPILOT_TO_TG_EVENT),
+  events: [...Object.keys(COPILOT_TO_TG_EVENT), ...Object.keys(VSCODE_ONLY_TO_TG_EVENT)],
   lost: (event) => JSON.stringify(copilotTranslate(event, {}, undefined, {})),
   async run(req, io) {
     try {

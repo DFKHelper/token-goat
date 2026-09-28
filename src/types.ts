@@ -29,6 +29,7 @@ export const HOOK_EVENTS = [
   'post_compact',
   'user_prompt_submit',
   'subagent_stop',
+  'subagent_start',
   'session_start',
   'post_tool_use_failure',
 ] as const

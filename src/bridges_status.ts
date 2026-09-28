@@ -39,6 +39,10 @@ const NO_SEPARATE_FAILURE_EVENT_REASON =
 const COPILOT_NO_POST_COMPACT_REASON =
   "Copilot CLI has no post-compaction hook: its HookType enum (schemas/api.schema.json, 1.0.79 and 1.0.80) declares preCompact and no postCompact, and both preCompact call sites in app.js await the hook and never assign its result. Whether the summary is reachable another way is open. app.js does emit session.compaction_complete carrying summaryContent, and the session event writer subscribes to '*' -- but emit() vs emitEphemeral() does NOT gate that writer: dispatchEventHandlers runs outside the ephemeral branch in emitInternal, on('*') early-returns past every filter, and the writer's callback applies no filter of its own before handing the JSON to native recordEventJson. The durable-vs-ephemeral decision is in Rust (api_session_event_writer.rs) and was not readable. Nor is the event uniformly summary-bearing: two of the four emit sites are the branches taken when no summary exists, summaryContent is optional in the schema, and the relay session class emits the same event via emitEphemeral. No compaction has ever been observed on the machines checked, so nothing empirical anchors any of it. Context can be written back on the next turn through userPromptSubmitted additionalContext"
 
+/** subagent_start answers a harness's own subagent-start hook with the spawn briefing, so the briefing reaches the subagent without passing through the parent's history. It is wired only where that hook was shown to put additionalContext into the subagent itself: Copilot CLI 1.0.88 (captured, tg-captures C4a) and VS Code 1.137 (read from its bundle). Everywhere else the briefing keeps riding the spawn tool's prompt through pre_tool_use, which works but leaves a copy in the parent's history. */
+const NO_SUBAGENT_START_REASON =
+  "subagent_start is wired only where the harness's subagent-start hook was shown to deliver additionalContext into the subagent itself (Copilot CLI 1.0.88, VS Code 1.137); here the spawn briefing still rides the spawn tool's prompt through pre_tool_use"
+
 /** How a bridge row's claims were established -- strictly by evidence recorded *in this repository*, never by recollection that someone once tried it. The distinction is load-bearing rather than decorative. Four features have shipped from here wired, tested, green and inert, and every one was caught by running the real thing -- never by a check written from the same understanding that produced the bug. A row saying `documented` is not an apology: it is the honest statement that its guarantee comes from reading, so the failure mode that reading cannot catch is still open on it. - `dogfooded`: some part of the wired path has been driven against the real harness binary, and the repo records which version and when. - `sourced`: the wire format was read out of the harness's own source or published declarations -- stronger than prose, still not a run. - `documented`: wired from the harness's documentation, with no source read and no run. */
 export type BridgeVerification = 'dogfooded' | 'sourced' | 'documented'
 
@@ -67,6 +71,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
     ],
   },
   {
@@ -80,6 +85,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
       {
         events: ['post_compact', 'session_start'],
         reason:
@@ -99,6 +105,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
       {
         events: ['session_start'],
         reason:
@@ -113,7 +120,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/copilot_cli_install.ts (COPILOT_CLI_HOOK_EVENTS), src/bridges/copilot_cli.ts (COPILOT_TO_TG_EVENT)',
     verification: 'dogfooded',
     verificationNote:
-      "doctor's checkCopilotCli drives the installed shim end to end, and every hook payload field is cross-checked against Copilot's own declarations pinned at 1.0.80 (schemas/copilot_cli.hooks.json).",
+      "doctor's checkCopilotCli drives the installed shim end to end, and every hook payload field is cross-checked against Copilot's own declarations pinned at 1.0.80 (schemas/copilot_cli.hooks.json). subagentStart's additionalContext was captured on 1.0.88 arriving at the start of the subagent's own prompt (tg-captures C4a).",
     implemented: new Set([
       'session_start',
       'pre_tool_use',
@@ -121,6 +128,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       'pre_compact',
       'stop',
       'subagent_stop',
+      'subagent_start',
       'user_prompt_submit',
       'post_tool_use_failure',
     ]),
@@ -129,7 +137,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       {
         events: ['notification'],
         reason:
-          "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/subagentStart/errorOccurred/permissionRequest) unimplemented rather than guessed at",
+          "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/errorOccurred/permissionRequest) unimplemented rather than guessed at",
       },
     ],
   },
@@ -145,7 +153,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'subagent_start', 'session_start'],
         reason: "Gemini CLI's hooks integration only wires BeforeTool/AfterTool/PreCompress (README \"Gemini CLI users\")",
       },
     ],
@@ -167,6 +175,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
           "Only five Qwen Code events have a token-goat handler; every other real event (Notification, SessionEnd, PostToolUseFailure, StopFailure, SubagentStart, PermissionRequest, TodoCreated, TodoCompleted) is left unimplemented rather than guessed at (qwen_install.ts)",
       },
       { events: ['stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
       {
         events: ['session_start'],
         reason: 'QWEN_EVENT_ARG has no session-start mapping wired yet -- left unimplemented rather than guessed at',
@@ -180,7 +189,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     verification: 'sourced',
     verificationNote:
       "Hook-file parsing, payload keys, tool names and response fields read from the VS Code 1.136.0 bundle (workbench.desktop.main.js, extensions/copilot/dist/extension.js, extensions/copilot/package.json); the installed shim is driven with VS Code-shaped payloads, but no run inside a live VS Code is recorded here.",
-    implemented: new Set(['session_start', 'pre_tool_use', 'post_tool_use', 'user_prompt_submit', 'subagent_stop']),
+    implemented: new Set(['session_start', 'pre_tool_use', 'post_tool_use', 'user_prompt_submit', 'subagent_stop', 'subagent_start']),
     reasons: [
       {
         events: ['pre_compact', 'post_tool_use_failure'],
@@ -217,7 +226,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
-      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
+    ],
   },
   {
     harness: 'opencode',
@@ -231,7 +242,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'subagent_start', 'session_start'],
         reason:
           "opencode's plugin API only exposes three relevant hooks -- tool.execute.before, tool.execute.after, experimental.session.compacting (opencode.ts module docstring, verified against opencode's real source)",
       },
@@ -249,7 +260,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'subagent_start', 'session_start'],
         reason:
           "OpenClaw's in-process plugin API only exposes before_tool_call/after_tool_call/before_compaction as api.on() handlers relevant here",
       },
@@ -267,7 +278,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'subagent_start', 'session_start'],
         reason:
           "pi's extension API subscribes to session_start/tool_call/tool_result/session_before_compact/session_compact, of which only tool_call/tool_result/session_before_compact map onto real HOOK_EVENTS names (pre_tool_use/post_tool_use/pre_compact) -- pi's own session_start event is never forwarded to token-goat's callHook()",
       },

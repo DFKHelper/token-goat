@@ -28,6 +28,7 @@ const HOOK_EVENT_NAME_MAP = {
   post_compact: 'PostCompact',
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
+  subagent_start: 'SubagentStart',
   session_start: 'SessionStart',
   post_tool_use_failure: 'PostToolUseFailure',
 }

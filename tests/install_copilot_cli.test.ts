@@ -61,7 +61,7 @@ afterEach(() => {
 })
 
 describe('installCopilotCli (user scope)', () => {
-  it('writes the shim script and a hooks config registering all eight implemented events on a fresh install', () => {
+  it('writes the shim script and a hooks config registering all nine implemented events on a fresh install', () => {
     const result = installCopilotCli()
     expect(result.alreadyInstalled).toBe(false)
     expect(result.configPath).toBe(copilotCliConfigPath())
@@ -86,6 +86,7 @@ describe('installCopilotCli (user scope)', () => {
         'subagentStop',
         'userPromptSubmitted',
         'postToolUseFailure',
+        'subagentStart',
       ].sort(),
     )
     for (const event of [
@@ -622,8 +623,8 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const mapMatch = /COPILOT_TO_TG_EVENT = \{([\s\S]*?)\}/.exec(COPILOT_CLI_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()
     const mapped = [...(mapMatch?.[1] ?? '').matchAll(/:\s*'([^']+)'/g)].map((m) => m[1])
-    // 8 entries: sessionStart, preToolUse, postToolUse, preCompact, agentStop, subagentStop, userPromptSubmitted, postToolUseFailure.
-    expect(mapped.length).toBe(8)
+    // 9 entries: sessionStart, preToolUse, postToolUse, preCompact, agentStop, subagentStop, userPromptSubmitted, postToolUseFailure, subagentStart.
+    expect(mapped.length).toBe(9)
     for (const eventName of mapped) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }

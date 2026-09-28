@@ -29,8 +29,11 @@ const COPILOT_CLI_HOOK_EVENTS = [
   'subagentStop',
   'userPromptSubmitted',
   'postToolUseFailure',
+  'subagentStart',
 ] as const
-type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number]
+/** Keys written only while VS Code shares the file (copilot_cli.ts's VSCODE_ONLY_TO_TG_EVENT). VS Code 1.137 reads a Copilot-format hooks file through its camelCase table first, which has no subagentStart, then accepts a key already spelled as its own PascalCase hook type (workbench.desktop.main.js: `iut(key) ?? eut(key)`), so its subagent hook needs `SubagentStart`. Copilot CLI 1.0.88's hook-key list is camelCase only, and the shim answers a Copilot payload on this key with nothing either way. */
+const VSCODE_ONLY_HOOK_EVENTS = ['SubagentStart'] as const
+type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number] | (typeof VSCODE_ONLY_HOOK_EVENTS)[number]
 
 interface CopilotHookEntry {
   type: 'command'
@@ -178,7 +181,8 @@ export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredH
   const scriptPath = copilotCliScriptPath(opts)
   const out: WiredHookEntry[] = []
   for (const [event, entries] of Object.entries(config?.hooks ?? {})) {
-    const expected = (COPILOT_CLI_HOOK_EVENTS as readonly string[]).includes(event) ? copilotHookCommandsFor(scriptPath, event as CopilotCliHookEvent, { sync: false }) : undefined
+    const known = (COPILOT_CLI_HOOK_EVENTS as readonly string[]).includes(event) || (VSCODE_ONLY_HOOK_EVENTS as readonly string[]).includes(event)
+    const expected = known ? copilotHookCommandsFor(scriptPath, event as CopilotCliHookEvent, { sync: false }) : undefined
     for (const h of Array.isArray(entries) ? entries : []) {
       if (typeof h?.command !== 'string') continue
       const current = expected !== undefined && h.command === expected.command && h.bash === expected.bash && h.powershell === expected.powershell
@@ -188,9 +192,10 @@ export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredH
   return out
 }
 
-function buildConfig(scriptPath: string): CopilotCliConfig {
+function buildConfig(scriptPath: string, owners: ReadonlySet<CopilotHooksOwner>): CopilotCliConfig {
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
-  for (const event of COPILOT_CLI_HOOK_EVENTS) {
+  const events: readonly CopilotCliHookEvent[] = owners.has('vscode') ? [...COPILOT_CLI_HOOK_EVENTS, ...VSCODE_ONLY_HOOK_EVENTS] : COPILOT_CLI_HOOK_EVENTS
+  for (const event of events) {
     hooks[event] = [
       {
         type: 'command',
@@ -278,12 +283,12 @@ export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the hook config itself needs any change (mirrors installCodex()). Both the primary .cjs shim (immune to "type": "module" in package.json) and the .js forwarder (for running sessions with cached .js hook commands) are written.
   const scriptChanged = writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
   const legacyScriptChanged = writeIfDifferent(legacyScriptPath, HOOKS_SCRIPT_FORWARDER)
-  const desiredText = JSON.stringify(buildConfig(scriptPath), null, 2) + '\n'
+  owners.add(owner)
+  const desiredText = JSON.stringify(buildConfig(scriptPath, owners), null, 2) + '\n'
   const configChanged = writeIfDifferent(configPath, desiredText, true)
   // Recorded on every install, not only on creation: the question this answers later is "did an install on THIS machine put that hooks file there", and vscode_duplicate.ts asks it before a user-scope hook copy is allowed to stand down for a project-scope one. A repository can commit `.github/hooks/token-goat.json` itself; nothing on disk in the clone can tell the two apart, so the discriminator has to live outside the clone.
   recordCreatedConfig(configPath)
 
-  owners.add(owner)
   const ownersChanged = writeIfDifferent(copilotHooksOwnersPath(hooksDir), [...owners].sort().join('\n') + '\n')
   return { configPath, scriptPath, changed: scriptChanged || legacyScriptChanged || configChanged || ownersChanged }
 }
@@ -297,6 +302,9 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   owners.delete(owner)
   if (owners.size > 0) {
     writeIfDifferent(ownersPath, [...owners].sort().join('\n') + '\n')
+    // The remaining owner's key set can differ from the shared one (VS Code alone reads SubagentStart), so the config is rewritten for who is left.
+    const configPath = path.join(hooksDir, HOOKS_CONFIG_FILE)
+    if (fs.existsSync(configPath)) writeIfDifferent(configPath, JSON.stringify(buildConfig(path.join(hooksDir, HOOKS_SCRIPT_FILE), owners), null, 2) + '\n', true)
     return true
   }
   const configRemoved = removeFileInScope(path.join(hooksDir, HOOKS_CONFIG_FILE))
