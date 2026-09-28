@@ -1021,10 +1021,11 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     },
   )
 
+  // PROVENANCE: CAPTURE. The preCompact and userPromptSubmitted payloads below are tests/fixtures/copilot_cli_1_0_88/C7-006-preCompact.json and C7-007-userPromptSubmitted.json, what Copilot CLI 1.0.88 sent around a manual /compact (see tests/fixtures/copilot_cli_1_0_88.ts). The same captures showed preCompact's additionalContext reaching nothing (C7, C7d) and userPromptSubmitted's reaching the model in 5 of 5 runs (C3); the token-goat answers are HAND-DERIVED stand-ins.
   it('preCompact discards any token-goat response and always emits {} -- Copilot treats preCompact as notification-only', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(cwd, JSON.stringify({ systemMessage: 'session manifest here' }))
-    const stdout = runShim('preCompact', JSON.stringify({ sessionId: 's1' }), cwd, env)
+    const stdout = runShim('preCompact', JSON.stringify(copilotCapture('C7-006-preCompact', { proj: cwd })), cwd, env)
     expect(stdout.trim()).toBe('{}')
   })
 
@@ -1043,7 +1044,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
 
     const stdout = runShim(
       'userPromptSubmitted',
-      JSON.stringify({ sessionId: 's1', cwd: '/tmp', prompt: 'fix the bug please' }),
+      JSON.stringify(copilotCapture('C7-007-userPromptSubmitted', { proj: cwd })),
       cwd,
       env,
     )
@@ -1052,7 +1053,9 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(JSON.parse(stdout)).toEqual({ additionalContext: 'branch: main' })
     expect(fs.readFileSync(argvPath, 'utf8')).toContain('user_prompt_submit')
     const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
-    expect(captured.session_id).toBe('s1')
+    expect(captured.session_id).toBe('7c0de7c7-0000-4000-8000-00000000c007')
+    expect(captured.cwd).toBe(cwd)
+    expect(String(captured.prompt)).toMatch(/^Do not use any tools\./)
   })
 
   it('emits {} for userPromptSubmitted when token-goat returns no context, rather than an empty additionalContext', () => {
@@ -1060,7 +1063,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const env = withFakeTokenGoat(cwd, JSON.stringify({}))
     const stdout = runShim(
       'userPromptSubmitted',
-      JSON.stringify({ sessionId: 's1', cwd: '/tmp', prompt: 'fix the bug please' }),
+      JSON.stringify(copilotCapture('C7-007-userPromptSubmitted', { proj: cwd })),
       cwd,
       env,
     )

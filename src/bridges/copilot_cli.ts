@@ -217,14 +217,13 @@ const POLL_ID_ARG_KEY = {
 // the same session, since process.pid varies per invocation -- breaking token-goat's
 // session-based dedup/state ledger, which never accumulates across calls as a result. Derive a
 // stable id instead from the one thing that's actually constant across calls for the same
-// session: the working directory Copilot reports. That field is \`workingDirectory\`, declared
-// required on BaseHookInput in copilot-sdk/types.d.ts since 1.0.76, so it is present on EVERY
-// hook event. This previously read \`payload.cwd\`, which Copilot has never sent under any name in
-// any version -- the key simply did not exist, so this derived every fallback id from
-// process.cwd() instead and \`canonical.cwd\` below was undefined on every single call. It went
-// unnoticed because process.cwd() happens to be the project directory Copilot spawns the hook in,
-// so the fallback was accidentally right; nothing about that was by design. \`cwd\` is still read
-// as a secondary in case a future version adds it under the shorter name.
+// session: the working directory Copilot reports. Copilot CLI's command hooks send it as \`cwd\`:
+// every payload 1.0.88 sent in the tg-captures run carried \`cwd\` and none carried
+// \`workingDirectory\` (tests/fixtures/copilot_cli_1_0_88/). The SDK's BaseHookInput in
+// copilot-sdk/types.d.ts declares the same value as \`workingDirectory\`, so both names are read,
+// that one first. Were neither read, the fallback id would come from process.cwd() and
+// \`canonical.cwd\` below would be undefined; tests/harness_schema_manifest.test.ts drives the
+// captured payload from a different directory to catch exactly that.
 function stableFallbackSessionId(cwd) {
   const key = typeof cwd === 'string' && cwd ? cwd : process.cwd()
   const hash = require('node:crypto').createHash('sha256').update(key).digest('hex').slice(0, 16)
@@ -616,32 +615,31 @@ function translate(copilotEvent, resp, toolName, originalToolArgs) {
     // had no marker in it, and proves nothing about the marker.) That the model sees it is the
     // whole point: hook.start/hook.end records also persist and reach nothing.
     //
-    // Scope of the finding, stated honestly: demonstrated ONCE on 1.0.80, not shown to be
-    // reliable. Of two turns in that experiment, one delivered the marker and one fired a
-    // userPromptSubmitted hook that produced no output and never ran the script; no explanation
-    // was established and the rate is unknown. A hint that silently fails to arrive costs nothing
-    // and breaks nothing here, which is why the direct return is still the right default.
+    // On 1.0.80 that was demonstrated once: of two turns, one delivered the marker and one fired
+    // a hook that never ran the script. On 1.0.88 it held 5 times in 5 clean runs (tg-captures
+    // C3): each wire request carried the context once, in the user message itself, as the prompt,
+    // a blank line, and the context inside a <system_reminder> block.
     //
     // modifiedPrompt is NOT claimed to work and is not wanted: rewriting a user's prompt is far
     // more invasive than anything token-goat does, so only additionalContext is forwarded.
     //
-    // This is also the write end of any post-compaction channel. Copilot has no postCompact hook.
-    // Whether the summary is recoverable from events.jsonl is NOT settled -- the emit()/
-    // emitEphemeral() distinction does not gate the writer, and the real decision is in native
-    // code; see COPILOT_NO_POST_COMPACT_REASON in ../bridges_status.ts for what was and was not
-    // established. The read end that IS confirmed is preCompact, which fires as a notification, so
-    // a manifest can be built there and drained here without reading the event log at all.
+    // This is also where the compaction manifest reaches the model. Copilot has no postCompact
+    // hook and does not read preCompact's answer (below), so token-goat queues the manifest at
+    // preCompact and the prompt handler puts it first in this answer on the next prompt
+    // (PRE_COMPACT_RESUMES_ON_PROMPT in ../harness_channels.ts; tests/copilot_compaction_resume.test.ts
+    // drives the captured C7 payloads through this shim). Whether the summary is recoverable from
+    // events.jsonl is still not settled; see COPILOT_NO_POST_COMPACT_REASON in ../bridges_status.ts.
     const context = extractContext(resp)
     if (context) return { additionalContext: context }
     return {}
   }
 
-  // preCompact is the genuine notification-only case, and the contrast with userPromptSubmitted
-  // above is why this fallthrough is worth a comment at all. The hooks reference marks it
-  // "No -- notification only" for output processing, and unlike the additionalContext claim that
-  // turned out to be false, this one is confirmed in the shipping bundle: both preCompact call
-  // sites in app.js (1.0.79 and re-checked in 1.0.80) await the hook and never assign its result.
-  // There is no field to aim at here, so nothing to reconsider on the next version bump.
+  // preCompact is the genuine notification-only case. The hooks reference marks it "No --
+  // notification only", both preCompact call sites in app.js (1.0.79, re-checked in 1.0.80) await
+  // the hook and never assign its result, and on 1.0.88 a marker returned here as
+  // additionalContext appeared zero times in the wire requests, the OTel spans and the model's
+  // reply after a manual /compact (tg-captures C7 and C7d). The payload is {sessionId, timestamp,
+  // cwd, transcriptPath, trigger, customInstructions}. There is no field to aim at here.
   return {}
 }
 

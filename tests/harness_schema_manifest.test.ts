@@ -5,7 +5,11 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { createHash } from 'node:crypto'
+
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
+import { runAdapter } from '../src/hook_adapters.js'
+import { copilotCapture } from './fixtures/copilot_cli_1_0_88.js'
 
 /**
  * Cross-checks the Copilot shim against a shape manifest derived from Copilot's own published
@@ -135,8 +139,7 @@ describe('Copilot hook-input shape manifest', () => {
     expect(canonical['session_id']).toBe('sess-42')
     expect(canonical['tool_name']).toBe('Bash')
     expect(canonical['error']).toBe('command not found: nope')
-    // Copilot sends `workingDirectory`; it has never sent `cwd` under that name in any version.
-    // The builder read the key that does not exist, so this was undefined on every call.
+    // The SDK declares `workingDirectory`; the shim reads it first, then `cwd`, which is what the CLI's command hooks send (see the capture test below).
     expect(canonical['cwd']).toBe(cwd)
   })
 
@@ -162,6 +165,49 @@ describe('Copilot hook-input shape manifest', () => {
     // '', so a missing key here is not a degraded hint -- it is every prompt-keyed branch dead.
     expect(canonical['prompt']).toBe('summarize the failing test')
     expect(canonical['cwd']).toBe(cwd)
+  })
+})
+
+/**
+ * The key Copilot CLI's command hooks really send for the working directory is `cwd`, not the SDK's `workingDirectory`: every payload Copilot CLI 1.0.88 sent in the tg-captures run carried `cwd` and none carried `workingDirectory`.
+ *
+ * PROVENANCE: CAPTURE. tests/fixtures/copilot_cli_1_0_88/C1a-005-postToolUse-view.json and C7-007-userPromptSubmitted.json, the stdin Copilot CLI 1.0.88 handed a hook (see tests/fixtures/copilot_cli_1_0_88.ts). The payload's `cwd` is set to a directory different from the one the shim runs in, so a builder that ignored `cwd` and fell back to process.cwd() fails here instead of being accidentally right, as it would be when Copilot spawns the hook in the project directory.
+ */
+describe('Copilot CLI 1.0.88 working directory (CAPTURE C1a, C7)', () => {
+  const fallbackId = (dir: string): string => 'copilot-' + createHash('sha256').update(dir).digest('hex').slice(0, 16)
+
+  function captured(name: string, proj: string, dropSessionId: boolean): Record<string, unknown> {
+    const payload = copilotCapture(name, { proj })
+    expect(payload['cwd']).toBe(proj)
+    expect(payload).not.toHaveProperty('workingDirectory')
+    if (dropSessionId) delete payload['sessionId']
+    return payload
+  }
+
+  it('the shim carries the captured `cwd` and derives the fallback session id from it', () => {
+    const proj = mkIsolated()
+    const shimDir = mkIsolated()
+    const capturePath = path.join(shimDir, 'captured.json')
+    writeCaptureBin(shimDir, capturePath)
+    const env = { ...process.env, PATH: shimDir + path.delimiter + (process.env['PATH'] ?? '') }
+    runShim('postToolUse', JSON.stringify(captured('C1a-005-postToolUse-view', proj, true)), shimDir, env)
+    const canonical = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
+    expect(canonical['cwd']).toBe(proj)
+    expect(canonical['session_id']).toBe(fallbackId(proj))
+    expect(canonical['session_id']).not.toBe(fallbackId(shimDir))
+  })
+
+  it('the in-process adapter carries the captured `cwd` the same way', async () => {
+    const proj = mkIsolated()
+    const seen: unknown[] = []
+    const io = { early: (): number => 0, relay: (_event: string, payload: unknown): Promise<string> => (seen.push(payload), Promise.resolve('{}')) }
+    await runAdapter('copilot_cli', { event: 'userPromptSubmitted', input: JSON.stringify(captured('C7-007-userPromptSubmitted', proj, false)) }, io)
+    await runAdapter('copilot_cli', { event: 'postToolUse', input: JSON.stringify(captured('C1a-005-postToolUse-view', proj, true)) }, io)
+    const [prompt, post] = seen as Array<Record<string, unknown>>
+    expect(prompt?.['cwd']).toBe(proj)
+    expect(prompt?.['session_id']).toBe('7c0de7c7-0000-4000-8000-00000000c007')
+    expect(post?.['cwd']).toBe(proj)
+    expect(post?.['session_id']).toBe(fallbackId(proj))
   })
 })
 
