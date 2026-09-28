@@ -74,3 +74,14 @@ export const PRE_COMPACT_CONTEXT_DROPPED = new Set<string>(['copilot_cli', 'code
 export function dropsPreCompactContext(): boolean {
   return PRE_COMPACT_CONTEXT_DROPPED.has(getHarnessName())
 }
+
+/**
+ * Harnesses in {@link PRE_COMPACT_CONTEXT_DROPPED} whose prompt-submit context was shown to reach the model, so the manifest queued at compaction can be delivered on the next prompt instead of waiting for a tool call. A prompt answered without tools makes no tool call, and on those harnesses the manifest used to sit queued until one came.
+ *
+ * Copilot CLI 1.0.88 is the one measured: tg-captures C3 returned a marker as userPromptSubmitted additionalContext and found it in all 5 runs, inside the user message as a `<system_reminder>` block Copilot adds itself, and tg-captures C7 found a preCompact marker zero times after a manual /compact. Codex is left out: its prompt-submit context has not been captured reaching the model, and a manifest delivered there on faith would be cleared from the queue as delivered while it reached nothing.
+ */
+export const PRE_COMPACT_RESUMES_ON_PROMPT = new Set<string>(['copilot_cli'])
+
+export function resumesCompactionOnPrompt(): boolean {
+  return PRE_COMPACT_RESUMES_ON_PROMPT.has(getHarnessName()) && !dropsPromptSubmitContext()
+}

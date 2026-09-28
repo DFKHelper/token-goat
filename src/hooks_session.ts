@@ -8,7 +8,7 @@ import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
 import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js';
 import { peekPendingContext, queuePendingContext } from './pending_context.js';
-import { dropsPreCompactContext, dropsPromptSubmitContext } from './harness_channels.js';
+import { dropsPreCompactContext, dropsPromptSubmitContext, resumesCompactionOnPrompt } from './harness_channels.js';
 import { recordStat } from './stats.js';
 import {
   accumulateResidentLines,
@@ -169,11 +169,17 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
     // `key: value` summary.
     const residentHints = residentContextHints(event);
 
-    if (parts.length === 0 && !driftNudge && residentHints.length === 0) {
+    // The manifest queued when the harness compacted, on a harness whose preCompact answer reaches nothing but whose prompt answer does (see resumesCompactionOnPrompt). Peeked, not taken: relay.ts clears the queue once the serialized output carries it, which is what makes this one-shot. First, because it says what happened before anything below it applies.
+    const resumed = resumesCompactionOnPrompt() ? peekPendingContext(sessionStateKey(event)) : null;
+
+    if (parts.length === 0 && !driftNudge && residentHints.length === 0 && resumed === null) {
       return passOutput();
     }
 
     const lines: string[] = [];
+    if (resumed !== null) {
+      lines.push(resumed);
+    }
     if (parts.length > 0) {
       lines.push('[' + parts.join(' | ') + ']');
     }
