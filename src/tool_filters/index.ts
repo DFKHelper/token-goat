@@ -115,10 +115,6 @@ export {
   MISC_FILTERS,
   PlaywrightFilter, playwrightFilter,
   CypressFilter, cypressFilter,
-  PsqlFilter, psqlFilter,
-  MySQLFilter, mySQLFilter,
-  Sqlite3Filter, sqlite3Filter,
-  RedisCLIFilter, redisCLIFilter,
   SysPackageFilter, sysPackageFilter,
   WmicFilter, wmicFilter,
   ProtocFilter, protocFilter,
@@ -133,6 +129,12 @@ export {
   SeverityLogFilter, severityLogFilter,
   TailTruncFilter, tailTruncFilter,
 } from './misc.js'
+export {
+  PsqlFilter, psqlFilter,
+  MySQLFilter, mySQLFilter,
+  Sqlite3Filter, sqlite3Filter,
+  RedisCLIFilter, redisCLIFilter,
+} from './db_clients.js'
 export {
   TOOL_FILTERS,
   selectFilter,
