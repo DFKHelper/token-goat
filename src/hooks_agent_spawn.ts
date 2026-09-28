@@ -23,7 +23,7 @@ import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, record
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
-import { storeMcpOutput } from './mcp_cache.js'
+import { mcpHash, mcpOutputId, storeMcpOutput } from './mcp_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { redactSecrets } from './secret_redact.js'
 import { loadConfig } from './config.js'
@@ -561,6 +561,65 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
   }
 }
 
+/** The notice both report rewrites append, built in one place so {@link REWRITTEN_REPORT_RE} can recognize it. */
+function reportNotice(resultText: string, recallHint: string, spawnAdvisory: string): string {
+  return `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}${spawnAdvisory === '' ? '' : `\n${spawnAdvisory}`}`
+}
+
+/** A report that already ends in the notice of a rewrite token-goat made. On Copilot CLI the subagentStop rewrite replaces the subagent's answer before the parent's task result is built (tg-captures C4a-014), so the post-tool pass then sees token-goat's own output, and compacting and caching it again would store the compacted copy as if it were the report. */
+const REWRITTEN_REPORT_RE = /\n\n\[token-goat\] This subagent report \([0-9.]+KB\) is cached for later recall: token-goat mcp-output mcp_[0-9a-f]{16} --full$/
+
+/** The compacted report and whether it pays for `notice`. Fence collapse, then intra-report cross-fence dedup, then blank-run collapse, judged by ONE combined net-benefit check rather than a gate each: sub-threshold rewrites could each decline alone when their sum would pass, and firing the notice cost more than once would double-charge it. Shared by the post-tool pass and Copilot's subagentStop rewrite so the two cannot drift. */
+function planReportCompaction(resultText: string, recallHint: string, notice: string): { final: string; worthwhile: boolean } {
+  const cfg = loadConfig().agent_report
+  const collapsed = collapseFencedBlocks(resultText, recallHint, cfg.fence_collapse_min_lines, cfg.fence_collapse_keep_lines)
+  // Dedup runs AFTER collapse, on collapse's own output -- see dedupeFencedBlocks's comment for why.
+  const deduped = dedupeFencedBlocks(collapsed, resultText, recallHint)
+  // Blank-run collapse runs LAST, on the combined output of both -- see collapseBlankRunsInFences's comment for why.
+  const final = collapseBlankRunsInFences(deduped)
+  if (final === resultText) return { final, worthwhile: false }
+  const worthwhile = isRewriteWorthwhile({
+    originalBytes: Buffer.byteLength(resultText, 'utf-8'),
+    rewrittenBytes: Buffer.byteLength(final, 'utf-8'),
+    noticeBytes: Buffer.byteLength(notice, 'utf-8'),
+    minNetSavingsBytes: resolveMinNetSavingsBytes(),
+  })
+  return { final, worthwhile }
+}
+
+/** Book the saving of a report rewrite. Measured against the envelope the parent actually receives (notice included), not the rewritten body alone: the notice is part of what is spent to buy the compaction. */
+function recordReportCompaction(resultText: string, updatedOutput: string): void {
+  const savedBytes = Buffer.byteLength(resultText, 'utf-8') - Buffer.byteLength(updatedOutput, 'utf-8')
+  if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, savedTokensFromBytes(savedBytes))
+}
+
+/** Copilot CLI's subagentStop hook hands over the subagent's final answer as `response`, and a `modifiedResponse` in reply replaces that answer everywhere the parent sees it: the task tool's result and the model request built from it (tg-captures C4a, Copilot CLI 1.0.88). That is the channel the compacted report goes through there. The post-tool rewrite of the task result has never been shown to be honored on Copilot for the task tool (C1b and C6 cover view and the shell tools only). Only a rewrite that pays for its notice is sent; anything less passes, and the post-tool pass handles the report as it does elsewhere. The report is cached only when the rewrite is sent, under an id computed up front, so a report the post-tool pass goes on to cache is not stored twice. */
+function subagentReportRewriteHandler(event: HookEvent): HookOutput {
+  try {
+    if (getHarnessName() !== 'copilot_cli' || !event.sessionId) return passOutput()
+    const raw = event.raw['last_assistant_message']
+    if (typeof raw !== 'string' || raw === '') return passOutput()
+    // Redacted at arrival, for the reason postAgentHandler gives.
+    const redactedReport = redactSecrets(raw)
+    const resultText = redactedReport.text
+    if (resultText.length < loadConfig().agent_report.min_bytes) return passOutput()
+    // Keyed on the subagent's own id: the payload names no tool call, and agentId is unique per spawn (tg-captures C4a-013).
+    const toolInput: Record<string, unknown> = { agent_id: event.agentId ?? '' }
+    const id = mcpOutputId(event.sessionId, mcpHash('task', toolInput))
+    const recallHint = `token-goat mcp-output ${id} --full`
+    const notice = reportNotice(resultText, recallHint, '')
+    const { final, worthwhile } = planReportCompaction(resultText, recallHint, notice)
+    if (!worthwhile) return passOutput()
+    if (storeMcpOutput(event.sessionId, 'task', toolInput, resultText) !== id) return passOutput()
+    if (redactedReport.count > 0) recordStat('secret_redacted', 0, redactedReport.count, undefined, 'agent')
+    const updatedOutput = `${final}\n\n${notice}`
+    recordReportCompaction(resultText, updatedOutput)
+    return emitRewrite(updatedOutput, 'agent', undefined, 'counted-elsewhere')
+  } catch {
+    return passOutput()
+  }
+}
+
 function postAgentHandler(event: HookEvent): HookOutput {
   try {
     if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
@@ -574,6 +633,8 @@ function postAgentHandler(event: HookEvent): HookOutput {
     // Redact BEFORE anything downstream reads the report, so the compacted envelope this handler hands the model and the blob storeMcpOutput() writes to disk are the same sanitized text. They were not: storeMcpOutput redacts its own copy (see mcp_cache.ts), while the rewriteOutput branch below built `updatedOutput` from the raw result -- so a credential a subagent pasted into its report was redacted on disk and raw in the model's context, in text token-goat itself authored. Redacting at the single point the report enters this handler is what keeps every consumer below on one sanitized source instead of each having to remember.
     const redactedReport = redactSecrets(extractToolResultText(event.raw))
     const resultText = redactedReport.text
+    // Already rewritten by subagentReportRewriteHandler on Copilot CLI; see REWRITTEN_REPORT_RE.
+    if (REWRITTEN_REPORT_RE.test(resultText)) return passOutput()
     const agentReportCfg = loadConfig().agent_report
     // Built before the min_bytes early returns because the advisory is about the SPAWN, not the report: a lane that came back with a two-line answer paid the same unrestricted prefix. On the early-return paths it rides alone as the whole context output; past them it is folded into `notice` below, BEFORE the net-benefit gate prices that notice, so the gate-then-emit-extra accounting trap cannot reappear here.
     const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput)
@@ -587,27 +648,15 @@ function postAgentHandler(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     // `--full` is load-bearing, not decoration: a bare `mcp-output <id>` render elides its own middle past the default head 30 / tail 80, so pointing at it would promise a full report the CLI cannot produce -- the elided fence middles would be exactly what a bare recall drops again.
     const recallHint = `token-goat mcp-output ${id} --full`
-    const notice = `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}${spawnAdvisory === '' ? '' : `\n${spawnAdvisory}`}`
+    const notice = reportNotice(resultText, recallHint, spawnAdvisory)
 
-    // Compact the envelope only when the combined rewrite (fence collapse, then intra-report cross-fence dedup, then blank-run collapse) actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE rewrites to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
-    const collapsed = collapseFencedBlocks(resultText, recallHint, agentReportCfg.fence_collapse_min_lines, agentReportCfg.fence_collapse_keep_lines)
-    // Dedup runs AFTER collapse, on collapse's own output -- see dedupeFencedBlocks's comment for why.
-    const deduped = dedupeFencedBlocks(collapsed, resultText, recallHint)
-    // Blank-run collapse runs LAST, on the combined output of both -- see collapseBlankRunsInFences's comment for why. All three rewrites are judged by ONE combined net-benefit check below, not separate gates: sub-threshold rewrites could each decline alone when their sum would pass, and firing the notice cost more than once would double-charge it.
-    const final = collapseBlankRunsInFences(deduped)
-    const originalBytes = Buffer.byteLength(resultText, 'utf-8')
+    // Compact the envelope only when the combined rewrite actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE rewrites to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
+    const { final, worthwhile } = planReportCompaction(resultText, recallHint, notice)
     if (final !== resultText) {
-      const worthwhile = isRewriteWorthwhile({
-        originalBytes,
-        rewrittenBytes: Buffer.byteLength(final, 'utf-8'),
-        noticeBytes: Buffer.byteLength(notice, 'utf-8'),
-        minNetSavingsBytes: resolveMinNetSavingsBytes(),
-      })
       if (worthwhile) {
         const updatedOutput = `${final}\n\n${notice}`
-        // Record the REAL saving, measured against the envelope the parent actually receives (notice included), not against the rewritten body alone -- the notice is part of what is spent to buy the compaction. The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
-        const savedBytes = originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
-        if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, savedTokensFromBytes(savedBytes))
+        // The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
+        recordReportCompaction(resultText, updatedOutput)
         // 'counted-elsewhere': the `secret_redacted` count for this text is booked above, at the point the redacted report enters the cache, because that one record covers the annotate-only return below as well as this one. Letting emitRewrite count the placeholders again here would book the identical redaction twice.
         return emitRewrite(updatedOutput, 'agent', undefined, 'counted-elsewhere')
       }
@@ -622,6 +671,8 @@ function postAgentHandler(event: HookEvent): HookOutput {
 }
 
 registerHook('subagent_start', subagentStartHandler)
+// advisory: hooks_session.ts's subagentStopHandler shares this event and must still run, whichever module registered first.
+registerHook('subagent_stop', subagentReportRewriteHandler, { advisory: true })
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'Agent' })
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'task' })
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'Task' })

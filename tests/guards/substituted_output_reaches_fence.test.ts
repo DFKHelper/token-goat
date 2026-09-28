@@ -103,6 +103,15 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'this site back in the offenders list, which is the intent.',
   ],
   [
+    'hooks_agent_spawn.ts::subagentReportRewriteHandler',
+    "The same interleaved report body as postAgentHandler, sent through Copilot CLI's " +
+      'subagentStop modifiedResponse instead of the post-tool result, and built by the same ' +
+      'planReportCompaction: collapseFencedBlocks and dedupeFencedBlocks splice ' +
+      '`[token-goat: N lines elided]` markers into the middle of the subagent report, so a fence ' +
+      "around it would escape token-goat's own markers. Open, not settled, and it settles with " +
+      'postAgentHandler: the two share one planner so they cannot drift.',
+  ],
+  [
     'hooks_browser_image.ts::postBrowserImageHandler',
     'Interleaved across blocks: our repeat-screenshot and tab-dedup notices are joined to blocks ' +
       'that passed through untouched, and to base64 data URLs a fence would corrupt. Open, not ' +

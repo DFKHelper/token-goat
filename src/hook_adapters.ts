@@ -372,6 +372,9 @@ function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown
   }
   if (copilotEvent === 'agentStop' || copilotEvent === 'subagentStop') {
     if (resp && get(resp, 'decision') === 'block') return { decision: 'block', reason: (resp && get(resp, 'reason')) || 'blocked by token-goat' }
+    const stopHso = resp && get(resp, 'hookSpecificOutput')
+    const modifiedResponse = stopHso && get(stopHso, 'updatedToolOutput')
+    if (copilotEvent === 'subagentStop' && typeof modifiedResponse === 'string') return { modifiedResponse }
     return { decision: 'allow' }
   }
   return {}
@@ -425,6 +428,8 @@ async function copilotRun(req: AdapterRequest, io: AdapterIo): Promise<string> {
   if (typeof tracestate === 'string' && tracestate !== '') canonical['tracestate'] = tracestate
   const prompt = get(payload, 'prompt')
   if (typeof prompt === 'string' && prompt !== '') canonical['prompt'] = prompt
+  const response = get(payload, 'response')
+  if (typeof response === 'string' && response !== '') canonical['last_assistant_message'] = response
   let originalToolArgs: object = {}
   if (toolName) {
     originalToolArgs = parseMaybeJsonObject(get(payload, 'toolArgs'))
