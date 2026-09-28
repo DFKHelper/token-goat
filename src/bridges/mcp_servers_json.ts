@@ -93,7 +93,6 @@ export function setTokenGoatServer(text: string, value: unknown, rootKey = 'serv
   return editAt(text, [rootKey, 'token-goat'], value)
 }
 
-/** Drops a `servers` object left empty by a removal, so a file install only added `servers` to reads back exactly as it was. */
 /** True when every key in the parsed config belongs to token-goat: a single server map holding only our own managed entry. This is the one content test uninstall's ownership rule is allowed to make. It is not the "is it empty" reasoning that deleted a user's file, because emptiness is reached by both cases while this shape is reached only by a file token-goat wrote end to end: there is no user data in it to lose. Anything else at all -- a second server, a comment-bearing sibling key, a user's own stub -- fails it, and the file is then never deleted. */
 export function holdsOnlyManagedServer(value: Record<string, unknown>): boolean {
   const keys = Object.keys(value)
@@ -118,6 +117,7 @@ export function isResidueServersJson(text: string, rootKey = 'servers'): boolean
   return servers !== null && typeof servers === 'object' && !Array.isArray(servers) && Object.keys(servers).length === 0
 }
 
+/** Drops a `servers` object left empty by a removal, so a file install only added `servers` to reads back exactly as it was. */
 export function dropEmptyServers(text: string, rootKey = 'servers'): string {
   const parsed = parseObject(text)
   if (parsed === null) return text
@@ -147,13 +147,18 @@ export function dropLoneEmptyMcpServers(text: string): string {
   return editAt(text, ['mcpServers'], undefined)
 }
 
-/** Whether `filePath` holds a token-goat-managed entry under `rootKey`; a missing, unreadable or malformed file reads as false. `isManaged` defaults to VS Code/Visual Studio's `isManagedServer`; `./zed_install.ts` passes its own `isZedManagedServer` for Zed's unrelated entry shape. */
-export function hasManagedServer(filePath: string, label: string, rootKey = 'servers', isManaged: (value: unknown) => boolean = isManagedServer): boolean {
-  if (!fs.existsSync(filePath)) return false
+/** The token-goat entry under `rootKey` in `filePath` when `isManaged` recognizes it as one token-goat wrote, else null; a missing, unreadable or malformed file reads as null. `isManaged` defaults to VS Code/Visual Studio's `isManagedServer`; `./cursor_install.ts` and `./zed_install.ts` pass their own predicates for their own entry shapes. */
+export function managedServerEntry(filePath: string, label: string, rootKey = 'servers', isManaged: (value: unknown) => boolean = isManagedServer): Record<string, unknown> | null {
+  if (!fs.existsSync(filePath)) return null
   try {
-    const config = readServersJson(filePath, label)
-    return isManaged(serversOf(config, filePath, label, rootKey)['token-goat'])
+    const entry = serversOf(readServersJson(filePath, label), filePath, label, rootKey)['token-goat']
+    return isManaged(entry) ? (entry as Record<string, unknown>) : null
   } catch {
-    return false
+    return null
   }
+}
+
+/** Whether `filePath` holds a token-goat-managed entry under `rootKey`, by {@link managedServerEntry}'s reading. */
+export function hasManagedServer(filePath: string, label: string, rootKey = 'servers', isManaged: (value: unknown) => boolean = isManagedServer): boolean {
+  return managedServerEntry(filePath, label, rootKey, isManaged) !== null
 }
