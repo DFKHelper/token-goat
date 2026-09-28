@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js';
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, removeFileInScope } from '../util.js';
 import { writeJsonSettings } from '../util_config.js';
+import { removeCreatedBackups } from './created_configs.js';
 import { assertProjectScopeTarget, withInstallScope } from './project_scope_guard.js';
 import { bundledCliPath } from './mcp_servers_json.js';
 
@@ -178,21 +179,30 @@ function uninstallJetbrainsScoped(options: JetbrainsScopeOptions = {}): boolean 
 
   let uninstalled = false;
 
-  if (fs.existsSync(mcpPath)) {
+  // Read as install reads it: a file that is there but cannot be read or parsed may still register token-goat's server, so uninstall stops here with it and the instructions block as they were, rather than pass over it without a word and strip the block.
+  const refuse = (problem: string, detail?: string): Error =>
+    new Error(`JetBrains MCP configuration '${mcpPath}' is unreadable: it ${problem}. Uninstall left it and the Copilot instructions block untouched; fix the file and run uninstall again.${detail === undefined ? '' : ` (${detail})`}`);
+  let raw: string | undefined;
+  try {
+    raw = fs.readFileSync(mcpPath, 'utf8');
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // Only an absent file is nothing to remove; see install.ts's readSettings.
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse('exists but cannot be read', code ?? extractErrorMessage(err));
+  }
+  if (raw !== undefined) {
+    let parsed: unknown;
     try {
-      const raw = fs.readFileSync(mcpPath, 'utf8');
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        const servers = parsed['mcpServers'] as Record<string, unknown> | undefined;
-        if (servers && typeof servers === 'object' && !Array.isArray(servers) && servers['token-goat']) {
-          delete servers['token-goat'];
-          backupFile(mcpPath);
-          writeJsonSettings(mcpPath, parsed);
-          uninstalled = true;
-        }
-      }
-    } catch {
-      // Ignore parse errors on uninstall
+      parsed = JSON.parse(raw);
+    } catch (err: unknown) {
+      throw refuse('exists but contains invalid JSON', extractErrorMessage(err));
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw refuse('does not contain a JSON object at the top level');
+    const servers = (parsed as Record<string, unknown>)['mcpServers'] as Record<string, unknown> | undefined;
+    if (servers && typeof servers === 'object' && !Array.isArray(servers) && servers['token-goat']) {
+      delete servers['token-goat'];
+      writeJsonSettings(mcpPath, parsed);
+      uninstalled = true;
     }
   }
 
@@ -214,6 +224,9 @@ function uninstallJetbrainsScoped(options: JetbrainsScopeOptions = {}): boolean 
       // Ignore file errors
     }
   }
+
+  // The timestamped backups install and this uninstall made of mcp.json are token-goat's own litter, so they leave with it, as every other bridge's config backups do.
+  removeCreatedBackups(mcpPath);
 
   return uninstalled;
 }

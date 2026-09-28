@@ -203,14 +203,18 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
     expect(uninstallOpenclaw()).toBe(false)
   })
 
-  it('uninstallOpenclaw and isOpenclawInstalled do not throw when plugins.load.paths is a bare string (non-strict read drops the malformed field instead of crashing)', () => {
+  // The rewrite uninstall makes would drop a field it cannot read as an array, so it refuses the file by path, as install does, where it used to write the file back without the field. HAND-DERIVED: a `paths` string where the loader takes an array, written without reference to the reader.
+  it('isOpenclawInstalled reads a plugins.load.paths that is a bare string as not installed, and uninstallOpenclaw refuses the file by path and leaves it as it was', () => {
     const p = openclawConfigPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, JSON.stringify({ plugins: { load: { paths: 'not-an-array' } } }))
+    const malformed = JSON.stringify({ plugins: { load: { paths: 'not-an-array' } } })
+    fs.writeFileSync(p, malformed)
 
     expect(() => isOpenclawInstalled()).not.toThrow()
     expect(isOpenclawInstalled()).toBe(false)
-    expect(() => uninstallOpenclaw()).not.toThrow()
+    expect(() => uninstallOpenclaw()).toThrow(OpenclawConfigParseError)
+    expect(() => uninstallOpenclaw()).toThrow(`'${p}' is unreadable`)
+    expect(fs.readFileSync(p, 'utf8')).toBe(malformed)
   })
 
   it('uninstallOpenclaw collapses openclaw.json back to an empty object when nothing else was in it (no dangling empty plugins/load/entries)', () => {
