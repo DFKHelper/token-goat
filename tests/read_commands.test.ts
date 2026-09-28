@@ -27,15 +27,22 @@ vi.mock('../src/index_health.js', () => ({
   suggestedIndexCommand: vi.fn(() => 'token-goat index .'),
 }))
 
-// A `symbol` miss reads the project's names and JSON/YAML files with two statements of its own rather than through querySymbols, so on the `:memory:` path below they would find nothing. Answered here from the same querySymbols stub every test in this file already seeds, so a miss sees the rows the test put in scope. The real statements are covered against a real index in tests/symbol_miss_work_budget.test.ts.
+// A `symbol` miss reads the project's names and JSON/YAML files with two statements of its own rather than through querySymbols, and the full-scope walk behind `find`, `locate` and a filtered `symbol` pages the table with its own keyset statements, so on the `:memory:` path below all of them would find nothing. Answered here from the same querySymbols stub every test in this file already seeds, so each sees the rows the test put in scope; a scanned row's id is its position in the stub's answer, which symbolsById reads back. The real statements are covered against a real index in tests/symbol_miss_work_budget.test.ts and tests/symbol_scan_keyset.test.ts.
 vi.mock('../src/symbol_scan.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   const reader = await import('../src/index_reader.js')
-  const inScope = (rootDir: string): Array<{ name: string; filePath: string }> => reader.querySymbols({ rootDir, limit: -1 })
+  type Row = ReturnType<typeof reader.querySymbols>[number]
+  const inScope = (rootDir: string): Row[] => reader.querySymbols({ rootDir, limit: -1 })
+  let scanned: Row[] = []
   return {
     ...actual,
     projectSymbolNames: vi.fn((rootDir: string) => [...new Set(inScope(rootDir).map((s) => s.name))]),
     projectStructuredFiles: vi.fn((rootDir: string) => [...new Set(inScope(rootDir).map((s) => s.filePath).filter((f) => /\.(json|ya?ml)$/i.test(f)))].sort()),
+    forEachSymbol: vi.fn((scope: Record<string, unknown>, visit: (s: Row & { id: number }) => void) => {
+      scanned = reader.querySymbols({ ...scope, limit: -1 })
+      scanned.forEach((s, i) => visit({ ...s, id: i + 1 }))
+    }),
+    symbolsById: vi.fn((ids: number[]) => ids.flatMap((id) => scanned[id - 1] ?? [])),
   }
 })
 

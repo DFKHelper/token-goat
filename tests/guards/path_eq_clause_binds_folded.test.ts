@@ -1,34 +1,4 @@
-/**
- * Guard against the "writer minted a key no reader could produce" class, at its one unguarded seam.
- *
- * `pathEqClause(col)` emits `TG_LOWER(col) = ?` on case-insensitive filesystems, so the bound
- * parameter has to arrive already folded. That obligation sits on the caller and nowhere else: the
- * two sibling builders in `src/sql_path.ts` (`pathSuffixClause`, `projectScopeClause`) each carry
- * their own `params()` method and fold internally, so only `pathEqClause` can be misused this way.
- * Its doc comment states the rule, and a doc comment is not a check -- a new call site that binds a
- * raw path compiles, type-checks, runs, and returns nothing at all. That is the failure shape this
- * repo keeps re-shipping: a total miss exits 0, so nothing anywhere reports an error.
- *
- * The behavioural coverage that exists today (`tests/*_collation.test.ts`) pins specific call sites
- * against specific case-variant inputs. That catches a regression at a site someone thought to
- * write a test for; it cannot catch the sixteenth site added next month. This guard is the
- * structural half, and it deliberately claims only what it checks.
- *
- * What it checks: for every `${pathEqClause(` occurrence in `src/`, the first execution call that
- * follows it (`.run(`/`.get(`/`.all(`) binds either a literal `foldPath(...)` call or an identifier
- * this file declared as `const <id> = foldPath(...)`. Those are the only two shapes the fifteen
- * production sites use today. The scan keys on the `${` interpolation rather than the bare name
- * because a call site is by construction inside a SQL template literal: matching the name alone
- * also caught the builder's own definition in `src/sql_path.ts` and a prose mention of it in a
- * `src/db.ts` comment, neither of which binds anything.
- *
- * What it does not check: which statement an execution call actually belongs to. Two statements
- * hoisted together and executed later (as in `src/embed_backfill.ts`) both resolve to the first of
- * the two executions, so a guard pass proves the folded convention is in use around each
- * occurrence, not that a specific bind reaches a specific `?`. Tightening that needs a real parse,
- * and it would buy little: the defect this exists to catch is a site written without `foldPath` in
- * sight, which this does catch.
- */
+/** Guard against the "writer minted a key no reader could produce" class, at its one unguarded seam. `pathEqClause(col)` emits `TG_LOWER(col) = ?` on case-insensitive filesystems, so the bound parameter has to arrive already folded. That obligation sits on the caller and nowhere else: the two sibling builders in `src/sql_path.ts` (`pathSuffixClause`, `projectScopeClause`) each carry their own `params()` method and fold internally, so only `pathEqClause` can be misused this way. Its doc comment states the rule, and a doc comment is not a check -- a new call site that binds a raw path compiles, type-checks, runs, and returns nothing at all. That is the failure shape this repo keeps re-shipping: a total miss exits 0, so nothing anywhere reports an error. The behavioural coverage that exists today (`tests/*_collation.test.ts`) pins specific call sites against specific case-variant inputs. That catches a regression at a site someone thought to write a test for; it cannot catch the sixteenth site added next month. This guard is the structural half, and it deliberately claims only what it checks. What it checks: for every `${pathEqClause(` occurrence in `src/`, the first bind that follows it binds either a literal `foldPath(...)` call or an identifier this file declared as `const <id> = foldPath(...)`. A bind is an execution call (`.run(`/`.get(`/`.all(`) or, for a statement assembled clause by clause (src/symbol_scan.ts), the `.push(` that adds the clause's parameters to the list the execution later spreads. The scan keys on the `${` interpolation rather than the bare name because a call site is by construction inside a SQL template literal: matching the name alone also caught the builder's own definition in `src/sql_path.ts` and a prose mention of it in a `src/db.ts` comment, neither of which binds anything. What it does not check: which statement an execution call actually belongs to. Two statements hoisted together and executed later (as in `src/embed_backfill.ts`) both resolve to the first of the two executions, so a guard pass proves the folded convention is in use around each occurrence, not that a specific bind reaches a specific `?`. Tightening that needs a real parse, and it would buy little: the defect this exists to catch is a site written without `foldPath` in sight, which this does catch. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -78,7 +48,7 @@ function sitesIn(file: string): Site[] {
   return [...src.matchAll(CALL_SITE_RE)].map((m) => {
     const from = m.index ?? 0
     // `.pluck()` and `.raw()` sit between the prepare and the execution, so match the execution by name rather than by taking the next chained call.
-    const exec = /\.(?:run|get|all)\(/.exec(src.slice(from))
+    const exec = /\.(?:run|get|all|push)\(/.exec(src.slice(from))
     const at = exec?.index
     const bound = at === undefined ? '' : argsAt(src, from + at + (exec?.[0].length ?? 0) - 1)
     return {
@@ -95,11 +65,10 @@ function callSites(): Site[] {
   pinnedPopulation({
     what: 'pathEqClause() call sites in src/',
     items: sites.map((s) => s.id),
-    floor: 10, // measured 15 live across 4 files (raise this to 9999 and read the count out of the failure)
+    floor: 10, // measured 21 live across 6 files (raise this to 9999 and read the count out of the failure)
     ceiling: 40,
-    // One anchor per file that holds sites today: a bare count cannot tell a collapse from a
-    // substitution, and losing a whole file's worth of sites is the shape that matters here.
-    mustInclude: ['src/embeddings.ts:', 'src/embed_backfill.ts:', 'src/parser.ts:', 'src/worker.ts:'],
+    // One anchor per file that holds sites today: a bare count cannot tell a collapse from a substitution, and losing a whole file's worth of sites is the shape that matters here.
+    mustInclude: ['src/embeddings.ts:', 'src/embed_backfill.ts:', 'src/index_prune.ts:', 'src/parser.ts:', 'src/symbol_scan.ts:', 'src/worker.ts:'],
   })
   return sites
 }

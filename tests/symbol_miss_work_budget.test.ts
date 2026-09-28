@@ -9,42 +9,10 @@ import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { runSymbol } from '../src/read_symbol.js'
+import { instrumentSymbolReads as instrument } from './helpers/symbol_work.js'
 
 /** Past two full 10,000-row scan pages, so a walk of the old kind issues at least three page queries. */
 const FILLER_ROWS = 25_000
-
-interface Work { statements: number; rows: number; bodyRows: number; sql: string[] }
-
-/** Wrap the shared connection's `prepare` so every statement that reads `symbols` is counted, with the rows it returned and whether it selected `body`. Restored in afterEach. */
-function instrument(): { work: Work; restore: () => void } {
-  const db = getDb(globalDbPath()) as unknown as { prepare: (sql: string) => object }
-  const original = db.prepare
-  const work: Work = { statements: 0, rows: 0, bodyRows: 0, sql: [] }
-  db.prepare = function (this: unknown, sql: string): object {
-    const stmt = original.call(this, sql) as Record<string, (...a: unknown[]) => unknown>
-    if (!/\bFROM\s+symbols\b/i.test(sql)) return stmt
-    work.statements++
-    work.sql.push(sql)
-    const readsBody = /\bbody\b/i.test(sql.split(/\bFROM\b/i)[0] ?? '')
-    const count = (n: number): void => {
-      work.rows += n
-      if (readsBody) work.bodyRows += n
-    }
-    const proxy: object = new Proxy(stmt, {
-      get(target, prop): unknown {
-        const value = target[prop as string]
-        if (typeof value !== 'function') return value
-        if (prop === 'all') return (...a: unknown[]) => { const r = value.apply(target, a) as unknown[]; count(r.length); return r }
-        if (prop === 'get') return (...a: unknown[]) => { const r = value.apply(target, a); if (r !== undefined) count(1); return r }
-        if (prop === 'iterate') return function* (...a: unknown[]) { for (const r of value.apply(target, a) as Iterable<unknown>) { count(1); yield r } }
-        if (prop === 'pluck') return (...a: unknown[]) => { value.apply(target, a); return proxy }
-        return value.bind(target)
-      },
-    })
-    return proxy
-  }
-  return { work, restore: () => { db.prepare = original } }
-}
 
 let root: string
 let cwdSpy: ReturnType<typeof vi.spyOn>
