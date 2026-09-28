@@ -4,7 +4,7 @@ import type { HookEvent } from '../src/hook_registry.js'
 import type { HookOutput } from '../src/types.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
@@ -466,6 +466,16 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
   })
 }
 
+/** A project directory, outside the OS temp dir and spelled with forward slashes, holding each named file as 300 plain numbered lines (HAND-DERIVED): a line-range read is put on record only for a file that is there to be read, and plain lines give the priced gate no region to offer instead. */
+function projectWith(...names: string[]): string {
+  const dir = indexableDir().replace(/\\/g, '/')
+  for (const name of names) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true })
+    writeFileSync(join(dir, name), Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n'))
+  }
+  return dir
+}
+
 // CAPTURE: real Codex session logs under ~/.codex/sessions on this machine show the harness executing shell-tool commands as ["...pwsh.exe","-Command","<script>"] on Windows, and a captured failure of the form `error: unknown option '--context'` after token-goat's own arg parser received a POSIX single-quote-escaped rewrite through PowerShell's different quoting convention -- confirming Codex on Windows runs the wrapped command through PowerShell, not the bash the rewrite assumes. An inline interpreter file read is intercepted one of two ways: run through the passthrough filter under a token cap, whose cap hint names the narrower command, or refused with that command where the wrapper cannot run. Returns the command-naming text either way, and null when the read was not intercepted, so a plain compress wrap of an exempt command reads as not intercepted.
 function interceptedReadHint(result: HookOutput): string | null {
   if (result.hookType === 'deny') return result.message
@@ -774,8 +784,9 @@ describe('preBashHandler — leading environment assignment stripping', () => {
   })
 
   it('an assignment-prefixed sed read meets the overlap dedup of an earlier bare one', () => {
-    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_env_demo.ts"))
-    const result = preBashHandler(makeBashEvent("LANG=C sed -n '50,100p' src/paging_env_demo.ts"))
+    const cwd = projectWith('src/paging_env_demo.ts')
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_env_demo.ts", cwd))
+    const result = preBashHandler(makeBashEvent("LANG=C sed -n '50,100p' src/paging_env_demo.ts", cwd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') expect(result.context).toContain('src/paging_env_demo.ts@61-100')
   })
@@ -1122,8 +1133,9 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('records compound sed ranges for overlap dedup on a later single sed', () => {
-    preBashHandler(makeBashEvent("sed -n '10,60p' src/compound_dedup_demo.ts; echo sep; sed -n '100,140p' src/compound_dedup_other.ts"))
-    const result = preBashHandler(makeBashEvent("sed -n '20,50p' src/compound_dedup_demo.ts"))
+    const cwd = projectWith('src/compound_dedup_demo.ts', 'src/compound_dedup_other.ts')
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/compound_dedup_demo.ts; echo sep; sed -n '100,140p' src/compound_dedup_other.ts", cwd))
+    const result = preBashHandler(makeBashEvent("sed -n '20,50p' src/compound_dedup_demo.ts", cwd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('You already read lines 10-60 of src/compound_dedup_demo.ts')
@@ -1166,10 +1178,11 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a second overlapping sed read names the prior range and points at the delta', () => {
+    const cwd = projectWith('src/paging_demo.ts')
     // First read records lines 10-60 for this file.
-    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts"))
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts", cwd))
     // Second read overlaps (50-60 repeat); the hint should name 10-60 and suggest only the new lines 61-100.
-    const result = preBashHandler(makeBashEvent("sed -n '50,100p' src/paging_demo.ts"))
+    const result = preBashHandler(makeBashEvent("sed -n '50,100p' src/paging_demo.ts", cwd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('already read')
@@ -1187,10 +1200,11 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a repeat head read on the same file names the lines it already served', async () => {
-    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_repeat.md'))
-    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_repeat.md', 'line\n'.repeat(30)))
+    const cwd = projectWith('docs/paging_head_repeat.md')
+    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_repeat.md', cwd))
+    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_repeat.md', 'line\n'.repeat(30), cwd))
 
-    const second = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_repeat.md'))
+    const second = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_repeat.md', cwd))
 
     expect(second.hookType).toBe('context')
     if (second.hookType === 'context') {
@@ -1200,10 +1214,11 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a longer repeat head read asks only for the lines it has not served', async () => {
-    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_grow.md'))
-    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_grow.md', 'line\n'.repeat(30)))
+    const cwd = projectWith('docs/paging_head_grow.md')
+    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_grow.md', cwd))
+    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_grow.md', 'line\n'.repeat(30), cwd))
 
-    const second = preBashHandler(makeBashEvent('head -n 80 docs/paging_head_grow.md'))
+    const second = preBashHandler(makeBashEvent('head -n 80 docs/paging_head_grow.md', cwd))
 
     expect(second.hookType).toBe('context')
     if (second.hookType === 'context') {
@@ -1213,21 +1228,28 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('a head read on a different file is not treated as an overlap', async () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
-    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_a.md'))
-    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_a.md', 'line\n'.repeat(30)))
+    const cwd = projectWith('docs/paging_head_a.md', 'docs/paging_head_b.md')
+    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_a.md', cwd))
+    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_a.md', 'line\n'.repeat(30), cwd))
 
-    const other = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_b.md'))
+    const other = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_b.md', cwd))
     expect(other.hookType).toBe('pass')
     expect(other.hookType === 'context' ? other.context : '').not.toContain('already read')
+    // The record b.md was checked against is there: the same head of a.md is told about it.
+    const same = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_a.md', cwd))
+    expect(same.hookType === 'context' ? same.context : '').toContain('already read lines 1-30')
   })
 
   it('a repeat tail read still gets the plain hint, since its absolute start line is unknown', async () => {
     // The deliberate non-change. `tail` is recorded as truncated, not as a range, because where its output starts depends on the file's total length -- which this hook does not know. Claiming an overlap for it would be a fabricated range, so the plain hint is the correct outcome.
-    preBashHandler(makeBashEvent('tail -n 30 docs/paging_tail_demo.md'))
-    await postBashHandler(makePostBashEvent('tail -n 30 docs/paging_tail_demo.md', 'line\n'.repeat(30)))
+    const cwd = projectWith('docs/paging_tail_demo.md')
+    preBashHandler(makeBashEvent('tail -n 30 docs/paging_tail_demo.md', cwd))
+    await postBashHandler(makePostBashEvent('tail -n 30 docs/paging_tail_demo.md', 'line\n'.repeat(30), cwd))
+    const shown = resolveIndexPath('docs/paging_tail_demo.md', cwd)
+    expect(wasFileTruncatedThisSession(shown)).toBe(true)
+    expect(getFileLineRanges(shown)).toEqual([])
 
-    const second = preBashHandler(makeBashEvent('tail -n 30 docs/paging_tail_demo.md'))
+    const second = preBashHandler(makeBashEvent('tail -n 30 docs/paging_tail_demo.md', cwd))
 
     expect(second.hookType).toBe('context')
     if (second.hookType === 'context') {
@@ -1237,10 +1259,11 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('an overlapping sed read that starts BEFORE the prior range surfaces the leading new lines, not a false "already served" (SEDOVERLAP-LEADING-DELTA regression)', () => {
+    const cwd = projectWith('src/paging_demo.ts')
     // First read records lines 50-100 for this file.
-    preBashHandler(makeBashEvent("sed -n '50,100p' src/paging_demo.ts"))
+    preBashHandler(makeBashEvent("sed -n '50,100p' src/paging_demo.ts", cwd))
     // Second read starts before the prior range and only partially overlaps it; lines 40-49 were never served.
-    const result = preBashHandler(makeBashEvent("sed -n '40,60p' src/paging_demo.ts"))
+    const result = preBashHandler(makeBashEvent("sed -n '40,60p' src/paging_demo.ts", cwd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('already read')
@@ -1251,10 +1274,11 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('an overlapping sed read that straddles the prior range on both sides surfaces both the leading and trailing new lines', () => {
+    const cwd = projectWith('src/paging_demo.ts')
     // First read records lines 50-60 for this file.
-    preBashHandler(makeBashEvent("sed -n '50,60p' src/paging_demo.ts"))
+    preBashHandler(makeBashEvent("sed -n '50,60p' src/paging_demo.ts", cwd))
     // Second read fully surrounds the prior range; lines 40-49 and 61-70 were never served.
-    const result = preBashHandler(makeBashEvent("sed -n '40,70p' src/paging_demo.ts"))
+    const result = preBashHandler(makeBashEvent("sed -n '40,70p' src/paging_demo.ts", cwd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('src/paging_demo.ts@40-49')
@@ -1271,9 +1295,9 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('dedups a sed read against the same file referenced by relative vs absolute path (fail-on-buggy: breaks if the line-range key stops resolving against cwd)', () => {
-    const cwd = 'C:/Projects/repo-a'
+    const cwd = projectWith('src/paging_demo.ts')
     preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts", cwd))
-    const result = preBashHandler(makeBashEvent("sed -n '50,100p' C:/Projects/repo-a/src/paging_demo.ts", cwd))
+    const result = preBashHandler(makeBashEvent(`sed -n '50,100p' ${cwd}/src/paging_demo.ts`, cwd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('already read')
@@ -1282,7 +1306,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('dedups a cd-prefixed sed read against the same file referenced without cd (regression: the sed dedup key and hint path never applied resolveCdHintPath while its cat/tail/head siblings did, so a cd-prefixed sed read resolved against the hook cwd instead of the shell cd target and missed the overlap)', () => {
-    const cwd = 'C:/Projects/repo-a'
+    const cwd = projectWith('src/paging_demo.ts')
     preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts", cwd))
     const result = preBashHandler(makeBashEvent("cd src && sed -n '50,100p' paging_demo.ts", cwd))
     expect(result.hookType).toBe('context')
@@ -2428,7 +2452,7 @@ describe('preBashHandler — awk line-range interception', () => {
   })
 
   it('shares one dedup ledger with the sed spelling of the same range', () => {
-    const ev = makeBashEvent("sed -n '10,50p' src/shared_ledger_probe.ts")
+    const ev = makeBashEvent("sed -n '10,50p' src/shared_ledger_probe.ts", projectWith('src/shared_ledger_probe.ts'))
     // The first read's own hint is declined by the priced gate, but it still records its range -- the ledger write happens before the gate, which is what the second read below depends on.
     expect(preBashHandler(ev).hookType).toBe('pass')
     const second = preBashHandler({ ...ev, toolInput: { command: "awk 'NR>=10 && NR<=50' src/shared_ledger_probe.ts" } })
@@ -4995,10 +5019,11 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
   })
 
   it('the piped head spelling feeds the same line-range ledger: a repeat is told which lines it already served', async () => {
-    preBashHandler(makeBashEvent('cat docs/loop46_ledger.md | head -50'))
-    await postBashHandler(makePostBashEvent('cat docs/loop46_ledger.md | head -50', 'line\n'.repeat(50)))
+    const cwd = projectWith('docs/loop46_ledger.md')
+    preBashHandler(makeBashEvent('cat docs/loop46_ledger.md | head -50', cwd))
+    await postBashHandler(makePostBashEvent('cat docs/loop46_ledger.md | head -50', 'line\n'.repeat(50), cwd))
 
-    const second = preBashHandler(makeBashEvent('cat docs/loop46_ledger.md | head -50'))
+    const second = preBashHandler(makeBashEvent('cat docs/loop46_ledger.md | head -50', cwd))
     expect(second.hookType).toBe('context')
     if (second.hookType === 'context') {
       expect(second.context).toContain('already read lines 1-50')

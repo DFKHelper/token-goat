@@ -7,7 +7,7 @@ import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
-import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText } from './paths.js'
+import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
@@ -279,7 +279,7 @@ async function maybeElideServedGenericOutput(
   optedOut: boolean,
   output: string,
   exitCode: number | null,
-  cwd: string | null,
+  runDir: string | null,
   cacheMinBytes: number,
   persisted = false,
 ): Promise<HookOutput | null> {
@@ -305,8 +305,8 @@ async function maybeElideServedGenericOutput(
       rewrittenText = fenced
     }
   }
-  // Nothing to record when the harness persisted the result, for the reason maybeCollapseIdenticalRead gives.
-  if (!persisted) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, cwd))
+  // Nothing to record when the harness persisted the result, for the reason maybeCollapseIdenticalRead gives. Stored under the directory the command ran in, as every other store in this file is, which is where the waste report and a later run's delta look for it.
+  if (!persisted) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, runDir))
   if (rewrittenText === null) return null
   return emitRewrite(rewrittenText, 'already-served shell output collapsed', { kind: 'bash_compress:generic-served-elision', originalBytes: deliveredOutputBytes(originalBytes) })
 }
@@ -316,7 +316,6 @@ async function maybeCompressCompoundOutput(
   optedOut: boolean,
   output: string,
   exitCode: number | null,
-  cwd: string | null,
   runDir: string | null,
   cacheMinBytes: number,
   isUnwrapped = false,
@@ -336,7 +335,7 @@ async function maybeCompressCompoundOutput(
   }
   if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
   if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
-  // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used. Both lookups find a package-manager script's runner in the directory the command ran in, not the event's cwd, which for a subagent is where the call started whatever its cd did; the store below stays on the event's cwd (loop-ledger DL-43).
+  // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used. Both lookups find a package-manager script's runner in the directory the command ran in, not the event's cwd, which for a subagent is where the call started whatever its cd did, and the store below files the output under that directory too. Under the event's cwd, an unwrapped `cd ../other && git diff` left the other repository's diff where a later `git diff` in the starting one took it for its own prior run, and the waste report, which looks a call up under the directory it ran in, found nothing.
   const shaped = pipelineShapeFilter(cmd, runDir) ?? (isUnwrapped ? detectFromCommand(cmd, runDir ?? undefined) ?? null : null)
   const useShaped = shaped !== null && !cfg.disabled_filters.includes(shaped.filter.name)
   const filter = useShaped ? shaped.filter : filterByName('generic')
@@ -351,8 +350,8 @@ async function maybeCompressCompoundOutput(
   const minNet = resolveMinNetSavingsBytes()
   // Cheap necessary pre-check: the recall pointer below only ever makes the rewrite bigger, so anything failing here can never clear the gate once the pointer is priced in either. Failing fast keeps a hopeless case from paying for a cache write.
   if (!compressed.worthApplying(minNet)) return null
-  // The id is `bashOutputIdSync(cmd, output, cwd)`, exactly what the storeBashOutput call below returns for this same output, so the pointer's real byte cost is known before committing to the cache write -- and the pointer names this run's body rather than whatever the command last produced.
-  const id = bashOutputIdSync(cmd, output, cwd)
+  // The id is `bashOutputIdSync(cmd, output, runDir)`, exactly what the storeBashOutput call below returns for this same output, so the pointer's real byte cost is known before committing to the cache write -- and the pointer names this run's body rather than whatever the command last produced.
+  const id = bashOutputIdSync(cmd, output, runDir)
   // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies head/tail elision, so it would return a truncated view, not the complete original. The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall pointer sit outside it. Fold them in and the model loses its one signal for where our voice ends and the command's output begins, and anyone who guesses the marker's wording gets to write text the model reads as ours. Every other rewrite hook already follows this rule -- fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in the codebase that handed the model a replacement body with no fence at all. A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the marker outside the tag rather than riding inside with the command's bytes. Leaving it in was the one case where token-goat's voice really did sit inside its own fence, which is exactly the ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the point it describes is where the body ends, which the closing tag already marks.
   const { body: untrusted, notices } = splitOwnTrailingNotices(compressed.text)
   const marker = compressed.withMarker(minNet).slice(compressed.text.length)
@@ -373,7 +372,7 @@ async function maybeCompressCompoundOutput(
   ) {
     return null
   }
-  await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+  await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
   // emitRewrite prices the saving from the string it returns, which is this same `body`, converts it with the one savedTokensFromBytes every other saving uses, and books the placeholders the filter's own redaction pass left in that body. Nothing booked those before: the cache copy is redacted by bash_output_cache before disk_cache sees it, so disk_cache's count comes back zero and this path's redactions were protecting the model while reporting nothing. originalBytes is capped at the harness delivery cap (src/delivery_cap.ts): the model never receives more than that inline, so a larger counterfactual would book output it could not see. The kind names the filter that actually ran, not the one this path used to hardcode. A stat key fixed to `generic` while the filter varies makes every family selection invisible to the ledger and to any test asserting on it, which is the shape commit 6645b3f3 removed from the byte-crediting stats for the same reason.
   return emitRewrite(body, 'bash', { kind: `bash_compress:${filter.name}`, originalBytes: deliveredOutputBytes(compressed.originalBytes) })
 }
@@ -548,46 +547,50 @@ function forgetPersistedLineRangeReads(rawCmd: string, cmd: string, cwd: string 
 // Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen. Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one. extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record. Every path resolves against `runDir`, the directory the command ran in (see postBashHandler), which is where a leading `cd DIR &&` prefix leaves the shell: the key the pre-hook gives a `sed` range and maybeCollapseIdenticalRead gives the same read: keyed on the hook's own cwd, `cd sub && head -n 40 x.ts` put lines 1..40 on record against ./x.ts, so a Read of ./x.ts was refused as already read while sub/x.ts, the file shown, had no record.
 function recordBashFileReadsForSessionCache(cmd: string, runDir: string | null): void {
   const base = runDir ?? process.cwd()
-  const resolve = (p: string) => resolveIndexPath(p, base)
+  // The command's shape is no proof it showed anything: a read of a file that is not there prints only an error, and Claude Code's PostToolUse carries no exit code, while `cat x.ts | head -n 40` reaches it with x.ts absent because a pipeline exits with its last command's status. Put on record, that read told a later read of x.ts, once something made the file, that lines it never saw were already served. So a read is recorded only for a regular file that is there now.
+  const record = (p: string, put: (file: string) => void): void => {
+    const file = resolveIndexPath(p, base)
+    if (isFileAtIndexKey(file)) put(file)
+  }
 
   const gcTail = extractGetContentTail(cmd)
   if (gcTail !== null) {
-    markFileTruncated(resolve(gcTail.filePath))
+    record(gcTail.filePath, markFileTruncated)
     return
   }
   const tail = extractTailFile(cmd)
   if (tail !== null) {
-    markFileTruncated(resolve(tail.filePath))
+    record(tail.filePath, markFileTruncated)
     return
   }
   const gcSelect = extractGetContentSelectFirst(cmd)
   if (gcSelect !== null) {
-    recordFileLineRange(resolve(gcSelect.filePath), 1, gcSelect.n)
+    record(gcSelect.filePath, (file) => recordFileLineRange(file, 1, gcSelect.n))
     return
   }
   const gcHead = extractGetContentHead(cmd)
   if (gcHead !== null) {
-    recordFileLineRange(resolve(gcHead.filePath), 1, gcHead.n)
+    record(gcHead.filePath, (file) => recordFileLineRange(file, 1, gcHead.n))
     return
   }
   const head = extractHeadFile(cmd)
   if (head !== null) {
-    recordFileLineRange(resolve(head.filePath), 1, head.n)
+    record(head.filePath, (file) => recordFileLineRange(file, 1, head.n))
     return
   }
   const cat = extractCatFile(cmd)
   if (cat !== null) {
-    recordFileRead(resolve(cat.filePath))
+    record(cat.filePath, recordFileRead)
     return
   }
   const catMulti = extractCatFilesMulti(cmd)
   if (catMulti !== null) {
-    for (const r of catMulti) recordFileRead(resolve(r.filePath))
+    for (const r of catMulti) record(r.filePath, recordFileRead)
     return
   }
   const wslCat = extractWslCatFile(cmd)
   if (wslCat !== null) {
-    recordFileRead(resolve(wslCat.filePath))
+    record(wslCat.filePath, recordFileRead)
     return
   }
   // An inline interpreter read (`python -c`, `node -e`, PowerShell `[IO.File]::ReadAllText`) is deliberately absent: what reaches the conversation is whatever the script printed, and of 217 such commands measured in real transcripts about 203 printed a key, a count or a slice. Recorded as a full read, one printed key armed the Read hook's unchanged-file denies against a file the model had never seen.
@@ -622,9 +625,12 @@ async function maybeEmitLargeUncompressedHint(
   // Under the directory the command ran in, as the cache branch stores the same output: under the hook's cwd instead, a later run of the same command there would find this copy and read it as its own prior run.
   const id = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
   const kb = Math.round(outputBytes / 1024)
-  // The recall pointer leads and each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of it took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion. The suggestion is a command to run, so it keeps the leading assignments `cmd` dropped: `FOO=1 build` suggested back as `build` would run without FOO.
-  const runCmd = stripCdPrefix(rawCmd)
-  const compressable = !/["`$\r\n]/.test(runCmd)
+  // The recall pointer leads and each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of it took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion. The suggestion is a command to run, so it keeps the leading assignments `cmd` dropped: `FOO=1 build` suggested back as `build` would run without FOO. It keeps a `cd DIR &&` prefix for the same reason, as the directory the prefix resolved to rather than as written: without it the next run happens wherever the shell is, and a relative DIR names the wrong place once the shell is in it, which is where Claude Code's main thread leaves it after this call. That directory sits in single quotes, which keep a space in it whole and cannot hold a single quote, so a directory containing one gets no compress suggestion either. Nor does one that is not there as resolved: the directory is resolved as a path with no `~` expanded, so `cd ~/pkg` names a `~` under the start directory, and a suggestion naming it fails at its cd before the command runs. The resolved directory is an index key, which spells a WSL drive mount `/mnt/c/x` as `c:/x`, a path the shell there cannot cd to, so the suggestion names the directory where the host finds it.
+  const bare = stripCdPrefix(rawCmd)
+  const cdDir = bare === rawCmd ? null : runDir
+  const cdHost = cdDir === null ? null : dirAtIndexKey(cdDir)
+  const runCmd = cdHost === null ? bare : `cd '${cdHost}' && ${bare}`
+  const compressable = !/["`$\r\n]/.test(runCmd) && (cdDir === null || (cdHost !== null && !cdHost.includes("'")))
   const msg = `[tg] Output was ${kb}KB uncompressed; \`token-goat bash-output ${id}\` recalls it` + (compressable ? `, and \`token-goat compress -c "${displaySafeText(runCmd)}"\` compresses the next run.` : '.')
   if (ansiResult !== null && ansiResult.hookType === 'rewriteOutput') {
     // The ansi strip already emitted through emitRewrite and booked its own saving there, so this re-emit carries the same text and books no saving of its own -- the hint is the session_hint stat recorded above, and double-booking those bytes would inflate every total that sums them. Routing through emitRewrite rather than constructing the object here is also what applies the vscode guard: that harness has no field which replaces a tool result, so a hand-built rewrite was silently dropped while still reading as an emit. maybeStripAnsiOnly may ship those bytes unfenced because it adds nothing of ours to them, but this block does add a marker, so the command output is fenced here and the marker stays outside it: otherwise the model cannot tell which of the two voices in the block is token-goat's, and output that forged the marker wording would read as ours. The marker leads rather than trails because it carries the only pointer back to the full output, and the harness truncates from the end.
@@ -758,7 +764,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`) that ran directly is compressed here on post-hook.
     if (isUnwrapped && /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd)) {
-      const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, cwd, runDir, cacheMinBytes, isUnwrapped)
+      const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, isUnwrapped)
       if (unwrappedCompressed !== null) return unwrappedCompressed
     }
 
@@ -772,12 +778,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap for compression) or an unwrapped single command gets its already-captured output compressed here. File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression. Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
       if (!isFileRead && (!isUnwrapped || !isCompressibleSingleCommand(cmd))) {
-        const compound = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, cwd, runDir, cacheMinBytes, isUnwrapped)
+        const compound = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, isUnwrapped)
         if (compound !== null) return compound
       }
       // A file read stays out of the generic list entirely, including the two-or-more-file compound shape `pureFileReadPath` itself declines to name (a single `filePath` has nowhere to put a second file): it already has its own per-file served store above, and letting a `sed`/`awk` range read's content leak into the session-wide list here is how a second, unrelated file that happens to share text with the first gets a stretch of itself withheld on the strength of a read of a DIFFERENT file -- exactly what the per-file scoping above exists to prevent.
       if (!isFileRead && extractLineRangeReadsCompound(cmd) === null) {
-        const genericElision = await maybeElideServedGenericOutput(cmd, optedOut, output, exitCode, cwd, cacheMinBytes, persisted)
+        const genericElision = await maybeElideServedGenericOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, persisted)
         if (genericElision !== null) return genericElision
       }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
