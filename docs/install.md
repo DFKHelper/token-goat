@@ -184,6 +184,14 @@ No ambient environment variable documents "this process is running under Copilot
 
 **If Copilot CLI starts denying every tool call with `Denied by preToolUse hook ... (hook errored)`:** this is Copilot's own fail-closed behavior for a `preToolUse` hook that crashes, exits non-zero, or returns unparseable output -- it isn't limited to token-goat's own tool calls, since a fail-closed `preToolUse` hook blocks the whole session. Copilot caches hook configs at session start, so **renaming or reinstalling the hook mid-session has no effect** -- the only recovery is: run `token-goat install --copilot` (or `token-goat doctor`, which now checks the installed hook end-to-end and calls out a stale node-binary path from an nvm/fnm/volta upgrade specifically), then **fully restart Copilot CLI**.
 
+**Status line.** Copilot CLI runs a status line command the same way Claude Code does, and `token-goat statusline` works as one. Install does not set it, because `~/.copilot/settings.json` holds only one status line and yours may already be in use. To use it, add this to `~/.copilot/settings.json` (or `$COPILOT_HOME/settings.json`), merged with what is already there:
+
+```json
+{ "statusLine": { "type": "command", "command": "token-goat statusline" } }
+```
+
+It shows the project, the model, the context percentage Copilot's own footer shows, whether the index is up to date, and the tokens token-goat saved today.
+
 ### VS Code (Copilot agent) users
 
 ```

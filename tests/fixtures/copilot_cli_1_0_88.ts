@@ -4,7 +4,8 @@
  * - C4a/C4c: the `task` tool. subagentStart carries the parent sessionId and no agentId, and its additionalContext is prepended to the subagent's prompt. subagentStop carries agentId, agentType and the raw `response`, and its `modifiedResponse` replaces what the parent's postToolUse task toolResult and function_call_output hold.
  * - C5: the `skill` tool's argument key is `skill`.
  * - C6: the Windows shell tool is `powershell` with `{command, description}`.
- * - C7: a `/compact` on a resumed session fires preCompact (whose additionalContext is not honored) and then the next prompt's userPromptSubmitted in the same session. */
+ * - C7: a `/compact` on a resumed session fires preCompact (whose additionalContext is not honored) and then the next prompt's userPromptSubmitted in the same session.
+ * - S1/S2: `<ID>-<NNN>-statusline.json` is instead the stdin a `statusLine` command in the sandbox's settings.json received (`raw\statusline-<NNN>.json`), from interactive sessions: S1's first render, S2 before the first reply and after two `view` calls. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
