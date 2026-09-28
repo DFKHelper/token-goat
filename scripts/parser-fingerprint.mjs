@@ -311,10 +311,17 @@ const EMBED_COMMENT =
 const EMBED_KIND_COMMENT =
   "// Per-kind digests, each over the global sources above plus that extraction kind's own. Keyed by the kind embedKindForPath() in src/embed_stamp.ts resolves a file to, which is what ensureEmbeddingProvenance scopes a re-embed by. A change to one document extractor moves one entry here, so only that format's already-embedded files are re-embedded; before this was per-kind, an edit to pdf_extract.ts re-embedded every file on the machine -- 243,238 chunks across 17,876 files on one real index."
 
-// Only act when run as a command. The guard exists so a test can import computeFingerprint without the import itself rewriting a source file or calling process.exit out from under the runner.
+// Only act when run as a command. The guard exists so a test can import computeFingerprint without the import itself rewriting a source file or calling process.exit out from under the runner. Both sides are compared as real paths: Node reports import.meta.url with symlinks resolved but leaves argv[1] as typed, so on macOS, where the temp directory /var is a link to /private/var, a script run from there answered every argument, --chek included, by doing nothing and exiting 0.
+const realOrResolved = (p) => {
+  try {
+    return fs.realpathSync.native(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
 const invokedDirectly =
   process.argv[1] !== undefined &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+  realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))
 
 const USAGE = [
   'usage: node scripts/parser-fingerprint.mjs [--check | --help]',
