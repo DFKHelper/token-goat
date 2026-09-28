@@ -231,7 +231,7 @@ Every proposed exact-duplicate-line fix is shown as a diff before anything is wr
 
 ### Session waste ledger
 
-`token-goat waste` parses the current project's Claude Code session transcript — the JSONL file Claude Code writes under `~/.claude/projects/<slug>/*.jsonl` — and attributes token cost to every tool call in it, then flags a few concrete waste signals: files that were `Read` once and never referenced again, and Bash commands run repeatedly without ever hitting token-goat's own bash-output cache. By default it auto-discovers the most-recently-modified transcript for the current project; pass `--transcript <path>` to point at a specific one instead (useful when several sessions are open, or for CI/testing):
+`token-goat waste` parses the current project's Claude Code session transcript — the JSONL file Claude Code writes under `~/.claude/projects/<slug>/*.jsonl` — and attributes token cost to every tool call in it, then flags a few concrete waste signals: files that were `Read` once and never referenced again, and Bash commands run repeatedly without ever hitting token-goat's own bash-output cache. By default it auto-discovers the most-recently-modified Claude Code or Copilot CLI transcript for the current project, preferring a Copilot CLI session that is still running; pass `--transcript <path>` to point at a specific one instead (useful when several sessions are open, or for CI/testing):
 
 ```
 $ token-goat waste

@@ -143,15 +143,7 @@ export function isCopilotSessionActive(sessionDir: string, sessionId?: string): 
     // Session directory unreadable
   }
 
-  try {
-    const opLock = path.join(path.dirname(sessionDir), '.session-operation-locks', `${sid}.lock`)
-    if (fs.existsSync(opLock)) {
-      return true
-    }
-  } catch {
-    // Ignore
-  }
-
+  // `session-state/.session-operation-locks/<sid>.lock` is deliberately not consulted: it is an empty file that outlives the session (33 of them on one machine, days after their sessions exited with their `inuse.<pid>.lock` removed), so its existence marked a finished session active and `waste` chose it over a newer Claude Code transcript.
   return false
 }
 

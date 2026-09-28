@@ -367,5 +367,42 @@ describe('findProjectSession', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('does not treat a leftover operation lock as a running session, so a newer Claude Code transcript wins', () => {
+    const base = mkdtempSync(join(tmpdir(), 'tg-opslock-'))
+    const saved = { home: process.env['COPILOT_HOME'], cfg: process.env['CLAUDE_CONFIG_DIR'], sid: process.env['COPILOT_AGENT_SESSION_ID'] }
+    try {
+      const project = join(base, 'proj')
+      mkdirSync(project, { recursive: true })
+      process.env['COPILOT_HOME'] = join(base, 'copilot')
+      process.env['CLAUDE_CONFIG_DIR'] = join(base, 'claude')
+      delete process.env['COPILOT_AGENT_SESSION_ID']
+      // CAPTURE (this machine, Copilot CLI 1.0.x, 2026-09-28): session f95cf6c9 ended 2026-09-24 22:06 with no `inuse.<pid>.lock` left in its directory, but a 0-byte `session-state/.session-operation-locks/f95cf6c9-....lock` stamped the same minute was still there four days later, alongside 32 more for other finished sessions. That file outlives the session, so its existence says nothing about liveness.
+      const sid = 'f95cf6c9-35cf-4811-91af-77fcb7eb7a1b'
+      const sessDir = join(base, 'copilot', 'session-state', sid)
+      mkdirSync(sessDir, { recursive: true })
+      const events = join(sessDir, 'events.jsonl')
+      writeFileSync(events, '', 'utf-8')
+      writeFileSync(join(sessDir, 'workspace.yaml'), `id: ${sid}\ncwd: ${project}\n`, 'utf-8')
+      mkdirSync(join(base, 'copilot', 'session-state', '.session-operation-locks'), { recursive: true })
+      writeFileSync(join(base, 'copilot', 'session-state', '.session-operation-locks', `${sid}.lock`), '', 'utf-8')
+      utimesSync(events, 1_000_000, 1_000_000)
+      // HAND-DERIVED: a Claude Code transcript for the same project, modified after the Copilot log, at the path projectTranscriptsDir documents (<config>/projects/<root with every non-alphanumeric as '-'>).
+      const slugDir = join(base, 'claude', 'projects', project.replace(/[^A-Za-z0-9]/g, '-'))
+      mkdirSync(slugDir, { recursive: true })
+      const transcript = join(slugDir, 'newer.jsonl')
+      writeFileSync(transcript, '{"type":"user","message":{"role":"user","content":"hi"}}\n', 'utf-8')
+      utimesSync(transcript, 2_000_000, 2_000_000)
+
+      expect(isCopilotSessionActive(sessDir, sid)).toBe(false)
+      expect(findProjectSession(project)).toEqual({ path: transcript, kind: 'claude' })
+    } finally {
+      for (const [k, v] of [['COPILOT_HOME', saved.home], ['CLAUDE_CONFIG_DIR', saved.cfg], ['COPILOT_AGENT_SESSION_ID', saved.sid]] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
 })
 
