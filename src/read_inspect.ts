@@ -19,7 +19,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { emitGuarded, fileExists, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes, healStaleResultFiles } from './read_commands.js'
+import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
 import { fileConfinementRefusal } from './read_spec.js'
@@ -788,6 +788,8 @@ export interface LocateHit {
   lineStart: number
   lineEnd: number
   span: string
+  /** Present only when the hit's file is gone from disk, as on refs' JSON items. */
+  deleted?: true
 }
 
 export function runLocate(opts: LocateOptions): number {
@@ -860,12 +862,16 @@ export function runLocate(opts: LocateOptions): number {
     }
   }
 
-  const shown = combined.slice(0, limit)
+  // Live rows first, as symbol and refs order them: a deleted checkout's rows outlive it for the missing-root grace and can sort ahead of the live copy.
+  const shown = sinkGoneRows(combined, (s) => s.filePath).slice(0, limit)
 
   if (shown.length === 0) {
     emitErr(`No landmark or symbol located for '${targetSpec}'`)
     return 1
   }
+
+  // A span is only as current as the rows it came from: warn on stderr (both modes) and book the answer, as refs does for its result files.
+  warnIfFilesStale(shown.map((s) => s.filePath), 'locate')
 
   const hits: LocateHit[] = shown.map((s: SymbolEntry) => ({
     filePath: toDisplayPath(rootDir, s.filePath),
@@ -874,6 +880,7 @@ export function runLocate(opts: LocateOptions): number {
     lineStart: s.lineStart,
     lineEnd: s.lineEnd,
     span: `${s.lineStart}-${s.lineEnd}`,
+    ...(fileIsGone(s.filePath) ? { deleted: true as const } : {}),
   }))
 
   if (opts.json === true) {
@@ -891,7 +898,7 @@ export function runLocate(opts: LocateOptions): number {
   }
 
   for (const hit of hits) {
-    emit(`${displaySafeText(hit.filePath)}:${hit.span} [${displaySafeText(hit.kind)}] ${displaySafeText(hit.name)}`)
+    emit(`${displaySafeText(hit.filePath)}:${hit.span} [${displaySafeText(hit.kind)}] ${displaySafeText(hit.name)}${hit.deleted === true ? `  ${DELETED_TAG}` : ''}`)
   }
 
   if (matchCount > limit) {
