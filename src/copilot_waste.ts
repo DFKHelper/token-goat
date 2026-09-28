@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { copilotCliUserRoot } from './copilot_home.js'
 import { readCopilotMcpTools, type CopilotMcpServerTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
 import { canonicalize } from './path_containment.js'
+import { projectTranscriptsDir } from './claude_config_dir.js'
 import { findLatestTranscript, readFileLines } from './waste.js'
 
 /** Event types verified to carry no model-visible content: they exist only in the on-disk log. */
@@ -251,15 +252,33 @@ export interface DetectedSession {
   kind: 'copilot' | 'claude'
 }
 
-/** Discovers the active or most recent session for a project across Copilot CLI and Claude Code. Active sessions take priority over inactive sessions; otherwise newest modification time wins. */
+/** The transcript of the Claude Code session this process runs under, when `CLAUDE_CODE_SESSION_ID` names one in this project's transcript directory. The existence check is the guard: an id seeded by a bridge for another harness, or a Claude session of another project, names no file here. */
+function ownClaudeTranscript(projectRoot: string): string | null {
+  const id = process.env['CLAUDE_CODE_SESSION_ID']?.trim()
+  if (!id || !/^[A-Za-z0-9-]+$/.test(id)) return null
+  const candidate = path.join(projectTranscriptsDir(projectRoot), `${id}.jsonl`)
+  try {
+    return fs.statSync(candidate).isFile() ? candidate : null
+  } catch {
+    return null
+  }
+}
+
+/** Discovers the session `waste` and `audit` should report on for a project, across Copilot CLI and Claude Code. The calling harness's own session wins when its id names one for this project: `COPILOT_AGENT_SESSION_ID` (the session-state directory name) or `CLAUDE_CODE_SESSION_ID` (the transcript's basename). Otherwise the most recently modified file wins. A live Copilot lock alone does not win: a Copilot session left open in another terminal holds its `inuse.<pid>.lock` for hours, and ranking it first made `waste` run inside Claude Code report the idle Copilot session instead of the caller's own. */
 export function findProjectSession(projectRoot: string): DetectedSession | null {
   const copilotSession = findActiveCopilotSession(projectRoot) ?? findLatestCopilotSession(projectRoot)
   const claudeTranscript = findLatestTranscript(projectRoot)
 
+  const copilotId = process.env['COPILOT_AGENT_SESSION_ID']?.trim()
+  if (copilotSession !== null && copilotId && path.basename(path.dirname(copilotSession)) === copilotId) {
+    return { path: copilotSession, kind: 'copilot' }
+  }
+  const own = ownClaudeTranscript(projectRoot)
+  if (own !== null) {
+    return { path: own, kind: 'claude' }
+  }
+
   if (copilotSession !== null && claudeTranscript !== null) {
-    if (findActiveCopilotSession(projectRoot) !== null) {
-      return { path: copilotSession, kind: 'copilot' }
-    }
     let cpTime = 0
     let clTime = 0
     try {
