@@ -9,7 +9,7 @@ import { globalDbPath } from './constants.js'
 import { compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, isTestFile } from './util.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry } from './parser_types.js'
-import { forEachSymbol, projectStructuredFiles } from './symbol_scan.js'
+import { FirstRows, forEachSymbol, projectStructuredFiles, symbolsById, type SymbolHead } from './symbol_scan.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNote, nearSymbolNames } from './read_suggest.js'
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
@@ -107,20 +107,28 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   interface SymbolSweep { kept: SymbolEntry[]; keptCount: number; scanned: number; hiddenByExcludeTests: number; files: Set<string> }
   const runSweep = (): SymbolSweep => {
     const found: SymbolSweep = { kept: [], keptCount: 0, scanned: 0, hiddenByExcludeTests: 0, files: new Set() }
-    const take = (s: SymbolEntry): void => {
+    const admit = (s: { filePath: string; name: string }): boolean => {
       found.scanned++
       found.files.add(s.filePath)
       const nameKept = matchesGrep === undefined || matchesGrep(s.name)
       if (nameKept && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath))) {
         found.keptCount++
-        if (found.kept.length < effectiveLimit) found.kept.push(s)
-      } else if (excludeTests && nameKept && isTestFile(s.filePath)) {
-        // Counted after --grep so the two filters never report the same row twice; only used to explain an empty result below.
-        found.hiddenByExcludeTests++
+        return true
       }
+      // Counted after --grep so the two filters never report the same row twice; only used to explain an empty result below.
+      if (excludeTests && nameKept && isTestFile(s.filePath)) found.hiddenByExcludeTests++
+      return false
     }
-    if (anyClientFilter) forEachSymbol(queryOpts, take)
-    else for (const row of querySymbols(queryOpts)) take(row)
+    if (anyClientFilter) {
+      // The scan reads no bodies: only the rows that will print are read in full, once the walk has picked them.
+      const first = new FirstRows<SymbolHead>(effectiveLimit)
+      forEachSymbol(queryOpts, (s: SymbolHead) => {
+        if (admit(s)) first.offer(s)
+      })
+      found.kept = symbolsById(first.rows().map((s) => s.id))
+    } else {
+      for (const row of querySymbols(queryOpts)) if (admit(row) && found.kept.length < effectiveLimit) found.kept.push(row)
+    }
     return found
   }
 
@@ -175,7 +183,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     if (opts.name !== undefined) {
       // Same near-name mechanism as `find`: match the project's names by case-insensitive substring in either direction, so a typo'd or partial name still gets a cheap next step instead of dead-ending into a full-file Read or a wide Grep.
       const rootDir = emptyIndexRoot
-      // Each question below is its own narrow query rather than one visit over every row. That visit, a forEachSymbol walk, cost 187 s of SQLite time on a 546,394-symbol project, all of it in 55 OFFSET pages that each sorted every row in scope with its body (see src/symbol_scan.ts::projectSymbolNames), while none of these answers needs a body or a complete row. The exact-name one is an indexed `name = ?` lookup with no cap problem: it is scoped to the same project and asks for the same name, so every row it could miss past its limit is one the count below still reports.
+      // Each question below is its own narrow query rather than one visit over every row. That visit, a forEachSymbol walk when it still paged by OFFSET, cost 187 s of SQLite time on a 546,394-symbol project, all of it in 55 pages that each sorted every row in scope with its body, while none of these answers needs more than names, and a walk of every row is still more than they need now that the pages are keyset pages. The exact-name one is an indexed `name = ?` lookup with no cap problem: it is scoped to the same project and asks for the same name, so every row it could miss past its limit is one the count below still reports.
       const exactMatches = querySymbols({ name: opts.name, rootDir, limit: DIDYOUMEAN_LIMIT })
       // An EXACT name match in the project cannot be a typo: the caller spelled the symbol correctly and the lookup above only came back empty because a scope filter (--kind/--file) narrowed it away. Reporting that as "Did you mean: alphaOne" for the query `alphaOne` prints a correction byte-identical to what was typed, and pairs it with a "No matches" line that reads as proof the symbol does not exist -- so the caller concludes it is absent and falls back to a full Read. Name the scope that hid it instead.
       if (exactMatches.length > 0) {

@@ -24,7 +24,7 @@ import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
 import { fileConfinementRefusal } from './read_spec.js'
 import { listSections } from './section_reader.js'
-import { forEachSymbol } from './symbol_scan.js'
+import { compareBinary, FirstRows, forEachSymbol, type SymbolHead, type SymbolScanScope } from './symbol_scan.js'
 import {
   formatSqliteQueryTable,
   formatSqliteSchema,
@@ -727,22 +727,24 @@ export function runFind(opts: FindOptions): number {
   // Walk the whole scope rather than one capped page: the name test is a JS substring match with no SQL equivalent, so a cap applied ahead of it drops every match that sorted past it -- and that miss falls straight into the near-name branch below, which answers a symbol that IS indexed with a confident list of unrelated files. Only file paths and names are kept, both bounded by the project rather than by its symbol count.
   const matchedFiles = new Set<string>()
   const allNames = new Set<string>()
-  forEachSymbol({ rootDir }, (s: SymbolEntry) => {
+  forEachSymbol({ rootDir }, (s: SymbolHead) => {
     allNames.add(s.name)
     if (s.name.toLowerCase().includes(patternLower)) matchedFiles.add(s.filePath)
   })
 
   let fuzzyNames: string[] = []
+  // Files in index path order, as a walk in `file_path` order listed them first-seen; the scan itself visits them in folded-path order.
+  let allFiles = [...matchedFiles].sort(compareBinary)
   if (matchedFiles.size === 0) {
     fuzzyNames = rankSimilarNames([...allNames], opts.pattern)
     if (fuzzyNames.length > 0) {
       // Grouped by name and emitted in ranked order, so the files listed for the closest name come first -- the same order the single-pass filter produced when every row was in hand at once.
-      const byName = new Map<string, string[]>(fuzzyNames.map((n: string) => [n, []]))
-      forEachSymbol({ rootDir }, (s: SymbolEntry) => { byName.get(s.name)?.push(s.filePath) })
-      for (const n of fuzzyNames) for (const f of byName.get(n) ?? []) matchedFiles.add(f)
+      const byName = new Map<string, Set<string>>(fuzzyNames.map((n: string) => [n, new Set()]))
+      forEachSymbol({ rootDir }, (s: SymbolHead) => { byName.get(s.name)?.add(s.filePath) })
+      for (const n of fuzzyNames) for (const f of [...(byName.get(n) ?? [])].sort(compareBinary)) matchedFiles.add(f)
+      allFiles = [...matchedFiles]
     }
   }
-  const allFiles = [...matchedFiles]
   const files = allFiles.slice(0, opts.limit ?? 50)
   const limitDropped = allFiles.length - files.length
   const truncated = limitDropped > 0
@@ -808,7 +810,7 @@ export function runLocate(opts: LocateOptions): number {
     targetSpec = targetSpec.slice(colonIdx + 2)
   }
 
-  const scanOpts: Parameters<typeof forEachSymbol>[0] = {}
+  const scanOpts: SymbolScanScope = {}
 
   if (targetFile !== undefined) {
     scanOpts.filePath = resolveSpecPath(targetFile, rootDir)
@@ -820,19 +822,19 @@ export function runLocate(opts: LocateOptions): number {
   const limit = opts.limit ?? 25
   const specLower = targetSpec.toLowerCase()
   // Walked in full rather than fetched as one capped page, for the reason runFind gives above: the name tests below are JS string matches with no SQL equivalent, and a cap ahead of them hides matches that sorted past it behind the near-name fallback. Exact matches are kept ahead of contains matches, and each list stops at `limit` because that is all `shown` can display -- the counts beside them stay exact, so the totals reported below still describe every match in the project rather than the rows held in memory.
-  interface LocateScan { exact: SymbolEntry[]; exactCount: number; partial: SymbolEntry[]; partialCount: number; names: Set<string>; files: Set<string> }
+  interface LocateScan { exact: FirstRows<SymbolHead>; exactCount: number; partial: FirstRows<SymbolHead>; partialCount: number; names: Set<string>; files: Set<string> }
   const scan = (): LocateScan => {
-    const found: LocateScan = { exact: [], exactCount: 0, partial: [], partialCount: 0, names: new Set(), files: new Set() }
-    forEachSymbol(scanOpts, (s: SymbolEntry) => {
+    const found: LocateScan = { exact: new FirstRows(limit), exactCount: 0, partial: new FirstRows(limit), partialCount: 0, names: new Set(), files: new Set() }
+    forEachSymbol(scanOpts, (s: SymbolHead) => {
       found.names.add(s.name)
       found.files.add(s.filePath)
       const nameLower = s.name.toLowerCase()
       if (nameLower === specLower) {
         found.exactCount++
-        if (found.exact.length < limit) found.exact.push(s)
+        found.exact.offer(s)
       } else if (nameLower.includes(specLower)) {
         found.partialCount++
-        if (found.partial.length < limit) found.partial.push(s)
+        found.partial.offer(s)
       }
     })
     return found
@@ -845,20 +847,20 @@ export function runLocate(opts: LocateOptions): number {
   }
 
   let matchCount = found.exactCount + found.partialCount
-  let combined = [...found.exact, ...found.partial]
+  let combined = [...found.exact.rows(), ...found.partial.rows()]
   let fuzzyNames: string[] = []
   if (matchCount === 0) {
     fuzzyNames = rankSimilarNames([...found.names], targetSpec)
     if (fuzzyNames.length > 0) {
       // Grouped by name and emitted in ranked order so the closest name's locations come first, matching the order a single pass over every row produced.
-      const byName = new Map<string, SymbolEntry[]>(fuzzyNames.map((n: string) => [n, []]))
-      forEachSymbol(scanOpts, (s: SymbolEntry) => {
+      const byName = new Map<string, FirstRows<SymbolHead>>(fuzzyNames.map((n: string) => [n, new FirstRows(limit)]))
+      forEachSymbol(scanOpts, (s: SymbolHead) => {
         const bucket = byName.get(s.name)
         if (bucket === undefined) return
         matchCount++
-        if (bucket.length < limit) bucket.push(s)
+        bucket.offer(s)
       })
-      combined = fuzzyNames.flatMap((n: string) => byName.get(n) ?? [])
+      combined = fuzzyNames.flatMap((n: string) => byName.get(n)?.rows() ?? [])
     }
   }
 
@@ -873,7 +875,7 @@ export function runLocate(opts: LocateOptions): number {
   // A span is only as current as the rows it came from: warn on stderr (both modes) and book the answer, as refs does for its result files.
   warnIfFilesStale(shown.map((s) => s.filePath), 'locate')
 
-  const hits: LocateHit[] = shown.map((s: SymbolEntry) => ({
+  const hits: LocateHit[] = shown.map((s: SymbolHead) => ({
     filePath: toDisplayPath(rootDir, s.filePath),
     name: s.name,
     kind: s.kind,
