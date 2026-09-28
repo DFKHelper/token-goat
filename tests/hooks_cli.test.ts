@@ -520,6 +520,12 @@ describe('normalizePayload', () => {
       insert_edit_into_file: { explanation: 'add a line', filePath: '/w/a.ts', code: 'const y = 2' },
       edit_notebook_file: { filePath: '/w/n.ipynb', editType: 'insert', cellId: 'c1', newCode: 'x = 1', language: 'python' },
       run_in_terminal: { command: 'npm test', explanation: 'run tests', goal: 'test', mode: 'sync' },
+      // PROVENANCE: FORMAT-DERIVED, VS Code 1.137.0. Names from the ToolName enum in resources/app/extensions/copilot/dist/extension.js (MultiReplaceString="multi_replace_string_in_file", ApplyPatch="apply_patch", FetchWebPage="fetch_webpage", CoreRunSubagent="runSubagent", CoreGetTerminalOutput="get_terminal_output"). Keys from the inputSchema of copilot_multiReplaceString {explanation, replacements[{filePath, oldString, newString}]}, copilot_applyPatch {input, explanation} and copilot_fetchWebPage {urls[], query} in resources/app/extensions/copilot/package.json, and from resources/app/out/vs/workbench/workbench.desktop.main.js for runSubagent {prompt, description, agentName, model} and get_terminal_output {id}. The patch text follows the V4A markers that bundle's extension.js declares ("*** Begin Patch", "*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "). Values are HAND-DERIVED.
+      multi_replace_string_in_file: { explanation: 'two files', replacements: [{ filePath: '/w/a.ts', oldString: 'a', newString: 'b' }, { filePath: '/w/b.ts', oldString: 'c', newString: 'd' }, { filePath: '/w/a.ts', oldString: 'e', newString: 'f' }] },
+      apply_patch: { explanation: 'patch', input: ['*** Begin Patch', '*** Update File: /w/a.ts', '@@', '-a', '+b', '*** Update File: /w/old.ts', '*** Move to: /w/new.ts', '@@', '-c', '+d', '*** Add File: /w/added.ts', '+export const z = 1', '*** Delete File: /w/gone.ts', '*** End Patch'].join('\n') },
+      fetch_webpage: { urls: ['https://example.com/docs'], query: 'install steps' },
+      runSubagent: { prompt: 'Find the parser entry point', description: 'find parser', agentName: 'Explore', model: 'GPT-5 (copilot)' },
+      get_terminal_output: { id: '0f8fad5b-d9cb-469f-a165-70867728950e' },
     }
 
     function vscodePayload(tool: string, input: Record<string, unknown>): HookPayload {
@@ -577,16 +583,47 @@ describe('normalizePayload', () => {
       expect(normalizePayload({ ...vscodePayload('read_file', NATIVE_INPUTS['read_file']!), cwd: '/given' }, 'vscode')['cwd']).toBe('/given')
     })
 
-    it('leaves unmapped tools (multi_replace_string_in_file, apply_patch, fetch_webpage) and their inputs untouched', () => {
-      for (const [tool, input] of [
-        ['multi_replace_string_in_file', { explanation: 'e', replacements: [{ filePath: '/w/a.ts', oldString: 'a', newString: 'b' }] }],
-        ['apply_patch', { input: '*** Begin Patch', explanation: 'e' }],
-        ['fetch_webpage', { urls: ['https://example.com'], query: 'q' }],
-      ] as const) {
-        const result = normalizePayload(vscodePayload(tool, input), 'vscode')
-        expect(result['tool_name']).toBe(tool)
-        expect(result['tool_input']).toEqual(input)
-      }
+    it('maps multi_replace_string_in_file to MultiEdit and names every file its replacements touch, once each', () => {
+      const result = normalizePayload(vscodePayload('multi_replace_string_in_file', NATIVE_INPUTS['multi_replace_string_in_file']!), 'vscode')
+      expect(result['tool_name']).toBe('MultiEdit')
+      const input = result['tool_input'] as Record<string, unknown>
+      expect(input['file_paths']).toEqual(['/w/a.ts', '/w/b.ts'])
+      // Two files: no single file_path, so no handler that reads one path picks an arbitrary one of them.
+      expect(input['file_path']).toBeUndefined()
+      const single = normalizePayload(vscodePayload('multi_replace_string_in_file', { explanation: 'e', replacements: [{ filePath: '/w/a.ts', oldString: 'a', newString: 'b' }, { filePath: '/w/a.ts', oldString: 'c', newString: 'd' }] }), 'vscode')
+      expect((single['tool_input'] as Record<string, unknown>)['file_path']).toBe('/w/a.ts')
+      expect((single['tool_input'] as Record<string, unknown>)['file_paths']).toEqual(['/w/a.ts'])
+    })
+
+    it('maps apply_patch to Edit and reads every added, updated, moved and deleted path out of the patch text', () => {
+      const result = normalizePayload(vscodePayload('apply_patch', NATIVE_INPUTS['apply_patch']!), 'vscode')
+      expect(result['tool_name']).toBe('Edit')
+      const input = result['tool_input'] as Record<string, unknown>
+      expect(input['file_paths']).toEqual(['/w/a.ts', '/w/old.ts', '/w/new.ts', '/w/added.ts', '/w/gone.ts'])
+      expect(input['file_path']).toBeUndefined()
+      const one = normalizePayload(vscodePayload('apply_patch', { explanation: 'e', input: ['*** Begin Patch', '*** Update File: /w/only.ts', '@@', '-a', '+b', '*** End Patch'].join('\r\n') }), 'vscode')
+      expect((one['tool_input'] as Record<string, unknown>)['file_path']).toBe('/w/only.ts')
+      // A hunk line that merely contains the marker text is file content, not a header.
+      const quoted = normalizePayload(vscodePayload('apply_patch', { explanation: 'e', input: ['*** Begin Patch', '*** Update File: /w/doc.md', '@@', '-x', '+ *** Update File: /w/not-a-target.ts', '*** End Patch'].join('\n') }), 'vscode')
+      expect((quoted['tool_input'] as Record<string, unknown>)['file_paths']).toEqual(['/w/doc.md'])
+    })
+
+    it('maps fetch_webpage to WebFetch with query as prompt, and names a url only when exactly one was asked for', () => {
+      const one = normalizePayload(vscodePayload('fetch_webpage', NATIVE_INPUTS['fetch_webpage']!), 'vscode')
+      expect(one['tool_name']).toBe('WebFetch')
+      expect(one['tool_input']).toMatchObject({ url: 'https://example.com/docs', urls: ['https://example.com/docs'], prompt: 'install steps' })
+      const two = normalizePayload(vscodePayload('fetch_webpage', { urls: ['https://a.example/', 'https://b.example/'], query: 'q' }), 'vscode')
+      expect((two['tool_input'] as Record<string, unknown>)['url']).toBeUndefined()
+      expect((two['tool_input'] as Record<string, unknown>)['urls']).toEqual(['https://a.example/', 'https://b.example/'])
+    })
+
+    it('maps runSubagent to Task with its prompt untouched, and get_terminal_output to BashOutput with id as bash_id', () => {
+      const task = normalizePayload(vscodePayload('runSubagent', NATIVE_INPUTS['runSubagent']!), 'vscode')
+      expect(task['tool_name']).toBe('Task')
+      expect(task['tool_input']).toEqual(NATIVE_INPUTS['runSubagent'])
+      const poll = normalizePayload(vscodePayload('get_terminal_output', NATIVE_INPUTS['get_terminal_output']!), 'vscode')
+      expect(poll['tool_name']).toBe('BashOutput')
+      expect(poll['tool_input']).toEqual({ bash_id: '0f8fad5b-d9cb-469f-a165-70867728950e' })
     })
   })
 
