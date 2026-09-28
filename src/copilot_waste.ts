@@ -3,7 +3,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { copilotCliUserRoot } from './bridges/copilot_cli_install.js'
+import { copilotCliUserRoot } from './copilot_home.js'
 import { readCopilotMcpTools, type CopilotMcpServerTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
 import { canonicalize } from './path_containment.js'
 import { findLatestTranscript, readFileLines } from './waste.js'

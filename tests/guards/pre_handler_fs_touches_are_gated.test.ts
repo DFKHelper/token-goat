@@ -215,7 +215,7 @@ describe('the pre-dispatch call graph is real', () => {
       items: touching.map((v) => v.key),
       floor: 18, // measured the same way: 21 live, 16 before call_streak.ts added its sidecar read and write and the loadConfig path's three
       ceiling: 24,
-      mustInclude: ['vscode_duplicate.ts::alreadyClaimed', 'bridges/copilot_cli_install.ts::readCopilotHooksOwners', 'constants.ts::ensureDataDirPrivate'],
+      mustInclude: ['vscode_duplicate.ts::alreadyClaimed', 'bridges/copilot_hooks_owners.ts::readCopilotHooksOwners', 'constants.ts::ensureDataDirPrivate'],
     })
   })
 })

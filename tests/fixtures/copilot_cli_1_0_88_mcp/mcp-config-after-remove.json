@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "other": {
+      "tools": [
+        "*"
+      ],
+      "type": "local",
+      "command": "echo",
+      "args": [
+        "hi"
+      ]
+    }
+  }
+}

@@ -1,6 +1,5 @@
 /** Copilot CLI install/uninstall wiring. Copilot's hook config is a standalone JSON file, one file per hook registration (not a shared/merge-heavy config like Codex's config.toml), confirmed against https://docs.github.com/en/copilot/reference/hooks-reference and https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks: { "version": 1, "hooks": { "<eventName>": [{ "type": "command", "command": "..." }] } } written to `.github/hooks/token-goat.json` (project scope, confirmed) or `~/.copilot/hooks/token-goat.json` (user scope, confirmed). Because the file is entirely token-goat's own (no other tool writes to a file named exactly `token-goat.json` in that directory), this follows pi_install.ts's simpler whole-file overwrite-on-diff pattern rather than Codex's parse/merge pattern -- there is nothing to merge into. It does, however, still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw), because Copilot's hooks schema supports per-entry fields token-goat writes only some of (`timeoutSec` and `allowedEnvVars` -- see HOOK_TIMEOUT_SEC and ALLOWED_ENV_VARS below) and never touches others of (`cwd`, `env`, `matcher` -- https://docs.github.com/en/copilot/reference/hooks-reference) that a user could plausibly hand-tune; since install always regenerates the whole file from scratch, a hand-edit would otherwise be silently destroyed with no recovery path. */
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
@@ -11,7 +10,9 @@ import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHo
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
-import { copilotCliUserRoot } from '../copilot_home.js'
+import { copilotCliCacheRoot, copilotCliMcpToolsDir, copilotCliUserRoot } from '../copilot_home.js'
+import { copilotHooksOwnersPath, HOOKS_CONFIG_FILE, readCopilotHooksOwners, type CopilotHooksOwner } from './copilot_hooks_owners.js'
+import { copilotMcpConfigPath, installCopilotMcpServer, uninstallCopilotMcpServer } from './copilot_mcp_install.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
@@ -50,7 +51,8 @@ interface CopilotCliConfig {
   hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>>
 }
 
-export { copilotCliUserRoot }
+export { copilotCliCacheRoot, copilotCliMcpToolsDir, copilotCliUserRoot }
+export { copilotHooksOwnersPath, readCopilotHooksOwners }
 
 export function copilotCliUserHooksDir(): string {
   return path.join(copilotCliUserRoot(), 'hooks')
@@ -58,27 +60,6 @@ export function copilotCliUserHooksDir(): string {
 
 export function copilotCliProjectHooksDir(): string {
   return path.join(process.cwd(), '.github', 'hooks')
-}
-
-/** Copilot's *cache* root, which is a different directory from its user root. copilotCliUserRoot() above resolves COPILOT_HOME / ~/.copilot, where config and session state live. The MCP tool-definition cache is not there: it sits under a separate cache root, and conflating the two would silently read an empty directory and report that no MCP servers are configured. The rule below was read directly out of the shipped Copilot 1.0.80 bundle rather than taken from documentation. The native entry point is `copilotCacheHome(platform, homedir, COPILOT_CACHE_HOME, LOCALAPPDATA, XDG_CACHE_HOME)`, and the bundle also carries a plain-JS twin of the same rule which is what this mirrors. Two details are easy to get wrong and are both taken from that twin: COPILOT_CACHE_HOME is the cache root *itself* and gets no `copilot` segment appended (the bundle joins it straight to `pkg`), whereas every platform default does append one. On win32 the fallback when LOCALAPPDATA is unset is ~/.cache, not ~/Library or an XDG path. */
-export function copilotCliCacheRoot(): string {
-  const override = process.env['COPILOT_CACHE_HOME']
-  if (override !== undefined && override.trim() !== '') return path.resolve(override)
-  const home = os.homedir()
-  if (process.platform === 'darwin') return path.join(home, 'Library', 'Caches', 'copilot')
-  if (process.platform === 'win32') {
-    const local = process.env['LOCALAPPDATA']
-    const base = local !== undefined && local.trim() !== '' ? local : path.join(home, '.cache')
-    return path.join(base, 'copilot')
-  }
-  const xdg = process.env['XDG_CACHE_HOME']
-  const base = xdg !== undefined && xdg.trim() !== '' ? xdg : path.join(home, '.cache')
-  return path.join(base, 'copilot')
-}
-
-/** Directory holding Copilot's per-server MCP tool-definition cache files. */
-export function copilotCliMcpToolsDir(): string {
-  return path.join(copilotCliCacheRoot(), 'mcp-tools')
 }
 
 function copilotCliHooksDir(opts: CopilotCliScopeOptions = {}): string {
@@ -209,17 +190,16 @@ export interface CopilotCliInstallResult {
   readonly scriptPath: string
   /** Path to the copilot-instructions.md that received the token-goat routing block. */
   readonly instructionsPath: string
-  /** True when the shim script, the hook config, and the instructions block were all already up to date (no write needed). */
+  /** `<COPILOT_HOME>/mcp-config.json`, which received the `token-goat` MCP server entry; undefined for a `--local` install, since Copilot reads MCP servers only from the user-scope file. */
+  readonly mcpConfigPath?: string
+  /** True when the shim script, the hook config, the instructions block and the MCP entry were all already up to date (no write needed). */
   readonly alreadyInstalled: boolean
 }
 
-/** Which token-goat installs rely on the hooks file in one hooks directory. VS Code's agent reads the same `~/.copilot/hooks` and `.github/hooks` directories Copilot CLI does, so `install --copilot` and `install --vscode` share one `token-goat.json` and one shim there. Removing the file for one of them must not take it away from the other, so each install records itself in a sidecar and the files go only when the last owner leaves. The sidecar's name must not end in `.json`: VS Code treats every `.json` file in a hooks directory as a hooks file. */
-export type CopilotHooksOwner = 'copilot' | 'vscode'
+export type { CopilotHooksOwner }
 
-const HOOKS_CONFIG_FILE = 'token-goat.json'
 export const HOOKS_SCRIPT_FILE = 'token-goat-shim.cjs'
 export const LEGACY_HOOKS_SCRIPT_FILE = 'token-goat-shim.js'
-const HOOKS_OWNERS_FILE = 'token-goat.owners'
 
 /** Forwarder written to token-goat-shim.js for compatibility with running Copilot CLI sessions that cached the .js path at startup. Dynamic import is valid in both ESM and CJS across Node 12+. The shim answers `{}` and exits 0 on any failure of its own, because preToolUse fails closed; the catch keeps that promise when the shim cannot even be loaded. */
 export const HOOKS_SCRIPT_FORWARDER = `#!/usr/bin/env node
@@ -230,10 +210,6 @@ import('./token-goat-shim.cjs').catch(() => {
 });
 `
 
-export function copilotHooksOwnersPath(hooksDir: string): string {
-  return path.join(hooksDir, HOOKS_OWNERS_FILE)
-}
-
 /** Every file this module reads or writes inside `hooksDir`. Exported so a project-scope caller can run all three past `assertProjectScopeTarget` before any of them is opened, rather than re-deriving the names and drifting from the three `path.join` call sites below. */
 export function copilotHooksFilePaths(hooksDir: string): readonly string[] {
   return [
@@ -242,23 +218,6 @@ export function copilotHooksFilePaths(hooksDir: string): readonly string[] {
     path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE),
     copilotHooksOwnersPath(hooksDir),
   ]
-}
-
-/** Owners recorded for `hooksDir`. A hooks file with no sidecar predates the sidecar, when only `install --copilot` wrote it, so it counts as Copilot's. */
-export function readCopilotHooksOwners(hooksDir: string): Set<CopilotHooksOwner> {
-  const owners = new Set<CopilotHooksOwner>()
-  let text: string
-  try {
-    text = fs.readFileSync(copilotHooksOwnersPath(hooksDir), 'utf8')
-  } catch {
-    if (fs.existsSync(path.join(hooksDir, HOOKS_CONFIG_FILE))) owners.add('copilot')
-    return owners
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const name = line.trim()
-    if (name === 'copilot' || name === 'vscode') owners.add(name)
-  }
-  return owners
 }
 
 export interface CopilotHooksFileResult {
@@ -320,6 +279,9 @@ export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCli
 
 function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstallResult {
   const instructionsPath = copilotCliInstructionsPath(opts)
+  // First, because it is the one step that refuses: a `token-goat` MCP entry token-goat did not write stops the install before the hooks or the instructions are touched, rather than leaving a half-installed integration behind the error.
+  const userScope = opts.local !== true
+  const mcpChanged = userScope ? installCopilotMcpServer() : false
   const hooks = installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
   const instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
 
@@ -327,7 +289,8 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
     configPath: hooks.configPath,
     scriptPath: hooks.scriptPath,
     instructionsPath,
-    alreadyInstalled: !hooks.changed && !instructionsChanged,
+    ...(userScope ? { mcpConfigPath: copilotMcpConfigPath() } : {}),
+    alreadyInstalled: !hooks.changed && !instructionsChanged && !mcpChanged,
   }
 }
 
@@ -341,6 +304,10 @@ function uninstallCopilotCliScopeInner(opts: CopilotCliScopeOptions): boolean {
   let removedAny = releaseCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
   // The instructions file is user-owned: strip only the delimited block and preserve everything else, never unlink the whole file (mirrors codex uninstall).
   if (stripCopilotInstructionsBlock(copilotCliInstructionsPath(opts))) {
+    removedAny = true
+  }
+  // Copilot reads MCP servers only from the user-scope file, so only the user-scope sweep removes the entry, and `uninstall --copilot --local` leaves it.
+  if (opts.local !== true && uninstallCopilotMcpServer()) {
     removedAny = true
   }
   return removedAny

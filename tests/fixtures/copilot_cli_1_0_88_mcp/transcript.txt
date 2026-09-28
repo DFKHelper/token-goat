@@ -1,0 +1,26 @@
+$ copilot mcp add other -- echo hi
+Added server "other"
+
+other
+  Type: local
+  Command: echo hi
+  Tools: * (all)
+  Source: User
+$ copilot mcp add token-goat -- "C:/Program Files/nodejs/node.exe" C:/x/dist/token-goat.mjs mcp-serve
+Added server "token-goat"
+
+token-goat
+  Type: local
+  Command: C:/Program Files/nodejs/node.exe C:/x/dist/token-goat.mjs mcp-serve
+  Tools: * (all)
+  Source: User
+$ copilot mcp list
+User servers:
+  other (local)
+  token-goat (local)
+
+Builtin servers:
+  github-mcp-server (http)
+
+$ copilot mcp remove token-goat
+Removed server "token-goat"

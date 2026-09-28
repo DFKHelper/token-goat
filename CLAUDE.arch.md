@@ -154,6 +154,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bridges/codex.ts`](src/bridges/codex.ts) | Codex hook script template; `hookSpecificOutput: true` (Codex schemas use `additionalProperties: false`) |
 | [`src/bridges/copilot_cli_install.ts`](src/bridges/copilot_cli_install.ts) | Copilot CLI install/uninstall wiring. |
 | [`src/bridges/copilot_cli.ts`](src/bridges/copilot_cli.ts) | Copilot CLI hook shim. |
+| [`src/bridges/copilot_hooks_owners.ts`](src/bridges/copilot_hooks_owners.ts) | The owner record for a Copilot hooks directory, split out of copilot_cli_install.ts so the hook path (vscode_duplicate.ts) can read it without loading the installer and everything |
+| [`src/bridges/copilot_mcp_install.ts`](src/bridges/copilot_mcp_install.ts) | Copilot CLI MCP-server registration: the `mcpServers.token-goat` entry in `<COPILOT_HOME>/mcp-config.json` (else `~/.copilot/mcp-config.json`), which `token-goat install --copilot` |
 | [`src/bridges/created_configs.ts`](src/bridges/created_configs.ts) | A record of the config files token-goat itself created, so uninstall can delete one it created and never one that was already the user's. |
 | [`src/bridges/cursor_install.ts`](src/bridges/cursor_install.ts) | Cursor MCP-server installer. |
 | [`src/bridges/detect_ecosystems.ts`](src/bridges/detect_ecosystems.ts) | Harness bridge integration and hook configuration for detect_ecosystems |
