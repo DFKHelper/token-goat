@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { anchoredMarkerPattern, saveUninstalledHookSettings } from '../install.js'
+import { anchoredMarkerPattern, finishHookUninstall } from '../install.js'
 import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 
 import { groupHasTokenGoat } from './matcher_group.js'
@@ -140,15 +140,8 @@ export function installQwen(): QwenInstallResult {
 export function uninstallQwen(): boolean {
   const p = qwenSettingsPath()
   const settings = readQwenSettings(p)
-  const hooks = settings.hooks
-  if (hooks === undefined) return false
-
-  const removed = stripOwnHooksFromMap(hooks, isQwenTokenGoatCommand)
-
-  if (!removed) return false
-
-  saveUninstalledHookSettings(p, settings)
-  return true
+  const removed = settings.hooks !== undefined && stripOwnHooksFromMap(settings.hooks, isQwenTokenGoatCommand)
+  return finishHookUninstall(p, settings, removed)
 }
 
 export function isQwenInstalled(): boolean {

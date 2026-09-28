@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { toolMatcherFor } from '../hook_registry.js'
-import { anchoredMarkerPattern, saveUninstalledHookSettings } from '../install.js'
+import { anchoredMarkerPattern, finishHookUninstall } from '../install.js'
 import type { HookEventName } from '../types.js'
 import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 import { groupHasTokenGoat } from './matcher_group.js'
@@ -201,15 +201,8 @@ export function installGemini(): GeminiInstallResult {
 export function uninstallGemini(): boolean {
   const p = geminiSettingsPath()
   const settings = readGeminiSettings(p)
-  const hooks = settings.hooks
-  if (hooks === undefined) return false
-
-  const removed = stripOwnHooksFromMap(hooks, isGeminiTokenGoatCommand)
-
-  if (!removed) return false
-
-  saveUninstalledHookSettings(p, settings)
-  return true
+  const removed = settings.hooks !== undefined && stripOwnHooksFromMap(settings.hooks, isGeminiTokenGoatCommand)
+  return finishHookUninstall(p, settings, removed)
 }
 
 /** Is the Gemini CLI integration currently present? True only when every (event, matcher) pair {@link desiredMatchersFor} expects carries a token-goat hook entry. A partial install (e.g. one matcher group deleted by hand) reads as not installed, so {@link installGemini} will top up what's missing. */

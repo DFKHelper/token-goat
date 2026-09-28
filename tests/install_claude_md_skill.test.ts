@@ -108,8 +108,8 @@ describe('uninstallClaudeMd', () => {
     installClaudeMd()
     expect(uninstallClaudeMd()).toBe(true)
 
-    const content = fs.readFileSync(claudeMdPath(), 'utf8')
-    expect(content).not.toContain('<!-- token-goat-begin -->')
+    // This install made the CLAUDE.md from nothing, so the block leaves with the file it was alone in.
+    expect(fs.existsSync(claudeMdPath())).toBe(false)
   })
 
   it('reports false when no CLAUDE.md exists', () => {
