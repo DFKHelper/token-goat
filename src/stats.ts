@@ -625,8 +625,8 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
   }
 }
 
-/** Record a stat event in the global database. Silently no-ops on any error so hook paths are never blocked. Pass `_testDb` in tests to inject a pre-initialized database. */
 // Distinguishes "genuinely no stats ever recorded" from "stats exist but every one falls outside the requested --window-days" -- same empty-vs-filtered-store distinction already made for dead/types (--exclude-tests, --grep) so a caller sees a bare "no stats" as a filter artifact rather than a broken telemetry pipeline. Only queried once summarize() already found zero rows in-window, so the common (non-empty) path pays nothing extra.
+/** The line a stats report prints when no event falls in its window: "No stats recorded yet." when none was ever recorded, else how many were recorded outside the last `windowDays` days. */
 export function noStatsMessage(windowDays: number, homeDir?: string): string {
   if (windowDays <= 0) return 'No stats recorded yet.'
   const db = getGlobalDb(homeDir)
@@ -679,6 +679,7 @@ function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDi
 // getDb()'s connection to global.db is shared with the indexer and worker and keeps db.ts's 15000ms busy_timeout on purpose (initConnection); recordStat's contract below is the opposite -- a lost stats row is already logged out of band, so the write goes through its own short-budget connection, opened and closed per call, instead of ever waiting out indexing's contention. 200ms is sized against the hook path's own ~65-92ms synchronous cost, not against 15000ms.
 const STATS_WRITE_BUSY_TIMEOUT_MS = 200
 
+/** Record a stat event in the global database. Silently no-ops on any error so hook paths are never blocked. Pass `_testDb` in tests to inject a pre-initialized database. */
 export function recordStat(
   kind: string,
   bytesSaved = 0,
