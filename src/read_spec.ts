@@ -10,7 +10,7 @@ export { resolveLineRegions, type LineRegion } from './line_regions.js'
 import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
-import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, readFileText, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
+import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
@@ -204,6 +204,7 @@ export function runLineRegion(
   }
   const slice = (r: LineRegion): string => allLines.slice(r.start - 1, Math.min(r.end, allLines.length)).join('\n')
   if (opts.json === true) {
+    recordStaleServed('read', indexFreshness(resolved))
     return {
       text: displaySafeJson({
         file,
@@ -228,7 +229,7 @@ export function runLineRegion(
     blocks.push(`# ${tag}${r.label}  ${span} (~${Math.ceil(body.length / 4)} tok)\n${body}`)
   })
   // The trailing half of the healStaleIndex/staleWarning pair every other single-file surgical-read command runs (runRead's symbol path, read_section, read_outline, cli_file_ops). healStaleIndex fails safe on a reparse it cannot complete: the stale rows stay, and this second look is what tells the reader the regions below were resolved against them.
-  return { text: guardText(staleWarning(resolved) + blocks.join('\n\n'), 'lines'), code: 0 }
+  return { text: guardText(staleWarning(resolved, 'read') + blocks.join('\n\n'), 'lines'), code: 0 }
 }
 
 export function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string | null {

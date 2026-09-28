@@ -14,7 +14,7 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, rankSimilarNames } from './read_suggest.js'
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
-import { DELETED_TAG, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, largestFileSize, recordReadStat, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
+import { DELETED_TAG, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
 
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
 const SYMBOL_PREVIEW_LINES = 5
@@ -136,6 +136,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const unordered = sweep.kept.slice(0, effectiveLimit)
   // An exact-name lookup asks where a thing is defined, and `file_path, line_start` answers it by alphabet: `const { ambigProbeFn } = await import('../src/thing.js')` in scripts/ sorts ahead of the real function in src/ purely because "scripts" precedes "src", so the first block a caller reads is an import statement rather than the body it went looking for. Sink the rows that only re-bind an imported name, keeping the query's own order within each group so the existing tie-breaks and paging behaviour are untouched. Nothing is dropped -- every candidate still prints, so a misjudged row costs one position and never an answer, which is the reason this reorders rather than filters. `--grep` listings are deliberately excluded: those are a browse of many different names, where file order is the useful one.
   const results = sinkGoneRows(opts.name === undefined ? unordered : stableSortImportBindsLast(unordered), (s) => s.filePath)
+  // A named file is judged once by staleWarning below (or the JSON branch); a bare lookup spans many files, so it books the states its own rows carry.
+  if (opts.file === undefined) {
+    if (results.some((s) => stillStale.has(s.filePath))) recordStaleServed('symbol', 'stale')
+    if (results.some((s) => fileIsGone(s.filePath))) recordStaleServed('symbol', 'deleted')
+  }
 
   const hiddenByExcludeTests = sweep.hiddenByExcludeTests
 
@@ -241,6 +246,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
     }))
     const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
+    if (opts.file !== undefined) recordStaleServed('symbol', indexFreshness(resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd())))
     const text = displaySafeJson(payload)
     recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
     return { text, code: 0 }
@@ -264,7 +270,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
         : ''
     return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
   })
-  const warning = opts.file !== undefined ? staleWarning(resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
+  const warning = opts.file !== undefined ? staleWarning(resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd()), 'symbol') : ''
   const text = guardText(warning + blocks.join('\n\n'), 'symbol')
   recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
   // Under a client-side filter the sweep walked every row in scope, so its kept count is the exact total rather than a floor.

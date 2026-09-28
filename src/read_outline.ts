@@ -10,7 +10,7 @@ import { resolveProjectRoot, getDisplayRoot } from './project.js'
 import { isVirtualIndexedPath, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
-import { indexFileSyncPinned, healStaleIndex, staleWarning, guardText, fileIsGone, recordReadStat, guardJsonRows, sumFileSizes } from './read_commands.js'
+import { indexFileSyncPinned, healStaleIndex, staleWarning, guardText, fileIsGone, indexFreshness, recordReadStat, recordStaleServed, guardJsonRows, sumFileSizes } from './read_commands.js'
 import { noSymbolsMessage, formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { firstBodyLine } from './read_suggest.js'
 import { parseMultiFileSpec, fileConfinementRefusal } from './read_spec.js'
@@ -196,6 +196,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
     const text = displaySafeJson(payload)
+    recordStaleServed('skeleton', indexFreshness(resolved))
     recordReadStat('stub_view', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
   }
@@ -207,7 +208,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
     const statsStr = formatStatsSuffix(refCounts, sym)
     lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
-  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
+  const text = guardText(staleWarning(resolved, 'skeleton') + lines.join('\n'), 'symbol')
   recordReadStat('stub_view', fullSourceBytes, text, opts.file)
   return { text, code: 0 }
 }
@@ -241,6 +242,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
     const text = displaySafeJson(payload)
+    recordStaleServed('outline', indexFreshness(resolved))
     recordReadStat('outline', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
   }
@@ -256,7 +258,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     const notebookSuffix = isVirtualIndexedPath(sym.filePath) ? NOTEBOOK_CELL_LINES_SUFFIX : ''
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}${notebookSuffix}`)
   }
-  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
+  const text = guardText(staleWarning(resolved, 'outline') + lines.join('\n'), 'symbol')
   recordReadStat('outline', fullSourceBytes, text, opts.file)
   return { text, code: 0 }
 }

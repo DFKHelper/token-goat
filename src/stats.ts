@@ -223,6 +223,8 @@ const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [
   ['taskoutput:', SOURCE_CONTENT],
   // Hook wall-clock timing (relay.ts's relayInProcess), one row per invocation, always 0 bytes/0 tokens: it measures token-goat's own overhead, not a saving. See hook_latency.ts's hookLatencyBreakdown() for the dedicated read path and pruneHookStats() below for its own (shorter) retention.
   ['hook:', SOURCE_OTHER],
+  // An answer a read command served from index rows that no longer match the disk (read_commands.ts recordStaleServed): `stale_served:stale` for a file changed since it was indexed, `stale_served:deleted` for one that is gone, the command in `detail`. Always 0 bytes/0 tokens: it counts old answers, it saves nothing.
+  ['stale_served:', SOURCE_OTHER],
 ]
 
 const COMMAND_KINDS: Record<string, Set<string>> = {

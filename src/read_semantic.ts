@@ -334,7 +334,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   const source = hadDense && hadFts ? 'hybrid' : hadDense ? 'embeddings' : 'fts'
 
   // Same multi-file self-heal-and-warn as runAsk/refs above -- `semantic` fuses hits across however many distinct files matched, none of which the caller named as a single spec.
-  warnIfFilesStale(hits.map((h) => h.filePath))
+  warnIfFilesStale(hits.map((h) => h.filePath), 'semantic')
 
   if (hits.length > 0) {
     if (opts.json === true) {

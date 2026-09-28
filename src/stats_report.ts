@@ -10,6 +10,14 @@ import { VERSION } from './version.js'
 const _BYTES_MODE_ONLY_KINDS = new Set(['webfetch_image', 'gdrive_image'])
 
 /** The short totals block shared by the plain-text and short-default renderers. */
+/** The `Stale answers:` totals line, from the `stale_served:` kinds recordStaleServed books, or nothing when there are none in the window. */
+function staleAnswersLine(summary: StatsSummary): string[] {
+  const changed = summary.by_kind['stale_served:stale']?.events ?? 0
+  const deleted = summary.by_kind['stale_served:deleted']?.events ?? 0
+  if (changed + deleted === 0) return []
+  return [`Stale answers:  ${changed + deleted} (${changed} changed on disk, ${deleted} deleted)`]
+}
+
 function _totalsLines(summary: StatsSummary): string[] {
   return [
     '# token-goat stats',
@@ -28,6 +36,8 @@ function _totalsLines(summary: StatsSummary): string[] {
     ...(summary.counts['secret_redacted']
       ? [`Secrets hidden: ${summary.counts['secret_redacted']} (a count, not tokens)`]
       : []),
+    // Omitted when nothing was served stale, like the line above. Counts answers, not tokens, so it stays out of the totals.
+    ...staleAnswersLine(summary),
     `Window:         ${summary.window_days} days`,
   ]
 }

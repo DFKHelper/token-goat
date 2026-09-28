@@ -452,7 +452,7 @@ export function runAsk(opts: AskOptions): number {
   if (moreBeyondTop) {
     emitErr(`Answer is grounded in the top ${countNoun(top, 'match', 'matches')}; more matched (raise --top to widen the evidence).`)
   }
-  warnIfFilesStale(hits.map((h) => h.filePath))
+  warnIfFilesStale(hits.map((h) => h.filePath), 'ask')
 
   const BACKEND_ENV = 'TOKEN_GOAT_ASK_BACKEND'
   const backendLabel = process.env[BACKEND_ENV] ?? ''
