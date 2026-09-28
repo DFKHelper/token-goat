@@ -1,6 +1,8 @@
 /** Shell command parsing, git mutation detection, pipeline filtering, and syntax validation. Extracted from hooks_bash.ts to isolate pure shell-command inspection and git working-tree mutation tracking from hook I/O delivery and caching. */
 
 import { statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import * as path from 'node:path'
 
 import { normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
@@ -80,10 +82,15 @@ function extractCdPrefixDirs(rawCmd: string): string[] {
   const segmentPattern = /cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))[ \t]*(?:&&|;|\r?\n)/g
   let match: RegExpExecArray | null
   while ((match = segmentPattern.exec(prefixMatch[0])) !== null) {
-    const dir = match[1] ?? match[2] ?? match[3]
+    const dir = match[1] ?? match[2] ?? (match[3] === undefined ? undefined : expandHomePrefix(match[3]))
     if (dir !== undefined) dirs.push(dir)
   }
   return dirs
+}
+
+/** An unquoted `cd` target as the shell reads it: a leading `~` alone or before `/` is the home directory. Only the unquoted word is passed here, since bash takes a quoted `~` literally. `~user` and a variable are left as written: the first names another account's home, which the hook has no portable way to look up, and the second whatever the shell's environment holds when the command runs, which the hook cannot see. */
+function expandHomePrefix(word: string): string {
+  return word === '~' || word.startsWith('~/') ? path.join(homedir(), word.slice(1)) : word
 }
 
 /** Resolves filePath against the directory a stripped `cd DIR && ...` prefix leaves the shell in (each cd resolved in turn — relative ones against the previous directory, starting from cwd — mirroring real shell semantics), so a hint naming filePath is resolvable from the hook's actual cwd rather than silently relative to a directory the model never navigated to. Falls back to filePath unchanged if the prefix can't be parsed into at least one directory. */
@@ -92,7 +99,7 @@ export function resolveCdHintPath(rawCmd: string, filePath: string, cwd: string)
   return resolveIndexPath(filePath, cdPrefixCwd(rawCmd, cwd))
 }
 
-/** The directory a leading `cd DIR` prefix leaves the shell in, or `cwd` when there is none. Split out of resolveCdHintPath because a caller building a cache key needs the resolution unconditionally, where one building a path to display wants the original text back when there was no prefix to account for. */
+/** The directory a leading `cd DIR` prefix leaves the shell in, or `cwd` when there is none, with an unquoted leading `~` read as the home directory (see expandHomePrefix). Split out of resolveCdHintPath because a caller building a cache key needs the resolution unconditionally, where one building a path to display wants the original text back when there was no prefix to account for. */
 export function cdPrefixCwd(rawCmd: string, cwd: string): string {
   let dir = cwd
   for (const target of extractCdPrefixDirs(rawCmd)) dir = resolveIndexPath(target, dir)

@@ -4,14 +4,15 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { preBashHandler } from '../src/hooks_bash.js'
+import { cdPrefixCwd } from '../src/hooks_bash_commands.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
-import { normalizePath } from '../src/paths.js'
+import { normalizePath, resolveIndexPath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { getSessionBashOutputs, getSessionBashReruns } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
@@ -24,8 +25,15 @@ const CLEAN = Array.from({ length: 30 }, (_, i) => `   Compiling writer-part${i}
 const dirs: string[] = []
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
 })
+
+/** Points the home directory at `dir`: os.homedir() reads HOME on Linux and macOS and USERPROFILE on Windows. */
+function homeAt(dir: string): void {
+  vi.stubEnv('HOME', dir)
+  vi.stubEnv('USERPROFILE', dir)
+}
 
 /** A root holding two packages, the directories one command runs in behind two different `cd` prefixes. */
 function layout(): { root: string; pkgA: string; pkgB: string } {
@@ -207,12 +215,61 @@ describe("the large-output hint's compress suggestion runs the command in the di
     expect(suggestion(hint)).toBeNull()
   })
 
-  // HAND-DERIVED: the hook resolves a cd's directory as a path and expands no `~`, so `cd ~/pkgA` resolves to a directory named `~` under the one the call started in, which is not there, and `cd ~` to that `~` itself. A suggestion naming it fails at its cd before the build runs.
-  it.each(['~/pkgA', '~'])('a cd to %s, which the hook cannot resolve to a directory that is there, gets the recall pointer and no compress suggestion', async (dir) => {
+  it.each([
+    ['~/pkgA', 'pkgA'],
+    ['~', ''],
+  ] as const)('a cd to %s is suggested with the home directory it expands to spelled out', async (dir, under) => {
     clearModuleCaches()
     const { root } = layout()
+    homeAt(root)
+    const hint = text(await post(newSession(), root, `cd ${dir} && ${piped}`, big))
+    expect(suggestion(hint)).toBe(`token-goat compress -c "cd '${normalizePath(path.join(root, under))}' && ${piped}"`)
+  })
+
+  // HAND-DERIVED: the hook leaves another account's home and a quoted `~` as written, so each resolves to a directory under the one the call started in, which is not there. A suggestion naming it would fail at its cd before the build runs.
+  it.each(['~other/pkgA', '"~/pkgA"'])('a cd to %s, which the hook cannot resolve to a directory that is there, gets the recall pointer and no compress suggestion', async (dir) => {
+    clearModuleCaches()
+    const { root } = layout()
+    homeAt(root)
     const hint = text(await post(newSession(), root, `cd ${dir} && ${piped}`, big))
     expect(hint).toMatch(/`token-goat bash-output [0-9a-f]+`/)
     expect(suggestion(hint)).toBeNull()
+  })
+})
+
+// FORMAT-DERIVED from bash(1), "Tilde Expansion": an unquoted word that starts with `~` alone or `~/` has the tilde replaced by $HOME, `~name` by that user's home, and a quoted `~` is not expanded; a variable expands to whatever the shell's environment holds when the command runs. The hook resolved every cd target as a path, so the key for a command behind `cd ~/pkgA` named a directory called `~` that never existed.
+describe('a cd to a home-relative directory is keyed where the shell lands', () => {
+  it('an unquoted `~` and `~/pkgA` resolve under the home directory', () => {
+    const { root, pkgA, pkgB } = layout()
+    homeAt(root)
+    expect(cdPrefixCwd('cd ~/pkgA && cargo build', pkgB)).toBe(pkgA)
+    expect(cdPrefixCwd('cd ~ && cargo build', pkgB)).toBe(root)
+    expect(cdPrefixCwd('cd ~ && cd pkgA && cargo build', pkgB)).toBe(pkgA)
+  })
+
+  it.each([
+    ['cd ~other/pkgA', '~other/pkgA'],
+    ['cd $HOME/pkgA', '$HOME/pkgA'],
+    ['cd "$HOME/pkgA"', '$HOME/pkgA'],
+    ["cd '~/pkgA'", '~/pkgA'],
+    ['cd "~/pkgA"', '~/pkgA'],
+    ['cd ~+/pkgA', '~+/pkgA'],
+  ])('%s is left as written', (prefix, written) => {
+    const { root, pkgB } = layout()
+    homeAt(root)
+    expect(cdPrefixCwd(`${prefix} && cargo build`, pkgB)).toBe(resolveIndexPath(written, pkgB))
+  })
+
+  it('a build behind `cd ~/pkgA` is recalled as the same build run in pkgA', async () => {
+    clearModuleCaches()
+    const { root, pkgA, pkgB } = layout()
+    homeAt(root)
+    const sid = newSession()
+    await post(sid, pkgA, 'cargo build', FAILING)
+    const idA = onlyCachedId(sid)
+    expect(await pre(sid, pkgB, 'cd ~/pkgA && cargo build')).toContain('bash-output ' + idA)
+    // Positive control: the same prefix with the home directory elsewhere names another directory, so the recall above is the expansion and not a key that ignores the prefix.
+    homeAt(pkgB)
+    expect(await pre(sid, pkgB, 'cd ~/pkgA && cargo build')).not.toContain(idA)
   })
 })
