@@ -131,6 +131,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     serve_diff_on_reread: true,
     elide_served_lines: true,
     subagent_markdown_first_read_deny: false,
+    agent_scoped_spawn_deny: false,
     backoff_thresholds: [1, 3, 10, 30],
     git_hint_max_ms: 50,
     min_session_hint_savings_bytes: 512,

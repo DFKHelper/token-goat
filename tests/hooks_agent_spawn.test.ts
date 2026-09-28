@@ -1221,3 +1221,87 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
     }
   })
 })
+
+describe('scoped-spawn deny (pre_tool_use, opt-in via hints.agent_scoped_spawn_deny, once per session)', () => {
+  // CAPTURE: tool_input key set of a real untyped Claude Code Agent call, from a transcript on this machine (~/.claude/projects/*/*.jsonl, tool_use id toolu_01WUEJYJkwVa9qcS6oYMPbmc): {"description","model","prompt"} with no subagent_type -- 137 of 157 Agent calls in that corpus began with description, 20 with subagent_type.
+  const UNTYPED_INPUT = { description: 'Gate 12: Haiku DRY check', model: 'haiku', prompt: 'Check the proposed addition.' }
+  const RESTRICTED_DEF = '---\nname: lean-coder\ndescription: scoped coder\ntools: Read, Grep, Bash\nmodel: inherit\n---\n\nBody.\n'
+  // HAND-DERIVED: the message is ours; pinned in full because the retry instruction (re-issue unchanged and it runs) is the promise the once-per-session gate below has to keep.
+  const EXPECTED_DENY = '[tg] This Agent call omits subagent_type, so it would run as general-purpose, which is unrestricted: its lane starts by paying for every tool and MCP schema on the machine. Tools-restricted agent definitions exist here: lean-coder. Re-issue the call with one of them as subagent_type if it fits the task. If none fits, re-issue it unchanged and it will run: this refusal fires once per session.'
+  let prevEnv: string | undefined
+
+  function writeRoster(): void {
+    const dir = path.join(os.homedir(), '.claude', 'agents')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'lean-coder.md'), RESTRICTED_DEF)
+  }
+
+  beforeEach(() => {
+    prevEnv = process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY']
+    process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY'] = '1'
+  })
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY']
+    else process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY'] = prevEnv
+    fs.rmSync(path.join(os.homedir(), '.claude'), { recursive: true, force: true })
+  })
+
+  it('denies the first untyped spawn with the exact message, lets the identical retry through, and does not repeat the names in the post-tool advisory (real cross-process load/dispatch/save cycle)', async () => {
+    writeRoster()
+    const sid = `${sessionId}-scoped-deny`
+    const first = await callAgentHook('pre_tool_use', UNTYPED_INPUT, sid)
+    expect(first.hookType).toBe('deny')
+    if (first.hookType === 'deny') expect(first.message).toBe(EXPECTED_DENY)
+    const retry = await callAgentHook('pre_tool_use', UNTYPED_INPUT, sid)
+    expect(retry.hookType).not.toBe('deny')
+    // The denied call never ran, so it must not have been registered as outstanding: the retry would otherwise be flagged as its own near-duplicate.
+    if (retry.hookType === 'rewriteInput') expect(String(retry.updatedInput['prompt'])).not.toContain('similar subagent spawn already appears')
+    const post = await callAgentHook('post_tool_use', UNTYPED_INPUT, sid, 'short report')
+    expect(post.hookType).toBe('pass')
+  })
+
+  it('is off by default: without the opt-in an untyped spawn is never denied', async () => {
+    delete process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY']
+    writeRoster()
+    const result = await callAgentHook('pre_tool_use', UNTYPED_INPUT, `${sessionId}-scoped-off`)
+    expect(result.hookType).not.toBe('deny')
+  })
+
+  it('leaves an explicit subagent_type alone, general-purpose included: spelling out the default is a choice, not an omission', async () => {
+    writeRoster()
+    for (const type of ['general-purpose', 'researcher']) {
+      const result = await callAgentHook('pre_tool_use', { ...UNTYPED_INPUT, subagent_type: type }, `${sessionId}-scoped-typed-${type}`)
+      expect(result.hookType).not.toBe('deny')
+    }
+  })
+
+  it('does not deny when no tools-restricted definition exists: a refusal with nothing to redirect to is pure friction', async () => {
+    const result = await callAgentHook('pre_tool_use', UNTYPED_INPUT, `${sessionId}-scoped-empty`)
+    expect(result.hookType).not.toBe('deny')
+  })
+
+  it('records one zero-credit agent_scoped_spawn_deny event per deny', async () => {
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      writeRoster()
+      const before = summarize(3650).by_kind['agent_scoped_spawn_deny']
+      const result = await callAgentHook('pre_tool_use', UNTYPED_INPUT, `${sessionId}-scoped-stats`)
+      expect(result.hookType).toBe('deny')
+      const after = summarize(3650).by_kind['agent_scoped_spawn_deny']
+      expect((after?.events ?? 0) - (before?.events ?? 0)).toBe(1)
+      expect((after?.bytes_saved ?? 0) - (before?.bytes_saved ?? 0)).toBe(0)
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
+    }
+  })
+})

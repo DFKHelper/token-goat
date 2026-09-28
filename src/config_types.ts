@@ -123,6 +123,8 @@ export interface HintsConfig {
   elide_served_lines: boolean
   /** Hard-deny a subagent's first, un-ranged Read of a >=30KB markdown file with >=3 headings, serving the heading tree instead. Off by default: the outcome rates for a first-read deny of this shape have never been measured, only borrowed from the re-read census. */
   subagent_markdown_first_read_deny: boolean
+  /** Deny, once per session, a Claude Code Agent spawn that omits subagent_type while tools-restricted agent definitions exist, naming them so the retry can pick one. Off by default: an untyped spawn inherits every tool and MCP schema into its lane's prefix, but whether a redirected spawn fits the narrower agent is a judgement the deny cannot make. */
+  agent_scoped_spawn_deny: boolean
   // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal can lift it back above hint_stats.suppress_threshold_pct -- see that module's "Probe recovery" doc-comment section. `[]` means no probes: suppression is permanent until a manual `token-goat hint-stats --reset`.
   backoff_thresholds: number[]
   git_hint_max_ms: number
