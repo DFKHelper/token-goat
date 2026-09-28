@@ -23,6 +23,7 @@ import {
   estimateRequestedSlice,
   describeSliceAdvice,
   loadSnapshotDiff,
+  rereadIdentity,
   type SnapshotDiffResult,
   countTextLines,
   estimateTruncatedLineCount,
@@ -1106,12 +1107,18 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // session_hint is recorded per-branch below, only where a deny actually returns or the final quietContextOutput will actually be visible -- recording it unconditionally here (as this used to) over-counted the ledger on every quiet-hours re-read that degraded to passOutput(), including protected/non-denying re-reads whose only possible output is that same quiet-hours-degradable fallback note. Session tracking above is unaffected either way; only this stat's accounting changes.
 
     // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only hinted via the contextOutput fallback at the bottom of this block.
+    // Which whole-file deny below fired, and whether the file it refused still held what the session last read (rereadIdentity). These denies decide from the read count alone, so this row is what tells a deny that saved a redundant read apart from one that withheld a changed file. Zero bytes: a measurement, not a saving.
+    const bookDenyIdentity = (branch: string): void => {
+      const { identity, basis } = rereadIdentity(sessionStateKey(event), normalized, entry)
+      recordStat('reread_deny_identity', 0, 0, undefined, `branch=${branch} identity=${identity} basis=${basis} edited=${entry?.wasEdited === true ? 1 : 0}`)
+    }
     if (config.hints.reread_deny && !protectedRead) {
       const window = readRequestedSliceWindow(event)
       // Item 1: file was truncated on last read — surgical reads only, gated on hints.truncated_read_min_lines (same gate as the doc/source diff-on-reread branch above) so a small file that happened to trip the token-based truncation marker doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
         if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
           recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-truncated-deny')
+          bookDenyIdentity('truncated')
           return denyOutput(truncatedReadDenyMessage(normalized))
         }
       }
@@ -1119,6 +1126,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size Sliced/ranged reads (carrying offset/limit) are surgical already and are left alone. Also requires a prior *whole-file* read (fullReads >= 1): a file touched only by narrow slices so far has never actually been read in full, so this unranged read is its first real full read, not a re-read.
       if (!window.isExplicitSlice && fullReads >= 1 && /\.(md|mdx|markdown|rst)$/i.test(basename)) {
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-doc-deny')
+        bookDenyIdentity('doc')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(leadWithCommand(
           'token-goat section "' + shown + '::' + hintTarget(normalized, 'section', { placeholder: 'HeadingName' }).name + '"',
@@ -1131,6 +1139,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (!window.isExplicitSlice && fullReads >= 1 && /\.(json|jsonc|html|htm)$/i.test(basename) && rereadBytes >= 8192) {
         const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
+        bookDenyIdentity('structured')
         return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').').trimStart())
       }
 
@@ -1139,6 +1148,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // read_count_deny carries the credit for this blocked read. Both it and session_hint map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint row here would double the same blocked bytes into the by_source rollup that hint-stats reads -- one deny, one blocked read, one credit. session_hint is still recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
+        bookDenyIdentity('source-count')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.').trimStart())
       }
@@ -1147,6 +1157,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
     if (config.hints.reread_deny && !protectedRead && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2)) {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
+      bookDenyIdentity('count')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
       return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').').trimStart())
     }
