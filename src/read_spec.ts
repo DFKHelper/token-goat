@@ -204,7 +204,8 @@ export function runLineRegion(
   }
   const slice = (r: LineRegion): string => allLines.slice(r.start - 1, Math.min(r.end, allLines.length)).join('\n')
   if (opts.json === true) {
-    recordStaleServed('read', indexFreshness(resolved))
+    const freshness = indexFreshness(resolved)
+    recordStaleServed('read', freshness)
     return {
       text: displaySafeJson({
         file,
@@ -216,6 +217,8 @@ export function runLineRegion(
           end: Math.min(r.end, allLines.length),
           lines: allLines.slice(r.start - 1, Math.min(r.end, allLines.length)),
         })),
+        // The text form prepends staleWarning's line; these are the keys the other --json outputs use for the same two states (runRead's `deleted`, runSymbol's per-row `stale`).
+        ...(freshness === 'deleted' ? { deleted: true } : freshness === 'stale' ? { stale: true } : {}),
       }),
       code: 0,
     }
