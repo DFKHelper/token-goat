@@ -260,7 +260,7 @@ function renderRefsTargets(
       if (notice !== null) lines.push(`  token-goat: ${notice}`)
     }
   }
-  warnIfFilesStale(refRows.map((r) => r.filePath))
+  warnIfFilesStale(refRows.map((r) => r.filePath), 'refs')
   const fullSourceBytes = refsSearchBaselineBytes(refRows)
   if (opts.json === true) {
     const text = displaySafeJson(jsonOut)
@@ -387,7 +387,7 @@ function runRefsSingle(opts: RefsOptions): number {
     return 1
   }
 
-  warnIfFilesStale(results.map((r) => r.filePath))
+  warnIfFilesStale(results.map((r) => r.filePath), 'refs')
   const fullSourceBytes = refsSearchBaselineBytes(results)
 
   if (opts.json === true) {

@@ -314,18 +314,34 @@ export function sinkGoneRows<T>(rows: readonly T[], pathOf: (row: T) => string):
   return live.length === rows.length ? [...rows] : [...live, ...rows.filter(isGone)]
 }
 
-/** Returns the STALE_WARNING line (plus trailing newline) when `resolvedPath`'s current on-disk SHA-256 differs from the SHA-256 stamped on its `files` row at the time it was last indexed, the DELETED_WARNING line when the file is gone from disk entirely, or '' when they match, the file isn't indexed, or the file is present but momentarily unreadable. Cheap by design: a single fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/skeleton/symbol lookup. */
-export function staleWarning(resolvedPath: string): string {
+/** Returns the STALE_WARNING line (plus trailing newline) when `resolvedPath`'s current on-disk SHA-256 differs from the SHA-256 stamped on its `files` row at the time it was last indexed, the DELETED_WARNING line when the file is gone from disk entirely, or '' when they match, the file isn't indexed, or the file is present but momentarily unreadable. Cheap by design: a single fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/skeleton/symbol lookup. A caller serving its answer from these rows passes its command name as `servedBy`, which books the answer through {@link recordStaleServed}; a caller only asking the question (a heal loop) leaves it out. */
+export function staleWarning(resolvedPath: string, servedBy?: string): string {
+  const state = indexFreshness(resolvedPath)
+  if (servedBy !== undefined) recordStaleServed(servedBy, state)
+  if (state === 'deleted') return `${DELETED_WARNING}\n`
+  if (state === 'fresh') return ''
+  return `${isReadOnlyDb(globalDbPath()) ? STALE_READ_ONLY_WARNING : STALE_WARNING}\n`
+}
+
+/** How a file's index rows compare with the file on disk, the judgement {@link staleWarning} renders: 'deleted' when the file is gone, 'stale' when its bytes no longer match the SHA its rows were indexed from, 'fresh' otherwise, including a file that is not indexed or is present but momentarily unreadable. */
+export type IndexFreshness = 'fresh' | 'stale' | 'deleted'
+
+export function indexFreshness(resolvedPath: string): IndexFreshness {
   const entry = getFileEntry(resolvedPath)
   // A sha-less row is not an indexed file (see indexMatchesDisk), and it stays quiet here for the same reason entry === null does: "stale" says the index holds an older version of this file, which is a different and more alarming claim than "this file is not indexed", and the caller's own no-symbols message already covers the latter. This is the one place the two cases should agree, so it is deliberately NOT the false-means-stale treatment the other two readers now give a sha-less row.
-  if (entry === null || entry.sha === '') return ''
+  if (entry === null || entry.sha === '') return 'fresh'
   const diskSha = fingerprintFile(resolvedPath)
   if (diskSha === null) {
     // Separate the two reasons fingerprintFile gives up. Gone from disk is a fact worth saying out loud; unreadable-right-now is transient and stays quiet as before.
-    return fileIsGone(resolvedPath) ? `${DELETED_WARNING}\n` : ''
+    return fileIsGone(resolvedPath) ? 'deleted' : 'fresh'
   }
-  if (diskSha === entry.sha) return ''
-  return `${isReadOnlyDb(globalDbPath()) ? STALE_READ_ONLY_WARNING : STALE_WARNING}\n`
+  return diskSha === entry.sha ? 'fresh' : 'stale'
+}
+
+/** Books one `stale_served:<state>` event in the stats ledger for an answer served from index rows that no longer match the disk, with the serving command as the row's detail. One event per answer, not per file: the count says how often a reply carried an old answer, which is what the warnings in the reply itself cannot add up. Zero bytes and zero tokens, since serving an old answer saves nothing. A fresh answer books nothing. */
+export function recordStaleServed(command: string, state: IndexFreshness): void {
+  if (state === 'fresh') return
+  recordStat(`stale_served:${state}`, 0, 0, undefined, command)
 }
 
 /** Self-heals a stale index entry instead of just warning about it: on the same SHA mismatch {@link staleWarning} detects, synchronously reparses `resolvedPath` in-process via {@link indexFileSync} -- the exact entry point the worker's dirty-queue drain (worker.ts's makeIndexer) and `--force-refresh` already use, so this shares `writeParseResult`'s single DELETE+INSERT transaction and db.ts's WAL journal mode + 15s busy_timeout. A background worker racing to reindex the very same file just makes whichever write goes second wait for the held lock instead of corrupting either write; no new concurrency handling is needed here. MUST be called before the caller's own DB query (querySymbols/etc.) so a successful heal is picked up by that query automatically -- this function does not itself return or re-fetch any rows. Every call site keeps its existing trailing `staleWarning(...)` call unchanged: once the heal has landed, that check naturally finds the sha now matches and emits nothing, so the surgical-read command just serves fresh data instead of a warning telling the agent to burn a full-file read. On a genuine reparse failure (syntax error, unsupported file type, I/O error) this fails safe -- the stale rows are left in place and the trailing `staleWarning(...)` call falls back to the original warning text unchanged. Also enqueues the dirty-queue path on a successful heal, mirroring `--force-refresh`'s own indexFileSync + enqueueDirtyPathSafe pairing (see that function's doc): indexFileSync always wipes `files.embed_sha`, so semantic search needs the same re-embed signal here too. Best-effort for ordinary parse/I/O failures (never throws for those); a ConfinementIdentityError from the pinned reindex is the one exception -- that signals a detected between-check-and-use swap, and the pinning contract requires a detected replacement to be refused rather than silently treated as an ordinary heal failure, so it is rethrown rather than swallowed. */
@@ -379,7 +395,7 @@ export function healStaleResultFiles(filePaths: readonly string[]): { healed: bo
   return { healed, stillStale }
 }
 
-export function warnIfFilesStale(filePaths: readonly string[]): void {
+export function warnIfFilesStale(filePaths: readonly string[], servedBy: string): void {
   const checked = new Set<string>()
   let staleCount = 0
   let goneCount = 0
@@ -397,6 +413,8 @@ export function warnIfFilesStale(filePaths: readonly string[]): void {
     // healStaleIndex is best-effort for ordinary parse/I/O failures already; only a detected between-check-and-use path swap (ConfinementIdentityError) is meant to escape it, and that is a real security-relevant condition this wrapper must not paper over either.
     healStaleIndex(raw)
   }
+  if (staleCount > 0) recordStaleServed(servedBy, 'stale')
+  if (goneCount > 0) recordStaleServed(servedBy, 'deleted')
   if (staleCount > 0) {
     const after = isReadOnlyDb(globalDbPath())
       ? 'the index is read-only this run, so these results are from the older version.'
@@ -620,6 +638,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
       : undefined
 
   if (opts.json === true) {
+    recordStaleServed('read', indexFreshness(match.filePath))
     // Serialize the resolved body, not the raw row. `symbols.body` is stored empty for symbols an extractor emits without text and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS (deliberately elided so it can be re-derived here rather than stored truncated). Emitting the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one output shape with no honest signal that the text is available elsewhere -- the text form below already resolves it.
     const text = displaySafeJson(
       {
@@ -641,7 +660,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     `# ${countNoun(bodyLen, 'line')} (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
     body,
   ]
-  const warning = staleWarning(match.filePath)
+  const warning = staleWarning(match.filePath, 'read')
   // Appended after the overflow guard, not folded into the guarded lines, so this advisory note never shifts the "showing N of M lines" count the guard reports for the actual body.
   const narrowerSliceHint = bodyLen > LARGE_SYMBOL_LINE_THRESHOLD
     ? `\n# for a narrower slice: token-goat grep "<pattern>" ${file} -C 15 --symbol`

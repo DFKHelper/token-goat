@@ -91,11 +91,11 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
-    'staleWarning',
+    'indexFreshness',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
       reason:
-        'read_commands.ts checks one file the caller\'s spec already named against a fresh disk read ' +
+        'read_commands.ts (the judgement behind staleWarning) checks one file the caller\'s spec already named against a fresh disk read ' +
         '-- detecting content drift for that one file, not scanning the whole project and silently ' +
         'skipping ones that look unchanged. A parser-stale-but-content-unchanged file here is caught ' +
         'by reconcile.ts\'s own sweep, not by this function.',

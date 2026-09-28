@@ -302,7 +302,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
   })
 
   if (opts.bodies === true) {
-    warnIfFilesStale(filtered.flatMap((b) => b.frames.map((f) => resolveIndexPath(f.file, cwd))))
+    warnIfFilesStale(filtered.flatMap((b) => b.frames.map((f) => resolveIndexPath(f.file, cwd))), 'trace')
   }
 
   if (opts.json === true) {

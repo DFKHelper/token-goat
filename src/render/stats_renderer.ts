@@ -1,24 +1,4 @@
-/**
- * Terminal renderer for token-goat stats.
- *
- * Produces a multi-section ANSI display from a ``StatsData`` payload:
- *
- * 1. **KPI tiles** — three side-by-side cards (data saved, tokens saved, events)
- *    with period-over-period deltas and optional mini sparklines.
- * 2. **By event kind** — colour-barred table showing savings per tool-call type
- *    (Read, image_shrink, Grep, etc.).
- * 3. **By source** — collapsed view of the four user-facing mechanisms (image
- *    / hint / read / compact) plus an ``other`` catch-all.
- * 4. **By day** — tabular daily breakdown (top N rows by bytes).
- * 5. **By project** — tabular per-project breakdown (top N rows by bytes).
- * 6. **Insights** — motivational copy loaded from ``stats_messages.json``.
- *
- * Entry point: :func:`renderStats` — returns a ready-to-print ANSI string.
- *
- * Layout uses ``_CONTENT_W`` (clamped 80–140 columns) and a shared set of
- * column-width constants so all tables are visually aligned. Colour values
- * come from ``ansi.C`` (GitHub dark palette).
- */
+/** Terminal renderer for token-goat stats. Produces a multi-section ANSI display from a ``StatsData`` payload: 1. **KPI tiles** — three side-by-side cards (data saved, tokens saved, events) with period-over-period deltas and optional mini sparklines. 2. **By event kind** — colour-barred table showing savings per tool-call type (Read, image_shrink, Grep, etc.). 3. **By source** — collapsed view of the four user-facing mechanisms (image / hint / read / compact) plus an ``other`` catch-all. 4. **By day** — tabular daily breakdown (top N rows by bytes). 5. **By project** — tabular per-project breakdown (top N rows by bytes). 6. **Insights** — motivational copy loaded from ``stats_messages.json``. Entry point: :func:`renderStats` — returns a ready-to-print ANSI string. Layout uses ``_CONTENT_W`` (clamped 80–140 columns) and a shared set of column-width constants so all tables are visually aligned. Colour values come from ``ansi.C`` (GitHub dark palette). */
 
 import { RESET, C, fg, lerpRgb, padL, padR, stripAnsiEscapes, vlen } from './ansi.js'
 import type { RGB } from './ansi.js'
@@ -105,9 +85,7 @@ const _TOKEN_TIERS: Tier[] = [
 
 // Formatters
 
-/**
- * Format an integer as a human-readable magnitude string with ANSI color.
- */
+/** Format an integer as a human-readable magnitude string with ANSI color. */
 function _fmtMagnitude(n: number, tiers: Tier[], zeroLabel?: string): string {
   if (zeroLabel !== undefined && n === 0) {
     return `${fg(...C.TEXT_DIM)}${zeroLabel}${RESET}`
@@ -170,9 +148,7 @@ const _BLOCK = '█'
 const _TRACK = '░'
 const _GRADIENT: RGB[] = [C.GREEN1, C.GREEN2, C.GREEN3, C.GREEN4, C.GREEN5]
 
-/**
- * Distribute `total` chars across `n` gradient stops, extras to later (brighter) stops.
- */
+/** Distribute `total` chars across `n` gradient stops, extras to later (brighter) stops. */
 function _distribute(total: number, n: number): number[] {
   if (total <= 0 || n <= 0) {
     return Array(Math.max(0, n)).fill(0)
@@ -182,9 +158,7 @@ function _distribute(total: number, n: number): number[] {
   return Array.from({ length: n }, (_, i) => base + (i >= n - rem ? 1 : 0))
 }
 
-/**
- * Render a uniform-width progress bar with a 5-stop green gradient fill and a dim track.
- */
+/** Render a uniform-width progress bar with a 5-stop green gradient fill and a dim track. */
 function _renderBar(fraction: number, width: number = _BAR_W): string {
   const f = Math.max(0, Math.min(1, fraction))
   const raw = f * width
@@ -216,9 +190,7 @@ function _renderBar(fraction: number, width: number = _BAR_W): string {
 // Sparkline renderer
 const _SPARK = '▁▂▃▄▅▆▇█'
 
-/**
- * Linearly resample *vals* to exactly *length* points.
- */
+/** Linearly resample *vals* to exactly *length* points. */
 function _resample(vals: number[], length: number): number[] {
   if (vals.length === 0) {
     return Array(length).fill(0)
@@ -239,9 +211,7 @@ function _resample(vals: number[], length: number): number[] {
   return result
 }
 
-/**
- * Render an 8-char mini sparkline.
- */
+/** Render an 8-char mini sparkline. */
 function _renderSparkline(values: number[], width: number = 8): string {
   const pts = _resample(values, width)
   const hi = pts.length > 0 ? Math.max(...pts) : 1
@@ -260,9 +230,7 @@ function _renderSparkline(values: number[], width: number = 8): string {
 
 // Share computation helpers
 
-/**
- * Return the share fraction for one item relative to period totals.
- */
+/** Return the share fraction for one item relative to period totals. */
 function _tokenOrByteShare(
   itemTokens: number,
   itemBytes: number,
@@ -278,9 +246,7 @@ function _tokenOrByteShare(
   return 0
 }
 
-/**
- * Savings-bar fill fraction. Positive-only: overhead rows render as empty bar.
- */
+/** Savings-bar fill fraction. Positive-only: overhead rows render as empty bar. */
 function _barFraction(itemBytes: number, grossBytes: number): number {
   return itemBytes > 0 ? itemBytes / grossBytes : 0
 }
@@ -291,9 +257,7 @@ interface ShareDenominators {
   shareTokensDenom: number
 }
 
-/**
- * Single-pass aggregation for share denominators.
- */
+/** Single-pass aggregation for share denominators. */
 function _computeShareDenominators(items: Array<{ bytes: number; tokens: number }>): ShareDenominators {
   let grossBytesSum = 0
   let shareByteSum = 0
@@ -312,9 +276,7 @@ function _computeShareDenominators(items: Array<{ bytes: number; tokens: number 
   }
 }
 
-/**
- * Share fraction using absolute-value denominators.
- */
+/** Share fraction using absolute-value denominators. */
 function _absShare(
   itemBytes: number,
   itemTokens: number,
@@ -578,10 +540,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'injection_detected',
     ]),
   },
-  // Membership comes from _kindGroupLabel's `mcp:` prefix branch, not from this set, which is why
-  // it is empty. The entry still has to exist: _renderByKindSection iterates _KIND_GROUPS' labels
-  // (plus 'Other') to decide what to print, so a label _kindGroupLabel returns but that is missing
-  // here does not fall back to 'Other' -- its rows disappear from the table entirely.
+  // Membership comes from _kindGroupLabel's `mcp:` prefix branch, not from this set, which is why it is empty. The entry still has to exist: _renderByKindSection iterates _KIND_GROUPS' labels (plus 'Other') to decide what to print, so a label _kindGroupLabel returns but that is missing here does not fall back to 'Other' -- its rows disappear from the table entirely.
   { label: 'MCP', members: new Set<string>() },
   {
     label: 'Compact / Skills',
@@ -611,6 +570,8 @@ const _KIND_GROUPS: KindGroup[] = [
       'plan_echo_collapse',
     ]),
   },
+  // Filled by _kindGroupLabel's `stale_served:` prefix branch, empty here for the same reason as MCP above.
+  { label: 'Stale answers', members: new Set<string>() },
 ]
 
 /** Every kind name literally listed in a {@link _KIND_GROUPS} member set. Exported for guards/rendered_stat_kind_is_registered.test.ts, the third mirror in the stat-registry guard family: a name the renderer groups but that stats.ts never registered has no source, no producer, and can only ever render as an empty row. */
@@ -623,28 +584,25 @@ export function _kindGroupLabel(kind: string): string {
   if (kind.startsWith('bash_compress:') || kind.startsWith('bashoutput:')) {
     return 'Bash'
   }
-  // Mirrors the bash_compress: special case above for stats.ts's other live colon-prefixed kind
-  // (webfetch:recall) -- KIND_PREFIX_TO_SOURCE maps it to SOURCE_WEB, but without this branch it
-  // fell through every literal _KIND_GROUPS member set to 'Other' instead of 'Web'.
+  // Mirrors the bash_compress: special case above for stats.ts's other live colon-prefixed kind (webfetch:recall) -- KIND_PREFIX_TO_SOURCE maps it to SOURCE_WEB, but without this branch it fell through every literal _KIND_GROUPS member set to 'Other' instead of 'Web'.
   if (kind.startsWith('webfetch:') || kind.startsWith('gdrive:')) {
     return 'Web'
   }
-  // Same special case for the mcp: prefix (mcp:compress, mcp:recall). KIND_PREFIX_TO_SOURCE maps
-  // it to SOURCE_MCP, which the by-source table shows, but the by-kind table -- the one users
-  // read -- has no literal member set for it, so without this branch every MCP row would land
-  // under 'Other' and the mechanism would still be effectively unreadable.
+  // Same special case for the mcp: prefix (mcp:compress, mcp:recall). KIND_PREFIX_TO_SOURCE maps it to SOURCE_MCP, which the by-source table shows, but the by-kind table -- the one users read -- has no literal member set for it, so without this branch every MCP row would land under 'Other' and the mechanism would still be effectively unreadable.
   if (kind.startsWith('mcp:')) {
     return 'MCP'
   }
-  // Same special case for the skill_body: prefix (skill_body:compact). Its literal siblings below
-  // already sit in the 'Compact / Skills' set, so without this branch a colon-prefixed skill kind
-  // would render under 'Other', separated from the very rows it belongs beside.
+  // Same special case for the skill_body: prefix (skill_body:compact). Its literal siblings below already sit in the 'Compact / Skills' set, so without this branch a colon-prefixed skill kind would render under 'Other', separated from the very rows it belongs beside.
   if (kind.startsWith('skill_body:') || kind.startsWith('skill_compact:')) {
     return 'Compact / Skills'
   }
   // taskoutput: is KIND_PREFIX_TO_SOURCE's other SOURCE_CONTENT entry (subagent report recall); it groups with the literal Content names below.
   if (kind.startsWith('taskoutput:')) {
     return 'Content'
+  }
+  // stale_served: counts answers served from index rows that no longer match the disk; it saves nothing, so it sits apart from every savings group.
+  if (kind.startsWith('stale_served:')) {
+    return 'Stale answers'
   }
   for (const group of _KIND_GROUPS) {
     if (group.members.has(kind)) {
@@ -691,9 +649,7 @@ function _renderByKindSection(stats: StatsData): string[] {
     grpKinds.sort((a, b) => share(b) - share(a))
   }
 
-  // Include 'Other' after the defined groups so kinds that _kindGroupLabel falls back to
-  // 'Other' for (i.e. not a member of any _KIND_GROUPS set) still get rendered instead of
-  // silently vanishing from this table while still being nameable by the Insights section.
+  // Include 'Other' after the defined groups so kinds that _kindGroupLabel falls back to 'Other' for (i.e. not a member of any _KIND_GROUPS set) still get rendered instead of silently vanishing from this table while still being nameable by the Insights section.
   const groupLabels = [..._KIND_GROUPS.map((g) => g.label), 'Other']
 
   let firstGroup = true
@@ -936,10 +892,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
     return `${fg(...C.TEXT_MUTED)}${s}${RESET}`
   }
 
-  // Only kinds that actually saved something can lead a savings ranking. Some kinds are pure
-  // measurements recorded at (0, 0) -- compact_summary, which records how large a compaction
-  // summary was -- and a store holding only those would otherwise crown one of them "Biggest
-  // saver ... 0.0%", which reads as a result rather than as an empty ranking.
+  // Only kinds that actually saved something can lead a savings ranking. Some kinds are pure measurements recorded at (0, 0) -- compact_summary, which records how large a compaction summary was -- and a store holding only those would otherwise crown one of them "Biggest saver ... 0.0%", which reads as a result rather than as an empty ranking.
   const savingKinds = stats.by_kind.filter((k) => k.bytes > 0)
   const topKind = savingKinds.reduce((max, k) => (k.bytes > (max?.bytes || -Infinity) ? k : max), savingKinds[0])
   if (topKind) {
@@ -969,8 +922,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
     )
   }
 
-  // Hints fired but zero direct commands were ever invoked -- the "By command"
-  // section would otherwise vanish silently instead of flagging the gap.
+  // Hints fired but zero direct commands were ever invoked -- the "By command" section would otherwise vanish silently instead of flagging the gap.
   if ((stats.by_command?.length ?? 0) === 0) {
     const hintSource = stats.by_source?.find((s) => s.source === 'hint')
     if (hintSource && hintSource.events > 0) {
@@ -1008,13 +960,7 @@ function _renderShortHint(): string[] {
 
 // Main export
 
-/**
- * Render a complete token-goat stats report to a string ready for print().
- *
- * Pass ``{ short: true }`` to render only the header and KPI section (totals,
- * bars, sparklines) plus a hint pointing at ``--full`` -- used by the bare
- * ``token-goat stats`` default on a TTY.
- */
+/** Render a complete token-goat stats report to a string ready for print(). Pass ``{ short: true }`` to render only the header and KPI section (totals, bars, sparklines) plus a hint pointing at ``--full`` -- used by the bare ``token-goat stats`` default on a TTY. */
 export function renderStats(stats: StatsData, opts?: { short?: boolean }): string {
   if (opts?.short) {
     const sections = [_renderHeader(stats), _renderKpiSection(stats), _renderShortHint(), ['']]

@@ -18,7 +18,7 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { findContainingSection, type SectionResult } from './section_reader.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
-import { fileIsGone, findSpecSeparator, guardText, readFileText, recordReadStat, resolveBody, staleWarning, sumFileSizes } from './read_commands.js'
+import { fileIsGone, findSpecSeparator, guardText, indexFreshness, readFileText, recordReadStat, recordStaleServed, resolveBody, staleWarning, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
 import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec } from './read_spec.js'
 import { formatBareNameSpecError, trimBlankLines } from './read_suggest.js'
@@ -124,6 +124,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
       section,
     }
     const jsonText = displaySafeJson(result)
+    recordStaleServed('brief', indexFreshness(match.filePath))
     if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, jsonText, opts.spec)
     return { text: jsonText, code: 0 }
   }
@@ -139,7 +140,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
   ]
 
   // Same staleWarning/healStaleIndex pair every other single-file surgical-read command runs (resolveSymbolSpec above already heals a stale-but-reparseable file in place; this is the same trailing check runRead makes to catch what healing could not fix -- most visibly a deleted file, which healStaleIndex leaves untouched).
-  const warning = staleWarning(match.filePath)
+  const warning = staleWarning(match.filePath, 'brief')
 
   // An empty caller block reads as "nothing calls this", which for a symbol exercised only by tests is the opposite of the truth and invites deleting live code -- so when the filter is what emptied it, say so instead of showing a bare zero.
   const hiddenNote = excludeTests && hiddenByExcludeTests > 0 ? ` (${excludeTestsHiddenNote(hiddenByExcludeTests)})` : ''
