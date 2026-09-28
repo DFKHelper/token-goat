@@ -45,7 +45,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
       'handoff-resolve', 'screenshot', 'fetch-image', 'prune-cache', 'reclaim-index',
       'clean-cache', 'mcp-serve', 'upgrade'],
     'reads a per-invocation session/transcript/cache slice scoped to one caller-named session or ID, not a shared filterable store':
-      ['session-outline', 'session-slice', 'session-summary', 'bash-history', 'web-history',
+      ['session-outline', 'session-slice', 'session-summary', 'listing-size', 'bash-history', 'web-history',
         'mcp-history', 'recall', 'resume', 'mcp-output', 'bash-output', 'web-output', 'pr-slice',
         'history'],
     'reads or extracts a single named item (one symbol, one file, one section), not a filterable listing':

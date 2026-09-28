@@ -15,6 +15,7 @@ import {
   cmdWaste,
   cmdAudit,
   cmdSessionOutline,
+  cmdListingSize,
   cmdSessionSlice,
   cmdSessionAudit,
   cmdMcpAudit,
@@ -240,6 +241,14 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
     .description('show body/compact token counts per skill')
     .option('--session-id <id>', 'filter by session')
     .action(guard(cmdSkillSize))
+
+  program
+    .command('listing-size [sessionIdOrPath]')
+    .description('price the skill and agent listings Claude Code sends each session, largest descriptions first')
+    .option('--project <path>', 'project root whose newest transcript to read')
+    .option('--top <n>', 'descriptions to list per listing (default: 10)')
+    .option('--json', 'output JSON')
+    .action(guard(cmdListingSize))
 
   program
     .command('skill-history')

@@ -97,6 +97,21 @@ export async function cmdSessionAudit(opts: { dir?: string; json?: boolean; wind
   out(opts.json === true ? displaySafeJson(summary, 0) : formatSessionAudit(summary))
 }
 
+export async function cmdListingSize(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean; top?: string } = {}): Promise<void> {
+  const top = opts.top !== undefined ? requireNonNegativeInt('--top', opts.top) : 10
+  const transcriptPath = resolveSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
+  if (transcriptPath === null) {
+    throw new CliError(
+      sessionIdOrPath !== undefined
+        ? `no session transcript found for '${sessionIdOrPath}'`
+        : 'no session transcript found for the current project; pass a session id or path explicitly',
+    )
+  }
+  const { measureListings, renderListingReport } = await import('./listing_size.js')
+  const report = await measureListings(transcriptPath)
+  out(opts.json === true ? displaySafeJson(report, 0) : renderListingReport(report, top))
+}
+
 export async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean } = {}): Promise<void> {
   const transcriptPath = resolveSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
   if (transcriptPath === null) {
