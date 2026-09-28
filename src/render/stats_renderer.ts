@@ -519,6 +519,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'read_count_deny',
       'read_served_deny',
       'reread_deny_identity',
+      'edit_after_fold',
       'subagent_markdown_first_read_deny',
       'grep_dedup_hint',
       'glob_dedup_hint',

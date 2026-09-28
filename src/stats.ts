@@ -106,6 +106,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   subagent_markdown_first_read_deny: SOURCE_HINT,
   // A measurement booked beside every whole-file re-read deny in hooks_read.ts: which branch fired and whether the refused file still held what the session last read (detail `branch=… identity=identical|changed|unknown basis=snapshot|stat|none edited=0|1`). SOURCE_OTHER, not SOURCE_HINT: stats_report.ts counts SOURCE_HINT events as hints fired, and this row is a second record of a deny its sibling session_hint or read_count_deny row already counts.
   reread_deny_identity: SOURCE_OTHER,
+  // A measurement booked by postEditHandler when an edit lands on a file whose last Read in the session handed over only part of it (detail `last_read=outline|skeleton|fold|truncated|partial tool=<name>`), from the record read_shape.ts keeps. Zero bytes: it saves nothing, it counts edits composed from a partial view.
+  edit_after_fold: SOURCE_OTHER,
   read_replacement: SOURCE_READ,
   section_replacement: SOURCE_READ,
   symbol_read: SOURCE_READ,
