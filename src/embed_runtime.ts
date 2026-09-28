@@ -3,6 +3,7 @@
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { dataDir } from './constants.js'
 import type { WebRuntimeHost } from './embed_runtime_web.js'
@@ -23,8 +24,11 @@ export const ORT_WEB_WASM: PinnedFile = {
   bytes: 14239897,
 }
 
-/** How long a failed attempt to get the WebAssembly runtime running is remembered before the next one. While it is remembered the runtime reports itself unavailable, so indexing records files as skipped for want of a runtime (and re-embeds them once it is back) instead of every file in a walk starting its own download; a new process, which is what each `token-goat index` is, always tries afresh. */
+/** How long a failed attempt to get the WebAssembly runtime running is remembered before the next one. While it is remembered the runtime reports itself unavailable, so indexing records files as skipped for want of a runtime (and re-embeds them once it is back) instead of every file in a walk starting its own download. A failure to place the binary (a download that did not complete, offline mode) is kept in this process only, so the next process, which is what each `token-goat index` is, tries afresh; a failure to start is kept on disk as well, for {@link START_FAILURE_HOLD_MS}. */
 const WEB_RETRY_AFTER_MS = 10 * 60 * 1000
+
+/** How long a failure of the WebAssembly runtime to start (the binary was in hand, and the bundled JavaScript or the engine under it refused to run it, as `node --jitless` or a Node without WebAssembly SIMD does) is held against every process that shares the data root. Kept only in memory, it was invisible to the next process: the worker's embeds failed while `semantic --preflight` and `doctor`, which only ask and never start the runtime, reported it ready. Such a failure repeats until something changes, so the record carries a key naming what could change it (see startFailureKey) and is ignored the moment the key differs; the day is for a cause the key cannot see, and deleting the record, which the reported reason names, retries at once. */
+const START_FAILURE_HOLD_MS = 24 * 60 * 60 * 1000
 
 /** The other way to get embeddings running, which needs no download from token-goat at all. */
 export const NATIVE_RUNTIME_INSTALL = 'install the native runtime with: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)'
@@ -74,7 +78,8 @@ export interface OrtWebModule extends OrtModule {
 let _chosen: RuntimeName | null = null
 let _nodeOrt: OrtModule | null = null
 let _nodeError: Error | null = null
-let _webFailure: { readonly error: Error; readonly at: number } | null = null
+let _webFailure: { readonly error: Error; readonly at: number; readonly started: boolean } | null = null
+let _recordChecked = false
 
 function asError(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e))
@@ -93,14 +98,56 @@ function chooseRuntime(): RuntimeName {
   return _chosen
 }
 
-/** The failure of the last attempt to get the WebAssembly runtime running, while it is still being remembered. */
+/** The failure of the last attempt to get the WebAssembly runtime running, while it is still being remembered: this process's own, else a start failure another process recorded under the same key (read once per process). */
 function recentWebFailure(): Error | null {
+  if (_webFailure === null && !_recordChecked) {
+    _recordChecked = true
+    _webFailure = recordedStartFailure()
+  }
   if (_webFailure === null) return null
-  if (Date.now() - _webFailure.at >= WEB_RETRY_AFTER_MS) {
+  // A start failure stands only while its record does, so deleting the record retries in a long-lived process too, such as the resident hook server that answers `semantic`.
+  if (Date.now() - _webFailure.at >= (_webFailure.started ? START_FAILURE_HOLD_MS : WEB_RETRY_AFTER_MS) || (_webFailure.started && !fs.existsSync(startFailurePath()))) {
     _webFailure = null
     return null
   }
   return _webFailure.error
+}
+
+/** Where a start failure is recorded: beside the binary it concerns, so a new ORT_WEB_VERSION, a new data root and `uninstall --purge` each leave it behind. */
+function startFailurePath(): string {
+  return path.join(wasmDir(), 'start-failure.json')
+}
+
+/** NODE_OPTIONS as this process started with it. Read at module load, not when a key is built: the resident hook server runs each request with its caller's environment swapped in (swapEnv in batch_serve.ts), while the flags V8 runs under are the ones the server itself started with, and the server loads this module before it takes a request. */
+const NODE_OPTIONS_AT_START = process.env['NODE_OPTIONS'] ?? ''
+
+/** Everything whose change could make a runtime that failed to start run: the pinned runtime and binary, this token-goat build (the size and modification time of the file this is bundled into, which any reinstall rewrites), and the Node that ran it with its flags. */
+function startFailureKey(): string {
+  let build = ''
+  try {
+    const self = fs.statSync(fileURLToPath(import.meta.url))
+    build = `${self.size}:${self.mtimeMs}`
+  } catch {
+    // Unreadable is still a key; it just cannot tell two builds apart.
+  }
+  return JSON.stringify([ORT_WEB_VERSION, ORT_WEB_WASM.sha256, build, process.execPath, process.version, process.platform, process.arch, process.execArgv, NODE_OPTIONS_AT_START])
+}
+
+/** A start failure recorded under the current key, as this process's own, or null. Fail-soft: a missing, unreadable or foreign record is no record. */
+function recordedStartFailure(): { error: Error; at: number; started: true } | null {
+  const file = startFailurePath()
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { key?: unknown; message?: unknown; at?: unknown }
+    if (parsed.key !== startFailureKey() || typeof parsed.message !== 'string' || typeof parsed.at !== 'number') return null
+    const when = new Date(parsed.at).toISOString()
+    return {
+      error: new Error(`${parsed.message} (in an earlier run, at ${when}; it is tried again once Node, its flags or token-goat change, or a day after, and deleting ${file} tries it at once)`),
+      at: parsed.at,
+      started: true,
+    }
+  } catch {
+    return null
+  }
 }
 
 /** Which runtime computes the vectors in this process. */
@@ -178,33 +225,33 @@ export async function ensureWasmBinary(): Promise<Uint8Array> {
 
 /** What embed_runtime_web.ts is given instead of importing it; see WebRuntimeHost there. */
 function webHost(): WebRuntimeHost {
-  return { version: ORT_WEB_VERSION, wasm: ORT_WEB_WASM, dir: wasmDir(), sharedDir: sharedWasmCacheDir(), publish: publishToSharedCache }
-}
-
-/** The WebAssembly build, loaded once per process with its binary and glue verified and its thread count set (loadWebRuntime in embed_runtime_web.ts). A failure is remembered for {@link WEB_RETRY_AFTER_MS}; see there. */
-async function loadWebRuntime(threads: number): Promise<OrtWebModule> {
-  const remembered = recentWebFailure()
-  if (remembered) throw remembered
-  try {
-    return await (await import('./embed_runtime_web.js')).loadWebRuntime(threads, webHost())
-  } catch (e) {
-    const error = asError(e)
-    _webFailure = { error, at: Date.now() }
-    throw error
+  return {
+    version: ORT_WEB_VERSION,
+    wasm: ORT_WEB_WASM,
+    dir: wasmDir(),
+    sharedDir: sharedWasmCacheDir(),
+    publish: publishToSharedCache,
+    startFailure: { path: startFailurePath(), key: startFailureKey() },
+    failed(e: unknown, started: boolean): Error {
+      const error = asError(e)
+      _webFailure = { error, at: Date.now(), started }
+      return error
+    },
   }
 }
 
-/** Create an inference session for the model at `modelPath` on the active runtime. Never create one bare. ONNX Runtime sizes its intra-op pool to the host when no count is given, and that pool is what every `run()` fans out across: measured on a 26-logical-core machine, `create()` with no options took the process from 13 OS threads to 30, while the same model with an explicit count added none. Indexing is background work -- a detached daemon draining a queue, or a bulk walk the user started and then went back to their editor -- so it takes a small, fixed share of the machine and finishes later, rather than most of the machine and finishes sooner. `interOpNumThreads` is 1 because the graph is run one sequence at a time (see EmbeddingModel.embed), so there are no parallel branches for a second scheduler to place. The WebAssembly build takes its count from `env.wasm.numThreads` instead, set to the same value when {@link loadWebRuntime} starts it, since it runs its pool as worker threads started before any session exists. */
+/** Create an inference session for the model at `modelPath` on the active runtime. Never create one bare. ONNX Runtime sizes its intra-op pool to the host when no count is given, and that pool is what every `run()` fans out across: measured on a 26-logical-core machine, `create()` with no options took the process from 13 OS threads to 30, while the same model with an explicit count added none. Indexing is background work -- a detached daemon draining a queue, or a bulk walk the user started and then went back to their editor -- so it takes a small, fixed share of the machine and finishes later, rather than most of the machine and finishes sooner. `interOpNumThreads` is 1 because the graph is run one sequence at a time (see EmbeddingModel.embed), so there are no parallel branches for a second scheduler to place. The WebAssembly build takes its count from `env.wasm.numThreads` instead, set to the same value when createWebSession in embed_runtime_web.ts starts it, since it runs its pool as worker threads started before any session exists. A failure of the WebAssembly build to get running is remembered (see {@link WEB_RETRY_AFTER_MS} and {@link START_FAILURE_HOLD_MS}), and while it is, this throws it without trying again. */
 export async function createInferenceSession(
   modelPath: string,
   threads: number,
 ): Promise<{ session: OrtSession; Tensor: OrtTensorConstructor }> {
-  const ort: OrtModule = chooseRuntime() === 'onnxruntime-node' ? (_nodeOrt as OrtModule) : await loadWebRuntime(threads)
-  const session = await ort.InferenceSession.create(modelPath, {
-    intraOpNumThreads: threads,
-    interOpNumThreads: 1,
-  })
-  return { session, Tensor: ort.Tensor }
+  if (chooseRuntime() === 'onnxruntime-node') {
+    const ort = _nodeOrt as OrtModule
+    return { session: await ort.InferenceSession.create(modelPath, { intraOpNumThreads: threads, interOpNumThreads: 1 }), Tensor: ort.Tensor }
+  }
+  const remembered = recentWebFailure()
+  if (remembered) throw remembered
+  return (await import('./embed_runtime_web.js')).createWebSession(modelPath, threads, webHost())
 }
 
 registerReset(() => {
@@ -212,4 +259,5 @@ registerReset(() => {
   _nodeOrt = null
   _nodeError = null
   _webFailure = null
+  _recordChecked = false
 })

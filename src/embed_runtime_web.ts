@@ -9,11 +9,11 @@ import { createGunzip } from 'node:zlib'
 
 import { loadConfig } from './config.js'
 import { ensureDataDirPrivate } from './constants.js'
-import type { OrtWebModule } from './embed_runtime.js'
+import type { OrtSession, OrtTensorConstructor, OrtWebModule } from './embed_runtime.js'
 import { copyFromSharedCache, downloadPinned } from './pinned_fetch.js'
 import type { PinnedFile } from './pinned_file.js'
 import { registerReset } from './reset.js'
-import { ensureDirSync } from './util.js'
+import { atomicWriteText, ensureDirSync } from './util.js'
 
 const _require = createRequire(import.meta.url)
 
@@ -29,6 +29,10 @@ export interface WebRuntimeHost {
   readonly sharedDir: string | null
   /** publishToSharedCache. */
   publish(shared: string, file: PinnedFile, target: string): void
+  /** Where a start failure is recorded, and the key a later process has to present to be held to it (startFailurePath and startFailureKey in embed_runtime.ts). */
+  readonly startFailure: { readonly path: string; readonly key: string }
+  /** Remember a failure in this process, as a failure to start (`started`) or to place the binary; returns it as an Error to throw. */
+  failed(e: unknown, started: boolean): Error
 }
 
 /** The npm registry tarball of onnxruntime-web at ORT_WEB_VERSION in embed_runtime.ts, whose value its name spells out because this module cannot import it (see {@link WebRuntimeHost}); tests/embed_runtime_pins.test.ts holds the name to the lock file's resolved URL for the devDependency. CAPTURE: fetched from registry.npmjs.org on 2026-09-28; its sha512 equals the registry's `dist.integrity` (sha512-q0y+JrrtukXSzsBWEMccVfqX25LRmosXHF+CaRJmg8pZClzcV7svNc4rKY3jL02Vb7QmRMDs1SigqR4CXAfKYQ==) and its sha1 the registry's `dist.shasum`, so these are the published bytes. */
@@ -48,8 +52,13 @@ export const ORT_WEB_GLUE: PinnedFile = {
 /** Where the binary sits inside the tarball. */
 const TARBALL_MEMBER = 'package/dist/ort-wasm-simd-threaded.wasm'
 
+/** How onnxruntime-common words a session that could not be created because no backend would initialize, which for this build means the WebAssembly engine refused to start. CAPTURE: `node --jitless` creating a session on the pinned 1.30.0 threw "no available backend found. ERR: [wasm] Error: WebAssembly SIMD is not supported in the current environment., [cpu] Error: previous call to 'initWasm()' failed."; tests/semantic_wasm_runtime_bundle_e2e.test.ts reproduces it against the built bundle. Any other failure to create a session is the model's or the moment's, and is not held against later runs. */
+const BACKEND_START_FAILED = 'no available backend found'
+
 let _webLoad: Promise<OrtWebModule> | null = null
 let _inFlightWasm: Promise<Uint8Array> | null = null
+/** Failures of {@link ensureWasmBinary} as they reach {@link loadWebRuntime}'s caller, which are about getting the binary rather than running it, so a fixed network is tried again at once instead of being held to a record. */
+const _placeFailures = new WeakSet<object>()
 
 /** The file's bytes when it is a regular file of exactly the pinned length and digest, else null. lstat first, so a FIFO or a symlink to something endless is refused before anything is read. */
 function readVerified(filePath: string, file: PinnedFile): Buffer | null {
@@ -277,8 +286,8 @@ function verifiedGlueUrl(version: string): string {
   return pathToFileURL(file).href
 }
 
-/** Load the bundled onnxruntime-web once per process, with its binary and glue verified and its thread count set, ready for a first session. A failure is not kept here: the next call tries again, and loadWebRuntime in embed_runtime.ts, the only caller, decides how long to hold one against it. */
-export function loadWebRuntime(threads: number, host: WebRuntimeHost): Promise<OrtWebModule> {
+/** Load the bundled onnxruntime-web once per process, with its binary and glue verified and its thread count set, ready for a first session. A failure is not kept here: the next call tries again, and {@link createWebSession} decides how long to hold one against it. */
+function loadWebRuntime(threads: number, host: WebRuntimeHost): Promise<OrtWebModule> {
   if (_webLoad !== null) return _webLoad
   const pending = (async () => {
     const ort = (await import('onnxruntime-web')) as unknown as OrtWebModule
@@ -286,7 +295,10 @@ export function loadWebRuntime(threads: number, host: WebRuntimeHost): Promise<O
       throw new Error(`the bundled onnxruntime-web is ${ort.env.versions.web ?? 'unknown'}, but its binary is pinned for ${host.version}`)
     }
     const glue = verifiedGlueUrl(host.version)
-    const binary = await ensureWasmBinary(host)
+    const binary = await ensureWasmBinary(host).catch((e: unknown) => {
+      if (typeof e === 'object' && e !== null) _placeFailures.add(e)
+      throw e
+    })
     ort.env.wasm.wasmBinary = binary
     ort.env.wasm.wasmPaths = { mjs: glue }
     ort.env.wasm.numThreads = threads
@@ -297,6 +309,48 @@ export function loadWebRuntime(threads: number, host: WebRuntimeHost): Promise<O
     if (_webLoad === pending) _webLoad = null
   })
   return pending
+}
+
+/** A session for the model at `modelPath` on the WebAssembly build, started with its verified binary and glue (createInferenceSession in embed_runtime.ts, the only caller, says why the thread counts are what they are). A failure to place the binary is remembered in this process only. A failure to start, which is a version or glue mismatch at load or no backend initializing at create, is remembered here and recorded under `host.startFailure` for the processes after this one, and the first session that does start under the same key deletes that record. */
+export async function createWebSession(
+  modelPath: string,
+  threads: number,
+  host: WebRuntimeHost,
+): Promise<{ session: OrtSession; Tensor: OrtTensorConstructor }> {
+  let ort: OrtWebModule
+  try {
+    ort = await loadWebRuntime(threads, host)
+  } catch (e) {
+    if (typeof e === 'object' && e !== null && _placeFailures.has(e)) throw host.failed(e, false)
+    throw startFailed(e, host)
+  }
+  let session: OrtSession
+  try {
+    session = await ort.InferenceSession.create(modelPath, { intraOpNumThreads: threads, interOpNumThreads: 1 })
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith(BACKEND_START_FAILED)) throw startFailed(e, host)
+    throw e
+  }
+  try {
+    // Only a record under this process's key is proved wrong by this start. One under another key (another Node, other flags) still describes the runtime there, and is ignored here anyway.
+    const recorded = JSON.parse(fs.readFileSync(host.startFailure.path, 'utf8')) as { key?: unknown }
+    if (recorded.key === host.startFailure.key) fs.rmSync(host.startFailure.path, { force: true })
+  } catch {
+    // No record, or one that cannot be read, which the reader ignores the same way.
+  }
+  return { session, Tensor: ort.Tensor }
+}
+
+/** Record a start failure for the processes after this one and remember it in this one. Remembered as a start failure only once the record is written, because embed_runtime.ts holds a start failure only while its record exists (so deleting the record retries even in a long-lived process); unwritable, it is remembered as a failure to place the binary is, for this process and its shorter hold, which is what there was before the record. */
+function startFailed(e: unknown, host: WebRuntimeHost): Error {
+  const message = e instanceof Error ? e.message : String(e)
+  try {
+    ensureDirSync(path.dirname(host.startFailure.path))
+    atomicWriteText(host.startFailure.path, JSON.stringify({ key: host.startFailure.key, message, at: Date.now() }))
+  } catch {
+    return host.failed(e, false)
+  }
+  return host.failed(e, true)
 }
 
 registerReset(() => {
