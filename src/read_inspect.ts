@@ -16,7 +16,8 @@ import { extractExportNames, extractImports, importsExtensionFor } from './impor
 import { querySymbols } from './index_reader.js'
 import { getNote, isNoteStale, listNotes, WHOLE_FILE_NOTE_SYMBOL } from './notes.js'
 import type { SymbolEntry } from './parser_types.js'
-import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, fileExists, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes, healStaleResultFiles } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
@@ -476,7 +477,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   }
 
   const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
-  const symbols = querySymbols({ filePath: resolveIndexPath(diskPath), limit: -1 })
+  const symbols = querySymbols({ filePath: resolveSpecPath(diskPath), limit: -1 })
   const kindOf = (name: string): string => symbols.find((s: SymbolEntry) => s.name === name)?.kind ?? 'export'
   const locOf = (name: string): { lineStart: number; lineEnd: number } | null => {
     const s = symbols.find((sym: SymbolEntry) => sym.name === name)
@@ -641,7 +642,7 @@ export interface NoteGetOptions {
 }
 
 export function runNoteGet(opts: NoteGetOptions): { text: string; code: number } {
-  const resolvedPath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
+  const resolvedPath = resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd())
   healStaleIndex(resolvedPath)
   const symbol = opts.symbol ?? WHOLE_FILE_NOTE_SYMBOL
   const note = getNote(resolvedPath, symbol)
@@ -808,7 +809,7 @@ export function runLocate(opts: LocateOptions): number {
   const scanOpts: Parameters<typeof forEachSymbol>[0] = {}
 
   if (targetFile !== undefined) {
-    scanOpts.filePath = resolveIndexPath(targetFile, rootDir)
+    scanOpts.filePath = resolveSpecPath(targetFile, rootDir)
     healStaleIndex(scanOpts.filePath)
   } else {
     scanOpts.rootDir = rootDir

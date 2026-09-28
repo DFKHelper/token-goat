@@ -3,7 +3,8 @@
 import { getFileEntry, getProjectFileEntries, querySymbols } from './index_reader.js'
 import { isIgnoredIndexPath } from './baseline.js'
 import { foldPath } from './path_containment.js'
-import { displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, toDisplayPath } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import { runCallers, runImpact } from './graph_commands.js'
 import { runTestFor } from './graph_analysis.js'
@@ -147,7 +148,7 @@ function resolveSymbolHit(subject: string, rootDir: string): { name: string; fil
 
 /** The subject read as a file: an exact path, else the project's file list matched by basename ("config.ts") or by extensionless stem ("config"). Several matches is reported as ambiguity rather than resolved by picking one, which would be a confident wrong answer. The match runs over the `files` table rather than over symbol rows: `files` is the authoritative list of what is indexed (a file with no extracted symbols has no symbol rows at all), it needs one query instead of a capped path-suffix scan, and it makes the candidate set independent of how many symbols each file happens to contain. */
 function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | null {
-  const entry = getFileEntry(resolveIndexPath(subject))
+  const entry = getFileEntry(resolveSpecPath(subject))
   if (entry && !isIgnoredIndexPath(entry.filePath)) return { kind: 'file', path: entry.filePath }
   if (subject.includes('/') || subject.includes('\\')) return null
 
@@ -173,7 +174,7 @@ export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-firs
   // Split on the LAST `::` by index rather than a regex: a Windows drive-letter path makes a lazy leading group ambiguous, and the file side is the part that may legitimately contain a colon.
   const sep = subject.lastIndexOf('::')
   if (sep > 0 && sep + 2 < subject.length) {
-    const file = resolveIndexPath(subject.slice(0, sep))
+    const file = resolveSpecPath(subject.slice(0, sep))
     const hit = querySymbols({ filePath: file, name: subject.slice(sep + 2), rootDir, limit: 1 })[0]
     if (hit && !isIgnoredIndexPath(hit.filePath)) return { kind: 'symbol', name: hit.name, file: hit.filePath }
     return null

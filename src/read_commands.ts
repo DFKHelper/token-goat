@@ -6,7 +6,8 @@ import { SKIP_DIRS } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { indexedSourceText, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
-import { displaySafeText, normalizePath, resolveIndexPath, displaySafeJson } from './paths.js'
+import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
+import { expandSpecPath, resolveSpecPath } from './spec_path.js'
 import { indexFileSync } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -572,7 +573,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
     const crossFileLead = formatCrossFileLead('read', symbol, file, opts.projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
-    const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+    const resolved = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
     // Query a bounded superset (FIND_SCAN_LIMIT) scoped to this one file, THEN rank by similarity and cap at DIDYOUMEAN_LIMIT -- capping in the query itself would return an arbitrary storage-order first-N that can omit the actual closest match entirely.
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
     const closes = rankSimilarNames(scanned, symbol)
@@ -675,7 +676,7 @@ function runReadMulti(pairs: { file: string; symbol: string }[], opts: ReadOptio
 
   // Count each distinct file's on-disk size once for the whole multi-symbol call, not once per symbol or per file repeat -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see ReadOptions.suppressStat).
   if (anyFound) {
-    const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, (f) => resolveIndexPath(f, opts.projectRoot ?? process.cwd())))
+    const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, (f) => resolveSpecPath(f, opts.projectRoot ?? process.cwd())))
     const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
     recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
     return { text, code: 0 }
@@ -687,9 +688,10 @@ function runReadMulti(pairs: { file: string; symbol: string }[], opts: ReadOptio
 
 // ---- section ----------------------------------------------------------------
 
-/** The base a relative file path resolves against on disk. Resolves against `projectRoot` only when one was explicitly given AND the path is relative: an absolute path, or the no-projectRoot default every CLI caller takes, is returned untouched so those paths stay byte-identical to the long-standing behavior of resolving against `process.cwd()` inside the read helpers themselves. This is the execution-side half of the MCP confinement invariant (see `resolveToolRoot` in mcp_server.ts): the gate admits a relative target by resolving it against the project root, so every disk read on that path must resolve it against the same root or the check guards a different file than the one served. */
+/** The base a relative file path resolves against on disk. Resolves against `projectRoot` only when one was explicitly given AND the path is relative: an absolute path, or the no-projectRoot default every CLI caller takes, is returned untouched so those paths stay byte-identical to the long-standing behavior of resolving against `process.cwd()` inside the read helpers themselves. This is the execution-side half of the MCP confinement invariant (see `resolveToolRoot` in mcp_server.ts): the gate admits a relative target by resolving it against the project root, so every disk read on that path must resolve it against the same root or the check guards a different file than the one served. The typed spelling first goes through expandSpecPath, the same front end resolveSpecPath applies for the index key, so `~/x` and a Git Bash `/c/x` open the file `read` and `outline` already look up; the MCP gate expands it the same way before measuring it. */
 export function resolveAgainstProjectRoot(file: string, projectRoot: string | undefined): string {
-  return projectRoot !== undefined && !path.isAbsolute(file) ? path.resolve(projectRoot, file) : file
+  const f = expandSpecPath(file)
+  return projectRoot !== undefined && !path.isAbsolute(f) ? path.resolve(projectRoot, f) : f
 }
 
 // ---- github pr-slice ---------------------------------------------------------
@@ -1167,7 +1169,7 @@ export function runGrep(opts: GrepOptions): number {
     for (const hit of truncated) {
       let syms = symbolsByFile.get(hit.file)
       if (syms === undefined) {
-        syms = querySymbols({ filePath: resolveIndexPath(hit.file), limit: ALL_SYMBOLS_IN_FILE_LIMIT })
+        syms = querySymbols({ filePath: resolveSpecPath(hit.file), limit: ALL_SYMBOLS_IN_FILE_LIMIT })
         symbolsByFile.set(hit.file, syms)
       }
       // `hit.line` is a line in the file the search read; a virtual-indexed file's symbol ranges are lines in the flattened cell source. Asking which symbol encloses a JSON line is asking the question in the wrong document: it answered null for every notebook hit, and could as easily have named whichever symbol happened to span that number. Refused explicitly, with one note per file below, so the blank label is an answer rather than an absence.

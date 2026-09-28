@@ -4,7 +4,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { querySymbols, queryRefs, distinctSymbolKinds } from './index_reader.js'
-import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
+import { displaySafeText, normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
+import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, isRefIndexedFile } from './ref_blindness.js'
 import { guardJsonRows } from './read_commands.js'
@@ -287,7 +288,7 @@ export function runTypes(opts: TypesOptions): number {
 
   const limit = opts.limit ?? 500
   const excludeTests = opts.excludeTests === true
-  const filePath = opts.file !== undefined ? resolveIndexPath(opts.file) : undefined
+  const filePath = opts.file !== undefined ? resolveSpecPath(opts.file) : undefined
   const fpOpt = filePath !== undefined ? { filePath } : {}
   const rootDir = resolveProjectRoot({ project: process.cwd() })
 
@@ -421,7 +422,7 @@ export function runScope(opts: ScopeOptions): number {
     return 1
   }
 
-  const filePath = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+  const filePath = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
   const enclosing = querySymbols({ filePath, enclosingLine: line, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
     .sort((a, b) => b.lineStart - a.lineStart || a.lineEnd - b.lineEnd || a.name.localeCompare(b.name, 'en'))
 

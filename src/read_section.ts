@@ -1,5 +1,4 @@
 import * as fs from 'node:fs'
-import * as path from 'node:path'
 
 import { querySymbols } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
@@ -214,11 +213,8 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
   const keyFor = (p: { file: string; symbol: string }): string =>
     distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`
 
-  const resolvePath = (f: string): string =>
-    opts.projectRoot !== undefined && !path.isAbsolute(f) ? path.resolve(opts.projectRoot, f) : f
-
   for (const { file, symbol: heading } of pairs) {
-    const resolved = resolvePath(file)
+    const resolved = resolveAgainstProjectRoot(file, opts.projectRoot)
     const sectionResult = readSection(resolved, heading, readFileText)
     const key = keyFor({ file, symbol: heading })
     const fileIncluded = includedByFile.get(resolved) ?? []
@@ -264,7 +260,7 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
 
   const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) {
-    const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, resolvePath))
+    const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, (f) => resolveAgainstProjectRoot(f, opts.projectRoot)))
     recordReadStat('section_read', fullSourceBytes, text, opts.spec)
   }
   return { text, code: anyFound ? 0 : 1 }
