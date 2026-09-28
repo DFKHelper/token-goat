@@ -1,25 +1,13 @@
-/**
- * Session spend-ledger: parses a Claude Code session transcript (JSONL) and
- * attributes token cost per tool call, per tool name, and per file, then
- * flags a few concrete waste signals. Backs `token-goat waste`.
- *
- * Transcript format (Claude Code, not otherwise documented in this repo --
- * confirmed empirically against real transcripts under
- * `~/.claude/projects/<slug>/*.jsonl`): one JSON object per line. Assistant
- * lines have `message.content` containing `{ type: 'tool_use', id, name,
- * input }` blocks; the corresponding result arrives in a later `user`-role
- * line as a `{ type: 'tool_result', tool_use_id, content }` block, where
- * `content` is either a plain string or an array of `{ type: 'text', text }`
- * blocks. Line order in the file is chronological.
- */
+/** Session spend-ledger: parses a Claude Code session transcript (JSONL) and attributes token cost per tool call, per tool name, and per file, then flags a few concrete waste signals. Backs `token-goat waste`. Transcript format (Claude Code, not otherwise documented in this repo -- confirmed empirically against real transcripts under `~/.claude/projects/<slug>/*.jsonl`): one JSON object per line. Assistant lines have `message.content` containing `{ type: 'tool_use', id, name, input }` blocks; the corresponding result arrives in a later `user`-role line as a `{ type: 'tool_result', tool_use_id, content }` block, where `content` is either a plain string or an array of `{ type: 'text', text }` blocks. Line order in the file is chronological. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 
-import { claudeConfigDir } from './claude_config_dir.js'
+import { projectTranscriptsDir } from './claude_config_dir.js'
 import { estimateTokens } from './overflow_guard.js'
 import { commandHash, getBashOutput, normalizeCommandForCacheKey } from './bash_output_cache.js'
+import { resolveBashCall } from './hooks_bash_commands.js'
 import {
   accumulateResidentLine,
   createResidentContextStats,
@@ -29,19 +17,6 @@ import {
 } from './resident_context.js'
 
 // ---- transcript discovery ----------------------------------------------------
-
-/**
- * Directory Claude Code stores this project's session transcripts under.
- *
- * Matches the project-dir slug convention already relied on by
- * `findMemoryMd` in cli_context_stats.ts: every non-alphanumeric character of
- * the resolved project root becomes `-`, no trimming.
- */
-export function projectTranscriptsDir(projectRoot: string): string {
-  const rootStr = path.resolve(projectRoot)
-  const slug = rootStr.replace(/[^A-Za-z0-9]/g, '-')
-  return path.join(claudeConfigDir(), 'projects', slug)
-}
 
 /** Return the most-recently-modified `*.jsonl` transcript for `projectRoot`, or null if none exist. */
 export function findLatestTranscript(projectRoot: string): string | null {
@@ -87,19 +62,9 @@ export interface ParsedToolCall {
 export interface ParsedTranscript {
   calls: ParsedToolCall[]
   resultTextById: Map<string, string>
-  /**
-   * Per-assistant-turn estimated token total of that turn's own `type:'text'` content blocks
-   * (one entry per assistant message that had at least one text block; a pure tool_use message
-   * with no text contributes no entry at all, so `assistantTurns.length` counts turns that
-   * actually said something, not every assistant message -- this is the count `assistantOutputCost`
-   * uses for its resend multiplier, so it deliberately excludes silent tool-only turns).
-   */
+  /** Per-assistant-turn estimated token total of that turn's own `type:'text'` content blocks (one entry per assistant message that had at least one text block; a pure tool_use message with no text contributes no entry at all, so `assistantTurns.length` counts turns that actually said something, not every assistant message -- this is the count `assistantOutputCost` uses for its resend multiplier, so it deliberately excludes silent tool-only turns). */
   assistantTurns: number[]
-  /**
-   * Harness-injected context counted off the same pass. These lines carry no `message`, so the
-   * tool-call parser below skips them entirely -- which is exactly why this class of cost went
-   * unreported until now. See resident_context.ts.
-   */
+  /** Harness-injected context counted off the same pass. These lines carry no `message`, so the tool-call parser below skips them entirely -- which is exactly why this class of cost went unreported until now. See resident_context.ts. */
   resident: ResidentContextStats
 }
 
@@ -119,11 +84,7 @@ function extractFilePath(name: string, input: unknown): string | null {
   const o = input as Record<string, unknown>
   const fp = o['file_path']
   if (typeof fp === 'string') return fp
-  // NotebookEdit's real wire field is `notebook_path`, not `file_path` (mirrors
-  // hooks_common.ts's getFilePath fallback) -- without this, every NotebookEdit call's
-  // filePath came back null, so tokensByFile silently dropped its token cost from the
-  // per-file breakdown instead of attributing it, the same class of gap already fixed for
-  // MultiEdit above.
+  // NotebookEdit's real wire field is `notebook_path`, not `file_path` (mirrors hooks_common.ts's getFilePath fallback) -- without this, every NotebookEdit call's filePath came back null, so tokensByFile silently dropped its token cost from the per-file breakdown instead of attributing it, the same class of gap already fixed for MultiEdit above.
   const notebookPath = o['notebook_path']
   return typeof notebookPath === 'string' ? notebookPath : null
 }
@@ -205,8 +166,7 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
     }
     if (obj === null || typeof obj !== 'object') continue
     const o = obj as Record<string, unknown>
-    // Before the `message` gate below, not after: attachment and compaction-boundary lines have no
-    // `message` at all, so anything placed after that early-continue would never see one.
+    // Before the `message` gate below, not after: attachment and compaction-boundary lines have no `message` at all, so anything placed after that early-continue would never see one.
     accumulateResidentLine(resident, o, trimmed.length)
     const message = o['message']
     if (message === null || typeof message !== 'object') continue
@@ -216,9 +176,7 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
     const role = typeof messageObj['role'] === 'string' ? messageObj['role'] : null
     const cwd = typeof o['cwd'] === 'string' ? (o['cwd'] as string) : null
 
-    // Assistant-authored text blocks in this message, if any -- accumulated across the whole
-    // message and pushed once below, not per-block, since a turn's cost is what gets resent as
-    // one unit on every later request.
+    // Assistant-authored text blocks in this message, if any -- accumulated across the whole message and pushed once below, not per-block, since a turn's cost is what gets resent as one unit on every later request.
     let turnTextTokens = 0
     let sawTextBlock = false
 
@@ -247,9 +205,7 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
           resultTextById.set(id, extractResultText(b['content']))
         }
       } else if (role === 'assistant' && b['type'] === 'text' && typeof b['text'] === 'string') {
-        // Deliberately NOT counting tool_use blocks here: their cost is already attributed via
-        // the tool-result ledger above (costPerCall/tokensByTool/tokensByFile), so summing them
-        // again here would double-count the same tokens under a different label.
+        // Deliberately NOT counting tool_use blocks here: their cost is already attributed via the tool-result ledger above (costPerCall/tokensByTool/tokensByFile), so summing them again here would double-count the same tokens under a different label.
         sawTextBlock = true
         turnTextTokens += estimateTokens(b['text'])
       }
@@ -313,15 +269,7 @@ export interface NeverTouchedFile {
   tokens: number
 }
 
-/**
- * Files read via Read whose path is never referenced again afterward: no
- * later Read/Edit/Write/NotebookEdit of the same path, and no later tool_use
- * whose input mentions the path anywhere (e.g. a Grep scoped to it, or a Bash
- * command operating on it). Aggregated per file across all of that file's
- * Read calls, anchored at the *first* Read of the file -- a second Read of
- * the same path is itself a "referenced again" event, so it must count as
- * touching the file rather than reset the window.
- */
+/** Files read via Read whose path is never referenced again afterward: no later Read/Edit/Write/NotebookEdit of the same path, and no later tool_use whose input mentions the path anywhere (e.g. a Grep scoped to it, or a Bash command operating on it). Aggregated per file across all of that file's Read calls, anchored at the *first* Read of the file -- a second Read of the same path is itself a "referenced again" event, so it must count as touching the file rather than reset the window. */
 export function neverTouchedAgain(costs: ToolCallCost[]): NeverTouchedFile[] {
   const readsByFile = new Map<string, ToolCallCost[]>()
   for (const c of costs) {
@@ -354,21 +302,7 @@ export interface RepeatedBashCommand {
   avgTokens: number
 }
 
-/**
- * Bash commands run 2+ times in the session (grouped by
- * `normalizeCommandForCacheKey`) where none of the repeat runs hit
- * token-goat's own bash-output cache (`bash_output_cache.ts`).
- *
- * Cache membership is checked best-effort via `commandHash` + `getBashOutput`
- * for each occurrence's recorded command/cwd; a lookup that throws (e.g. a
- * transient fingerprint probe failure) is treated as a miss rather than
- * aborting the whole report. Note this check reflects the *current* on-disk
- * cache state, not the cache state at the time each historical command ran --
- * a git-mutable command (`git status`/`git diff`) in particular is
- * fingerprinted against live repo state, so a session-old invocation will
- * usually miss even if it was cached when it originally ran. Treat this list
- * as "still uncached as of right now", not a perfect historical replay.
- */
+/** Bash commands run 2+ times in the session (grouped by `normalizeCommandForCacheKey`) where none of the repeat runs hit token-goat's own bash-output cache (`bash_output_cache.ts`). Cache membership is checked best-effort via `commandHash` + `getBashOutput` for each occurrence under the command and directory `resolveBashCall` derives from its recorded command and cwd, the key the Bash post hook stored its output under; a lookup that throws (e.g. a transient fingerprint probe failure) is treated as a miss rather than aborting the whole report. Note this check reflects the *current* on-disk cache state, not the cache state at the time each historical command ran -- a git-mutable command (`git status`/`git diff`) in particular is fingerprinted against live repo state, so a session-old invocation will usually miss even if it was cached when it originally ran. Treat this list as "still uncached as of right now", not a perfect historical replay. */
 export async function repeatedUncompressedBashCommands(costs: ToolCallCost[]): Promise<RepeatedBashCommand[]> {
   const groups = new Map<string, ToolCallCost[]>()
   for (const c of costs) {
@@ -386,7 +320,9 @@ export async function repeatedUncompressedBashCommands(costs: ToolCallCost[]): P
     let cached = false
     for (const c of calls) {
       try {
-        const hash = await commandHash(c.command as string, c.cwd)
+        // Looked up under the key the post hook stored the call's output under, not the command as written: a cd prefix, leading assignments, a subshell group or a compress wrapper would otherwise hash to a key nothing is ever stored under.
+        const { cmd, runDir } = resolveBashCall(c.command as string, c.cwd)
+        const hash = await commandHash(cmd, runDir)
         if (getBashOutput(hash) !== null) {
           cached = true
           break
@@ -415,16 +351,7 @@ export interface AssistantOutputCost {
   turnCount: number
   /** Sum of every turn's tokens -- what was paid ONCE, as output, to produce this text. Real spend. */
   generatedTokens: number
-  /**
-   * A cache-UNAWARE upper bound, NOT real spend: turn `i`'s tokens counted once for every LATER
-   * turn that would resend it as conversation-history input (`turnCount - 1 - i` later turns).
-   * This is a ceiling because Claude Code's prompt caching bills a repeated conversation prefix
-   * at cache-read rates -- a fraction of the full input-token price -- not the full rate this sum
-   * assumes for every resend. Presenting this number as actual cost would be a fabricated
-   * statistic; it exists to bound how bad unbounded verbosity COULD get, the same reason the Read
-   * counterfactual elsewhere in this file is capped rather than left unbounded. Callers MUST
-   * render it labeled as a ceiling/upper bound, never as spend (see cli_waste.ts).
-   */
+  /** A cache-UNAWARE upper bound, NOT real spend: turn `i`'s tokens counted once for every LATER turn that would resend it as conversation-history input (`turnCount - 1 - i` later turns). This is a ceiling because Claude Code's prompt caching bills a repeated conversation prefix at cache-read rates -- a fraction of the full input-token price -- not the full rate this sum assumes for every resend. Presenting this number as actual cost would be a fabricated statistic; it exists to bound how bad unbounded verbosity COULD get, the same reason the Read counterfactual elsewhere in this file is capped rather than left unbounded. Callers MUST render it labeled as a ceiling/upper bound, never as spend (see cli_waste.ts). */
   resendCeilingTokens: number
 }
 

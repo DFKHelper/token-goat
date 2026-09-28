@@ -9,14 +9,13 @@ import * as path from 'node:path'
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 
-import { claudeConfigDir } from '../src/claude_config_dir.js'
+import { claudeConfigDir, projectTranscriptsDir } from '../src/claude_config_dir.js'
 import { buildBootstrapAudit } from '../src/cli_bootstrap_audit.js'
 import { findClaudeMdFiles, findMemoryMd } from '../src/cli_context_stats.js'
 import { findRestrictedAgentNames } from '../src/hooks_agent_spawn.js'
 import { claudeHookScriptPath, claudeMdPath, findStrayClaudeMdBlocks, settingsPath, skillDir } from '../src/install.js'
 import { defaultCorpusDir } from '../src/session_audit.js'
 import { installedSkillPath } from '../src/skill_cache.js'
-import { projectTranscriptsDir } from '../src/waste.js'
 
 let configHome: string
 let prev: string | undefined

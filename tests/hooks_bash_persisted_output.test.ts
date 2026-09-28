@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 
 import { readPersistedBashOutput } from '../src/hooks_bash_post.js'
-import { projectTranscriptsDir } from '../src/waste.js'
+import { projectTranscriptsDir } from '../src/claude_config_dir.js'
 import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 const SESSION_ID = 'dogfood-session-id'
