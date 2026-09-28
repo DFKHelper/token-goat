@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir } from './constants.js'
 import { displaySafeText } from './paths.js'
-import { ensureDirSync, extractErrorMessage } from './util.js'
+import { atomicWriteText, ensureDirSync, extractErrorMessage } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -41,12 +41,12 @@ export function drainHeartbeatPathFor(dir: string): string {
   return path.join(dir, 'queue', 'drain-heartbeat')
 }
 
+/** Rewrite the drain heartbeat with this process's pid. Written through a temp file and a rename rather than in place: `writeFileSync` truncates before it writes, and a reader in another process landing in that window read an empty file, so hasFreshWorkerHeartbeat reported a live worker as dead. */
 export function writeDrainHeartbeat(dir: string, force = false): void {
   const now = Date.now()
   if (!force && now - (heartbeatWriteTimes.get(dir) ?? 0) < WORKER_HEARTBEAT_REFRESH_MS) return
   try {
-    ensureDirSync(path.dirname(drainHeartbeatPathFor(dir)))
-    fs.writeFileSync(drainHeartbeatPathFor(dir), `${process.pid}\n`)
+    atomicWriteText(drainHeartbeatPathFor(dir), `${process.pid}\n`)
     heartbeatWriteTimes.set(dir, now)
   } catch {
     // Best-effort liveness signal; failed heartbeat writes must not stop indexing.

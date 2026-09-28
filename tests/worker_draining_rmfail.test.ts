@@ -7,15 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mockState = vi.hoisted(() => ({ throwRmSyncOnce: false, throwRenameSyncOnce: false }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
+  // Only the dirty-queue files are faulted: drainOnce also renames its heartbeat into place, and a guard that fired on whatever rename came next would spend itself there instead of on the queue cleanup under test.
+  const isQueueFile = (p: fs.PathLike): boolean => String(p).includes('dirty.txt')
   const guardedRmSync = (target: fs.PathLike, options?: fs.RmOptions): void => {
-    if (mockState.throwRmSyncOnce) {
+    if (mockState.throwRmSyncOnce && isQueueFile(target)) {
       mockState.throwRmSyncOnce = false
       throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
     }
     actual.rmSync(target, options)
   }
   const guardedRenameSync = (oldPath: fs.PathLike, newPath: fs.PathLike): void => {
-    if (mockState.throwRenameSyncOnce) {
+    if (mockState.throwRenameSyncOnce && isQueueFile(oldPath)) {
       mockState.throwRenameSyncOnce = false
       throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
     }
