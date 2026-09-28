@@ -391,3 +391,35 @@ function parseNumberedReadResult(respText: string, firstLine: number): ParsedRea
   if (rows.length > 0) return { header, rows, trailer }
   return plainReadResult(respText, firstLine)
 }
+
+/** Whether a file the whole-file re-read denies are refusing still holds what the session last read, and how that was decided. */
+export interface RereadIdentity {
+  readonly identity: 'identical' | 'changed' | 'unknown'
+  readonly basis: 'snapshot' | 'stat' | 'none'
+}
+
+/** Decide whether `normalized` still holds what this session last read, for the measurement the whole-file re-read denies book. Those denies say "already read this session" from a read count alone, never from the content, so a deny on a file that changed since the read the model holds refuses the one read that would have been current. The snapshot postReadHandler keeps of the last read is the proof when there is one: byte equality with disk. A missing or truncated snapshot falls back to the size captured at the last read and the file's mtime against the last whole-file read: a size that moved, or a write after that read, is a change; neither is identical as far as a stat can tell. `prior` is the session entry as it stood before this read was recorded, so its size and times describe the last read the session recorded. That includes a read an earlier deny refused (recordActualRead books it all the same), so after one deny the stat fallback measures against that refusal, not the delivery the model holds; the snapshot, written only when a read is delivered, has no such blind spot. */
+export function rereadIdentity(
+  sessionId: string,
+  normalized: string,
+  prior: { readonly sizeBytes: number; readonly lastReadAt: number; readonly lastFullReadAt?: number } | undefined,
+): RereadIdentity {
+  const onDisk = hostPathOfIndexKey(normalized)
+  let current: fs.Stats
+  try {
+    current = fs.statSync(onDisk)
+  } catch {
+    return { identity: 'unknown', basis: 'none' }
+  }
+  const snap = snapshotLoad(sessionId, normalized)
+  if (snap !== null && !snap.includes('\n<snapshot truncated at ') && current.size <= 256 * 1024) {
+    try {
+      return { identity: snap.equals(fs.readFileSync(onDisk)) ? 'identical' : 'changed', basis: 'snapshot' }
+    } catch {
+      // Unreadable now: fall through to the stat comparison.
+    }
+  }
+  if (prior === undefined || prior.sizeBytes <= 0) return { identity: 'unknown', basis: 'none' }
+  const changed = current.size !== prior.sizeBytes || current.mtimeMs > (prior.lastFullReadAt ?? prior.lastReadAt)
+  return { identity: changed ? 'changed' : 'identical', basis: 'stat' }
+}

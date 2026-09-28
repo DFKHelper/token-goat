@@ -104,6 +104,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   read_served_deny: SOURCE_HINT,
   // hooks_read.ts's subagent first-read markdown deny (hints.subagent_markdown_first_read_deny, off by default). Always recorded at 0 bytes / 0 tokens: no first-read deny of this shape exists in the transcript corpus, so its abandoned/substituted/shell-read/retried rates are unknown and can only be borrowed from the re-read heading-tree census. Booking withheld bytes against borrowed rates would claim a saving this path cannot back up. The kind exists to make the intervention countable in session-audit, not to claim a win.
   subagent_markdown_first_read_deny: SOURCE_HINT,
+  // A measurement booked beside every whole-file re-read deny in hooks_read.ts: which branch fired and whether the refused file still held what the session last read (detail `branch=… identity=identical|changed|unknown basis=snapshot|stat|none edited=0|1`). SOURCE_OTHER, not SOURCE_HINT: stats_report.ts counts SOURCE_HINT events as hints fired, and this row is a second record of a deny its sibling session_hint or read_count_deny row already counts.
+  reread_deny_identity: SOURCE_OTHER,
   read_replacement: SOURCE_READ,
   section_replacement: SOURCE_READ,
   symbol_read: SOURCE_READ,
