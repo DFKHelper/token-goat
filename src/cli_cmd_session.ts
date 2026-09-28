@@ -138,7 +138,7 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
     .command('waste')
     .description('session spend-ledger: token cost per tool/file from the current Claude Code session transcript, plus waste signals')
     .option('--project <path>', 'project root to analyze')
-    .option('--transcript <path>', 'explicit transcript JSONL path (default: most-recently-modified transcript for this project)')
+    .option('--transcript <path>', 'explicit transcript JSONL path (default: the running Copilot CLI session for this project, else the newest Claude Code or Copilot CLI transcript for it)')
     .option('--top <n>', 'number of top expensive tool calls to show (default: 10)')
     .option('--copilot', 'analyze a Copilot CLI session event log instead, reporting Copilot\'s own token split')
     .option('--json', 'output JSON')
