@@ -429,6 +429,52 @@ describe('warm CLI', () => {
     expect(cold(sb, ['section', 'notes.md::Alpha']).stdout).toContain('alpha body')
   })
 
+  // The index-backed analysis commands. Each was left to a fresh Node start on every call although it only reads the index, and a served run is worth having only if it prints what the cold run prints, byte for byte.
+  it('answers the index-backed analysis commands with the same stdout, stderr and exit code as a cold run', async () => {
+    const sb = sandbox()
+    // HAND-DERIVED fixture: two source files and a test file whose call graph is written out below, so each command's answer is known before it runs.
+    fs.mkdirSync(path.join(sb.proj, 'src'))
+    fs.mkdirSync(path.join(sb.proj, 'tests'))
+    fs.writeFileSync(path.join(sb.proj, 'src', 'helper.ts'), 'export function scaleValue(value: number, factor: number): number {\n  return value * factor\n}\n\nexport function unusedHelper(): number {\n  return 0\n}\n')
+    fs.writeFileSync(
+      path.join(sb.proj, 'src', 'calc.ts'),
+      "import { scaleValue } from './helper'\n\nexport interface CalcOptions {\n  factor: number\n}\n\nexport function computeTotal(values: number[], opts: CalcOptions): number {\n  let total = 0\n  for (const v of values) total += scaleValue(v, opts.factor)\n  return total\n}\n\nexport function reportTotal(values: number[]): string {\n  return String(computeTotal(values, { factor: 2 }))\n}\n",
+    )
+    fs.writeFileSync(path.join(sb.proj, 'tests', 'calc.test.ts'), "import { computeTotal } from '../src/calc'\n\nexport function checkComputeTotal(): boolean {\n  return computeTotal([1], { factor: 1 }) === 1\n}\n")
+    for (const args of [['init', '-q'], ['add', '-A']]) expect(spawnSync('git', args, { cwd: sb.proj }).status).toBe(0)
+    const indexed = cold(sb, ['index', '.'])
+    expect(indexed.status, indexed.stderr).toBe(0)
+    startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    // Each case with a line its cold run must print, so a pair of empty answers cannot pass as equal.
+    const cases: Array<[string[], string]> = [
+      [['find', 'compute'], 'src/calc.ts'],
+      [['locate', 'computeTotal'], 'src/calc.ts:7-11 [function] computeTotal'],
+      [['callers', 'scaleValue'], 'computeTotal\tsrc/calc.ts:9'],
+      [['call-chain', 'scaleValue'], 'scaleValue -> computeTotal -> reportTotal'],
+      [['impact', 'scaleValue'], 'reportTotal\t(hops: 2)'],
+      [['dead'], 'unusedHelper\tsrc/helper.ts:5'],
+      [['deps', 'src/calc.ts'], 'src/helper.ts'],
+      [['types'], 'CalcOptions\tinterface\tsrc/calc.ts:3'],
+      [['scope', 'src/calc.ts:9'], 'computeTotal\tfunction\tsrc/calc.ts:7-11'],
+      [['similar', 'src/calc.ts::computeTotal'], 'reportTotal\tfunction\tsrc/calc.ts:13'],
+      [['context-for', 'compute the scaled total'], 'src/calc.ts::computeTotal'],
+      [['test-for', 'src/calc.ts'], 'tests/calc.test.ts'],
+      [['callers', 'noSuchSymbolAnywhere'], 'Symbol not found: noSuchSymbolAnywhere'],
+    ]
+    let served = 0
+    for (const [args, mustPrint] of cases) {
+      const expected = cold(sb, args)
+      expect(expected.stdout + expected.stderr, args.join(' ')).toContain(mustPrint)
+      const actual = cli(sb, args)
+      expectSameRun(actual, expected)
+      served++
+      expect(servedBySlot(sb), args.join(' ')).toEqual({ 0: served })
+    }
+    // The failing case really fails, so the exit code is compared on a non-zero one too.
+    expect(cold(sb, ['callers', 'noSuchSymbolAnywhere']).status).toBe(1)
+  }, 120_000)
+
   it('leaves --help to the local CLI', async () => {
     const sb = sandbox()
     startServer(sb, 0)

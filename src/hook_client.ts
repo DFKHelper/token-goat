@@ -222,21 +222,33 @@ export async function relayViaServer(event: string, input: string | object, harn
   }
 }
 
-/** Read-only commands a server may answer on the CLI's behalf. Each reads its arguments and the index, writes to stdout, and never reads stdin, so running one in a warm process is indistinguishable from running it in a fresh one, and re-running one after a lost reply is harmless. A reply is lost only when the server fails (the connection drops, or the answer does not authenticate), never because the command is slow: the client waits for a slow one rather than start it again beside the server's run. */
+/** Read-only commands a server may answer on the CLI's behalf. Each reads its arguments and the index, writes to stdout, and never reads stdin, so running one in a warm process is indistinguishable from running it in a fresh one, and re-running one after a lost reply is harmless. A reply is lost only when the server fails (the connection drops, or the answer does not authenticate), never because the command is slow: the client waits for a slow one rather than start it again beside the server's run. Left out on purpose: `ask`, which can run an external model backend, and `search`, whose output carries its own duration, so a warm and a cold run can never print the same bytes. */
 export const WARM_CLI_COMMANDS: ReadonlySet<string> = new Set([
   'answer',
   'brief',
+  'call-chain',
+  'callers',
   'changed',
+  'context-for',
+  'dead',
+  'deps',
   'exports',
+  'find',
+  'impact',
   'imports',
+  'locate',
   'map',
   'outline',
   'read',
   'refs',
+  'scope',
   'section',
   'semantic',
+  'similar',
   'skeleton',
   'symbol',
+  'test-for',
+  'types',
 ])
 
 /** Whether `argv` (a full `process.argv`) is a CLI call a server may answer: an allowlisted command, output going to a pipe rather than a terminal (the only case the caller is an agent and the startup cost is paid per call), and no argument that could mean stdin. */
