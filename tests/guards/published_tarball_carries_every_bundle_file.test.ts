@@ -6,11 +6,15 @@ import { describe, expect, it } from 'vitest'
 
 import { ROOT } from '../helpers/bundle.js'
 import { pinnedPopulation } from './population.js'
+// @ts-expect-error -- a maintainer script in plain JavaScript, deliberately outside the typed source tree.
+import { npmCommand } from '../../scripts/dependabot-body.mjs'
 
 /** What `npm pack` would publish, read from npm itself rather than from package.json's `files` list: `dist/.npmignore` also decides, and it drops every `.cjs` except the hook client by name, so a new CommonJS file added to the build without a matching exception would build, pass every test that reads dist/, and be missing from every install. The dry run reads the working dist/, which the suite's global setup has just built. */
 function packedPaths(): string[] {
-  // Constant arguments, so the shell Windows needs to run npm's .cmd wrapper sees nothing a caller controls.
-  const res = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', timeout: 60_000 })
+  // npm's own entry through this Node rather than its Windows .cmd wrapper, which Node spawns only through a shell.
+  const npm = npmCommand({ platform: process.platform, env: process.env, execPath: process.execPath, exists: fs.existsSync })
+  expect(npm, 'no npm-cli.js to run').not.toBeNull()
+  const res = spawnSync(npm.file, [...npm.prefix, 'pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8', timeout: 60_000 })
   expect(res.status, res.stderr).toBe(0)
   // CAPTURE (CI on Node 22, and npm 10.9.9 run here): npm 10 still runs `prepare` for a pack despite --ignore-scripts, and its output ("sync hooks: ...") lands on stdout ahead of the JSON; npm 11 skips it. npm's JSON is the array that opens at the start of a line.
   const json = res.stdout.slice(res.stdout.search(/^\[/m))
