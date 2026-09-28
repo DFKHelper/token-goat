@@ -16,7 +16,7 @@ import * as path from 'node:path'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { emitRewrite, passOutput, contextOutput, extractToolResultText, getCwd } from './hooks_common.js'
+import { emitRewrite, passOutput, contextOutput, denyOutput, extractToolResultText, getCwd } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { neutralizeSpokenMarkers } from './injection_scan.js'
 import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn, wasHintShown } from './session.js'
@@ -217,6 +217,10 @@ function preAgentHandler(event: HookEvent): HookOutput {
   if (typeof prompt !== 'string' || prompt.trim() === '') return passOutput()
 
   try {
+    // Ahead of the outstanding-spawn registration: a denied call never runs, so registering it would flag its own retry as a near-duplicate.
+    const scopedDeny = buildScopedSpawnDeny(toolInput)
+    if (scopedDeny) return scopedDeny
+
     // Check for a near-duplicate BEFORE registering this prompt, so a spawn never flags itself.
     const duplicateOf = findDuplicateOutstandingPrompt(prompt)
     recordOutstandingAgentSpawn(prompt)
@@ -559,6 +563,37 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
   } catch {
     return ''
   }
+}
+
+/** Session-hint dedupe key for the opt-in scoped-spawn deny: it refuses at most one spawn per session, so re-issuing the same call is always a way through. */
+const SCOPED_SPAWN_DENY_KEY = 'agent-scoped-spawn-deny'
+
+/**
+ * The pre-tool counterpart of {@link buildUnrestrictedSpawnAdvisory}, behind
+ * `hints.agent_scoped_spawn_deny` (off by default). The advisory can only describe a spawn that has
+ * already paid for its unrestricted prefix; this refuses the first untyped spawn of a session before it
+ * runs and names the restricted definitions, so the retry can pick one. Narrower than the advisory on
+ * purpose: only an OMITTED subagent_type triggers it, since an explicit `general-purpose` is a choice the
+ * caller made, and a refusal that overrode a choice would just be re-issued. Once per session, so the
+ * promise the message makes -- re-issue unchanged and it runs -- is kept by construction. Harness-gated
+ * exactly as the advisory is, for the same schema reason. Returns null when it does not fire.
+ */
+function buildScopedSpawnDeny(toolInput: Record<string, unknown>): HookOutput | null {
+  if (!loadConfig().hints.agent_scoped_spawn_deny) return null
+  const harness = getHarnessName()
+  if (harness === 'copilot_cli' || harness === 'vscode') return null
+  const rawType = toolInput['subagent_type']
+  if (typeof rawType === 'string' && rawType.trim() !== '') return null
+  if (wasHintShown(SCOPED_SPAWN_DENY_KEY)) return null
+  const names = findRestrictedAgentNames()
+  if (names.length === 0) return null
+  markHintShown(SCOPED_SPAWN_DENY_KEY)
+  // The post-tool advisory would name the same definitions again after the retry runs; the deny has already said it.
+  markHintShown(SPAWN_RESTRICT_HINT_KEY)
+  recordStat('agent_scoped_spawn_deny', 0, 0)
+  const shown = neutralizeSpokenMarkers(names.slice(0, SPAWN_RESTRICT_MAX_NAMES).join(', '))
+  const more = names.length > SPAWN_RESTRICT_MAX_NAMES ? ` and ${names.length - SPAWN_RESTRICT_MAX_NAMES} more` : ''
+  return denyOutput(`This Agent call omits subagent_type, so it would run as general-purpose, which is unrestricted: its lane starts by paying for every tool and MCP schema on the machine. Tools-restricted agent definitions exist here: ${shown}${more}. Re-issue the call with one of them as subagent_type if it fits the task. If none fits, re-issue it unchanged and it will run: this refusal fires once per session.`)
 }
 
 /** The notice both report rewrites append, built in one place so {@link REWRITTEN_REPORT_RE} can recognize it. */

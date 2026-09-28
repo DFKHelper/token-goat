@@ -31,6 +31,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hint_stats.defiance_threshold_pct',
   'hint_stats.min_sample_size',
   'hint_stats.suppress_threshold_pct',
+  'hints.agent_scoped_spawn_deny',
   'hints.backoff_thresholds',
   'hints.bash_dedup_min_bytes',
   'hints.context_threshold_advisory',

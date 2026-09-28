@@ -81,6 +81,24 @@ describe('unrestricted-spawn advisory under Copilot CLI', () => {
     expect(wasHintShown('agent-spawn-restrict-hint')).toBe(false)
   })
 
+  it('never fires the opt-in scoped-spawn deny under Copilot CLI, whose task tool has no subagent_type to omit (real runHook dispatch)', async () => {
+    writeRoster()
+    const prev = process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY']
+    process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY'] = '1'
+    try {
+      const sid = `copilot-scoped-deny-${Math.random().toString(36).slice(2)}`
+      loadSessionState(sid)
+      // CAPTURE: key set of Copilot's task toolArgs, tests/fixtures/copilot_cli_1_0_88/C4a-004-preToolUse-task.json.
+      const payload = { tool_name: 'task', tool_input: { description: 'd', prompt: 'p', agent_type: 'explore', name: 'n' }, session_id: sid }
+      const result = await runHook(buildEvent('pre_tool_use', payload))
+      expect(result.hookType).not.toBe('deny')
+      expect(wasHintShown('agent-scoped-spawn-deny')).toBe(false)
+    } finally {
+      if (prev === undefined) delete process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY']
+      else process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY'] = prev
+    }
+  })
+
   it('control: the same spawn under a non-copilot harness still produces the exact advisory (an over-broad gate must go red here)', () => {
     // clearModuleCaches() resets the memoized harness (and, with it, the hook registry -- which is why this control calls the exported builder directly instead of dispatching).
     process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
