@@ -89,7 +89,7 @@ flowchart TB
         HookRelay["⚡ Hook Relay & Normalizer<br/><small>[dist/token-goat-hook.mjs]</small><br/>Normalizes Codex/Gemini/Claude schemas"]:::process
         CLIBinary["💻 CLI Tool & Command Suite<br/><small>[dist/token-goat.mjs]</small><br/>100+ surgical read, outline, pack commands"]:::process
         MCPServer["🔌 MCP stdio Server<br/><small>[token-goat mcp-serve]</small><br/>18 tools: symbol, read, retrieve, section"]:::process
-        WorkerDaemon["🔄 Background Indexer Daemon<br/><small>[worker.ts / worker_daemon.ts]</small><br/>Polls dirty queue every 2s, reindexes changes"]:::process
+        WorkerDaemon["🔄 Background Indexer Daemon<br/><small>[worker.ts / worker_daemon.ts]</small><br/>Wakes on each dirty-queue append (2s poll fallback), reindexes changes"]:::process
     end
 
     subgraph DiskStorage ["Persistent Storage Model (%LOCALAPPDATA% or ~/.token-goat)"]
