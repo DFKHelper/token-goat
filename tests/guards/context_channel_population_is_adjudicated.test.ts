@@ -46,6 +46,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'call_streak.ts::callStreakAfterFailure': 'Wraps the brake line onSearchMiss returned. Interpolates nothing of its own.',
   'hooks_session_start.ts::sessionStartHandler':
     'Three contributors. reconcileNote emits counts only. The delta capsule lists paths from files a Read touched, escaped in evidence_cache.ts. The DB health message is text token-goat authored itself.',
+  'hooks_edit.ts::markdownSectionHint':
+    'Names the edited file, split out of postEditHandlerInner unchanged. Already routed through displaySafePath before the backtick escaping, with a comment saying why that order matters.',
   'hooks_edit.ts::postEditHandlerInner':
     'Names the edited file. Already routed through displaySafePath before the backtick escaping, with a comment saying why that order matters.',
   'hooks_write.ts::preWriteRewriteHandler':

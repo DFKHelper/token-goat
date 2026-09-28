@@ -87,7 +87,7 @@ const EXEMPT: readonly Exemption[] = [
   {
     file: 'tests/vscode_pre_handler_path_gate.test.ts',
     table: 'TOOLS',
-    reason: 'Derived from VSCODE_TOOL_NAME_MAP in src/hooks_cli.ts. This same file asserts TOOLS equals the hardcoded list of the six canonical tool names, so an emptied or drifted map fails that equality first.',
+    reason: 'Derived from VSCODE_TOOL_NAME_MAP in src/hooks_cli.ts. This same file asserts TOOLS equals the hardcoded list of the canonical tool names, so an emptied or drifted map fails that equality first.',
   },
 ] as const
 

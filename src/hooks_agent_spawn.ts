@@ -16,7 +16,7 @@ import * as path from 'node:path'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { emitRewrite, passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
+import { emitRewrite, passOutput, contextOutput, extractToolResultText, getCwd } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { neutralizeSpokenMarkers } from './injection_scan.js'
 import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn, wasHintShown } from './session.js'
@@ -53,8 +53,11 @@ const BRIEFING_TARGET_TOKENS = 550
  *
  * Returns empty string if the briefing cannot be built (project unavailable, etc.).
  * Estimated length is kept under BRIEFING_TARGET_TOKENS for efficient context usage.
+ *
+ * `projectRoot` is the directory the map summary walks, and null skips the map. See
+ * {@link briefingRoot} for why that is not always process.cwd().
  */
-function buildSubagentBriefing(): string {
+function buildSubagentBriefing(projectRoot: string | null): string {
   try {
     const head: string[] = []
     head.push('')
@@ -62,7 +65,8 @@ function buildSubagentBriefing(): string {
 
     // 1. Project map summary
     try {
-      const map = buildProjectMap(process.cwd(), { compact: true })
+      if (projectRoot === null) throw new Error('no project root')
+      const map = buildProjectMap(projectRoot, { compact: true })
       const mapText = formatProjectMap(map, map.compact)
       head.push(mapText)
     } catch {
@@ -165,6 +169,12 @@ function truncateForWarning(text: string, max: number): string {
   return text.length > max ? text.slice(0, max) + '...' : text
 }
 
+/** The directory a spawn briefing's project map walks, or null to leave the map out. On VS Code it is the workspace folder the payload names and nothing else: with no folder open VS Code sends no cwd and starts the hook in the home directory, so process.cwd() there would walk $HOME ahead of the approval prompt. Every other harness keeps process.cwd(), as before. */
+function briefingRoot(event: HookEvent): string | null {
+  if (getHarnessName() === 'vscode') return getCwd(event) ?? null
+  return process.cwd()
+}
+
 function isAgentTool(toolName: string | undefined): boolean {
   return toolName === 'Agent' || toolName === 'task' || toolName === 'Task'
 }
@@ -184,7 +194,7 @@ function preAgentHandler(event: HookEvent): HookOutput {
     const duplicateOf = findDuplicateOutstandingPrompt(prompt)
     recordOutstandingAgentSpawn(prompt)
 
-    const briefing = buildSubagentBriefing()
+    const briefing = buildSubagentBriefing(briefingRoot(event))
     const advisory = duplicateOf
       ? `\n\n&#91;token-goat] A similar subagent spawn already appears to be outstanding this session (prompt starts: "${neutralizeSpokenMarkers(truncateForWarning(duplicateOf, 80))}"). This is advisory only -- proceeding is fine if intentional.`
       : ''
@@ -503,8 +513,9 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
  */
 export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>): string {
   try {
-    // Gated off entirely on Copilot CLI because the advisory's content is Claude Code's Task schema (subagent_type, ~/.claude/agents rosters). Copilot's own task tool carries agent_type, not subagent_type (captured toolArgs {description, prompt, agent_type, name}, tg-captures C4a), so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the reason: post_tool_use additionalContext does reach the model on Copilot 1.0.88 (tg-captures C1a). Other bridges are not gated here: their task-tool wire shapes are unverified (loop-ledger BE-06) and their bridges forward additionalContext, so suppressing them would rest on inference.
-    if (getHarnessName() === 'copilot_cli') return ''
+    // Gated off entirely on Copilot CLI because the advisory's content is Claude Code's Task schema (subagent_type, ~/.claude/agents rosters). Copilot's own task tool carries agent_type, not subagent_type (captured toolArgs {description, prompt, agent_type, name}, tg-captures C4a), so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the reason: post_tool_use additionalContext does reach the model on Copilot 1.0.88 (tg-captures C1a). Other bridges are not gated here: their task-tool wire shapes are unverified (loop-ledger BE-06) and their bridges forward additionalContext, so suppressing them would rest on inference. VS Code is gated for the same schema reason, read off its own bundle: runSubagent takes {prompt, description, agentName, model} (RunSubagentTool.getToolData in VS Code 1.137.0's workbench.desktop.main.js), where agentName names a VS Code chat agent, so advice to pass a ~/.claude/agents name as subagent_type names a key the tool does not have.
+    const harness = getHarnessName()
+    if (harness === 'copilot_cli' || harness === 'vscode') return ''
     const rawType = toolInput['subagent_type']
     const spawnType = typeof rawType === 'string' ? rawType.trim() : ''
     if (spawnType !== '' && spawnType !== 'general-purpose') return ''

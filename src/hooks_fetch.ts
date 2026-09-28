@@ -47,23 +47,36 @@ function resolveWebFetchContext(event: HookEvent): { toolInput: Record<string, u
   return resolveWebFetchUrl(event);
 }
 
+/** Every URL a WebFetch call will reach: its `url`, then each string in a `urls` array. VS Code's fetch_webpage takes `urls[]` and names a single `url` only when it asked for one page (see VSCODE_DERIVED_INPUT in hooks_cli.ts), so a policy that read `url` alone let a call pass on its first page, or unjudged when it named several. */
+function webFetchPolicyUrls(event: HookEvent): string[] {
+  if (getToolName(event) !== 'WebFetch') return [];
+  const toolInput = getToolInput(event);
+  const out: string[] = [];
+  const single = toolInput['url'];
+  if (typeof single === 'string' && single !== '') out.push(single);
+  const list = toolInput['urls'];
+  if (Array.isArray(list)) {
+    for (const entry of list) if (typeof entry === 'string' && entry !== '' && !out.includes(entry)) out.push(entry);
+  }
+  return out;
+}
+
 export function preFetchHandler(event: HookEvent): HookOutput {
   try {
-    // webfetch.allow/webfetch.deny gate every WebFetch call regardless of session id -- unlike the dedup check below, blocking a URL has nothing to do with caching, so it must run even for a harness that sends no session_id (see resolveWebFetchContext's own comment).
-    const urlOnlyCtx = resolveWebFetchUrl(event);
-    if (urlOnlyCtx !== null) {
+    // webfetch.allow/webfetch.deny gate every WebFetch call regardless of session id -- unlike the dedup check below, blocking a URL has nothing to do with caching, so it must run even for a harness that sends no session_id (see resolveWebFetchContext's own comment). One refused URL refuses the whole call: the harness fetches the list as one tool call, so there is no way to let the rest through.
+    for (const url of webFetchPolicyUrls(event)) {
       // Unconditional, and ahead of the configurable policy: an operator's allow/deny list is
       // about which ordinary hosts they want reached, not about whether the machine's own cloud
       // credentials are reachable through a fetched URL.
-      const metadataRefusal = metadataEndpointRefusal(urlOnlyCtx.url);
+      const metadataRefusal = metadataEndpointRefusal(url);
       if (metadataRefusal !== null) {
         return denyOutput(`WebFetch blocked: ${metadataRefusal}.`);
       }
       const wfCfg = loadConfig().webfetch;
-      if (wfCfg.deny.length > 0 && matchesDenyPattern(urlOnlyCtx.url, wfCfg.deny)) {
+      if (wfCfg.deny.length > 0 && matchesDenyPattern(url, wfCfg.deny)) {
         return denyOutput(`WebFetch blocked: URL matches a configured webfetch.deny pattern.`);
       }
-      if (wfCfg.allow.length > 0 && !matchesAllowPattern(urlOnlyCtx.url, wfCfg.allow)) {
+      if (wfCfg.allow.length > 0 && !matchesAllowPattern(url, wfCfg.allow)) {
         return denyOutput(`WebFetch blocked: URL does not match any configured webfetch.allow pattern.`);
       }
     }

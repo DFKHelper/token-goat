@@ -1,9 +1,9 @@
-/** post_tool_use edit hooks (Write / Edit / NotebookEdit). Ports `hooks_edit.py::post_edit`: after a successful Write/Edit/NotebookEdit, record the file in the session cache and append it to the dirty queue so the background indexer (Layer 7) reindexes only what changed. Never blocks an edit — returns `context` for markdown files (with a section hint) or `pass` for others. The dirty-queue path and write logic live in `hooks_index.ts` ({@link appendDirtyPath}) so this writer and the queue drainer share one definition. */
+/** post_tool_use edit hooks (Write / Edit / MultiEdit / NotebookEdit). Ports `hooks_edit.py::post_edit`: after a successful edit, record every file it touched in the session cache and append each to the dirty queue so the background indexer (Layer 7) reindexes only what changed. Never blocks an edit -- returns `context` for a single edited markdown file (with a section hint) or `pass` otherwise. The dirty-queue path and write logic live in `hooks_index.ts` ({@link appendDirtyPath}) so this writer and the queue drainer share one definition. */
 
 import * as path from 'node:path'
 import { statSync } from 'node:fs'
 
-import { getCwd, getFilePath } from './hooks_common.js'
+import { getCwd, getFilePaths } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
@@ -22,11 +22,19 @@ import { compactPathFor, markCompactStale } from './doc_compact.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 import type { HookOutput } from './types.js'
 
-/** post_tool_use handler for Write/Edit/NotebookEdit. Records the edit in the session cache and enqueues the absolute path for reindexing. A missing path (malformed payload — `file_path` for Write/Edit, `notebook_path` for NotebookEdit) is tolerated — the call passes through without touching the queue. Returns a context hint for markdown/rst files suggesting the token-goat section command for re-reading. */
+/** post_tool_use handler for Write/Edit/MultiEdit/NotebookEdit. Records each edited file in the session cache and enqueues its absolute path for reindexing. A missing path (malformed payload: no `file_paths`, and no `file_path` for Write/Edit or `notebook_path` for NotebookEdit) is tolerated, and the call passes through without touching the queue. Returns a context hint for markdown/rst files suggesting the token-goat section command for re-reading. */
 function postEditHandlerInner(event: HookEvent): HookOutput {
-  const filePath = getFilePath(event)
-  if (filePath === undefined) return passOutput()
+  const filePaths = getFilePaths(event)
+  if (filePaths.length === 0) return passOutput()
+  // One call can edit several files (VS Code's multi_replace_string_in_file and apply_patch arrive with `file_paths`), and every one of them has to reach the dirty queue, or the files after the first stay stale in the index until something else touches them. The section hint below names one file, so it fires only for a single-file edit.
+  const normalizedPaths = filePaths.map((p) => recordEditedFile(event, p))
+  if (normalizedPaths.length !== 1) return passOutput()
+  const normalized = normalizedPaths[0]!
+  return markdownSectionHint(event, normalized)
+}
 
+/** Record one edited file in the session cache, queue it for reindexing, and mark its compact sidecar stale. Returns the normalized path. */
+function recordEditedFile(event: HookEvent, filePath: string): string {
   const normalized = normalizePath(filePath)
   recordFileEdit(normalized)
   // The index keys on the absolute path and the worker drains from its own directory, so a relative path (pi's edit and write tools take one) is resolved against the directory the harness ran the tool in before it is queued: left relative, the drain found no such file, read it as a deletion of a path no row carries, and the edit was never indexed.
@@ -60,7 +68,11 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
   if (loadConfig().hints.stable_doc_compacts) {
     markCompactStale(compactPathFor(normalized))
   }
+  return normalized
+}
 
+/** The `token-goat section` re-read hint for an edited markdown/rst file, or pass for any other file. */
+function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
   const editedBasename = path.basename(normalized)
   if (/\.(md|mdx|markdown|rst)$/i.test(editedBasename)) {
     // The hint's value is re-reading via `section` instead of the whole file, so its quantified savings are the edited file's own size -- skip the fs.statSync entirely on failure (fail-soft) rather than let a stat error suppress a hint that would otherwise have fired.

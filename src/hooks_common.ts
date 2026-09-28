@@ -27,6 +27,18 @@ export function getFilePath(event: HookEvent): string | undefined {
   return typeof notebookValue === 'string' && notebookValue !== '' ? notebookValue : undefined
 }
 
+/** Every file an edit touched: the entries of a `file_paths` array, then {@link getFilePath}'s single path when the array does not already hold it, each once. `file_paths` is how a tool that edits several files in one call reaches the post-edit handler (VS Code's multi_replace_string_in_file and apply_patch, whose paths hooks_cli.ts reads out of `replacements[]` and the patch text). Non-string and empty entries are skipped. */
+export function getFilePaths(event: HookEvent): string[] {
+  const out: string[] = []
+  const list = event.toolInput['file_paths']
+  if (Array.isArray(list)) {
+    for (const entry of list) if (typeof entry === 'string' && entry !== '' && !out.includes(entry)) out.push(entry)
+  }
+  const single = getFilePath(event)
+  if (single !== undefined && !out.includes(single)) out.push(single)
+  return out
+}
+
 /** Extract the working directory a hook event's wire payload carries, validated as a string. Replaces six unchecked `event.raw['cwd']` cast sites across hooks_bash.ts/hooks_session.ts/hooks_read.ts (two used `as string | undefined` with no runtime check, so a non-string cwd would throw inside runGit() and be silently swallowed by the caller's try/catch). Returns `undefined` (never a baked-in fallback) so each caller keeps its own default -- hooks_bash.ts wants `null`, hooks_read.ts wants `process.cwd()`. */
 export function getCwd(event: HookEvent): string | undefined {
   const value = event.raw && typeof event.raw === 'object' ? event.raw['cwd'] : undefined
