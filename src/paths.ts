@@ -125,6 +125,37 @@ export function resolveIndexPath(file: string, base: string = process.cwd()): st
   return normalizePath(resolve(b, f))
 }
 
+/** True when stat finds a directory at `p`, following a symlink; false for anything else and for any error. */
+export function dirExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/** The paths the host may open for an index key, the key first. A key is not always one: shellMountToWindowsPath folds a WSL mount path `/mnt/c/x` into `c:/x` on every platform, which POSIX resolves as relative, so a drive-letter key is also tried at its mount. */
+function hostPathsOfIndexKey(key: string): string[] {
+  const mount = /^([a-z]):\/(.*)$/s.exec(key)
+  return mount === null ? [key] : [key, `/mnt/${mount[1] as string}/${mount[2] as string}`]
+}
+
+/** True when stat finds a regular file at an index key or at its WSL mount. */
+export function isFileAtIndexKey(key: string): boolean {
+  return hostPathsOfIndexKey(key).some((p) => {
+    try {
+      return fs.statSync(p).isFile()
+    } catch {
+      return false
+    }
+  })
+}
+
+/** Where the host finds a directory for an index key, the key itself or its WSL mount, or null when neither holds one. */
+export function dirAtIndexKey(key: string): string | null {
+  return hostPathsOfIndexKey(key).find((p) => dirExists(p)) ?? null
+}
+
 /** Convert an indexed absolute path to a display form for HUMAN (non-JSON) output. The global index is machine-wide and keyed by absolute path on purpose (see `resolveIndexPath` above), so a query can legitimately return rows from projects other than `root` -- those rows must stay absolute or the printed path becomes ambiguous. Only a path genuinely inside `root` is shortened, and only for display; `--json` payloads must never call this and must keep the raw absolute path. Cross-drive guard: on Windows, `path.relative()` between two different drive letters returns the target's own absolute path unchanged rather than a `..`-prefixed relative path (documented Node behavior, not a bug). A bare `!rel.startsWith('..')` check is therefore not sufficient -- it would let an unrelated-drive path through as if it were in-root. Mirrors the guard shape already used by `relPathWithinRoot` (hooks_read.ts) and `isPathWithinRoot` (pack.ts): any relative result that is itself absolute, or that starts with `..`, means `target` is NOT inside `root`, so the original absolute path is returned unchanged. */
 export function toDisplayPath(root: string | undefined, target: string): string {
   // No root means the caller has none it can name without resolving one itself. Return the absolute path rather than falling back to process.cwd(): a cwd-relative path renders the SAME query differently depending on where it was run from, is ambiguous once printed, and cannot be resolved from anywhere else -- strictly worse than the absolute path it replaced.

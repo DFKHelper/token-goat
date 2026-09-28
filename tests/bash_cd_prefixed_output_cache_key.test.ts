@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { getBashOutput } from '../src/bash_output_cache.js'
+import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { preBashHandler } from '../src/hooks_bash.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
@@ -160,5 +161,58 @@ describe('a cached Bash result is keyed on the directory the command ran in', ()
     expect(text(await post(sid, root, piped, bigClean))).not.toContain('[token-goat: delta]')
     // Positive control: a second build in pkgA is the rerun.
     expect(text(await post(sid, root, `cd pkgA && ${piped}`, bigClean))).toContain('[token-goat: delta]')
+  })
+})
+
+describe("the large-output hint's compress suggestion runs the command in the directory it ran in", () => {
+  // HAND-DERIVED: the failing build above at 100 lines, past the hint's 4 KB floor, piped so the pre hook leaves it unwrapped and the hint fires. The suggestion dropped the `cd pkgA &&` prefix, so run where the call started, as in a subagent or any harness whose shell does not keep a cd, it built the root instead of pkgA; kept as written instead, it names pkgA/pkgA once Claude Code's main thread has left the shell in pkgA.
+  const big = Array.from({ length: 100 }, (_, i) => `error[E0425]: cannot find value \`limit${i}\` in this scope`).join('\n')
+  const piped = 'cargo build 2>&1 | tail -n 400'
+
+  function suggestion(hint: string): string | null {
+    return /`(token-goat compress -c "[^"]*")`/.exec(hint)?.[1] ?? null
+  }
+
+  it('a main-thread call is suggested with a cd to the directory it resolved to', async () => {
+    clearModuleCaches()
+    const { root, pkgA } = layout()
+    const sid = newSession()
+    const call = { toolUseId: 'toolu_cd_hint_1' }
+    await pre(sid, root, `cd pkgA && ${piped}`, call)
+    const hint = text(await post(sid, pkgA, `cd pkgA && ${piped}`, big, call))
+    expect(suggestion(hint)).toBe(`token-goat compress -c "cd '${pkgA}' && ${piped}"`)
+    // The relay's suggestion scrubber lets it through whole.
+    expect(stripUnsafeSuggestions(hint)).toBe(hint)
+  })
+
+  it('a subagent call, whose shell stays where it started, is suggested with the same directory', async () => {
+    clearModuleCaches()
+    const { root, pkgA } = layout()
+    const hint = text(await post(newSession(), root, `cd pkgA && ${piped}`, big))
+    expect(suggestion(hint)).toBe(`token-goat compress -c "cd '${pkgA}' && ${piped}"`)
+  })
+
+  it('a command with no cd prefix is suggested as it ran', async () => {
+    clearModuleCaches()
+    const { pkgA } = layout()
+    expect(suggestion(text(await post(newSession(), pkgA, piped, big)))).toBe(`token-goat compress -c "${piped}"`)
+  })
+
+  it('a directory holding a single quote, which its quoting cannot hold, gets the recall pointer and no compress suggestion', async () => {
+    clearModuleCaches()
+    const { root } = layout()
+    fs.mkdirSync(path.join(root, "pkg'Q"))
+    const hint = text(await post(newSession(), root, `cd "pkg'Q" && ${piped}`, big))
+    expect(hint).toMatch(/`token-goat bash-output [0-9a-f]+`/)
+    expect(suggestion(hint)).toBeNull()
+  })
+
+  // HAND-DERIVED: the hook resolves a cd's directory as a path and expands no `~`, so `cd ~/pkgA` resolves to a directory named `~` under the one the call started in, which is not there, and `cd ~` to that `~` itself. A suggestion naming it fails at its cd before the build runs.
+  it.each(['~/pkgA', '~'])('a cd to %s, which the hook cannot resolve to a directory that is there, gets the recall pointer and no compress suggestion', async (dir) => {
+    clearModuleCaches()
+    const { root } = layout()
+    const hint = text(await post(newSession(), root, `cd ${dir} && ${piped}`, big))
+    expect(hint).toMatch(/`token-goat bash-output [0-9a-f]+`/)
+    expect(suggestion(hint)).toBeNull()
   })
 })

@@ -7,7 +7,7 @@ import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
-import { resolveIndexPath, displaySafePath } from './paths.js'
+import { resolveIndexPath, displaySafePath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand } from './bash_output_cache.js'
@@ -343,9 +343,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       }
       const overlapHints: string[] = []
       const freshRanges: Array<readonly [number, number]> = []
+      // Recorded before the command runs, so only for a file that is there to be read: a range read of an absent file shows nothing, and Claude Code reports that failure to PostToolUseFailure alone, where nothing takes the range back, so once the file appeared a read of those lines was told they were already served.
+      const onDisk = isFileAtIndexKey(sedDedupKey)
       for (const [start, end] of ranges) {
         const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
-        recordFileLineRange(sedDedupKey, start, end)
+        if (onDisk) recordFileLineRange(sedDedupKey, start, end)
         if (priorOverlap !== null) {
           overlapHints.push(sedOverlapHint(hintPath, priorOverlap, start, end))
         } else {

@@ -31,9 +31,9 @@ function layout(): { root: string; pkgA: string } {
 }
 
 // CAPTURE: a subagent's Bash payload from Claude Code 2.1.281, whose cwd is the directory the call started in on every event, with the tool_response keys recorded off real traffic in tests/hooks_real_harness_payload_shape.test.ts; Claude Code reports no exit code there.
-async function storeRun(root: string, command: string): Promise<void> {
+async function storeRun(root: string, command: string, stdout = FAILING): Promise<void> {
   const sid = `s-waste-key-${process.pid}-${Math.random().toString(36).slice(2)}`
-  const raw = { cwd: root, tool_name: 'Bash', tool_input: { command }, agent_id: 'a3fa4da94f851e86f', tool_response: { stdout: FAILING, stderr: '', interrupted: false, isImage: false, noOutputExpected: false } }
+  const raw = { cwd: root, tool_name: 'Bash', tool_input: { command }, agent_id: 'a3fa4da94f851e86f', tool_response: { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false } }
   const event: HookEvent = { eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId: sid, agentId: 'a3fa4da94f851e86f', raw }
   loadSessionState(sid)
   try {
@@ -82,4 +82,29 @@ describe('the waste report looks a repeated Bash call up under the key its outpu
     const report = await buildWasteReport(transcriptRunning(root, 'cd pkgA && cargo build', 2))
     expect(report.repeatedUncompressedBash).toMatchObject([{ normalized: 'cd pkgA && cargo build', count: 2 }])
   })
+})
+
+// HAND-DERIVED: a pipeline no pre hook wraps, so the post hook compresses what it printed after the run, and two outputs for it. One line repeated 3,000 times is what the generic filter collapses, the shape tests/hooks_bash_compound_savings.test.ts drives through the same pass; forty distinct lines give that filter nothing to take, so the output goes on to the pass that keeps it for eliding later repeats. Each pass stored under the event's cwd, which for a subagent is where the call started, rather than the directory its cd moved it to (loop-ledger DL-43).
+const PIPELINE = 'grep -h pattern app.log | sort'
+const COLLAPSIBLE = 'a repeated progress line the generic filter collapses\n'.repeat(3000)
+const DISTINCT = Array.from({ length: 40 }, (_, i) => `app.log:${i + 1}: pattern matched in request ${i * 7919} from worker ${i % 5}`).join('\n')
+
+describe('an output the post hook compresses or keeps after a cd-prefixed pipeline is filed where the waste report looks', () => {
+  const passes: Array<[string, string]> = [
+    ['the compound compression pass', COLLAPSIBLE],
+    ['the served-output elision pass', DISTINCT],
+  ]
+
+  for (const [pass, stdout] of passes) {
+    it(`${pass} files it under the directory the cd moved to, not the one the call started in`, async () => {
+      clearModuleCaches()
+      const { root } = layout()
+      await storeRun(root, `cd pkgA && ${PIPELINE}`, stdout)
+      const stored = await buildWasteReport(transcriptRunning(root, `cd pkgA && ${PIPELINE}`, 2))
+      expect(stored.repeatedUncompressedBash).toEqual([])
+      // The same pipeline run where the call started is another command in another directory, so the copy in pkgA is no cached run of it.
+      const elsewhere = await buildWasteReport(transcriptRunning(root, PIPELINE, 2))
+      expect(elsewhere.repeatedUncompressedBash).toMatchObject([{ normalized: PIPELINE, count: 2 }])
+    })
+  }
 })
