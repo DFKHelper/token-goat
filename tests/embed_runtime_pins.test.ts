@@ -8,7 +8,8 @@ import * as zlib from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { _resetDataDirCacheForTesting } from '../src/constants.js'
-import { ORT_WEB_GLUE, ORT_WEB_TARBALL, ORT_WEB_VERSION, ORT_WEB_WASM, ensureWasmBinary, extractTarMember, wasmBinaryPresent, wasmDir } from '../src/embed_runtime.js'
+import { ORT_WEB_VERSION, ORT_WEB_WASM, ensureWasmBinary, wasmBinaryPresent, wasmDir } from '../src/embed_runtime.js'
+import { ORT_WEB_GLUE, ORT_WEB_TARBALL, extractTarMember } from '../src/embed_runtime_web.js'
 import { downloadPinned, type PinnedFile } from '../src/pinned_file.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -29,6 +30,8 @@ describe('the onnxruntime-web pins', () => {
   it('pin the tarball the lockfile installs', () => {
     const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8')) as { packages: Record<string, { version?: string; resolved?: string; integrity?: string }> }
     const entry = lock.packages['node_modules/onnxruntime-web']
+    // embed_runtime_web.ts spells the version out in the name rather than importing ORT_WEB_VERSION; see WebRuntimeHost there.
+    expect(ORT_WEB_TARBALL.name).toBe(`onnxruntime-web-${ORT_WEB_VERSION}.tgz`)
     expect(entry?.resolved).toBe(`https://registry.npmjs.org/onnxruntime-web/-/${ORT_WEB_TARBALL.name}`)
     // CAPTURE: the registry's dist.integrity for onnxruntime-web 1.30.0, which the sha512 of the tarball whose sha256 and length ORT_WEB_TARBALL pins matched on 2026-09-28. Moving the lockfile to another tarball fails here before the binary pin can drift from it.
     expect(entry?.integrity).toBe('sha512-q0y+JrrtukXSzsBWEMccVfqX25LRmosXHF+CaRJmg8pZClzcV7svNc4rKY3jL02Vb7QmRMDs1SigqR4CXAfKYQ==')

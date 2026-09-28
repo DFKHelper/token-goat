@@ -9,6 +9,8 @@ import { pinnedPopulation } from './population.js'
 const ROOT = process.cwd()
 const RUNTIME = 'src/embed_runtime.ts'
 const PINNED_FILE = 'src/pinned_file.ts'
+/** The two modules behind a dynamic import that do the placing, downloading and starting: as free of the fingerprint as the modules that load them. */
+const LAZY = ['src/embed_runtime_web.ts', 'src/pinned_fetch.ts']
 
 const relative = (f: string): string => path.relative(ROOT, f).split(path.sep).join('/')
 const read = (rel: string): string => fs.readFileSync(path.join(ROOT, rel), 'utf8')
@@ -31,10 +33,10 @@ describe('the inference runtime loader lives outside every hashed fingerprint so
     expect(LOAD_CALL.test(text), `${RUNTIME} no longer loads a runtime package by any form LOAD_CALL recognises, so the pattern below would miss the real one`).toBe(true)
   })
 
-  it('is not hashed by embedFingerprintSources() or extractionSources(), and neither is the pinned-download helper it shares with the model', () => {
+  it('is not hashed by embedFingerprintSources() or extractionSources(), and neither is the pinned-download helper it shares with the model, nor the lazily loaded halves of either', () => {
     const embed = new Set(embedFingerprintSources().map(relative))
     const extraction = new Set(extractionSources().map(relative))
-    for (const file of [RUNTIME, PINNED_FILE]) {
+    for (const file of [RUNTIME, PINNED_FILE, ...LAZY]) {
       expect(fs.existsSync(path.join(ROOT, file)), `${file} is gone; update this guard`).toBe(true)
       expect(embed.has(file), `${file} is hashed into EMBED_FINGERPRINT, so every edit to how the runtime is found or fetched re-embeds every indexed file on every machine`).toBe(false)
       expect(extraction.has(file), `${file} is hashed into PARSER_FINGERPRINT, so every edit to it reparses every indexed file`).toBe(false)

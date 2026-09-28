@@ -8,7 +8,7 @@ import { sweepStaleChunks } from './scripts/sweep-chunks.mjs'
 const CHUNK_PREFIX = 'token-goat-chunk-'
 // The hook entry used to be built separately and owned its own prefix, so dist/ carried a second, byte-for-byte copy of every shared chunk. Nothing emits these any more; sweeping them with an empty keep-list clears whatever an older build left behind in a working dist/.
 const LEGACY_HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
-// Named in src/embed_runtime.ts (ORT_WEB_GLUE) too, where its digest is pinned; tests/embed_runtime_pins.test.ts checks the copy this build writes against that pin.
+// Named in src/embed_runtime_web.ts (ORT_WEB_GLUE) too, where its digest is pinned; tests/embed_runtime_pins.test.ts checks the copy this build writes against that pin.
 const ORT_WEB_GLUE = 'ort-wasm-simd-threaded.mjs'
 
 
