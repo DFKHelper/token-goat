@@ -310,24 +310,28 @@ describe('bash_runner.run — quiet-command heartbeat (stderr, doubling schedule
     expect(err).toMatch(/\[token-goat compress] still running, \d+s elapsed/)
   })
 
-  // Non-firing guard: a command that keeps producing output resets the quiet clock on every write, so a chatty command must never see a heartbeat at all.
-  it('non-firing: a chatty command never gets a heartbeat', async () => {
+  // Non-firing guard: a command that keeps producing output resets the quiet clock on every write, so no heartbeat may land while its output is flowing. The clock starts at spawn, so a heartbeat before the first write is correct on a box where Node's own startup exceeds the interval (this test used to assert "no heartbeat at all" and failed that way under a loaded parallel suite). Stdout reaches writeStdout only as the compressed body at exit, so the child stamps its own first and last write times and the heartbeats are checked against that wall-clock window instead. The chatter (~3s) spans at least one gap of the doubling schedule (300, 900, 2100, 4500ms from spawn), so a schedule that stopped resetting on output fires inside it: mutation-checked by turning onOutput into a no-op.
+  it('non-firing: a chatty command gets no heartbeat while its output is flowing', async () => {
+    const timesPath = path.join(scriptDir, 'chatty-times.json')
     const s = script(
       'chatty.js',
-      'let n = 0\nconsole.log("tick " + n++)\nconst id = setInterval(() => { console.log("tick " + n++); if (n >= 20) { clearInterval(id) } }, 20)\n',
+      'const fs = require("fs")\nconst first = Date.now()\nlet n = 0\nconsole.log("tick " + n++)\nconst id = setInterval(() => { console.log("tick " + n++); if (n >= 150) { clearInterval(id); fs.writeFileSync(' + JSON.stringify(timesPath) + ', JSON.stringify({ first, last: Date.now() })) } }, 20)\n',
     )
-    let out = ''
-    let err = ''
+    const beats: number[] = []
     const code = await run(nodeCmd(s), {
       filterName: 'generic',
-      // Well above typical Node process-startup latency, so a slow spawn on a loaded CI box never reads as a "quiet gap" before the child's own first (immediate) write.
-      heartbeatIntervalMs: 500,
-      writeStdout: (x) => (out += x),
-      writeStderr: (x) => (err += x),
+      heartbeatIntervalMs: 300,
+      writeStdout: () => {},
+      writeStderr: (x) => {
+        if (/still running/.test(x)) beats.push(Date.now())
+      },
     })
     expect(code).toBe(0)
-    expect(out).toContain('tick')
-    expect(err).not.toMatch(/still running/)
+    const { first, last } = JSON.parse(fs.readFileSync(timesPath, 'utf8')) as { first: number; last: number }
+    expect(last - first).toBeGreaterThan(2500)
+    // 100ms of slack after the first write: a beat already due when the child wrote can reach writeStderr a moment after the child's own clock reading.
+    const beatsWhileFlowing = beats.filter((t) => t > first + 100 && t < last)
+    expect(beatsWhileFlowing).toEqual([])
   })
 })
 
