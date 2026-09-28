@@ -232,12 +232,12 @@ interface Session {
 
 type Script = (c: FakeConn, f: Fake) => Promise<void>
 
-/** The endpoint the client computes for `slot` of the fake bundle. A long Unix socket path moves under the temp directory, which is the sandbox's, so it is computed with the sandbox's TMPDIR. */
-function fakeEndpoint(slot: number): string {
+/** The endpoint a client in the sandbox computes for `slot` of `bundle`. A long Unix socket path moves under the temp directory, which is the sandbox's, so it is computed with the sandbox's TMPDIR. CAPTURE: on CI's test-macos job for f285eff0 the real-server cases computed it with this process's TMPDIR, polled `/var/folders/.../T/tg-run-WZTo44/token-goat-501/11df605e7cdbd677-0.sock`, and never saw the server the wrapped command started under the sandbox's; Linux's shorter data directory keeps the socket there, so TMPDIR never entered it. */
+function sandboxEndpoint(slot: number, bundle: string): string {
   const saved = process.env['TMPDIR']
   process.env['TMPDIR'] = sb.tmp
   try {
-    return endpointFor(slot, sb.dataDir, sb.fakeBundle)
+    return endpointFor(slot, sb.dataDir, bundle)
   } finally {
     if (saved === undefined) delete process.env['TMPDIR']
     else process.env['TMPDIR'] = saved
@@ -252,7 +252,7 @@ async function startFake(slot: number, script: Script): Promise<Fake> {
     socket.on('error', () => undefined)
     script(new FakeConn(socket), fake).catch(() => socket.destroy())
   })
-  const endpoint = fakeEndpoint(slot)
+  const endpoint = sandboxEndpoint(slot, sb.fakeBundle)
   if (!WIN) fs.rmSync(endpoint, { force: true })
   await new Promise<void>((resolve, reject) => {
     fake.server.once('error', reject)
@@ -352,7 +352,7 @@ beforeAll(() => {
 afterAll(async () => {
   // The real server was started by a wrapped Node command's autostart, so only the stop query reaches it.
   cli(['hook-server', 'stop'])
-  const endpoint = endpointFor(0, sb.dataDir, fs.realpathSync.native(path.dirname(BUNDLE)))
+  const endpoint = sandboxEndpoint(0, fs.realpathSync.native(path.dirname(BUNDLE)))
   const deadline = Date.now() + 10_000
   while ((await slotStatus(endpoint, sb.key)) !== undefined && Date.now() < deadline) await sleep(100)
   fs.rmSync(sb.base, { recursive: true, force: true })
@@ -388,7 +388,7 @@ describe('against a real hook server', () => {
     }
     walk(JSON.parse(settings))
     expect(fs.existsSync(shim), `no pre_tool_use shim in ${settings}`).toBe(true)
-    endpoint = endpointFor(0, sb.dataDir, fs.realpathSync.native(path.dirname(BUNDLE)))
+    endpoint = sandboxEndpoint(0, fs.realpathSync.native(path.dirname(BUNDLE)))
   }, 120_000)
 
   it('with no server, the wrapped command runs and starts one, and the next call is served by it', async () => {
