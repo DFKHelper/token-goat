@@ -1,12 +1,4 @@
-/**
- * SECURITY.md tells an evaluator which packages carry the residual `npm audit` findings, that
- * `onnxruntime-node` is opt-in so an install can simply not have it, and that `exceljs` is
- * not installed at all any more. That claim is only true while the manifest agrees. Promoting
- * either one back into a shipped section
- * would silently turn a documented "you can opt out" into a lie, and no other test reads the
- * manifest for this. The two forward-patched majors are pinned here for the same reason: the
- * document says they were moved across a major to clear their advisories, so a revert must fail.
- */
+/** SECURITY.md tells an evaluator which packages carry the residual `npm audit` findings, that `onnxruntime-node` is opt-in so an install can simply not have it, and that `exceljs` is not installed at all any more. That claim is only true while the manifest agrees. Promoting either one back into a shipped section would silently turn a documented "you can opt out" into a lie, and no other test reads the manifest for this. The two forward-patched majors are pinned here for the same reason: the document says they were moved across a major to clear their advisories, so a revert must fail. */
 import { execSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -38,15 +30,7 @@ function minorOf(range: string): number {
   return Number(/\d+\.(\d+)/.exec(range)?.[1] ?? -1)
 }
 
-/**
- * The size SECURITY.md claims for one of the two installs, read out of the table row that claims it.
- *
- * Read rather than matched. This guard used to assert that the string `clean, 106 packages` appeared
- * somewhere in the document, which cannot tell a current number from a stale one -- it is a fact
- * about the sentence. Pulling the number out and measuring against it is the whole point of the
- * change; finding the row is a precondition, so a row that has been deleted or reworded fails here
- * instead of quietly leaving nothing to check.
- */
+/** The size SECURITY.md claims for one of the two installs, read out of the table row that claims it. Read rather than matched. This guard used to assert that the string `clean, 106 packages` appeared somewhere in the document, which cannot tell a current number from a stale one -- it is a fact about the sentence. Pulling the number out and measuring against it is the whole point of the change; finding the row is a precondition, so a row that has been deleted or reworded fails here instead of quietly leaving nothing to check. */
 function statedInstallSize(rowLabel: string): number {
   const row = security.split('\n').find((line) => line.startsWith(`| ${rowLabel} |`))
   if (!row) throw new Error(`SECURITY.md has no install table row labelled "${rowLabel}"`)
@@ -60,72 +44,47 @@ describe('dependency advisory disclosure', () => {
     expect(security).toContain('## Dependency advisories')
   })
 
-  // The inverse of what this asserted until the embedding model became opt-in. Optional was not
-  // good enough: npm installs optionalDependencies by default, so "optional" meant everyone got it,
-  // and with it a critical protobufjs advisory, four more through onnxruntime-web, and a nested
-  // older sharp carrying four libvips CVEs -- six in total, none patchable from here. The runtime
-  // that replaced all of that carries one advisory of its own, so putting it back into either
-  // shipped section makes a default install dirty again while this page still calls it clean --
-  // which is precisely why this reads both sections rather than only the one it stays out of.
+  // The inverse of what this asserted until the embedding model became opt-in. Optional was not good enough: npm installs optionalDependencies by default, so "optional" meant everyone got it, and with it a critical protobufjs advisory, four more through onnxruntime-web, and a nested older sharp carrying four libvips CVEs -- six in total, none patchable from here. The runtime that replaced all of that carries one advisory of its own, so putting it back into either shipped section makes a default install dirty again while this page still calls it clean -- which is precisely why this reads both sections rather than only the one it stays out of.
   it('keeps the embedding runtime out of the packages a consumer installs', () => {
     expect(Object.keys(pkg.dependencies ?? {})).not.toContain('onnxruntime-node')
     expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('onnxruntime-node')
     expect(Object.keys(pkg.devDependencies ?? {}), 'the tests still embed with it').toContain('onnxruntime-node')
   })
 
-  // The package it replaced must not come back either, by either door. It is still a devDependency,
-  // but only to regenerate the frozen tokenizer oracle -- nothing in src/ requires it any more.
+  // The package it replaced must not come back either, by either door. It is still a devDependency, but only to regenerate the frozen tokenizer oracle -- nothing in src/ requires it any more.
   it('keeps the package it replaced out of the packages a consumer installs', () => {
     expect(Object.keys(pkg.dependencies ?? {})).not.toContain('@xenova/transformers')
     expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('@xenova/transformers')
   })
 
-  // The one advisory this project does not clear for the reader. SECURITY.md states the count, the
-  // identifier, why it is unreachable, and the override that fixes it -- and, because a plausible
-  // fix that does not work is worse than none, that co-installing adm-zip does not dedupe. Rounding
-  // any of that to "clean" is the failure this pins shut.
-  it('discloses the adm-zip advisory the opt-in runtime carries, rather than rounding it to clean', () => {
+  // CAPTURE: a fresh `npm install onnxruntime-node@1.30.0` in an empty directory on 2026-09-28 resolved adm-zip 0.6.1 and `npm audit` reported 0 vulnerabilities, and GitHub's advisory database gives GHSA-vwc7-r8mq-g2x9 the range ">= 0.5.9, <= 0.6.0". Older onnxruntime-node releases still ask for `^0.5.16`, so SECURITY.md has to keep naming the advisory, why it is unreachable, and the override that fixes it for someone held on one; rounding that to "clean" for every version, or dropping the version the claim holds from, is the failure this pins shut.
+  it('discloses the adm-zip advisories older opt-in runtimes carry and the version that clears them', () => {
     expect(security, 'the advisory identifier, so a reader can look it up').toContain('GHSA-xcpc-8h2w-3j85')
+    expect(security, 'the second advisory, which 0.6.0 itself carried').toContain('GHSA-vwc7-r8mq-g2x9')
     expect(security, 'the package it is in').toContain('adm-zip')
     expect(security, 'why it is not reachable from token-goat').toContain('postinstall')
-    expect(security, 'and the override that actually resolves it').toMatch(/"adm-zip":\s*"\^0\.6\.0"/)
-    // The repository's own scan is clean only because of that override, so it has to still be there.
-    expect(Object.keys(pkg.overrides ?? {}), 'the repository row is clean because of this pin').toContain('adm-zip')
+    expect(security, 'the runtime version the clean claim holds from').toContain('`onnxruntime-node` 1.30.0')
+    expect(security, 'and the override that actually resolves it on an older runtime').toMatch(/"adm-zip":\s*"\^0\.6\.1"/)
+    expect(pkg.overrides?.['adm-zip'], 'the repository pins the version that clears both advisories').toBe('^0.6.1')
   })
 
-  // exceljs went further than optional: the xlsx-* commands read the container directly with
-  // fflate and fast-xml-parser now, so it is a test fixture writer and nothing else. That is what
-  // takes the install tree from 301 packages to 246 and clears every deprecated package out of it,
-  // so putting it back into either shipped section would quietly undo all of that while the
-  // document still claimed it.
+  // exceljs went further than optional: the xlsx-* commands read the container directly with fflate and fast-xml-parser now, so it is a test fixture writer and nothing else. That is what takes the install tree from 301 packages to 246 and clears every deprecated package out of it, so putting it back into either shipped section would quietly undo all of that while the document still claimed it.
   it('keeps exceljs out of the packages a consumer installs', () => {
     expect(Object.keys(pkg.dependencies ?? {})).not.toContain('exceljs')
     expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('exceljs')
     expect(Object.keys(pkg.devDependencies ?? {}), 'the tests still write fixtures with it').toContain('exceljs')
   })
 
-  // The reverse of what this once asserted. html-to-text is inlined by esbuild at build time and
-  // nothing in dist imports it, so keeping it in `dependencies` shipped deepmerge-ts, htmlparser2,
-  // selderee and dom-serializer to every consumer for nothing. Moving it is what takes the
-  // no-optional install to zero advisories, so a move back would silently reintroduce that chain.
+  // The reverse of what this once asserted. html-to-text is inlined by esbuild at build time and nothing in dist imports it, so keeping it in `dependencies` shipped deepmerge-ts, htmlparser2, selderee and dom-serializer to every consumer for nothing. Moving it is what takes the no-optional install to zero advisories, so a move back would silently reintroduce that chain.
   it('keeps html-to-text out of the packages a consumer installs', () => {
     expect(Object.keys(pkg.dependencies ?? {})).not.toContain('html-to-text')
     expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('html-to-text')
     expect(Object.keys(pkg.devDependencies ?? {}), 'the build still needs it').toContain('html-to-text')
   })
 
-  // The document now claims that install is clean rather than carrying one chain. The claim is
-  // only worth making while nothing has been added back to `dependencies` that could break it.
-  // The count is the part worth pinning: the document states how large that install is, and five
-  // packages the bundle inlines have since moved out of `dependencies`, which took it from 46 to
-  // 40; replacing better-sqlite3 with the node:sqlite driver then took it from 40 to 2. The anchor
-  // names the one that stays because the bundle genuinely resolves it at run time, so a demotion
-  // of it fails here as well as in the bundle guard.
+  // The document now claims that install is clean rather than carrying one chain. The claim is only worth making while nothing has been added back to `dependencies` that could break it. The count is the part worth pinning: the document states how large that install is, and five packages the bundle inlines have since moved out of `dependencies`, which took it from 46 to 40; replacing better-sqlite3 with the node:sqlite driver then took it from 40 to 2. The anchor names the one that stays because the bundle genuinely resolves it at run time, so a demotion of it fails here as well as in the bundle guard.
   it('states the size of a no-optional install that the lock file agrees with exactly', () => {
-    // Not a text match: the number is read out of the document and compared against the tree
-    // resolved from package-lock.json. Exact equality is available here and nowhere else, because
-    // this half of the tree contains no platform-gated package -- every entry installs everywhere --
-    // so the resolved answer is one number rather than one per runner.
+    // Not a text match: the number is read out of the document and compared against the tree resolved from package-lock.json. Exact equality is available here and nowhere else, because this half of the tree contains no platform-gated package -- every entry installs everywhere -- so the resolved answer is one number rather than one per runner.
     const measured = consumerPackageCount({ includeOptional: false })
     expect(
       statedInstallSize('an install without optional packages'),
@@ -135,9 +94,7 @@ describe('dependency advisory disclosure', () => {
   })
 
   it('resolves the same no-optional tree on every platform, which is what lets the check above be exact', () => {
-    // The premise of the exact comparison, asserted rather than assumed. If a native package ever
-    // lands in `dependencies`, this fails first and says so, instead of the check above starting to
-    // fail on two of the four CI jobs for a reason that reads like a stale document.
+    // The premise of the exact comparison, asserted rather than assumed. If a native package ever lands in `dependencies`, this fails first and says so, instead of the check above starting to fail on two of the four CI jobs for a reason that reads like a stale document.
     const sizes = (
       [
         ['win32', 'x64'],
@@ -154,41 +111,25 @@ describe('dependency advisory disclosure', () => {
       expect(security, `${name} is discussed in SECURITY.md`).toContain(name)
       expect(declared, `${name} is still a dependency`).toContain(name)
     }
-    // sharp is the second package the document discusses at length without shipping. Nothing under
-    // src/ imports it -- the image pipeline is pure TypeScript, and the bundle resolves no `sharp`
-    // specifier at all -- so it is a devDependency the tests use, and the passage explaining why a
-    // default install carries no libvips has to keep naming it.
+    // sharp is the second package the document discusses at length without shipping. Nothing under src/ imports it -- the image pipeline is pure TypeScript, and the bundle resolves no `sharp` specifier at all -- so it is a devDependency the tests use, and the passage explaining why a default install carries no libvips has to keep naming it.
     expect(security).toContain('sharp')
     expect(Object.keys(pkg.devDependencies ?? {})).toContain('sharp')
     expect(declared).not.toContain('sharp')
-    // onnxruntime-node is the one the document discusses at length without shipping. It has to stay
-    // named there, because the section is now largely about its absence and the command that brings
-    // it back, and a silent rename would leave that whole passage pointing at nothing.
+    // onnxruntime-node is the one the document discusses at length without shipping. It has to stay named there, because the section is now largely about its absence and the command that brings it back, and a silent rename would leave that whole passage pointing at nothing.
     expect(security).toContain('onnxruntime-node')
     expect(Object.keys(pkg.devDependencies ?? {})).toContain('onnxruntime-node')
     expect(declared).not.toContain('onnxruntime-node')
   })
 
-  // The document does not merely say the model is optional; it prints the command that installs it.
-  // A command that is wrong is worse than no command, and this one is easy to get wrong in a way
-  // nobody notices: a global token-goat needs `-g` for the sibling to resolve, and a project
-  // install must not have it. Both spellings are asserted because the document promises both.
+  // The document does not merely say the model is optional; it prints the command that installs it. A command that is wrong is worse than no command, and this one is easy to get wrong in a way nobody notices: a global token-goat needs `-g` for the sibling to resolve, and a project install must not have it. Both spellings are asserted because the document promises both.
   it('prints an install command for the runtime it no longer ships', () => {
     expect(security).toContain('npm install -g onnxruntime-node')
     expect(security).toMatch(/drop -g if token-goat is a project dependency/)
   })
 
-  // Every advisory a consumer used to inherit came through that one package, so the document's
-  // claim is now that a default install is clean rather than that some paths are unreachable. The
-  // count is pinned for the same reason the no-optional count below it is: the document states a
-  // number, and a number in a security document that nothing checks goes stale silently.
+  // Every advisory a consumer used to inherit came through that one package, so the document's claim is now that a default install is clean rather than that some paths are unreachable. The count is pinned for the same reason the no-optional count below it is: the document states a number, and a number in a security document that nothing checks goes stale silently.
   it('never claims a default install is smaller than the lock file proves it must be', () => {
-    // One-directional on purpose. A default install pulls the optional half, which is where every
-    // prebuilt binary lives, so the true size depends on the platform (measured: 102 on win32/x64,
-    // 106 on linux/x64, 103 on darwin/arm64) and on how far upstream trees have grown since the lock
-    // was last built. The lock is therefore a floor and not the answer, and a floor is still worth
-    // holding the document to: a document claiming fewer packages than the lock demonstrably
-    // requires is wrong, with no measurement needed to know it.
+    // One-directional on purpose. A default install pulls the optional half, which is where every prebuilt binary lives, so the true size depends on the platform (measured: 102 on win32/x64, 106 on linux/x64, 103 on darwin/arm64) and on how far upstream trees have grown since the lock was last built. The lock is therefore a floor and not the answer, and a floor is still worth holding the document to: a document claiming fewer packages than the lock demonstrably requires is wrong, with no measurement needed to know it.
     const stated = statedInstallSize('a default install')
     const floor = consumerPackageCount({ includeOptional: true })
     expect(
@@ -197,10 +138,7 @@ describe('dependency advisory disclosure', () => {
     ).toBeGreaterThanOrEqual(floor)
   })
 
-  // The floor above cannot see the other half of the drift: upstream trees grow inside version
-  // ranges an install already accepts, and no file in this repository changes when they do. That
-  // half is answered by telling the reader the figures are dated measurements rather than
-  // constants, so the passage saying so is itself load-bearing and pinned here.
+  // The floor above cannot see the other half of the drift: upstream trees grow inside version ranges an install already accepts, and no file in this repository changes when they do. That half is answered by telling the reader the figures are dated measurements rather than constants, so the passage saying so is itself load-bearing and pinned here.
   it('presents the counts as dated measurements rather than as constants', () => {
     expect(security, 'the counting method has to survive, or the figures cannot be reproduced').toContain(
       'counting the directories under `node_modules`',
@@ -210,34 +148,22 @@ describe('dependency advisory disclosure', () => {
   })
 
   it('does not fall back below the versions that carry the forward fixes', () => {
-    // sharp is pre-1.0, so its patched line is a minor bump; puppeteer-core's is a major. sharp is
-    // read from devDependencies because that is where it lives now, and the floor still matters
-    // there: the repository's own `npm audit` includes development dependencies.
+    // sharp is pre-1.0, so its patched line is a minor bump; puppeteer-core's is a major. sharp is read from devDependencies because that is where it lives now, and the floor still matters there: the repository's own `npm audit` includes development dependencies.
     expect(minorOf(pkg.devDependencies?.['sharp'] ?? '')).toBeGreaterThanOrEqual(35)
     expect(majorOf(pkg.optionalDependencies?.['puppeteer-core'] ?? '')).toBeGreaterThanOrEqual(25)
   })
 })
 
-/**
- * The "this repository" row is the one claim in the table no other test here re-derives: the rest
- * check package identity and lock-file counts, which is a proxy for what `npm audit` reports, not
- * the audit result itself. A real advisory landing in a dev-only transitive dependency (exactly what
- * happened with adm-zip and hono) can make the row's "clean" claim false without moving anything
- * those other checks look at. `auditReport` is computed once at module load so every test in this
- * file pays for at most one `npm audit` call, not one per assertion.
- */
+/** The "this repository" row is the one claim in the table no other test here re-derives: the rest check package identity and lock-file counts, which is a proxy for what `npm audit` reports, not the audit result itself. A real advisory landing in a dev-only transitive dependency (exactly what happened with adm-zip and hono) can make the row's "clean" claim false without moving anything those other checks look at. `auditReport` is computed once at module load so every test in this file pays for at most one `npm audit` call, not one per assertion. */
 interface AuditReport { metadata: { vulnerabilities: { total: number } } }
 
 let auditReport: AuditReport | null = null
 try {
-  // execSync, not execFileSync: `npm` is a `.cmd` shim on Windows, and execFileSync fails to spawn
-  // one directly (EINVAL) without a shell. The command is a fixed literal with no interpolated
-  // input, so a shell string carries no injection risk here.
+  // execSync, not execFileSync: `npm` is a `.cmd` shim on Windows, and execFileSync fails to spawn one directly (EINVAL) without a shell. The command is a fixed literal with no interpolated input, so a shell string carries no injection risk here.
   const out = execSync('npm audit --json', { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16e6 })
   auditReport = JSON.parse(out) as AuditReport
 } catch (err) {
-  // `npm audit` exits non-zero the moment it finds anything, which execFileSync treats as a thrown
-  // error -- but the JSON report is still on stdout in that case, so try that before giving up.
+  // `npm audit` exits non-zero the moment it finds anything, which execFileSync treats as a thrown error -- but the JSON report is still on stdout in that case, so try that before giving up.
   const stdout = (err as { stdout?: Buffer | string } | null)?.stdout
   if (stdout !== undefined) {
     try {
@@ -266,26 +192,13 @@ describe('this repository row matches a live npm audit', () => {
   })
 })
 
-/**
- * The overrides clear the repository's own audit, and npm applies them only in the root project, so
- * an install of the published package does not get them. SECURITY.md now says that outright. These
- * pin both halves of the claim: dropping an override would make the repository dirty again while
- * the document still called it clean, and dropping the disclosure would let a clean repository scan
- * pass for a clean install.
- */
+/** The overrides clear the repository's own audit, and npm applies them only in the root project, so an install of the published package does not get them. SECURITY.md now says that outright. These pin both halves of the claim: dropping an override would make the repository dirty again while the document still called it clean, and dropping the disclosure would let a clean repository scan pass for a clean install. */
 describe('override disclosure', () => {
   it.each([['protobufjs'], ['deepmerge-ts'], ['uuid'], ['sharp']])('still overrides %s', (name) => {
     expect(Object.keys(pkg.overrides ?? {})).toContain(name)
   })
 
-  // An override whose key is also a direct dependency has to use npm's reference form, `$name`.
-  // Repeating the range literally reads as a conflict even when the two ranges are identical:
-  // Dependabot reported `dependency_file_not_resolvable` on `sharp` and abandoned the entire
-  // grouped update, so every other package in that batch stopped getting version bumps as well,
-  // and the failure was a resolution error rather than anything a test here noticed. `$name` means
-  // "the version this manifest already asks for", which keeps the pin working -- without it
-  // `@xenova/transformers` asks for sharp@^0.32.0 and npm nests a second, older copy -- while
-  // leaving the direct dependency as the one place a version is written down.
+  // An override whose key is also a direct dependency has to use npm's reference form, `$name`. Repeating the range literally reads as a conflict even when the two ranges are identical: Dependabot reported `dependency_file_not_resolvable` on `sharp` and abandoned the entire grouped update, so every other package in that batch stopped getting version bumps as well, and the failure was a resolution error rather than anything a test here noticed. `$name` means "the version this manifest already asks for", which keeps the pin working -- without it `@xenova/transformers` asks for sharp@^0.32.0 and npm nests a second, older copy -- while leaving the direct dependency as the one place a version is written down.
   it('refers to the direct dependency instead of repeating its range', () => {
     const direct: Record<string, string> = {
       ...(pkg.dependencies ?? {}),
@@ -314,17 +227,13 @@ describe('override disclosure', () => {
     expect(security).toContain('npm install --omit=optional token-goat')
   })
 
-  // The document points a bill-of-materials scanner at this script; an absent script would send
-  // that reader to a command that does not exist.
+  // The document points a bill-of-materials scanner at this script; an absent script would send that reader to a command that does not exist.
   it('ships the sbom script SECURITY.md sends a scanner to', () => {
     expect(security).toContain('npm run sbom')
     expect(pkg.scripts?.['sbom']).toContain('cyclonedx')
   })
 
-  // The html-to-text row used to carry a reachability argument for deepmerge-ts. The package is
-  // gone from a consumer install now, so the document explains the removal instead -- including
-  // why it beat the rollback we had considered, which is the part a reader would otherwise ask
-  // about. Naming both packages keeps that explanation from decaying into "we removed it".
+  // The html-to-text row used to carry a reachability argument for deepmerge-ts. The package is gone from a consumer install now, so the document explains the removal instead -- including why it beat the rollback we had considered, which is the part a reader would otherwise ask about. Naming both packages keeps that explanation from decaying into "we removed it".
   it('explains the html-to-text removal rather than dropping the subject', () => {
     expect(security).toContain('deepmerge-ts')
     expect(security).toContain('htmlparser2')
