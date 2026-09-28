@@ -7,7 +7,7 @@ import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
-import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, isFileAtIndexKey } from './paths.js'
+import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, hostPathOfIndexKey, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
@@ -143,7 +143,7 @@ function foldShellReadStructure(cmd: string, filePath: string, output: string, f
   const originalBytes = Buffer.byteLength(output, 'utf-8')
   let onDisk: number
   try {
-    onDisk = statSync(fileKey).size
+    onDisk = statSync(hostPathOfIndexKey(fileKey)).size
   } catch {
     return null
   }
@@ -692,9 +692,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
     const curlDl = extractCurlDownload(cmd)
     if (curlDl !== null && (exitCode === null || exitCode === 0)) {
-      const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, runDir ?? process.cwd())
-      if (existsSync(resolvedOutputPath)) {
-        recordCurlDownload(curlDl.url, resolvedOutputPath)
+      // Recorded at its host path, which is the key everywhere but WSL, so the recall names a file the shell there can open.
+      const outputOnDisk = hostPathOfIndexKey(resolveIndexPath(curlDl.outputPath, runDir ?? process.cwd()))
+      if (existsSync(outputOnDisk)) {
+        recordCurlDownload(curlDl.url, outputOnDisk)
       }
     }
 

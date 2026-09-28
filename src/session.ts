@@ -3,7 +3,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 
-import { normalizePath } from './paths.js'
+import { hostPathOfIndexKey, normalizePath } from './paths.js'
 import { registerReset } from './reset.js'
 import { foldPath } from './util.js'
 import { shortFingerprint } from './fingerprint.js'
@@ -120,7 +120,7 @@ let _transcriptPath: { path: string; sessionId: string } | null = null
 /** Best-effort file size in bytes, or 0 when the file cannot be stat'd. Never throws: a missing/locked file simply records size 0 so the read is still tracked for dedup. */
 function fileSize(absPath: string): number {
   try {
-    return fs.statSync(absPath).size
+    return fs.statSync(hostPathOfIndexKey(absPath)).size
   } catch {
     return 0
   }
@@ -557,7 +557,7 @@ export const MAX_RANGES_PER_FILE = 64
 /** Best-effort file identity (size + mtimeMs) for the repeated-range deny's no-snapshot fallback, or undefined when the file cannot be stat'd. */
 function statIdentity(absPath: string): { size: number; mtimeMs: number } | undefined {
   try {
-    const st = fs.statSync(absPath)
+    const st = fs.statSync(hostPathOfIndexKey(absPath))
     return { size: st.size, mtimeMs: st.mtimeMs }
   } catch {
     return undefined

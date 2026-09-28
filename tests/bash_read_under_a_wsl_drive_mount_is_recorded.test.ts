@@ -1,4 +1,4 @@
-// The Bash hooks record a read-shaped command's file only when stat finds a regular file there, and they stat its index key. On WSL a project on a Windows drive sits under a mount such as /mnt/c/..., which shellMountToWindowsPath folds into the drive-letter key c:/... on every platform, and POSIX resolves that key as a relative path, so no Bash read under a drive mount went on record. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the built bundle's pre hook told a repeat `head -n 40 x.ts`, and a repeat `sed -n '1,40p' x.ts`, "You already read lines 1-40" in a project under /var/tmp and nothing in the same project under /mnt/c/Projects/..., while a build with the stat check stripped told both. A runner cannot create a real /mnt/<letter> without root (see tests/mcp_server_normalization_asymmetry.test.ts), so this file maps one mount onto a temp directory through node:fs's statSync alone, the call the check makes; the /mnt/<drive> layout is FORMAT-DERIVED from WSL's default automount root, and the commands and their output are HAND-DERIVED from coreutils and sed syntax.
+// The Bash hooks record a read-shaped command's file only when stat finds a regular file there, and they stat its index key. On WSL a project on a Windows drive sits under a mount such as /mnt/c/..., which shellMountToWindowsPath folds into the drive-letter key c:/... on every platform, and POSIX resolves that key as a relative path, so no Bash read under a drive mount went on record. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the built bundle's pre hook told a repeat `head -n 40 x.ts`, and a repeat `sed -n '1,40p' x.ts`, "You already read lines 1-40" in a project under /var/tmp and nothing in the same project under /mnt/c/Projects/..., while a build with the stat check stripped told both. A runner cannot create a real /mnt/<letter> without root (see tests/mcp_server_normalization_asymmetry.test.ts), so this file maps one mount onto a temp directory through node:fs's statSync alone, the call the check makes, and on Windows, which opens a drive-letter key as it stands, maps the letter there too; the /mnt/<drive> layout is FORMAT-DERIVED from WSL's default automount root, and the commands and their output are HAND-DERIVED from coreutils and sed syntax.
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -22,11 +22,13 @@ const mounted = vi.hoisted(() => ({ root: null as string | null }))
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
-  const statSync = ((p: fs.PathLike, ...rest: unknown[]) => {
-    const s = String(p)
-    const target = mounted.root !== null && s.startsWith(MOUNT) ? path.join(mounted.root, s.slice(MOUNT.length)) : p
-    return (actual.statSync as (...args: unknown[]) => unknown)(target, ...rest)
-  }) as typeof actual.statSync
+  const onHost = (s: string): string | null => {
+    if (mounted.root === null) return null
+    if (s.startsWith(MOUNT)) return path.join(mounted.root, s.slice(MOUNT.length))
+    if (process.platform === 'win32' && /^q:[\\/]/i.test(s)) return path.join(mounted.root, s.slice(3))
+    return null
+  }
+  const statSync = ((p: fs.PathLike, ...rest: unknown[]) => (actual.statSync as (...args: unknown[]) => unknown)(onHost(String(p)) ?? p, ...rest)) as typeof actual.statSync
   return { ...actual, statSync, default: { ...actual, statSync } }
 })
 

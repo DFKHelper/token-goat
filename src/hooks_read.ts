@@ -11,7 +11,7 @@ import { preToolPathDeclined } from './vscode_path_gate.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
-import { displaySafePath, displaySafeText, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
+import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
@@ -406,14 +406,15 @@ export function realSymbolReadHint(filePath: string, shown: string, range?: { st
 
 function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): number {
   try {
+    const onDisk = hostPathOfIndexKey(filePath)
     if (fileStatSize !== undefined && fileStatSize > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       return 0
     }
-    const sz = fileStatSize ?? statSize(filePath)
+    const sz = fileStatSize ?? statSize(onDisk)
     if (sz !== null && sz > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       return 0
     }
-    return countTextLines(fs.readFileSync(filePath, 'utf8'))
+    return countTextLines(fs.readFileSync(onDisk, 'utf8'))
   } catch {
     return 0
   }
@@ -552,6 +553,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   const normalized = normalizePath(filePath)
   const shown = displaySafePath(normalized)
+  // The index key the session, snapshots and hints are keyed on is not always a path this host can open: on WSL a drive-mount key names its mount. Every stat and read below goes through `onDisk`.
+  const onDisk = hostPathOfIndexKey(normalized)
 
   if (isNodeModulesPath(normalized)) {
     return denyOutput(
@@ -633,7 +636,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const skillName = detectSkillFile(normalized)
   if (skillName && basename === 'SKILL.md') {
     try {
-      const body = fs.readFileSync(normalized, 'utf-8')
+      const body = fs.readFileSync(onDisk, 'utf-8')
       const bodySha = contentHash(body)
       const compact = getCompactAnySessionSync(skillName)
       const stale = isCompactStale(compact, skillName, bodySha)
@@ -657,11 +660,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     _isDocFile(normalized)
   ) {
     const compactPath = compactPathFor(normalized)
-    if (isCompactFresh(compactPath, normalized)) {
+    if (isCompactFresh(compactPath, onDisk)) {
       const compactBody = readCompactBody(compactPath)
       if (compactBody !== null) {
         recordActualRead(event, normalized)
-        const fullSize = statSize(normalized) ?? 0
+        const fullSize = statSize(onDisk) ?? 0
         const savedBytes = counterfactualCredit(fullSize, compactBody.length)
         recordStat('session_hint', savedBytes, savedTokensFromBytes(savedBytes), undefined, 'stable-doc-compact')
         return denyOutput(
@@ -686,7 +689,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep needs to search the notebook's actual content, not the output-stripped sidecar this intercept would serve instead — exempt it from this intercept (same rationale as the doc-compact exemption above).
   if (event.toolName !== 'Grep' && isNotebook) {
     try {
-      const rawBytes = fs.readFileSync(normalized)
+      const rawBytes = fs.readFileSync(onDisk)
       const [sidecarPath] = getOrCreateSidecar(rawBytes, dataDir())
       const sidecarContent = fs.readFileSync(sidecarPath, 'utf-8')
       const savedBytes = rawBytes.length - sidecarContent.length
@@ -713,10 +716,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     let fileContent: string | null = null
     let markdownSize: number | null = null
     try {
-      const sz = statSize(normalized)
+      const sz = statSize(onDisk)
       if (sz !== null && sz >= MARKDOWN_SIZE_THRESHOLD) {
         markdownSize = sz
-        fileContent = fs.readFileSync(normalized, 'utf8')
+        fileContent = fs.readFileSync(onDisk, 'utf8')
       }
     } catch {
       // best-effort
@@ -901,10 +904,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     {
       const isTaskOutput = /[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)
       const label = isTaskOutput ? 'Session transcript' : 'Tool-result file'
-      const outputSize = statSize(normalized)
+      const outputSize = statSize(onDisk)
       // The gate is on the read, not the file. Claude Code persists every Bash result past 20,000 bytes to tool-results/ and tells the model to Read the file, so every persisted result is past this floor, and denying a bounded window of it left the model no way to see lines the preview cut off: the recall named here pages by head, tail or pattern, never by line range.
       const window = readRequestedSliceWindow(event)
-      const windowBytes = window.limit === undefined ? undefined : lineWindowBytes(normalized, window.offset ?? 1, window.limit)
+      const windowBytes = window.limit === undefined ? undefined : lineWindowBytes(onDisk, window.offset ?? 1, window.limit)
       if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES && (windowBytes === undefined || windowBytes >= TASK_OUTPUT_DENY_BYTES)) {
         // Not recorded as a read: the model never saw the file, and recording it made the bounded retry the refusal invites hit "was already read this session" instead, the same rule the file-type gate below keeps.
         const artifactDenyCredit = counterfactualCredit(outputSize)
@@ -1003,7 +1006,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const protectedRead = isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)
 
     recordActualRead(event, normalized)
-    const rereadBytes = statSize(normalized) ?? 0
+    const rereadBytes = statSize(onDisk) ?? 0
     // A denied Read that carried offset/limit was only ever going to hand over its requested window, not the whole file -- crediting rereadBytes (the on-disk file size) unconditionally here booked every windowed re-read as if it had asked for everything, the same defect the read_served_deny branch above already avoids via counterfactualCredit(alreadyServed.bytes). estimateRequestedSlice cheaply sizes just that window when one was requested; anything else (no offset/limit, or a shape it can't size cheaply) still gates on the whole file.
     const requestedSlice = estimateRequestedSlice(event, normalized)
     const rereadCreditBasis = requestedSlice.kind === 'bytes' ? requestedSlice.bytes : rereadBytes
@@ -1059,7 +1062,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             const recordedIdentity = getSessionFileEntry(normalized)?.rangeFileIdentity
             let currentIdentity: { size: number; mtimeMs: number } | undefined
             try {
-              const st = fs.statSync(normalized)
+              const st = fs.statSync(onDisk)
               currentIdentity = { size: st.size, mtimeMs: st.mtimeMs }
             } catch {
               currentIdentity = undefined
@@ -1167,7 +1170,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     )
   }
 
-  const size = statSize(normalized)
+  const size = statSize(onDisk)
   // Grep never reads/returns the whole file — its cost is the search pattern's match count, not the file's total size (same rationale as the re-read dedup exemption above), and estimateRequestedSlice() always reports 'unbounded' for it (no offset/limit on its schema), which would otherwise gate it on the full file size and hard-deny it with an "edit it anyway" message that makes no sense for a search operation.
   if (event.toolName !== 'Grep' && size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized) && !isDispatchedFileType(normalized)) {
     // A genuine, bounded offset/limit request gates on the requested slice's size instead of the whole file's — a small window into a huge file should be let through. Whole-file requests (no offset/limit, or an unboundable window) keep gating on the real file size.
@@ -1211,7 +1214,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   // Universal file type handler (catch-all for non-code, non-markdown large files)
   const fileTypeExt = path.extname(normalized).slice(1).toLowerCase()
-  const fileStatSize = size ?? statSize(normalized) ?? 0
+  const fileStatSize = size ?? statSize(onDisk) ?? 0
   const isKnownFileType = DISPATCHED_FILE_TYPE_EXTS.has(fileTypeExt)
   // Same Grep exemption as the large-file gate above: this catch-all's per-type handlers (handleTxt/handleCsv/handleHtml/handleGenericLarge/handlePdf/handleOfficeBinary) block purely on the whole file's size/type, with no notion of a search pattern — without this, a Grep call would fall through from the exempted gate above straight into an equally tool-blind deny here for any large .txt/.log/.csv/.html/binary file.
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
@@ -1222,7 +1225,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // Guarded the same way every other full-content fs.readFileSync in this file is (see SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read into a JS string in full on every single call, even a cheap bounded offset/limit request whose small ftEffectiveLength was always going to pass every handler's length-gate below without ever touching content.
     if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       try {
-        ftContent = fs.readFileSync(normalized, 'utf8')
+        ftContent = fs.readFileSync(onDisk, 'utf8')
       } catch {
         // best-effort — empty content will pass through
       }
@@ -1262,7 +1265,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       try {
         let content = ''
         if (fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-          content = fs.readFileSync(normalized, 'utf8')
+          content = fs.readFileSync(onDisk, 'utf8')
         }
         const headings = extractMarkdownHeadings(content)
         if (headings.length < 3) {

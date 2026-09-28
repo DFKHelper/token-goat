@@ -7,7 +7,7 @@ import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
-import { resolveIndexPath, displaySafePath, isFileAtIndexKey } from './paths.js'
+import { resolveIndexPath, displaySafePath, hostPathOfIndexKey, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand } from './bash_output_cache.js'
@@ -175,10 +175,10 @@ function wholeFileRange(
   const cat = classifyCatPath(filePath, tool)
   if (cat === null) return null
   try {
-    const resolved = resolveIndexPath(hintPath, cwd)
-    const st = statSync(resolved)
+    const onDisk = hostPathOfIndexKey(resolveIndexPath(hintPath, cwd))
+    const st = statSync(onDisk)
     if (!st.isFile() || st.size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
-    const total = countTextLines(readFileSync(resolved, 'utf8'))
+    const total = countTextLines(readFileSync(onDisk, 'utf8'))
     if (total === 0 || range[1] < total) return null
     return { start: range[0], end: range[1], cat, reason: '`' + tool + '` over lines ' + range[0] + '-' + range[1] + ' is the whole file (' + total + ' lines), and loads all of it into context.' }
   } catch {
@@ -218,6 +218,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
   // A leading-lines read's substitute, priced, or null when it could not be priced or was not cheaper -- the same gate the sed/awk branch applies, reached through one expression because two branches need it identically.
   const pricedSubstitute = (hintPath: string, start: number, end: number): RangeSubstituteFigures | null => {
+    // Pricing stats and reads the file before the command is approved: `head -n 300 //10.255.255.1/share/x.ts` spent the 21 s SMB connect timeout here on Windows.
+    if (!commandPathIsTouchable(hintPath, event)) return null
     const sub = rangeSubstituteFor(hintPath, hintCwd, [[start, end]])
     return sub !== null && meetsSavingsFloor(sub.requestedBytes - sub.replacementBytes) ? sub : null
   }
@@ -330,6 +332,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     for (const { filePath, ranges, tool } of sedReads) {
       // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve against the directory cd would actually leave the shell in, matching every other path-carrying hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd instead of the shell's real one, both mislabeling the hint and missing dedup against a non-cd-prefixed reference to the same file.
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+      // Everything below stats or reads the file, and this hook runs before the command is approved: `sed -n '1,5p' //10.255.255.1/share/x.txt` spent the whole 21 s SMB connect timeout here on Windows, and on WSL a drive-letter path now opens at its mount.
+      if (!commandPathIsTouchable(hintPath, event)) continue
       // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
       hintPaths.push(hintPath)
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
@@ -547,7 +551,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an exact index answer -- rewrite the command to it instead of just hinting, so the model gets the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape rather than something this call needs to special-case.
-  const structuralRewrite = detectStructuralIndexRewrite(rawCmd, hintCwd)
+  const structuralRewrite = detectStructuralIndexRewrite(rawCmd, hintCwd, event)
   if (structuralRewrite !== null) {
     return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: structuralRewrite.command } }
   }
@@ -625,13 +629,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const curlDl = extractCurlDownload(cmd)
   if (curlDl !== null) {
     const prevPath = getCurlDownloadPath(curlDl.url)
-    const prevResolvedPath = prevPath !== null && commandPathIsTouchable(prevPath, event)
-      ? resolveIndexPath(prevPath, preHookCwd ?? process.cwd())
+    const prevOnDisk = prevPath !== null && commandPathIsTouchable(prevPath, event)
+      ? hostPathOfIndexKey(resolveIndexPath(prevPath, preHookCwd ?? process.cwd()))
       : null
-    if (prevPath !== null && prevResolvedPath !== null && !existsSync(prevResolvedPath)) {
+    if (prevPath !== null && prevOnDisk !== null && !existsSync(prevOnDisk)) {
       // The previously downloaded file is gone (deleted/moved since). Forget the stale session record and let the re-download proceed instead of denying.
       clearCurlDownload(curlDl.url)
-    } else if (prevPath !== null && prevResolvedPath !== null && statSync(prevResolvedPath).size >= loadConfig().hints.bash_dedup_min_bytes) {
+    } else if (prevPath !== null && prevOnDisk !== null && statSync(prevOnDisk).size >= loadConfig().hints.bash_dedup_min_bytes) {
       recordStat('session_hint', 0, 0)
       return denyOutput(leadWithCommand(sliceCommand(prevPath, targetFor(prevPath)), 'to read a part of it, or `rg \'<pattern>\' ' + prevPath + '` to search it', 'Already downloaded to ' + prevPath + ' earlier this session.'))
     }

@@ -12,7 +12,7 @@ import { leadWithCommand } from './hint_suggestion_guard.js'
 import { hintTarget } from './hint_target.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './known_roots.js'
-import { displaySafePath, normalizePath, resolveIndexPath } from './paths.js'
+import { displaySafePath, hostPathOfIndexKey, normalizePath, resolveIndexPath } from './paths.js'
 import { extractErrorMessage } from './util.js'
 import { recordFileEdit } from './session.js'
 import { isUnderSystemTemp } from './project.js'
@@ -66,7 +66,7 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
     // The hint's value is re-reading via `section` instead of the whole file, so its quantified savings are the edited file's own size -- skip the fs.statSync entirely on failure (fail-soft) rather than let a stat error suppress a hint that would otherwise have fired.
     let editedSize = Infinity
     try {
-      editedSize = statSync(normalized).size
+      editedSize = statSync(hostPathOfIndexKey(normalized)).size
     } catch {
       // best-effort; treat as eligible for the hint below on stat failure
     }

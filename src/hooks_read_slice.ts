@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 
 import type { HookEvent } from './hook_registry.js'
 import { OUTPUT_FIRST_TOOL_RESPONSE_KEYS, resolveToolResponseFieldPath } from './hooks_common.js'
-import { displaySafePath } from './paths.js'
+import { displaySafePath, hostPathOfIndexKey } from './paths.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
 import { decodeSource, statSize, toKB } from './util.js'
@@ -133,7 +133,7 @@ function scanRequestedSlice(absPath: string, offset: number, limit: number): Sli
   const windowEnd = offset + limit
   let fd: number
   try {
-    fd = fs.openSync(absPath, 'r')
+    fd = fs.openSync(hostPathOfIndexKey(absPath), 'r')
   } catch {
     return null
   }
@@ -268,9 +268,10 @@ export function loadSnapshotDiff(sessionId: string, normalized: string, basename
   const oldSnap = snapshotLoad(sessionId, normalized)
   if (oldSnap === null) return { kind: 'none' }
   try {
-    const sz = statSize(normalized)
+    const onDisk = hostPathOfIndexKey(normalized)
+    const sz = statSize(onDisk)
     if (sz === null || sz > 256 * 1024) return { kind: 'none' }
-    const currentContent = fs.readFileSync(normalized, 'utf8')
+    const currentContent = fs.readFileSync(onDisk, 'utf8')
     const TRUNC_MARKER = '\n<snapshot truncated at '
     const oldRaw = oldSnap.toString('utf8')
     const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
@@ -298,9 +299,10 @@ export function countTextLines(content: string): number {
 /** Line count capped by SLICE_ESTIMATE_SCAN_CAP_BYTES; Infinity when unreadable or too large. */
 export function estimateTruncatedLineCount(normalized: string): number {
   try {
-    const sz = statSize(normalized)
+    const onDisk = hostPathOfIndexKey(normalized)
+    const sz = statSize(onDisk)
     if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-      return countTextLines(fs.readFileSync(normalized, 'utf8'))
+      return countTextLines(fs.readFileSync(onDisk, 'utf8'))
     }
   } catch {
     // best-effort
@@ -327,9 +329,10 @@ export function truncatedReadDenyMessage(rawPath: string): string {
 
 /** Slices window text directly from disk. */
 export function readWindowFromDisk(event: HookEvent, normalized: string): string | null {
-  const size = statSize(normalized)
+  const onDisk = hostPathOfIndexKey(normalized)
+  const size = statSize(onDisk)
   if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
-  const text = decodeSource(fs.readFileSync(normalized))
+  const text = decodeSource(fs.readFileSync(onDisk))
   const window = readRequestedSliceWindow(event)
   const start = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
   const limit = window.limit

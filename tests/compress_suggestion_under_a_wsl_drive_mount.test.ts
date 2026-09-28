@@ -1,4 +1,4 @@
-// The large-output hint suggests `token-goat compress -c "cd '<dir>' && <cmd>"` for a cd-prefixed pipeline, naming the directory the prefix resolved to, and withholds the suggestion when that directory is not there. The resolved directory is an index key, and shellMountToWindowsPath folds a WSL mount such as /mnt/c/... into the drive-letter key c:/... on every platform, which POSIX resolves as a relative path, so under a drive mount the suggestion was withheld for a directory that is there. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the built bundle's post hook, handed `cd <project>/sub && cargo build 2>&1 | tail -n 400` with 5,589 bytes of output, suggested `cd '/var/tmp/.../sub' && ...` for a project under /var/tmp and gave only the recall pointer for the same project under /mnt/c/Projects/.... A runner cannot create a real /mnt/<letter> without root (see tests/mcp_server_normalization_asymmetry.test.ts), so this file maps one mount onto a temp directory through node:fs's statSync alone, the call the check makes; the /mnt/<drive> layout is FORMAT-DERIVED from WSL's default automount root, and the output is HAND-DERIVED, the rustc error line bash_cd_prefixed_output_cache_key.test.ts repeats past the hint's 4 KB floor.
+// The large-output hint suggests `token-goat compress -c "cd '<dir>' && <cmd>"` for a cd-prefixed pipeline, naming the directory the prefix resolved to, and withholds the suggestion when that directory is not there. The resolved directory is an index key, and shellMountToWindowsPath folds a WSL mount such as /mnt/c/... into the drive-letter key c:/... on every platform, which POSIX resolves as a relative path, so under a drive mount the suggestion was withheld for a directory that is there. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the built bundle's post hook, handed `cd <project>/sub && cargo build 2>&1 | tail -n 400` with 5,589 bytes of output, suggested `cd '/var/tmp/.../sub' && ...` for a project under /var/tmp and gave only the recall pointer for the same project under /mnt/c/Projects/.... A runner cannot create a real /mnt/<letter> without root (see tests/mcp_server_normalization_asymmetry.test.ts), so this file maps one mount onto a temp directory through node:fs's statSync alone, the call the check makes, and on Windows, which opens a drive-letter key as it stands, maps the letter there too; the /mnt/<drive> layout is FORMAT-DERIVED from WSL's default automount root, and the output is HAND-DERIVED, the rustc error line bash_cd_prefixed_output_cache_key.test.ts repeats past the hint's 4 KB floor.
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -15,16 +15,20 @@ import type { HookOutput } from '../src/types.js'
 
 const MOUNT = '/mnt/q/'
 const PROJECT = '/mnt/q/proj'
+/** Where this host opens the project behind its keys: the mount on Linux, and on Windows the drive letter, which it opens as it stands. */
+const HOST_PROJECT = process.platform === 'win32' ? 'q:/proj' : PROJECT
 
 const mounted = vi.hoisted(() => ({ root: null as string | null }))
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
-  const statSync = ((p: fs.PathLike, ...rest: unknown[]) => {
-    const s = String(p)
-    const target = mounted.root !== null && s.startsWith(MOUNT) ? path.join(mounted.root, s.slice(MOUNT.length)) : p
-    return (actual.statSync as (...args: unknown[]) => unknown)(target, ...rest)
-  }) as typeof actual.statSync
+  const onHost = (s: string): string | null => {
+    if (mounted.root === null) return null
+    if (s.startsWith(MOUNT)) return path.join(mounted.root, s.slice(MOUNT.length))
+    if (process.platform === 'win32' && /^q:[\\/]/i.test(s)) return path.join(mounted.root, s.slice(3))
+    return null
+  }
+  const statSync = ((p: fs.PathLike, ...rest: unknown[]) => (actual.statSync as (...args: unknown[]) => unknown)(onHost(String(p)) ?? p, ...rest)) as typeof actual.statSync
   return { ...actual, statSync, default: { ...actual, statSync } }
 })
 
@@ -65,10 +69,10 @@ describe('the compress suggestion for a cd under a WSL drive mount names the dir
     expect(resolveIndexPath('sub', PROJECT)).toBe('q:/proj/sub')
   })
 
-  it('a directory that is there under the mount is suggested at its mount path', async () => {
+  it('a directory that is there under the mount is suggested where the host opens it', async () => {
     clearModuleCaches()
     fs.mkdirSync(path.join(mounted.root as string, 'proj', 'sub'))
-    expect(suggestion(await post(`cd sub && ${PIPED}`))).toBe(`token-goat compress -c "cd '/mnt/q/proj/sub' && ${PIPED}"`)
+    expect(suggestion(await post(`cd sub && ${PIPED}`))).toBe(`token-goat compress -c "cd '${HOST_PROJECT}/sub' && ${PIPED}"`)
   })
 
   it('a directory that is not there under the mount either gets the recall pointer and no suggestion', async () => {

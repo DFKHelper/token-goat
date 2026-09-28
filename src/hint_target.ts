@@ -1,7 +1,7 @@
 /** Resolves the real name a deny or read hint's suggested command carries -- a heading, symbol, key or table the file actually holds -- so the command it leads with runs as printed, and sharpens a deny the same call already received once. Measured over 3,692 local Claude Code transcripts, the most frequent token-goat denies named a literal placeholder (`section "file::SectionHeading"`, `config-get "file" KEY_NAME`, `read "file::SymbolName"`), which exits 1 when run verbatim, and after a deny the next call was the named command only 4 times in 39 sampled. A placeholder is still the answer when nothing better is found: the claim is "this command runs", never "this is the part you wanted". */
 import { openSync, readSync, closeSync, statSync } from 'node:fs'
 
-import { resolveIndexPath, displaySafeText } from './paths.js'
+import { resolveIndexPath, displaySafeText, hostPathOfIndexKey } from './paths.js'
 import { querySymbols } from './index_reader.js'
 import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
@@ -134,9 +134,9 @@ function frontMatterEnd(text: string): number {
   return close === -1 ? 0 : close + 1
 }
 
-/** Up to HINT_TARGET_SCAN_BYTES of `resolved`, cut back to the last whole line when the file runs past it. */
-function readHead(resolved: string): string {
-  const fd = openSync(resolved, 'r')
+/** Up to HINT_TARGET_SCAN_BYTES of the file at host path `onDisk`, cut back to the last whole line when the file runs past it. */
+function readHead(onDisk: string): string {
+  const fd = openSync(onDisk, 'r')
   try {
     const buf = Buffer.alloc(HINT_TARGET_SCAN_BYTES)
     const n = readSync(fd, buf, 0, buf.length, 0)
@@ -148,12 +148,12 @@ function readHead(resolved: string): string {
 }
 
 /** Index-held names for this slice, in line order, or null when the index cannot vouch for the file as it is on disk (a stale name would print a command that runs and returns the wrong thing). */
-function indexedCandidates(resolved: string, slice: HintSlice): Array<{ name: string; level: number }> | null {
+function indexedCandidates(resolved: string, onDisk: string, slice: HintSlice): Array<{ name: string; level: number }> | null {
   if (!indexMatchesDisk(resolved)) return null
   const kinds = slice === 'symbol' ? null : SLICE_KINDS[slice]
   const rows = querySymbols({ filePath: resolved, limit: HINT_TARGET_INDEX_ROWS }).filter((s) => kinds === null || kinds.has(s.kind))
   // Only a dash-underlined heading can be a front matter line, so the file is read for the block's extent only when the index holds one.
-  const metaEnd = slice === 'section' && rows.some((s) => SETEXT_DASH_RE.test(s.body)) ? frontMatterEnd(readHead(resolved)) : 0
+  const metaEnd = slice === 'section' && rows.some((s) => SETEXT_DASH_RE.test(s.body)) ? frontMatterEnd(readHead(onDisk)) : 0
   return rows
     .filter((s) => s.lineStart > metaEnd)
     .map((s) => ({ name: s.name, level: s.kind === 'heading' ? (HEADING_LEVEL_RE.exec(s.body)?.[1]?.length ?? 0) : 0 }))
@@ -171,10 +171,11 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
       if (source.content !== undefined) return pick(scanText(source.content, filePath, slice), slice)
       if (source.cwd !== undefined && !commandPathIsTouchable(filePath, source.event)) return null
       const resolved = source.cwd !== undefined ? resolveIndexPath(filePath, source.cwd) : filePath
-      if (!statSync(resolved).isFile()) return null
-      const indexed = indexedCandidates(resolved, slice)
+      const onDisk = hostPathOfIndexKey(resolved)
+      if (!statSync(onDisk).isFile()) return null
+      const indexed = indexedCandidates(resolved, onDisk, slice)
       const fromIndex = indexed === null ? null : pick(indexed, slice)
-      return fromIndex ?? pick(scanText(readHead(resolved), resolved, slice), slice)
+      return fromIndex ?? pick(scanText(readHead(onDisk), resolved, slice), slice)
     } catch {
       // A name that cannot be resolved is a reason to keep the placeholder, never to guess one.
       return null
