@@ -8,7 +8,7 @@ import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './
 import { buildGuidanceBody } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
-import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 
 const LABEL = 'Visual Studio'
 
@@ -88,15 +88,10 @@ export function visualStudioMcpStatus(opts: { projectRoot?: string } = {}): { co
 
 /** The command and bundle path of a managed entry in `filePath`, or null when there is none (or the file is unreadable). */
 export function visualStudioManagedEntry(filePath: string): { command: string; bundlePath: string } | null {
-  if (!fs.existsSync(filePath)) return null
-  try {
-    const entry = serversOf(readServersJson(filePath, LABEL), filePath, LABEL)['token-goat']
-    if (!isManagedServer(entry)) return null
-    const { command, args } = entry as { command?: unknown; args: string[] }
-    return { command: typeof command === 'string' ? command : '', bundlePath: args[0] ?? '' }
-  } catch {
-    return null
-  }
+  const entry = managedServerEntry(filePath, LABEL)
+  if (entry === null) return null
+  const { command, args } = entry as { command?: unknown; args: string[] }
+  return { command: typeof command === 'string' ? command : '', bundlePath: args[0] ?? '' }
 }
 
 // Visual Studio's own agent tool names, from the custom-agents page; written without code spans because an instructions loader can harvest backticked names into a tool allowlist.

@@ -9,7 +9,7 @@ import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
-import { dropEmptyServers, isManagedServer, isResidueServersJson, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
+import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */
@@ -138,15 +138,7 @@ export function otherScopeHasManagedServer(opts: VscodeScopeOptions): boolean {
   const otherPath = otherScopeMcpPath(opts)
   // In a user-scope run the other scope is the PROJECT one, so this path comes out of the working tree even though nothing in this run writes to it. See {@link projectPathIsConsultable}.
   if (opts.project !== true && !projectPathIsConsultable(otherPath, path.resolve(opts.projectRoot ?? process.cwd()))) return false
-  if (!fs.existsSync(otherPath)) return false
-  try {
-    const config = readConfig(otherPath)
-    const servers = config.value['servers']
-    if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) return false
-    return isManagedServer((servers as Record<string, unknown>)['token-goat'])
-  } catch {
-    return false
-  }
+  return hasManagedServer(otherPath, 'VS Code')
 }
 
 export interface VscodeDecoderStatus {
@@ -162,20 +154,8 @@ export function vscodeDecoderConfigured(opts: { projectRoot?: string } = {}): Vs
     const projectPath = vscodeProjectMcpPath(opts.projectRoot)
     if (projectPathIsConsultable(projectPath, path.resolve(opts.projectRoot))) checkedPaths.push(projectPath)
   }
-  for (const candidate of checkedPaths) {
-    if (!fs.existsSync(candidate)) continue
-    try {
-      const config = readConfig(candidate)
-      const servers = config.value['servers']
-      if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) continue
-      if (isManagedServer((servers as Record<string, unknown>)['token-goat'])) {
-        return { configured: true, checkedPaths }
-      }
-    } catch {
-      // Malformed file at this path isn't this check's problem -- it surfaces loudly the moment someone actually installs into that scope. Keep scanning the rest.
-    }
-  }
-  return { configured: false, checkedPaths }
+  // A malformed file at one path isn't this check's problem -- it surfaces loudly the moment someone actually installs into that scope -- so hasManagedServer reads it as unmanaged and the scan goes on to the rest.
+  return { configured: checkedPaths.some((candidate) => hasManagedServer(candidate, 'VS Code')), checkedPaths }
 }
 
 function writeGuidance(filePath: string, userScope: boolean): boolean {

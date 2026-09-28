@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
-import { bundledCliPath, dropEmptyServers, hasManagedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { atomicWriteText, backupFile, writeIfDifferent } from '../util.js'
 
 const CONTEXT_SERVERS_KEY = 'context_servers'
@@ -125,14 +125,8 @@ export function isZedInstalled(): boolean {
   return hasManagedServer(zedSettingsPath(), 'Zed', CONTEXT_SERVERS_KEY, isZedManagedServer)
 }
 
-/** Reads back the token-goat `context_servers` entry from `settingsPath`, for `../cli_doctor.ts`'s staleness check -- mirrors `../bridges/visualstudio_install.ts`'s `visualStudioManagedEntry`. Returns `null` when the file is missing, unreadable, or holds no token-goat-managed entry. */
+/** Reads back the token-goat `context_servers` entry from `settingsPath` through `./mcp_servers_json.ts`'s `managedServerEntry`, for `../cli_doctor_platforms.ts`'s staleness check. Returns `null` when the file is missing, unreadable, or holds no token-goat-managed entry. */
 export function zedManagedEntry(settingsPath: string): { command: string } | null {
-  if (!fs.existsSync(settingsPath)) return null
-  try {
-    const entry = serversOf(readServersJson(settingsPath, 'Zed'), settingsPath, 'Zed', CONTEXT_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
-    if (!isZedManagedServer(entry)) return null
-    return { command: (entry as { command: string }).command }
-  } catch {
-    return null
-  }
+  const entry = managedServerEntry(settingsPath, 'Zed', CONTEXT_SERVERS_KEY, isZedManagedServer)
+  return entry === null ? null : { command: entry['command'] as string }
 }

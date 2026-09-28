@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
-import { bundledCliPath, dropEmptyServers, hasManagedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js'
 
@@ -120,14 +120,8 @@ export function isCursorInstalled(opts: CursorScopeOptions = {}): boolean {
   return hasManagedServer(cursorMcpPath(opts), 'Cursor', MCP_SERVERS_KEY, isCursorManagedServer)
 }
 
-/** Reads back the token-goat `mcpServers` entry from `mcpPath`, for `../cli_doctor.ts`'s staleness check -- mirrors `../bridges/zed_install.ts`'s `zedManagedEntry`. Returns `null` when the file is missing, unreadable, or holds no token-goat-managed entry. */
+/** Reads back the token-goat `mcpServers` entry from `mcpPath` through `./mcp_servers_json.ts`'s `managedServerEntry`, for `../cli_doctor_platforms.ts`'s Cursor check. Returns `null` when the file is missing, unreadable, or holds no token-goat-managed entry. */
 export function cursorManagedEntry(mcpPath: string): { command: string } | null {
-  if (!fs.existsSync(mcpPath)) return null
-  try {
-    const entry = serversOf(readServersJson(mcpPath, 'Cursor'), mcpPath, 'Cursor', MCP_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
-    if (!isCursorManagedServer(entry)) return null
-    return { command: (entry as { command: string }).command }
-  } catch {
-    return null
-  }
+  const entry = managedServerEntry(mcpPath, 'Cursor', MCP_SERVERS_KEY, isCursorManagedServer)
+  return entry === null ? null : { command: entry['command'] as string }
 }
