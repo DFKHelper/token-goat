@@ -1,4 +1,4 @@
-/** CLI handler for `token-goat statusline`. Renders one line of terminal status text from the JSON session payload a harness pipes on stdin, for use as a Claude Code `statusLine` command (settings.json `statusLine.command`). The status line is re-rendered on a short cadence and any failure here (crash, hang, non-zero exit that the harness doesn't expect) degrades the user's entire terminal UI -- so this command must never throw uncaught and must never block waiting on stdin that never arrives. Payload shape: verified against Claude Code's own statusline docs (https://code.claude.com/docs/en/statusline, "Full JSON schema" accordion, fetched 2026-07-18). That page documents `cwd`, `workspace.current_dir`, `model.{id,display_name}`, and `context_window.used_percentage` exactly as used below, so those four are high-confidence. Everything else about the payload (whether a given field is present on a given Claude Code version, whether other harnesses that shell out to a "statusline" command send the same shape at all) is unverified -- every field access here is optional-chained with a safe fallback rather than assumed present, so a schema drift or a non-Claude-Code caller degrades this line, it never crashes it. */
+/** CLI handler for `token-goat statusline`. Renders one line of terminal status text from the JSON session payload a harness pipes on stdin, for use as a Claude Code `statusLine` command (settings.json `statusLine.command`) or a GitHub Copilot CLI one (`~/.copilot/settings.json` `statusLine.command`). The status line is re-rendered on a short cadence and any failure here (crash, hang, non-zero exit that the harness doesn't expect) degrades the user's entire terminal UI -- so this command must never throw uncaught and must never block waiting on stdin that never arrives. Payload shape: verified against Claude Code's own statusline docs (https://code.claude.com/docs/en/statusline, "Full JSON schema" accordion, fetched 2026-07-18). That page documents `cwd`, `workspace.current_dir`, `model.{id,display_name}`, and `context_window.used_percentage` exactly as used below, so those four are high-confidence. Copilot CLI 1.0.88 sends the same contract (tests/fixtures/copilot_cli_1_0_88/S*-statusline.json, captured from a real session): the same `cwd`, `workspace.current_dir` and `model.display_name`, plus `context_window.current_context_used_percentage`, which is the figure Copilot's own footer shows. Its `used_percentage` is measured against a larger `context_window_size` and stays 0 until the first reply, so the Copilot key is preferred when present. Everything else about the payload (whether a given field is present on a given Claude Code version, whether other harnesses that shell out to a "statusline" command send the same shape at all) is unverified -- every field access here is optional-chained with a safe fallback rather than assumed present, so a schema drift or a non-Claude-Code caller degrades this line, it never crashes it. */
 
 // From stdin_json.ts, not relay.js: importing it from relay would pull in every hook handler and the whole bash filter registry for one stdin read (see stdin_json.ts).
 import { readStdinJson } from './stdin_json.js'
@@ -16,7 +16,7 @@ export interface StatuslinePayload {
   cwd?: string
   model?: { id?: string; display_name?: string }
   workspace?: { current_dir?: string; project_dir?: string }
-  context_window?: { used_percentage?: number }
+  context_window?: { used_percentage?: number | null; current_context_used_percentage?: number | null }
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -74,8 +74,10 @@ export function buildStatuslineData(payload: StatuslinePayload): StatuslineData 
   // Split on both separators rather than the host-platform `path.basename` -- the payload's current_dir reflects the OS Claude Code is running on, which may differ from the OS this hook process is running on (e.g. a Linux CI runner rendering a fixture captured on Windows).
   const project = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || cwd
   const model = typeof payload.model?.display_name === 'string' ? payload.model.display_name : null
-  const contextPct =
-    typeof payload.context_window?.used_percentage === 'number' ? payload.context_window.used_percentage : null
+  // Copilot CLI sends the percentage its own footer shows as current_context_used_percentage; Claude Code sends only used_percentage.
+  const current = payload.context_window?.current_context_used_percentage
+  const used = payload.context_window?.used_percentage
+  const contextPct = typeof current === 'number' ? current : typeof used === 'number' ? used : null
   return {
     project,
     model,

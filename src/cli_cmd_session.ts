@@ -211,7 +211,7 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
 
   program
     .command('statusline')
-    .description('render one line of terminal status text from a harness statusline payload on stdin (Claude Code statusLine.command)')
+    .description('render one line of terminal status text from a harness statusline payload on stdin (Claude Code or Copilot CLI statusLine.command)')
     .option('--json', 'emit the underlying data as JSON instead of a rendered line (debug)')
     .action(guard(cmdStatusline))
 
