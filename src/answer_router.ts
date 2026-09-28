@@ -11,6 +11,7 @@ import { runTestFor } from './graph_analysis.js'
 import { runExports, runImports } from './read_inspect.js'
 import { runSymbol } from './read_symbol.js'
 import { emit, emitErr } from './emit.js'
+import { recordStat } from './stats.js'
 
 export interface AnswerOptions {
   question: string
@@ -211,44 +212,49 @@ function subjectModeFor(intent: AnswerIntent): SubjectMode {
   return intent === 'tests' ? 'file-first' : 'symbol-first'
 }
 
+/** Why {@link runAnswer} refused, as booked in the detail of its `answer:refused` ledger row. */
+type RefusalReason = 'empty' | 'judgement' | 'no-intent' | 'unresolved' | 'ambiguous' | 'symbol-only' | 'file-needs-symbol'
+
+/** Books one `answer:<route>` row: `route` is the command the `via:` line names, or `refused`; `outcome` is the delegate's result or the refusal reason. Zero bytes and zero tokens, since the delegate books its own saving under its own kind; this row is what says the call came through the router and how it ended. The question text is never stored. */
+function recordAnswer(route: string, outcome: string): void {
+  recordStat(`answer:${route}`, 0, 0, undefined, outcome)
+}
+
+function refuse(reason: RefusalReason, why: string, suggestion: string): number {
+  recordAnswer('refused', reason)
+  emitErr(refusal(why, suggestion))
+  return 1
+}
+
+/** Books the route taken and passes the delegate's exit code through. A nonzero code is kept as `exit N` rather than folded into `answered`, since the delegate ran but found nothing or failed. */
+function routed(route: string, code: number): number {
+  recordAnswer(route, code === 0 ? 'answered' : `exit ${code}`)
+  return code
+}
+
 export function runAnswer(opts: AnswerOptions): number {
   const question = opts.question.trim()
-  if (question.length === 0) {
-    emitErr(refusal('the question is empty', 'token-goat answer "who calls <symbol>"'))
-    return 1
-  }
+  if (question.length === 0) return refuse('empty', 'the question is empty', 'token-goat answer "who calls <symbol>"')
 
   if (isJudgementQuestion(question)) {
-    emitErr(
-      refusal(
-        'that asks for judgement, intent, or runtime behaviour, which the index cannot answer -- it would need the code read and reasoned over',
-        `token-goat semantic "${question}"`,
-      ),
+    return refuse(
+      'judgement',
+      'that asks for judgement, intent, or runtime behaviour, which the index cannot answer -- it would need the code read and reasoned over',
+      `token-goat semantic "${question}"`,
     )
-    return 1
   }
 
   const cls = classify(question)
   if (cls === null) {
-    emitErr(
-      refusal(
-        'no intent matched -- this router only answers where/who-calls/what-tests-cover/what-exports/what-imports/what-breaks questions about a named symbol or file',
-        `token-goat semantic "${question}"`,
-      ),
+    return refuse(
+      'no-intent',
+      'no intent matched -- this router only answers where/who-calls/what-tests-cover/what-exports/what-imports/what-breaks questions about a named symbol or file',
+      `token-goat semantic "${question}"`,
     )
-    return 1
   }
 
   const resolved = resolveSubject(cls.subject, subjectModeFor(cls.intent))
-  if (resolved === null) {
-    emitErr(
-      refusal(
-        `'${cls.subject}' is not an indexed symbol or file`,
-        `token-goat semantic "${question}"`,
-      ),
-    )
-    return 1
-  }
+  if (resolved === null) return refuse('unresolved', `'${cls.subject}' is not an indexed symbol or file`, `token-goat semantic "${question}"`)
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
 
@@ -260,23 +266,11 @@ export function runAnswer(opts: AnswerOptions): number {
     const next = FILE_INTENTS.has(cls.intent)
       ? `token-goat answer "${cls.intent === 'tests' ? 'tests for' : cls.intent === 'imports' ? 'imports of' : 'exports of'} ${first}"`
       : `token-goat outline ${first}`
-    emitErr(
-      refusal(
-        `'${cls.subject}' names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`,
-        next,
-      ),
-    )
-    return 1
+    return refuse('ambiguous', `'${cls.subject}' names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, next)
   }
 
   if (resolved.kind === 'symbol-only') {
-    emitErr(
-      refusal(
-        `'${cls.subject}' is a symbol; exports/imports are file-level`,
-        `token-goat ${cls.intent} ${toDisplayPath(rootDir, resolved.file)}`,
-      ),
-    )
-    return 1
+    return refuse('symbol-only', `'${cls.subject}' is a symbol; exports/imports are file-level`, `token-goat ${cls.intent} ${toDisplayPath(rootDir, resolved.file)}`)
   }
 
   if (FILE_INTENTS.has(cls.intent)) {
@@ -284,39 +278,33 @@ export function runAnswer(opts: AnswerOptions): number {
     const display = toDisplayPath(rootDir, file)
     if (cls.intent === 'tests') {
       emit(`via: token-goat test-for ${display}`)
-      return runTestFor({ file })
+      return routed('test-for', runTestFor({ file }))
     }
     if (cls.intent === 'exports') {
       emit(`via: token-goat exports ${display}`)
-      return runExports({ file })
+      return routed('exports', runExports({ file }))
     }
     emit(`via: token-goat imports ${display}`)
-    return runImports({ file })
+    return routed('imports', runImports({ file }))
   }
 
   if (resolved.kind === 'file') {
     const display = toDisplayPath(rootDir, resolved.path)
-    emitErr(
-      refusal(
-        `'${cls.subject}' is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`,
-        `token-goat outline ${display}`,
-      ),
-    )
-    return 1
+    return refuse('file-needs-symbol', `'${cls.subject}' is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`, `token-goat outline ${display}`)
   }
 
   if (cls.intent === 'callers') {
     emit(`via: token-goat callers ${displaySafeText(resolved.name)} --limit ${ANSWER_DELEGATE_LIMIT}`)
-    return runCallers({ symbol: resolved.name, limit: ANSWER_DELEGATE_LIMIT })
+    return routed('callers', runCallers({ symbol: resolved.name, limit: ANSWER_DELEGATE_LIMIT }))
   }
   if (cls.intent === 'impact') {
     emit(`via: token-goat impact ${displaySafeText(resolved.name)} --top ${ANSWER_DELEGATE_LIMIT}`)
-    return runImpact({ symbol: resolved.name, top: ANSWER_DELEGATE_LIMIT })
+    return routed('impact', runImpact({ symbol: resolved.name, top: ANSWER_DELEGATE_LIMIT }))
   }
 
   // `-p` is not decoration: `symbol` searches the machine-wide index unless the project scope is opted into, while the router always scopes to this project. Without it the pointer named a command whose output includes same-named definitions from every other checkout on the machine -- a `via:` line that does not reproduce its own window is worse than none, since the reader verifies against it and concludes the answer dropped rows.
   emit(`via: token-goat symbol ${displaySafeText(resolved.name)} -p --exclude-vendored`)
   const r = runSymbol({ name: resolved.name, projectRoot: rootDir, limit: ANSWER_DELEGATE_LIMIT, excludeVendored: true })
   if (r.text.length > 0) emit(r.text)
-  return r.code
+  return routed('symbol', r.code)
 }
