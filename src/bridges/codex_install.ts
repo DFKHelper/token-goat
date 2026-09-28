@@ -64,7 +64,7 @@ interface CodexConfig {
   [key: string]: unknown
 }
 
-/** Thrown by {@link installCodex} when `config.toml` exists but isn't parseable TOML. A caller about to overwrite the file must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single TOML typo in the user's config gets clobbered on write. */
+/** Thrown by {@link installCodex}/{@link uninstallCodex} when `config.toml` exists but cannot be read or isn't parseable TOML. A caller about to write the file must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single TOML typo in the user's config gets clobbered on write, or the hook shim and the file's backups are deleted while it still names them. */
 export class CodexConfigParseError extends Error {}
 
 /** Absolute path to `~/.codex/config.toml`. */
@@ -87,23 +87,28 @@ function codexLegacyHookScriptPath(): string {
   return path.join(os.homedir(), '.codex', 'hooks', LEGACY_SHIM_FILE)
 }
 
-/** Parse `config.toml` at `p`. A missing file yields `{}` -- the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but fails to parse throws {@link CodexConfigParseError} instead of returning `{}`, so a caller about to overwrite the file can tell "genuinely empty" apart from "corrupt, do not touch." Non-strict (read-only) callers keep the lenient `{}` fallback. */
-function readCodexConfig(p: string, opts: { strict?: boolean } = {}): CodexConfig {
+/** Parse `config.toml` at `p`. A missing file yields `{}` -- the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but cannot be read or fails to parse throws {@link CodexConfigParseError} instead of returning `{}`, so a caller about to overwrite or strip the file can tell "genuinely empty" apart from "corrupt, do not touch"; `opts.command` names the command the message tells the user to run again. Non-strict (read-only) callers keep the lenient `{}` fallback. */
+function readCodexConfig(p: string, opts: { strict?: boolean; command?: 'install' | 'uninstall' } = {}): CodexConfig {
+  const refuse = (problem: string, detail?: string): CodexConfigParseError =>
+    new CodexConfigParseError(
+      (opts.command === 'uninstall'
+        ? `Codex config file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name, the AGENTS.md block and the file's backups; fix the file and run uninstall again.`
+        : `Codex config file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+    )
   let raw: string
   try {
     raw = fs.readFileSync(p, 'utf8')
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    // Only an absent file is the "nothing installed yet" case; see install.ts's readSettings.
+    if (opts.strict === true && code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse('exists but cannot be read', code ?? extractErrorMessage(e))
     return {}
   }
   try {
     const parsed = parse(raw)
     return parsed as CodexConfig
   } catch (e) {
-    if (opts.strict === true) {
-      throw new CodexConfigParseError(
-        `Codex config file '${p}' exists but contains invalid TOML. Fix or back up the file before running install. (${extractErrorMessage(e)})`,
-      )
-    }
+    if (opts.strict === true) throw refuse('exists but contains invalid TOML', extractErrorMessage(e))
     return {}
   }
 }
@@ -326,7 +331,8 @@ export function uninstallCodex(): boolean {
 
   let removedAny = false
 
-  const config = readCodexConfig(configPath)
+  // Strict, as install reads it: a file that is there but cannot be read or parsed may still wire hooks that run the shim, so uninstall stops here with the file, the shim, the AGENTS.md block and the file's backups as they were, rather than read it as holding no hooks and delete what those hooks run.
+  const config = readCodexConfig(configPath, { strict: true, command: 'uninstall' })
   const hooks = config.hooks
   if (hooks !== undefined) {
     const hooksRemoved = stripOwnHooksFromMap(hooks, isCodexTokenGoatCommand)

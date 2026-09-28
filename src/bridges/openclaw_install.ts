@@ -25,6 +25,7 @@ interface OpenclawSettings {
   [key: string]: unknown
 }
 
+/** Thrown by {@link installOpenclaw}/{@link uninstallOpenclaw} when `openclaw.json` exists but cannot be read, isn't parseable JSON, isn't a JSON object at the top level, or holds a `plugins.load.paths` that isn't an array. */
 export class OpenclawConfigParseError extends Error {}
 
 const OPENCLAW_PLUGIN_ID = 'token-goat'
@@ -46,22 +47,28 @@ export function openclawEntrySidecarPath(): string {
   return path.join(path.dirname(openclawPluginPath()), 'token-goat-entry.json')
 }
 
-function readOpenclawConfig(p: string, opts: { strict?: boolean } = {}): OpenclawSettings {
+/** Parse `openclaw.json` at `p`. A missing file yields `{}`; when `opts.strict` is true, one that is there but cannot be read, does not parse, or does not have the shape every caller below assumes throws {@link OpenclawConfigParseError}, worded for `opts.command`, instead. */
+function readOpenclawConfig(p: string, opts: { strict?: boolean; command?: 'install' | 'uninstall' } = {}): OpenclawSettings {
+  const refuse = (problem: string, detail?: string): OpenclawConfigParseError =>
+    new OpenclawConfigParseError(
+      (opts.command === 'uninstall'
+        ? `OpenClaw config file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the plugin it may still load, the plugin's entry sidecar and the file's backups; fix the file and run uninstall again.`
+        : `OpenClaw config file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+    )
   let raw: string
   try {
     raw = fs.readFileSync(p, 'utf8')
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    // Only an absent file is the "nothing installed yet" case; see install.ts's readSettings.
+    if (opts.strict === true && code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse('exists but cannot be read', code ?? extractErrorMessage(e))
     return {}
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch (e) {
-    if (opts.strict === true) {
-      throw new OpenclawConfigParseError(
-        `OpenClaw config file '${p}' exists but contains invalid JSON. Fix or back up the file before running install. (${extractErrorMessage(e)})`,
-      )
-    }
+    if (opts.strict === true) throw refuse('exists but contains invalid JSON', extractErrorMessage(e))
     return {}
   }
   if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
@@ -69,20 +76,12 @@ function readOpenclawConfig(p: string, opts: { strict?: boolean } = {}): Opencla
     // A hand-edited config can hold e.g. `"paths": "some/path"` (a bare string) instead of the documented array -- every call site below assumes `plugins.load.paths` is an array (spreads or filters/.some's over it), so a mismatched shape must be caught here rather than silently corrupting a write (string spread splits into characters) or crashing a read (.some/.filter isn't a function on a string/number/object).
     const paths = settings.plugins?.load?.paths
     if (paths !== undefined && !Array.isArray(paths)) {
-      if (opts.strict === true) {
-        throw new OpenclawConfigParseError(
-          `OpenClaw config file '${p}' has a 'plugins.load.paths' field that isn't a JSON array. Fix or back up the file before running install.`,
-        )
-      }
+      if (opts.strict === true) throw refuse("has a 'plugins.load.paths' field that isn't a JSON array")
       delete settings.plugins?.load?.paths
     }
     return settings
   }
-  if (opts.strict === true) {
-    throw new OpenclawConfigParseError(
-      `OpenClaw config file '${p}' does not contain a JSON object at the top level. Fix or back up the file before running install.`,
-    )
-  }
+  if (opts.strict === true) throw refuse('does not contain a JSON object at the top level')
   return {}
 }
 
@@ -150,6 +149,8 @@ export function installOpenclaw(): OpenclawInstallResult {
 export function uninstallOpenclaw(): boolean {
   const configPath = openclawConfigPath()
   const pluginPath = openclawPluginPath()
+  // Strict, as install reads it, and before the plugin and its sidecar go: a file that is there but cannot be read or parsed may still load the plugin, and one whose `plugins.load.paths` is not an array would lose that field to the rewrite below, so uninstall stops here with the file, the plugin, the sidecar and the file's backups as they were.
+  const settings = readOpenclawConfig(configPath, { strict: true, command: 'uninstall' })
 
   let removed = false
 
@@ -166,7 +167,6 @@ export function uninstallOpenclaw(): boolean {
     // nothing to remove
   }
 
-  const settings = readOpenclawConfig(configPath)
   const plugins = settings.plugins
   if (plugins !== undefined) {
     const loadPaths = plugins.load?.paths

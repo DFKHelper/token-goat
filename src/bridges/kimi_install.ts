@@ -42,7 +42,7 @@ interface KimiConfig {
   [key: string]: unknown
 }
 
-/** Thrown by {@link installKimi} when `config.toml` exists but isn't parseable as TOML. */
+/** Thrown by {@link installKimi}/{@link uninstallKimi} when `config.toml` exists but cannot be read or isn't parseable as TOML. */
 export class KimiConfigParseError extends Error {}
 
 /** Kimi's data root: `$KIMI_CODE_HOME` when set and non-blank, else `~/.kimi-code`. Resolved on every call rather than cached so tests (and a user switching roots between commands) see the current value. */
@@ -82,21 +82,27 @@ export function kimiSkillPath(): string {
   return path.join(kimiSkillDir(), 'SKILL.md')
 }
 
-function readKimiConfig(p: string, opts: { strict?: boolean } = {}): KimiConfig {
+/** Parse `config.toml` at `p`. A missing file yields `{}`; when `opts.strict` is true, one that is there but cannot be read or does not parse throws {@link KimiConfigParseError}, worded for `opts.command`, instead. */
+function readKimiConfig(p: string, opts: { strict?: boolean; command?: 'install' | 'uninstall' } = {}): KimiConfig {
+  const refuse = (problem: string, detail?: string): KimiConfigParseError =>
+    new KimiConfigParseError(
+      (opts.command === 'uninstall'
+        ? `Kimi Code config file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name, the AGENTS.md block, the skill and the file's backups; fix the file and run uninstall again.`
+        : `Kimi Code config file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+    )
   let raw: string
   try {
     raw = fs.readFileSync(p, 'utf8')
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    // Only an absent file is the "nothing installed yet" case; see install.ts's readSettings.
+    if (opts.strict === true && code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse('exists but cannot be read', code ?? extractErrorMessage(e))
     return {}
   }
   try {
     return parse(raw) as KimiConfig
   } catch (e) {
-    if (opts.strict === true) {
-      throw new KimiConfigParseError(
-        `Kimi Code config file '${p}' exists but contains invalid TOML. Fix or back up the file before running install. (${extractErrorMessage(e)})`,
-      )
-    }
+    if (opts.strict === true) throw refuse('exists but contains invalid TOML', extractErrorMessage(e))
     return {}
   }
 }
@@ -212,7 +218,8 @@ export function installKimi(): KimiInstallResult {
 /** Remove the Kimi Code integration: strips only token-goat's own `[[hooks]]` entries, the delimited AGENTS.md block, the skill directory, and the shim script. Returns true when anything was actually removed. */
 export function uninstallKimi(): boolean {
   const configPath = kimiConfigPath()
-  const config = readKimiConfig(configPath)
+  // Strict, as install reads it: a file that is there but cannot be read or parsed may still wire hooks that run the shim, so uninstall stops here with the file, the shim, the AGENTS.md block, the skill and the file's backups as they were.
+  const config = readKimiConfig(configPath, { strict: true, command: 'uninstall' })
   let removed = false
 
   if (Array.isArray(config.hooks)) {
