@@ -16,20 +16,7 @@ const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
   devDependencies?: Record<string, string>
 }
 
-/**
- * The one package allowed to be required at runtime without being installed.
- *
- * Every other entry in this guard exists because an undeclared require fails silently: the require
- * throws, the catch swallows it, and the feature is simply dead. `onnxruntime-node` is now
- * deliberately in that position -- it is a 34 MB native addon for a feature most installs never
- * invoke, so it is opt-in.
- *
- * The exemption is conditional rather than a hole, because "silently dead" is exactly what must not
- * happen. Three things have to hold, and the assertions below check all three: it is still a
- * devDependency, so the repository's own tests exercise the real package rather than a stand-in;
- * `doctor` has a check that names it, so the absence is reported instead of merely happening; and
- * that check prints the command that installs it. Take any of the three away and this fails.
- */
+/** The one package allowed to be required at runtime without being installed. Every other entry in this guard exists because an undeclared require fails silently: the require throws, the catch swallows it, and the feature is simply dead. `onnxruntime-node` is now deliberately in that position -- it is a 288 MB native package, and the bundled WebAssembly build of the same runtime already embeds without it, so it is an opt-in accelerator. The exemption is conditional rather than a hole, because "silently dead" is exactly what must not happen. Three things have to hold, and the assertions below check all three: it is still a devDependency, so the repository's own tests exercise the real package rather than a stand-in; `doctor` has a check that names it, so the absence is reported instead of merely happening; and that check prints the command that installs it. Take any of the three away and this fails. */
 const OPT_IN_AT_RUNTIME = 'onnxruntime-node'
 
 /** Concatenated text of every .ts file under src/, recursively. */
@@ -43,9 +30,7 @@ function allSrcText(): string {
     }
   }
   walk(SRC)
-  // Pinned: this returns concatenated text, and an empty walk yields an empty string in which no
-  // `_require('pkg')` is ever found -- reported as "no undeclared optional deps", the same verdict
-  // a genuinely clean tree produces. The count of files that fed it is the independent check.
+  // Pinned: this returns concatenated text, and an empty walk yields an empty string in which no `_require('pkg')` is ever found -- reported as "no undeclared optional deps", the same verdict a genuinely clean tree produces. The count of files that fed it is the independent check.
   pinnedPopulation({ what: 'src/**/*.ts files concatenated for dependency scanning', items: out, floor: 150 })
   return out.join('\n')
 }
@@ -58,10 +43,7 @@ function requiredOptionalPackages(): string[] {
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const pkg = m[1]
-    // A `node:` specifier is a builtin, not something npm can install, so it is neither missing nor
-    // declarable. sqlite_driver.ts requires `node:sqlite` through this same helper (it cannot use a
-    // static import without hoisting the load above its warning filter), which is what put a builtin
-    // in front of this scan for the first time.
+    // A `node:` specifier is a builtin, not something npm can install, so it is neither missing nor declarable. sqlite_driver.ts requires `node:sqlite` through this same helper (it cannot use a static import without hoisting the load above its warning filter), which is what put a builtin in front of this scan for the first time.
     if (pkg !== undefined && !pkg.startsWith('tree-sitter') && !pkg.startsWith('node:')) out.add(pkg)
   }
   return [...out]
@@ -84,14 +66,12 @@ describe('semantic-stack dependency declarations', () => {
     const declared = declaredDeps()
     const missing = required.filter((pkg) => !declared.has(pkg) && pkg !== OPT_IN_AT_RUNTIME)
     expect(missing).toEqual([])
-    // The exemption is for that one package and no other: anything else that stops being declared
-    // still fails above, and this pins that the exemption was not quietly widened into the rule.
+    // The exemption is for that one package and no other: anything else that stops being declared still fails above, and this pins that the exemption was not quietly widened into the rule.
     expect(declared).toContain('sqlite-vec')
   })
 
   it('the one exempt package is opt-in on purpose, not undeclared by accident', () => {
-    // An undeclared require and a deliberate opt-in look identical in package.json. What tells them
-    // apart is whether anything tells the user, so the exemption is held to its mitigation here.
+    // An undeclared require and a deliberate opt-in look identical in package.json. What tells them apart is whether anything tells the user, so the exemption is held to its mitigation here.
     expect(Object.keys(PKG.devDependencies ?? {}), 'the tests still embed with the real package').toContain(
       OPT_IN_AT_RUNTIME,
     )

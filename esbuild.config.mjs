@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 
 import { buildDefines, CJS_CLIENT, ENTRY_POINTS, EXTERNAL_NATIVE_DEPS } from './scripts/build-options.mjs'
 import { sweepStaleChunks } from './scripts/sweep-chunks.mjs'
@@ -8,6 +8,8 @@ import { sweepStaleChunks } from './scripts/sweep-chunks.mjs'
 const CHUNK_PREFIX = 'token-goat-chunk-'
 // The hook entry used to be built separately and owned its own prefix, so dist/ carried a second, byte-for-byte copy of every shared chunk. Nothing emits these any more; sweeping them with an empty keep-list clears whatever an older build left behind in a working dist/.
 const LEGACY_HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
+// Named in src/embed_runtime.ts (ORT_WEB_GLUE) too, where its digest is pinned; tests/embed_runtime_pins.test.ts checks the copy this build writes against that pin.
+const ORT_WEB_GLUE = 'ort-wasm-simd-threaded.mjs'
 
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
@@ -63,10 +65,13 @@ await esbuild.build({
   logOverride: { 'empty-import-meta': 'error' },
 })
 
+// The WebAssembly runtime's glue module is the one piece of onnxruntime-web the bundle cannot inline: ONNX Runtime loads it by URL (env.wasm.wasmPaths) as a module of its own, so it has to be a real file beside the chunks. src/embed_runtime.ts checks it against a pinned digest before handing its URL over, so a glue from any other release is refused rather than paired with the wrong binary.
+copyFileSync(`node_modules/onnxruntime-web/dist/${ORT_WEB_GLUE}`, `dist/${ORT_WEB_GLUE}`)
+
 sweepStaleChunks('dist', CHUNK_PREFIX, Object.keys(result.metafile.outputs))
 sweepStaleChunks('dist', LEGACY_HOOK_CHUNK_PREFIX, [])
 // Also clears an entry file orphaned by a since-renamed ENTRY_POINTS key (e.g. dist/_m.mjs from before an entry was called 'token-goat.core'): unlike a chunk, nothing re-emits it under a new name, and package.json's `files: ["dist/"]` would otherwise ship it in every tarball forever. The launcher below is the one file this build writes outside esbuild's own outputs.
-sweepStaleChunks('dist', '', [...Object.keys(result.metafile.outputs), 'dist/token-goat.mjs'])
+sweepStaleChunks('dist', '', [...Object.keys(result.metafile.outputs), 'dist/token-goat.mjs', `dist/${ORT_WEB_GLUE}`])
 
 // The `bin` entry point is a launcher, not the bundle itself, purely so that module.enableCompileCache() can run BEFORE the ~3.5MB core bundle is compiled. V8 compiles a module in full before executing any of it, so the same call placed in the core bundle's own banner runs too late to cache that bundle -- measured as no change at all, versus ~22ms (about 17% of a bare invocation) when it precedes the import from here. Every CLI call and every spawned hook pays that compile, so the launcher stays tiny: anything added to it is compiled uncached on every single run.
 const LAUNCHER = [

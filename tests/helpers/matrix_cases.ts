@@ -1436,6 +1436,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       'at_rest.symbol_index',
       'ipc.hook_server',
       'network.embedding_model_download',
+      'network.embedding_runtime_download',
       'network.google_drive',
       'network.http_fetch',
       'network.ocr_data_download',

@@ -33,6 +33,7 @@ import { cursorMcpPath } from './bridges/cursor_install.js'
 import { zedSettingsPath } from './bridges/zed_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_compiler.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
+import { ORT_WEB_VERSION, RUNTIME_UNAVAILABLE_ADVICE, activeRuntime, nativeRuntimeLoadError, runtimeVersion, wasmBinaryPresent } from './embed_runtime.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
 import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
@@ -137,34 +138,42 @@ export function checkTreeSitter(): DoctorResult {
   }
 }
 
-/** The embedding model is the one optional package a default install no longer carries. It used to arrive with everyone, and it brought the whole `onnxruntime-web` -> `onnx-proto` -> `protobufjs` chain plus its own nested, older `sharp` with it -- five high advisories and one critical, none of them fixable from here, on a feature that most installs never invoke. So it is opt-in now, and the cost of that trade is discoverability: `semantic` keeps working either way, because it always consults keyword search as well, so nothing errors and nothing is empty. The failure is silent by construction, which is exactly the kind doctor exists to make loud. Three states, three different answers. Off by config is not a problem and is reported as fine. Absent is one command away, and the command is the whole point of the line. Present but throwing is a different fault with a different fix, which is why this reads the error rather than the boolean -- see `embeddingBackendLoadError`. */
+/** Which inference runtime embeddings run on, and whether they can run at all. A default install has one: the WebAssembly build of ONNX Runtime ships inside the bundle and fetches its 14 MB binary once, on first use. The native `onnxruntime-node` (about 288 MB installed) takes over when someone installs it, which is why the bundled case names the command. The states that matter are the ones a reader cannot see from `semantic` itself, which answers on keyword search alone whenever embeddings cannot run and never errors: off by config (fine, and said so), running on either runtime (fine, and which one), and unable to start (a warning, with the reason). The native binding being installed but throwing is reported on the bundled line rather than hidden by the fallback, since it is a different fault with a different fix -- see `nativeRuntimeLoadError`. */
 export function checkEmbeddings(config: Config): DoctorResult {
   const name = 'Embeddings'
   // `?? true` rather than `=== true`: the rest of the codebase reads an absent flag as enabled (src/cli.ts and src/worker.ts both spell it this way), and a doctor line that reported "disabled by config" for a config that never mentioned the setting would be a false all-clear.
   if ((config.indexing?.embeddings_enabled ?? true) === false) {
     return { name, status: 'ok', message: 'disabled by config (indexing.embeddings_enabled)' }
   }
-  if (embeddingModelAvailable()) return { name, status: 'ok', message: 'available' }
-  const err = embeddingBackendLoadError()
-  // createRequire goes through Node's CJS loader, so an absent package is MODULE_NOT_FOUND; ERR_MODULE_NOT_FOUND is accepted too rather than assumed away, since the same package reached through an ESM path would report that instead and both mean the same thing to the reader.
-  const code = (err as NodeJS.ErrnoException | null)?.code
-  if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') {
+  if (activeRuntime() === 'onnxruntime-node') {
+    return { name, status: 'ok', message: `available (native onnxruntime-node ${runtimeVersion()})` }
+  }
+  const bundled = `bundled WebAssembly runtime, onnxruntime-web ${ORT_WEB_VERSION}`
+  if (!embeddingModelAvailable()) {
+    const err = embeddingBackendLoadError()
     return {
       name,
       status: 'warn',
-      message:
-        'onnxruntime-node is not installed, so semantic falls back to keyword search — ' +
-        'install it with: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)',
+      message: `unavailable, so semantic falls back to keyword search: the ${bundled} failed to start (${err !== null ? extractErrorMessage(err) : 'unknown error'}). ${RUNTIME_UNAVAILABLE_ADVICE}`,
     }
   }
-  return {
-    name,
-    status: 'warn',
-    message:
-      err !== null
-        ? `onnxruntime-node is installed but failed to load: ${extractErrorMessage(err)}`
-        : 'unavailable (not attempted)',
+  const binaryPresent = wasmBinaryPresent()
+  if (!binaryPresent && config.network?.offline) {
+    return {
+      name,
+      status: 'warn',
+      message: `unavailable, so semantic falls back to keyword search: the ${bundled} is not downloaded yet and offline mode (network.offline) prevents fetching it. ${RUNTIME_UNAVAILABLE_ADVICE}`,
+    }
   }
+  const binary = binaryPresent ? 'runtime binary downloaded' : 'runtime binary not downloaded yet, fetched once on first use'
+  const nativeErr = nativeRuntimeLoadError()
+  // createRequire goes through Node's CJS loader, so an absent package is MODULE_NOT_FOUND; ERR_MODULE_NOT_FOUND is accepted too rather than assumed away, since the same package reached through an ESM path would report that instead and both mean the same thing to the reader.
+  const code = (nativeErr as NodeJS.ErrnoException | null)?.code
+  const native =
+    nativeErr === null || code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND'
+      ? 'for the native runtime instead: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)'
+      : `onnxruntime-node is installed but failed to load: ${extractErrorMessage(nativeErr)}`
+  return { name, status: 'ok', message: `available (${bundled}; ${binary}); ${native}` }
 }
 
 /** Check whether the pinned embedding model files are present on disk. */
