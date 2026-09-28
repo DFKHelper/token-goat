@@ -21,24 +21,15 @@ import { getHarnessName } from './bridges/registry.js'
  * Empty today, and that is a finding rather than an oversight. Copilot CLI was the only member,
  * on the strength of its own hooks reference saying command-hook output "is dropped"
  * (https://docs.github.com/en/copilot/reference/hooks-reference). That documentation is wrong for
- * `additionalContext`, at least as of 1.0.80: a project-scope config-file command hook (under
- * `<cwd>/.github/hooks/`) returned `{"additionalContext":"<marker>"}` and the marker appeared
- * verbatim in the session's `user.message.transformedContent`, wrapped in `<system_reminder>`.
- * That it reached the model rather than only the on-disk record is settled by the provider's own
- * returned usage: ~140 input tokens billed for a turn whose raw `content` is 35 bytes. Scope: this
- * was demonstrated once, on one of two turns, and the delivery rate is unknown -- see the longer
- * account in `src/bridges/copilot_cli.ts`. The doc's claim about `modifiedPrompt` was not retested
- * and is assumed to still hold; token-goat does not want that field regardless.
+ * `additionalContext`: on Copilot CLI 1.0.88, five of five runs of a user-scope command hook that
+ * returned `{"additionalContext":"<marker>"}` put the marker in the model request once, after the
+ * prompt inside a `<system_reminder>` block (tg-captures C3, wire `C3/wire/*-req-01.json`). The doc's claim about `modifiedPrompt` was not retested and is
+ * assumed to still hold; token-goat does not want that field regardless.
  *
  * The set and the reroute below are kept rather than deleted because they are the fallback if a
- * future Copilot release makes the documentation true again. Re-adding a harness name here used to
- * be described as the whole fix, with no other code change, and for Copilot that was once false:
- * a hint queued by this reroute drains through `post_tool_use`, and Copilot's `postToolUse` never
- * forwards `additionalContext` to the model on the JS path (no supplier for `onAdditionalContext`,
- * no `additional_contexts` key in that event's native return payload). The `postToolUse` branch in
- * `src/bridges/copilot_cli.ts` now folds the drained text into `modifiedResult.textResultForLlm`
- * instead, which that same bundle applies in place, so the drain side is no longer the weak link.
- * Membership stays evidence-backed in both directions --
+ * future Copilot release makes the documentation true again. A hint queued by this reroute drains
+ * through `post_tool_use`, whose `additionalContext` Copilot 1.0.88 appends to the tool output
+ * (tg-captures C1a). Membership stays evidence-backed in both directions --
  * adding a harness silently reroutes its hints and removing one silently discards them, so
  * neither move should ever rest on documentation alone. See BRIDGES_STATUS for the harness-level
  * record of what each event can actually carry.

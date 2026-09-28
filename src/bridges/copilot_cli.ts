@@ -479,12 +479,12 @@ async function main() {
     return
   }
 
-  process.stdout.write(JSON.stringify(translate(copilotEvent, resp, toolName, originalToolArgs, payload)))
+  process.stdout.write(JSON.stringify(translate(copilotEvent, resp, toolName, originalToolArgs)))
 }
 
 ${MATERIALIZE_SHRUNK_IMAGE_JS}
 
-function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
+function translate(copilotEvent, resp, toolName, originalToolArgs) {
   if (copilotEvent === 'preToolUse') {
     const hso = resp && resp.hookSpecificOutput
     const denied = resp && (resp.decision === 'block' || (hso && hso.permissionDecision === 'deny'))
@@ -511,33 +511,12 @@ function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
   }
 
   if (copilotEvent === 'postToolUse') {
-    // modifiedResult is honored on success: rewriteOutput (compression, fencing, image shrink) reaches LLM.
-    // additionalContext is dropped on Copilot CLI JS path, so the ONLY channel that reaches the model here is
-    // modifiedResult.textResultForLlm, and the body that goes into it is chosen before the fold rather than
-    // instead of it. The two used to be alternatives -- a rewritten output took the first branch and skipped the
-    // fold entirely -- so any response carrying both a compressed body and a hint delivered the body and dropped
-    // the hint on the floor, silently, on the one harness this whole fold exists for. Pick the body (rewritten if
-    // there is one, else the original), then append the hint to whichever it was.
+    // Each field carries one thing. modifiedResult replaces the tool output, so it is sent only for a real rewrite (compression, fencing, image shrink). additionalContext carries the hint: Copilot CLI 1.0.88 appends it to the tool output itself, under the heading Tool "<name>" succeeded. Additional guidance from postToolUse hooks:, followed by the text, once (captured on the wire, tg-captures C1a; with a modifiedResult alongside, C1c, each arrives once). This branch used to also fold the hint into modifiedResult, on a 1.0.80 reading that additionalContext was dropped here, so on 1.0.88 the model got every post-tool hint twice.
     const hso = resp && resp.hookSpecificOutput
     const updatedToolOutput = hso && hso.updatedToolOutput
     const context = extractContext(resp)
     const out = {}
-    const rawResult = payload && payload.toolResult
-    // Copilot's own ToolResult type is a union of a bare string and ToolResultObject (copilot-sdk/types.d.ts), so a string is a shape the harness itself admits even though PostToolUseHookInput narrows this field to the object form. Reading it as a body costs one typeof and removes the only route by which body could come back undefined on a well-formed payload: in every version this bridge has been checked against (1.0.80, 1.0.82, 1.0.86, 1.0.87, 1.0.88) ToolResultObject declares textResultForLlm as a required string rather than an optional one, so the object form always carries a body and the hint always has something to be folded into.
-    const originalText =
-      typeof rawResult === 'string'
-        ? rawResult
-        : rawResult && (typeof rawResult.textResultForLlm === 'string' ? rawResult.textResultForLlm : typeof rawResult.text_result_for_llm === 'string' ? rawResult.text_result_for_llm : undefined)
-    const rewritten = typeof updatedToolOutput === 'string'
-    const body = rewritten ? updatedToolOutput : typeof originalText === 'string' ? originalText : undefined
-    // Never claim a modification we did not make: with no rewrite and no hint, the body would be the tool's own
-    // text handed back verbatim, and a pass-through modifiedResult is a lie about authorship on every call.
-    if (typeof body === 'string' && (rewritten || context)) {
-      out.modifiedResult = { resultType: 'success', textResultForLlm: context ? body + '\\n\\n[token-goat: ' + context + ']' : body }
-    }
-    // Still set alongside the fold rather than instead of it: the field is dropped on the JS path read at 1.0.80,
-    // but it is the documented channel and costs nothing if a later release starts honoring it. The fold above is
-    // what the delivery guarantee rests on.
+    if (typeof updatedToolOutput === 'string') out.modifiedResult = { resultType: 'success', textResultForLlm: updatedToolOutput }
     if (context) out.additionalContext = context
     return out
   }

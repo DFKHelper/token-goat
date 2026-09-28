@@ -1,0 +1,1 @@
+{"sessionId":"dc04ed3b-56ff-4fd4-bd32-694f837477e7","timestamp":1790610993595,"cwd":"{{PROJ}}","toolName":"skill","toolArgs":{"skill":"tgcap-echo"},"toolResult":{"resultType":"success","textResultForLlm":"Skill \"tgcap-echo\" loaded successfully. Follow the instructions in the skill context."},"traceparent":"00-987e9f097dbf8cb7efd886bfa726de8c-7080201fdef96a50-01"}

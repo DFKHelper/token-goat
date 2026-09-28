@@ -13,18 +13,15 @@
  * appending guidance after a tool result is additive and visible, where rewriting the prompt would
  * silently change what the user asked for.
  *
- * The channel it lands on is `modifiedResult.textResultForLlm`, not `additionalContext`. That
- * distinction is the whole delivery guarantee and it was not always true here. `additionalContext`
- * is dropped on Copilot's JS path: reading the 1.0.80 bundle, `postToolExecution` (app.js offset
- * 2043150) applies `modifiedResult` in place and never pushes `additionalContext` anywhere,
- * `grep -abo "onAdditionalContext:" app.js` finds no supplier for the callback, and that event's
- * native return payload (offset 1793926) has no `additional_contexts` key, unlike the pre-tool
- * sibling that does. `modifiedResult`, by contrast, is applied in place by that same function. So
- * the `postToolUse` branch in `src/bridges/copilot_cli.ts` appends the queued text to the body it
- * returns, and the hint arrives on the channel the harness reads rather than the one its docs name.
+ * The channel it lands on is the next tool call's `additionalContext`. On Copilot CLI 1.0.88 that
+ * field reaches the model once, appended to the tool output under "Additional guidance from
+ * postToolUse hooks:" (captured on the wire, tg-captures C1a). An earlier reading of the 1.0.80
+ * bundle had it dropped there, so the `postToolUse` branch in `src/bridges/copilot_cli.ts` also
+ * folded the text into `modifiedResult.textResultForLlm`; on 1.0.88 that delivered it twice, and
+ * the fold is gone.
  *
  * What is still open is not the channel but the population: `PROMPT_SUBMIT_CONTEXT_DROPPED` in
- * `src/harness_channels.ts` is empty, because a live test on 1.0.80 showed Copilot's
+ * `src/harness_channels.ts` is empty, because captures on 1.0.88 (tg-captures C3) show Copilot's
  * `userPromptSubmitted` context does reach the model despite the documentation saying otherwise.
  * So no harness currently reroutes through here for prompt-submit hints. The pre-compact queue
  * beside it is not empty and does use this path -- see `dropsPreCompactContext`.
