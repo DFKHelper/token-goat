@@ -572,6 +572,8 @@ const _KIND_GROUPS: KindGroup[] = [
   },
   // Filled by _kindGroupLabel's `stale_served:` prefix branch, empty here for the same reason as MCP above.
   { label: 'Stale answers', members: new Set<string>() },
+  // Filled by the `answer:` prefix branch, like the two above.
+  { label: 'Answer routing', members: new Set<string>() },
 ]
 
 /** Every kind name literally listed in a {@link _KIND_GROUPS} member set. Exported for guards/rendered_stat_kind_is_registered.test.ts, the third mirror in the stat-registry guard family: a name the renderer groups but that stats.ts never registered has no source, no producer, and can only ever render as an empty row. */
@@ -603,6 +605,10 @@ export function _kindGroupLabel(kind: string): string {
   // stale_served: counts answers served from index rows that no longer match the disk; it saves nothing, so it sits apart from every savings group.
   if (kind.startsWith('stale_served:')) {
     return 'Stale answers'
+  }
+  // answer: counts calls to the `answer` router and its refusals; the savings of a routed call are booked on the delegate's own kind.
+  if (kind.startsWith('answer:')) {
+    return 'Answer routing'
   }
   for (const group of _KIND_GROUPS) {
     if (group.members.has(kind)) {
