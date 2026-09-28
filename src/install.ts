@@ -15,9 +15,9 @@ import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
-import { hasCreatedConfig, recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './bridges/created_configs.js'
+import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty } from './bridges/created_configs.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -404,25 +404,6 @@ export function finishHookUninstall(p: string, settings: { hooks?: Record<string
   }
   removeCreatedBackups(p)
   return removed
-}
-
-/** `ensureDirSync`, recording `dir` in the created-configs ledger when this call is what brought it into being, so uninstall can take away a directory token-goat's install made and leave one that was already there. */
-function ensureDirRecordingCreation(dir: string): void {
-  const existed = fs.existsSync(dir)
-  ensureDirSync(dir)
-  if (!existed) recordCreatedConfig(dir)
-}
-
-/** Delete `target`, an empty directory or a file holding nothing but whitespace, when the created-configs ledger says a token-goat install created it, and forget the entry once it is gone. Anything else stays: a directory or file the user made, however empty, and one token-goat made that now holds anything at all. Emptiness alone is not evidence either way, which is why the ledger is asked first. */
-function removeCreatedIfEmpty(target: string): void {
-  if (!hasCreatedConfig(target)) return
-  let removed = false
-  try {
-    removed = fs.lstatSync(target).isDirectory() ? removeEmptyDirInScope(target) : fs.readFileSync(target, 'utf8').trim() === '' && removeFileInScope(target)
-  } catch {
-    // Already gone, unreadable, or not a plain file or directory: nothing is removed, and the entry stays for a later uninstall.
-  }
-  if (removed) takeCreatedConfig(target)
 }
 
 /** Are token-goat hooks installed in `scope`? True only when every mapped event key carries a *current-format* token-goat hook command — a legacy-only entry does not count, since it is dead on this build, and a partial install (some events wired, some not) reads as not installed so {@link installHooks} will top up the missing entries. */

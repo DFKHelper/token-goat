@@ -4,7 +4,7 @@ import * as path from 'path'
 
 import { dataDir } from '../constants.js'
 import { normalizePath } from '../paths.js'
-import { atomicWriteText, ensureDirSync, foldPath, removeFileInScope } from '../util.js'
+import { atomicWriteText, ensureDirSync, foldPath, removeEmptyDirInScope, removeFileInScope } from '../util.js'
 
 function ledgerPath(): string {
   return path.join(dataDir(), 'created-configs.json')
@@ -100,4 +100,23 @@ export function removeCreatedBackups(configPath: string): number {
   }
   writeLedger(entries.filter((entry) => !ours.includes(entry) || failed.has(entry)))
   return removed
+}
+
+/** `ensureDirSync`, recording `dir` in the created-configs ledger when this call is what brought it into being, so uninstall can take away a directory token-goat's install made and leave one that was already there. */
+export function ensureDirRecordingCreation(dir: string): void {
+  const existed = fs.existsSync(dir)
+  ensureDirSync(dir)
+  if (!existed) recordCreatedConfig(dir)
+}
+
+/** Delete `target`, an empty directory or a file holding nothing but whitespace, when the created-configs ledger says a token-goat install created it, and forget the entry once it is gone. Anything else stays: a directory or file the user made, however empty, and one token-goat made that now holds anything at all. Emptiness alone is not evidence either way, which is why the ledger is asked first. */
+export function removeCreatedIfEmpty(target: string): void {
+  if (!hasCreatedConfig(target)) return
+  let removed = false
+  try {
+    removed = fs.lstatSync(target).isDirectory() ? removeEmptyDirInScope(target) : fs.readFileSync(target, 'utf8').trim() === '' && removeFileInScope(target)
+  } catch {
+    // Already gone, unreadable, or not a plain file or directory: nothing is removed, and the entry stays for a later uninstall.
+  }
+  if (removed) takeCreatedConfig(target)
 }

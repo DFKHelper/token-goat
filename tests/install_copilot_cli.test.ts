@@ -394,6 +394,57 @@ describe('isCopilotCliInstalled / uninstallCopilotCli', () => {
     expect(fs.existsSync(localResult.configPath)).toBe(false)
   })
 
+  // Regression: uninstall stripped the routing block and removed the hook files but left the 0-byte copilot-instructions.md and the empty hooks directory that install had created to hold them.
+  // HAND-DERIVED: a fresh isolated home and project with no Copilot directory, so every file and directory below is one this install created.
+  it('uninstallCopilotCli removes the instructions file and the directories its install created, once they are empty (user scope)', () => {
+    const copilotHome = path.join(TMP, 'home', '.copilot')
+    expect(fs.existsSync(copilotHome)).toBe(false)
+    const result = installCopilotCli()
+    expect(uninstallCopilotCli()).toBe(true)
+    expect(fs.existsSync(result.instructionsPath)).toBe(false)
+    expect(fs.existsSync(copilotCliUserHooksDir())).toBe(false)
+    expect(fs.existsSync(copilotHome)).toBe(false)
+  })
+
+  // HAND-DERIVED: as above, for the project scope under the isolated project dir.
+  it('uninstallCopilotCli removes the instructions file and the .github directories its install created, once they are empty (project scope)', () => {
+    const github = path.join(process.cwd(), '.github')
+    const result = installCopilotCli({ local: true })
+    expect(uninstallCopilotCli({ local: true })).toBe(true)
+    expect(fs.existsSync(result.instructionsPath)).toBe(false)
+    expect(fs.existsSync(copilotCliProjectHooksDir())).toBe(false)
+    expect(fs.existsSync(github)).toBe(false)
+    expect(fs.existsSync(process.cwd())).toBe(true)
+  })
+
+  // HAND-DERIVED: the user already had an empty instructions file and an empty hooks directory before install, so emptiness after uninstall is not evidence they are token-goat's.
+  it('uninstallCopilotCli leaves an instructions file and hooks directory that existed before install, however empty', () => {
+    const dir = copilotCliUserHooksDir()
+    fs.mkdirSync(dir, { recursive: true })
+    const instructions = copilotCliInstructionsPath()
+    fs.writeFileSync(instructions, '')
+
+    installCopilotCli()
+    uninstallCopilotCli()
+
+    expect(fs.existsSync(instructions)).toBe(true)
+    expect(fs.readFileSync(instructions, 'utf8').trim()).toBe('')
+    expect(fs.existsSync(dir)).toBe(true)
+  })
+
+  // HAND-DERIVED: install created everything, then the user wrote into both the instructions file and the hooks directory; what they added must survive uninstall.
+  it('uninstallCopilotCli keeps a created instructions file and hooks directory the user has since put content into', () => {
+    const result = installCopilotCli()
+    fs.appendFileSync(result.instructionsPath, '\nMy own rule.\n')
+    const userHook = path.join(copilotCliUserHooksDir(), 'my-hooks.json')
+    fs.writeFileSync(userHook, '{"version":1,"hooks":{}}\n')
+
+    uninstallCopilotCli()
+
+    expect(fs.readFileSync(result.instructionsPath, 'utf8')).toContain('My own rule.')
+    expect(fs.readFileSync(userHook, 'utf8')).toBe('{"version":1,"hooks":{}}\n')
+  })
+
   it('uninstallCopilotCli({ local: true }) narrows removal to the project scope, leaving a user-scope install untouched', () => {
     const userResult = installCopilotCli()
     installCopilotCli({ local: true })
