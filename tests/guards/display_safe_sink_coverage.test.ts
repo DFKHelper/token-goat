@@ -312,11 +312,11 @@ const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
       'definitions, interpolated into a stats key.',
   ],
   [
-    'session_audit.ts:a.kind',
+    'session_audit_report.ts:a.kind',
     "token-goat's own injection-kind enum, assigned when the audit rows are built.",
   ],
   [
-    'session_audit.ts:d.kind',
+    'session_audit_report.ts:d.kind',
     "token-goat's own dedup-kind enum, assigned when the audit rows are built.",
   ],
   ...(

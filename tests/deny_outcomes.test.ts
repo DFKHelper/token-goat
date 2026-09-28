@@ -5,7 +5,8 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { DENY_TEMPLATE_KINDS, auditSessionCorpus, formatSessionAudit } from '../src/session_audit.js'
+import { DENY_TEMPLATE_KINDS, auditSessionCorpus } from '../src/session_audit.js'
+import { formatSessionAudit } from '../src/session_audit_report.js'
 import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
 
 const use = (id: string, name: string, input: Record<string, unknown>): string =>

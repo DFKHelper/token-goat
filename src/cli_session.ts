@@ -4,10 +4,8 @@ import * as fs from 'node:fs'
 
 import { CliError, out, requireNonNegativeInt } from './cli.js'
 import { displaySafeJson } from './paths.js'
-import {
-  auditSessionCorpus,
-  formatSessionAudit,
-} from './session_audit.js'
+import { auditSessionCorpus } from './session_audit.js'
+import { formatSessionAudit } from './session_audit_report.js'
 import {
   buildSessionOutline,
   formatSessionOutline,
