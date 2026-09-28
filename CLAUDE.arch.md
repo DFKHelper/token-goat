@@ -408,8 +408,10 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/confirm_apply.ts`](src/confirm_apply.ts) | Small, reusable diff-preview + confirm-before-write helper. |
 | [`src/conflict_query.ts`](src/conflict_query.ts) | Unresolved git merge-conflict marker extraction (`token-goat conflicts`). |
 | [`src/content_store.ts`](src/content_store.ts) | Local, bounded storage for generic compressed text and named handoffs. |
+| [`src/copilot_home.ts`](src/copilot_home.ts) | Exports: `copilotCliUserRoot` |
 | [`src/copilot_mcp_names.ts`](src/copilot_mcp_names.ts) | Canonicalise Copilot CLI's MCP tool names into the `mcp__<server>__<tool>` shape every MCP-aware hook in token-goat gates on. |
 | [`src/copilot_mcp_tools.ts`](src/copilot_mcp_tools.ts) | Reads Copilot CLI's on-disk MCP tool-definition cache. |
+| [`src/copilot_skill_path.ts`](src/copilot_skill_path.ts) | Exports: `copilotSkillPath` |
 | [`src/copilot_tool_names.ts`](src/copilot_tool_names.ts) | Copilot CLI's built-in tool names, mapped to the canonical token-goat names every hook gates on. |
 | [`src/copilot_waste.ts`](src/copilot_waste.ts) | Waste analysis for Copilot CLI sessions. |
 | [`src/coverage_query.ts`](src/coverage_query.ts) | Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report (which can run to tens of thousands of lines for a real project) never needs a full ` |

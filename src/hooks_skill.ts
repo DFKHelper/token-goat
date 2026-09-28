@@ -2,7 +2,9 @@ import { readFile } from 'node:fs/promises';
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, denyOutput, getToolName, getToolInput, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js';
+import { passOutput, denyOutput, getToolName, getToolInput, getCwd, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js';
+import { getHarnessName } from './bridges/registry.js';
+import { copilotSkillPath } from './copilot_skill_path.js';
 import { loadConfig } from './config.js';
 import { recordStat, savedTokensFromBytes } from './stats.js';
 import {
@@ -47,6 +49,17 @@ function extractSkillName(toolInput: Record<string, unknown>): string | null {
 
 function extractSkillBody(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
+}
+
+/** Copilot CLI's skill tool answers with a one-line confirmation (`Skill "<name>" loaded successfully. Follow the instructions in the skill context.`) and delivers the body separately, as a `<skill-context>` user message the hook never sees (tg-captures C5, Copilot CLI 1.0.88). Its tool result is therefore not the skill, and its skills live in Copilot's own directories rather than Claude Code's. */
+function skillResultIsConfirmationOnly(): boolean {
+  return getHarnessName() === 'copilot_cli';
+}
+
+/** The on-disk SKILL.md the running harness loads for `skillName`: Copilot's project and personal skill directories on Copilot CLI, Claude Code's skills directory (or plugin manifest) everywhere else. */
+function harnessSkillPath(event: HookEvent, skillName: string): Promise<string | null> {
+  if (skillResultIsConfirmationOnly()) return copilotSkillPath(skillName, getCwd(event) ?? null);
+  return installedSkillPath(skillName);
 }
 
 /** Shared prologue for {@link preSkillHandler}/{@link postSkillHandler}: only a Skill call with an extractable skill name and a session id is in scope; everything else passes through. */
@@ -106,14 +119,14 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'skill-reload-deny');
       return denyOutput(
         'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-section ' +
-          skillName + ' ' + skillSectionArg(await installedSkillPath(skillName)) + '` to recall a section, `token-goat skill-body ' +
+          skillName + ' ' + skillSectionArg(await harnessSkillPath(event, skillName)) + '` to recall a section, `token-goat skill-body ' +
           skillName + ' --compact` to recall the compact slice, or `token-goat skill-body ' + skillName +
           '` for the full body instead of re-loading it.',
       );
     }
 
     // First (cold) load of an oversized skill with an extractable compact: gate this too, or the full body still lands in context once per skill per session regardless of repeat-load protection.
-    const sourcePath = await installedSkillPath(skillName);
+    const sourcePath = await harnessSkillPath(event, skillName);
     if (sourcePath) {
       try {
         const body = await readFile(sourcePath, 'utf-8');
@@ -183,13 +196,24 @@ export async function postSkillHandler(event: HookEvent): Promise<HookOutput> {
 
     recordStat('skill_load');
 
-    const body = extractSkillBody(event.raw);
+    let body: string;
+    let sourcePath: string | null;
+    if (skillResultIsConfirmationOnly()) {
+      // The tool result is only a confirmation line, so the body is read from the file Copilot loaded. With no such file there is nothing recallable to store, and storing the confirmation would make the next load's deny point at a `skill-body` that cannot find the skill.
+      sourcePath = await harnessSkillPath(event, skillName);
+      if (sourcePath === null) {
+        return passOutput();
+      }
+      body = await readFile(sourcePath, 'utf-8');
+    } else {
+      body = extractSkillBody(event.raw);
+      sourcePath = await installedSkillPath(skillName);
+    }
     if (!body) {
       return passOutput();
     }
 
     // Persist the loaded body under the real skill name (toolInput.skill), so skill-compact/skill-body/skill-list can recall it after compaction. Keyed by skill name + content hash; storeOutput dedups identical bodies across sessions. sourcePath points at the on-disk install when present, so getSkillFilePath resolves it without the disk-scan fallback.
-    const sourcePath = await installedSkillPath(skillName);
     await storeOutput(event.sessionId, skillName, body, sourcePath ? { sourcePath } : undefined);
     // Increment hit count for skill recall tracking.
     await incrementSkillHit(skillName);
