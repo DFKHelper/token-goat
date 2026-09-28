@@ -32,6 +32,8 @@ import {
 const HANDSHAKE_TIMEOUT_MS = 150
 /** Total time spent finding a server before giving up and falling back; a fallback costs about 100ms, so waiting longer than this never pays. */
 const FIND_BUDGET_MS = 300
+/** How long a slot gets to answer the handshake before the next slot is asked beside it. An idle server answers in 1 to 3 ms, so a slot silent this long is in synchronous work, and the caller now waits on it and the next slot at once instead of spending its whole budget on one slot and then the next: two slots each held past the handshake allowance used to use up the budget before the third, possibly idle, was ever asked. */
+const HEDGE_MS = 40
 /** A dispatched hook request that has not answered by now is failed open. Matches the hook relay's own queue wait. A CLI request has no such limit (see attempt). */
 const RESPONSE_TIMEOUT_MS = 120_000
 /** How long `status` and `stop` keep asking a slot whose handshake timed out. */
@@ -41,8 +43,11 @@ const DISABLED_MARKER_TTL_MS = 10 * 60_000
 
 type Outcome = { kind: 'served'; reply: ServerReply } | { kind: 'absent' } | { kind: 'busy' } | { kind: 'stale' } | { kind: 'refused' } | { kind: 'oversize' } | { kind: 'lost' }
 
-/** One attempt against one slot. Resolves exactly once. */
-function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs: number, dir?: string): Promise<Outcome> {
+/** What lets several attempts wait on different slots at once while at most one of them dispatches: `claim` is asked on a verified challenge, with the canceller the attempt registered, and answers whether this attempt may send its request; `onCancel` registers what to run once another attempt has claimed. */
+type Race = { claim: (self: () => void) => boolean; onCancel: (cancel: () => void) => void }
+
+/** One attempt against one slot. Resolves exactly once. With `race`, an attempt that loses the claim, or is cancelled before its challenge arrives, hangs up without dispatching and resolves `busy`. */
+function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs: number, dir?: string, race?: Race): Promise<Outcome> {
   return new Promise((resolve) => {
     const socket = net.connect(endpointFor(slot, dir))
     const nc = nonce()
@@ -56,6 +61,10 @@ function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs:
       resolve(outcome)
     }
     let timer = setTimeout(() => finish({ kind: 'busy' }), handshakeMs)
+    const cancel = (): void => {
+      if (!dispatched) finish({ kind: 'busy' })
+    }
+    race?.onCancel(cancel)
     socket.on('error', (e: NodeJS.ErrnoException) => {
       if (dispatched) finish({ kind: 'lost' })
       else finish({ kind: e.code === 'ENOENT' || e.code === 'ECONNREFUSED' ? 'absent' : 'refused' })
@@ -78,6 +87,8 @@ function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs:
           const frame = encodeFrame({ t: 'req', mac: mac(key, 'C', nc, ns, body), body })
           // The server hangs up on a frame this long before reading any of it, which after dispatch would read as a lost request and fail it open unrun.
           if (!frameFits(frame)) return finish({ kind: 'oversize' })
+          // Another slot's server answered first and has the request.
+          if (race !== undefined && !race.claim(cancel)) return finish({ kind: 'busy' })
           dispatched = true
           clearTimeout(timer)
           // A CLI command waits for its answer however long it runs. The server cannot abandon a command it has started (the work is synchronous and nothing interrupts it), so giving up here only made the caller run the same command a second time beside it, on the same index, never faster (a 342.8 s `symbol` miss on a large project was 120 s of waiting here and then the whole command again). A server that dies mid-command still closes the connection, which reads as lost below, and the caller still runs it itself.
@@ -124,7 +135,7 @@ export function serverEnabled(): boolean {
   return envBool('TOKEN_GOAT_HOOK_SERVER', true)
 }
 
-/** Send `request` to the first free server. `undefined` means nothing was dispatched and the caller should do the work itself; `'lost'` means a server took the request and then failed to answer. */
+/** Send `request` to the first free server. `undefined` means nothing was dispatched and the caller should do the work itself; `'lost'` means a server took the request and then failed to answer. Slot 0 is asked first; a slot that has not answered within {@link HEDGE_MS} keeps being waited on while the next slot is asked beside it, and the first server to answer the handshake takes the request. A server in synchronous work answers the handshake the moment that work ends, so waiting on every held slot at once is a bounded wait for whichever frees first, and no slot is newly asked once {@link FIND_BUDGET_MS} has passed. A slot that answers busy or refuses moves the call on to the next slot at once, and an absent slot is started in the background and asked about no further, as before. */
 export async function callServer(request: ServerRequest, opts: { autostart?: boolean; handshakeMs?: number } = {}): Promise<ServerReply | 'lost' | undefined> {
   if (!serverEnabled()) return undefined
   const autostart = opts.autostart !== false
@@ -134,18 +145,60 @@ export async function callServer(request: ServerRequest, opts: { autostart?: boo
     return undefined
   }
   const deadline = Date.now() + FIND_BUDGET_MS
-  for (let slot = 0; slot < SERVER_SLOTS && Date.now() < deadline; slot++) {
-    const outcome = await attempt(slot, key, request, opts.handshakeMs ?? HANDSHAKE_TIMEOUT_MS)
-    if (outcome.kind === 'served') return outcome.reply
-    if (outcome.kind === 'lost') return 'lost'
-    if (outcome.kind === 'absent') {
-      if (autostart) startServer(slot)
-      return undefined
+  const handshakeMs = opts.handshakeMs ?? HANDSHAKE_TIMEOUT_MS
+  return new Promise((resolve) => {
+    let claimed = false
+    let settled = false
+    // Nothing further is asked once a slot is found absent: that call falls back, as it always has, once the slots already asked have answered.
+    let exhausted = false
+    let next = 0
+    let pending = 0
+    let hedge: NodeJS.Timeout | undefined
+    const cancels: Array<() => void> = []
+    const settle = (value: ServerReply | 'lost' | undefined): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(hedge)
+      for (const cancel of cancels) cancel()
+      resolve(value)
     }
-    // Every slot would refuse it alike.
-    if (outcome.kind === 'stale' || outcome.kind === 'oversize') return undefined
-  }
-  return undefined
+    const race: Race = {
+      claim: (self) => {
+        if (claimed || settled) return false
+        claimed = true
+        clearTimeout(hedge)
+        for (const cancel of cancels) if (cancel !== self) cancel()
+        return true
+      },
+      onCancel: (cancel) => cancels.push(cancel),
+    }
+    const askNext = (): void => {
+      clearTimeout(hedge)
+      if (settled || claimed || exhausted || next >= SERVER_SLOTS || Date.now() >= deadline) {
+        if (pending === 0 && !claimed) settle(undefined)
+        return
+      }
+      const slot = next++
+      pending++
+      // Each slot gets the whole handshake allowance from when it is asked, as it did when slots were asked one after another; asking the next slot at most {@link HEDGE_MS} later is what keeps the total inside the budget.
+      void attempt(slot, key, request, handshakeMs, undefined, race).then((outcome) => {
+        pending--
+        if (outcome.kind === 'served') return settle(outcome.reply)
+        if (outcome.kind === 'lost') return settle('lost')
+        // The winner settles the call.
+        if (claimed) return
+        // Every slot would refuse it alike.
+        if (outcome.kind === 'stale' || outcome.kind === 'oversize') return settle(undefined)
+        if (outcome.kind === 'absent') {
+          if (autostart) startServer(slot)
+          exhausted = true
+        }
+        askNext()
+      })
+      if (next < SERVER_SLOTS) hedge = setTimeout(askNext, HEDGE_MS)
+    }
+    askNext()
+  })
 }
 
 /** Run hook `event` on a resident server. Returns the hook's stdout, `'{}'` when a dispatched request failed (fail open, never run twice), or `undefined` to fall back. */
