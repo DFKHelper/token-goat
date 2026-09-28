@@ -404,5 +404,71 @@ describe('findProjectSession', () => {
       rmSync(base, { recursive: true, force: true })
     }
   })
-})
 
+  const HARNESS_KEYS = ['COPILOT_HOME', 'CLAUDE_CONFIG_DIR', 'COPILOT_AGENT_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'CLAUDECODE'] as const
+
+  /** A project with one live Copilot session (inuse lock held by this test's own pid, so isProcessAlive answers true) and one Claude Code transcript named `<claudeId>.jsonl`, with the mtimes given. HAND-DERIVED layout: the same session-state and projects/<slug> paths the operation-lock test above uses. */
+  function withTwoHarnesses(
+    opts: { copilotMtime: number; claudeMtime: number; env: Partial<Record<(typeof HARNESS_KEYS)[number], string>> },
+    body: (f: { project: string; events: string; transcript: string; sid: string; claudeId: string }) => void,
+  ): void {
+    const base = mkdtempSync(join(tmpdir(), 'tg-pick-'))
+    const saved = new Map(HARNESS_KEYS.map((k) => [k, process.env[k]]))
+    try {
+      const project = join(base, 'proj')
+      mkdirSync(project, { recursive: true })
+      for (const k of HARNESS_KEYS) delete process.env[k]
+      process.env['COPILOT_HOME'] = join(base, 'copilot')
+      process.env['CLAUDE_CONFIG_DIR'] = join(base, 'claude')
+      const sid = '7d0c2a51-4b8e-4f7a-9c3e-2f1d6b8a9e04'
+      const sessDir = join(base, 'copilot', 'session-state', sid)
+      mkdirSync(sessDir, { recursive: true })
+      const events = join(sessDir, 'events.jsonl')
+      writeFileSync(events, '', 'utf-8')
+      writeFileSync(join(sessDir, 'workspace.yaml'), `id: ${sid}\ncwd: ${project}\n`, 'utf-8')
+      writeFileSync(join(sessDir, `inuse.${process.pid}.lock`), '', 'utf-8')
+      utimesSync(events, opts.copilotMtime, opts.copilotMtime)
+      const claudeId = '2ab49bbf-9914-4011-81d8-e30ccde5b635'
+      const slugDir = join(base, 'claude', 'projects', project.replace(/[^A-Za-z0-9]/g, '-'))
+      mkdirSync(slugDir, { recursive: true })
+      const transcript = join(slugDir, `${claudeId}.jsonl`)
+      writeFileSync(transcript, '{"type":"user","message":{"role":"user","content":"hi"}}\n', 'utf-8')
+      utimesSync(transcript, opts.claudeMtime, opts.claudeMtime)
+      for (const [k, v] of Object.entries(opts.env)) process.env[k] = v === '<claude>' ? claudeId : v === '<copilot>' ? sid : v
+      expect(isCopilotSessionActive(sessDir, sid)).toBe(true)
+      body({ project, events, transcript, sid, claudeId })
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+      rmSync(base, { recursive: true, force: true })
+    }
+  }
+
+  // CAPTURE (this machine, Claude Code, 2026-09-28): a Bash subprocess of a live session carries CLAUDECODE=1 and CLAUDE_CODE_SESSION_ID=2ab49bbf-9914-4011-81d8-e30ccde5b635, and that session's transcript is <config>/projects/C--Projects-token-goat/2ab49bbf-9914-4011-81d8-e30ccde5b635.jsonl: the id is the file's basename.
+  it('picks the calling Claude Code session by its id even while a Copilot session in the same project is live and newer', () => {
+    withTwoHarnesses({ copilotMtime: 2_000_000, claudeMtime: 1_000_000, env: { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: '<claude>' } }, ({ project, transcript }) => {
+      expect(findProjectSession(project)).toEqual({ path: transcript, kind: 'claude' })
+    })
+  })
+
+  it('outside any harness, picks the newer file rather than whichever Copilot session holds a lock', () => {
+    withTwoHarnesses({ copilotMtime: 1_000_000, claudeMtime: 2_000_000, env: {} }, ({ project, transcript }) => {
+      expect(findProjectSession(project)).toEqual({ path: transcript, kind: 'claude' })
+    })
+  })
+
+  // FORMAT-DERIVED: Copilot CLI exports COPILOT_AGENT_SESSION_ID naming the session-state/<sid> directory it writes (the fast path findLatestCopilotSession already reads).
+  it('picks the calling Copilot session by its id even when a Claude Code transcript is newer', () => {
+    withTwoHarnesses({ copilotMtime: 1_000_000, claudeMtime: 2_000_000, env: { COPILOT_AGENT_SESSION_ID: '<copilot>' } }, ({ project, events }) => {
+      expect(findProjectSession(project)).toEqual({ path: events, kind: 'copilot' })
+    })
+  })
+
+  it('falls back to the newest file when CLAUDE_CODE_SESSION_ID names a session of another project', () => {
+    withTwoHarnesses({ copilotMtime: 2_000_000, claudeMtime: 1_000_000, env: { CLAUDE_CODE_SESSION_ID: 'ffffffff-0000-4000-8000-000000000000' } }, ({ project, events }) => {
+      expect(findProjectSession(project)).toEqual({ path: events, kind: 'copilot' })
+    })
+  })
+})
