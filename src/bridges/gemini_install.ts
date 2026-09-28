@@ -56,7 +56,7 @@ interface GeminiSettings {
   [key: string]: unknown
 }
 
-/** Thrown by {@link installGemini}/{@link uninstallGemini} when `settings.json` exists but isn't parseable JSON (or isn't a JSON object at the top level). A caller about to write the file must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single JSON typo in the user's settings gets clobbered on write. */
+/** Thrown by {@link installGemini}/{@link uninstallGemini} when `settings.json` exists but cannot be read, isn't parseable JSON, or isn't a JSON object at the top level. A caller about to write the file must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single JSON typo in the user's settings gets clobbered on write, or its backups are deleted while it still holds token-goat's hooks. */
 export class GeminiSettingsParseError extends Error {}
 
 /** Absolute path to `~/.gemini/settings.json`. */
@@ -64,33 +64,34 @@ export function geminiSettingsPath(): string {
   return path.join(os.homedir(), '.gemini', 'settings.json')
 }
 
-/** Parse `settings.json` at `p`. A missing file yields `{}` -- the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but fails to parse (or whose top level isn't a JSON object) throws {@link GeminiSettingsParseError} instead of returning `{}`, so a caller about to overwrite the file can tell "genuinely empty" apart from "corrupt, do not touch." Non-strict (read-only) callers keep the lenient `{}` fallback. */
-function readGeminiSettings(p: string, opts: { strict?: boolean } = {}): GeminiSettings {
+/** Parse `settings.json` at `p`. A missing file yields `{}` -- the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but cannot be read, fails to parse, or whose top level isn't a JSON object throws {@link GeminiSettingsParseError} instead of returning `{}`, so a caller about to overwrite or strip the file can tell "genuinely empty" apart from "corrupt, do not touch"; `opts.command` names the command the message tells the user to run again. Non-strict (read-only) callers keep the lenient `{}` fallback. */
+function readGeminiSettings(p: string, opts: { strict?: boolean; command?: 'install' | 'uninstall' } = {}): GeminiSettings {
+  const refuse = (problem: string, detail?: string): GeminiSettingsParseError =>
+    new GeminiSettingsParseError(
+      (opts.command === 'uninstall'
+        ? `Gemini settings file '${p}' is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
+        : `Gemini settings file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+    )
   let raw: string
   try {
     raw = fs.readFileSync(p, 'utf8')
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    // Only an absent file is the "nothing installed yet" case; see install.ts's readSettings.
+    if (opts.strict === true && code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse('exists but cannot be read', code ?? extractErrorMessage(e))
     return {}
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch (e) {
-    if (opts.strict === true) {
-      throw new GeminiSettingsParseError(
-        `Gemini settings file '${p}' exists but contains invalid JSON. Fix or back up the file before running install. (${extractErrorMessage(e)})`,
-      )
-    }
+    if (opts.strict === true) throw refuse('exists but contains invalid JSON', extractErrorMessage(e))
     return {}
   }
   if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
     return parsed as GeminiSettings
   }
-  if (opts.strict === true) {
-    throw new GeminiSettingsParseError(
-      `Gemini settings file '${p}' does not contain a JSON object at the top level. Fix or back up the file before running install.`,
-    )
-  }
+  if (opts.strict === true) throw refuse('does not contain a JSON object at the top level')
   return {}
 }
 
@@ -200,7 +201,8 @@ export function installGemini(): GeminiInstallResult {
 /** Remove the Gemini CLI integration: strips only token-goat's own hook entries from `settings.json` (preserving any other keys/hooks/matchers). Returns true when at least one entry was present and removed; false when nothing was installed (no write occurs in that case). */
 export function uninstallGemini(): boolean {
   const p = geminiSettingsPath()
-  const settings = readGeminiSettings(p)
+  // Strict, as install reads it: a file that is there but cannot be read or parsed may still hold token-goat's hooks, so uninstall stops with it and its backups as they were.
+  const settings = readGeminiSettings(p, { strict: true, command: 'uninstall' })
   const removed = settings.hooks !== undefined && stripOwnHooksFromMap(settings.hooks, isGeminiTokenGoatCommand)
   return finishHookUninstall(p, settings, removed)
 }
