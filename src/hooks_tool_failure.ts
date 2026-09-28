@@ -8,7 +8,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput } from './hooks_common.js'
-import { displaySafeText, normalizePath } from './paths.js'
+import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { ensureDirSync } from './util.js'
 import { sessionSidecarPath } from './session_store.js'
@@ -140,7 +140,7 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
 
   if (oldString === undefined || oldString === '') return null
 
-  const absPath = normalizePath(filePath)
+  const absPath = hostPathOfIndexKey(normalizePath(filePath))
   if (!existsSync(absPath)) return null
 
   try {

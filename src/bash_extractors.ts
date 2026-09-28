@@ -3,7 +3,7 @@ import { statSync, openSync, readSync, closeSync } from 'node:fs'
 
 import { isUnderSystemTemp } from './project.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
-import { resolveIndexPath, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
+import { hostPathOfIndexKey, resolveIndexPath, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import type { HookEvent } from './hook_registry.js'
 import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } from './tool_filters/index.js'
 import { getFileLineRanges } from './session.js'
@@ -173,7 +173,8 @@ export function classifyCatPath(
 }
 
 export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; cmd0: string; advisoryOnly: boolean } | null {
-  if (/-(?:TotalCount|Head|First|Tail)\b/i.test(cmd)) return null
+  // A bounded read belongs to the head and tail handlers. Its parameter starts a token, so a name such as `precision-first-low-promotion/SKILL.md` is not one.
+  if (/(?:^|\s)-(?:TotalCount|Head|First|Tail)\b/i.test(cmd)) return null
   // Loop-46 census (8,179 real cat-headed commands): 144 qualifying reads spelled the identical read with a trailing `2>&1` or `2>/dev/null` and got no hint at all, so the suffix is accepted like extractSedRange already does. The `2>/dev/null` spelling signals an existence-tolerant read (dominated by memory-recall probes of files that may not exist), so it is admitted advisory-only: denying it would push the agent at a possibly missing file.
   const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*?)?(?:\s+2>(&1|\/dev\/null))?\s*$/i.exec(cmd)
   if (!m) return null
@@ -230,7 +231,7 @@ export function extractPowerShellWrappedGetContent(cmd: string, event?: HookEven
   if (!w) return null
   const inner = (w[1] ?? w[2] ?? '').trim()
   if (!inner) return null
-  if (/-(?:TotalCount|Head|First|Tail)\b/i.test(inner)) return null
+  if (/(?:^|\s)-(?:TotalCount|Head|First|Tail)\b/i.test(inner)) return null
   const m = PS_GETCONTENT_INNER_RE.exec(inner)
   if (!m) return null
   const filePath = m[1] ?? m[2] ?? m[3]
@@ -859,7 +860,7 @@ export function extractGetContentTail(cmd: string): { filePath: string; isDoc: b
   if (!getnMatch) return null
   // Extract filePath: everything between command and -Tail, or between -Tail N and end. A `-Path` flag is stripped wherever it falls (it names the very positional argument that follows it, e.g. `Get-Content -Path src/auth.ts -Tail 50` or `Get-Content -Tail 50 -Path src/auth.ts`), matching PS_GETCONTENT_INNER_RE and extractCatFile's own leading-flag skip -- without it, "-Path " itself became a permanent prefix of the extracted path.
   const afterCmd = cmd.slice(getnMatch[0].length).replace(/-Path\s+/i, '')
-  const beforeTail = afterCmd.split(/-Tail/i)[0]?.trim() ?? ''
+  const beforeTail = afterCmd.split(/(?:^|\s)-Tail\b/i)[0]?.trim() ?? ''
   const afterTail = afterCmd.split(/-Tail\s+\d+/i)[1]?.trim() ?? ''
   const filePath = (beforeTail || afterTail).replace(/^["']|["']$/g, '')
   if (!filePath) return null
@@ -886,17 +887,17 @@ export function extractGetContentSelectFirst(cmd: string): { filePath: string; i
 
 // Extracts file path from `Get-Content <path> -TotalCount N` / `-Head N` / `-First N` (PowerShell).
 export function extractGetContentHead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean; n: number } | null {
-  const headMatch = /-(?:TotalCount|Head|First)\s+(\d+)/i.exec(cmd)
+  // A parameter starts a token and a hyphen inside a name does not, so every pattern here is anchored to the start or a space: unanchored, the switch strip turned `docs/loop-ledger.md` into `docs/loop.md`, and the hint named, and the pricing stat-ed, a file the command never reads.
+  const headMatch = /(?:^|\s)-(?:TotalCount|Head|First)\s+(\d+)/i.exec(cmd)
   if (!headMatch) return null
   const n = parseInt(headMatch[1]!, 10)
   if (n <= 10) return null // already surgical -- matches extractHeadFile's <=10 threshold
   const getnMatch = /^(Get-Content|gc)\s+/i.exec(cmd)
   if (!getnMatch) return null
-  const afterCmd = cmd.slice(getnMatch[0].length).replace(/-Path\s+/i, '')
-  const beforeHead = afterCmd.split(/-(?:TotalCount|Head|First)/i)[0]?.trim() ?? ''
-  const afterHead = afterCmd.split(/-(?:TotalCount|Head|First)\s+\d+/i)[1]?.trim() ?? ''
-  const cleanedBefore = beforeHead.replace(/-(?:Encoding|Delimiter|Wait)\s+\S+/gi, '').replace(/-[a-zA-Z]+/g, '').trim()
-  const cleanedAfter = afterHead.replace(/-(?:Encoding|Delimiter|Wait)\s+\S+/gi, '').replace(/-[a-zA-Z]+/g, '').trim()
+  const afterCmd = cmd.slice(getnMatch[0].length).replace(/(?:^|\s)-Path\s+/i, ' ')
+  const [beforeHead = '', afterHead = ''] = afterCmd.split(/(?:^|\s)-(?:TotalCount|Head|First)\s+\d+/i, 2)
+  const cleanedBefore = beforeHead.replace(/(?:^|\s)-(?:Encoding|Delimiter|Wait)\s+\S+/gi, ' ').replace(/(?:^|\s)-[a-zA-Z]+(?=\s|$)/g, ' ').trim()
+  const cleanedAfter = afterHead.replace(/(?:^|\s)-(?:Encoding|Delimiter|Wait)\s+\S+/gi, ' ').replace(/(?:^|\s)-[a-zA-Z]+(?=\s|$)/g, ' ').trim()
   const filePath = (cleanedBefore || cleanedAfter).replace(/^["']|["']$/g, '')
   if (!filePath) return null
   if (isTempPath(filePath)) return null
@@ -913,7 +914,7 @@ const JSONL_TRANSCRIPT_HEAD_RE = /^\{\s*"(?:(?:parentUuid|isSidechain)"\s*:|type
 export function taskOutputIsJsonlTranscript(outPath: string): boolean {
   let fd: number | null = null
   try {
-    fd = openSync(normalizePath(outPath), 'r')
+    fd = openSync(hostPathOfIndexKey(normalizePath(outPath)), 'r')
     const buf = Buffer.alloc(64)
     const read = readSync(fd, buf, 0, buf.length, 0)
     return JSONL_TRANSCRIPT_HEAD_RE.test(buf.subarray(0, read).toString('utf-8').trim())

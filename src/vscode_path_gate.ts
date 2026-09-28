@@ -5,7 +5,7 @@ import type { HookEvent } from './hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { getCwd } from './hooks_common.js'
 import { escapesOntoNetworkThroughLinks, isInsideRoot } from './project.js'
-import { isUncOrDevicePath } from './paths.js'
+import { isUncOrDevicePath, resolveIndexPath, wslMountOfIndexKey } from './paths.js'
 import { foldPathForContainment } from './util.js'
 
 // Re-exported rather than defined here: path_containment.ts needs the same test, to refuse a symlink whose target escapes onto a share before its own walk stats the next segment, and it cannot import this module. The definition moved to paths.ts, at the bottom of the import graph.
@@ -44,9 +44,24 @@ function isVscodeEvent(event: HookEvent): boolean {
 export function preToolPathDeclined(event: HookEvent, target: string | undefined): boolean {
   if (target === undefined) return false
   const cwd = getCwd(event)
+  if (spellingDeclined(event, target, cwd)) return true
+  const mount = secondSpellingAtMount(target, cwd)
+  return mount !== null && spellingDeclined(event, mount, cwd)
+}
+
+/** The question preToolPathDeclined asks, asked of one spelling. */
+function spellingDeclined(event: HookEvent, target: string, cwd: string | undefined): boolean {
   if (isUncOrDevicePath(target) || resolvesToUncPath(target, cwd)) return true
   if (isVscodeEvent(event)) return !vscodePathAllowed(target, cwd)
   return escapesOntoNetworkThroughLinks(target, cwd)
+}
+
+/** The WSL mount a handler opens for `target` when it is not the path the gate already asked about, or null. A handler turns the typed path into an index key and opens the key's host path, which on Linux is the mount of a drive-letter key: under VS Code `c:/Users/x` passes as workspace-relative while the handler reads `/mnt/c/Users/x`, outside the workspace. Windows has no second path, since it opens the key as it stands, and it is not asked at all because resolving a key there can touch the filesystem; everywhere else the resolution is lexical. With no cwd the base matters only for a relative target, and the key a handler resolves for one against its own POSIX working directory names the path the gate asked about, so `/` stands in rather than calling process.cwd(), which throws once that directory is deleted. */
+function secondSpellingAtMount(target: string, cwd: string | undefined): string | null {
+  if (process.platform === 'win32') return null
+  const base = cwd ?? '/'
+  const mount = wslMountOfIndexKey(resolveIndexPath(target, base))
+  return mount !== null && mount !== path.resolve(base, target) ? mount : null
 }
 
 /** Whether a path this hook parsed OUT OF a command may be touched on disk before the user has approved that command. Every other pre_tool_use handler asks {@link preToolPathDeclined} before its first fs call, because the harness fires the hook before the approval prompt and the path is the model's choice until then -- and on Windows a `statSync` of `\\host\share\...` opens an SMB session, carrying an authentication attempt, to a host a repository named. This handler was outside that discipline for one reason that reads plausible and is wrong: its tool carries a command rather than a path. It carries about twenty paths, extracted from the command, and stats two of them. Answers false rather than throwing: the caller's only use for the size is deciding whether to emit a hint, and declining to measure is the same outcome as measuring and finding nothing. `event === undefined` still refuses a network or device path, including one reached through a link, so a caller that has no event to hand -- a direct unit test of an extractor, or a future one -- loses only the workspace half of the rule, never the network half. */

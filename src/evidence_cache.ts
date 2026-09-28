@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { dataDir } from './constants.js'
-import { displaySafePath, normalizePath } from './paths.js'
+import { displaySafePath, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { redactSecrets } from './secret_redact.js'
 import { embedTexts, isAvailable } from './embeddings.js'
@@ -65,11 +65,12 @@ function save(entries: readonly EvidenceEntry[]): void {
   }
 }
 
-/** A file's text as its evidence is hashed, recorded and verified: decoded by its byte-order mark the way the indexer reads it, or null for a file that cannot fit the cache, which a stat settles before any of a longer file is read. Every side of the cache reads through here, since a hash taken over one decoding never matches a hash taken over another. */
+/** A file's text as its evidence is hashed, recorded and verified: decoded by its byte-order mark the way the indexer reads it, or null for a file that cannot fit the cache, which a stat settles before any of a longer file is read. Every side of the cache reads through here, since a hash taken over one decoding never matches a hash taken over another. `filePath` is the index key the entry is recorded under, read at its host path. */
 export function readEvidenceFileText(filePath: string): string | null {
-  const size = statSize(filePath)
+  const onDisk = hostPathOfIndexKey(filePath)
+  const size = statSize(onDisk)
   if (size === null || size > MAX_FILE_BYTES) return null
-  const text = decodeSource(fs.readFileSync(filePath))
+  const text = decodeSource(fs.readFileSync(onDisk))
   return Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES ? null : text
 }
 

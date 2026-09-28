@@ -134,26 +134,41 @@ export function dirExists(p: string): boolean {
   }
 }
 
-/** The paths the host may open for an index key, the key first. A key is not always one: shellMountToWindowsPath folds a WSL mount path `/mnt/c/x` into `c:/x` on every platform, which POSIX resolves as relative, so a drive-letter key is also tried at its mount. */
-function hostPathsOfIndexKey(key: string): string[] {
-  const mount = /^([a-z]):\/(.*)$/s.exec(key)
-  return mount === null ? [key] : [key, `/mnt/${mount[1] as string}/${mount[2] as string}`]
+/** The WSL mount spelling of a drive-letter index key, `/mnt/c/x` for `c:/x`, or null for any other key and on Windows. A key is not always a path the host can open: shellMountToWindowsPath folds `/mnt/c/x` into `c:/x` on every platform, and POSIX resolves `c:/x` as relative, so on Linux the file behind a drive-letter key is at its mount. Windows opens the key as it stands, and there `/mnt/c/x` would name a different file on the current drive. preToolPathDeclined asks its question of this spelling too, since it is a second path a hook can open for one typed path. */
+export function wslMountOfIndexKey(key: string): string | null {
+  if (process.platform === 'win32') return null
+  const drive = /^([a-z]):\/(.*)$/s.exec(key)
+  return drive === null ? null : `/mnt/${drive[1] as string}/${drive[2] as string}`
 }
 
-/** True when stat finds a regular file at an index key or at its WSL mount. */
-export function isFileAtIndexKey(key: string): boolean {
-  return hostPathsOfIndexKey(key).some((p) => {
+/** The first host path for an index key that stat finds anything at, the key before its WSL mount, with what stat found, or null when neither holds anything. */
+function statAtIndexKey(key: string): { hostPath: string; stats: fs.Stats } | null {
+  const mount = wslMountOfIndexKey(key)
+  for (const hostPath of mount === null ? [key] : [key, mount]) {
     try {
-      return fs.statSync(p).isFile()
+      return { hostPath, stats: fs.statSync(hostPath) }
     } catch {
-      return false
+      // Nothing at this candidate, so the next one is tried.
     }
-  })
+  }
+  return null
 }
 
-/** Where the host finds a directory for an index key, the key itself or its WSL mount, or null when neither holds one. */
+/** The path the host opens for an index key: the key itself, or its WSL mount when only the mount holds anything. Every hook-side stat or read of a key goes through this, because a drive-letter key names nothing on WSL, where POSIX resolves `c:/x` as relative. A key with no mount spelling, which is every key on Windows, comes back without a stat, and a key found at neither place comes back unchanged, so the caller's own stat or read fails on it exactly as it did before. The confined CLI and MCP readers must not use it: their confinement vouches for the spelling it checked, and this can answer a different one. */
+export function hostPathOfIndexKey(key: string): string {
+  if (wslMountOfIndexKey(key) === null) return key
+  return statAtIndexKey(key)?.hostPath ?? key
+}
+
+/** True when the host path of an index key holds a regular file. */
+export function isFileAtIndexKey(key: string): boolean {
+  return statAtIndexKey(key)?.stats.isFile() === true
+}
+
+/** The host path of an index key when it holds a directory, or null when it holds anything else or nothing. */
 export function dirAtIndexKey(key: string): string | null {
-  return hostPathsOfIndexKey(key).find((p) => dirExists(p)) ?? null
+  const found = statAtIndexKey(key)
+  return found !== null && found.stats.isDirectory() ? found.hostPath : null
 }
 
 /** Convert an indexed absolute path to a display form for HUMAN (non-JSON) output. The global index is machine-wide and keyed by absolute path on purpose (see `resolveIndexPath` above), so a query can legitimately return rows from projects other than `root` -- those rows must stay absolute or the printed path becomes ambiguous. Only a path genuinely inside `root` is shortened, and only for display; `--json` payloads must never call this and must keep the raw absolute path. Cross-drive guard: on Windows, `path.relative()` between two different drive letters returns the target's own absolute path unchanged rather than a `..`-prefixed relative path (documented Node behavior, not a bug). A bare `!rel.startsWith('..')` check is therefore not sufficient -- it would let an unrelated-drive path through as if it were in-root. Mirrors the guard shape already used by `relPathWithinRoot` (hooks_read.ts) and `isPathWithinRoot` (pack.ts): any relative result that is itself absolute, or that starts with `..`, means `target` is NOT inside `root`, so the original absolute path is returned unchanged. */

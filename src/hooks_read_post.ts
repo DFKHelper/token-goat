@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { emitRewrite, emitRewriteWithContext, extractToolResponseField, getCwd, getFilePath, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, passOutput } from './hooks_common.js'
 import { type HookEvent, registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
-import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
+import { displaySafePath, hostPathOfIndexKey, normalizePath, toDisplayPath } from './paths.js'
 import { indexServedBody, planServedElisions, type ServedBody, servedRunNotice } from './served_lines.js'
 import { IDENTICAL_READ_MIN_BODY_BYTES, statSize } from './util.js'
 import { loadConfig } from './config.js'
@@ -58,9 +58,10 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   const diffSourcesEnabled = loadConfig().hints.serve_diff_on_reread
   if (/\.(md|mdx|markdown|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && isDiffableSource(postBasename))) {
     try {
-      const sz = statSize(normalized)
+      const onDisk = hostPathOfIndexKey(normalized)
+      const sz = statSize(onDisk)
       if (sz !== null && sz <= 256 * 1024) {
-        const content = fs.readFileSync(normalized)
+        const content = fs.readFileSync(onDisk)
         snapshotStore(sessionStateKey(event), normalized, content)
       }
     } catch {
@@ -111,9 +112,10 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   // Post-read structural-navigation hint: once a just-read source file crosses post_read_code_compress.min_lines, nudge toward token-goat skeleton/outline instead of a future full re-read. Only fires for extensions with a tree-sitter language adapter (the sourceHints column of src/language_specs.ts), where skeleton/outline actually produce structure.
   if (isSourceExtension(postBasename)) {
     try {
-      const sz = statSize(normalized)
+      const onDisk = hostPathOfIndexKey(normalized)
+      const sz = statSize(onDisk)
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-        const lineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
+        const lineCount = countTextLines(fs.readFileSync(onDisk, 'utf8'))
         const minLines = loadConfig().post_read_code_compress.min_lines
         if (lineCount >= minLines && !suppressStructuralHint) {
           if (!meetsSavingsFloor(sz)) {

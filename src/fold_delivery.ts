@@ -10,7 +10,7 @@ import { getFileEntry, querySymbols } from './index_reader.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguage } from './parser_types.js'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, hostPathOfIndexKey } from './paths.js'
 import { findContainingSection } from './section_reader.js'
 
 /** Lines kept at the head of each folded body: the declaration plus enough to judge the rest. */
@@ -107,10 +107,11 @@ const FOLD_SPAN_PARSE_MAX_BYTES = 400_000
 /** Symbol spans for a file the index cannot vouch for, parsed from disk on the spot. The index is the fast path and stays the fast path; this is what the miss falls back to. It exists because the miss is not the rare case it reads as. The freshness gate demands both a content hash and a parser stamp match, and the stamp changes whenever extraction logic does, which invalidates every already-indexed file at once. Measured on the live index while writing this: 46 of 17,952 files carried the shipping stamp, 0.3%, and 0 of 3,322 `.js` files did. Enqueueing the miss for reindex, which the caller does, heals a file for next time but returns nothing for this read, and a project that was never indexed at all is never healed by it either. So the lever that folds a long function body out of a delivered slice was firing on almost nothing. The whole file is parsed, never the delivered slice, and that is the point rather than an inefficiency. Spans have to be absolute file line numbers for {@link planBodyFolds} to place them, and a slice starting mid-body parses as a fragment whose recovered spans name the wrong lines. Parsing the file the reader is reading gives the same spans the indexer would have written, so a window is folded on the same evidence as a whole-file read. */
 function parseFoldSpansFromDisk(normalizedPath: string, rows: readonly FoldRow[]): FoldSpan[] {
   try {
-    if (statSync(normalizedPath).size > FOLD_SPAN_PARSE_MAX_BYTES) return []
+    const onDisk = hostPathOfIndexKey(normalizedPath)
+    if (statSync(onDisk).size > FOLD_SPAN_PARSE_MAX_BYTES) return []
     const language = detectLanguage(normalizedPath)
     if (!isTreeSitterAvailable(language)) return []
-    const fileText = readFileSync(normalizedPath, 'utf-8')
+    const fileText = readFileSync(onDisk, 'utf-8')
     // The spans about to be produced are line numbers into this disk text, and they get applied to rows delivered by someone else. If the two disagree the fold cuts at a line the reader never saw, under a notice naming a symbol that is not there. So the delivered rows are checked against the file they claim to come from, and one mismatch abandons the whole file rather than a single span: once any line is displaced, every later line number is suspect too. Comparison ignores a trailing carriage return, which is the one difference a shell read legitimately introduces on this platform. This check is what makes the disk parse safer than the index path it falls back from, which only ever verified the index against disk and took delivered-equals-disk on trust.
     const diskLines = fileText.split('\n')
     for (const row of rows) {
@@ -132,7 +133,7 @@ function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean, row
   try {
     const entry = getFileEntry(normalizedPath)
     // The freshness gate below asks whether the index is current, not whether it measures the same document as `rows`. For a notebook it is both current and unusable here: the spans are lines of the virtual Python source, the rows are lines of JSON. Measured before this guard, a 123-line notebook came back with its JSON cut mid-array and a notice reading "114 more lines of big_one (10-123) folded" over a region that held no such body. Comment folds still apply, because those are read off the delivered text itself.
-    if (entry !== null && entry.sha !== '' && !isVirtualIndexedPath(normalizedPath) && entry.sha === fingerprintFile(normalizedPath) && entry.parserSha === parserFingerprintForLanguage(entry.language)) {
+    if (entry !== null && entry.sha !== '' && !isVirtualIndexedPath(normalizedPath) && entry.sha === fingerprintFile(hostPathOfIndexKey(normalizedPath)) && entry.parserSha === parserFingerprintForLanguage(entry.language)) {
       return querySymbols({ filePath: normalizedPath, limit: BODY_FOLD_SYMBOL_LIMIT })
     }
     if (hasCommentSyntax) enqueueDirtyPathSafe(normalizedPath)
