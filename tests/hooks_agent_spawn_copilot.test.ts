@@ -9,6 +9,7 @@ import { wasHintShown } from '../src/session.js'
 import { loadSessionState } from '../src/session_store.js'
 import { buildUnrestrictedSpawnAdvisory } from '../src/hooks_agent_spawn.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { rmInSandbox } from './helpers/sandbox-rm.js'
 
 /**
  * The unrestricted-spawn advisory must never fire under Copilot CLI. The advisory's content is
@@ -65,7 +66,7 @@ afterAll(() => {
 })
 
 afterEach(() => {
-  fs.rmSync(path.join(os.homedir(), '.claude'), { recursive: true, force: true })
+  rmInSandbox(path.join(os.homedir(), '.claude'))
 })
 
 describe('unrestricted-spawn advisory under Copilot CLI', () => {

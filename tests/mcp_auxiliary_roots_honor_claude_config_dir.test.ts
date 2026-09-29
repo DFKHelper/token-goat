@@ -20,6 +20,7 @@ import * as path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { rmInSandbox } from './helpers/sandbox-rm.js'
 
 const { createMcpServer } = await import('../src/mcp_server.js')
 const { invalidateConfigCache } = await import('../src/config.js')
@@ -107,7 +108,7 @@ describe('mcp auxiliary roots honour CLAUDE_CONFIG_DIR', () => {
         const text = await mapVerdict(target)
         expect(text).not.toContain('mcp.allowed_roots')
       } finally {
-        fs.rmSync(path.join(os.homedir(), '.claude', child, 'a-workspace'), { recursive: true, force: true })
+        rmInSandbox(path.join(os.homedir(), '.claude', child, 'a-workspace'))
       }
     },
   )
@@ -138,7 +139,7 @@ describe('mcp auxiliary roots honour CLAUDE_CONFIG_DIR', () => {
       const text = await mapVerdict(target)
       expect(text).toContain('mcp.allowed_roots')
     } finally {
-      fs.rmSync(path.join(os.homedir(), '.claude', 'projects', 'a-workspace'), { recursive: true, force: true })
+      rmInSandbox(path.join(os.homedir(), '.claude', 'projects', 'a-workspace'))
     }
   })
 })

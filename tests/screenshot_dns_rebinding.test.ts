@@ -96,10 +96,13 @@ describe('address-level screenshot policy (no browser needed)', () => {
 })
 
 const browserPath = (() => {
+  // try/finally: a throw here would otherwise leave HOME/USERPROFILE pointing at the developer's real profile for every test after it in this file.
   useRealEnv()
-  const found = resolveBrowserExecutablePath()
-  restoreSandboxedEnv()
-  return found
+  try {
+    return resolveBrowserExecutablePath()
+  } finally {
+    restoreSandboxedEnv()
+  }
 })()
 
 const describeWithBrowser = browserPath ? describe : describe.skip
@@ -127,10 +130,11 @@ describeWithBrowser('takeScreenshot DNS rebinding', () => {
   })
 
   afterAll(async () => {
+    // First, before anything here can throw: the real HOME/USERPROFILE this file borrowed for Chrome must not outlive it.
+    restoreSandboxedEnv()
     await new Promise<void>((resolve) => server.close(() => resolve()))
     fs.rmSync(tmpDir, { recursive: true, force: true })
     delete process.env['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS']
-    restoreSandboxedEnv()
     invalidateConfigCache()
   })
 
