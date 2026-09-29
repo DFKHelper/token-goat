@@ -20,6 +20,11 @@ type Exemption = { file: string; table: string; reason: string }
 /** Every `.each` table this guard cannot prove non-empty statically, with the assertion that would fail first if it did go empty. */
 const EXEMPT: readonly Exemption[] = [
   {
+    file: 'tests/retrieval_labels.test.ts',
+    table: 'golden.map((g) => [g.id, g] as const)',
+    reason: 'Read from evals/retrieval/golden.jsonl. The same file asserts `golden.length` is at least 40, so a golden set that failed to load or was emptied fails there before this table matters.',
+  },
+  {
     file: 'tests/embed_tokenizer_oracle.test.ts',
     table: 'oracle.records.map((r, i) => [i, label(r.text), r] as const)',
     reason: 'Read from a gzipped oracle fixture. The same file asserts `oracle.records.length` is greater than 80, so a fixture that failed to load or decoded to nothing fails there before this table matters.',

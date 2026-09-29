@@ -1,0 +1,21 @@
+{"id":"ans-def-process-dirty-batch","question":"where is processDirtyBatch defined","route":"symbol","expectFiles":["src/worker.ts"]}
+{"id":"ans-show-run-answer","question":"show me runAnswer","route":"refused","expectFiles":[],"why_hard":"relabelled from symbol after the first run: a bare name asks for the body, and answer routes only on a stated intent (where, callers, impact...), so refusing and pointing at read is the designed outcome"}
+{"id":"ans-code-for-shrink","question":"where's the code for shrinkImage","route":"symbol","expectFiles":["src/image_shrink.ts"],"why_hard":"contraction and 'code for' instead of 'defined'"}
+{"id":"ans-callers-append","question":"who calls appendDirtyQueuePaths","route":"callers","expectFiles":["src/hooks_index.ts","src/worker.ts"]}
+{"id":"ans-callers-clip","question":"what calls clipToDeliveryCap","route":"callers","expectFiles":["src/hooks_bash_post.ts","src/hooks_mcp.ts"]}
+{"id":"ans-callers-uses","question":"who uses redactDotenvValues","route":"callers","expectFiles":["src/dotenv_redact.ts"],"why_hard":"'uses' rather than 'calls'; the only production caller is in the defining file"}
+{"id":"ans-impact-fingerprint","question":"what breaks if I change fingerprintFile","route":"impact","expectFiles":[],"grading":"route only: impact prints caller symbol names and module-scope files, not the files of named callers, so file recall cannot score it"}
+{"id":"ans-impact-blast","question":"blast radius of changing decodeDirtyQueueLine","route":"impact","expectFiles":[],"why_hard":"idiom, no 'break' or 'affect' verb","grading":"route only: impact prints caller symbol names and module-scope files, not the files of named callers, so file recall cannot score it"}
+{"id":"ans-tests-delivery-cap","question":"which tests cover src/delivery_cap.ts","route":"test-for","expectFiles":["tests/bash_delivery_cap.test.ts"]}
+{"id":"ans-tests-fingerprint","question":"tests for src/fingerprint.ts","route":"test-for","expectFiles":["tests/fingerprint.test.ts"],"why_hard":"a noun phrase with no verb"}
+{"id":"ans-exports-dirty-queue","question":"what does src/dirty_queue.ts export","route":"exports","expectFiles":[]}
+{"id":"ans-imports-worker","question":"what does src/worker.ts import","route":"imports","expectFiles":["src/dirty_queue.ts"]}
+{"id":"ans-importers-delivery-cap","question":"what imports src/delivery_cap.ts","route":"deps","expectFiles":["src/hooks_mcp.ts","src/bash_runner.ts"]}
+{"id":"ans-importers-depend","question":"which files depend on src/fingerprint.ts","route":"deps","expectFiles":["src/worker.ts"],"why_hard":"'depend on' rather than 'import'; 'which files' also reads like an exports question"}
+{"id":"ans-refuse-capital","question":"what is the capital of France","route":"refused","expectFiles":[]}
+{"id":"ans-refuse-coffee","question":"how do I make coffee","route":"refused","expectFiles":[]}
+{"id":"ans-held-def-contraction","question":"where's normalizePath defined","route":"symbol","expectFiles":["src/paths.ts"],"why_hard":"held out: written after the first run, before the router change, knowing the contraction was a gap"}
+{"id":"ans-held-source-for","question":"show me the source for clipToDeliveryCap","route":"symbol","expectFiles":["src/delivery_cap.ts"],"why_hard":"held out: 'show me' framing plus 'source for' rather than 'code for'"}
+{"id":"ans-held-callers-what-uses","question":"what uses isDotenvPath","route":"callers","expectFiles":["src/walk_index.ts"],"why_hard":"held out: 'what uses' rather than 'who uses'"}
+{"id":"ans-held-impact-blast","question":"blast radius of changing clipToDeliveryCap","route":"impact","expectFiles":[],"why_hard":"held out: same idiom as ans-impact-blast on a different symbol","grading":"route only: impact prints caller symbol names and module-scope files, not the files of named callers, so file recall cannot score it"}
+{"id":"ans-held-importers-modules","question":"which modules depend on src/dotenv_redact.ts","route":"deps","expectFiles":["src/walk_index.ts","src/parser.ts"],"why_hard":"held out: 'modules' rather than 'files'"}
