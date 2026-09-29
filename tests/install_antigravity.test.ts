@@ -69,6 +69,11 @@ describe('antigravityHookCommand', () => {
     expect(command).toContain(process.execPath)
     expect(command.endsWith('hook post_tool_use --harness antigravity')).toBe(true)
   })
+
+  it('quotes both paths, so an install under a directory with a space still runs', () => {
+    process.argv[1] = path.join(TMP, 'my tools', 'token-goat.mjs')
+    expect(antigravityHookCommand('post_tool_use', 'linux')).toBe(`"${process.execPath}" "${process.argv[1]}" hook post_tool_use --harness antigravity`)
+  })
 })
 
 describe('installAntigravity', () => {
@@ -149,6 +154,14 @@ describe('installAntigravity', () => {
     expect(fs.existsSync(shimPath())).toBe(false)
   })
 
+  it('refuses a hooks.json it cannot read at all, such as a directory in its place, and writes nothing', () => {
+    fs.mkdirSync(antigravityHooksPath(), { recursive: true })
+
+    expect(() => installAntigravity()).toThrow(AntigravitySettingsParseError)
+    expect(() => installAntigravity()).toThrow(/exists but cannot be read/)
+    expect(fs.existsSync(manifestPath())).toBe(false)
+  })
+
   it('refuses an unreadable plugin.json before writing the hooks file', () => {
     fs.mkdirSync(antigravityPluginDir(), { recursive: true })
     fs.writeFileSync(manifestPath(), '{ nope')
@@ -192,6 +205,17 @@ describe('uninstallAntigravity', () => {
     // Identical to what token-goat would write, but the user wrote it first, so it stays.
     expect(JSON.parse(fs.readFileSync(manifestPath(), 'utf8'))).toEqual(userManifest)
     expect(fs.existsSync(shimPath())).toBe(false)
+  })
+
+  it("keeps the user's manifest even when it reads exactly like token-goat's and the hooks file is gone", () => {
+    fs.mkdirSync(antigravityPluginDir(), { recursive: true })
+    fs.writeFileSync(manifestPath(), JSON.stringify({ name: 'token-goat' }))
+    installAntigravity()
+
+    expect(uninstallAntigravity()).toBe(true)
+
+    expect(fs.existsSync(antigravityHooksPath())).toBe(false)
+    expect(JSON.parse(fs.readFileSync(manifestPath(), 'utf8'))).toEqual({ name: 'token-goat' })
   })
 
   it('keeps a hooks.json that existed before install even once it is empty', () => {
