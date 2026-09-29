@@ -1,4 +1,4 @@
-/** `token-goat doctor --probe <harness>` starts a harness headless with a probe nonce set, and the session_start/user_prompt_submit hooks add a marker line to what they hand the model and leave a receipt saying they ran. The verdict per event is "reached the model", "hook ran but its output never reached the model", "hook did not run", or "not wired for this harness". The probe exists because every other doctor check stops at token-goat's own side of the wire: a hook that is installed, runs, and returns context can still be dropped by the harness, and nothing in this repo could tell. Provenance: the classifier cases are CAPTURE, the stdout of real headless runs with the marker hooks installed (claude 2.1.284 `-p`, codex-cli 0.158.0 `exec`, Copilot CLI 1.0.88 `-p`), including Copilot's timestamp run straight onto the session_start marker and codex answering with the prompt marker only because its SessionStart is unwired. The applyProbeMarker cases are HAND-DERIVED from the output contract in src/types.ts. The end-to-end cases drive runProbe over a stand-in harness that runs the built bundle's real `hook` command, so the spawn, the child env, the hooks, the marker and the receipt directory are all the shipping path; only the model is replaced, by a script that repeats (or withholds) what the hooks returned. */
+/** `token-goat doctor --probe <harness>` starts a harness headless with a probe nonce set, and the session_start/user_prompt_submit hooks add a marker line to what they hand the model and leave a receipt saying they ran. The verdict per event is "reached the model", "hook ran but its output never reached the model", "hook did not run", or "not wired for this harness". The probe exists because every other doctor check stops at token-goat's own side of the wire: a hook that is installed, runs, and returns context can still be dropped by the harness, and nothing in this repo could tell. Provenance: the classifier cases are CAPTURE, the stdout of real headless runs with the marker hooks installed (claude 2.1.284 `-p`, codex-cli 0.158.0 `exec`, Copilot CLI 1.0.88 `-p`), including Copilot's timestamp run straight onto the session_start marker and codex answering with the prompt marker only because its SessionStart is unwired. The applyProbeMarker cases are HAND-DERIVED from the output contract in src/types.ts, and the probePassed cases from the four per-event verdicts. The end-to-end cases drive runProbe over a stand-in harness that runs the built bundle's real `hook` command, so the spawn, the child env, the hooks, the marker and the receipt directory are all the shipping path; only the model is replaced, by a script that repeats (or withholds) what the hooks returned. */
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -120,6 +120,23 @@ describe('isProbeHarness', () => {
     expect(['claudecode', 'codex', 'copilot_cli'].every(isProbeHarness)).toBe(true)
     expect(isProbeHarness('opencode')).toBe(false)
     expect(isProbeHarness('toString')).toBe(false)
+  })
+})
+
+describe('probePassed', () => {
+  const report = (status: 'ok' | 'failed', session: 'reached' | 'not_wired' | 'not_fired', prompt: 'reached' | 'fired_not_delivered') => ({
+    harness: 'codex' as const, command: 'codex exec', status, exitCode: status === 'ok' ? 0 : 1,
+    events: [{ event: 'session_start' as const, result: session }, { event: 'user_prompt_submit' as const, result: prompt }],
+  })
+
+  it('passes codex, whose session start is not wired, when its prompt hook reaches the model', () => {
+    expect(probePassed(report('ok', 'not_wired', 'reached'))).toBe(true)
+  })
+
+  it('fails on any event that ran without reaching the model, or a run that did not finish', () => {
+    expect(probePassed(report('ok', 'not_fired', 'reached'))).toBe(false)
+    expect(probePassed(report('ok', 'reached', 'fired_not_delivered'))).toBe(false)
+    expect(probePassed(report('failed', 'reached', 'reached'))).toBe(false)
   })
 })
 
