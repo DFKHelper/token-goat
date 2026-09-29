@@ -27,6 +27,7 @@
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
     "model:warm": "tsx scripts/warm-model-cache.ts",
+    "eval:hints": "tsx scripts/eval-hints.ts",
     "eval:retrieval": "tsx scripts/eval-retrieval.ts",
     "test:guards": "vitest run tests/guards",
     "test:matrix": "vitest run tests/command_matrix_e2e",
