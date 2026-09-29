@@ -1,10 +1,10 @@
 /** The suite's two retry mechanisms (vitest's CI-only `retry: 1` and the workflow's nick-fields/retry around the whole run) are deliberate, but both hide flakes by construction: a test that fails and then passes is reported exactly like one that passed first time. Two consecutive green CI runs were audited and neither consumed a retry, so nothing is currently masked -- but nothing would have SAID so if one had been, which is the gap this closes. The reporter is deliberately non-fatal: failing the build on a consumed retry would re-create the exact problem the retry was added to solve. The end-to-end test at the bottom is the load-bearing one. The first draft of this reporter guessed the vitest API (`onFinished`, `result.retryCount`, `state === 'pass'`) and every hand-built-task-tree unit test passed against that guess while the reporter never fired on a real retry -- the injected-seam trap CLAUDE.md warns about, where the test supplies the very shape the shipping path gets wrong. Spawning a genuinely flaky test is what catches that. */
 import { spawnSync } from 'node:child_process'
-import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
+import { PROBE_DIR, removeProbe, writeProbe } from './helpers/vitest-probe.js'
 import RetryVisibilityReporter, { collectRetriedTests, formatRetryReport } from './setup/retry-visibility-reporter.js'
 
 /** Build one module whose single test carries the given diagnostic, matching vitest 4's shape. */
@@ -99,12 +99,11 @@ describe('RetryVisibilityReporter', () => {
 
 // ---- end-to-end against a genuinely retried test ---------------------------------------------
 
-// Deliberately outside tests/. This file is created and deleted while the rest of the suite is running, and several guards walk tests/ listing every entry and then reading each one, so with it in there one of them would eventually list it and find it already gone: an ENOENT failure in a guard that has nothing to do with retries, blaming a file it never meant to read. Vitest's default include glob covers the whole repo apart from node_modules, dist and .claude, so a probe here is still collected and still matched by the filter the spawn below passes, while being somewhere no tests/ walker will ever look. The directory is gitignored and removed with the file.
-const PROBE_DIR = path.resolve('.vitest-probe')
+// Deliberately outside tests/. This file is created and deleted while the rest of the suite is running, and several guards walk tests/ listing every entry and then reading each one, so with it in there one of them would eventually list it and find it already gone: an ENOENT failure in a guard that has nothing to do with retries, blaming a file it never meant to read. Vitest's default include glob covers the whole repo apart from node_modules, dist and .claude, so a probe here is still collected and still matched by the filter the spawn below passes, while being somewhere no tests/ walker will ever look. The directory is gitignored and shared with other probes; tests/helpers/vitest-probe.ts says why only the file is removed.
 const TMP_FLAKY = path.join(PROBE_DIR, 'zz_generated_flaky_probe.test.ts')
 
 afterAll(() => {
-  fs.rmSync(PROBE_DIR, { recursive: true, force: true })
+  removeProbe(TMP_FLAKY)
 })
 
 describe('reporter against the real vitest API', () => {
@@ -115,19 +114,15 @@ describe('reporter against the real vitest API', () => {
 
   it('fires on a test that actually failed and passed on retry', () => {
     // A module-level counter makes attempt 1 fail and attempt 2 pass, so vitest genuinely marks the test flaky rather than us asserting our own idea of its task shape.
-    fs.mkdirSync(PROBE_DIR, { recursive: true })
-    fs.writeFileSync(
-      TMP_FLAKY,
-      [
-        "import { expect, it } from 'vitest'",
-        'let attempts = 0',
-        "it('generated probe: fails once then passes', () => {",
-        '  attempts += 1',
-        "  expect(attempts, 'the first attempt fails on purpose').toBeGreaterThan(1)",
-        '})',
-        '',
-      ].join('\n'),
-    )
+    writeProbe(path.basename(TMP_FLAKY), [
+      "import { expect, it } from 'vitest'",
+      'let attempts = 0',
+      "it('generated probe: fails once then passes', () => {",
+      '  attempts += 1',
+      "  expect(attempts, 'the first attempt fails on purpose').toBeGreaterThan(1)",
+      '})',
+      '',
+    ])
 
     const res = spawnSync(
       process.execPath,
