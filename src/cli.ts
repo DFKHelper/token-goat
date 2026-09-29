@@ -545,7 +545,19 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
   runStats(statsOpts)
 }
 
-async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean }): Promise<void> {
+async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; probe?: string }): Promise<void> {
+  if (opts.probe !== undefined) {
+    // Loaded on demand: a probe spawns a whole harness, and nothing else in doctor needs this module.
+    const { PROBE_COMMANDS, formatProbeReport, isProbeHarness, probePassed, runProbe } = await import('./doctor_probe.js')
+    const harness = opts.probe.trim().toLowerCase()
+    if (!isProbeHarness(harness)) {
+      throw new CliError(`no headless probe for '${opts.probe}'; supported: ${Object.keys(PROBE_COMMANDS).join(', ')}`)
+    }
+    const report = runProbe(harness)
+    out(opts.json === true ? displaySafeJson(report, 0) : formatProbeReport(report))
+    if (!probePassed(report)) throw new CliError('doctor probe failed')
+    return
+  }
   const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean } = {}
   if (opts.context === true) {
     doctorOpts.context = true
@@ -1205,6 +1217,7 @@ export function buildProgram(): Command {
     .option('--json', 'emit check results as JSON instead of text')
     .option('--repair', 'automatically repair fixable issues (permissive settings, missing semantics models)')
     .option('--fix', 'alias for --repair')
+    .option('--probe <harness>', 'run one real prompt through a harness (claudecode, codex, copilot_cli) and check that token-goat\'s context hooks reach the model')
     .action(guard(cmdDoctor))
 
   program

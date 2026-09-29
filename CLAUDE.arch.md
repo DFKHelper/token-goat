@@ -428,6 +428,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/doc_comment.ts`](src/doc_comment.ts) | Shared doc-comment recovery, used by both the tree-sitter parser (`parser.ts`) and the regex-based language adapters (`languages/common.ts`). |
 | [`src/doc_compact.ts`](src/doc_compact.ts) | Stable-doc compact serving for large reference docs. |
 | [`src/doc_embed_extract.ts`](src/doc_embed_extract.ts) | Extracted-text bridge from the binary-document readers (pdf, docx, pptx, xlsx) into the embeddings/chunking pipeline, so `token-goat semantic` can answer questions from spec PDFs, |
+| [`src/doctor_probe.ts`](src/doctor_probe.ts) | `token-goat doctor --probe <harness>`: start the harness headless on one real prompt with a probe nonce set, then read back which of token-goat's context hooks fired and whether wh |
 | [`src/doctor_result.ts`](src/doctor_result.ts) | The shape every doctor check returns. |
 | [`src/document_refusal.ts`](src/document_refusal.ts) | How long any one document's extraction may run, whatever format it is. |
 | [`src/docx_extract.ts`](src/docx_extract.ts) | Word (.docx) narrow-slice reader. |
@@ -497,6 +498,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/pinned_file.ts`](src/pinned_file.ts) | Files held to a SHA-256 and byte length recorded in this repository. |
 | [`src/pptx_extract.ts`](src/pptx_extract.ts) | PowerPoint (.pptx) narrow-slice reader. |
 | [`src/pr_slice.ts`](src/pr_slice.ts) | Surgical GitHub PR reads via the `gh` CLI. |
+| [`src/probe_marker.ts`](src/probe_marker.ts) | The hook half of `token-goat doctor --probe`. |
 | [`src/process_priority.ts`](src/process_priority.ts) | Scheduling priority for the processes that index. |
 | [`src/process_util.ts`](src/process_util.ts) | Process and OS execution utilities. |
 | [`src/purge.ts`](src/purge.ts) | `uninstall --purge`: delete everything token-goat has written to disk. |
