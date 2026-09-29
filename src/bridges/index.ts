@@ -53,6 +53,16 @@ export {
 } from './grok_install.js'
 export type { GrokInstallResult } from './grok_install.js'
 export {
+  antigravityHookCommand,
+  antigravityHooksPath,
+  antigravityPluginDir,
+  antigravityPluginsDir,
+  AntigravitySettingsParseError,
+  installAntigravity,
+  isAntigravityInstalled,
+  uninstallAntigravity,
+} from './antigravity_install.js'
+export {
   installVscode,
   uninstallVscode,
   vscodeInstructionsPath,

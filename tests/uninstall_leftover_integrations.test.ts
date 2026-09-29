@@ -82,6 +82,7 @@ describe('leftoverIntegrations', () => {
       copilot: true,
       opencode: true,
       grok: true,
+      antigravity: true,
       visualstudio: true,
     })
 

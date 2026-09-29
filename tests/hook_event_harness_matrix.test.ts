@@ -96,6 +96,16 @@ function kimiEvents(): HookEventName[] {
   return extractKnownEvents(m[1], 'src/bridges/kimi_install.ts KIMI_EVENT_ARG')
 }
 
+/** Antigravity's ANTIGRAVITY_EVENT_ARG (src/bridges/antigravity_install.ts): agy event key -> internal event arg. */
+function antigravityEvents(): HookEventName[] {
+  const src = readSrc('bridges/antigravity_install.ts')
+  const m = src.match(/const ANTIGRAVITY_EVENT_ARG:[^\r\n]*\r?\n([\s\S]*?)\r?\n\}/)
+  if (!m || m[1] === undefined) {
+    throw new Error('ANTIGRAVITY_EVENT_ARG not found in src/bridges/antigravity_install.ts -- update the matrix derivation')
+  }
+  return extractKnownEvents(m[1], 'src/bridges/antigravity_install.ts ANTIGRAVITY_EVENT_ARG')
+}
+
 /** Copilot CLI's COPILOT_TO_TG_EVENT (src/bridges/copilot_cli.ts): Copilot event name -> internal event, already the value passed as the CLI event arg. */
 function copilotCliEvents(): HookEventName[] {
   const src = readSrc('bridges/copilot_cli.ts')
@@ -145,6 +155,7 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   gemini: geminiEvents(),
   qwen: qwenEvents(),
   kimi: kimiEvents(),
+  antigravity: antigravityEvents(),
   pi: callHookEvents(PI_EXTENSION_SCRIPT, 'PI_EXTENSION_SCRIPT'),
   opencode: callHookEvents(OPENCODE_PLUGIN_SCRIPT, 'OPENCODE_PLUGIN_SCRIPT'),
   openclaw: callHookEvents(OPENCLAW_PLUGIN_SCRIPT, 'OPENCLAW_PLUGIN_SCRIPT'),
@@ -164,6 +175,7 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   gemini: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   qwen: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
   kimi: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+  antigravity: ['pre_tool_use', 'post_tool_use'],
   pi: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   opencode: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   openclaw: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
@@ -322,6 +334,10 @@ function toolPayload(harness: HarnessName, sessionId: string, filePath: string):
     // FORMAT-DERIVED: the envelope ChatHookService.executePreToolUseHook builds in VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js, with read_file's schema (filePath, startLine, endLine) from resources/app/extensions/copilot/package.json; cwd is the workspace root, which the hook-config parser in out/vs/workbench/workbench.desktop.main.js defaults a hook's cwd to and executeHook copies into the input.
     return { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: sessionId, cwd: path.dirname(filePath), tool_name: 'read_file', tool_input: { filePath, startLine: 1, endLine: 1 }, tool_use_id: 'tu-matrix' }
   }
+  if (harness === 'antigravity') {
+    // FORMAT-DERIVED: the PreToolUse envelope in agy 1.2.11's hooks guide (~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md), with view_file's AbsolutePath key CAPTURED from a real agy transcript on 2026-09-29.
+    return { toolCall: { name: 'view_file', args: { AbsolutePath: filePath } }, stepIdx: 1, conversationId: sessionId, workspacePaths: [path.dirname(filePath)], modelName: 'matrix' }
+  }
   return { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: sessionId }
 }
 
@@ -428,6 +444,23 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny')
     expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('was already read this session')
     for (const key of ['decision', 'modifiedArgs', 'modifiedResult', 'permissionDecision']) expect(key in parsed, key).toBe(false)
+  })
+
+  // agy reads a PreToolUse deny from a top-level decision:"deny" (FORMAT-DERIVED: agy 1.2.11 hooks.md); decision:"block" is not in its documented set, and CAPTURE (2026-09-29) showed decision:"allow" auto-approves, so a pass must stay {}.
+  it('antigravity: the real bundle denies a re-read of a view_file call through a top-level {decision:"deny", reason}, never "block"', () => {
+    const sessionId = 'matrix-deny-antigravity'
+    const filePath = path.join(dataBase, `${sessionId}-large.bin`)
+    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    const env = tgEnv('antigravity')
+    const payload = toolPayload('antigravity', sessionId, filePath)
+    const first = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
+    expect(first.status, `first read, stderr: ${first.stderr}`).toBe(0)
+    expect(first.stdout.trim()).toBe('{}')
+    const second = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
+    expect(second.status, `second read, stderr: ${second.stderr}`).toBe(0)
+    const parsed = JSON.parse(second.stdout) as { decision?: string; reason?: string }
+    expect(parsed.decision).toBe('deny')
+    expect(parsed.reason ?? '').toContain('was already read this session')
   })
 
   it('vscode: the shared COPILOT_CLI_HOOK_SCRIPT shim recognizes a VS Code payload and returns the VS Code deny shape, not the Copilot CLI one', () => {

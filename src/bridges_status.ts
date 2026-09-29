@@ -231,6 +231,30 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     ],
   },
   {
+    harness: 'antigravity',
+    label: 'Antigravity CLI (agy)',
+    sourceFile: 'src/bridges/antigravity_install.ts (ANTIGRAVITY_HOOK_EVENTS), src/bridges/antigravity_hooks.ts, src/hooks_cli.ts (antigravityToCanonicalWire)',
+    verification: 'documented',
+    verificationNote:
+      "PreToolUse/PostToolUse payload and response fields from atamel.dev's \"Where agy hooks\" (2026-07-16). The plugin layout and the Windows command form were driven against agy 1.2.11 (a plugin hook fired with the plugin directory as its working directory), but a tool event was not: agy's quota refused the model call, so no PreToolUse payload has been captured.",
+    implemented: new Set(['pre_tool_use', 'post_tool_use']),
+    reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
+      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
+      {
+        events: ['pre_compact', 'session_start', 'subagent_stop'],
+        reason: 'agy documents PreToolUse, PostToolUse, PreInvocation, PostInvocation and Stop only: no compaction, session-start or subagent event exists to wire',
+      },
+      {
+        events: ['user_prompt_submit'],
+        reason:
+          "agy's nearest event is PreInvocation, which fires before each model call rather than once per prompt, and its payload has not been captured; left unwired rather than guessed at",
+      },
+    ],
+  },
+  {
     harness: 'opencode',
     label: 'opencode',
     sourceFile: 'src/bridges/opencode.ts',

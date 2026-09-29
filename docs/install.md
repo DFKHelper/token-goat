@@ -1,6 +1,6 @@
 ---
 title: "Install guide"
-description: "How to install, wire it into Claude Code, Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok, Cline or Cursor, and what lands on your machine."
+description: "How to install, wire it into Claude Code, Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok, Antigravity, Cline or Cursor, and what lands on your machine."
 image: /token-goat/assets/goat-social.png
 ---
 
@@ -129,6 +129,18 @@ token-goat install --kimi
 ```
 
 This writes `[[hooks]]` entries into `~/.kimi-code/config.toml` (or `$KIMI_CODE_HOME/config.toml`), covering Kimi Code's `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, and `SessionStart` events. Kimi Code sends a Claude-Code-shaped snake_case payload on stdin, but it reads a different response: only a top-level `message` and `hookSpecificOutput.permissionDecision` / `permissionDecisionReason`. So the install also writes a small shim at `~/.kimi-code/hooks/token-goat-shim.cjs` that translates token-goat's answer into that contract, turns a hint into `message`, and writes nothing at all for a no-op. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. `Notification` and `Stop` are not wired, because token-goat has no handler for them. Input and output rewriting are not wired either: Kimi Code offers no channel to replace a tool's input or its result. This bridge was built from MoonshotAI/kimi-code's own source and docs, not tested against a live Kimi Code install, so if hooks are not firing, `token-goat doctor` and the `config.toml` contents are the first things to check. To remove: `token-goat uninstall --kimi`.
+
+### Antigravity CLI users
+
+```
+token-goat install --antigravity
+```
+
+This adds token-goat to Google's Antigravity CLI (`agy`) as a plugin: a folder at `~/.gemini/config/plugins/token-goat/` holding a `plugin.json`, a `hooks.json`, and on Windows a one-line launcher, `token-goat-hook.cmd`. agy turns plugins on by default, so nothing else needs changing. token-goat does not edit `~/.gemini/config/hooks.json`, which other tools write to, or `~/.gemini/config/config.json`, so if you turned the plugin off there it stays off.
+
+It wires agy's `PreToolUse` and `PostToolUse` events. agy's tool names (`view_file`, `run_command`, `grep_search`, `find_by_name`, `replace_file_content`, `write_to_file` and others) and their argument names are translated to token-goat's own, so repeat-read hints, repeat-read denial, bash output handling and post-edit indexing see agy's calls. A pass answers `{}`, not `"allow"`, because in agy `"allow"` approves the tool call without asking you. agy has no session-start or pre-compaction event token-goat can use, so those are not wired.
+
+The hooks were checked loading and running under agy 1.2.11 on Windows, and the payloads they read were captured from real agy tool calls. Whether agy acts on every answer (a hint, a rewritten command, a rewritten result) has not been checked in a live session yet, so if something seems not to take effect, check first that `~/.gemini/config/plugins/token-goat/hooks.json` is there and that the plugin is not turned off in `~/.gemini/config/config.json`. To remove: `token-goat uninstall --antigravity`, which deletes the plugin folder and any `~/.gemini` folders the install created, if they are empty.
 
 ### opencode users
 
@@ -273,7 +285,7 @@ No separate install step needed. Token-goat compresses the terminal output of th
 
 Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`windsurf`, including Cascade AI patterns), **Cursor** (`cursor` — this passive terminal filter is separate from the `--cursor` MCP bridge in [Cursor users](#cursor-users) above; it needs no install step), **GitHub Copilot CLI** (`gh copilot explain/suggest` and the standalone `copilot` binary — this passive output filter is separate from the `--copilot` hook bridge above; it works with no install step and covers Copilot CLI's own terminal chrome, not the hook-driven read/index integrations), **Aider** (`aider`), **Continue** (`continue`), **OpenCode** (`opencode`). Each filter strips version banners, spinner/thinking lines, token-usage boilerplate, and tool-call progress noise while keeping the AI response body, error signals, and any user-approval prompts verbatim.
 
-Windsurf gets terminal-output compression only — not the read/index hook integration Claude Code, Codex, Copilot CLI, Gemini, Qwen, Kimi, VS Code, Visual Studio and Grok get above. Windsurf's Cascade agent hooks (`cascadeHooksJson`) are configured on Windsurf's own servers, per team, not from a file on your machine, so there is no local hook config for token-goat to install into. There is no `--windsurf` flag, and none is planned unless that changes.
+Windsurf gets terminal-output compression only — not the read/index hook integration Claude Code, Codex, Copilot CLI, Gemini, Qwen, Kimi, Antigravity, VS Code, Visual Studio and Grok get above. Windsurf's Cascade agent hooks (`cascadeHooksJson`) are configured on Windsurf's own servers, per team, not from a file on your machine, so there is no local hook config for token-goat to install into. There is no `--windsurf` flag, and none is planned unless that changes.
 
 ### JetBrains IDEs (WebStorm, IntelliJ, PyCharm, Rider, PhpStorm) users
 
@@ -455,6 +467,14 @@ Three things follow, and they are worth knowing before you decide. It never leav
 | `~/.kimi-code/hooks/token-goat-shim.cjs` | The hook script those commands invoke. Rewrites a token-goat block into `hookSpecificOutput.permissionDecision` and a hint into a top-level `message`, and writes empty stdout for a no-op. Regenerated on every `install --kimi` run. The `.cjs` extension keeps Node from loading it as an ES module when a package.json above it says `"type": "module"`. A small `token-goat-shim.js` beside it hands off to the `.cjs` file, for sessions started before the rename that still run the old path. |
 | `~/.kimi-code/AGENTS.md` | A delimited block (`<!-- token-goat-kimi-begin -->` ... `<!-- token-goat-kimi-end -->`) with the routing guidance, adapted for Kimi Code tool names. |
 | `~/.kimi-code/skills/token-goat/SKILL.md` | The same guidance as a Kimi Code skill. |
+
+**With `--antigravity`** (Antigravity CLI integration)
+
+| Path | What |
+|------|------|
+| `~/.gemini/config/plugins/token-goat/plugin.json` | `{"name": "token-goat"}`, the marker agy needs before it treats the folder as a plugin. Written only if missing. |
+| `~/.gemini/config/plugins/token-goat/hooks.json` | A `token-goat` entry with `PreToolUse` and `PostToolUse` hooks, catch-all matcher, 30-second timeout. Other entries in the file are kept. |
+| `~/.gemini/config/plugins/token-goat/token-goat-hook.cmd` | Windows only. A one-line launcher the hooks call as `.\token-goat-hook.cmd <event>`: agy runs plugin hooks from the plugin folder, and on Windows it neither finds a bare name there nor passes a quoted path through intact. Rewritten on each `install --antigravity` run. |
 
 **With `--opencode`** (opencode plugin)
 

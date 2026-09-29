@@ -15,6 +15,7 @@ import { installOpencode, isOpencodeInstalled, uninstallOpencode } from './bridg
 import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
+import { installAntigravity, isAntigravityInstalled, uninstallAntigravity } from './bridges/antigravity_install.js'
 import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeScopeFromFlags, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { installCursor, isCursorInstalled, uninstallCursor } from './bridges/cursor_install.js'
 import { installZed, isZedInstalled, uninstallZed } from './bridges/zed_install.js'
@@ -72,6 +73,7 @@ function wantsClaudeCodeBase(opts: {
   openclaw?: boolean
   copilot?: boolean
   grok?: boolean
+  antigravity?: boolean
   vscode?: boolean
   visualstudio?: boolean
   zed?: boolean
@@ -94,6 +96,7 @@ function wantsClaudeCodeBase(opts: {
     opts.openclaw,
     opts.copilot,
     opts.grok,
+    opts.antigravity,
     opts.vscode,
     opts.visualstudio,
     opts.zed,
@@ -116,6 +119,7 @@ export async function cmdInstall(opts: {
   openclaw?: boolean
   copilot?: boolean
   grok?: boolean
+  antigravity?: boolean
   vscode?: boolean
   visualstudio?: boolean
   zed?: boolean
@@ -208,6 +212,7 @@ export async function cmdInstall(opts: {
     opts.pi = true
     opts.openclaw = true
     opts.grok = true
+    opts.antigravity = true
     opts.claudecode = true
   }
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever hook modules the CLI's static imports happen to reach for unrelated commands (neither this file nor cli.ts imports one directly: hooks_read.ts, with the image_shrink.ts and hint_stats.ts handlers it imports, arrives through hint_target.ts, and hooks_index.ts through read_commands.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
@@ -341,6 +346,17 @@ export async function cmdInstall(opts: {
       out(`Installed token-goat Grok CLI integration → ${grokResult.configPath}, ${grokResult.hookScriptPath}`)
     }
     printBridgeVerificationNotice('grok')
+  }
+
+  // --antigravity is additive, exactly like --grok above.
+  if (opts.antigravity === true) {
+    const antigravityResult = installAntigravity()
+    if (antigravityResult.alreadyInstalled) {
+      out(`Antigravity CLI integration already installed → ${antigravityResult.pluginDir}`)
+    } else {
+      out(`Installed token-goat Antigravity CLI integration → ${antigravityResult.pluginDir}`)
+    }
+    printBridgeVerificationNotice('antigravity')
   }
 
   if (opts.vscode === true) {
@@ -488,6 +504,7 @@ export async function cmdUninstall(opts: {
   openclaw?: boolean
   copilot?: boolean
   grok?: boolean
+  antigravity?: boolean
   vscode?: boolean
   visualstudio?: boolean
   zed?: boolean
@@ -513,6 +530,7 @@ export async function cmdUninstall(opts: {
     opts.copilot = true
     opts.opencode = true
     opts.grok = true
+    opts.antigravity = true
     opts.vscode = true
     opts.visualstudio = true
     opts.zed = true
@@ -553,6 +571,7 @@ export async function cmdUninstall(opts: {
     { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
     { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
     { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
+    { flag: opts.antigravity === true, run: uninstallAntigravity, label: 'Antigravity CLI integration' },
     { flag: opts.vscode === true, run: () => uninstallVscode(vscodeScopeFromFlags(opts)), label: 'VS Code MCP integration' },
     { flag: opts.visualstudio === true, run: () => uninstallVisualStudio({ project: opts.project === true }), label: 'Visual Studio MCP integration' },
     { flag: opts.zed === true, run: uninstallZed, label: 'Zed MCP context-server integration' },
@@ -607,6 +626,7 @@ export function leftoverIntegrations(opts: {
   copilot?: boolean
   opencode?: boolean
   grok?: boolean
+  antigravity?: boolean
   visualstudio?: boolean
   zed?: boolean
   cursor?: boolean
@@ -628,6 +648,7 @@ export function leftoverIntegrations(opts: {
     },
     { skipped: opts.opencode !== true, present: isOpencodeInstalled, flag: '--opencode', label: 'opencode plugin' },
     { skipped: opts.grok !== true, present: isGrokInstalled, flag: '--grok', label: 'Grok CLI integration' },
+    { skipped: opts.antigravity !== true, present: isAntigravityInstalled, flag: '--antigravity', label: 'Antigravity CLI integration' },
     {
       skipped: opts.visualstudio !== true,
       present: () => isVisualStudioInstalled() || isVisualStudioInstalled({ project: true }),

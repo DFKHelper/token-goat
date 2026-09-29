@@ -70,6 +70,7 @@ interface WriteSite {
 const EXEMPT: ReadonlyArray<{ file: string; fn: string; call: string; reason: string }> = [
   { file: 'src/install.ts', fn: 'installHooksScoped', call: "writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)", reason: 'generated hook shim script, byte-identical on every rebuild; nothing user-authored to lose' },
   { file: 'src/install.ts', fn: 'installHooksScoped', call: "writeIfDifferent(claudeLegacyHookScriptPath(), legacyShimForwarder('{}'))", reason: 'generated backward-compat forwarder script at the pre-.cjs shim path, same class as the Copilot CLI forwarder below' },
+  { file: 'src/bridges/antigravity_install.ts', fn: 'installAntigravity', call: 'atomicWriteText(shimPath(), content)', reason: "generated one-line launcher inside token-goat's own ~/.gemini/config/plugins/token-goat directory, same class as installHooks above" },
   { file: 'src/bridges/codex_install.ts', fn: 'installCodex', call: 'atomicWriteText(scriptPath, CODEX_HOOK_SCRIPT)', reason: 'generated hook shim script, same class as installHooks above' },
   { file: 'src/bridges/codex_install.ts', fn: 'installCodex', call: "atomicWriteText(codexLegacyHookScriptPath(), legacyShimForwarder('{}'))", reason: 'generated backward-compat forwarder script, same class as the Claude Code forwarder above' },
   { file: 'src/bridges/copilot_cli_install.ts', fn: 'installCopilotHooksFile', call: 'writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)', reason: 'generated hook shim script, same class as installHooks above' },
