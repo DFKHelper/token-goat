@@ -30,6 +30,8 @@ import type { HarnessName } from './bridges/types.js'
 import { ensureDirSync } from './util.js'
 import { contentHash, extractCompactFromMarker, storeCompact, skillOutputsDir } from './skill_cache.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
+import { recordStat } from './stats.js'
+import { CLAUDE_HOOKS_UNINSTALLED_KIND } from './hook_latency.js'
 import { err, out } from './cli.js'
 
 /** Print the "how well is this bridge actually verified" caveat, if the bridge has one. Routed through {@link installVerificationNotice} rather than spelled out per branch: a caveat enumerated at nine callsites is a caveat that goes missing from the tenth, which is precisely the whitelist-drops-a-field shape that has shipped dead features from this codebase before. */
@@ -518,6 +520,8 @@ export async function cmdUninstall(opts: {
   if (wantsClaudeCodeBase(opts)) {
     const removed = uninstallHooks(scope)
     out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
+    // Tells doctor's Claude Code hooks check this removal was asked for, so it does not report the hooks as lost.
+    if (removed) recordStat(CLAUDE_HOOKS_UNINSTALLED_KIND)
 
     const claudeMdRemoved = uninstallClaudeMd()
     out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')

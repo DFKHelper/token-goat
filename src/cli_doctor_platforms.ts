@@ -257,3 +257,15 @@ export function checkVscodeProjectMcp(projectRoot: string = process.cwd()): Doct
   }
 }
 
+
+/** Claude Code ran token-goat hooks recently, yet neither settings.json scope wires one now. `checkClaudeHookEvents` is silent here by design, since no install reads the same as a machine without Claude Code, so hooks lost to an overwritten or deleted settings.json went unreported: on 2026-09-28 the maintainer's `~/.claude` disappeared and 84,312 Claude Code hook calls in three days dropped to none, with doctor printing no Claude Code row at all. Quiet when the hooks are wired, when no Claude Code hook ran inside the stats window, and when a `token-goat uninstall` was recorded after the last one ran. */
+export function checkClaudeHooksGone(installed: boolean, activity: { count: number; lastTs: number | null; uninstalledTs: number | null } | null): DoctorResult | null {
+  if (installed || activity === null || activity.count === 0 || activity.lastTs === null) return null
+  if (activity.uninstalledTs !== null && activity.uninstalledTs >= activity.lastTs) return null
+  const last = new Date(activity.lastTs * 1000).toISOString().replace('T', ' ').slice(0, 16)
+  return {
+    name: 'Claude Code hooks',
+    status: 'warn',
+    message: `Claude Code ran ${activity.count} token-goat hook(s) in the last 7 days, the last at ${last} UTC, but no token-goat hook is wired in ~/.claude/settings.json or this project's .claude/settings.json now, and no uninstall was recorded. The file was probably overwritten or deleted. Run: token-goat install (or token-goat install --project), then restart any running session.`,
+  }
+}

@@ -122,3 +122,19 @@ export function nativeHookCounts(testDb?: SqliteDatabase, homeDir?: string, nowT
   }
   return out
 }
+
+/** The `stats` kind `token-goat uninstall` records when it takes the Claude Code hooks out, so doctor can tell a deliberate uninstall from hooks that vanished under it. */
+export const CLAUDE_HOOKS_UNINSTALLED_KIND = 'claude_hooks_uninstalled'
+
+/** How many token-goat hooks Claude Code ran inside the hook-stats retention window and when the last one ran, plus the time of the newest recorded `token-goat uninstall` of those hooks. Null when the database cannot say: no harness column, or any read error. */
+export function claudeHookActivity(testDb?: SqliteDatabase, homeDir?: string, nowTs: number = Math.floor(Date.now() / 1000)): { count: number; lastTs: number | null; uninstalledTs: number | null } | null {
+  try {
+    const db = testDb ?? getGlobalDb(homeDir)
+    if (!statsHasHarnessColumn(db)) return null
+    const hooks = db.prepare(`SELECT COUNT(*) AS n, MAX(ts) AS last FROM stats WHERE kind LIKE 'hook:%' AND harness = 'claudecode' AND ts >= ?`).get(nowTs - HOOK_STATS_RETENTION_DAYS * 86400) as { n: number; last: number | null }
+    const uninstall = db.prepare('SELECT MAX(ts) AS last FROM stats WHERE kind = ?').get(CLAUDE_HOOKS_UNINSTALLED_KIND) as { last: number | null }
+    return { count: hooks.n, lastTs: hooks.last, uninstalledTs: uninstall.last }
+  } catch {
+    return null
+  }
+}
