@@ -10,23 +10,18 @@ import * as path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import { KEPT_TOKEN_GOAT_ENV_PREFIX, KEPT_TOKEN_GOAT_ENV_VARS, scrubTokenGoatUserEnv } from '../helpers/token-goat-env.js'
+import { removeProbe, writeProbe } from '../helpers/vitest-probe.js'
 import { pinnedPopulation } from './population.js'
 
 const KEPT = KEPT_TOKEN_GOAT_ENV_VARS as readonly string[]
 const isKept = (name: string): boolean => name.startsWith(KEPT_TOKEN_GOAT_ENV_PREFIX) || KEPT.includes(name)
 const SETTING_RE = /\b(?:TOKEN_GOAT|TOKENWISE)_[A-Z0-9_]+/g
 
-// Same directory retry_visibility_reporter.test.ts uses, for the same reason: vitest.config.ts collects it, and no guard walking tests/ can race a file created and deleted there.
-const PROBE_DIR = path.resolve('.vitest-probe')
-const PROBE = path.join(PROBE_DIR, 'zz_generated_env_probe.test.ts')
+const PROBE_NAME = 'zz_generated_env_probe.test.ts'
+let probe: string | undefined
 
 afterAll(() => {
-  fs.rmSync(PROBE, { force: true })
-  try {
-    fs.rmdirSync(PROBE_DIR)
-  } catch {
-    // Not empty (the retry probe is using it) or already gone.
-  }
+  if (probe !== undefined) removeProbe(probe)
 })
 
 /** Every file outside src/ that sets or reads a token-goat variable on purpose. */
@@ -85,21 +80,17 @@ describe('the test process inherits no token-goat setting', () => {
   })
 
   it('a test run launched with product settings exported sees none of them', () => {
-    fs.mkdirSync(PROBE_DIR, { recursive: true })
-    fs.writeFileSync(
-      PROBE,
-      [
-        "import { expect, it } from 'vitest'",
-        "it('generated probe: inherited token-goat settings are gone', () => {",
-        "  expect(process.env['TOKEN_GOAT_BASH_COMPRESS']).toBeUndefined()",
-        "  expect(process.env['TOKEN_GOAT_ASK_MODEL']).toBeUndefined()",
-        "  expect(process.env['TOKENWISE_COMPACT_ASSIST']).toBeUndefined()",
-        "  expect(process.env['TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD']).toBe('1')",
-        '})',
-        '',
-      ].join('\n'),
-    )
-    const res = spawnSync(process.execPath, [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', PROBE], {
+    probe = writeProbe(PROBE_NAME, [
+      "import { expect, it } from 'vitest'",
+      "it('generated probe: inherited token-goat settings are gone', () => {",
+      "  expect(process.env['TOKEN_GOAT_BASH_COMPRESS']).toBeUndefined()",
+      "  expect(process.env['TOKEN_GOAT_ASK_MODEL']).toBeUndefined()",
+      "  expect(process.env['TOKENWISE_COMPACT_ASSIST']).toBeUndefined()",
+      "  expect(process.env['TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD']).toBe('1')",
+      '})',
+      '',
+    ])
+    const res = spawnSync(process.execPath, [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', probe], {
       encoding: 'utf8',
       // The bundle build this config runs in globalSetup would race the outer run's readers of the same artifact.
       env: { ...process.env, CI: '', TOKEN_GOAT_BASH_COMPRESS: '0', TOKEN_GOAT_ASK_MODEL: 'some-model', TOKENWISE_COMPACT_ASSIST: 'false', TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' },
