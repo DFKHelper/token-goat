@@ -28,6 +28,12 @@ export const EXTERNAL_NATIVE_DEPS = [
 /** The entry built a second time as a standalone CommonJS file, `dist/token-goat-hook-client.cjs`, which is what a hook shim loads first; see esbuild.config.mjs. Its graph is a subset of the ESM build's, so the notices generator has nothing more to find in it. */
 export const CJS_CLIENT = 'token-goat-hook-client'
 
+/** The WebAssembly runtime's glue module, which esbuild.config.mjs copies into dist/ beside the chunks. Named in src/embed_runtime_web.ts (ORT_WEB_GLUE) too, where its digest is pinned; tests/embed_runtime_pins.test.ts checks the copy the build writes against that pin. */
+export const ORT_WEB_GLUE = 'ort-wasm-simd-threaded.mjs'
+
+/** Every file the build writes into dist/ under a fixed name: the launcher, each ES module entry, the CommonJS client and the glue. tests/setup/build-bundle.ts rebuilds when any of them is missing, because the source stamp lives outside dist/ and says nothing about what is still in it: checking only the launcher and the core kept a dist/ with the glue deleted, and the suite then ran against a bundle that could not load the WebAssembly runtime. */
+export const BUNDLE_OUTPUTS = ['token-goat.mjs', ...Object.keys(ENTRY_POINTS).map((name) => `${name}.mjs`), `${CJS_CLIENT}.cjs`, ORT_WEB_GLUE]
+
 /** Constants every build of the shipping graph inlines. `__TG_MANIFEST__` carries the package.json fields src/version.ts exports, so a bundled process never opens package.json: that read cost 2.2ms of every CLI start and of every hook call a resident server answers. */
 export function buildDefines(pkg) {
   return {

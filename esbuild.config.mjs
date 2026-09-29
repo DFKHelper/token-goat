@@ -1,17 +1,19 @@
 import * as esbuild from 'esbuild'
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 
-import { buildDefines, CJS_CLIENT, ENTRY_POINTS, EXTERNAL_NATIVE_DEPS } from './scripts/build-options.mjs'
+import { buildDefines, CJS_CLIENT, ENTRY_POINTS, EXTERNAL_NATIVE_DEPS, ORT_WEB_GLUE } from './scripts/build-options.mjs'
+import { clearBundleStamp, sourceDigest, writeBundleStamp } from './scripts/source-digest.mjs'
 import { sweepStaleChunks } from './scripts/sweep-chunks.mjs'
 
 // Every ES module entry point shares this prefix because they share the chunks themselves -- see the build below.
 const CHUNK_PREFIX = 'token-goat-chunk-'
 // The hook entry used to be built separately and owned its own prefix, so dist/ carried a second, byte-for-byte copy of every shared chunk. Nothing emits these any more; sweeping them with an empty keep-list clears whatever an older build left behind in a working dist/.
 const LEGACY_HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
-// Named in src/embed_runtime_web.ts (ORT_WEB_GLUE) too, where its digest is pinned; tests/embed_runtime_pins.test.ts checks the copy this build writes against that pin.
-const ORT_WEB_GLUE = 'ort-wasm-simd-threaded.mjs'
 
 
+// Taken before the build reads anything, so a source edited while the build runs leaves a stamp that no longer matches and the next test run builds again. tests/setup/build-bundle.ts compares it; see scripts/source-digest.mjs for why it is a digest and not an mtime.
+const sourcesBuilt = sourceDigest('.')
+clearBundleStamp('.')
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
 // The entry points and the external list live in scripts/build-options.mjs: the notices generator and its guard have to bundle the same graph this build does, and a second copy of either would drift silently. See that file's own comment for why each package stays external.
@@ -90,5 +92,7 @@ const LAUNCHER = [
   '',
 ].join('\n')
 writeFileSync('dist/token-goat.mjs', LAUNCHER)
+// Two builds that overlap with a source edited between their starts can interleave their outputs and leave the stamp of whichever finished last. Accepted rather than locked: it needs a hand-run build racing the test setup's, and the next edit to any source makes the stamp miss again.
+writeBundleStamp('.', sourcesBuilt)
 
 console.log(`Built dist/token-goat.mjs  (v${pkg.version})`)

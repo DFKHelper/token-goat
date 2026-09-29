@@ -4,33 +4,18 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { BUNDLE_OUTPUTS } from '../../scripts/build-options.mjs'
+import { readBundleStamp, sourceDigest } from '../../scripts/source-digest.mjs'
+
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-function newestSourceMtime(): number {
-  const inputs = [
-    path.join(ROOT, 'package.json'),
-    path.join(ROOT, 'esbuild.config.mjs'),
-  ]
-  const stack = [path.join(ROOT, 'src')]
-  while (stack.length > 0) {
-    const dir = stack.pop()!
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name)
-      if (entry.isDirectory()) stack.push(full)
-      else if (entry.isFile()) inputs.push(full)
-    }
-  }
-  return Math.max(...inputs.map((file) => fs.statSync(file).mtimeMs))
-}
-
-function shouldBuildBundle(): boolean {
+/** Whether dist/ has to be rebuilt before the suite spawns it. The build records a digest of the sources it read (scripts/source-digest.mjs), and a bundle counts as fresh only when that digest matches the sources now. This compared mtimes until a mutation run restored a source file with `mv` from a backup: the file got back its older timestamp, the bundle built from the mutant in between looked newer than every source, and the next run tested the mutant, not the code on disk. tests/build_bundle_freshness.test.ts holds that case. */
+export function shouldBuildBundle(root: string = ROOT): boolean {
   if (process.env['TOKEN_GOAT_TEST_FORCE_BUNDLE_BUILD'] === '1') return true
 
-  const bundle = path.join(ROOT, 'dist', 'token-goat.mjs')
-  const coreBundle = path.join(ROOT, 'dist', 'token-goat.core.mjs')
-  if (!fs.existsSync(bundle) || !fs.existsSync(coreBundle)) return true
+  if (BUNDLE_OUTPUTS.some((name) => !fs.existsSync(path.join(root, 'dist', name)))) return true
 
-  return fs.statSync(bundle).mtimeMs <= newestSourceMtime()
+  return readBundleStamp(root) !== sourceDigest(root)
 }
 
 // vitest globalSetup: ensure the shipping bundle (dist/token-goat.mjs) is available and fresh before any test file runs. The e2e and CLI smoke tests spawn this prebuilt artifact, so without this each of them rebuilt it in its own beforeAll - six redundant esbuild runs that also raced on the same output path. One freshness-gated build here replaces all of them. Note: in watch mode this runs once at startup and not on source edits, so a bundle-spawning test will see stale dist until the watcher is restarted.
