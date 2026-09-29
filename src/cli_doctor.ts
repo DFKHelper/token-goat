@@ -39,14 +39,14 @@ import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_type
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
 import { HOOK_PROBE_ENV, readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
-import { hookLatencyBreakdown } from './hook_latency.js'
+import { claudeHookActivity, hookLatencyBreakdown } from './hook_latency.js'
 import { checkNativeHooks } from './cli_doctor_native.js'
 import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingCoverage, checkParserFreshness } from './cli_doctor_index.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
 import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWorkerRunning } from './cli_doctor_process.js'
-import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
+import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkClaudeHooksGone, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
 import { checkSecurityPosture } from './cli_doctor_security.js'
 
 /** Check if token-goat binary is installed and accessible. */
@@ -662,6 +662,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (claudeShimResult) results.push(claudeShimResult)
   const claudeEventsResult = checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })
   if (claudeEventsResult) results.push(claudeEventsResult)
+  const claudeGoneResult = checkClaudeHooksGone(isInstalled('user') || isInstalled('project'), claudeHookActivity())
+  if (claudeGoneResult) results.push(claudeGoneResult)
   for (const result of checkNativeHooks(path.join(actualDataDir, 'global.db'))) results.push(result)
   const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
   if (codexShimResult) results.push(codexShimResult)
