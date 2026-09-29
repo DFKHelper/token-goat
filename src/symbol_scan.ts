@@ -3,6 +3,7 @@
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import type { querySymbols } from './index_reader.js'
+import { nestedWorktreeExclusions, ownProjectScope } from './nested_worktrees.js'
 import type { SymbolEntry } from './parser_types.js'
 import { normalizePath } from './paths.js'
 import { pathEqClause, projectScopeClause } from './sql_path.js'
@@ -60,6 +61,12 @@ export function forEachSymbol(scope: SymbolScanScope, visit: (symbol: SymbolHead
     params.push(scope.kind)
   }
   const [lower, upper] = scope.rootDir === undefined ? [undefined, undefined] : projectScopeClause('file_path').params(normalizePath(scope.rootDir))
+  if (scope.rootDir !== undefined) {
+    // A git worktree nested under the root is a second copy of the project, not part of it (nested_worktrees.ts).
+    const excluded = nestedWorktreeExclusions('file_path', normalizePath(scope.rootDir))
+    where.push(...excluded.clauses)
+    params.push(...excluded.params)
+  }
   const db = getDb(globalDbPath())
   let last: ScanRow | undefined
   for (;;) {
@@ -163,19 +170,19 @@ export const SUGGEST_NAME_BUDGET = 500_000
 
 /** Every distinct symbol name indexed under `rootDir`, or `null` when there are more than `budget` of them. Names only, from one statement served by the `(TG_LOWER(file_path), name)` covering index, so no row's body is read and nothing is paged. A miss used to find its near names with a {@link forEachSymbol} walk when that paged by `OFFSET`, which sent every page through a temp B-tree sort of every row in scope, bodies included (a scan of N rows in pages of P re-sorts about N*N/(2P) rows), and cost minutes. The walk is keyset-paged now, but one statement over a covering index still reads less than a walk of every row. The `LIMIT` makes SQLite stop at the first name past the budget rather than read the rest, and `.all()` rather than an early-exited `iterate()` leaves no half-stepped statement holding a read snapshot open in a long-lived process such as the MCP server. */
 export function projectSymbolNames(rootDir: string, budget: number = SUGGEST_NAME_BUDGET): string[] | null {
-  const { clause, params } = projectScopeClause('file_path')
+  const { clause, params } = ownProjectScope('file_path', rootDir)
   const sql = `SELECT DISTINCT name FROM symbols WHERE ${clause} AND name IS NOT NULL LIMIT ?`
-  const names = getDb(globalDbPath()).prepare(sql).pluck().all(...params(rootDir), budget + 1) as string[]
+  const names = getDb(globalDbPath()).prepare(sql).pluck().all(...params, budget + 1) as string[]
   return names.length > budget ? null : names
 }
 
 /** Every JSON or YAML file under `rootDir` that has at least one indexed symbol, sorted: the candidate list a miss hands to findStructuredKeyPath (read_suggest.ts). Walks `files`, one row per file, and asks `symbols` only whether each candidate has a row, instead of reading the file path of every symbol in scope: about 170 ms against 1.7 s on a 546k-symbol project, for the identical set of 15,272 files. The path returned is the one stored on the symbol row, so a caller displays the same spelling it did when it collected these from a full-row scan. LIKE folds ASCII case, so `.JSON` and `.Yml` qualify exactly as they did under the old `toLowerCase().endsWith(...)` test. */
 export function projectStructuredFiles(rootDir: string): string[] {
-  const { clause, params } = projectScopeClause('f.path')
+  const { clause, params } = ownProjectScope('f.path', rootDir)
   const sameFile = isCaseInsensitiveFs() ? 'TG_LOWER(s.file_path) = TG_LOWER(f.path)' : 's.file_path = f.path'
   const sql =
     `SELECT (SELECT s.file_path FROM symbols s WHERE ${sameFile} LIMIT 1) AS fp FROM files f ` +
     `WHERE ${clause} AND (f.path LIKE '%.json' OR f.path LIKE '%.yaml' OR f.path LIKE '%.yml') AND fp IS NOT NULL`
-  const files = getDb(globalDbPath()).prepare(sql).pluck().all(...params(rootDir)) as string[]
+  const files = getDb(globalDbPath()).prepare(sql).pluck().all(...params) as string[]
   return [...new Set(files)].sort()
 }
