@@ -40,7 +40,7 @@ import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable
 import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
-import { HOOK_PROBE_ENV, readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
+import { HOOK_PROBE_ENV, firstReceiptShownAt, readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
 import { claudeHookActivity, hookLatencyBreakdown } from './hook_latency.js'
 import { checkNativeHooks } from './cli_doctor_native.js'
 import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingCoverage, checkParserFreshness } from './cli_doctor_index.js'
@@ -613,6 +613,14 @@ export function checkUnmappedTools(dbPath: string, options?: { maxAgeDays?: numb
   }
 }
 
+/** The Savings receipt line: whether the one-time "token-goat has saved about N tokens" message has been shown at a Claude Code session start, and when. Informational only, so a user who never saw it can tell whether it went out. */
+export function checkSavingsReceipt(dbPath: string): DoctorResult {
+  const name = 'Savings receipt'
+  if (!fs.existsSync(dbPath)) return { name, status: 'ok', message: 'not shown yet' }
+  const shownAt = firstReceiptShownAt(getDb(dbPath))
+  return { name, status: 'ok', message: shownAt === null ? 'not shown yet' : `shown ${new Date(shownAt).toISOString().slice(0, 10)}` }
+}
+
 /** The Worker line. A worker stopped because its data directory refuses writes does not come back on its own, since every hook's auto-restart is refused the same way, so that case says why instead of the bare "not running" a stopped worker gets. A directory that does not exist yet is not probed: `worker start` creates it. */
 export function checkWorker(dir: string): DoctorResult {
   if (checkWorkerRunning(dir)) return { name: 'Worker', status: 'ok', message: 'running' }
@@ -661,6 +669,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkCompactionChannel(path.join(actualDataDir, 'global.db')))
   results.push(checkHookLatency(path.join(actualDataDir, 'global.db')))
   results.push(checkUnmappedTools(path.join(actualDataDir, 'global.db')))
+  results.push(checkSavingsReceipt(path.join(actualDataDir, 'global.db')))
 
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))

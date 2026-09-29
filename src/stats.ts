@@ -409,6 +409,10 @@ CREATE TABLE IF NOT EXISTS unmapped_tools (
   hits INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (harness, tool_name, event_name)
 );
+CREATE TABLE IF NOT EXISTS stats_flags (
+  name TEXT PRIMARY KEY,
+  set_ts INTEGER NOT NULL
+);
 `
 
 const _globalSchemaApplied = new Set<string>()
@@ -814,6 +818,43 @@ export function pruneStalePatternCoveredUnmappedTools(db: SqliteDatabase, patter
     for (const r of stale) del.run(r.tool_name)
   } catch {
     // No table yet, or an unreadable one -- nothing to clean up.
+  }
+}
+
+/** The `stats_flags` row that records the one-time savings receipt as shown. */
+export const FIRST_RECEIPT_FLAG = 'first_receipt_shown'
+
+/** Every token this install has recorded as saved, raw rows and rolled-up days together, with count-only kinds left out: the same figure {@link summarize}`(0)` reports as `total_tokens_saved`, from two SUMs instead of loading every row. */
+function allTimeTokensSaved(db: SqliteDatabase): number {
+  const kinds = [...COUNT_ONLY_KINDS]
+  const notCount = kinds.length > 0 ? `WHERE kind NOT IN (${kinds.map(() => '?').join(', ')})` : ''
+  const raw = (db.prepare(`SELECT COALESCE(SUM(tokens_saved), 0) AS t FROM stats ${notCount}`).get(...kinds) as { t: number }).t
+  const rolled = (db.prepare(`SELECT COALESCE(SUM(tokens_saved), 0) AS t FROM stats_daily_rollup ${notCount}`).get(...kinds) as { t: number }).t
+  return raw + rolled
+}
+
+/** Claim the one-time savings receipt: returns the all-time tokens saved the first time it is called after anything was saved, and null every other time, including every call once the flag is set. The flag goes in with INSERT OR IGNORE and counts as claimed only when that insert changed a row, so two sessions starting together cannot both show it. Null on any failure: a receipt is a courtesy and never worth an error. */
+export function claimFirstSavingsReceipt(testDb?: SqliteDatabase, homeDir?: string, now: number = Date.now()): number | null {
+  try {
+    const db = testDb ?? getGlobalDb(homeDir)
+    if (db.prepare('SELECT 1 FROM stats_flags WHERE name = ?').get(FIRST_RECEIPT_FLAG) !== undefined) return null
+    const total = allTimeTokensSaved(db)
+    if (total <= 0) return null
+    const claimed = db.prepare('INSERT OR IGNORE INTO stats_flags (name, set_ts) VALUES (?, ?)').run(FIRST_RECEIPT_FLAG, Math.floor(now / 1000))
+    return claimed.changes === 1 ? total : null
+  } catch {
+    return null
+  }
+}
+
+/** When the savings receipt was shown, in epoch milliseconds, or null when it has not been (or the flag cannot be read). */
+export function firstReceiptShownAt(testDb?: SqliteDatabase, homeDir?: string): number | null {
+  try {
+    const db = testDb ?? getGlobalDb(homeDir)
+    const row = db.prepare('SELECT set_ts FROM stats_flags WHERE name = ?').get(FIRST_RECEIPT_FLAG) as { set_ts: number } | undefined
+    return row === undefined ? null : row.set_ts * 1000
+  } catch {
+    return null
   }
 }
 

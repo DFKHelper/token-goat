@@ -45,6 +45,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'call_streak.ts::applyCallStreak': 'Appends the line trackedLine returned to the handlers\' own answer, or wraps it alone. Interpolates nothing of its own.',
   'call_streak.ts::callStreakAfterFailure': 'Wraps the brake line onSearchMiss returned. Interpolates nothing of its own.',
   'hooks_session_start.ts::sessionStartHandler':
+    'Reaches the channel only through sessionStartOutput. The savings receipt it may attach goes out as a notice, the user-only systemMessage, not on this channel, and interpolates only a token count.',
+  'hooks_session_start.ts::sessionStartOutput':
     'Three contributors. reconcileNote emits counts only. The delta capsule lists paths from files a Read touched, escaped in evidence_cache.ts. The DB health message is text token-goat authored itself.',
   'hooks_edit.ts::markdownSectionHint':
     'Names the edited file, split out of postEditHandlerInner unchanged. Already routed through displaySafePath before the backtick escaping, with a comment saying why that order matters.',

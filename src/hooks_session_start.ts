@@ -13,7 +13,8 @@ import { ENV_KEYS } from './constants.js'
 import { envBool, envInt } from './env.js'
 import { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject } from './reconcile.js'
 import { countNoun, extractErrorMessage } from './util.js'
-import { recordStat } from './stats.js'
+import { claimFirstSavingsReceipt, recordStat } from './stats.js'
+import { detectHarness } from './bridges/registry.js'
 import { projectNotesFor } from './project_memory.js'
 
 /** Generic reminder used when the cwd is missing, unresolvable, or not indexed. */
@@ -102,6 +103,24 @@ async function postCompactRecovery(event: HookEvent): Promise<string | null> {
 }
 
 export async function sessionStartHandler(event: HookEvent): Promise<HookOutput> {
+  return withSavingsReceipt(await sessionStartOutput(event))
+}
+
+/** The words of the one-time savings receipt. */
+export function savingsReceiptText(tokens: number): string {
+  return `token-goat has saved about ${tokens.toLocaleString('en-US')} tokens so far. Run \`token-goat stats\` for the detail.`
+}
+
+/** Attach the one-time savings receipt to a session-start output, the first time there is anything to report. Claude Code only: there it travels as a `notice`, which the user sees and the model never does (see HookOutput's `notice`). Other harnesses have no channel that stays out of the model's context, so the claim is not made there either, and the receipt waits for a Claude Code session. */
+export function withSavingsReceipt(output: HookOutput, homeDir?: string): HookOutput {
+  if (output.hookType !== 'pass' && output.hookType !== 'context') return output
+  // Uncached, as relay.ts serializes with: a long-lived host that memoized another harness must not spend the one-time claim on an answer that will drop the notice.
+  if (detectHarness() !== 'claudecode') return output
+  const saved = claimFirstSavingsReceipt(undefined, homeDir)
+  return saved === null ? output : { ...output, notice: savingsReceiptText(saved) }
+}
+
+async function sessionStartOutput(event: HookEvent): Promise<HookOutput> {
   // Recovery is resolved before the reminder gate and appended after it, because the two answer different questions: `hints.session_start_reminder` turns off a routing reminder an experienced user does not need, and it must not also turn off the restoration of state that has just been compacted away. A user who silenced the reminder still gets the packet, alone.
   const recovery = await postCompactRecovery(event)
   const cwd = getCwd(event)

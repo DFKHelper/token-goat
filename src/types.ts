@@ -8,6 +8,8 @@ export type HookOutput =
       readonly context: string
       /** The file path(s) this hint points at, supplied by the builder rather than regex-scraped back out of `context` by hint_stats.ts's extractPathCorrelator -- see that function's doc comment for the failure mode this field exists to end. Measurement only: relay.ts rebuilds the context output without it before anything reaches a harness, so it can never reach the model. Empty/absent means "this builder has no path to give", which is not the same as "no path could be found" and is treated as unobservable rather than as a failed hint (see logHintEmission). */
       readonly correlators?: readonly string[]
+      /** Words for the user, never the model: Claude Code's top-level `systemMessage`. claude.exe 2.1.284's hook runner turns it into a `hook_system_message` attachment, shown as "<hook> says: ..." and skipped when the conversation is sent to the API, so it costs no tokens. Other harnesses have no such channel and drop it. */
+      readonly notice?: string
     }
   | { readonly hookType: 'rewriteInput'; readonly updatedInput: Record<string, unknown> }
   | {
@@ -17,7 +19,7 @@ export type HookOutput =
       /** Words of token-goat's own to deliver beside the rewritten result rather than inside it: PostToolUse `additionalContext`, which Claude Code shows as its own message next to the result: claude.exe 2.1.281's PostToolUse runner yields `updatedToolOutput` and then, independently, a `hook_additional_context` message from the same hook result, so the two travel together. For a rewrite whose body cannot carry them, because the harness numbers that body by position and every line of ours in it would push the file's lines down a number (see `harnessNumbersReadContent`). Other harnesses read only `updatedOutput`, which is why the one producer sets this only on the Claude Code Read envelope. */
       readonly context?: string
     }
-  | { readonly hookType: 'pass' }
+  | { readonly hookType: 'pass'; readonly notice?: string }
 
 /** Hook event names token-goat reacts to. This is a subset of the full Claude Code / Codex hook surface; expand as later layers add handlers. Declared `as const` so `HookEventName` is the exact literal union rather than `string`. */
 export const HOOK_EVENTS = [
