@@ -33,6 +33,7 @@ import { formatBytes, purgeDataDirectories } from './purge.js'
 import { recordStat } from './stats.js'
 import { CLAUDE_HOOKS_UNINSTALLED_KIND } from './hook_latency.js'
 import { err, out } from './cli.js'
+import { formatInstallIndexResult, queueInstallIndex } from './install_index.js'
 
 /** Print the "how well is this bridge actually verified" caveat, if the bridge has one. Routed through {@link installVerificationNotice} rather than spelled out per branch: a caveat enumerated at nine callsites is a caveat that goes missing from the tenth, which is precisely the whitelist-drops-a-field shape that has shipped dead features from this codebase before. */
 function printBridgeVerificationNotice(harness: HarnessName): void {
@@ -127,6 +128,8 @@ export async function cmdInstall(opts: {
   claudecode?: boolean
   local?: boolean
   user?: boolean
+  /** Commander's negation of `--no-index`: false only when the user passed it. */
+  index?: boolean
 }): Promise<void> {
   // --user is the opt-out from the one harness whose scope default is inverted (see vscodeScopeFromFlags). Passing both scope flags is a contradiction, not a precedence puzzle.
   if (opts.project === true && opts.user === true) {
@@ -458,6 +461,10 @@ export async function cmdInstall(opts: {
   } catch {
     // fail-soft: install succeeded even if pre-gen fails
   }
+
+  // Last, so every harness above is wired before the worker starts spending CPU on a parse. queueInstallIndex never throws.
+  const indexLine = formatInstallIndexResult(queueInstallIndex(process.cwd(), { enabled: opts.index }))
+  if (indexLine !== null) out(indexLine)
 }
 
 // Backs the VS Code extension's ensureDecoderSetup check -- shelled out to rather than reimplemented in the extension, so the extension and installVscode share one path resolver (vscodeDecoderConfigured) and can never drift on where mcp.json lives or what key name it looks for. --project checks the workspace `.vscode/mcp.json` too (via process.cwd(), set by --cwd above), matching install/uninstall's --project convention. --visualstudio answers the same question for the Visual Studio `.mcp.json` files.

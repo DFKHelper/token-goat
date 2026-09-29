@@ -1112,6 +1112,7 @@ export function buildProgram(): Command {
     .option('--auto', 'automatically install token-goat across all detected developer ecosystems')
     .option('--all', 'install token-goat across all supported IDE and coding agent environments')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
+    .option('--no-index', 'do not queue the project in the current directory for its first index (TOKEN_GOAT_INSTALL_INDEX=0 does the same)')
     .action(guard(cmdInstall))
 
   program
