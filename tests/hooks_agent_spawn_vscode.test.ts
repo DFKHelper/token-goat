@@ -8,6 +8,7 @@ import { runHook } from '../src/hook_registry.js'
 import { normalizePayload } from '../src/hooks_cli.js'
 import { wasHintShown } from '../src/session.js'
 import { loadSessionState } from '../src/session_store.js'
+import { rmInSandbox } from './helpers/sandbox-rm.js'
 
 /** VS Code's runSubagent reaches the Task handlers once hooks_cli.ts maps it, and two of their behaviors were written for Claude Code. The unrestricted-spawn advisory tells the model to pass a ~/.claude/agents name as `subagent_type`, a key runSubagent does not have (it takes `agentName`, a VS Code chat agent). And the spawn briefing's project map walked process.cwd(), which on VS Code with no folder open is the home directory, ahead of the approval prompt. PROVENANCE: FORMAT-DERIVED, VS Code 1.137.0. runSubagent's inputSchema {prompt, description, agentName, model} is RunSubagentTool.getToolData in resources/app/out/vs/workbench/workbench.desktop.main.js ("Optional name of a specific agent to invoke"); the name is `CoreRunSubagent="runSubagent"` in resources/app/extensions/copilot/dist/extension.js. The envelope is ChatHookService.executePreToolUseHook/executePostToolUseHook's in that extension.js. The no-folder case (no cwd key, hook started in the home directory) is the one cited on normalizePayload's vscode branch in src/hooks_cli.ts. Prompts, names and directories are HAND-DERIVED. This lives in its own file because getHarnessName() memoizes on first dispatch (see tests/hooks_agent_spawn_copilot.test.ts). */
 
@@ -45,7 +46,7 @@ afterEach(() => {
       /* ignore */
     }
   }
-  fs.rmSync(path.join(os.homedir(), '.claude'), { recursive: true, force: true })
+  rmInSandbox(path.join(os.homedir(), '.claude'))
 })
 
 function runSubagent(eventName: 'pre_tool_use' | 'post_tool_use', sid: string, cwd: string | undefined): ReturnType<typeof buildEvent> {
@@ -64,9 +65,9 @@ function runSubagent(eventName: 'pre_tool_use' | 'post_tool_use', sid: string, c
 
 describe('runSubagent on VS Code', () => {
   it('gets no unrestricted-spawn advisory, and burns no hint budget, even with a restricted roster present', async () => {
-    const dir = path.join(os.homedir(), '.claude', 'agents')
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'lean-coder.md'), RESTRICTED_DEF)
+    const agentsDir = path.join(os.homedir(), '.claude', 'agents')
+    fs.mkdirSync(agentsDir, { recursive: true })
+    fs.writeFileSync(path.join(agentsDir, 'lean-coder.md'), RESTRICTED_DEF)
     const sid = `vscode-advisory-${Math.random().toString(36).slice(2)}`
     loadSessionState(sid)
     const result = await runHook(runSubagent('post_tool_use', sid, workspace))

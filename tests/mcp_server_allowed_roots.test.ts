@@ -20,6 +20,7 @@ import * as path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { rmInSandbox } from './helpers/sandbox-rm.js'
 
 const { createMcpServer } = await import('../src/mcp_server.js')
 const { invalidateConfigCache } = await import('../src/config.js')
@@ -208,7 +209,7 @@ describe('mcp allowed_roots', () => {
     } finally {
       delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
       invalidateConfigCache()
-      fs.rmSync(skillsDir, { recursive: true, force: true })
+      rmInSandbox(skillsDir)
     }
   })
 })

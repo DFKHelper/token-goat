@@ -51,9 +51,14 @@ function restoreSandboxedEnv(): void {
   }
 }
 
+// try/finally: a throw here would otherwise leave HOME/USERPROFILE pointing at the developer's real profile for every test after it in this file.
+let browserPath: string | null
 useRealEnv()
-const browserPath = resolveBrowserExecutablePath()
-restoreSandboxedEnv()
+try {
+  browserPath = resolveBrowserExecutablePath()
+} finally {
+  restoreSandboxedEnv()
+}
 
 const describeWithBrowser = browserPath ? describe : describe.skip
 
@@ -89,10 +94,11 @@ describeWithBrowser('takeScreenshot redirect SSRF', () => {
   })
 
   afterAll(async () => {
+    // First, before anything here can throw: the real HOME/USERPROFILE this file borrowed for Chrome must not outlive it.
+    restoreSandboxedEnv()
     await new Promise<void>((resolve) => server.close(() => resolve()))
     fs.rmSync(tmpDir, { recursive: true, force: true })
     delete process.env['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS']
-    restoreSandboxedEnv()
     invalidateConfigCache()
   })
 

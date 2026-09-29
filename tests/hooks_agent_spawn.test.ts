@@ -12,6 +12,7 @@ import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.j
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences, parseAgentDefinition, findRestrictedAgentNames } from '../src/hooks_agent_spawn.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
+import { rmInSandbox } from './helpers/sandbox-rm.js'
 
 // Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing as a whole exceeds budget" test below) is actually exercised -- this real repo's own compact project map is far too small to trip BRIEFING_TARGET_TOKENS on its own. Fixed-size project maps (not derived from this repo's own live index) so both the over-budget path and the cache-ids-block regression path are exercised deterministically, regardless of the host machine's index state or repo size -- see cycle 121: a test that reads buildProjectMap()'s live output for this repo passes or fails depending on ambient index staleness, not on the actual budget-vs-reminder-size coupling being tested.
 let _hugeProjectMapOverride = false
@@ -1030,7 +1031,7 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
   }
 
   afterEach(() => {
-    fs.rmSync(path.join(os.homedir(), '.claude'), { recursive: true, force: true })
+    rmInSandbox(path.join(os.homedir(), '.claude'))
   })
 
   it('emits the exact advisory once for an untyped spawn, then never again in the same session (real cross-process load/dispatch/save cycle)', async () => {
@@ -1243,7 +1244,7 @@ describe('scoped-spawn deny (pre_tool_use, opt-in via hints.agent_scoped_spawn_d
   afterEach(() => {
     if (prevEnv === undefined) delete process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY']
     else process.env['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY'] = prevEnv
-    fs.rmSync(path.join(os.homedir(), '.claude'), { recursive: true, force: true })
+    rmInSandbox(path.join(os.homedir(), '.claude'))
   })
 
   it('denies the first untyped spawn with the exact message, lets the identical retry through, and does not repeat the names in the post-tool advisory (real cross-process load/dispatch/save cycle)', async () => {
