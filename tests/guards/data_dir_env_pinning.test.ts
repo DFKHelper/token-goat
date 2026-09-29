@@ -68,6 +68,8 @@ function collectTestFiles(dir: string): string[] {
     throw err
   }
   for (const entry of entries) {
+    // tests/.tg-* are other tests' gitignored scratch dirs, made and removed while this walk runs; none holds a committed file.
+    if (entry.name.startsWith('.')) continue
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) found.push(...collectTestFiles(full))
     else if (entry.name.endsWith('.ts')) found.push(full)

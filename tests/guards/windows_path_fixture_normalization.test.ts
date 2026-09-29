@@ -57,6 +57,8 @@ export function readdirIfPresent(dir: string): fs.Dirent[] {
 
 function walkTestFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirIfPresent(dir)) {
+    // tests/.tg-* are other tests' gitignored scratch dirs, made and removed while this walk runs; none holds a committed file.
+    if (entry.name.startsWith('.')) continue
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       walkTestFiles(full, out)
