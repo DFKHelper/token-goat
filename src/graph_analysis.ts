@@ -1,9 +1,11 @@
 /** Code graph analysis and query commands: similar, context-for, test-for, coverage-gaps, arch, blame, and ask. */
 
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 
+import { extractImports, importsExtensionFor } from './import_export_extract.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
-import { displaySafeText, toDisplayPath, displaySafeJson } from './paths.js'
+import { displaySafeText, normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
@@ -13,7 +15,7 @@ import { resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, isTestFile, extractErrorMessage, countNoun } from './util.js'
+import { runGit, isTestFile, extractErrorMessage, countNoun, foldPath } from './util.js'
 import { globalDbPath } from './constants.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
@@ -138,6 +140,24 @@ export interface TestForOptions {
 
 export interface TestForEntry { testFile: string; testFunctions: string[] }
 
+/** Whether `fromFile` names `target` in a relative import. The specifier is resolved the way import_graph.ts resolves one: a `.js`/`.mjs`/`.cjs` suffix written against compiled output stands for the source file, and a directory stands for its `index` file. */
+function importsFile(fromFile: string, target: string): boolean {
+  let text: string
+  try {
+    text = fs.readFileSync(fromFile, 'utf8')
+  } catch {
+    return false
+  }
+  const exact = foldPath(normalizePath(target))
+  const bare = exact.replace(/\.[^./]+$/, '')
+  for (const spec of extractImports(text, importsExtensionFor(fromFile))) {
+    if (!spec.startsWith('.')) continue
+    const base = foldPath(normalizePath(path.resolve(path.dirname(fromFile), spec.replace(/\.(m?js|cjs)$/, ''))))
+    if (base === exact || base === bare || `${base}/index` === bare) return true
+  }
+  return false
+}
+
 export function runTestFor(opts: TestForOptions): number {
   const filePath = resolveSpecPath(opts.file)
   const symbols = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
@@ -150,11 +170,25 @@ export function runTestFor(opts: TestForOptions): number {
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const testFileMap = new Map<string, Set<string>>()
   const getSyms = buildFileSymCache()
+  const targetKey = foldPath(filePath)
+  const importVerdicts = new Map<string, boolean>()
 
-  for (const sym of symbols) {
-    const refs = queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir })
+  // A reference is recorded by name alone, so it only points at this file when nothing else in the project defines that name. zip_bounds.ts declares interface members called `name`, `start` and `push`, and a constructor; every test file in the repository uses one of those, so all 605 of them were listed where five import the module. A name some other non-test file also defines is therefore evidence only in a test file that imports this one.
+  for (const name of new Set(symbols.map((s) => s.name))) {
+    const definedElsewhere = querySymbols({ name, rootDir, limit: ALL_SYMBOLS_IN_FILE_LIMIT }).some(
+      (d) => foldPath(d.filePath) !== targetKey && !isTestFile(d.filePath),
+    )
+    const refs = queryRefs({ name, limit: UNBOUNDED_REF_LIMIT, rootDir })
     for (const ref of refs) {
       if (!isTestFile(ref.filePath)) continue
+      if (definedElsewhere) {
+        let imports = importVerdicts.get(ref.filePath)
+        if (imports === undefined) {
+          imports = importsFile(ref.filePath, filePath)
+          importVerdicts.set(ref.filePath, imports)
+        }
+        if (!imports) continue
+      }
       if (!testFileMap.has(ref.filePath)) testFileMap.set(ref.filePath, new Set())
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
       if (enc !== null) {
