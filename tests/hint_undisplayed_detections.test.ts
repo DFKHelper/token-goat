@@ -104,7 +104,9 @@ describe('a detection that never reached the agent still gets a row', () => {
 
     const row = summaryFor('bash_redirect')
     expect(row.detected).toBe(2)
-    expect(row.emitted).toBe(1)
+    // The shown hint's window is still open, so it is pending rather than scored; neither undisplayed row joins it there.
+    expect(row.pending).toBe(1)
+    expect(row.emitted).toBe(0)
     expect(row.unobservable).toBe(0)
     // The two undisplayed rows cost nothing, so the spend figure must not move.
     expect(row.bytesEmitted).toBe(400)

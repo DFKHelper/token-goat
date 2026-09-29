@@ -351,6 +351,8 @@ export interface CategoryEfficacy {
   emitted: number
   actedOn: number
   efficacyPct: number | null
+  /** Count of this category's emissions that were shown and can be scored but have no verdict yet: the window of {@link ACTED_ON_WINDOW} tool calls is still open, or the session ended before it closed and nothing ever will. Excluded from `emitted`, `actedOn` and `efficacyPct`, and so from the suppression gate, because counting a row with no verdict as a failure is booking one -- and for a suppression category it would book defiance. Still included in `bytesEmitted`, since the hint was shown. */
+  pending: number
   /** Count of this category's emissions that carried no correlator, so nothing a later command could do would ever have matched them. Excluded from `emitted`, `actedOn` and `efficacyPct` -- they are the rows no verdict was ever observed for -- but still included in `bytesEmitted`, because an unobservable hint spent its bytes all the same. Surfaced so a category whose efficacy rests on a small observable slice of a large emission count cannot look the same as one that was fully measured. */
   unobservable: number
   /** Count of this category's detections that were never shown to the agent -- auto-suppressed, or declined by a hint's own net-benefit gate. Zero-byte by construction, so absent from every other count here. Surfaced because a muted category and a category that has stopped triggering print identically otherwise, and they call for opposite actions: one is a throttle to review, the other is a hint whose trigger has gone away. */
@@ -369,6 +371,7 @@ export interface CategoryEfficacy {
 interface EmissionRow {
   emitted: number
   actedOn: number | null
+  pending: number
   unobservable: number
   detected: number
   bytesEmitted: number | null
@@ -379,11 +382,12 @@ interface EmissionRow {
 function categoryStats(category: HintCategory, sessionId?: string): EmissionRow {
   const db = getDb(globalDbPath())
   const scope = sessionId === undefined ? 'harness = ?' : 'session_id = ?'
+  // Four populations, deliberately not pooled. `emitted` is what was shown, could be scored, AND has been: it is the only honest denominator for efficacy, because including a row nothing could ever have satisfied, or one whose verdict is not in yet, would divide a real numerator by partly-imaginary rows. `pending` was shown and can be scored but has not been: its window is still open, or the session ended before the window closed and nothing will ever close it. Counted as a failure, it muted `bash_redirect` on a real ledger at 1 in 11 (9.1%) when its scored rows stood at 1 in 6 (16.7%), five of the eleven having been left pending by a session that died mid-window; a suppression category would book the same rows as defiance. `unobservable` was shown but carried no pointer -- it spent bytes and earned no verdict. `detected` was never shown at all (suppressed, or declined by a net-benefit gate) and spent nothing. bytesEmitted and legacyEmissions span every row, which is correct in each case: the pending and unobservable rows really did cost the agent, and the never-displayed ones are zero-byte, so none of them distorts the spend figure. COALESCE on the counts that stay `number`: SUM over no rows is NULL where the COUNT(*) this replaced was 0, and an aggregate query always returns its row, so the `?? default` below would not have caught it.
   const row = db
     .prepare(
-      // Three populations, deliberately not pooled. `emitted` is what was shown AND could be scored, so it is the only honest denominator for efficacy: including a row nothing could ever have satisfied would divide a real numerator by partly-imaginary rows. `unobservable` was shown but carried no pointer -- it spent bytes and earned no verdict. `detected` was never shown at all (suppressed, or declined by a net-benefit gate) and spent nothing. bytesEmitted and legacyEmissions span every row, which is correct in each case: the unobservable rows really did cost the agent, and the never-displayed ones are zero-byte, so neither distorts the spend figure. COALESCE on the counts that stay `number`: SUM over no rows is NULL where the COUNT(*) this replaced was 0, and an aggregate query always returns its row, so the `?? default` below would not have caught it.
-      `SELECT COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 1 THEN 1 ELSE 0 END), 0) AS emitted,
-              SUM(CASE WHEN displayed = 1 AND observable = 1 THEN acted_on ELSE 0 END) AS actedOn,
+      `SELECT COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 1 AND resolved = 1 THEN 1 ELSE 0 END), 0) AS emitted,
+              SUM(CASE WHEN displayed = 1 AND observable = 1 AND resolved = 1 THEN acted_on ELSE 0 END) AS actedOn,
+              COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 1 AND resolved = 0 THEN 1 ELSE 0 END), 0) AS pending,
               COALESCE(SUM(CASE WHEN displayed = 1 AND observable = 0 THEN 1 ELSE 0 END), 0) AS unobservable,
               COALESCE(SUM(CASE WHEN displayed = 0 THEN 1 ELSE 0 END), 0) AS detected,
               SUM(bytes_emitted) AS bytesEmitted,
@@ -391,7 +395,7 @@ function categoryStats(category: HintCategory, sessionId?: string): EmissionRow 
        FROM hint_emissions WHERE category = ? AND ${scope}`,
     )
     .get(category, sessionId ?? getHarnessName()) as EmissionRow | undefined
-  return row ?? { emitted: 0, actedOn: 0, unobservable: 0, detected: 0, bytesEmitted: null, legacyEmissions: 0 }
+  return row ?? { emitted: 0, actedOn: 0, pending: 0, unobservable: 0, detected: 0, bytesEmitted: null, legacyEmissions: 0 }
 }
 
 /** True once (category, current harness) has at least `hint_stats.min_sample_size` emissions AND the category has failed the bar its own polarity is measured against — see the module doc comment's "Suppression persistence" section for why this is not literally scoped to only the current `sessionId` despite accepting it as a parameter (kept for interface honesty/future use and because it is the natural key this feature was specified against). Two bars, because the two kinds of category measure different quantities. A normal hint names a substitute command, so `acted_on` counts uptake and the question is whether uptake fell below `suppress_threshold_pct`. A suppression category asks for an absence and is booked compliance-first (see {@link SUPPRESSION_HINT_CATEGORIES}), so `100 - efficacy` is its observed defiance rate and the question is whether that rate rose above `defiance_threshold_pct`. The defaults are exact complements (15 / 85), so the two branches agree on every verdict until an operator deliberately separates them; they are separate keys because an uptake rate and a defiance rate have unrelated base rates and one number cannot be well-calibrated for both. */
@@ -429,7 +433,7 @@ function manualMarks(category: HintCategory): { effective: number; ineffective: 
 export function getHintStatsSummary(sessionId?: string): CategoryEfficacy[] {
   const probeThresholds = loadConfig().hints.backoff_thresholds.filter((t) => t > 0)
   return HINT_CATEGORIES.map((category) => {
-    const { emitted, actedOn, unobservable, detected, bytesEmitted, legacyEmissions } = categoryStats(category, sessionId)
+    const { emitted, actedOn, pending, unobservable, detected, bytesEmitted, legacyEmissions } = categoryStats(category, sessionId)
     const marks = manualMarks(category)
     const suppressed = shouldSuppress(category, '')
     return {
@@ -437,6 +441,7 @@ export function getHintStatsSummary(sessionId?: string): CategoryEfficacy[] {
       emitted,
       actedOn: actedOn ?? 0,
       efficacyPct: emitted === 0 ? null : Math.round((1000 * (actedOn ?? 0)) / emitted) / 10,
+      pending,
       unobservable,
       detected,
       suppressed: suppressed,

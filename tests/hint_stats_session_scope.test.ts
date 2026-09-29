@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runHintStatsCommand } from '../src/cli_hint_stats.js'
 import { cmdHintStats } from '../src/cli_session.js'
 import { CliError } from '../src/cli.js'
-import { getHintSpendTotals, getHintStatsSummary, getHintStatsTotals, logHintEmission, markCategoryEffective, resetHintStats, type CategoryEfficacy } from '../src/hint_stats.js'
+import { getHintSpendTotals, getHintStatsSummary, getHintStatsTotals, logHintEmission, markCategoryEffective, resetHintStats, resolvePendingHintsForEvent, type CategoryEfficacy } from '../src/hint_stats.js'
 import { tokenGoatHome } from '../src/constants.js'
 import { clearModuleCaches } from '../src/reset.js'
+import type { HookEvent } from '../src/hook_registry.js'
 
 function nonce(prefix: string): string {
   return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
@@ -23,13 +24,19 @@ function captureStdout(fn: () => void): string {
   }
 }
 
+/** Closes the window on every pending row in `sessionId` without following any of them, so each is scored rather than left pending. */
+function expireWindow(sessionId: string): void {
+  const ls: HookEvent = { eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command: 'ls' }, sessionId, agentId: undefined, raw: {} }
+  for (let i = 0; i < 8; i++) resolvePendingHintsForEvent(ls)
+}
+
 function row(rows: readonly CategoryEfficacy[], category: string): CategoryEfficacy {
   const found = rows.find((r) => r.category === category)
   if (found === undefined) throw new Error(`no row for ${category}`)
   return found
 }
 
-// HAND-DERIVED: synthetic hint_emissions rows written through the production logHintEmission; session A gets three bash_redirect emissions (100 + 200 + 0 bytes) and one bash_recall (40 bytes), session B one bash_redirect (50 bytes), so A=3/1 emitted, B=1/0, the sum 4/1, and spend A=340, B=50, all=390, all computed by hand from these calls.
+// HAND-DERIVED: synthetic hint_emissions rows written through the production logHintEmission; session A gets three bash_redirect emissions (100 + 200 + 0 bytes) and one bash_recall (40 bytes), session B one bash_redirect (50 bytes), so A=3/1 emitted, B=1/0, the sum 4/1, and spend A=340, B=50, all=390, all computed by hand from these calls. Both sessions' windows are then run out unfollowed, so every row is scored (acted on 0) rather than pending; a row still inside its window is not in the emitted count.
 function seedTwoSessions(): { a: string; b: string } {
   const a = nonce('hssA')
   const b = nonce('hssB')
@@ -38,6 +45,8 @@ function seedTwoSessions(): { a: string; b: string } {
   logHintEmission('bash_redirect', a, 'src/a3.ts', false, 0)
   logHintEmission('bash_recall', a, 'id-a', false, 40)
   logHintEmission('bash_redirect', b, 'src/b1.ts', false, 50)
+  expireWindow(a)
+  expireWindow(b)
   return { a, b }
 }
 

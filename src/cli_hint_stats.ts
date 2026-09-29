@@ -15,16 +15,16 @@ export interface HintStatsCommandOptions {
 
 /** Which `--session-id --json` fields cover that session, which stay all-time, and which have no per-session figure at all. Carried in the payload so a consumer never has to know that suppression is cross-session or that the `stats` ledger has no session column. */
 const SESSION_JSON_SCOPE = {
-  session: ['emitted', 'actedOn', 'efficacyPct', 'unobservable', 'detected', 'bytesEmitted', 'legacyEmissions', 'totals.spentBytes', 'totals.legacyEmissions'],
+  session: ['emitted', 'actedOn', 'efficacyPct', 'pending', 'unobservable', 'detected', 'bytesEmitted', 'legacyEmissions', 'totals.spentBytes', 'totals.legacyEmissions'],
   allTime: ['suppressed', 'suppressionPermanent', 'manualEffective', 'manualIneffective'],
   unavailable: ['totals.savedBytes'],
 } as const
 
 
 
-/** Renders a category's spend cell honestly: 'n/a' when nothing has been recorded at all (never a fake 0), 'n/a (legacy)' when every emission predates spend tracking, and the real tracked sum -- annotated with however many legacy rows were excluded from it -- otherwise. See hint_emissions.bytes_emitted's schema comment in db.ts for why a legacy row is never counted as a zero spend. */
+/** Renders a category's spend cell honestly: 'n/a' when nothing reached the agent at all (never a fake 0), 'n/a (legacy)' when every emission predates spend tracking, and the real tracked sum -- annotated with however many legacy rows were excluded from it -- otherwise. "Reached the agent" is every displayed row, scored or not: a hint still waiting on its verdict, or one with no correlator to score, spent its bytes all the same, and gating this cell on the scored count alone printed 'n/a' beside a category that had real spend. Undisplayed detections are zero-byte and do not count. See hint_emissions.bytes_emitted's schema comment in db.ts for why a legacy row is never counted as a zero spend. */
 function formatSpentCell(row: CategoryEfficacy): string {
-  if (row.emitted === 0) return 'n/a'
+  if (row.emitted + row.pending + row.unobservable === 0) return 'n/a'
   if (row.bytesEmitted === null) return 'n/a (legacy)'
   return row.legacyEmissions > 0 ? `${row.bytesEmitted} (${row.legacyEmissions} legacy)` : String(row.bytesEmitted)
 }
@@ -41,9 +41,9 @@ function efficacyCell(row: CategoryEfficacy): string {
   return isSuppressionCategory(row.category) ? `${pct} *` : pct
 }
 
-/** Renders a category's emitted cell, marked when some of what it emitted is not in that count. `emitted` counts the rows efficacy was actually scored on. A hint that carried no correlator names nothing a later command could match, so it is excluded from both sides of the percentage rather than given an invented verdict -- but it was still emitted, and it still spent its bytes. Without a marker the two populations are indistinguishable: `bash_redirect` reads as 524 emissions when 698 were really pushed at the agent, and a reader sizing the category off this column undercounts it by a quarter. */
+/** Renders a category's emitted cell, marked when some of what it emitted is not in that count. `emitted` counts the rows efficacy was actually scored on. A hint that carried no correlator names nothing a later command could match, so it is excluded from both sides of the percentage rather than given an invented verdict -- but it was still emitted, and it still spent its bytes. Without a marker the two populations are indistinguishable: `bash_redirect` reads as 524 emissions when 698 were really pushed at the agent, and a reader sizing the category off this column undercounts it by a quarter. The same goes for a hint still waiting on its verdict, marked `+N`: its window is open, or the session ended before the window closed, so it has been scored neither way yet. */
 function emittedCell(row: CategoryEfficacy): string {
-  return row.unobservable > 0 ? `${row.emitted} ~${row.unobservable}` : String(row.emitted)
+  return String(row.emitted) + (row.pending > 0 ? ` +${row.pending}` : '') + (row.unobservable > 0 ? ` ~${row.unobservable}` : '')
 }
 
 /** Renders how often a category's trigger fired, against how often the agent was actually told. A suppressed category emits nothing, so every other column on its row freezes and stays frozen. That leaves the two questions a reader has -- has the trigger stopped firing, or is it firing constantly into a mute -- answered identically, and they call for opposite actions. This column counts the zero-byte rows written for detections that never reached the agent: a large figure says the trigger is alive and the mute is doing the work, a 0 says it has gone quiet on its own. Rendered as `-` rather than `0` when there are none, so a column of zeros does not read as a measured absence on the categories that have no gate to decline at. */
@@ -55,11 +55,11 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
   const w = (text: string) => {
     process.stdout.write(text)
   }
-  w(pad('category', 22) + pad('emitted', 9) + pad('undisplayed', 13) + pad('acted-on', 10) + pad('efficacy', 12) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent-bytes\n')
+  w(pad('category', 22) + pad('emitted', 14) + pad('undisplayed', 13) + pad('acted-on', 10) + pad('efficacy', 12) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent-bytes\n')
   for (const row of rows) {
     w(
       pad(row.category, 22) +
-        pad(emittedCell(row), 9) +
+        pad(emittedCell(row), 14) +
         pad(detectedCell(row), 13) +
         pad(String(row.actedOn), 10) +
         pad(efficacyCell(row), 12) +
@@ -118,7 +118,7 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
     process.stdout.write(`${displaySafeJson(payload, 0)}\n`)
     return
   }
-  const noEmissions = rows.every((r) => r.emitted === 0 && r.actedOn === 0 && r.unobservable === 0 && r.detected === 0)
+  const noEmissions = rows.every((r) => r.emitted === 0 && r.actedOn === 0 && r.pending === 0 && r.unobservable === 0 && r.detected === 0)
   if (session !== undefined) {
     process.stdout.write(
       `Session: ${displaySafeText(session)}\n` +
@@ -126,7 +126,7 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
     )
     if (noEmissions) process.stdout.write('No hint emissions were recorded for this session, so every per-session figure below is 0.\n')
   }
-  // Categories are registered statically, so an untouched store still renders a full table of zeros -- which reads as "these hints fire and never work" rather than "nothing recorded yet". Those two conclusions call for opposite actions (retire the hints vs. go collect data), so say which one it is. The table still prints underneath: the registered category list is useful on its own, and dropping it would narrow existing output. `unobservable` belongs in this test: a store holding only correlator-less rows has recorded plenty, it just scored none of it, and calling that "absence of data" would send a reader to collect more of exactly the data that is already there and still unscoreable.
+  // Categories are registered statically, so an untouched store still renders a full table of zeros -- which reads as "these hints fire and never work" rather than "nothing recorded yet". Those two conclusions call for opposite actions (retire the hints vs. go collect data), so say which one it is. The table still prints underneath: the registered category list is useful on its own, and dropping it would narrow existing output. `unobservable` belongs in this test: a store holding only correlator-less rows has recorded plenty, it just scored none of it, and calling that "absence of data" would send a reader to collect more of exactly the data that is already there and still unscoreable. `pending` belongs for the same reason: those rows were recorded, they just have not been scored yet.
   if (session === undefined && noEmissions) {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
@@ -157,6 +157,15 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
       'the emitted or acted-on counts and not in the efficacy figure, which is scored only on the ' +
       'rows that could have gone either way. They ARE in the spend column: an unobservable hint ' +
       'costs the agent its bytes all the same.\n',
+    )
+  }
+  // Without this, a burst of hints from a session that ended mid-window vanishes from every scored column with nothing to say where it went. Before these rows were held apart they were counted as failures, and five of them from one ended session muted a category whose scored rows put it over the bar.
+  if (rows.some((r) => r.pending > 0)) {
+    process.stdout.write(
+      '\n+N: N further emissions in that category are still waiting on a verdict -- the window ' +
+      'that decides whether the agent followed them is still open, or the session ended before ' +
+      'it closed and they will never be scored. They are not in the emitted or acted-on counts, ' +
+      'the efficacy figure, or the suppression decision. They ARE in the spend column.\n',
     )
   }
   // A permanently-suppressed category emits nothing at all, so its efficacy can never rise and the table above will look identical forever. Name the one action that changes it, rather than leaving a reader to trace four source files and two databases to find out -- which is what happened once, and produced a wrong diagnosis on the way.
