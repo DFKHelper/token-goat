@@ -52,6 +52,7 @@ const INTENT_RULES: readonly IntentRule[] = [
   { intent: 'callers', re: /^callers of (.+)$/i },
   { intent: 'callers', re: /^call ?-?sites of (.+)$/i },
   { intent: 'callers', re: /^(?:all )?(.+) call ?-?sites$/i },
+  { intent: 'callers', re: /^(?:who|what) uses (.+)$/i },
 
   { intent: 'tests', re: /^wh(?:at|ich) tests? (?:covers?|exercises?|tests?|touch(?:es)?) (.+)$/i },
   { intent: 'tests', re: /^tests? for (.+)$/i },
@@ -64,6 +65,8 @@ const INTENT_RULES: readonly IntentRule[] = [
   // The reverse direction: the files that import X, as opposed to what X imports.
   { intent: 'importers', re: /^(?:what|who|which (?:files?|modules?)) imports? (.+)$/i },
   { intent: 'importers', re: /^importers of (.+)$/i },
+  // Only the `which files`/`which modules` form: `what depends on X` stays with impact below, which already answers a file subject with its importers.
+  { intent: 'importers', re: /^which (?:files?|modules?) depends? on (.+)$/i },
 
   { intent: 'imports', re: /^what does (.+) import$/i },
   { intent: 'imports', re: /^imports of (.+)$/i },
@@ -76,11 +79,13 @@ const INTENT_RULES: readonly IntentRule[] = [
   { intent: 'impact', re: /^what breaks when (.+) chang(?:es|ed)$/i },
   { intent: 'impact', re: /^what depends on (.+)$/i },
   { intent: 'impact', re: /^what(?:'s| is) impacted by (?:changing )?(.+)$/i },
-  { intent: 'impact', re: /^blast radius of (.+)$/i },
+  { intent: 'impact', re: /^blast radius of (?:changing )?(.+)$/i },
   { intent: 'impact', re: /^impact of (?:changing )?(.+)$/i },
 
-  { intent: 'where', re: /^where is (.+) (?:defined|declared)$/i },
-  { intent: 'where', re: /^where is (.+)$/i },
+  { intent: 'where', re: /^where(?:'s| is) (.+) (?:defined|declared)$/i },
+  // Ahead of the bare `where is X`, which would otherwise capture `the code for X` as a four-word subject and refuse it.
+  { intent: 'where', re: /^(?:where(?:'s| is) )?(?:the )?(?:code|source|definition|implementation) (?:for|of) (.+)$/i },
+  { intent: 'where', re: /^where(?:'s| is) (.+)$/i },
   { intent: 'where', re: /^where does (.+) live$/i },
 ]
 
@@ -92,8 +97,8 @@ export interface Classification {
 /** Collapses runs of whitespace and drops trailing question marks so every pattern below can use literal single spaces, which is what keeps them free of the ambiguous-quantifier backtracking the repo's regexp lint rejects. Also strips a leading imperative framing verb: agents overwhelmingly phrase a question as an instruction to themselves ("Check env.ts exports"), and 2,388 of the 25,425 distinct questions captured from a real session transcript open with "Check " alone. The verb carries no subject and no intent, so removing it widens recall without widening the match. */
 export function normalizeQuestion(question: string): string {
   const collapsed = question.replace(/\s+/g, ' ').trim().replace(/[?\s]+$/, '')
-  // Retrieval verbs only. An edit verb (`add`, `update`, `wire`, `patch`, `fix`) is deliberately absent: stripping it would turn "Add imports" -- an instruction to write code -- into a query about a file named `Add`. `read` is included because it is the single most common lead-in on retrieval-shaped lines in the captured corpus, and its edit-instruction cases carry multi-word subjects that subject resolution refuses anyway. The article is peeled only as part of the verb, so a bare "the blast radius of X" is untouched: the captured corpus writes it as "Measure the blast radius of ...", where the article belongs to the framing and not to the question.
-  return collapsed.replace(/^(?:check|show|list|find|get|print|inspect|read|locate|verify|measure|view|trace|identify) (?:the |a |an )?/i, '')
+  // Retrieval verbs only. An edit verb (`add`, `update`, `wire`, `patch`, `fix`) is deliberately absent: stripping it would turn "Add imports" -- an instruction to write code -- into a query about a file named `Add`. `read` is included because it is the single most common lead-in on retrieval-shaped lines in the captured corpus, and its edit-instruction cases carry multi-word subjects that subject resolution refuses anyway. The article is peeled only as part of the verb, so a bare "the blast radius of X" is untouched: the captured corpus writes it as "Measure the blast radius of ...", where the article belongs to the framing and not to the question. A `me` after the verb goes with it, so "show me the source for X" reads as "source for X".
+  return collapsed.replace(/^(?:check|show|list|find|get|print|inspect|read|locate|verify|measure|view|trace|identify) (?:me )?(?:the |a |an )?/i, '')
 }
 
 /** True when the question asks for judgement, intent, or runtime behaviour, which no index row can answer. Checked before intent matching, and reported as its own refusal reason so the caller is not told "no intent matched" about a question that matched one. */

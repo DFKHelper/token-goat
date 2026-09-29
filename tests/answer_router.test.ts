@@ -162,6 +162,41 @@ describe('classify (pure, no index)', () => {
     expect(classify('delivery_cap imports')).toEqual({ intent: 'imports', subject: 'delivery_cap' })
   })
 
+  it('routes the phrasings the golden answer eval found refused', () => {
+    // HAND-DERIVED: each question is a plain-English way to ask for an intent the router already serves, written from the question rather than from the patterns. The first run of scripts/eval-retrieval.ts refused every one of them as no-intent (evals/retrieval/answer.jsonl, ids ans-code-for-shrink, ans-callers-uses, ans-impact-blast, ans-importers-depend and the ans-held-* records).
+    const cases: Array<[string, string, string]> = [
+      ["where's foldPath defined", 'where', 'foldPath'],
+      ["where's foldPath", 'where', 'foldPath'],
+      ["where's the code for foldPath", 'where', 'foldPath'],
+      ['where is the implementation of foldPath', 'where', 'foldPath'],
+      ['show me the source for foldPath', 'where', 'foldPath'],
+      ['definition of foldPath', 'where', 'foldPath'],
+      ['who uses foldPath', 'callers', 'foldPath'],
+      ['what uses foldPath', 'callers', 'foldPath'],
+      ['blast radius of changing foldPath', 'impact', 'foldPath'],
+      ['blast radius of foldPath', 'impact', 'foldPath'],
+      ['which files depend on src/delivery_cap.ts', 'importers', 'src/delivery_cap.ts'],
+      ['which modules depend on delivery_cap', 'importers', 'delivery_cap'],
+      ['which file depends on delivery_cap', 'importers', 'delivery_cap'],
+    ]
+    for (const [q, intent, subject] of cases) expect(classify(q), `failed on: ${q}`).toEqual({ intent, subject })
+  })
+
+  it('keeps the neighbours of those phrasings where they were', () => {
+    // HAND-DERIVED: the near-misses each new pattern must not swallow.
+    // `what depends on X` is an impact question; only the `which files`/`which modules` form asks for importers.
+    expect(classify('what depends on foldPath')).toEqual({ intent: 'impact', subject: 'foldPath' })
+    // A bare name after `show me` names no intent, so it refuses rather than guessing that the body is wanted.
+    expect(normalizeQuestion('show me foldPath')).toBe('foldPath')
+    expect(classify('show me foldPath')).toBeNull()
+    // `me` is peeled only as a whole word: "mean" is the start of the subject.
+    expect(normalizeQuestion('show mean values')).toBe('mean values')
+    // The code-for rule sits ahead of the generic `where is X`, which would otherwise take `the code for foldPath` as the subject.
+    expect(classify('where is the code for foldPath')?.subject).toBe('foldPath')
+    // The earlier rules still win over the new callers rule.
+    expect(classify('who calls foldPath')).toEqual({ intent: 'callers', subject: 'foldPath' })
+  })
+
   it('routes the captured test-coverage question to the tests intent', () => {
     for (const { q, subject } of QUESTIONS.tests) {
       expect(classify(q), `failed on: ${q}`).toEqual({ intent: 'tests', subject })
