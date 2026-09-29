@@ -25,6 +25,8 @@ const DELETE_CALL = /\b(?:rmSync|rmdirSync|rm|rmdir|unlinkSync|unlink)\(([^;\n]*
 function collect(dir: string): string[] {
   const out: string[] = []
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    // tests/.tg-* are other tests' gitignored scratch dirs, made and removed while this walk runs; none holds a committed file.
+    if (e.name.startsWith('.')) continue
     const p = path.join(dir, e.name)
     if (e.isDirectory()) {
       if (e.name !== 'fixtures' && e.name !== 'node_modules') out.push(...collect(p))

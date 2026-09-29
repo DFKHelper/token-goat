@@ -15,6 +15,8 @@ function filesDrivingEnsureModelFiles(): string[] {
   const out: string[] = []
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      // tests/.tg-* are other tests' gitignored scratch dirs, made and removed while this walk runs; none holds a committed file.
+      if (entry.name.startsWith('.')) continue
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
         if (entry.name !== 'fixtures' && entry.name !== 'node_modules') walk(full)
