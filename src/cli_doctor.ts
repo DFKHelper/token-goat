@@ -16,6 +16,8 @@ import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './co
 import { hookServerEnabled, loadConfig, readConfigSource, saveConfig, invalidateConfigCache } from './config.js'
 import type { Config } from './config.js'
 import { ensureModelFiles, modelFilesPresent } from './embed_model.js'
+import { downloadAdvice, runtimeDownloadAdvice } from './embed_preflight.js'
+import { lastDownloadFailure, RUNTIME_DOWNLOAD_HOST, withExplicitDownload } from './model_download_gate.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath, LEGACY_HOOKS_SCRIPT_FILE, readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
@@ -33,7 +35,7 @@ import { cursorMcpPath } from './bridges/cursor_install.js'
 import { zedSettingsPath } from './bridges/zed_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_compiler.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
-import { ORT_WEB_VERSION, RUNTIME_UNAVAILABLE_ADVICE, activeRuntime, nativeRuntimeLoadError, runtimeVersion, wasmBinaryPresent } from './embed_runtime.js'
+import { ORT_WEB_VERSION, RUNTIME_UNAVAILABLE_ADVICE, activeRuntime, ensureWasmBinary, nativeRuntimeLoadError, runtimeVersion, wasmBinaryPresent } from './embed_runtime.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
 import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
@@ -165,6 +167,15 @@ export function checkEmbeddings(config: Config): DoctorResult {
       message: `unavailable, so semantic falls back to keyword search: the ${bundled} is not downloaded yet and offline mode (network.offline) prevents fetching it. ${RUNTIME_UNAVAILABLE_ADVICE}`,
     }
   }
+  // A failed download of the binary is recorded against the registry, and it is the one thing here the reader can act on: without this the line read "fetched once on first use" while every first use was failing.
+  const runtimeFailure = binaryPresent ? null : lastDownloadFailure(RUNTIME_DOWNLOAD_HOST)
+  if (runtimeFailure !== null) {
+    return {
+      name,
+      status: 'warn',
+      message: `unavailable, so semantic falls back to keyword search: the ${bundled} is not downloaded yet; the last download, at ${new Date(runtimeFailure.at).toISOString()}, failed with ${runtimeFailure.message}. ${runtimeDownloadAdvice()} ("token-goat doctor --repair" retries it too.)`,
+    }
+  }
   const binary = binaryPresent ? 'runtime binary downloaded' : 'runtime binary not downloaded yet, fetched once on first use'
   const nativeErr = nativeRuntimeLoadError()
   // createRequire goes through Node's CJS loader, so an absent package is MODULE_NOT_FOUND; ERR_MODULE_NOT_FOUND is accepted too rather than assumed away, since the same package reached through an ESM path would report that instead and both mean the same thing to the reader.
@@ -191,11 +202,20 @@ export function checkEmbeddingModel(config: Config): DoctorResult {
           'model files are missing and network is disabled (network.offline = true) — run "token-goat doctor --repair" to restore network and download model',
       }
     }
+    // A recorded failure is the one thing here a user can act on, so it leads: without it this read "run --repair" to someone whose network had just refused the same download.
+    const failure = lastDownloadFailure()
+    if (failure !== null) {
+      return {
+        name,
+        status: 'warn',
+        message: `model files are missing: the last download, at ${new Date(failure.at).toISOString()}, failed with ${failure.message}. ${downloadAdvice()} ("token-goat doctor --repair" retries it too.)`,
+      }
+    }
     return {
       name,
       status: 'warn',
       message:
-        'model files are missing — run "token-goat doctor --repair" to download',
+        'model files are missing — they download by themselves (about 35 MB) the first time a file is embedded; run "token-goat doctor --repair" to download them now',
     }
   }
   return { name, status: 'ok', message: 'model files verified and ready' }
@@ -747,10 +767,23 @@ export async function runDoctorRepair(opts?: {
   if (needModel) {
     try {
       console.log('Downloading and verifying semantic model files...')
-      await ensureModelFiles()
+      // `--repair` is the user asking for the download now, so it goes through a hold an earlier failure left behind.
+      await withExplicitDownload(() => ensureModelFiles())
       repairs.push('Downloaded and verified semantic embedding model files')
     } catch (e) {
-      errors.push(`Failed to download embedding model: ${extractErrorMessage(e)}`)
+      errors.push(`Failed to download embedding model: ${extractErrorMessage(e)}. ${downloadAdvice()}`)
+    }
+  }
+
+  // 3b. The WebAssembly runtime's binary, the other download semantic search waits on when the native runtime is not installed. Offline mode is left alone here unless step 2 lifted it, since nothing else is missing that would justify overriding the user's setting.
+  const embeddingsOn = (updatedCfg.indexing?.embeddings_enabled ?? true) !== false
+  if (embeddingsOn && updatedCfg.network?.offline !== true && activeRuntime() === 'onnxruntime-web' && !wasmBinaryPresent()) {
+    try {
+      console.log('Downloading and verifying the WebAssembly runtime binary...')
+      await withExplicitDownload(() => ensureWasmBinary())
+      repairs.push('Downloaded and verified the WebAssembly runtime binary')
+    } catch (e) {
+      errors.push(`Failed to download the WebAssembly runtime binary: ${extractErrorMessage(e)}. ${runtimeDownloadAdvice()}`)
     }
   }
 

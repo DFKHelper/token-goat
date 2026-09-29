@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { _resetDataDirCacheForTesting } from '../src/constants.js'
 import { ORT_WEB_VERSION, ORT_WEB_WASM, ensureWasmBinary, wasmBinaryPresent, wasmDir } from '../src/embed_runtime.js'
 import { ORT_WEB_GLUE, ORT_WEB_TARBALL, extractTarMember } from '../src/embed_runtime_web.js'
+import { RUNTIME_DOWNLOAD_HOST } from '../src/model_download_gate.js'
 import { downloadPinned, type PinnedFile } from '../src/pinned_file.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -262,6 +263,8 @@ describe('ensureWasmBinary', () => {
 
     await expect(ensureWasmBinary()).rejects.toThrow(/404/)
     expect(urls).toEqual([`https://registry.npmjs.org/onnxruntime-web/-/${ORT_WEB_TARBALL.name}`])
+    // The host a failure is recorded and held against: the worker's hold and doctor's warning read this constant, so it has to be the host the download really asks.
+    expect(new URL(urls[0]!).host).toBe(RUNTIME_DOWNLOAD_HOST)
     // Neither the zeroed copy, nor the archive, nor a partial file survives: a later attempt starts clean.
     expect(fs.readdirSync(wasmDir())).toEqual([])
   })

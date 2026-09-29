@@ -2,6 +2,7 @@
 
 import { ensureModelFiles, modelFilesPresent } from '../src/embed_model.js'
 import { ensureWasmBinary, wasmBinaryPresent, wasmDir } from '../src/embed_runtime.js'
+import { withExplicitDownload } from '../src/model_download_gate.js'
 
 /** Absorbs a transient registry rate-limit or CDN block without turning every pull request red; a real outage still fails after the last one. */
 const ATTEMPTS = 3
@@ -41,7 +42,8 @@ async function main(): Promise<void> {
   })
 }
 
-main().catch((err: unknown) => {
+// A CI cache warm is a download asked for by name: its retry loop above must reach the network each attempt rather than stop at the hold the first failure records.
+withExplicitDownload(main).catch((err: unknown) => {
   console.error(`Could not obtain the embedding model or its runtime: ${err instanceof Error ? err.message : String(err)}`)
   process.exitCode = 1
 })

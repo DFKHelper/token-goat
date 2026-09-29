@@ -8,6 +8,8 @@ import * as embedModel from '../src/embed_model.js'
 import * as configModule from '../src/config.js'
 import { recordCreatedConfig } from '../src/bridges/created_configs.js'
 import { _resetDataDirCacheForTesting } from '../src/constants.js'
+import { downloadAdvice } from '../src/embed_preflight.js'
+import { MODEL_DOWNLOAD_HOST, clearDownloadFailure, isExplicitDownload, recordDownloadFailure } from '../src/model_download_gate.js'
 
 describe('doctor auto-repair and embedding model checks', () => {
   beforeEach(() => {
@@ -45,6 +47,29 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(result.status).toBe('warn')
       expect(result.message).toContain('model files are missing')
       expect(result.message).toContain('token-goat doctor --repair')
+    })
+
+    // PROVENANCE: HAND-DERIVED. The failure message is the describeCause output tests/model_download_gate.test.ts derives from a CAPTURE on node v24.12.0; the expected wording follows from checkEmbeddingModel's branch, and the advice is compared against downloadAdvice() itself, which tests/embed_preflight.test.ts pins variant by variant.
+    it('leads with the recorded download failure, its reason and the proxy advice, instead of a bare "run --repair"', () => {
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      const at = Date.UTC(2026, 8, 29, 1, 0, 0)
+      recordDownloadFailure(`https://${MODEL_DOWNLOAD_HOST}/x/tokenizer.json`, 'fetch failed (connect ECONNREFUSED 127.0.0.1:9)', at)
+      try {
+        const config = { indexing: { embeddings_enabled: true }, network: { offline: false } } as unknown as Config
+        const result = checkEmbeddingModel(config)
+        expect(result.status).toBe('warn')
+        expect(result.message).toContain('failed with fetch failed (connect ECONNREFUSED 127.0.0.1:9)')
+        expect(result.message).toContain(new Date(at).toISOString())
+        expect(result.message).toContain(downloadAdvice())
+      } finally {
+        clearDownloadFailure(MODEL_DOWNLOAD_HOST)
+      }
+    })
+
+    it('says the model downloads by itself when no download has failed', () => {
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      const config = { indexing: { embeddings_enabled: true }, network: { offline: false } } as unknown as Config
+      expect(checkEmbeddingModel(config).message).toContain('they download by themselves')
     })
 
     it('returns ok when model files are present', () => {
@@ -101,6 +126,32 @@ describe('doctor auto-repair and embedding model checks', () => {
       const savedConfig = saveSpy.mock.calls[0][0]
       expect(savedConfig.network.offline).toBe(false)
       expect(savedConfig.indexing.embeddings_enabled).toBe(true)
+    })
+
+    it('downloads the model as an explicit request, which goes through a hold an earlier failure left', async () => {
+      const mockConfig = { mcp: { confine_reads_to_project_root: false }, indexing: { cross_project_symbols: true, embeddings_enabled: true }, network: { offline: false } } as unknown as Config
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      let explicit: boolean | null = null
+      vi.spyOn(embedModel, 'ensureModelFiles').mockImplementation(async () => {
+        explicit = isExplicitDownload()
+        return 'mock-dir'
+      })
+
+      await runDoctorRepair()
+      expect(explicit).toBe(true)
+    })
+
+    it('adds what to try when the download fails', async () => {
+      const mockConfig = { mcp: { confine_reads_to_project_root: false }, indexing: { cross_project_symbols: true, embeddings_enabled: true }, network: { offline: false } } as unknown as Config
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      vi.spyOn(embedModel, 'ensureModelFiles').mockRejectedValue(new Error('GET https://huggingface.co/x failed: fetch failed (connect ECONNREFUSED 127.0.0.1:9)'))
+
+      const result = await runDoctorRepair()
+      expect(result.errors).toContain(`Failed to download embedding model: GET https://huggingface.co/x failed: fetch failed (connect ECONNREFUSED 127.0.0.1:9). ${downloadAdvice()}`)
     })
 
     it('reports no repairs when configuration and models are already healthy', async () => {

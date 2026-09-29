@@ -1,8 +1,15 @@
 /** `doctor`'s report on which inference runtime embeddings run on, and whether they can run at all. A default install embeds on the bundled WebAssembly build of ONNX Runtime, whose 14 MB binary is fetched once on first use; the native `onnxruntime-node` (about 288 MB installed) takes over whenever it resolves. `semantic` consults keyword search alongside the vectors, so when embeddings cannot run it still answers, still finds things, and never errors -- it just stops matching on meaning. A degradation that produces no error, no empty result and no warning is one nobody discovers, which is exactly what `doctor` is for. The states are genuinely different advice rather than phrasings of "unavailable": off in config is not a fault at all, either runtime running is fine but the reader should know which, a binary not yet fetched is fine unless offline mode forbids fetching it, a bundled runtime that failed to start is a warning with its reason, and a native binding that is installed but throwing is a different fault with a different fix. Asserting only `status` would pass while the advice was wrong or missing, so these assert the text a reader acts on. The native case runs against the real package, which the repository carries as a devDependency, so that happy path is not a mock of itself. The bundled cases substitute the runtime queries of `embed_runtime.js` -- a separate module, not the code under test -- because a consumer's install without the native binding is the one this repository never reaches on its own. Everything else in that module stays real, including the advice text, so a change to it is asserted here rather than restated. */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Config } from '../src/config.js'
+import type * as EmbedModel from '../src/embed_model.js'
+import { runtimeDownloadAdvice } from '../src/embed_preflight.js'
 import type * as EmbedRuntime from '../src/embed_runtime.js'
+import { RUNTIME_DOWNLOAD_HOST, clearDownloadFailure, recordDownloadFailure } from '../src/model_download_gate.js'
 
 /** Only `indexing.embeddings_enabled` and `network.offline` are read, so the rest of Config is irrelevant to the check. */
 function configWith(enabled: boolean | undefined, offline = false): Config {
@@ -134,6 +141,77 @@ describe('doctor: embeddings', () => {
     expect(result.message).toContain('installed but failed to load')
     expect(result.message).toContain('onnxruntime_binding.node')
     expect(result.message).not.toContain('npm install')
+  })
+})
+
+/** HAND-DERIVED: the URL is the registry tarball path embed_runtime_web.ts requests (tests/embed_runtime_pins.test.ts pins the real one); the message is the shape describeCause gives Node's "fetch failed" with its cause. */
+const RUNTIME_URL = `https://${RUNTIME_DOWNLOAD_HOST}/onnxruntime-web/-/onnxruntime-web-1.30.0.tgz`
+const RUNTIME_FAILURE = `GET ${RUNTIME_URL} failed: fetch failed (connect ECONNREFUSED 127.0.0.1:9)`
+
+describe('doctor: a WebAssembly runtime download that failed', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.doUnmock('../src/embed_runtime.js')
+    vi.doUnmock('../src/embed_model.js')
+  })
+  afterEach(() => {
+    clearDownloadFailure(RUNTIME_URL)
+    vi.unstubAllEnvs()
+  })
+
+  it('says the download failed, with the reason and what to try, instead of "fetched once on first use"', async () => {
+    recordDownloadFailure(RUNTIME_URL, RUNTIME_FAILURE)
+    const checkEmbeddings = await withWebRuntime({ ...RUNNING, binaryPresent: false })
+    const result = checkEmbeddings(configWith(true))
+    expect(result.status).toBe('warn')
+    expect(result.message).toContain('ECONNREFUSED 127.0.0.1:9')
+    expect(result.message).toContain('falls back to keyword search')
+    expect(result.message).toContain(runtimeDownloadAdvice())
+    expect(result.message).not.toContain('fetched once on first use')
+  })
+
+  it('ignores the record once the binary is on disk', async () => {
+    recordDownloadFailure(RUNTIME_URL, RUNTIME_FAILURE)
+    const checkEmbeddings = await withWebRuntime({ ...RUNNING })
+    expect(checkEmbeddings(configWith(true)).status).toBe('ok')
+  })
+
+  /** Loads `runDoctorRepair` with the model in place, the WebAssembly runtime in use and its binary missing, and `ensureWasmBinary` replaced by `download`. */
+  async function repairWith(download: () => Promise<string>) {
+    // tests/setup/isolate-home.ts turns embeddings off for the whole suite, and step 3b rightly skips a runtime nothing will use.
+    vi.stubEnv('TOKEN_GOAT_EMBEDDINGS_ENABLED', 'true')
+    vi.stubEnv('TOKEN_GOAT_OFFLINE', 'false')
+    vi.doMock('../src/embed_runtime.js', async (importOriginal) => ({
+      ...(await importOriginal<typeof EmbedRuntime>()),
+      activeRuntime: () => 'onnxruntime-web',
+      wasmBinaryPresent: () => false,
+      ensureWasmBinary: download,
+    }))
+    vi.doMock('../src/embed_model.js', async (importOriginal) => ({
+      ...(await importOriginal<typeof EmbedModel>()),
+      modelFilesPresent: () => true,
+    }))
+    const { runDoctorRepair } = await import('../src/cli_doctor.js')
+    return runDoctorRepair({ rootDir: fs.mkdtempSync(path.join(os.tmpdir(), 'tg-doctor-wasm-')) })
+  }
+
+  it('--repair downloads the binary as an explicit request, which goes through a hold an earlier failure left', async () => {
+    const { isExplicitDownload } = await import('../src/model_download_gate.js')
+    let explicit: boolean | null = null
+    const result = await repairWith(async () => {
+      explicit = isExplicitDownload()
+      return 'wasm-dir'
+    })
+    expect(explicit).toBe(true)
+    expect(result.repairs).toContain('Downloaded and verified the WebAssembly runtime binary')
+    expect(result.errors).toEqual([])
+  })
+
+  it('--repair says what to try when that download fails', async () => {
+    const result = await repairWith(async () => {
+      throw new Error(RUNTIME_FAILURE)
+    })
+    expect(result.errors).toContain(`Failed to download the WebAssembly runtime binary: ${RUNTIME_FAILURE}. ${runtimeDownloadAdvice()}`)
   })
 })
 

@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 import { attemptedCommandName, suggestForUnknownCommand } from './command_intent.js'
+import { spawnSync } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 // Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively the whole MCP protocol layer and zod) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
@@ -17,6 +18,8 @@ import { dataDir, ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
+import { foregroundDownloadDeferred, WARM_COMMAND } from './embed_preflight.js'
+import { rerunWithEnvProxy } from './env_proxy.js'
 import { allowReadOnlyIndex, getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { recordKnownRootThrottled } from './known_roots.js'
@@ -30,7 +33,7 @@ import { resolveProjectRoot } from './project.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
-import { isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
+import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
 import { runRead, runPrSlice } from './read_commands.js'
 import { runSymbol } from './read_symbol.js'
@@ -173,6 +176,14 @@ async function cmdSemantic(query: string | undefined, more: string[], opts: { li
   if (opts.preflight === true && more.length > 0) {
     throw new CliError('--preflight checks the embedding setup and runs no query; drop the queries, or drop --preflight to search')
   }
+  // --warm is a download the user asked for now, so on a machine whose proxy this process's fetch would go around, the command runs again in a child that goes through it (env_proxy.ts rerunWithEnvProxy).
+  if (opts.warm === true) {
+    const code = rerunWithEnvProxy(spawnSync)
+    if (code !== null) {
+      process.exitCode = code
+      return
+    }
+  }
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
   const semanticOpts = {
     limit,
@@ -275,6 +286,7 @@ export async function cmdIndex(
   // Whether a file is embedded is decided by its own project's configuration, through the rule the worker's drain applies to the same file (see embedPolicyResolver), never by the directory this command runs in: run inside a monorepo package, or given a path from elsewhere, the index and the drain stamped one file two ways and each undid the other. The other indexing keys this function reads through loadConfig() with no root are right from any root only because each is in PROJECT_LOCKED_KEYS, so no project file can set one.
   const embedPolicy = embedPolicyResolver()
   let indexed = 0
+  let embedsDeferred = 0
   let failed = 0
   let skipped = 0
   const failureGroups = new Map<string, { example: string; count: number }>()
@@ -381,7 +393,11 @@ export async function cmdIndex(
     }
     // Re-read the stamp the parse above just wrote rather than trusting the one captured before it: writeParseResult clears the carried embed_sha when a reparse moved this file's embedding boundaries (see embeddingBoundariesMoved), and `embedUnchanged` was computed from the pre-parse row. Without this the re-embed is deferred to whatever run happens next, so a single `token-goat index` after an adapter change leaves the file's vectors cut on boundaries that no longer exist.
     const embedFresh = parseUnchanged ? embedUnchanged : embedFreshFor(getFileEntry(key, dbPath)?.embedSha)
-    if (!embedFresh) {
+    // A model that is not on this machine and cannot be fetched now (offline, the last download failed recently, or this process would go around the machine's proxy to get it) makes every embed below fail the same way, one file at a time. Skipping leaves embed_sha unset, so the worker, or the next run, embeds the file once the download succeeds.
+    // Only a file that would really download is deferred: with embeddings off, or the embedding packages absent, the call below writes the terminal marker that keeps the file from being retried, and that needs no download.
+    if (!embedFresh && depsAvailable && foregroundDownloadDeferred()) {
+      embedsDeferred += 1
+    } else if (!embedFresh) {
       paintProgress('embedding')
       // Best-effort semantic-embeddings step for the same file, run right after its syntactic parse; awaited here because this is a one-shot foreground command the caller waits on, unlike the worker's incremental drain which fires this and forgets it. Passing sha lets it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses. It reads `embeddings_enabled` with no root to pass, as its first synchronous statement, so the file's own project is the one loadConfig() resolves for that stretch, as in worker.ts's embedFileSerialized.
       await withConfigProjectRoot(configRoot, () => indexFileEmbeddings(key, dbPath, sha ?? undefined))
@@ -405,6 +421,11 @@ export async function cmdIndex(
       `${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}` +
       `${failed > 0 ? ` Failed to index ${failed} file(s) (see stderr).` : ''}`,
   )
+  // The worker's backlog sweep embeds every file left without an embed_sha, and it is the process whose downloads go through the proxy, so it is started here rather than left for the next hook to start.
+  if (embedsDeferred > 0) {
+    ensureWorkerAlive()
+    err(`token-goat: index: ${countNoun(embedsDeferred, 'file')} not embedded yet: the embedding model is not downloaded. The background worker downloads it and embeds them; to do it now, run \`${WARM_COMMAND}\` and then \`token-goat index\` again.`)
+  }
   // A run where every file failed and none indexed is a total indexing failure, not a no-op success -- callers scripting on `$?` must be able to detect it.
   if (indexed === 0 && failed > 0) {
     process.exitCode = 1
@@ -530,6 +551,12 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
     doctorOpts.context = true
   }
   if (opts.repair === true || opts.fix === true) {
+    // A repair downloads what is missing, now, so it runs again through the machine's proxy as `semantic --warm` does.
+    const code = rerunWithEnvProxy(spawnSync)
+    if (code !== null) {
+      process.exitCode = code
+      return
+    }
     doctorOpts.repair = true
   }
   // Scope the Symbols check to the invoking project so an unrelated project sharing the same global.db can't mask this project's own parser being broken (see checkSymbolCount's doc comment). No project root found (bare directory, no git/package.json) falls back to the prior unscoped whole-database behavior.

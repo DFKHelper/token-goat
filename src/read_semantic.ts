@@ -9,7 +9,9 @@ import { getDb } from './db.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { emitErr } from './emit.js'
 import { ORT_WEB_WASM, RUNTIME_UNAVAILABLE_ADVICE } from './embed_runtime.js'
-import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, embeddingBackendLoadError, checkEmbeddingPreflight, type EmbeddingPreflightResult, type SearchHit } from './embeddings.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, embeddingBackendLoadError, type EmbeddingPreflightResult, type SearchHit } from './embeddings.js'
+import { checkSemanticReadiness, foregroundDownloadDeferred, modelDownloadHeld, WARM_COMMAND } from './embed_preflight.js'
+import { withExplicitDownload } from './model_download_gate.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
@@ -19,6 +21,7 @@ import { resolveProjectRoot } from './project.js'
 import { guardJsonRows, guardText, largestFileSize, recordReadStat, warnIfFilesStale } from './read_commands.js'
 import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
+import { ensureWorkerAlive } from './worker_lifecycle.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, grepFilteredToEmptyNotice, isTestFile } from './util.js'
 
 // Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.
@@ -145,12 +148,19 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     // DB or project root not yet initialized
   }
 
+  // `--warm` is the user asking for the model now, so it downloads through a hold a failed background try left behind (model_download_gate.ts).
+  const readiness = (): Promise<EmbeddingPreflightResult> => {
+    const check = (): Promise<EmbeddingPreflightResult> =>
+      checkSemanticReadiness({
+        ...(opts.warm !== undefined ? { warm: opts.warm } : {}),
+        projectRoot: rootDir,
+        ...(projectCoverage !== undefined ? { coverage: projectCoverage } : {}),
+      })
+    return opts.warm === true ? withExplicitDownload(check) : check()
+  }
+
   if (opts.preflight === true) {
-    const preflight = await checkEmbeddingPreflight({
-      ...(opts.warm !== undefined ? { warm: opts.warm } : {}),
-      projectRoot: rootDir,
-      ...(projectCoverage !== undefined ? { coverage: projectCoverage } : {}),
-    })
+    const preflight = await readiness()
     if (opts.json === true) {
       return { text: displaySafeJson(preflight), code: preflight.status === 'ready' ? 0 : 1 }
     }
@@ -162,7 +172,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       ...(preflight.runtimeBinaryPresent === null
         ? []
         : [`  Runtime binary (${ORT_WEB_WASM.name}, ~14 MB): ${preflight.runtimeBinaryPresent ? 'downloaded' : 'not downloaded yet, fetched once on first use'}`]),
-      `  Model files (~34 MB): ${preflight.modelFilesPresent ? 'present' : 'missing'}`,
+      `  Model files (~35 MB): ${preflight.modelFilesPresent ? 'present' : 'missing'}`,
       `  In-memory session: ${preflight.modelWarmed ? 'ready / warmed' : 'not loaded'}`,
       `  Project coverage: ${preflight.embeddedFiles}/${countNoun(preflight.indexedFiles, 'file')} (${preflight.coveragePercent}%)`,
     ]
@@ -173,11 +183,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   }
 
   // Preflight check surfaces broken or degraded embeddings before a query is attempted.
-  const preflight = await checkEmbeddingPreflight({
-    ...(opts.warm !== undefined ? { warm: opts.warm } : {}),
-    projectRoot: rootDir,
-    ...(projectCoverage !== undefined ? { coverage: projectCoverage } : {}),
-  })
+  const preflight = await readiness()
 
   // Same flag that gates embedding at index time (parser.ts, worker.ts) must also gate it here at query time, or TOKEN_GOAT_EMBEDDINGS_ENABLED=0 -- read by every other embedding-adjacent path in this codebase, including memory_prune.ts's tryEmbeddingClusters -- does nothing for `semantic`: embeddingModelAvailable() below only checks whether the optional onnxruntime-node runtime is installed, not whether the user opted out, so a disabled-but-installed runtime would still call searchSemantic, which calls embedTexts, which downloads the ~34 MB model on a cold cache regardless of this setting. Checked once here so both the availability warning below and the searchSemantic call are skipped together.
   const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
@@ -199,7 +205,13 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   // The dense half is best-effort, and this catch is the whole of what makes that true. The package being absent is handled inside searchSemantic (it returns no hits), but the model files are a separate thing that can be missing on their own: the runtime installs fine and then the weights cannot be fetched -- offline mode, no cache yet, a network failure, a digest that does not match. That throws out of embedTexts, and before this catch it escaped runSemantic entirely, so `semantic` exited non-zero with nothing on stdout at the exact moment it was supposed to degrade to keyword search. Same treatment as the absent package: say what is missing, then carry on with the BM25 pass below, which is the half that still works.
   let rawHits: SearchHit[] = []
   let searchSemanticError: string | null = null
-  if (embeddingsEnabled) {
+  // A held download (see modelDownloadHeld) would only fail again, and the warning above already says why and how to fix it. A download this process would make around the machine's proxy is left to the worker (see foregroundDownloadDeferred), which is started if it is not running, since that is where the download now happens.
+  const deferred = embeddingsEnabled && foregroundDownloadDeferred()
+  if (deferred && !modelDownloadHeld()) {
+    ensureWorkerAlive()
+    console.warn(`The embedding model is not downloaded yet. This process would go around the proxy in HTTPS_PROXY to fetch it, so the background worker downloads it through the proxy instead; these results come from keyword search alone until then. To download it now, run \`${WARM_COMMAND}\`.`)
+  }
+  if (embeddingsEnabled && !deferred) {
     try {
       rawHits = await searchSemantic(
         getDb(globalDbPath()),

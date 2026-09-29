@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import { getDb } from '../db.js';
 import { globalDbPath } from '../constants.js';
 import { searchSemantic, mergeNearbyHits, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD } from '../embeddings.js';
-import { checkEmbeddingPreflight } from '../embed_model.js';
+import { checkSemanticReadiness } from '../embed_preflight.js';
 import { getProjectFileEntries } from '../index_reader.js';
 import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
@@ -129,7 +129,7 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
 /** Searches dense embeddings and semantic vectors. */
 async function searchSemanticChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   try {
-    const preflight = await checkEmbeddingPreflight(rootDir !== undefined ? { projectRoot: rootDir } : undefined);
+    const preflight = await checkSemanticReadiness(rootDir !== undefined ? { projectRoot: rootDir } : undefined);
     if (preflight.status !== 'ready') {
       return { hits: [], degradedReason: `Semantic indexing not ready: ${preflight.summary}` };
     }
