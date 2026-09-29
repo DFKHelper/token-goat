@@ -49,9 +49,11 @@ describe('writeDrainHeartbeat', () => {
     // Let the reader get going before the writes start, so the window is actually contested.
     await new Promise((resolve) => setTimeout(resolve, 300))
 
+    // 1.5 s, and past that until 20 writes have landed: under a loaded full-suite run on Windows the retried renames were once slow enough that 1.5 s held only 7, failing the floor below with nothing wrong. The 10 s cap keeps a truly stuck writer from hanging the test.
     const deadline = Date.now() + 1500
+    const hardDeadline = Date.now() + 10_000
     let writes = 0
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline || (writes < 20 && Date.now() < hardDeadline)) {
       writeDrainHeartbeat(dir, true)
       writes++
     }
