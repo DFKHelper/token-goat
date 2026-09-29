@@ -23,7 +23,7 @@ Token-Goat sits silently between your AI and your tools. Re-read a file? It gets
 
 The symbol index also understands native Nginx, Caddyfile, and Apache HTTP Server configuration blocks, so `token-goat read "file::symbol"` can jump directly to them.
 
-Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Visual Studio** (Copilot agent, MCP tools and instructions only), **Zed** (MCP tools only), **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
+Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Visual Studio** (Copilot agent, MCP tools and instructions only), **Zed** (MCP tools only), **Kimi Code**, **Grok CLI** (xAI Grok Build), **Antigravity CLI** (`agy`), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
 **Ask your AI to install it fully (give it this GitHub link), or install in one command:**
 
@@ -340,7 +340,7 @@ Three commands. Hooks register and start working immediately: no terminal popups
 
 > **WSL performance tip:** Keep active repositories on WSL's native ext4 filesystem (`~/projects/...`) rather than Windows mounts (`/mnt/c/...`) to avoid 9P cross-OS filesystem translation overhead during initial indexing.
 
-Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok and Cline/Windsurf/Cursor, the companion CLI tools worth installing alongside it, upgrading, and the full list of what lands on your machine: **[Install guide](docs/install.md)**.
+Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok, Antigravity and Cline/Windsurf/Cursor, the companion CLI tools worth installing alongside it, upgrading, and the full list of what lands on your machine: **[Install guide](docs/install.md)**.
 
 ## CLI
 

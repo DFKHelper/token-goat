@@ -12,7 +12,7 @@ const _LOG = {
 }
 
 /** Harness identifier: the Claude Code harness variant token-goat is running under. Determines payload/response shape translation. */
-export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi' | 'qwen' | 'vscode'
+export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi' | 'qwen' | 'vscode' | 'antigravity'
 
 /** Hook payload: unstructured dict from harness stdin. The raw shape is harness-specific (camelCase in Claude, snake_case in Codex/Gemini). normalize_payload translates to internal PascalCase shape before dispatch. */
 export type HookPayload = Record<string, unknown>
@@ -306,6 +306,70 @@ export function vscodeNativeToolInput(vscodeToolName: string, canonicalInput: Re
   return native
 }
 
+/** Antigravity CLI (agy 1.2.11) tool name -> internal PascalCase tool name. The model-facing names and their argument keys are CAPTURE: read out of the transcript of a real agy run on 2026-09-29 (view_file `{AbsolutePath, StartLine, EndLine}`, list_dir `{DirectoryPath}`, run_command `{CommandLine, Cwd, WaitMsBeforeAsync}`, grep_search `{Query, SearchPath, CaseInsensitive, IsRegex, MatchPerLine, Includes}`, find_by_name `{Pattern, SearchDirectory, MaxDepth}`, replace_file_content `{TargetFile, TargetContent, ReplacementContent, StartLine, EndLine, AllowMultiple}`, write_to_file `{TargetFile, CodeContent, Overwrite}`, search_web `{query}`). The agy binary also names its steps with a second vocabulary (list_directory, find, file_change), and the hook payload's `toolCall.name` could not be captured live (the account's quota ran out first), so those spellings are accepted too; their argument keys are assumed to match the model-facing tool's. `list_dir` is `Read`, the same considered choice as Gemini's, Qwen's and VS Code's directory listers. read_url_content has no token-goat equivalent. */
+export const ANTIGRAVITY_TOOL_NAME_MAP: Record<string, string> = {
+  view_file: 'Read',
+  list_dir: 'Read',
+  list_directory: 'Read',
+  run_command: 'Bash',
+  grep_search: 'Grep',
+  find_by_name: 'Glob',
+  find: 'Glob',
+  replace_file_content: 'Edit',
+  multi_replace_file_content: 'Edit',
+  file_change: 'Edit',
+  write_to_file: 'Write',
+  search_web: 'WebSearch',
+}
+
+const AGY_EDIT_KEYS = { TargetFile: 'file_path', TargetContent: 'old_string', ReplacementContent: 'new_string' }
+
+/** Antigravity tool_input key -> internal key, keyed by the Antigravity tool name for the same reason as {@link VSCODE_INPUT_KEY_MAP}: the reverse direction in {@link antigravityNativeToolInput} has to know which tool it is undoing. view_file's `StartLine`/`EndLine` become the `startLine`/`endLine` pair readRequestedSliceWindow already reads, so a ranged view is not mistaken for a whole-file read. */
+export const ANTIGRAVITY_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
+  view_file: { AbsolutePath: 'file_path', StartLine: 'startLine', EndLine: 'endLine' },
+  list_dir: { DirectoryPath: 'file_path' },
+  list_directory: { DirectoryPath: 'file_path' },
+  run_command: { CommandLine: 'command' },
+  grep_search: { Query: 'pattern', SearchPath: 'path' },
+  find_by_name: { Pattern: 'pattern', SearchDirectory: 'path' },
+  find: { Pattern: 'pattern', SearchDirectory: 'path' },
+  replace_file_content: AGY_EDIT_KEYS,
+  multi_replace_file_content: AGY_EDIT_KEYS,
+  file_change: AGY_EDIT_KEYS,
+  write_to_file: { TargetFile: 'file_path', CodeContent: 'content' },
+  search_web: {},
+}
+
+/** Payload key normalizePayload stores the original Antigravity tool name under, so the response side can undo the key rename. */
+export const ANTIGRAVITY_TOOL_NAME_KEY = '_tg_antigravity_tool_name'
+
+/** Rename canonical keys in a rewritten tool input back to the Antigravity tool's own keys. agy merges a PreToolUse hook's `overwrite` object into the tool call's arguments, so a rewrite carrying `command` would leave `CommandLine` untouched beside it. */
+export function antigravityNativeToolInput(agyToolName: string, canonicalInput: Record<string, unknown>): Record<string, unknown> {
+  const inverse: Record<string, string> = {}
+  for (const [nativeKey, canonicalKey] of Object.entries(ownGet(ANTIGRAVITY_INPUT_KEY_MAP, agyToolName) ?? {})) {
+    inverse[canonicalKey] = nativeKey
+  }
+  return remapInputKeys(canonicalInput, inverse)
+}
+
+/** Translate Antigravity's hook payload into the snake_case shape the rest of normalizePayload expects. FORMAT-DERIVED from agy's own hooks guide (~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md, agy 1.2.11): PreToolUse sends `{toolCall: {name, args}, stepIdx, conversationId, workspacePaths, transcriptPath, artifactDirectoryPath, modelName}` and PostToolUse adds `result` and `error`. rtk's integration (rtk-ai/rtk PR #2093) also saw a flat `{tool_name, tool_input}` shape, which passes through untouched because every key is copied only when its snake_case form is absent. The hook process runs in the directory holding hooks.json, not the workspace (CAPTURE, 2026-09-29), so `workspacePaths[0]` fills `cwd`; otherwise every getCwd consumer would fall back to ~/.gemini/config. `transcriptPath` is deliberately not mapped to `transcript_path`: agy's transcript is not Claude Code's JSONL, and the prompt-size reader would misread it. */
+function antigravityToCanonicalWire(obj: Record<string, unknown>): Record<string, unknown> {
+  const wire = { ...obj }
+  const call = wire['toolCall']
+  if (call !== null && typeof call === 'object' && !Array.isArray(call)) {
+    const { name, args } = call as Record<string, unknown>
+    if (typeof name === 'string' && wire['tool_name'] === undefined) wire['tool_name'] = name
+    if (args !== null && typeof args === 'object' && !Array.isArray(args) && wire['tool_input'] === undefined) wire['tool_input'] = args
+  }
+  if (typeof wire['conversationId'] === 'string' && wire['session_id'] === undefined) wire['session_id'] = wire['conversationId']
+  const workspaces = wire['workspacePaths']
+  if (wire['cwd'] === undefined && Array.isArray(workspaces) && typeof workspaces[0] === 'string' && workspaces[0] !== '') wire['cwd'] = workspaces[0]
+  if (wire['tool_response'] === undefined && typeof wire['result'] === 'string') {
+    wire['tool_response'] = typeof wire['error'] === 'string' && wire['error'] !== '' ? { output: wire['result'], error: wire['error'] } : { output: wire['result'] }
+  }
+  return wire
+}
+
 /** Translate grok's camelCase wire keys (toolName/toolInput/sessionId) to the snake_case shape the rest of normalizePayload expects, and unwrap post_tool_use's tagged `toolResult` object into the `tool_response` shape extractBashOutput/extractReadOutput (hooks_bash_post.ts/hooks_read_post.ts) already know how to read (a string, or an object with an 'output'/'content'/ 'text'/'body' string key). Unlike Codex/Gemini, grok's entire wire payload is camelCase, not just its tool-name vocabulary -- `toolName`/`toolInput`/ `sessionId`, never `tool_name`/`tool_input`/`session_id` -- confirmed via the same live capture as GROK_TOOL_NAME_MAP above. run_terminal_command's `toolResult` carries a ready-made `output_for_prompt` string plus a real `exit_code` number, both pulled through directly; other tools' toolResult keys are dynamic and PascalCase (`Content`/`FileContent`/`EditsApplied`, confirmed for list_dir/read_file/search_replace respectively). Rather than hard-code every one of those (and go stale the next time grok renames a field, exactly as happened to Gemini's grep_search rename above), the first string-valued field other than 'type' is used as a best-effort 'content' value. */
 /** Rename `tool_input`'s keys per `keyMap` (unmapped keys pass through unchanged). Shared by the grok and gemini branches of {@link normalizePayload}, which both remap select keys the same way once a tool name has matched. */
 function remapInputKeys(input: Record<string, unknown>, keyMap: Record<string, string>): Record<string, unknown> {
@@ -389,7 +453,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
   }
 
   const rawObj = payload as Record<string, unknown>
-  const obj = harness === 'grok' ? grokToCanonicalWire(rawObj) : rawObj
+  const obj = harness === 'grok' ? grokToCanonicalWire(rawObj) : harness === 'antigravity' ? antigravityToCanonicalWire(rawObj) : rawObj
   const toolName = obj['tool_name']
   if (typeof toolName !== 'string' || !toolName.trim()) {
     _LOG.debug('normalizePayload: tool_name missing or invalid; received %s', toolName)
@@ -434,6 +498,20 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     result[VSCODE_TOOL_NAME_KEY] = toolName
     result['_tg_harness'] = harness
     // No cwd fallback here, deliberately. VS Code sends a cwd when a workspace folder is open: it resolves the hook's cwd to that folder and the payload carries it. With no folder open it resolves none, omits the key, and spawns the hook in the HOME directory -- so process.cwd() at this point IS $HOME. Filling the key from it would convert "the harness told us nothing" into "the harness told us $HOME", and vscode_path_gate.ts would then treat the entire home directory as the workspace and let a pre-approval hook open anything inside it. Leaving the key absent is what lets vscodePathAllowed's `workspace === undefined` branch fail closed. Nothing loses a working directory by this: every getCwd consumer already supplies its own default (hooks_read.ts process.cwd(), hooks_bash.ts null). An earlier version of this comment claimed the payload carried no cwd at all, which was read off the extension source rather than a real run.
+    return result
+  }
+
+  if (harness === 'antigravity') {
+    const mapped = normalizeToolNameWithMap(toolName, ANTIGRAVITY_TOOL_NAME_MAP)
+    const result = { ...obj }
+    result['tool_name'] = mapped
+    const keyMap = ownGet(ANTIGRAVITY_INPUT_KEY_MAP, toolName)
+    const rawInput = obj['tool_input']
+    if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
+      result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
+    }
+    result[ANTIGRAVITY_TOOL_NAME_KEY] = toolName
+    result['_tg_harness'] = harness
     return result
   }
 

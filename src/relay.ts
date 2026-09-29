@@ -107,6 +107,8 @@ function harnessForNormalization(): Harness {
   if (detected === 'copilot_cli') return 'copilot_cli'
   // VS Code's agent hooks run through the shared Copilot shim, which sets TOKEN_GOAT_HARNESS_OVERRIDE=vscode when the payload carries VS Code's `hook_event_name`; its model-facing tool names (read_file, run_in_terminal, ...) need VSCODE_TOOL_NAME_MAP.
   if (detected === 'vscode') return 'vscode'
+  // Antigravity's install wires `token-goat hook <event> --harness antigravity` (antigravity_install.ts), which sets TOKEN_GOAT_HARNESS_OVERRIDE=antigravity. Its payload nests the tool call as `toolCall: {name, args}` with PascalCase argument keys, so without this branch no tool-scoped handler would ever match.
+  if (detected === 'antigravity') return 'antigravity'
   return 'claude'
 }
 

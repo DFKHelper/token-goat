@@ -30,6 +30,7 @@ const EXPECTED: Readonly<Record<string, ScopeDefault>> = {
   Opencode: 'no-scope',
   Openclaw: 'no-scope',
   Grok: 'no-scope',
+  Antigravity: 'no-scope',
   Zed: 'no-scope',
   Hooks: 'no-scope',
   ClaudeMd: 'no-scope',

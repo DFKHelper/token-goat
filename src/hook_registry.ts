@@ -7,6 +7,7 @@ import { recordUnmappedTool } from './stats.js'
 import type { HookEventName, HookOutput } from './types.js'
 import { replaceToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { serializeVscodeOutput } from './bridges/vscode_hooks.js'
+import { serializeAntigravityOutput } from './bridges/antigravity_hooks.js'
 
 /** The event object passed to every {@link HookHandler}. `toolInput` and `raw` are kept as `Record<string, unknown>` rather than a narrower TypedDict-style shape so handlers can read harness-specific keys the registry doesn't model. `toolName` is `undefined` for non-tool events (notification, stop, pre_compact). */
 export interface HookEvent {
@@ -207,6 +208,8 @@ export function serializeOutput(
 ): string {
   // VS Code reads a strict subset of this shape (no top-level deny on PreToolUse, no result rewrite at all), so it has its own serializer; see bridges/vscode_hooks.ts.
   if (harness === 'vscode') return serializeVscodeOutput(output, eventName, CLAUDE_CODE_EVENT_NAMES[eventName], event)
+  // Antigravity reads flat `decision`/`reason`/`overwrite` fields and treats "allow" as an auto-approval, so it has its own serializer too; see bridges/antigravity_hooks.ts.
+  if (harness === 'antigravity') return serializeAntigravityOutput(output, eventName, event)
   switch (output.hookType) {
     case 'deny':
       return JSON.stringify({ decision: 'block', reason: output.message })

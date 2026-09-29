@@ -14,6 +14,7 @@ export type HarnessName =
   | 'qwen'
   | 'kimi'
   | 'vscode'
+  | 'antigravity'
   | 'visualstudio'
   | 'generic'
 

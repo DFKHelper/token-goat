@@ -7,7 +7,7 @@ import { ownGet } from './own_lookup.js'
 import { foldToolName } from './tool_name_fold.js'
 import { HOOK_EVENTS } from './types.js'
 
-/** The harnesses that run a token-goat Node shim. The others call `token-goat hook <event>` directly (Gemini, Qwen), ride Claude Code's wiring (Cursor), or host token-goat in-process (opencode, pi, OpenClaw). */
+/** The harnesses that run a token-goat Node shim. The others call `token-goat hook <event>` directly (Gemini, Qwen, and Antigravity through a one-line launcher in its plugin directory), ride Claude Code's wiring (Cursor), or host token-goat in-process (opencode, pi, OpenClaw). */
 export const ADAPTER_HARNESSES = ['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const
 export type AdapterHarness = (typeof ADAPTER_HARNESSES)[number]
 

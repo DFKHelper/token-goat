@@ -43,7 +43,7 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
   it('covers exactly the real bridge modules -- excludes hermes (no install-writer) and generic (fallback, not a harness)', () => {
     const harnesses = BRIDGE_CAPABILITY_MATRIX.map((r) => r.harness).sort()
     expect(harnesses).toEqual(
-      ['claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'kimi', 'openclaw', 'opencode', 'pi', 'qwen', 'visualstudio', 'vscode'].sort(),
+      ['antigravity', 'claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'kimi', 'openclaw', 'opencode', 'pi', 'qwen', 'visualstudio', 'vscode'].sort(),
     )
     expect(harnesses).not.toContain('hermes')
     expect(harnesses).not.toContain('generic')
@@ -171,7 +171,7 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 9/11 score for copilot_cli, 8/11 for claudecode, 6/11 for kimi and vscode, 5/11 for codex/grok/qwen, 3/11 for opencode/gemini/openclaw/pi', () => {
+  it('shows a 9/11 score for copilot_cli, 8/11 for claudecode, 6/11 for kimi and vscode, 5/11 for codex/grok/qwen, 3/11 for opencode/gemini/openclaw/pi, 2/11 for antigravity', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
     // copilot_cli and claudecode both wire post_tool_use_failure, their own event on both harnesses. copilot_cli also wires stop via its agentStop mapping, which claudecode's settings.json wiring does not; claudecode's edge is post_compact, which no other harness has a confirmed equivalent event for. subagent_start is wired only on copilot_cli and vscode, the two harnesses whose subagent-start hook was shown to deliver the briefing into the subagent.
     expect(text).toMatch(/copilot_cli\s+.*\s9\/11/)
@@ -184,6 +184,8 @@ describe('formatBridgesStatus', () => {
     for (const harness of ['opencode', 'gemini', 'openclaw', 'pi']) {
       expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/11`))
     }
+    // antigravity wires only PreToolUse and PostToolUse: agy documents no session-start, compact or subagent event to map the rest onto.
+    expect(text).toMatch(/antigravity\s+.*\s2\/11/)
   })
 })
 
