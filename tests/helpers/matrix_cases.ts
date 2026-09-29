@@ -2358,6 +2358,13 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // Invalid regex falls back to a literal substring match instead of erroring.
     const grepInvalid = run(['deps', 'app.ts', '--grep', '[unclosed'])
     expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
+
+    // --importers turns the question around: the committed app.ts imports src/mod.ts, so it is listed as an importer, root-relative.
+    const importers = run(['deps', 'src/mod.ts', '--importers', '--json'])
+    expect(importers.status, importers.stderr).toBe(0)
+    const imp = JSON.parse(importers.stdout) as { file: string; importedBy: string[] }
+    expect(imp.file).toBe('src/mod.ts')
+    expect(imp.importedBy).toContain('app.ts')
   },
   types: () => {
     // The fixture is tiny and may have no type declarations; accept exit 0 or 1 but never a crash.

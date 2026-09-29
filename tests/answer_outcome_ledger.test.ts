@@ -1,4 +1,5 @@
 /** `token-goat answer` books every call in the stats ledger: `answer:<route>` naming the command it delegated to (the one its `via:` line prints), with the delegate's outcome as detail, or `answer:refused` with the reason it refused. `stats` then lists an `answer` row under By Command. Before this the router recorded nothing of its own: a routed answer was booked only as the delegate's kind, indistinguishable from a direct call, and a refusal left no trace, so neither how often `answer` is used nor how often it refuses could be measured. */
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -48,6 +49,18 @@ describe('answer outcome ledger', () => {
     expect(runAnswer({ question: 'Where is ledgerTarget5w' })).toBe(0)
     expect(runAnswer({ question: 'Check ledger_def5w.ts exports' })).toBe(0)
     expect(answerRows().slice(before)).toEqual(['answer:callers answered', 'answer:symbol answered', 'answer:exports answered'])
+  })
+
+  it('books an importers question under deps, the command its via: line names', () => {
+    // Importers come from git-tracked files, so the scratch project is made a repository first.
+    execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' })
+    execFileSync('git', ['add', '.'], { cwd: root, stdio: 'ignore' })
+    const before = answerRows().length
+    // HAND-DERIVED: the reverse of the router's `what does X import` intent, with this file's subject substituted.
+    expect(runAnswer({ question: 'what imports ledger_def5w.ts' })).toBe(0)
+    expect(answerRows().slice(before)).toEqual(['answer:deps answered'])
+    // The row counts under `answer` in By Command, not only in the raw ledger: stats keeps its own list of answer kinds, which once lacked this route.
+    expect(summarize(30).by_command.find((r) => r.command === 'answer')?.events).toBe(answerRows().length)
   })
 
   it('books each refusal with the reason it refused', () => {
