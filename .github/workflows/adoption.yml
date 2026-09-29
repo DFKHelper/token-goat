@@ -1,0 +1,34 @@
+name: Adoption
+
+# Weekly npm downloads, GitHub stars and forks, printed to this run's job summary by
+# scripts/adoption-baseline.mjs. The script rebuilds the whole series from the public APIs each
+# time, so nothing is stored between runs and nothing is committed back.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 06:43 UTC, after npm has counted Sunday. Off the hour on purpose -- the top of the
+    # hour is when every cron-scheduled workflow on the platform queues at once.
+    - cron: '43 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  adoption:
+    name: Adoption by week
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      # The script uses Node built-ins only, so there is no npm ci. GitHub will not list
+      # stargazers without a token; the job's own read-only token is enough.
+      - name: Write the table to the job summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/adoption-baseline.mjs >> "$GITHUB_STEP_SUMMARY"
