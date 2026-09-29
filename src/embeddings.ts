@@ -13,7 +13,8 @@ import {
   type EmbeddingPreflightStatus,
 } from './embed_model.js'
 import { activeRuntime, isRuntimeAvailable, runtimeLoadError, runtimeVersion } from './embed_runtime.js'
-import { pathEqClause, projectScopeClause } from './sql_path.js'
+import { ownProjectScope } from './nested_worktrees.js'
+import { pathEqClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
 import { EMBED_FINGERPRINT, EMBED_KIND_FINGERPRINTS, PRE_KIND_EMBED_FINGERPRINT, SPLIT_EMBED_FINGERPRINT } from './embed_fingerprint.js'
@@ -680,13 +681,13 @@ export function fetchScopedHits(
   }
 
   // Fetch chunk metadata from the chunks table, scoped to rootDir when provided.
-  const scope = rootDir !== undefined ? projectScopeClause('file_path') : undefined
+  const scope = rootDir !== undefined ? ownProjectScope('file_path', rootDir) : undefined
   const chunkSql =
     scope !== undefined
       ? `SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ? AND ${scope.clause}`
       : `SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ?`
   const chunkStmt = db.prepare(chunkSql)
-  const scopeParams = scope !== undefined && rootDir !== undefined ? scope.params(rootDir) : undefined
+  const scopeParams = scope?.params
 
   // Build hits from rows.
   const hits: SearchHit[] = []
@@ -723,7 +724,7 @@ export function fetchScopedExactHits(
   maxDistance: number,
   rootDir: string,
 ): SearchHit[] {
-  const scope = projectScopeClause('c.file_path')
+  const scope = ownProjectScope('c.file_path', rootDir)
   // The threshold runs inside the query and the row limit outside it, in that order. A vector holding a NaN component -- refused on write now, but written by earlier builds -- makes `vec_distance_L2` return SQL NULL, and NULL sorts ahead of every real distance under ASC, so a limit applied before the distance test is spent on rows that are not matches at all: measured on a four-row fixture with two such vectors, `LIMIT 2` returned both NULLs and neither of the two genuine hits. Filtering afterwards in JavaScript cannot recover them, because by then the query has already thrown them away. That is the same cap-before-predicate shape this function exists to remove, one layer down.
   const rows = db
     .prepare(
@@ -736,7 +737,7 @@ export function fetchScopedExactHits(
        ORDER BY distance ASC, file_path ASC, start_line ASC, id ASC
        LIMIT ?`,
     )
-    .all(packVec(queryVec), ...scope.params(rootDir), maxDistance, limit) as Array<
+    .all(packVec(queryVec), ...scope.params, maxDistance, limit) as Array<
     { file_path: string; start_line: number; end_line: number; text: string; kind: string; distance: number } | undefined
   >
 

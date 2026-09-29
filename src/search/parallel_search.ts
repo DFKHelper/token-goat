@@ -3,7 +3,7 @@ import { getDb } from '../db.js';
 import { globalDbPath } from '../constants.js';
 import { searchSemantic, mergeNearbyHits, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD } from '../embeddings.js';
 import { checkSemanticReadiness } from '../embed_preflight.js';
-import { getProjectFileEntries } from '../index_reader.js';
+import { getOwnProjectFileEntries } from '../index_reader.js';
 import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
 import { readFileText } from '../read_commands.js';
@@ -58,7 +58,7 @@ async function searchHeadingChannel(query: string, limit: number, rootDir?: stri
 async function searchTextChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   await Promise.resolve();
   try {
-    const fileEntries = getProjectFileEntries(rootDir ?? process.cwd());
+    const fileEntries = getOwnProjectFileEntries(rootDir ?? process.cwd());
     const hits: ChannelHit[] = [];
     const lowerQuery = query.toLowerCase();
     let totalBytesScanned = 0;

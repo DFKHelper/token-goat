@@ -76,6 +76,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/index_reader.ts': 'querySymbols is used inside buildEmbeddingBoundaries to read back already-written symbol rows for embedding chunking, and elsewhere only by CLI read commands; it never decides what indexFileSync writes',
   'src/injection_scan.ts': 'untrusted-content fencing for CLI/hook output display, reached via paths.ts, never applied to stored symbol/ref/section content',
   'src/lazy_module.ts': 'generic optional-dependency lazy-loader factory used by pdf/ooxml_extract.ts (embed_sha pipeline) and unrelated CLI surfaces; carries no extraction decisions itself',
+  'src/nested_worktrees.ts': 'narrows which already-indexed rows a rootDir-scoped read returns, by leaving out git worktrees nested under the root; indexFileSync writes one file by path and never takes a rootDir scope, so nothing here decides what a parse extracts',
   'src/ocr_languages.ts': 'OCR language selection for image/PDF text extraction, part of the embed_sha-gated document pipeline',
   'src/ooxml_extract.ts': 'shared zip/XML helpers for docx/pptx/xlsx extraction, part of the embed_sha-gated pipeline',
   'src/parser_fingerprint.ts': 'the generated digest constant itself; hashing it into its own digest is self-referential',

@@ -3,7 +3,7 @@
 import { getDb } from '../db.js'
 import { sanitizeFtsQuery } from '../index_reader.js'
 import type { SymbolEntry } from '../parser_types.js'
-import { projectScopeClause } from '../sql_path.js'
+import { ownProjectScope } from '../nested_worktrees.js'
 
 /** Which side of the heading/symbol split a query keeps. */
 export type SymbolKindFilter = { readonly equals: string } | { readonly notEquals: string }
@@ -20,7 +20,7 @@ interface SymbolRow {
 }
 
 function runKindFtsQuery(dbPath: string, match: string, limit: number, rootDir: string | undefined, kind: SymbolKindFilter): SymbolEntry[] {
-  const scope = rootDir !== undefined ? projectScopeClause('s.file_path') : undefined
+  const scope = rootDir !== undefined ? ownProjectScope('s.file_path', rootDir) : undefined
   const kindClause = 'equals' in kind ? 's.kind = ?' : 's.kind != ?'
   // FTS5's MATCH operator and bm25() must name the FTS table directly: a table alias resolves as a bare column reference.
   const sql =
@@ -28,7 +28,7 @@ function runKindFtsQuery(dbPath: string, match: string, limit: number, rootDir: 
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
     `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} AND ${kindClause} ORDER BY bm25(symbols_fts) LIMIT ?`
   const params: (string | number)[] = [match]
-  if (scope !== undefined && rootDir !== undefined) params.push(...scope.params(rootDir))
+  if (scope !== undefined) params.push(...scope.params)
   params.push('equals' in kind ? kind.equals : kind.notEquals, limit)
   const rows = getDb(dbPath).prepare(sql).all(...params) as SymbolRow[]
   return rows.map((row) => ({

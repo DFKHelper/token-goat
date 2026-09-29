@@ -2,6 +2,7 @@
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
+import { ownProjectScope } from './nested_worktrees.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
 import { normalizePath } from './paths.js'
 import { pathEqClause as pathEq, pathSuffixClause, projectScopeClause } from './sql_path.js'
@@ -75,9 +76,9 @@ function applyRootDirScope(
   params: (string | number)[],
 ): void {
   if (rootDir === undefined) return
-  const { clause, params: bounds } = projectScopeClause(column)
-  where.push(clause)
-  params.push(...bounds(indexKey(rootDir)))
+  const scope = ownProjectScope(column, indexKey(rootDir))
+  where.push(scope.clause)
+  params.push(...scope.params)
 }
 
 interface SymbolQueryOpts {
@@ -264,11 +265,23 @@ export function getProjectFileEntries(
   rootDir: string,
   dbPath: string = globalDbPath(),
 ): Map<string, FileIndexEntry> {
-  const db = getDb(dbPath)
   const { clause, params } = projectScopeClause('path')
-  const rows = db
+  return fileEntriesWhere(clause, params(indexKey(rootDir)), dbPath)
+}
+
+/** {@link getProjectFileEntries} without the git worktrees nested inside the project, for read paths answering a question about this checkout. The full range is right for maintenance, which has to see every row under the root to clean up after a deleted file, and wrong for a search: the text channel matched a nested agent worktree's stale copy of a file as its own hit, and `answer` counted each copy as a second file with the same name and refused the question as ambiguous. */
+export function getOwnProjectFileEntries(
+  rootDir: string,
+  dbPath: string = globalDbPath(),
+): Map<string, FileIndexEntry> {
+  const { clause, params } = ownProjectScope('path', indexKey(rootDir))
+  return fileEntriesWhere(clause, params, dbPath)
+}
+
+function fileEntriesWhere(clause: string, params: readonly string[], dbPath: string): Map<string, FileIndexEntry> {
+  const rows = getDb(dbPath)
     .prepare(`SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${clause}`)
-    .all(...params(indexKey(rootDir))) as FileRow[]
+    .all(...params) as FileRow[]
 
   const out = new Map<string, FileIndexEntry>()
   for (const row of rows) {
@@ -333,8 +346,7 @@ function runFtsQuery(
   db: ReturnType<typeof getDb>,
   match: string,
   limit: number,
-  scope: ReturnType<typeof projectScopeClause> | undefined,
-  rootDir: string | undefined,
+  scope: ReturnType<typeof ownProjectScope> | undefined,
 ): SymbolEntry[] {
   // FTS5's MATCH operator and bm25() must name the FTS table directly — a table alias resolves as a bare column reference ("no such column: f"), which the catch below would silently swallow, leaving `semantic` permanently empty.
   const sql =
@@ -342,9 +354,7 @@ function runFtsQuery(
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
     `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} ORDER BY bm25(symbols_fts) LIMIT ?`
   const params: (string | number)[] = [match]
-  if (scope !== undefined && rootDir !== undefined) {
-    params.push(...scope.params(rootDir))
-  }
+  if (scope !== undefined) params.push(...scope.params)
   params.push(limit)
   const rows = db.prepare(sql).all(...params) as SymbolRow[]
   return rows.map(toSymbolEntry)
@@ -361,14 +371,14 @@ export function searchSymbolsFts(
   if (andMatch === '') return []
 
   const db = getDb(dbPath)
-  const scope = rootDir !== undefined ? projectScopeClause('s.file_path') : undefined
+  const scope = rootDir !== undefined ? ownProjectScope('s.file_path', indexKey(rootDir)) : undefined
   try {
-    const andResults = runFtsQuery(db, andMatch, limit, scope, rootDir)
+    const andResults = runFtsQuery(db, andMatch, limit, scope)
     if (andResults.length > 0) return andResults
 
     const orMatch = sanitizeFtsQuery(query, 'OR')
     if (orMatch === andMatch) return andResults
-    return runFtsQuery(db, orMatch, limit, scope, rootDir)
+    return runFtsQuery(db, orMatch, limit, scope)
   } catch {
     // FTS5 missing or a syntactically invalid MATCH query — degrade to empty.
     return []
