@@ -59,18 +59,23 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
   await Promise.resolve();
   try {
     const fileEntries = getOwnProjectFileEntries(rootDir ?? process.cwd());
-    const hits: ChannelHit[] = [];
     const lowerQuery = query.toLowerCase();
     let totalBytesScanned = 0;
     let filesScanned = 0;
+    let visited = 0;
     let unreadableCount = 0;
-    const MAX_FILES = 300;
-    const MAX_BYTES = 5 * 1024 * 1024;
+    let capped = false;
+    // A byte budget, not a file count: a count of 300 stopped this repo's scan at src/ while its 1,874 indexed files came to 22.8 MB, read in under 200 ms.
+    const MAX_BYTES = 64 * 1024 * 1024;
+    const PER_FILE_HITS = 3;
+    const matched: Array<{ lines: Array<{ line: number; preview: string }>; count: number; filePath: string }> = [];
 
     for (const file of fileEntries.values()) {
-      if (hits.length >= limit || filesScanned >= MAX_FILES || totalBytesScanned >= MAX_BYTES) break;
-      filesScanned++;
-      if (filesScanned % 50 === 0) {
+      if (totalBytesScanned >= MAX_BYTES) {
+        capped = true;
+        break;
+      }
+      if (++visited % 50 === 0) {
         await new Promise((resolve) => setImmediate(resolve));
       }
       const fullPath = file.filePath;
@@ -79,6 +84,7 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
         if (!fs.existsSync(fullPath)) continue;
         const stat = fs.statSync(fullPath);
         if (stat.size > 200_000) continue;
+        filesScanned++;
         totalBytesScanned += stat.size;
 
         // Through the reader seam, not a plain utf-8 read: the matching line is printed as the preview, so a dotenv value has to come back masked the way `read` shows it, and a UTF-16 file has to be decoded before a query can match it.
@@ -88,26 +94,32 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
           continue;
         }
         const lines = content.split(/\r?\n/);
+        const found: { lines: Array<{ line: number; preview: string }>; count: number; filePath: string } = { lines: [], count: 0, filePath: fullPath };
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           if (line && line.toLowerCase().includes(lowerQuery)) {
-            hits.push({
-              channel: 'text' as SearchChannel,
-              filePath: fullPath,
-              lineStart: i + 1,
-              lineEnd: i + 1,
-              preview: line.slice(0, 140).trim(),
-              rank: hits.length + 1,
-            });
-            if (hits.length >= limit) break;
+            found.count++;
+            if (found.lines.length < PER_FILE_HITS) found.lines.push({ line: i + 1, preview: line.slice(0, 140).trim() });
           }
         }
+        if (found.count > 0) matched.push(found);
       } catch {
         unreadableCount++;
       }
     }
 
-    const capped = filesScanned >= MAX_FILES || totalBytesScanned >= MAX_BYTES;
+    // Every file is scanned before any hit is kept, then the files that mention the query most go first and each gives one line per round: stopping at the first `limit` matching lines handed every slot to whatever sorted first, so a changelog or a docs folder that mentions a name often could crowd out the file that defines it.
+    matched.sort((a, b) => b.count - a.count);
+    const hits: ChannelHit[] = [];
+    for (let round = 0; round < PER_FILE_HITS && hits.length < limit; round++) {
+      for (const file of matched) {
+        const hit = file.lines[round];
+        if (!hit) continue;
+        hits.push({ channel: 'text' as SearchChannel, filePath: file.filePath, lineStart: hit.line, lineEnd: hit.line, preview: hit.preview, rank: hits.length + 1 });
+        if (hits.length >= limit) break;
+      }
+    }
+
     const degradedParts: string[] = [];
     if (capped) {
       degradedParts.push(`Scanned ${filesScanned} files (${Math.round(totalBytesScanned / 1024)} KB, capped)`);
