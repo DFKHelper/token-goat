@@ -41,7 +41,8 @@
     "schema:copilot": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json",
     "schema:copilot:check": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json --check",
     "docs:arch": "node scripts/sync-arch-docs.mjs",
-    "docs:arch:check": "node scripts/sync-arch-docs.mjs --check"
+    "docs:arch:check": "node scripts/sync-arch-docs.mjs --check",
+    "adoption": "node scripts/adoption-baseline.mjs"
   },
   "contributors": [
     {
