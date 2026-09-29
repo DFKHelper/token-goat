@@ -4417,6 +4417,57 @@ describe('runTestFor', () => {
     }
   })
 
+  it('does not list a test that only uses a name another source file also defines, unless it imports the target (regression: `test-for src/zip_bounds.ts` listed all 605 test files, because its interface members and methods share names like `name` and `push` with the rest of the project, where five import it)', () => {
+    // Provenance: HAND-DERIVED. The fixture files and the expected set are written from the import statements below, not from runTestFor's matcher; the 605-against-5 figure is CAPTURE from `token-goat test-for src/zip_bounds.ts` on this repository before the fix.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-ambig-'))
+    try {
+      writeFileSync(join(dir, 'package.json'), '{"name":"tg-testfor-ambig-fixture"}\n')
+      mkdirSync(join(dir, 'src', 'pkg'), { recursive: true })
+      mkdirSync(join(dir, 'tests'))
+      const target = normalizePath(join(dir, 'src', 'target.ts'))
+      const other = normalizePath(join(dir, 'src', 'other.ts'))
+      const pkgIndex = normalizePath(join(dir, 'src', 'pkg', 'index.ts'))
+      const viaImport = normalizePath(join(dir, 'tests', 'via_import.test.ts'))
+      const viaUnique = normalizePath(join(dir, 'tests', 'via_unique.test.ts'))
+      const unrelated = normalizePath(join(dir, 'tests', 'unrelated.test.ts'))
+      const viaIndex = normalizePath(join(dir, 'tests', 'via_index.test.ts'))
+      writeFileSync(target, 'export class Box {\n  measureSize() {\n    return 1\n  }\n}\n\nexport function __ambigUniqueFn_4b8e() {\n  return 2\n}\n')
+      writeFileSync(other, 'export class Crate {\n  measureSize() {\n    return 3\n  }\n}\n')
+      writeFileSync(pkgIndex, 'export class Pallet {\n  measureSize() {\n    return 4\n  }\n}\n')
+      // imports the target with the compiled `.js` spelling and uses only the shared method name
+      writeFileSync(viaImport, "import type { Box } from '../src/target.js'\n\nfunction test_viaImport(b: Box) {\n  return b.measureSize()\n}\n")
+      // imports nothing from the target but calls a name only the target defines
+      writeFileSync(viaUnique, 'declare function __ambigUniqueFn_4b8e(): number\n\nfunction test_viaUnique() {\n  return __ambigUniqueFn_4b8e()\n}\n')
+      // uses the shared name through a different module
+      writeFileSync(unrelated, "import type { Crate } from '../src/other.js'\n\nfunction test_unrelated(c: Crate) {\n  return c.measureSize()\n}\n")
+      // a package that happens to share the target's basename, imported from beside it: `import 'zod'` next to src/zod.ts is a package, not the file
+      const barePkg = normalizePath(join(dir, 'src', 'bare_pkg.test.ts'))
+      writeFileSync(barePkg, "import type { Thing } from 'target'\n\nfunction test_barePkg(t: Thing) {\n  return t.measureSize()\n}\n")
+      for (const f of [target, other, pkgIndex, viaImport, viaUnique, unrelated, barePkg]) indexFileSync(f)
+
+      const listed = (file: string): string[] => {
+        const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
+        try {
+          const captured = captureStdout(() => {
+            expect(runTestFor({ file, json: true })).toBe(0)
+          })
+          return envelopeItems<{ testFile: string }>(captured).map((r) => r.testFile).sort()
+        } finally {
+          cwdSpy.mockRestore()
+        }
+      }
+
+      expect(listed(target)).toEqual(['tests/via_import.test.ts', 'tests/via_unique.test.ts'])
+
+      // a directory import stands for its index file
+      writeFileSync(viaIndex, "import type { Pallet } from '../src/pkg'\n\nfunction test_viaIndex(p: Pallet) {\n  return p.measureSize()\n}\n")
+      indexFileSync(viaIndex)
+      expect(listed(pkgIndex)).toEqual(['tests/via_index.test.ts'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('does not misclassify an ordinary helper whose name merely starts with "it" or "test" as a test function (regression: the test-prefix regex had no boundary after the alternation, so a bare prefix match let "it" match "itemsToJson"/"iterateOverTargetHelper" and "test" match "testament")', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-itword-'))
     try {
