@@ -62,7 +62,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['scripts/**/*.ts'],
+    files: ['scripts/**/*.ts', 'evals/**/*.ts'],
     languageOptions: {
       parserOptions: { project: './tsconfig.tests.json' },
     },
