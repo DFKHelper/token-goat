@@ -15,6 +15,11 @@ function bashEvent(sessionId: string, command: string): HookEvent {
   return { eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId, agentId: undefined, raw: {} }
 }
 
+/** Closes the window on every pending row in `sessionId` without following any of them, so each is scored: more unrelated calls than any row's window holds. A row still inside its window is pending, not emitted, and is in neither the emitted count nor the suppression sample. */
+function expireWindow(sessionId: string): void {
+  for (let i = 0; i < 8; i++) resolvePendingHintsForEvent(bashEvent(sessionId, 'ls'))
+}
+
 beforeEach(() => {
   clearModuleCaches()
   resetHintStats()
@@ -85,7 +90,9 @@ describe('runHintStatsCommand — human output', () => {
     saveConfig(cfg)
     clearModuleCaches()
     // A real correlator, because this helper's job is "this category emitted and was never acted on". A null correlator now means the opposite -- nothing a later command could have matched, so no verdict was observed -- and such a row is not part of the sample shouldSuppress judges.
-    logHintEmission('bash_redirect', nonce(), 'C:/x/suppress.ts')
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/suppress.ts')
+    expireWindow(sid)
   }
 
   it('marks a permanently-suppressed category and names the action that clears it', () => {
@@ -240,6 +247,7 @@ describe('runHintStatsCommand — efficacy polarity disclosure', () => {
     const sid = nonce()
     logHintEmission('edit_reread_suggest', sid, 'C:/x/a.ts')
     logHintEmission('bash_redirect', sid, 'C:/x/b.ts')
+    expireWindow(sid)
 
     const output = captureStdout(() => runHintStatsCommand())
     const line = (cat: string) => output.split('\n').find((l) => l.startsWith(cat)) ?? ''
@@ -278,6 +286,7 @@ describe('runHintStatsCommand — unobservable emissions are disclosed, not sile
     logHintEmission('bash_redirect', sid, 'C:/x/seen.ts')
     logHintEmission('bash_redirect', sid, null)
     logHintEmission('bash_redirect', sid, null)
+    expireWindow(sid)
 
     const output = captureStdout(() => runHintStatsCommand())
     const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
@@ -303,6 +312,7 @@ describe('runHintStatsCommand — unobservable emissions are disclosed, not sile
     logHintEmission('bash_redirect', sid, 'C:/x/shown.ts')
     logSuppressedDetection('bash_redirect', sid, 'C:/x/hidden.ts')
     logSuppressedDetection('bash_redirect', sid, 'C:/x/hidden2.ts')
+    expireWindow(sid)
 
     const output = captureStdout(() => runHintStatsCommand())
     expect(output).toContain('undisplayed')
@@ -314,7 +324,9 @@ describe('runHintStatsCommand — unobservable emissions are disclosed, not sile
   })
 
   it('prints a dash, not a zero, and stays silent when nothing was suppressed', () => {
-    logHintEmission('bash_redirect', nonce(), 'C:/x/shown.ts')
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/shown.ts')
+    expireWindow(sid)
 
     const output = captureStdout(() => runHintStatsCommand())
     const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
@@ -337,5 +349,93 @@ describe('runHintStatsCommand — unobservable emissions are disclosed, not sile
     // The zeros here mean "recorded but unscoreable", which calls for fixing the hint builder that supplies no correlator -- the opposite action from "go collect data".
     expect(output).not.toContain('No hint emissions recorded yet')
     expect(output).toContain('carried no correlator')
+  })
+})
+
+// A hint still inside its window, or left there by a session that ended, has not been scored either way, so it is out of the emitted count and the suppression sample. It still reached the agent and spent its bytes, so the table has to show where it went: five such rows from one ended session once muted a category whose scored rows put it over the bar, and dropping them from view without a marker would look like data loss instead.
+//
+// FIXTURE PROVENANCE: HAND-DERIVED. Each expected count and byte figure follows from the emissions the test itself makes.
+describe('runHintStatsCommand — pending emissions are disclosed, not silently dropped', () => {
+  const PENDING_NOTE = 'still waiting on a verdict'
+
+  it('marks the emitted cell with +N and explains the marker', () => {
+    const settled = nonce()
+    logHintEmission('bash_redirect', settled, 'C:/x/scored.ts', false, 100)
+    expireWindow(settled)
+    const open = nonce()
+    logHintEmission('bash_redirect', open, 'C:/x/open1.ts', false, 100)
+    logHintEmission('bash_redirect', open, 'C:/x/open2.ts', false, 100)
+
+    const output = captureStdout(() => runHintStatsCommand())
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line).toBeDefined()
+    expect(line).toMatch(/^bash_redirect\s+1 \+2\s+-\s+0\s/)
+    // Spend covers all three rows: the two pending ones reached the agent too.
+    expect(line).toMatch(/\s300$/)
+    expect(output).toContain(PENDING_NOTE)
+  })
+
+  it('stays silent, and prints no +N, when every emission has been scored', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/scored.ts', false, 100)
+    expireWindow(sid)
+
+    const output = captureStdout(() => runHintStatsCommand())
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line).not.toContain('+')
+    expect(output).not.toContain(PENDING_NOTE)
+  })
+
+  it('keeps both markers apart when a category has pending and unobservable rows', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/open.ts')
+    logHintEmission('bash_redirect', sid, null)
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output.split('\n').find((l) => l.startsWith('bash_redirect'))).toMatch(/^bash_redirect\s+0 \+1 ~1\s/)
+  })
+
+  it('shows real spend, not n/a, for a category whose only rows are pending', () => {
+    logHintEmission('bash_redirect', nonce(), 'C:/x/open.ts', false, 150)
+    const output = captureStdout(() => runHintStatsCommand())
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line).toMatch(/\s150$/)
+    expect(line).not.toContain('n/a (legacy)')
+    expect(line).not.toMatch(/\sn\/a$/)
+  })
+
+  it('shows real spend, not n/a, for a category whose only rows are unobservable', () => {
+    logHintEmission('bash_redirect', nonce(), null, false, 90)
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output.split('\n').find((l) => l.startsWith('bash_redirect'))).toMatch(/\s90$/)
+  })
+
+  it('a store holding only pending rows is not reported as absence of data', () => {
+    logHintEmission('bash_redirect', nonce(), 'C:/x/open.ts')
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).not.toContain('No hint emissions recorded yet')
+    expect(output).toContain(PENDING_NOTE)
+  })
+
+  it('a session holding only pending rows is not reported as having none', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/open.ts')
+    const output = captureStdout(() => runHintStatsCommand({ sessionId: sid }))
+    expect(output).not.toContain('No hint emissions were recorded for this session')
+  })
+
+  it('--json carries the pending count, and --session-id scopes it to that session', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, 'C:/x/open.ts')
+    logHintEmission('bash_redirect', nonce(), 'C:/x/other.ts')
+
+    const all = JSON.parse(captureStdout(() => runHintStatsCommand({ json: true }))) as Array<{ category: string; pending: number }>
+    expect(all.find((r) => r.category === 'bash_redirect')?.pending).toBe(2)
+
+    const scoped = JSON.parse(captureStdout(() => runHintStatsCommand({ json: true, sessionId: sid }))) as {
+      rows: Array<{ category: string; pending: number }>
+      scope: { session: string[] }
+    }
+    expect(scoped.rows.find((r) => r.category === 'bash_redirect')?.pending).toBe(1)
+    expect(scoped.scope.session).toContain('pending')
   })
 })

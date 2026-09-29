@@ -21,6 +21,7 @@ import {
   resolvePendingHintsForEvent,
   shouldSuppress,
   HINT_CATEGORIES,
+  type HintCategory,
 } from '../src/hint_stats.js'
 import { recordStat, GLOBAL_SCHEMA_SQL, pruneHintEmissions } from '../src/stats.js'
 import { getDb } from '../src/db.js'
@@ -43,6 +44,19 @@ function seedComplied(category: 'read_reread_dedup' | 'read_structural_nav' | 'e
   const session = nonce()
   logHintEmission(category, session, unfollowed(), false, bytesEmitted)
   for (let i = 0; i < 6; i++) resolvePendingHintsForEvent(bashEvent(session, `echo idle-${i}`))
+}
+
+/** Runs out a session's ACTED_ON_WINDOW with unrelated calls, so every hint still pending in it is scored. A hint nobody has scored yet is pending, not ignored, and efficacy and shouldSuppress leave it out of their sample; a seed that means "shown and never followed" has to be settled first or it seeds nothing. */
+function expireWindow(sessionId: string): void {
+  for (let i = 0; i < 8; i++) resolvePendingHintsForEvent(bashEvent(sessionId, `echo idle-${i}`))
+}
+
+/** Logs a hint whose pointer is never followed and settles it, which is what the "0% acted-on" seeds below mean. */
+function seedIgnored(category: HintCategory, bytesEmitted: number | null = null): string {
+  const session = nonce()
+  logHintEmission(category, session, unfollowed(), false, bytesEmitted)
+  expireWindow(session)
+  return session
 }
 
 function bashEvent(sessionId: string, command: string): HookEvent {
@@ -277,8 +291,8 @@ describe('getHintStatsSummary — spend (bytesEmitted/legacyEmissions)', () => {
   })
 
   it('sums only the tracked rows and reports the legacy count separately for a mixed category', () => {
-    logHintEmission('bash_recall', nonce(), unfollowed()) // legacy: no spend figure
-    logHintEmission('bash_recall', nonce(), unfollowed(), false, 80) // tracked
+    seedIgnored('bash_recall') // legacy: no spend figure
+    seedIgnored('bash_recall', 80) // tracked
     const summary = getHintStatsSummary()
     const row = summary.find((r) => r.category === 'bash_recall')
     expect(row?.emitted).toBe(2)
@@ -493,6 +507,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     for (let i = 0; i < 4; i++) {
       const n = nonce()
       logHintEmission('bash_redirect', n, unfollowed()) // a real pointer, never followed
+      expireWindow(n)
     }
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
   })
@@ -506,6 +521,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     for (let i = 0; i < 5; i++) {
       const n = nonce()
       logHintEmission('bash_redirect', n, unfollowed()) // 0% acted-on
+      expireWindow(n)
     }
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
@@ -536,6 +552,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     resolvePendingHintsForEvent(bashEvent(nActed, 'token-goat skeleton "C:/repo/a.ts"'))
     const nNotActed = nonce()
     logHintEmission('bash_redirect', nNotActed, unfollowed())
+    expireWindow(nNotActed)
     // 1/2 = 50%, not below a 50% threshold.
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
 
@@ -552,7 +569,7 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     cfg.hint_stats.suppress_threshold_pct = 100 // guarantee suppression on the first sample
     saveConfig(cfg)
 
-    logHintEmission('bash_redirect', nonce(), unfollowed()) // 0% acted-on
+    seedIgnored('bash_redirect') // 0% acted-on
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     const summary = getHintStatsSummary()
@@ -613,8 +630,10 @@ describe('applyHintTracking', () => {
     expect(result).toEqual(contextOut)
 
     const summary = getHintStatsSummary()
-    // Exactly one applyHintTracking call above, isolated by beforeEach's resetHintStats().
-    expect(summary.find((r) => r.category === 'bash_redirect')?.emitted).toBe(1)
+    // Exactly one applyHintTracking call above, isolated by beforeEach's resetHintStats(). Nothing has scored it yet, so it is pending until its window runs out.
+    expect(summary.find((r) => r.category === 'bash_redirect')?.pending).toBe(1)
+    expireWindow(n)
+    expect(getHintStatsSummary().find((r) => r.category === 'bash_redirect')?.emitted).toBe(1)
   })
 
   it('records the emitted hint text length as the spend (bytesEmitted) for this emission', () => {
@@ -636,6 +655,7 @@ describe('applyHintTracking', () => {
 
     const seedSession = nonce()
     logHintEmission('bash_redirect', seedSession, unfollowed()) // 0% acted-on
+    expireWindow(seedSession)
 
     const n = nonce()
     const event = bashEvent(n, 'cat C:/repo/other.ts')
@@ -721,6 +741,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     // Seed one below-threshold, never-acted-on emission so the category crosses min_sample_size at 0% efficacy.
     const seedSession = nonce()
     logHintEmission('bash_redirect', seedSession, unfollowed())
+    expireWindow(seedSession)
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     // Occasion 1 while suppressed matches backoff_thresholds' single threshold (1) -- must probe: shown to the caller AND logged as a real emission, unlike an ordinary suppressed occasion.
@@ -752,6 +773,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
 
     const seedSession = nonce()
     logHintEmission('bash_redirect', seedSession, unfollowed())
+    expireWindow(seedSession)
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     // Occasions 1 and 2 don't match the schedule -- must stay silently suppressed, not logged.
@@ -787,6 +809,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
 
     const seedSession = nonce()
     logHintEmission('bash_redirect', seedSession, unfollowed())
+    expireWindow(seedSession)
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     for (let i = 0; i < 40; i++) {
@@ -811,6 +834,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     // Episode 1: seed a 0%-acted-on emission -> suppressed. Occasion 1 matches threshold [1] and probes through.
     const seedSession = nonce()
     logHintEmission('bash_redirect', seedSession, unfollowed())
+    expireWindow(seedSession)
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     const probeSession = nonce()
@@ -827,6 +851,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     const liftedEvent = bashEvent(liftedSession, 'cat C:/repo/lifted.ts')
     const liftedContext = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/lifted.ts::Foo"` instead.' }
     expect(applyHintTracking(liftedEvent, liftedContext, classify)).toEqual(liftedContext) // shown: not suppressed yet
+    expireWindow(liftedSession) // scored as ignored, so it enters the sample
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true) // suppressed again starting now
 
     // Episode 2, occasion 1: if the streak was properly reset to 0, this is occasion 1 again, which matches threshold [1] and must probe through -- not stay silently suppressed as it would if the streak had kept counting up from episode 1's leftover value.
@@ -872,7 +897,7 @@ describe('pruneHintEmissions (retention via the shared stats maintenance throttl
     )
     for (let i = 0; i < 5; i++) insertOld.run(`old-${nonce()}`, oldMs) // old rows alone already cross min_sample_size at 0% efficacy
 
-    for (let i = 0; i < 5; i++) logHintEmission('bash_redirect', nonce(), unfollowed()) // fresh rows, also 0% efficacy -- cross the same threshold on their own
+    for (let i = 0; i < 5; i++) seedIgnored('bash_redirect') // fresh rows, also 0% efficacy -- cross the same threshold on their own
 
     expect(shouldSuppress('bash_redirect', nonce()), 'setup: suppressed before pruning').toBe(true)
 
@@ -1127,7 +1152,7 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     cfg.hints.backoff_thresholds = thresholds as number[]
     saveConfig(cfg)
 
-    logHintEmission('bash_redirect', nonce(), unfollowed())
+    seedIgnored('bash_redirect')
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     const row = getHintStatsSummary().find((r) => r.category === 'bash_redirect')
@@ -1154,7 +1179,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     const acted = nonce()
     logHintEmission('bash_redirect', acted, 'C:/repo/a.ts')
     resolvePendingHintsForEvent(bashEvent(acted, 'token-goat skeleton "C:/repo/a.ts"'))
-    logHintEmission('bash_redirect', nonce(), unfollowed())
+    seedIgnored('bash_redirect')
   }
 
   /** A suppression category at exactly 50%: one observed re-read of the named path, one emission whose re-read never happened. */

@@ -322,16 +322,16 @@ that category — the real cost of emitting it, not just how often it fired):
 
 ```
 $ token-goat hint-stats
-category              emitted  undisplayed  acted-on  efficacy    suppressed       manual+  manual-  spent-bytes
-bash_redirect         42       -            9         21.4%       no               0        0        3150
-bash_recall           18       -            15        83.3%       no               0        0        1080
-read_reread_dedup     11       -            2         18.2% *     no               0        0        660
-read_structural_nav   7        3            1         14.3% *     yes              0        1        420
-edit_reread_suggest   3        -            0         0% *        no               0        0        180
-read_batch            6        -            4         66.7%       no               0        0        900
-search_brake          2        -            1         50.0%       no               0        0        330
-grep_dedup_hint       4        -            0         n/a         no               0        0        240
-glob_dedup_hint       1        -            0         n/a         no               0        0        60
+category              emitted       undisplayed  acted-on  efficacy    suppressed       manual+  manual-  spent-bytes
+bash_redirect         42 +3         -            9         21.4%       no               0        0        3150
+bash_recall           18            -            15        83.3%       no               0        0        1080
+read_reread_dedup     11            -            2         18.2% *     no               0        0        660
+read_structural_nav   7             3            1         14.3% *     yes              0        1        420
+edit_reread_suggest   3             -            0         0% *        no               0        0        180
+read_batch            6             -            4         66.7%       no               0        0        900
+search_brake          2             -            1         50.0%       no               0        0        330
+grep_dedup_hint       0 ~4          -            0         n/a         no               0        0        240
+glob_dedup_hint       0 ~1          -            0         n/a         no               0        0        60
 
 TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=7020 (hint_emissions ledger only)
 ```
@@ -341,12 +341,27 @@ category — or, for the total, the whole store — has no tracked spend figure 
 nothing has fired yet, or every emission predates this feature and was recorded before spend
 tracking existed. A partially-tracked category shows the real sum plus how many legacy rows it
 excludes, e.g. `120 (2 legacy)`, rather than silently blending unknown-cost rows into the total
-as if they cost nothing.
+as if they cost nothing. `n/a` means nothing in that category reached the agent: a category whose
+only emissions are still pending or were never scorable shows their real spend.
+
+`emitted` counts only the emissions that have been scored. Two kinds sit beside it instead:
+
+- `+N` is how many are still waiting on a verdict. Each hint gets the next few tool calls in its
+  session to be followed; until those calls arrive, it has been scored neither way. A session that
+  ends before they arrive leaves its hints pending for good, and they are never scored.
+- `~N` is how many carried nothing a later call could match (see `grep_dedup_hint` below), so no
+  verdict was ever possible.
+
+Neither is counted in `emitted`, `acted-on`, the efficacy figure or the suppression decision.
+Both are counted in `spent-bytes`, because the hint text reached the agent either way. Counting
+pending hints as failures once muted `bash_redirect` on a real ledger at 1 in 11 (9.1%) when its
+scored hints stood at 1 in 6 (16.7%): five of the eleven were left pending by a session that ended
+mid-window.
 
 A category is auto-suppressed for its harness once it has at least `hint_stats.min_sample_size`
-emissions (default 5) AND its efficacy falls below `hint_stats.suppress_threshold_pct` (default
+scored emissions (default 5) AND its efficacy falls below `hint_stats.suppress_threshold_pct` (default
 15%) — the sample-size floor exists so a category is never suppressed off a single unlucky
-emission. Once suppressed, that hook stops emitting that category until `token-goat hint-stats
+emission. Pending hints are not part of that sample. Once suppressed, that hook stops emitting that category until `token-goat hint-stats
 --reset` clears the tracked data. Configure both knobs with `token-goat config set hint_stats.min_sample_size <n>` / `token-goat config set hint_stats.suppress_threshold_pct <pct>`.
 
 A `*` on an efficacy figure means that category is scored on an absence. Those hints ask the
@@ -360,16 +375,19 @@ anyone.
 own text pointed at is checked against the next few tool calls in that session) — not a guess —
 but it is a proxy for correlation, not proof of causation: a match means the agent ran the
 suggested command shortly after the hint, not that the hint necessarily caused it. A hint whose
-text has no extractable path/id (a small minority of branches) is counted as emitted with no
-automatic "acted on" credit. `--mark-effective <category>` / `--mark-ineffective <category>`
+text has no extractable path/id (a small minority of branches) cannot be scored at all: it is
+left out of `emitted` and the efficacy figure, shown as the `~N` beside `emitted`, and counted
+only in `spent-bytes`. `--mark-effective <category>` / `--mark-ineffective <category>`
 record a separate manual vote as a human override/supplement for exactly that gap — manual votes
 are shown alongside the automatic percentage but never blended into it. `--json` emits
-`{ category, emitted, actedOn, efficacyPct, suppressed, manualEffective, manualIneffective }[]`.
+`{ category, emitted, actedOn, efficacyPct, pending, unobservable, detected, suppressed, suppressionPermanent, manualEffective, manualIneffective, bytesEmitted, legacyEmissions }[]`.
+With `--session-id` it emits an object instead, carrying the same rows under `rows` beside a
+`scope` that names which fields are limited to that session.
 Note that what this feature calls "harness" (Claude Code, Codex, Gemini, ...) is not the same as
 "which LLM model" — no bridge in this codebase exposes an LLM model identifier to hooks, so
 harness is the closest real signal available.
 
-Two categories are scored on a pattern of calls rather than a named command. `read_batch` (three or more reads or searches in a row, each sent a full turn after the previous result) counts as acted on when the first later turn that makes read-only calls makes at least two of them together. `search_brake` (three searches in a row found nothing) counts as acted on when the next search from a later turn is `token-goat answer` or `token-goat semantic`. Until that later call arrives the emission stays pending and counts as not acted on. `grep_dedup_hint` and `glob_dedup_hint` (an identical Grep or Glob already ran this session) are never scored: the note rides on the re-run it describes, so no later call can show whether it was heeded. They appear in `spent-bytes` and as the `~N` beside `emitted`, never in `emitted` itself or the efficacy figure.
+Two categories are scored on a pattern of calls rather than a named command. `read_batch` (three or more reads or searches in a row, each sent a full turn after the previous result) counts as acted on when the first later turn that makes read-only calls makes at least two of them together. `search_brake` (three searches in a row found nothing) counts as acted on when the next search from a later turn is `token-goat answer` or `token-goat semantic`. Until that later call arrives the emission stays pending (`+N`) and is counted neither way. `grep_dedup_hint` and `glob_dedup_hint` (an identical Grep or Glob already ran this session) are never scored: the note rides on the re-run it describes, so no later call can show whether it was heeded. They appear in `spent-bytes` and as the `~N` beside `emitted`, never in `emitted` itself or the efficacy figure.
 
 ### Scoring the compressors — `token-goat bench`
 

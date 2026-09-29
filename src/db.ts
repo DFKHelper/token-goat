@@ -170,7 +170,11 @@ CREATE INDEX IF NOT EXISTS idx_cache_recall_type ON cache_recall(cache_type);
 -- picked and averaging fabrications into a measured rate is how 174 of bash_redirect's 698 rows
 -- came to hold its efficacy down to 0.86% when the observed figure was 1.15%. calls_remaining is
 -- the countdown of subsequent tool-use events still eligible to resolve this row before it is
--- considered timed out. displayed=0 marks a detection that never reached the agent -- auto-
+-- considered timed out. A displayed, observable row with resolved=0 is pending: nothing has
+-- scored it yet. Nothing sweeps these on a clock, so a session that ends mid-window leaves its
+-- rows pending for good, and efficacy and suppression count only resolved rows -- counting a
+-- pending one as not acted on is what muted bash_redirect at 1 in 11 when its scored rows stood
+-- at 1 in 6. displayed=0 marks a detection that never reached the agent -- auto-
 -- suppressed, or declined by a hint's own net-benefit gate -- recorded so the ledger can answer
 -- how often a hint fired at all, which it previously could not: a suppressed detection left no
 -- trace, so a fully-muted category was indistinguishable from one that had stopped triggering.
