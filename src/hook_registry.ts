@@ -123,6 +123,8 @@ export async function runHook(event: HookEvent): Promise<HookOutput> {
   noteUnrecognizedTool(event, list)
   // Advisory handlers never short-circuit: their non-pass results are remembered as a fallback, but the loop always continues so every later, non-advisory handler for this event still runs and can still return its own result. This keeps a side-effect-only handler from ever silently suppressing another handler's output, regardless of registration order.
   let advisoryResult: HookOutput | undefined
+  // A pass that carries a notice has something to say to the user even though it changes nothing for the model, so it is kept like an advisory result rather than folded into the bare pass below.
+  let noticeResult: HookOutput | undefined
   for (const { handler, toolName, advisory } of list) {
     if (toolName !== undefined && toolName !== event.toolName) continue
     let result: HookOutput
@@ -139,8 +141,9 @@ export async function runHook(event: HookEvent): Promise<HookOutput> {
       }
       return result
     }
+    if (result.notice !== undefined) noticeResult ??= result
   }
-  return advisoryResult ?? { hookType: 'pass' }
+  return advisoryResult ?? noticeResult ?? { hookType: 'pass' }
 }
 
 /** Drop every registered handler. Internal — invoked by {@link registerReset}. */
@@ -215,6 +218,7 @@ export function serializeOutput(
         return JSON.stringify({ systemMessage: output.context })
       }
       return JSON.stringify({
+        ...noticeField(output.notice, harness),
         hookSpecificOutput: {
           hookEventName: CLAUDE_CODE_EVENT_NAMES[eventName],
           additionalContext: output.context,
@@ -241,6 +245,11 @@ export function serializeOutput(
         },
       })
     case 'pass':
-      return JSON.stringify({})
+      return JSON.stringify(noticeField(output.notice, harness))
   }
+}
+
+/** The top-level `systemMessage` carrying a user-only notice, on Claude Code alone. See HookOutput's `notice` for why it never reaches the model there. Claude Code is the only harness whose handling of the field has been read, so it is left off everywhere else rather than sent somewhere it might be taken for context. */
+function noticeField(notice: string | undefined, harness: HarnessName): { systemMessage?: string } {
+  return notice !== undefined && harness === 'claudecode' ? { systemMessage: notice } : {}
 }
