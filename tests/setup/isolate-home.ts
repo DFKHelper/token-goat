@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
+import { scrubTokenGoatUserEnv } from '../helpers/token-goat-env.js'
 
 // Unique per TEST FILE, not per worker process. setupFiles runs once per test file, but `pool: 'forks'` REUSES a fork across many files, so keying these dirs on process.pid alone handed consecutive files in the same fork one shared global.db. That is cross-file state leakage, not contention: which files land in which fork varies run to run, so different files failed each run and every one passed in isolation. Reproduced deterministically by running `db.test.ts` then `cli_note.test.ts` in a single fork -- the notes db.test.ts left behind made cli_note's `not.toContain('[STALE]')` fail. A per-file suffix restores the isolation this file's docblock already claimed.
 const workerScope = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
@@ -83,6 +84,9 @@ process.on('exit', () => {
 //
 // Deleting them is not an escape hatch: nothing is skipped and no assertion is relaxed. It makes every git call in the suite find its repository from its own working directory and read that repository's real index, which is the question the guards mean to ask, and it stops the suite mutating the repository git is about to commit to.
 scrubRepoLocalGitEnv(process.env)
+
+// A token-goat setting exported in the launching shell reaches the product under test the same way: with bash output compression switched off in the shell to read raw output, three guards failed locally that pass in CI. So every token-goat variable goes except the ones tooling sets on purpose (tests/helpers/token-goat-env.ts), and it goes before the pins below, which also clears what an earlier file left in a reused fork.
+scrubTokenGoatUserEnv(process.env)
 
 // Embeddings generation (indexing.embeddings_enabled) defaults to true in production so a real `token-goat index` populates chunks/chunk_vectors for `token-goat semantic` out of the box, but that means every test in this suite that touches indexFileSync/cmdIndex/the worker drain would otherwise load a real transformer model and run real inference on every index call - slow, and a hard network dependency on a machine without the model already cached (e.g. a fresh CI checkout). Force it off by default for the whole suite, exactly like TOKEN_GOAT_HOME above: a test that sets this env var itself (e.g. the embeddings-in-index regression tests, which additionally gate on the real optional deps being available) still wins, because that assignment runs after this file's setup.
 if (!process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']) {
