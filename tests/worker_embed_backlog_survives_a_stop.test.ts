@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as NodeFsModule from 'node:fs'
 
 import { closeAllDbs, getDb } from '../src/db.js'
+import { modelDownloadHeld } from '../src/embed_preflight.js'
 import { DEFAULT_DIM, isAvailable, setPipelineFnForTesting } from '../src/embeddings.js'
 import { disabledEmbedSha } from '../src/parser.js'
+import { clearDownloadFailure, MODEL_DOWNLOAD_HOST, recordDownloadFailure } from '../src/model_download_gate.js'
 import { normalizePath } from '../src/paths.js'
 import { drainOnce, pendingEmbeddings, runWorkerLoop } from '../src/worker.js'
 
@@ -216,6 +218,30 @@ describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops
     await runLoopSwitchingAt(10, () => (process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'), () => chunkCount() > 0, 200)
 
     expect(chunkCount(), 'the file indexed while embeddings were off stayed out of semantic search').toBeGreaterThan(1)
+  })
+
+  // A failed model download holds further tries (model_download_gate.ts), and every embed in that hold would fail the same way. A walk that ran through the hold would queue each file for an embed that cannot happen and then find itself finished, so the files would wait for the next worker start once the network is back. The hold has to count as "not ready", so that lifting it starts the walk again. PROVENANCE: HAND-DERIVED, the failure written through the gate's own recorder with the model files absent from both the data root and the shared cache.
+  it('waits out a held model download, then scans once the hold lifts', async () => {
+    await parsedButNeverEmbedded()
+    const prevCache = process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
+    delete process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
+    const url = `https://${MODEL_DOWNLOAD_HOST}/x`
+    try {
+      recordDownloadFailure(url, 'connect ECONNREFUSED 127.0.0.1:9')
+      expect(modelDownloadHeld(), 'calibration: the recorded failure holds the download').toBe(true)
+      let chunksWhileHeld = -1
+      await runLoopSwitchingAt(10, () => {
+        chunksWhileHeld = chunkCount()
+        clearDownloadFailure(url)
+      }, () => chunkCount() > 0, 200)
+
+      expect(chunksWhileHeld, 'the worker embedded while the model download was held').toBe(0)
+      expect(chunkCount(), 'the file waiting on the held download was never embedded once the hold lifted').toBeGreaterThan(1)
+    } finally {
+      clearDownloadFailure(url)
+      if (prevCache === undefined) delete process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
+      else process.env['TOKEN_GOAT_MODEL_CACHE_DIR'] = prevCache
+    }
   })
 
   // The walk ends once it has read every file, and a finished walk is where a long-running worker spends nearly all its life. Files indexed while embeddings were then switched off owe an embed as much as the ones a stop dropped, so switching them back on has to start the walk again rather than find it finished. PROVENANCE: HAND-DERIVED, the file put back into the state an index taken with embeddings off leaves (chunks gone, a `disabled:` stamp) after the first walk had embedded it and finished.

@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { dataDir } from './constants.js'
+import { withEnvProxyEnabled } from './env_proxy.js'
 import { displaySafeText } from './paths.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage } from './util.js'
 
@@ -351,7 +352,7 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
       stdio: 'ignore',
       windowsHide: true,
       env: {
-        ...process.env,
+        ...withEnvProxyEnabled(process.env),
         TG_WORKER_POLL_MS: String(pollIntervalMs),
         TG_WORKER_DATA_DIR: dir,
       },

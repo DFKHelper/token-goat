@@ -35,7 +35,8 @@ import { getProjectIndexCounts, getEmbeddingCoverage } from './index_health.js'
 import { getDirtyPathsFor } from './dirty_queue.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
 import { getDb } from './db.js'
-import { embeddingsDepsAvailable, checkEmbeddingPreflight } from './embeddings.js'
+import { embeddingsDepsAvailable } from './embeddings.js'
+import { checkSemanticReadiness } from './embed_preflight.js'
 import { loadConfig } from './config.js'
 import { extractErrorMessage, foldCaseForContainment } from './util.js'
 import { statThroughHandle } from './handle_stat.js'
@@ -648,7 +649,7 @@ export async function createMcpServer(): Promise<McpServer> {
         }
       }
       const embeddingsEnabled = loadConfig(rootDir).indexing?.embeddings_enabled ?? true
-      const preflight = await checkEmbeddingPreflight({
+      const preflight = await checkSemanticReadiness({
         projectRoot: rootDir,
         ...(coverage !== undefined ? { coverage } : {}),
       })

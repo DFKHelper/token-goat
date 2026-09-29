@@ -24,6 +24,8 @@ import { cleanup_stale } from './snapshots.js'
 import { sweepCacheRoots } from './disk_cache.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 import { registerReset } from './reset.js'
+import { modelDownloadHeld } from './embed_preflight.js'
+import { failedAtOf } from './model_download_gate.js'
 import { appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
 import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
 import { appendWorkerErrorLog, readPidFile, resolvePollIntervalMs, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
@@ -191,7 +193,11 @@ registerReset(() => {
   embedSlotWaiters.length = 0
   // inFlightEmbeddings has to go with them. A call that arrived while the cap was full returns a promise whose only way to settle is the closure sitting in embedSlotWaiters, so dropping that array orphans the promise for good: its `.finally` never runs, its map entry never clears, and pendingEmbeddings() -- which waits on exactly those values -- never resolves. Clearing the map is what makes the "clean slate" above true rather than only true for the counter.
   inFlightEmbeddings.clear()
+  lastLoggedDownloadFailure.clear()
 })
+
+/** The recorded model-download failure each data dir last logged, by its timestamp. Every embed queued before the hold took effect fails with the same recorded failure, and logging each one buried the single line that says why under dozens of copies. */
+const lastLoggedDownloadFailure = new Map<string, number>()
 
 /** Run {@link indexFileEmbeddings} for `absPath`, serialized against any other in-flight embed call for the same path (see {@link inFlightEmbeddings}) AND capped globally across all files by {@link acquireEmbedSlot}/{@link makeReleaseEmbedSlot}. Errors are swallowed (mirrors the `.catch(() => undefined)` the direct call used before this wrapper existed) so one failed embed never breaks the chain for the next caller. `configRoot` is the file's own project ({@link embedPolicyResolver}), applied at dispatch rather than here because a queued call dispatches after this function has returned. */
 function embedFileSerialized(absPath: string, dbPath: string, sha: string, configRoot: string): Promise<unknown> {
@@ -200,6 +206,11 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string, confi
   const dir = path.dirname(dbPath)
   // Unlike a parse failure (logged via logIndexFailure/INDEX_FAILED above), indexFileEmbeddings swallows its own errors internally with no log path at all -- and the background daemon runs with stdio: 'ignore' (see startDetachedWorker), so a thrown embedding error previously produced zero observable trace anywhere. Route it through the same worker-errors.log appendWorkerErrorLog uses for indexing failures so it is at least discoverable after the fact, instead of vanishing silently.
   const onEmbedError = (err: unknown): void => {
+    const failedAt = failedAtOf(err)
+    if (failedAt !== null) {
+      if (lastLoggedDownloadFailure.get(dir) === failedAt) return
+      lastLoggedDownloadFailure.set(dir, failedAt)
+    }
     const message = extractErrorMessage(err)
     appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileEmbeddings failed for ${absPath}: ${message}\n`)
   }
@@ -207,6 +218,11 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string, confi
   const limit = loadConfig().worker.max_pool_workers ?? 4
   // Dispatches the actual embed call once a global slot is available, releasing it as soon as that call settles (success or failure) so it frees up for the next queued file regardless of outcome. Release is attached as a sibling `.then(release, release)` on the SAME promise `indexFileEmbeddings` returns (rather than wrapped via `.finally()` into a new promise that `runEmbed` then returns) so it costs no extra microtask hop on the chain the rest of this function builds on top of `runEmbed()`'s return value -- preserving indexFileEmbeddings' previous direct-call timing (including for tests that assert on it without awaiting extra ticks) for the common case where a slot is immediately free. Only when the global cap is already saturated does this queue in embedSlotWaiters, deferring dispatch until a running embed elsewhere finishes and calls its release closure.
   const dispatchEmbed = (): Promise<unknown> => {
+    // makeIndexer checks the hold when it queues a file, but a drain queues every file before the first embed runs, so the embeds behind a failed download were still dispatched: each announced "Downloading the embedding model" and then refused. Checking again here, when the embed actually starts (a queued one starts from embedSlotWaiters, not runEmbed), skips them; the file keeps a NULL embed_sha for the backlog sweep. The slot is taken already, so hand it back.
+    if (modelDownloadHeld()) {
+      makeReleaseEmbedSlot()()
+      return Promise.resolve(undefined)
+    }
     // indexFileEmbeddings reads `indexing.embeddings_enabled` with no root to pass, as its first synchronous statement, so the file's project has to be the one loadConfig() resolves for that stretch.
     const result = withConfigProjectRoot(configRoot, () => indexFileEmbeddings(absPath, dbPath, sha, onEmbedError))
     const release = makeReleaseEmbedSlot()
@@ -354,6 +370,8 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
         return parseUnchanged ? false : undefined
       }
       // Embeddings are fired and forgotten here, never awaited: the worker's drain loop is synchronous by design (drainOnce/processDirtyBatch must return instantly so the dirty queue clears promptly), and chunk/vector freshness can safely lag a beat behind symbol freshness since semantic search tolerates staleness in a way exact symbol lookups do not. indexFileEmbeddings already swallows its own errors internally, and embedFileSerialized ends its chain with a .catch so the promise returned here can never reject -- that backstop lives there, not on this line, and removing it would leave this un-awaited call able to take the daemon down with an unhandled rejection. Returning the promise (rather than voiding it) lets a caller that wants to - such as a test - await it explicitly instead of racing it. Routed through embedFileSerialized so two overlapping drains of the same rapidly re-edited file chain onto one another instead of racing -- see its doc comment for the stale-overwrite bug this closes.
+      // The model is not on this machine and its download is held (offline, or failed moments ago): an embed now would only fail again. The file keeps a NULL embed_sha, so runWorkerLoop's backlog sweep embeds it once embeddingsReady turns true.
+      if (modelDownloadHeld()) return parseUnchanged ? false : undefined
       return embedFileSerialized(absPath, dbPath, sha, configRoot)
     } catch (err) {
       // One bad file must not abort the rest of the batch -- but a swallowed failure must not be silently indistinguishable from a successful index either. See the doc comment above.
@@ -627,10 +645,10 @@ function requeueStaleEmbeddings(dir: string, cursor: string): string | null {
   return owed.length === EMBED_BACKLOG_BATCH || rows.length === EMBED_BACKLOG_SCAN ? resumeAfter : null
 }
 
-/** Whether an embed could be written now: the index exists, the configuration has not turned embeddings off, and their dependencies load. Both probes behind the last check are cached, so asking on every idle cycle costs two small config reads. */
+/** Whether an embed could be written now: the index exists, the configuration has not turned embeddings off, their dependencies load, and the model is on disk or may be downloaded. Both probes behind the dependency check are cached, so asking on every idle cycle costs two small config reads and a stat of the model files. */
 function embeddingsReady(dir: string): boolean {
   const dbPath = path.join(dir, 'global.db')
-  return fs.existsSync(dbPath) && loadConfig().indexing?.embeddings_enabled !== false && embeddingsDepsAvailable(getDb(dbPath))
+  return fs.existsSync(dbPath) && loadConfig().indexing?.embeddings_enabled !== false && embeddingsDepsAvailable(getDb(dbPath)) && !modelDownloadHeld()
 }
 
 export async function runWorkerLoop(

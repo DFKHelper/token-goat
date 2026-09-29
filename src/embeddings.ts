@@ -88,6 +88,10 @@ async function buildExtractorWithRetry(
       // The revision is pinned inside embed_model.ts, which is the only thing that can act on it: it is what the digests belong to. Passing it here as well would be a second copy of the same fact, and the one a reader would trust is not necessarily the one that is used.
       return await pipelineFn('feature-extraction', modelName)
     } catch (e) {
+      // A download that already failed was retried by pinned_fetch.ts and recorded against its host, and the record holds every later try, so going round again only prints "Downloading..." twice more and turns the real reason into "Not downloading yet".
+      // Imported here rather than at the top because embeddings.ts is on the hook path, and the hook never builds an extractor.
+      const { failedAtOf } = await import('./model_download_gate.js')
+      if (failedAtOf(e) !== null) throw e
       lastError = e
       if (attempt < PIPELINE_RETRY_ATTEMPTS) await sleep(PIPELINE_RETRY_DELAY_MS * attempt)
     }

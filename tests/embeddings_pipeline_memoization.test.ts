@@ -21,6 +21,7 @@ import {
   setPipelineRetryDelayForTesting,
   isAvailable,
 } from '../src/embeddings.js'
+import { DownloadCooldownError, DownloadFailedError } from '../src/model_download_gate.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 afterEach(() => {
@@ -108,4 +109,21 @@ describe('embedTexts pipeline construction retry (regression)', () => {
       expect(recoveredFactory).toHaveBeenCalledTimes(1)
     },
   )
+
+  // PROVENANCE: HAND-DERIVED from pinned_fetch.ts's contract (a DownloadFailedError is thrown only after its own three attempts, and the failure it records holds every later automatic try). CAPTURE behind it: with the network blocked, a foreground `semantic` on the built 2.9.29 bundle printed "Downloading the embedding model, once (tokenizer.json, 1 MB)" three times, then reported the hold ("Not downloading ... yet: the last try, moments ago, failed with ...") instead of the ECONNREFUSED that caused it, because this retry ran the download twice more into its own fresh hold.
+  it.each([
+    ['a failed download', () => new DownloadFailedError('GET https://huggingface.co/x/tokenizer.json failed: fetch failed (connect ECONNREFUSED 127.0.0.1:9)', 'https://huggingface.co/x/tokenizer.json', 1_000)],
+    ['a held download', () => new DownloadCooldownError('https://huggingface.co/x/tokenizer.json', { host: 'huggingface.co', url: 'https://huggingface.co/x/tokenizer.json', message: 'fetch failed', at: Date.now(), failures: 1, retryAt: Date.now() + 600_000 })],
+    ['a failed download wrapped by the loader', () => new Error('could not load the model', { cause: new DownloadFailedError('GET x failed', 'x', 1_000) })],
+  ])('does not retry %s, which the download already retried and recorded, and surfaces it unchanged', async (_name, make) => {
+    setPipelineRetryDelayForTesting(1)
+    const err = make()
+    const failingFactory = vi.fn(async () => {
+      throw err
+    })
+    setPipelineFnForTesting(failingFactory)
+
+    await expect(embedTexts(['text'], 'download-failure-model')).rejects.toBe(err)
+    expect(failingFactory).toHaveBeenCalledTimes(1)
+  })
 })
