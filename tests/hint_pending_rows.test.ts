@@ -136,13 +136,14 @@ describe('an emission still waiting on its verdict is not scored', () => {
   })
 
   it('negative control: once enough scored rows fail, the category is still suppressed', () => {
+    // The gate reads the 95% Wilson upper bound on the follow rate, which at zero followed drops under the 15% bar at 22 scored rows (0 of 21 bounds it at 15.46%, 0 of 22 at 14.87%). 25 clears that with room.
     const ignored = nonce()
-    for (let i = 0; i < 6; i++) logHintEmission(REDIRECT, ignored, 'src/db.ts', false, 100)
+    for (let i = 0; i < 25; i++) logHintEmission(REDIRECT, ignored, 'src/db.ts', false, 100)
     expireWindow(ignored)
     abandon(REDIRECT, 3)
 
     const row = summaryFor(REDIRECT)
-    expect(row.emitted).toBe(6)
+    expect(row.emitted).toBe(25)
     expect(row.actedOn).toBe(0)
     expect(row.pending).toBe(3)
     expect(row.suppressed).toBe(true)

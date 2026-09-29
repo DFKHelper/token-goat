@@ -125,7 +125,7 @@ export interface HintsConfig {
   subagent_markdown_first_read_deny: boolean
   /** Deny, once per session, a Claude Code Agent spawn that omits subagent_type while tools-restricted agent definitions exist, naming them so the retry can pick one. Off by default: an untyped spawn inherits every tool and MCP schema into its lane's prefix, but whether a redirected spawn fits the narrower agent is a judgement the deny cannot make. */
   agent_scoped_spawn_deny: boolean
-  // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal can lift it back above hint_stats.suppress_threshold_pct -- see that module's "Probe recovery" doc-comment section. `[]` means no probes: suppression is permanent until a manual `token-goat hint-stats --reset`.
+  // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal can lift its upper bound back over hint_stats.suppress_threshold_pct -- see that module's "Probe recovery" doc-comment section. `[]` means no probes: suppression is permanent until a manual `token-goat hint-stats --reset`.
   backoff_thresholds: number[]
   git_hint_max_ms: number
   min_session_hint_savings_bytes: number
@@ -237,10 +237,10 @@ export interface McpConfig {
   allowed_roots: string[]
 }
 
-/** Config for `token-goat hint-stats` (hint_stats.ts): the suppression gate that stops emitting a hint category for the rest of a session once its measured efficacy (acted-on / emitted) falls below `suppress_threshold_pct`, but only once at least `min_sample_size` emissions have been observed -- guards against suppressing a category on a single unlucky (or un-actable, e.g. no correlator extracted) data point. */
+/** Config for `token-goat hint-stats` (hint_stats.ts): the suppression gate that stops emitting a hint category once the 95% Wilson upper bound on its measured efficacy (acted-on / scored) sits under `suppress_threshold_pct`, and only once at least `min_sample_size` scored emissions exist. The interval is what keeps a useful category from being muted on a short unlucky run: at zero uptake and the default 15% it takes 22 scored emissions, so the default `min_sample_size` of 5 never binds at the default threshold; it starts to matter above about 49%, where 0 of 4 (upper bound 48.99%) would otherwise be enough. */
 export interface HintStatsConfig {
   suppress_threshold_pct: number
-  // The ceiling a SUPPRESSION category is judged against instead of `suppress_threshold_pct` (see hint_stats.ts's SUPPRESSION_HINT_CATEGORIES). Those categories ask for an absence, so their emissions are booked compliance-first -- `acted_on = 0` is written only when a re-read of the named path is actually observed -- which makes `100 - efficacy` their measured defiance rate. Suppress once that rate exceeds this. Defaults to 85, the exact complement of `suppress_threshold_pct`'s 15, so every verdict is unchanged until the two are deliberately set apart; they are separate knobs because a defiance rate and an uptake rate have different natural base rates and there is no reason one number should serve both.
+  // The ceiling a SUPPRESSION category is judged against instead of `suppress_threshold_pct` (see hint_stats.ts's SUPPRESSION_HINT_CATEGORIES). Those categories ask for an absence, so their emissions are booked compliance-first -- `acted_on = 0` is written only when a re-read of the named path is actually observed -- which makes `100 - efficacy` their measured defiance rate. Suppress once the 95% Wilson lower bound on that rate exceeds this. Defaults to 85, the exact complement of `suppress_threshold_pct`'s 15, so every verdict is unchanged until the two are deliberately set apart; they are separate knobs because a defiance rate and an uptake rate have different natural base rates and there is no reason one number should serve both.
   defiance_threshold_pct: number
   min_sample_size: number
 }

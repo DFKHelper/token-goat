@@ -358,11 +358,25 @@ pending hints as failures once muted `bash_redirect` on a real ledger at 1 in 11
 scored hints stood at 1 in 6 (16.7%): five of the eleven were left pending by a session that ended
 mid-window.
 
-A category is auto-suppressed for its harness once it has at least `hint_stats.min_sample_size`
-scored emissions (default 5) AND its efficacy falls below `hint_stats.suppress_threshold_pct` (default
-15%) — the sample-size floor exists so a category is never suppressed off a single unlucky
-emission. Pending hints are not part of that sample. Once suppressed, that hook stops emitting that category until `token-goat hint-stats
---reset` clears the tracked data. Configure both knobs with `token-goat config set hint_stats.min_sample_size <n>` / `token-goat config set hint_stats.suppress_threshold_pct <pct>`.
+A category is auto-suppressed for its harness only once the numbers show it is confidently below
+the bar, not merely below it on a small sample. token-goat takes the 95% Wilson interval on the
+category's efficacy and mutes it when the top of that interval sits under
+`hint_stats.suppress_threshold_pct` (default 15%). With the defaults, a hint nobody ever follows is
+muted after 22 scored emissions; 1 followed in 7 is not muted, though its raw rate is 14%. For a
+starred category (below) the test runs on the defiance rate instead: it is muted once the bottom of
+that interval sits over `hint_stats.defiance_threshold_pct`, which defaults to 100 minus the
+suppress threshold. `hint_stats.min_sample_size` (default 5) is a floor under both tests. At the
+default threshold the interval never allows muting sooner, so the floor only matters once the
+threshold is raised. Pending hints are not part of the sample.
+
+A suppressed category is not silenced for good. On the suppressed occasions listed in
+`hints.backoff_thresholds` (default the 1st, 3rd, 10th and 30th, then every 30th) the hint is shown
+anyway as a probe, and a probe the agent follows lifts the upper bound back over the bar. `token-goat
+hint-stats --reset` clears the tracked data outright. Configure the knobs with `token-goat config set
+hint_stats.suppress_threshold_pct <pct>`, `hint_stats.defiance_threshold_pct <pct>` and
+`hint_stats.min_sample_size <n>`. To see how the rule behaves across uptake rates, and how each
+category on a ledger scores under it, run `npm run eval:hints` from a checkout (add
+`-- --db <path to global.db>` to read a ledger; it is opened read-only).
 
 A `*` on an efficacy figure means that category is scored on an absence. Those hints ask the
 agent *not* to do something, so a window that expires with no re-read counts as compliance, while

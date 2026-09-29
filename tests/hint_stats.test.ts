@@ -518,11 +518,16 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     cfg.hint_stats.suppress_threshold_pct = 15
     saveConfig(cfg)
 
-    for (let i = 0; i < 5; i++) {
+    // The gate mutes on the 95% Wilson upper bound, not the raw rate: at 0 followed that bound is 15.46% after 21 scored rows and 14.87% after 22, so the 22nd unfollowed showing is the first to cross a 15% bar even though the 5-row floor was passed long before.
+    for (let i = 0; i < 21; i++) {
       const n = nonce()
       logHintEmission('bash_redirect', n, unfollowed()) // 0% acted-on
       expireWindow(n)
     }
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
+    const last = nonce()
+    logHintEmission('bash_redirect', last, unfollowed())
+    expireWindow(last)
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
 
@@ -547,18 +552,24 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     saveConfig(cfg)
 
     // bash_redirect (not a suppression category): its null-correlator row books acted_on=0, same as before this fix's polarity change to read_structural_nav -- keeps this test's threshold/sample-size scaffold orthogonal to that fix.
-    const nActed = nonce()
-    logHintEmission('bash_redirect', nActed, 'C:/repo/a.ts')
-    resolvePendingHintsForEvent(bashEvent(nActed, 'token-goat skeleton "C:/repo/a.ts"'))
-    const nNotActed = nonce()
-    logHintEmission('bash_redirect', nNotActed, unfollowed())
-    expireWindow(nNotActed)
-    // 1/2 = 50%, not below a 50% threshold.
+    for (let i = 0; i < 10; i++) {
+      const nActed = nonce()
+      logHintEmission('bash_redirect', nActed, 'C:/repo/a.ts')
+      resolvePendingHintsForEvent(bashEvent(nActed, 'token-goat skeleton "C:/repo/a.ts"'))
+      const nNotActed = nonce()
+      logHintEmission('bash_redirect', nNotActed, unfollowed())
+      expireWindow(nNotActed)
+    }
+    // 10 of 20 followed: the 95% Wilson interval is [29.93%, 70.07%]. The gate mutes only once the upper end sits under the bar.
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
 
-    cfg.hint_stats.suppress_threshold_pct = 60
+    cfg.hint_stats.suppress_threshold_pct = 70
     saveConfig(cfg)
-    // Same 50% data, now below a 60% threshold.
+    // 70.07% is not under 70%: the edge holds.
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
+
+    cfg.hint_stats.suppress_threshold_pct = 71
+    saveConfig(cfg)
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
 
@@ -738,10 +749,12 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     cfg.hints.backoff_thresholds = [1]
     saveConfig(cfg)
 
-    // Seed one below-threshold, never-acted-on emission so the category crosses min_sample_size at 0% efficacy.
-    const seedSession = nonce()
-    logHintEmission('bash_redirect', seedSession, unfollowed())
-    expireWindow(seedSession)
+    // Seed four never-acted-on emissions: at 0 of 4 the 95% Wilson upper bound is 48.99%, the first count at which it sits under a 50% bar.
+    for (let i = 0; i < 4; i++) {
+      const seedSession = nonce()
+      logHintEmission('bash_redirect', seedSession, unfollowed())
+      expireWindow(seedSession)
+    }
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     // Occasion 1 while suppressed matches backoff_thresholds' single threshold (1) -- must probe: shown to the caller AND logged as a real emission, unlike an ordinary suppressed occasion.
@@ -760,7 +773,7 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     const resolvedRow = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
     expect(resolvedRow.acted_on).toBe(1)
 
-    // emitted=2 (seed + probe), actedOn=1 -> 50%, not below a 50% threshold -> suppression lifts.
+    // emitted=5 (4 seeds + probe), actedOn=1: the upper bound rises to 62.45%, back over the 50% bar -> suppression lifts.
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
   })
 
@@ -831,10 +844,12 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     cfg.hints.backoff_thresholds = [1, 5]
     saveConfig(cfg)
 
-    // Episode 1: seed a 0%-acted-on emission -> suppressed. Occasion 1 matches threshold [1] and probes through.
-    const seedSession = nonce()
-    logHintEmission('bash_redirect', seedSession, unfollowed())
-    expireWindow(seedSession)
+    // Episode 1: seed four 0%-acted-on emissions -> suppressed (Wilson upper bound 48.99%, under 50%). Occasion 1 matches threshold [1] and probes through.
+    for (let i = 0; i < 4; i++) {
+      const seedSession = nonce()
+      logHintEmission('bash_redirect', seedSession, unfollowed())
+      expireWindow(seedSession)
+    }
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
 
     const probeSession = nonce()
@@ -842,17 +857,19 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     const probeContext = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/probe.ts::Foo"` instead.' }
     expect(applyHintTracking(probeEvent, probeContext, classify)).toEqual(probeContext) // probed through
 
-    // Act on the probe's own pointer: emitted=2, actedOn=1 -> 50%, not below a 50% threshold -> suppression genuinely lifts (a fresh episode, not just a probe).
+    // Act on the probe's own pointer: emitted=5, actedOn=1 -> upper bound 62.45%, over the 50% bar -> suppression genuinely lifts (a fresh episode, not just a probe).
     resolvePendingHintsForEvent(bashEvent(probeSession, 'token-goat read "C:/repo/probe.ts::Foo"'))
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
 
-    // This not-suppressed call must reset the streak, AND its own never-acted-on emission tips the cumulative percentage back below threshold (emitted=3, actedOn=1 -> 33.3%), so the category is suppressed again for the NEXT call -- episode 2 begins here.
-    const liftedSession = nonce()
-    const liftedEvent = bashEvent(liftedSession, 'cat C:/repo/lifted.ts')
-    const liftedContext = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/lifted.ts::Foo"` instead.' }
-    expect(applyHintTracking(liftedEvent, liftedContext, classify)).toEqual(liftedContext) // shown: not suppressed yet
-    expireWindow(liftedSession) // scored as ignored, so it enters the sample
-    expect(shouldSuppress('bash_redirect', nonce())).toBe(true) // suppressed again starting now
+    // Each not-suppressed call must reset the streak, and its own never-acted-on emission pulls the bound back down: 1 of 6 is 56.35%, 1 of 7 is 51.31%, 1 of 8 is 47.09%. So the third shown-and-ignored call leaves the category suppressed again for the NEXT call -- episode 2 begins there.
+    for (let i = 0; i < 3; i++) {
+      const liftedSession = nonce()
+      const liftedEvent = bashEvent(liftedSession, `cat C:/repo/lifted-${i}.ts`)
+      const liftedContext = { hookType: 'context' as const, context: `Use \`token-goat read "C:/repo/lifted-${i}.ts::Foo"\` instead.` }
+      expect(applyHintTracking(liftedEvent, liftedContext, classify)).toEqual(liftedContext) // shown: not suppressed yet
+      expireWindow(liftedSession) // scored as ignored, so it enters the sample
+      expect(shouldSuppress('bash_redirect', nonce())).toBe(i === 2) // suppressed again only after the third
+    }
 
     // Episode 2, occasion 1: if the streak was properly reset to 0, this is occasion 1 again, which matches threshold [1] and must probe through -- not stay silently suppressed as it would if the streak had kept counting up from episode 1's leftover value.
     const episode2Session = nonce()
@@ -895,9 +912,10 @@ describe('pruneHintEmissions (retention via the shared stats maintenance throttl
       `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
        VALUES ('bash_redirect', ?, 'claude-code', NULL, ?, 1, 0, 0, NULL)`,
     )
-    for (let i = 0; i < 5; i++) insertOld.run(`old-${nonce()}`, oldMs) // old rows alone already cross min_sample_size at 0% efficacy
+    // 25 of each: at 0 followed the 95% Wilson upper bound is 13.32% after 25 scored rows, under the 15% bar, so either batch alone is enough to suppress.
+    for (let i = 0; i < 25; i++) insertOld.run(`old-${nonce()}`, oldMs) // old rows alone already cross the bar at 0% efficacy
 
-    for (let i = 0; i < 5; i++) seedIgnored('bash_redirect') // fresh rows, also 0% efficacy -- cross the same threshold on their own
+    for (let i = 0; i < 25; i++) seedIgnored('bash_redirect') // fresh rows, also 0% efficacy -- cross the same bar on their own
 
     expect(shouldSuppress('bash_redirect', nonce()), 'setup: suppressed before pruning').toBe(true)
 
@@ -906,7 +924,7 @@ describe('pruneHintEmissions (retention via the shared stats maintenance throttl
     const oldSurvivors = db.prepare(`SELECT COUNT(*) as c FROM hint_emissions WHERE emitted_at < ?`).get(oldMs + 1) as { c: number }
     expect(oldSurvivors.c).toBe(0)
     const freshSurvivors = db.prepare(`SELECT COUNT(*) as c FROM hint_emissions WHERE category = 'bash_redirect'`).get() as { c: number }
-    expect(freshSurvivors.c).toBe(5)
+    expect(freshSurvivors.c).toBe(25)
     expect(shouldSuppress('bash_redirect', nonce()), 'verdict unchanged after pruning').toBe(true)
   })
 
@@ -1111,10 +1129,10 @@ describe('acted-on polarity for suppression-shaped hints', () => {
   })
 
   it('lets a category already muted by pre-fix rows recover on its next obeyed probe', () => {
-    // The shape this machine was actually found in: read_reread_dedup at 0 acted-on across 5 emissions and suppressed, every one of those zeros produced by the rule this fix replaced. Recovery does not need those rows rewritten -- the backoff probe schedule already exists to let a muted category earn its way back, and it could not work while compliance was unobservable. One probe the agent obeys is now enough to clear the threshold.
+    // The shape this machine was actually found in: read_reread_dedup at 0 acted-on and suppressed, every one of those zeros produced by the rule this fix replaced. Recovery does not need those rows rewritten -- the backoff probe schedule already exists to let a muted category earn its way back, and it could not work while compliance was unobservable. One probe the agent obeys is now enough to clear the threshold. 25 rows because the gate reads the 95% Wilson upper bound on compliance: 0 of 25 bounds it at 13.32%, under the 15% bar, and one obeyed probe makes it 1 of 26, bounded at 18.89%, over it.
     saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, defiance_threshold_pct: 85, min_sample_size: 5 } })
     invalidateConfigCache()
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 25; i++) {
       const stale = nonce()
       logHintEmission('read_reread_dedup', stale, `C:/repo/src/old${i}.ts`)
       resolvePendingHintsForEvent(readEvent(stale, `C:/repo/src/old${i}.ts`))
@@ -1174,20 +1192,24 @@ describe('acted-on polarity for suppression-shaped hints', () => {
 
 /** hint_stats.defiance_threshold_pct: a suppression category is judged against its own ceiling. Provenance HAND-DERIVED for the percentages and CAPTURE for the polarity they rest on. The two 50% populations below are each built by driving logHintEmission and resolvePendingHintsForEvent -- the real write path -- rather than by inserting hint_emissions rows, so what `acted_on` means for each category is whatever the shipping code writes, not whatever this test assumed. The first test asserts that meaning directly, because the premise this change was specified against ("a suppression category's stored number counts defiance, so one threshold reads it backwards") is not what the code does: logHintEmission and the suppression arm of resolvePendingHintsForEvent already normalise to compliance at write time, booking acted_on=1 for an unobserved re-read and acted_on=0 only when defiance is actually seen. Both stored percentages are therefore higher-is-better and the single threshold was never inverted. What differs is the base rate: a suppression category defaults to compliance when its window simply expires, so it sits near 100% where an uptake rate sits near 0%, and one number cannot be calibrated for both. Hence a second ceiling expressed in the units that category is actually about -- its defiance rate, 100 minus the stored figure -- defaulting to the exact complement of suppress_threshold_pct so no existing verdict moves. */
 describe('shouldSuppress — defiance_threshold_pct for inverted-polarity categories', () => {
-  /** A normal category at exactly 50% acted-on: one followed pointer, one no-signal emission. */
-  function seedNormalAt50Pct(): void {
-    const acted = nonce()
-    logHintEmission('bash_redirect', acted, 'C:/repo/a.ts')
-    resolvePendingHintsForEvent(bashEvent(acted, 'token-goat skeleton "C:/repo/a.ts"'))
-    seedIgnored('bash_redirect')
+  /** A normal category at exactly 50% acted-on: `pairs` followed pointers and as many no-signal emissions. The gate reads the 95% Wilson interval, which at the default 10 pairs (10 of 20) is [29.93%, 70.07%]; the ceilings below are placed either side of those bounds. */
+  function seedNormalAt50Pct(pairs = 10): void {
+    for (let i = 0; i < pairs; i++) {
+      const acted = nonce()
+      logHintEmission('bash_redirect', acted, `C:/repo/a${i}.ts`)
+      resolvePendingHintsForEvent(bashEvent(acted, `token-goat skeleton "C:/repo/a${i}.ts"`))
+      seedIgnored('bash_redirect')
+    }
   }
 
-  /** A suppression category at exactly 50%: one observed re-read of the named path, one emission whose re-read never happened. */
-  function seedSuppressionAt50Pct(): void {
-    const defied = nonce()
-    logHintEmission('read_reread_dedup', defied, 'C:/repo/b.ts')
-    resolvePendingHintsForEvent(readEvent(defied, 'C:/repo/b.ts'))
-    seedComplied('read_reread_dedup')
+  /** A suppression category at exactly 50%: `pairs` observed re-reads of the named path and as many emissions whose re-read never happened. Same interval as seedNormalAt50Pct, read as compliance. */
+  function seedSuppressionAt50Pct(pairs = 10): void {
+    for (let i = 0; i < pairs; i++) {
+      const defied = nonce()
+      logHintEmission('read_reread_dedup', defied, `C:/repo/b${i}.ts`)
+      resolvePendingHintsForEvent(readEvent(defied, `C:/repo/b${i}.ts`))
+      seedComplied('read_reread_dedup')
+    }
   }
 
   function configure(suppressPct: number, defiancePct: number): void {
@@ -1205,9 +1227,9 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     const summary = getHintStatsSummary()
     const normal = summary.find((r) => r.category === 'bash_redirect')
     const suppression = summary.find((r) => r.category === 'read_reread_dedup')
-    expect(normal?.emitted).toBe(2)
+    expect(normal?.emitted).toBe(20)
     expect(normal?.efficacyPct).toBe(50)
-    expect(suppression?.emitted).toBe(2)
+    expect(suppression?.emitted).toBe(20)
     // The observed re-read booked 0 and the unobserved one booked 1. Were the column counting defiance, this would read 50 for the opposite reason and the assertion below on which emission was which would not hold.
     expect(suppression?.efficacyPct).toBe(50)
   })
@@ -1225,8 +1247,8 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
   })
 
   it('judges the same 50% against different ceilings, reaching opposite verdicts', () => {
-    // Normal suppressed (50 < 60), suppression category spared (50% defiance does not clear 80).
-    configure(60, 80)
+    // Normal suppressed (its upper bound 70.07% sits under 75), suppression category spared (a defiance bar of 80 is a compliance bar of 20, and its compliance upper bound 70.07% is not under it).
+    configure(75, 80)
     seedNormalAt50Pct()
     seedSuppressionAt50Pct()
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
@@ -1234,8 +1256,8 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
   })
 
   it('reaches the opposite pair of verdicts when the two ceilings are swapped', () => {
-    // Normal spared (50 is not below 40), suppression category suppressed (50% defiance clears 30).
-    configure(40, 30)
+    // Normal spared (its upper bound 70.07% is not under 25), suppression category suppressed (a defiance bar of 20 is a compliance bar of 80, and 70.07% sits under it).
+    configure(25, 20)
     seedNormalAt50Pct()
     seedSuppressionAt50Pct()
     expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
@@ -1243,12 +1265,12 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
   })
 
   it('the TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT env override beats the file the consumer reads', () => {
-    configure(40, 90) // file value 90 would spare the suppression category at 50% defiance
-    process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT'] = '30'
+    configure(25, 90) // file value 90 is a compliance bar of 10, which would spare the suppression category at a compliance upper bound of 70.07%
+    process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT'] = '20'
     try {
       invalidateConfigCache()
       seedSuppressionAt50Pct()
-      expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(30)
+      expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(20)
       expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
     } finally {
       delete process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT']
@@ -1286,11 +1308,11 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
   })
 
   it('derives the absent ceiling at a non-default value whose complement is not round', () => {
-    // 37 complements to 63. At 25% acted-on the old single-threshold predicate suppressed (25 < 37); the compiled 85 would spare it (100 - 25 is not above 85).
+    // 37 complements to 63, a compliance bar of 37. At 25 of 100 complied the Wilson upper bound is 34.30%, under 37, so the category is suppressed; the compiled 85 (a compliance bar of 15) would spare it.
     configureWithoutDefianceKey(37)
     expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(63)
-    seedSuppressionAllDefiance(3)
-    seedComplied('read_reread_dedup')
+    seedSuppressionAllDefiance(75)
+    for (let i = 0; i < 25; i++) seedComplied('read_reread_dedup')
     expect(getHintStatsSummary().find((r) => r.category === 'read_reread_dedup')?.efficacyPct).toBe(25)
     expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
   })
@@ -1298,6 +1320,7 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
   it('lets an explicit file value beat the derived complement', () => {
     configure(0, 40)
     expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(40)
+    // A defiance bar of 40 is a compliance bar of 60; 0 of 3 complied bounds compliance at 56.15%, under it.
     seedSuppressionAllDefiance(3)
     expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
   })
@@ -1308,7 +1331,8 @@ describe('shouldSuppress — defiance_threshold_pct for inverted-polarity catego
     try {
       invalidateConfigCache()
       expect(loadConfig().hint_stats.defiance_threshold_pct).toBe(50)
-      seedSuppressionAllDefiance(3)
+      // A compliance bar of 50: 0 of 3 bounds compliance at 56.15%, over it, so it takes 4 (48.99%).
+      seedSuppressionAllDefiance(4)
       expect(shouldSuppress('read_reread_dedup', nonce())).toBe(true)
     } finally {
       delete process.env['TOKEN_GOAT_HINT_DEFIANCE_THRESHOLD_PCT']
