@@ -93,6 +93,10 @@ if (!process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']) {
 if (!process.env['TOKEN_GOAT_NO_WORKER_SPAWN']) {
   process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '1'
 }
+// Every install test runs with its cwd inside this repository, and install queues the project it runs in for a first index (src/install_index.ts). Unpinned, each of those tests would sweep this whole repository onto the dirty queue of its sandboxed data dir: slow, and a side effect none of them is about. tests/install_index.test.ts deletes this to exercise the shipped default.
+if (!process.env['TOKEN_GOAT_INSTALL_INDEX']) {
+  process.env['TOKEN_GOAT_INSTALL_INDEX'] = '0'
+}
 if (!process.env['TOKEN_GOAT_HARNESS_OVERRIDE']) {
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
 }
