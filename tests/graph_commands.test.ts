@@ -9,7 +9,7 @@ import { join, resolve, delimiter, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
@@ -2790,6 +2790,75 @@ describe('runDeps integration', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('runDeps --importers', () => {
+  // HAND-DERIVED: a five-file repository whose import edges are written out below, so each expected importer list is read off the fixture, not off the import graph. a.ts is imported through its compiled .js spelling and extensionless; c/index.ts only as a directory; b.ts by one file; lonely.ts by none.
+  let repo: string
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), 'tg-deps-importers-'))
+    mkdirSync(join(repo, 'c'))
+    writeFileSync(join(repo, 'a.ts'), 'export const a = 1\n')
+    writeFileSync(join(repo, 'b.ts'), "import { a } from './a.js'\nexport const b = a\n")
+    writeFileSync(join(repo, 'c', 'index.ts'), 'export const c = 1\n')
+    writeFileSync(join(repo, 'd.ts'), "import { c } from './c'\nimport { a } from './a'\nexport const d = a + c\n")
+    writeFileSync(join(repo, 'e.ts'), "import { b } from './b.js'\nexport const e = b\n")
+    writeFileSync(join(repo, 'lonely.ts'), 'export const lonely = 1\n')
+    execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+    // Written after `git add`, so it exists on disk but is not tracked.
+    writeFileSync(join(repo, 'untracked.ts'), "import { a } from './a.js'\n")
+  })
+  afterAll(() => rmSync(repo, { recursive: true, force: true }))
+
+  const importersOf = (rel: string, extra: { grep?: string } = {}): { file: string; importedBy: string[]; hiddenByGrep?: number } => {
+    const captured = captureStdout(() => {
+      expect(runDeps({ file: join(repo, rel), importers: true, json: true, ...extra })).toBe(0)
+    })
+    return JSON.parse(captured) as { file: string; importedBy: string[]; hiddenByGrep?: number }
+  }
+
+  it('lists every tracked file that imports the target, sorted, and no file it only imports', () => {
+    expect(importersOf('a.ts').importedBy).toEqual(['b.ts', 'd.ts'])
+    expect(importersOf('b.ts').importedBy).toEqual(['e.ts'])
+    // e.ts imports b.ts, which imports a.ts: only direct importers count.
+    expect(importersOf('a.ts').importedBy).not.toContain('e.ts')
+  })
+
+  it('finds a directory import as an importer of that directory\'s index file', () => {
+    expect(importersOf('c/index.ts').importedBy).toEqual(['d.ts'])
+  })
+
+  it('leaves an untracked file out of the importers, since the list comes from git', () => {
+    expect(importersOf('a.ts').importedBy).not.toContain('untracked.ts')
+  })
+
+  it('prints the list as text, and says so when nothing imports the file', () => {
+    const text = captureStdout(() => { expect(runDeps({ file: join(repo, 'a.ts'), importers: true })).toBe(0) })
+    expect(text).toBe('imported by:\n  b.ts\n  d.ts\n')
+    const none = captureStdout(() => { expect(runDeps({ file: join(repo, 'lonely.ts'), importers: true })).toBe(0) })
+    expect(none).toBe('(no project file imports it)\n')
+  })
+
+  it('filters with --grep and discloses what the filter hid', () => {
+    expect(importersOf('a.ts', { grep: '^d' })).toEqual({ file: 'a.ts', importedBy: ['d.ts'], hiddenByGrep: 1 })
+    const text = captureStdout(() => { expect(runDeps({ file: join(repo, 'a.ts'), importers: true, grep: 'zzz' })).toBe(0) })
+    expect(text).toContain('all 2 importers were filtered out')
+  })
+
+  it('refuses a file git does not track rather than reporting that nothing imports it', () => {
+    let code = -1
+    const out = captureStdout(() => {
+      const err = captureStderr(() => { code = runDeps({ file: join(repo, 'untracked.ts'), importers: true }) })
+      expect(err).toContain('untracked.ts is not tracked')
+    })
+    expect(code).toBe(1)
+    expect(out).toBe('')
+  })
+
+  it.runIf(process.platform === 'win32' || process.platform === 'darwin')('matches the target case-insensitively where the filesystem is', () => {
+    expect(importersOf('A.TS')).toEqual({ file: 'a.ts', importedBy: ['b.ts', 'd.ts'] })
   })
 })
 

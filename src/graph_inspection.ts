@@ -13,7 +13,8 @@ import { symbolExtractorGap } from './read_meta.js'
 import { extractImports, importsExtensionFor } from './import_export_extract.js'
 import { fileConfinementRefusal } from './read_spec.js'
 import { rankSimilarNames, didYouMean } from './read_suggest.js'
-import { decodeSource, isTestFile, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun } from './util.js'
+import { decodeSource, isTestFile, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, foldPath } from './util.js'
+import { buildImportGraph } from './import_graph.js'
 import type { SymbolEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
 import { formatSymbolLocation } from './indexed_source.js'
@@ -176,6 +177,46 @@ export interface DepsOptions {
   json?: boolean
   /** Only list dependencies whose MODULE SPECIFIER matches this pattern. */
   grep?: string
+  /** List the project files that import this file instead of the files it imports. */
+  importers?: boolean
+}
+
+/** The reverse of runDeps: the git-tracked project files whose relative imports resolve to `file`. It reads the shared import graph rather than the index, because the index records a reference by name alone and a name cannot tell which of two same-named exports an importer reached. */
+function runDepsImporters(opts: DepsOptions): number {
+  const abs = path.resolve(opts.file)
+  const rootDir = resolveProjectRoot({ project: path.dirname(abs) })
+  const { files, importedBy } = buildImportGraph(rootDir)
+  // The tracked list uses the platform separator and a resolved path uses forward slashes, so both sides are normalized before folding, the same match computeAffected makes for its seeds.
+  const trackedByFolded = new Map<string, string>()
+  for (const f of files) trackedByFolded.set(foldPath(normalizePath(f)), f)
+  const tracked = trackedByFolded.get(foldPath(normalizePath(abs)))
+  if (tracked === undefined) {
+    emitErr(`importers come from git-tracked files; ${toDisplayPath(rootDir, normalizePath(abs))} is not tracked, or this is not a git repository`)
+    return 1
+  }
+  // Named as git spells it, so a target typed in another case on a case-insensitive filesystem still reports the file's real name.
+  const display = toDisplayPath(rootDir, normalizePath(tracked))
+
+  const importers = [...(importedBy.get(tracked) ?? [])].map((f) => toDisplayPath(rootDir, normalizePath(f))).sort()
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filtered = matchesGrep !== undefined ? importers.filter((i) => matchesGrep(i)) : importers
+
+  if (opts.json === true) {
+    const hiddenByGrep = importers.length - filtered.length
+    emit(displaySafeJson({ file: display, importedBy: filtered, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }))
+    return 0
+  }
+  if (matchesGrep !== undefined && importers.length > 0 && filtered.length === 0) {
+    emit(grepFilteredToEmptyNotice(importers.length, opts.grep ?? '', 'importer', 'importers'))
+    return 0
+  }
+  if (filtered.length === 0) {
+    emit('(no project file imports it)')
+    return 0
+  }
+  emit('imported by:')
+  for (const i of filtered) emit(`  ${i}`)
+  return 0
 }
 
 const SOURCE_EXTENSIONS = [
@@ -191,6 +232,7 @@ export function runDeps(opts: DepsOptions): number {
     emitErr(`Could not read: ${opts.file}`)
     return 1
   }
+  if (opts.importers === true) return runDepsImporters(opts)
 
   const ext = importsExtensionFor(opts.file)
   const raw = extractImports(text, ext)

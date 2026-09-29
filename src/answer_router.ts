@@ -8,10 +8,11 @@ import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import { runCallers, runImpact } from './graph_commands.js'
 import { runTestFor } from './graph_analysis.js'
+import { runDeps } from './graph_inspection.js'
 import { runExports, runImports } from './read_inspect.js'
 import { runSymbol } from './read_symbol.js'
 import { emit, emitErr } from './emit.js'
-import { recordStat } from './stats.js'
+import { type AnswerRoute, recordStat } from './stats.js'
 
 export interface AnswerOptions {
   question: string
@@ -22,7 +23,7 @@ export function refusal(why: string, suggestion: string): string {
   return `cannot answer deterministically: ${why}; try: ${suggestion}`
 }
 
-export type AnswerIntent = 'where' | 'callers' | 'tests' | 'exports' | 'imports' | 'impact'
+export type AnswerIntent = 'where' | 'callers' | 'tests' | 'exports' | 'imports' | 'importers' | 'impact'
 
 /** Questions that must refuse even when they name a resolvable symbol. These ask for judgement, intent, runtime behaviour, or a reading of a body -- none of which any index row can answer. This guard runs before intent matching precisely because the over-firing case is a judgement question that happens to contain a symbol name ("why does foldPath normalize", "is foldPath correct"). */
 const JUDGEMENT_PATTERNS: readonly RegExp[] = [
@@ -59,6 +60,10 @@ const INTENT_RULES: readonly IntentRule[] = [
   { intent: 'exports', re: /^what does (.+) export$/i },
   { intent: 'exports', re: /^exports of (.+)$/i },
   { intent: 'exports', re: /^(.+) exports$/i },
+
+  // The reverse direction: the files that import X, as opposed to what X imports.
+  { intent: 'importers', re: /^(?:what|who|which (?:files?|modules?)) imports? (.+)$/i },
+  { intent: 'importers', re: /^importers of (.+)$/i },
 
   { intent: 'imports', re: /^what does (.+) import$/i },
   { intent: 'imports', re: /^imports of (.+)$/i },
@@ -201,14 +206,17 @@ export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-firs
 }
 
 /** Intents whose delegate takes a file path; a symbol subject resolves to its defining file. */
-const FILE_INTENTS: ReadonlySet<AnswerIntent> = new Set<AnswerIntent>(['tests', 'exports', 'imports'])
+const FILE_INTENTS: ReadonlySet<AnswerIntent> = new Set<AnswerIntent>(['tests', 'exports', 'imports', 'importers'])
+
+/** The phrasing that re-asks a file intent about one specific path, for the ambiguous refusal's next step. */
+const FILE_INTENT_PHRASE: Readonly<Partial<Record<AnswerIntent, string>>> = { tests: 'tests for', exports: 'exports of', imports: 'imports of', importers: 'importers of' }
 
 /** Row cap the router puts on every symbol-intent delegate, so an answer stays smaller than the file it exists to save you from reading. Measured against this repo's own index: `callers normalizePath` (500+ refs) emits 24,274 bytes unbounded versus 21,091 for src/paths.ts itself, and 878 bytes at 20 rows; `impact` and `symbol` already default to 20 at the CLI, so this is the bound the whole router shares. Every `via:` line names the flag that reproduces the window it printed, and the delegate discloses whatever it withheld. */
 export const ANSWER_DELEGATE_LIMIT = 20
 
 /** See {@link SubjectMode}: `exports`/`imports` are module-level and take no symbol, `tests` accepts either with the file reading first, everything else is about a definition. */
 function subjectModeFor(intent: AnswerIntent): SubjectMode {
-  if (intent === 'exports' || intent === 'imports') return 'file-only'
+  if (intent === 'exports' || intent === 'imports' || intent === 'importers') return 'file-only'
   return intent === 'tests' ? 'file-first' : 'symbol-first'
 }
 
@@ -216,7 +224,7 @@ function subjectModeFor(intent: AnswerIntent): SubjectMode {
 type RefusalReason = 'empty' | 'judgement' | 'no-intent' | 'unresolved' | 'ambiguous' | 'symbol-only' | 'file-needs-symbol'
 
 /** Books one `answer:<route>` row: `route` is the command the `via:` line names, or `refused`; `outcome` is the delegate's result or the refusal reason. Zero bytes and zero tokens, since the delegate books its own saving under its own kind; this row is what says the call came through the router and how it ended. The question text is never stored. */
-function recordAnswer(route: string, outcome: string): void {
+function recordAnswer(route: AnswerRoute, outcome: string): void {
   recordStat(`answer:${route}`, 0, 0, undefined, outcome)
 }
 
@@ -227,9 +235,14 @@ function refuse(reason: RefusalReason, why: string, suggestion: string): number 
 }
 
 /** Books the route taken and passes the delegate's exit code through. A nonzero code is kept as `exit N` rather than folded into `answered`, since the delegate ran but found nothing or failed. */
-function routed(route: string, code: number): number {
+function routed(route: Exclude<AnswerRoute, 'refused'>, code: number): number {
   recordAnswer(route, code === 0 ? 'answered' : `exit ${code}`)
   return code
+}
+
+function answerImporters(file: string, display: string): number {
+  emit(`via: token-goat deps ${display} --importers`)
+  return routed('deps', runDeps({ file, importers: true }))
 }
 
 export function runAnswer(opts: AnswerOptions): number {
@@ -248,7 +261,7 @@ export function runAnswer(opts: AnswerOptions): number {
   if (cls === null) {
     return refuse(
       'no-intent',
-      'no intent matched -- this router only answers where/who-calls/what-tests-cover/what-exports/what-imports/what-breaks questions about a named symbol or file',
+      'no intent matched -- this router only answers where/who-calls/what-tests-cover/what-exports/what-imports/what-imports-it/what-breaks questions about a named symbol or file',
       `token-goat semantic "${question}"`,
     )
   }
@@ -264,13 +277,14 @@ export function runAnswer(opts: AnswerOptions): number {
     const first = shown[0] ?? ''
     // A symbol intent that got here fell through to the file reading, so re-asking it with one of these paths would refuse again for being a file: point at `outline` instead.
     const next = FILE_INTENTS.has(cls.intent)
-      ? `token-goat answer "${cls.intent === 'tests' ? 'tests for' : cls.intent === 'imports' ? 'imports of' : 'exports of'} ${first}"`
+      ? `token-goat answer "${FILE_INTENT_PHRASE[cls.intent] ?? ''} ${first}"`
       : `token-goat outline ${first}`
     return refuse('ambiguous', `'${cls.subject}' names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, next)
   }
 
   if (resolved.kind === 'symbol-only') {
-    return refuse('symbol-only', `'${cls.subject}' is a symbol; exports/imports are file-level`, `token-goat ${cls.intent} ${toDisplayPath(rootDir, resolved.file)}`)
+    const defining = toDisplayPath(rootDir, resolved.file)
+    return refuse('symbol-only', `'${cls.subject}' is a symbol; ${cls.intent === 'importers' ? 'importers are' : 'exports/imports are'} file-level`, cls.intent === 'importers' ? `token-goat deps ${defining} --importers` : `token-goat ${cls.intent} ${defining}`)
   }
 
   if (FILE_INTENTS.has(cls.intent)) {
@@ -284,12 +298,15 @@ export function runAnswer(opts: AnswerOptions): number {
       emit(`via: token-goat exports ${display}`)
       return routed('exports', runExports({ file }))
     }
+    if (cls.intent === 'importers') return answerImporters(file, display)
     emit(`via: token-goat imports ${display}`)
     return routed('imports', runImports({ file }))
   }
 
   if (resolved.kind === 'file') {
     const display = toDisplayPath(rootDir, resolved.path)
+    // "What depends on src/x.ts" asks about a file, and a file's direct dependents are the files that import it: answering that beats refusing and pointing at an outline, which does not answer the question at all.
+    if (cls.intent === 'impact') return answerImporters(resolved.path, display)
     return refuse('file-needs-symbol', `'${cls.subject}' is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`, `token-goat outline ${display}`)
   }
 

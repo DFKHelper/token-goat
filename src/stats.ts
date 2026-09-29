@@ -235,10 +235,14 @@ const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [
   ['answer:', SOURCE_OTHER],
 ]
 
+/** Every route runAnswer books as `answer:<route>`, each the command its `via:` line names, plus `refused`. The router's `routed()` takes only these, so a new route that is not listed here fails typecheck instead of vanishing from the `answer` row under By Command. */
+export const ANSWER_ROUTES = ['symbol', 'callers', 'impact', 'test-for', 'exports', 'imports', 'deps', 'refused'] as const
+export type AnswerRoute = (typeof ANSWER_ROUTES)[number]
+
 const COMMAND_KINDS: Record<string, Set<string>> = {
   symbol: new Set(['symbol_lookup']),
   // runAnswer's routes and refusals; savings stay on the delegate's own kind.
-  answer: new Set(['answer:symbol', 'answer:callers', 'answer:impact', 'answer:test-for', 'answer:exports', 'answer:imports', 'answer:refused']),
+  answer: new Set(ANSWER_ROUTES.map((r) => `answer:${r}`)),
   read: new Set(['read_replacement']),
   section: new Set(['section_replacement', 'section_read']),
   semantic: new Set(['semantic_search']),

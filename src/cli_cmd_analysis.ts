@@ -226,8 +226,9 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
     .description('one-level imports: resolves relative imports to project files, groups others as external')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'only show dependencies whose module specifier matches this regex (literal substring if it is not valid regex)')
-    .action((file: string, opts: { json?: boolean; grep?: string }) =>
-      runExit(() => runDeps({ file, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })),
+    .option('--importers', 'list the git-tracked project files that import this file instead')
+    .action((file: string, opts: { json?: boolean; grep?: string; importers?: boolean }) =>
+      runExit(() => runDeps({ file, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}), ...(opts.importers === true ? { importers: true } : {}) })),
     )
 
   program

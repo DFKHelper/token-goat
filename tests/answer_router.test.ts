@@ -144,6 +144,24 @@ describe('classify (pure, no index)', () => {
     }
   })
 
+  it('reads "what imports X" as the reverse of "what does X import"', () => {
+    // HAND-DERIVED: the ways to ask which files import a module, written from the question rather than the patterns. Every one of them refused as no-intent before the importers intent existed.
+    for (const q of [
+      'what imports src/delivery_cap.ts',
+      'who imports delivery_cap.ts',
+      'which files import delivery_cap',
+      'which modules import delivery_cap',
+      'importers of delivery_cap',
+    ]) {
+      expect(classify(q)?.intent, `failed on: ${q}`).toBe('importers')
+    }
+    expect(classify('what imports src/delivery_cap.ts')?.subject).toBe('src/delivery_cap.ts')
+    // The forward direction must keep its own intent: the importers rules sit ahead of the imports rules.
+    expect(classify('what does src/delivery_cap.ts import')).toEqual({ intent: 'imports', subject: 'src/delivery_cap.ts' })
+    expect(classify('imports of delivery_cap')).toEqual({ intent: 'imports', subject: 'delivery_cap' })
+    expect(classify('delivery_cap imports')).toEqual({ intent: 'imports', subject: 'delivery_cap' })
+  })
+
   it('routes the captured test-coverage question to the tests intent', () => {
     for (const { q, subject } of QUESTIONS.tests) {
       expect(classify(q), `failed on: ${q}`).toEqual({ intent: 'tests', subject })
@@ -206,6 +224,40 @@ describe('runAnswer against the real index', () => {
     expect(r.code).toBe(0)
     expect(r.out.split('\n')[0]).toBe('via: token-goat imports src/answer_router.ts')
     expect(r.out).toContain('./index_reader.js')
+  })
+
+  it('answers what-imports-X with the files that import it', () => {
+    const r = captureErr(() => runAnswer({ question: 'what imports src/delivery_cap.ts' }))
+    expect(r.code, r.err).toBe(0)
+    expect(r.out.split('\n')[0]).toBe('via: token-goat deps src/delivery_cap.ts --importers')
+    expect(r.out).toContain('imported by:')
+    expect(r.out).toContain('  src/hooks_bash_post.ts')
+    expect(r.out).not.toContain('  src/delivery_cap.ts')
+  })
+
+  it('answers what-depends-on a FILE with its importers instead of refusing for a missing symbol', () => {
+    // A file's direct dependents are the files that import it; before this the impact intent refused a file subject and pointed at outline, which does not answer the question.
+    const r = captureErr(() => runAnswer({ question: 'what depends on src/delivery_cap.ts' }))
+    expect(r.code, r.err).toBe(0)
+    expect(r.out.split('\n')[0]).toBe('via: token-goat deps src/delivery_cap.ts --importers')
+    // A symbol subject keeps the call-graph answer.
+    const bySymbol = captureErr(() => runAnswer({ question: 'what depends on foldPath' }))
+    expect(bySymbol.out.split('\n')[0]).toBe('via: token-goat impact foldPath --top 20')
+  })
+
+  it('refuses a symbol subject for importers and names the file-level command that answers it', () => {
+    const r = captureErr(() => runAnswer({ question: 'importers of foldPath' }))
+    expect(r.code).toBe(1)
+    expect(r.err).toContain("'foldPath' is a symbol; importers are file-level")
+    expect(r.err).toContain('try: token-goat deps src/path_containment.ts --importers')
+    expect(r.out).toBe('')
+  })
+
+  it('suggests re-asking importers about one path when the subject names several files', () => {
+    const r = captureErr(() => runAnswer({ question: 'what imports registry' }))
+    expect(r.code).toBe(1)
+    expect(r.err).toContain("'registry' names 2 files in this project")
+    expect(r.err).toMatch(/try: token-goat answer "importers of src\/(?:bridges|languages)\/registry\.ts"/)
   })
 
   it('answers what-breaks-if-X-changes via impact', () => {
