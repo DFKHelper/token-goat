@@ -171,6 +171,11 @@ function servedBySlot(sb: Sandbox): Record<number, number> {
   return Object.fromEntries(statuses(sb).map((s) => [s.slot, s.served]))
 }
 
+/** Calls served across every slot. Which slot answers is timing, not behavior: a slot 0 held past HEDGE_MS (src/hook_client.ts) has the client ask slot 1 beside it and start it when absent, and a loaded machine's pre-push once failed on `{ 0: 5, 1: 0 }` for exactly that. That each call was served is what these tests are about. */
+function servedTotal(sb: Sandbox): number {
+  return statuses(sb).reduce((sum, s) => sum + s.served, 0)
+}
+
 async function until<T>(label: string, probe: () => T | undefined, timeoutMs = 15_000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -341,7 +346,7 @@ describe('serving hook calls', () => {
     expect(started?.served).toBe(0)
 
     expect(relay(sb, 'pre_tool_use', bashDenyPayload('hs-serve-warm'))).toBe(baseline.stdout)
-    expect(servedBySlot(sb)).toEqual({ 0: 1 })
+    expect(servedTotal(sb)).toBe(1)
   })
 
   // HAND-DERIVED: a hook payload past MAX_FRAME_BYTES (64 MiB, src/hook_ipc.ts) was handed over, the server dropped the connection on reading its length, and the client counted that as a lost request and failed it open, so the hook ran nowhere.
@@ -365,7 +370,7 @@ describe('serving hook calls', () => {
     expect(relayResult(runNode(sb, argv, { input: bashDenyPayload('hs-cjs-first') }))).toBeNull()
     await waitForSlots(sb, [0])
     expect(relayResult(runNode(sb, argv, { input: bashDenyPayload('hs-cjs-warm') }))).toBe(baseline.stdout)
-    expect(servedBySlot(sb)).toEqual({ 0: 1 })
+    expect(servedTotal(sb)).toBe(1)
   })
 
   it('runs each request under its caller environment and working directory, so session state lands in each caller own home', async () => {
@@ -402,7 +407,7 @@ describe('serving hook calls', () => {
     fs.writeFileSync(path.join(dirB, 'doc.md'), '# B\n\n## Part\n\nfrom directory B\n')
     expect(cli(sb, ['section', 'doc.md::Part'], { cwd: dirA }).stdout).toContain('from directory A')
     expect(cli(sb, ['section', 'doc.md::Part'], { cwd: dirB }).stdout).toContain('from directory B')
-    expect(servedBySlot(sb)).toEqual({ 0: 5 })
+    expect(servedTotal(sb)).toBe(5)
   })
 })
 
@@ -422,7 +427,7 @@ describe('warm CLI', () => {
       const actual = cli(sb, args)
       expectSameRun(actual, expected)
       served++
-      expect(servedBySlot(sb), args.join(' ')).toEqual({ 0: served })
+      expect(servedTotal(sb), args.join(' ')).toBe(served)
     }
     // HAND-DERIVED guard on the fixture itself: the failing case really fails, and the others really print the file.
     expect(cold(sb, ['section', 'missing.md::Alpha']).status).toBe(1)
@@ -469,7 +474,7 @@ describe('warm CLI', () => {
       const actual = cli(sb, args)
       expectSameRun(actual, expected)
       served++
-      expect(servedBySlot(sb), args.join(' ')).toEqual({ 0: served })
+      expect(servedTotal(sb), args.join(' ')).toBe(served)
     }
     // The failing case really fails, so the exit code is compared on a non-zero one too.
     expect(cold(sb, ['callers', 'noSuchSymbolAnywhere']).status).toBe(1)
@@ -480,7 +485,7 @@ describe('warm CLI', () => {
     startServer(sb, 0)
     await waitForSlots(sb, [0])
     expectSameRun(cli(sb, ['section', '--help']), cold(sb, ['section', '--help']))
-    expect(servedBySlot(sb)).toEqual({ 0: 0 })
+    expect(servedTotal(sb)).toBe(0)
   })
 })
 
@@ -800,7 +805,7 @@ describe('retirement', () => {
     const [fresh] = await waitForSlots(sb, [0])
     expect(fresh?.pid).not.toBe(first?.pid)
     expectSameRun(cli(sb, ['section', 'notes.md::Alpha']), expected)
-    expect(servedBySlot(sb)).toEqual({ 0: 1 })
+    expect(servedTotal(sb)).toBe(1)
   })
 
   it('starts the new build on the next call even when the retired server was itself started moments before', async () => {
@@ -1009,7 +1014,7 @@ describe('through a real shim', () => {
 
     const claudeServed = runShim(sb, claude, 'pre_tool_use', claudePayload('served'))
     expectSameRun(claudeServed, claudeCold)
-    expect(servedBySlot(sb)).toEqual({ 0: 1 })
+    expect(servedTotal(sb)).toBe(1)
     const claudeRow = latestHookRow(sb)
     expect(claudeRow?.kind).toBe('hook:pre_tool_use')
     expect(claudeRow?.harness).toBe('claudecode')
@@ -1019,7 +1024,7 @@ describe('through a real shim', () => {
 
     const copilotServed = runShim(sb, copilot, 'preToolUse', copilotPayload('served'))
     expectSameRun(copilotServed, copilotCold)
-    expect(servedBySlot(sb)).toEqual({ 0: 2 })
+    expect(servedTotal(sb)).toBe(2)
     const copilotRow = latestHookRow(sb)
     expect(copilotRow?.seq).toBeGreaterThan(claudeRow?.seq as number)
     expect(copilotRow?.kind).toBe('hook:pre_tool_use')
