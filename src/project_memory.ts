@@ -15,11 +15,41 @@ const MAX_TOTAL_CHARS = 4000;
 const KEY_RE = /^[A-Za-z0-9_-]{1,80}$/;
 // A note's set time is a comment on the line before its entry, because older binaries share this file and skip `#` lines, where any other new line shape would land in their unparsed list and make them refuse every later update. Only the shape `new Date().toISOString()` writes is read as a time.
 const SET_AT_RE = /^#\s*set\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)$/;
+// An anchored note's symbol is a comment for the same reason. The file is matched greedily and the symbol cannot hold `:` or `@`, so a path containing either still splits on the last `::` and the last `@`.
+const ANCHOR_RE = /^#\s*anchor:\s*(\S.*)::([^:@\s]+)@([0-9a-f]{64})$/;
 
-/** A note's value and, when its file records one, the ISO 8601 UTC time setEntry last wrote it. A note written before notes carried a time, or saved since by a binary that drops the comment, has none. */
+/** The indexed symbol a note describes: its file relative to the project root with forward slashes, its name, and the fingerprint of its body when the note was set. */
+export interface NoteAnchor {
+  file: string;
+  symbol: string;
+  sha: string;
+}
+
+/** A note's value and, when its file records one, the ISO 8601 UTC time setEntry last wrote it and the symbol it is anchored to. A note written before notes carried a time, or saved since by a binary that drops the comment, has none; the same goes for an anchor. */
 export interface NoteEntry {
   value: string;
   setAt?: string;
+  anchor?: NoteAnchor;
+}
+
+/** Whether an anchored note's symbol still has the body it had when the note was set. `unknown` makes no claim: the file is not indexed, or the index could not be read. */
+export type AnchorStatus = 'current' | 'changed' | 'gone' | 'unknown';
+
+/** Resolves an anchor's status under a project root. Passed in rather than imported, because the resolver (note_anchor.ts) pulls in the index reader, and this module sits on every hook's eager import path while only session start and the note command need anchors resolved. */
+export type AnchorStatusOf = (root: string, anchor: NoteAnchor) => AnchorStatus;
+
+/** The marker appended to a note's line, empty when there is nothing to flag. */
+export function anchorLabel(status: AnchorStatus): string {
+  if (status === 'changed') return ' (changed since note)';
+  if (status === 'gone') return ' (anchored symbol gone)';
+  return '';
+}
+
+/** The comment line that records `anchor`, or null when the anchor could not be read back from it (a name holding `:`, `@` or whitespace), so a caller refuses it instead of saving an anchor that silently disappears. */
+export function anchorLine(anchor: NoteAnchor): string | null {
+  const line = `# anchor: ${anchor.file}::${anchor.symbol}@${anchor.sha}`;
+  const back = ANCHOR_RE.exec(line);
+  return back !== null && back[1] === anchor.file && back[2] === anchor.symbol ? line : null;
 }
 
 /** An empty map for notes keyed by user-supplied names. KEY_RE admits `__proto__`, `constructor`, `toString` and the rest of Object.prototype's names; on a plain object the first is dropped on assignment and the others answer `in` without ever being set. Membership is still tested with Object.hasOwn. */
@@ -46,10 +76,11 @@ function validateKey(key: string): void {
   }
 }
 
-/** Simple TOML parser for key=value format (no nested tables). The 1-based number of every line that is neither blank, a comment, nor an entry is pushed onto `unparsed`. A `# set <ISO time>` comment dates the next entry line only, recorded in `setAt`; an entry with none, or with a time that does not parse, is undated there. */
-function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<string, string>()): Record<string, string> {
+/** Simple TOML parser for key=value format (no nested tables). The 1-based number of every line that is neither blank, a comment, nor an entry is pushed onto `unparsed`. A `# set <ISO time>` comment dates the next entry line only, recorded in `setAt`; an entry with none, or with a time that does not parse, is undated there. A `# anchor: file::symbol@sha` comment anchors the next entry line the same way, recorded in `anchors`, whichever order the two comments come in. */
+function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<string, string>(), anchors = new Map<string, NoteAnchor>()): Record<string, string> {
   const result = noteMap<string>();
   let pendingSetAt: string | undefined;
+  let pendingAnchor: NoteAnchor | undefined;
   for (const [i, line] of content.split('\n').entries()) {
     const trimmed = line.trim();
     if (!trimmed) {
@@ -58,10 +89,14 @@ function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<str
     if (trimmed.startsWith('#')) {
       const time = SET_AT_RE.exec(trimmed)?.[1];
       if (time !== undefined && !Number.isNaN(Date.parse(time))) pendingSetAt = time;
+      const anchor = ANCHOR_RE.exec(trimmed);
+      if (anchor !== null) pendingAnchor = { file: anchor[1] as string, symbol: anchor[2] as string, sha: anchor[3] as string };
       continue;
     }
     const entrySetAt = pendingSetAt;
+    const entryAnchor = pendingAnchor;
     pendingSetAt = undefined;
+    pendingAnchor = undefined;
     const match = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*"(.*)"\s*$/);
     if (match) {
       const [, key, value] = match;
@@ -79,6 +114,8 @@ function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<str
         result[key] = unescaped;
         if (entrySetAt === undefined) setAt.delete(key);
         else setAt.set(key, entrySetAt);
+        if (entryAnchor === undefined) anchors.delete(key);
+        else anchors.set(key, entryAnchor);
       }
     } else {
       unparsed.push(i + 1);
@@ -88,7 +125,7 @@ function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<str
 }
 
 /** Read and parse the TOML file. An absent file is no entries; a read that fails any other way throws, because setEntry and unsetEntry save what this returns, and answering "no entries" to a scanner briefly holding a just-written file made them replace every note with the one they were changing. That brief lock is retried first. For the same reason `forUpdate` refuses a file with a line the parser cannot read, such as a value a hand edit continued onto a second line: a read skips it, and a save of what was read would delete it. */
-function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string>): Record<string, string> {
+function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string>, anchors?: Map<string, NoteAnchor>): Record<string, string> {
   let content = '';
   try {
     withRetryOnLock(() => {
@@ -99,7 +136,7 @@ function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string
     throw err;
   }
   const unparsed: number[] = [];
-  const entries = parseTOML(content, unparsed, setAt);
+  const entries = parseTOML(content, unparsed, setAt, anchors);
   if (forUpdate && unparsed.length > 0) {
     const one = unparsed.length === 1;
     throw new Error(`Not updating ${filePath}: ${one ? 'line' : 'lines'} ${unparsed.join(', ')} ${one ? 'is' : 'are'} not in the key = "value" form, and saving would drop ${one ? 'it' : 'them'}. Fix or remove ${one ? 'it' : 'them'}, then try again.`);
@@ -107,8 +144,8 @@ function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string
   return entries;
 }
 
-/** Serialize entries to TOML and write atomically, each dated entry preceded by its `# set <ISO time>` comment. */
-function save(filePath: string, entries: Record<string, string>, setAt = new Map<string, string>()): void {
+/** Serialize entries to TOML and write atomically, each dated entry preceded by its `# set <ISO time>` comment and each anchored one by its `# anchor:` comment. */
+function save(filePath: string, entries: Record<string, string>, setAt = new Map<string, string>(), anchors = new Map<string, NoteAnchor>()): void {
   const lines: string[] = [];
   const sorted = Object.entries(entries).sort(([a], [b]) => ordinal(a, b));
   for (const [k, v] of sorted) {
@@ -119,6 +156,9 @@ function save(filePath: string, entries: Record<string, string>, setAt = new Map
       .replace(/\n/g, '\\n');
     const time = setAt.get(k);
     if (time !== undefined) lines.push(`# set ${time}`);
+    const anchor = anchors.get(k);
+    const anchored = anchor === undefined ? null : anchorLine(anchor);
+    if (anchored !== null) lines.push(anchored);
     lines.push(`${k} = "${escaped}"`);
   }
 
@@ -135,14 +175,19 @@ export function loadEntries(projectHash: string): Record<string, string> {
   return loadRaw(memoryPath(projectHash));
 }
 
-/** Like {@link loadEntries}, in the same key order, with each note's set time when its file records one. */
+/** Like {@link loadEntries}, in the same key order, with each note's set time and anchor when its file records them. */
 export function loadDatedEntries(projectHash: string): Record<string, NoteEntry> {
   const setAt = new Map<string, string>();
-  const entries = loadRaw(memoryPath(projectHash), false, setAt);
+  const anchors = new Map<string, NoteAnchor>();
+  const entries = loadRaw(memoryPath(projectHash), false, setAt, anchors);
   const result = noteMap<NoteEntry>();
   for (const [key, value] of Object.entries(entries)) {
+    const note: NoteEntry = { value };
     const time = setAt.get(key);
-    result[key] = time === undefined ? { value } : { value, setAt: time };
+    if (time !== undefined) note.setAt = time;
+    const anchor = anchors.get(key);
+    if (anchor !== undefined) note.anchor = anchor;
+    result[key] = note;
   }
   return result;
 }
@@ -167,7 +212,7 @@ export interface SetResult {
 }
 
 /** Set key to value in this project's memory, stamped with the current time. Enforces MAX_ENTRIES by evicting the oldest-set entries to make room for new entries; undated entries count as older than any dated one, and among them the alphabetically last goes first. */
-export function setEntry(projectHash: string, key: string, value: string): SetResult {
+export function setEntry(projectHash: string, key: string, value: string, anchor?: NoteAnchor): SetResult {
   validateKey(key);
   const p = memoryPath(projectHash);
   const dir = path.dirname(p);
@@ -177,7 +222,8 @@ export function setEntry(projectHash: string, key: string, value: string): SetRe
   const result: SetResult = { evicted: [] };
   const doSet = (): true => {
     const setAt = new Map<string, string>();
-    const entries = loadRaw(p, true, setAt);
+    const anchors = new Map<string, NoteAnchor>();
+    const entries = loadRaw(p, true, setAt, anchors);
     // Read under the lock, so the value reported as replaced is the one this write actually overwrote, even when another process set the key a moment earlier.
     const old = Object.hasOwn(entries, key) ? entries[key] : undefined;
     if (old !== undefined) result.previous = old;
@@ -191,12 +237,16 @@ export function setEntry(projectHash: string, key: string, value: string): SetRe
         result.evicted.push(k);
         delete entries[k];
         setAt.delete(k);
+        anchors.delete(k);
       }
     }
 
     entries[key] = value;
     setAt.set(key, new Date().toISOString());
-    save(p, entries, setAt);
+    // A note set again without an anchor loses the old one: the anchor describes the value it was set with, not the key.
+    if (anchor === undefined) anchors.delete(key);
+    else anchors.set(key, anchor);
+    save(p, entries, setAt, anchors);
     return true;
   };
   underNotesLock(p, doSet);
@@ -222,10 +272,11 @@ export function unsetEntry(projectHash: string, key: string): void {
   const p = memoryPath(projectHash);
   const doUnset = (): true => {
     const setAt = new Map<string, string>();
-    const entries = loadRaw(p, true, setAt);
+    const anchors = new Map<string, NoteAnchor>();
+    const entries = loadRaw(p, true, setAt, anchors);
     if (Object.hasOwn(entries, key)) {
       delete entries[key];
-      save(p, entries, setAt);
+      save(p, entries, setAt, anchors);
     }
     return true;
   };
@@ -244,8 +295,8 @@ export function clearAll(projectHash: string): void {
   underNotesLock(p, doClear);
 }
 
-/** Build a compact Markdown block of memory entries for session-start injection. Returns null when no entries stored. */
-export function buildInjection(projectHash: string): string | null {
+/** Build a compact Markdown block of memory entries for session-start injection. Returns null when no entries stored. With the project `root` and a `statusOf` resolver, an anchored note whose symbol has changed or gone since it was set carries a marker saying so. */
+export function buildInjection(projectHash: string, root?: string, statusOf?: AnchorStatusOf): string | null {
   try {
     const entries = loadDatedEntries(projectHash);
     if (Object.keys(entries).length === 0) {
@@ -269,7 +320,9 @@ export function buildInjection(projectHash: string): string | null {
     for (const [key, note] of entries_list.slice(0, MAX_ENTRIES)) {
       const val = note.value;
       const display = val.length <= MAX_VALUE_LEN ? val : val.slice(0, MAX_VALUE_LEN) + '…';
-      const line = `- **${key}**${noteAgeLabel(note, now)}: ${display}`;
+      // The anchor marker is part of the line too, so the cap counts it. Without the project root there is nothing to resolve the anchored file against, and without a resolver nothing to ask, and the note shows unmarked.
+      const flag = root === undefined || statusOf === undefined || note.anchor === undefined ? '' : anchorLabel(statusOf(root, note.anchor));
+      const line = `- **${key}**${noteAgeLabel(note, now)}${flag}: ${display}`;
       if (render([...shown, line], entries_list.length - shown.length - 1).length > MAX_TOTAL_CHARS) break;
       shown.push(line);
     }
@@ -280,12 +333,12 @@ export function buildInjection(projectHash: string): string | null {
   }
 }
 
-/** The notes block for the project containing `cwd`, or null when `cwd` is in no project, the project has no notes, or the lookup fails. Session start and the compaction manifest both carry it, since a finding recorded with `note set` exists precisely to outlive the context it was found in, and both run on hook paths that must never throw. */
-export function projectNotesFor(cwd: string | undefined): string | null {
+/** The notes block for the project containing `cwd`, or null when `cwd` is in no project, the project has no notes, or the lookup fails. Session start and the compaction manifest both carry it, since a finding recorded with `note set` exists precisely to outlive the context it was found in, and both run on hook paths that must never throw. Anchored notes are marked only when the caller passes `statusOf`; see {@link AnchorStatusOf} for why it is a parameter. */
+export function projectNotesFor(cwd: string | undefined, statusOf?: AnchorStatusOf): string | null {
   if (cwd === undefined) return null;
   try {
     const project = findProject(cwd);
-    return project === null ? null : buildInjection(project.hash);
+    return project === null ? null : buildInjection(project.hash, project.root, statusOf);
   } catch {
     return null;
   }

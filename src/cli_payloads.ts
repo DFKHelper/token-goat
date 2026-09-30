@@ -8,6 +8,7 @@ import { buildDeltaCapsule } from './evidence_cache.js'
 import { installedClaudeMdBlock, skillPath } from './install.js'
 import { displaySafeJson, normalizePath } from './paths.js'
 import { findProject } from './project.js'
+import { anchorStatus } from './note_anchor.js'
 import { loadDatedEntries, projectNotesFor } from './project_memory.js'
 import { buildReminder, isIndexedProject } from './session_reminder.js'
 import { sessionsDir } from './sessions_dir.js'
@@ -130,7 +131,8 @@ export function measurePayloads(cwd: string, dir?: string): PayloadReport {
 
   const reminder = reminderOn ? buildReminder(isIndexedProject(cwd)) : null
   const capsule = reminderOn ? buildDeltaCapsule(cwd) : null
-  const notes = projectNotesFor(cwd)
+  // With the resolver session start passes, so the measured block carries the same markers.
+  const notes = projectNotesFor(cwd, anchorStatus)
   const noteCount = project === null ? 0 : Object.keys(loadDatedEntries(project.hash)).length
   const sessionStart = [
     block('routing reminder', reminder, reminderOn ? 'every session start' : 'off (hints.session_start_reminder = false)'),

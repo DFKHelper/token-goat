@@ -10,8 +10,10 @@ import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { ownGet } from './own_lookup.js'
 import { displaySafeText, toDisplayPath, displaySafeJson } from './paths.js'
-import { findProject, getDisplayRoot } from './project.js'
-import { clearAll, loadDatedEntries, loadEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, setEntry, unsetEntry } from './project_memory.js'
+import { autoNoteAnchor, resolveNoteAnchor } from './cli_file_ops.js'
+import { anchorStatus } from './note_anchor.js'
+import { findProject, getDisplayRoot, type Project } from './project.js'
+import { anchorLabel, clearAll, loadDatedEntries, loadEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
 import { foldPath, requireNonNegativeStrictInt } from './util.js'
 import { suggestPackageNames } from './util_suggest.js'
@@ -477,22 +479,28 @@ export function cmdLockdeps(filePath: string | undefined, opts: { json?: boolean
 
 // ── note ─────────────────────────────────────────────────────────────────────
 
-function resolveProjectHash(): string {
+function resolveProject(): Project {
   const project = findProject(process.cwd())
   if (project === null) throw new Error('No project root found from cwd. Is this inside a project (git repo, package.json, etc.)?')
-  return project.hash
+  return project
+}
+
+function resolveProjectHash(): string {
+  return resolveProject().hash
 }
 
 export function cmdNote(
   action: string,
   key: string | undefined,
   value: string | undefined,
-  opts: { json?: boolean },
+  opts: { json?: boolean; anchor?: string },
 ): void {
   const act = action.toLowerCase()
+  if (opts.anchor !== undefined && act !== 'set') throw new Error('--anchor applies to note set only')
 
   if (act === 'list') {
-    const hash = resolveProjectHash()
+    const project = resolveProject()
+    const hash = project.hash
     if (opts.json === true) {
       process.stdout.write(displaySafeJson(loadEntries(hash)) + '\n')
     } else {
@@ -502,7 +510,8 @@ export function cmdNote(
       } else {
         const now = Date.now()
         for (const [k, note] of pairs) {
-          process.stdout.write(`${k}${noteAgeLabel(note, now)} = ${note.value}\n`)
+          const flag = note.anchor === undefined ? '' : anchorLabel(anchorStatus(project.root, note.anchor))
+          process.stdout.write(`${k}${noteAgeLabel(note, now)}${flag} = ${note.value}\n`)
         }
       }
     }
@@ -537,9 +546,12 @@ export function cmdNote(
   if (act === 'set') {
     if (key === undefined) throw new Error('note set requires a key')
     if (value === undefined) throw new Error('note set requires a value')
-    const hash = resolveProjectHash()
-    const { previous, evicted } = setEntry(hash, key, value)
+    const project = resolveProject()
+    // An explicit anchor that does not resolve is an error; one found in the note's own text is a convenience, and the note is set either way.
+    const anchor = opts.anchor !== undefined ? resolveNoteAnchor(opts.anchor, project.root) : autoNoteAnchor(value, project.root) ?? undefined
+    const { previous, evicted } = setEntry(project.hash, key, value, anchor)
     process.stdout.write(`Set: ${key} = ${value}\n`)
+    if (anchor !== undefined) process.stdout.write(`Anchored to ${displaySafeText(anchor.file)}::${displaySafeText(anchor.symbol)}; the note is flagged once that symbol changes\n`)
     // A note set overwrites without asking, so say what it overwrote: the old finding is otherwise gone with no trace.
     if (previous !== undefined && previous !== value) process.stdout.write(`Replaced the previous value: ${previous}\n`)
     for (const k of evicted) process.stdout.write(`Removed the oldest note to stay within ${MAX_NOTE_ENTRIES}: ${k}\n`)

@@ -489,6 +489,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/modules.ts`](src/modules.ts) | Module detection over the project's internal import graph. |
 | [`src/native_hook.ts`](src/native_hook.ts) | The native hook client (native/tg-hook) as installers and `doctor` see it: where this install's binary is, whether an install should wire it, the command lines that put it in front |
 | [`src/nested_worktrees.ts`](src/nested_worktrees.ts) | Git linked worktrees that sit inside a project's own directory, and the SQL that keeps their rows out of that project's queries. |
+| [`src/note_anchor.ts`](src/note_anchor.ts) | Exports: `anchorStatus` |
 | [`src/notebook_compact.ts`](src/notebook_compact.ts) | Strip cell outputs from Jupyter notebooks to reduce token burn. |
 | [`src/notes.ts`](src/notes.ts) | Architecture-notes storage layer. |
 | [`src/ocr_hashes.ts`](src/ocr_hashes.ts) | Exports: `OcrLangSpec`, `ocrLangPath`, `OCR_LANG_HASHES`, `SUPPORTED_OCR_LANGS` |

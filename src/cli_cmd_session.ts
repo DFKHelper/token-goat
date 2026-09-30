@@ -270,7 +270,8 @@ export function registerSessionCommands(program: Command, guard: GuardFn): void 
     .command('note <action> [key] [value]')
     .description('per-project key-value notes (actions: set, get, unset, list, clear)')
     .option('-j, --json', 'output as JSON (list action only)')
-    .action((action: string, key: string | undefined, value: string | undefined, opts: { json?: boolean }) =>
+    .option('--anchor <spec>', 'anchor the note to one indexed symbol (file::symbol), so it is flagged once that symbol changes; a file::symbol in the note text anchors it too (set action only)')
+    .action((action: string, key: string | undefined, value: string | undefined, opts: { json?: boolean; anchor?: string }) =>
       guard(() => cmdNote(action, key, value, opts))(),
     )
 

@@ -96,7 +96,9 @@ async function sessionStartOutput(event: HookEvent): Promise<HookOutput> {
   const recovery = await postCompactRecovery(event)
   const cwd = getCwd(event)
   // Resolved outside the reminder gate for the same reason as the packet: notes are findings the session recorded on purpose, not routing advice a user opts out of.
-  const tail = [projectNotesFor(cwd), recovery].filter((part): part is string => part !== null).join('\n\n')
+  // Loaded here rather than imported: the anchor resolver reads the index, and this module is on the eager path of every hook, not just this one.
+  const { anchorStatus } = await import('./note_anchor.js')
+  const tail = [projectNotesFor(cwd, anchorStatus), recovery].filter((part): part is string => part !== null).join('\n\n')
   const tailOnly = (): HookOutput => (tail === '' ? passOutput() : contextOutput(tail))
   try {
     if (!loadConfig().hints.session_start_reminder) return tailOnly()

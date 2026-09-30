@@ -13,8 +13,11 @@ import {
   upsertNote,
   WHOLE_FILE_NOTE_SYMBOL,
 } from './notes.js'
+import { isInsideRoot } from './path_containment.js'
 import { resolveIndexPath } from './paths.js'
-import { healStaleIndex } from './read_commands.js'
+import type { SymbolEntry } from './parser_types.js'
+import { anchorLine, type NoteAnchor } from './project_memory.js'
+import { findSpecSeparator, healStaleIndex } from './read_commands.js'
 import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
 import { didYouMeanLines, filterSimilarHeadings, rankSimilarNames } from './read_suggest.js'
 import { listSections, readSection } from './section_reader.js'
@@ -200,6 +203,56 @@ function decodeBase64Buffer(payload: string, label: string): Buffer {
   return Buffer.from(normalized, 'base64')
 }
 
+/** The indexed symbol `name` in `resolvedPath`, or a CliError listing the closest names the file does have. */
+function requireSymbolMatch(resolvedPath: string, file: string, name: string): SymbolEntry {
+  const match = resolveSymbolMatch(resolvedPath, name)
+  if (match !== null) return match
+  const messages = [`No symbol named '${name}' is indexed in '${file}'`]
+  const allNames = symbolNamesInFile(resolvedPath)
+  const available = rankSimilarNames(allNames, name)
+  if (available.length > 0) messages.push(...didYouMeanLines(available))
+  else if (allNames.length > 0) messages.push(`Try: token-goat outline ${file}`)
+  throw new CliError(messages)
+}
+
+/** Resolve a `file::symbol` spec to the anchor a project note records: the file relative to the project root with forward slashes, so the note file reads the same on every platform, and the hash of the symbol's indexed body. */
+export function resolveNoteAnchor(spec: string, root: string, base: string = process.cwd()): NoteAnchor {
+  const sep = findSpecSeparator(spec)
+  const file = sep > 0 ? spec.slice(0, sep) : ''
+  const symbol = sep > 0 ? spec.slice(sep + 2) : ''
+  if (file === '' || symbol === '') throw new CliError(`--anchor takes file::symbol, got '${spec}'`)
+  const resolvedPath = resolveIndexPath(file, base)
+  if (!fs.existsSync(resolvedPath)) throw new CliError(`File not found: '${resolvedPath}'`)
+  // A note belongs to one project, and session start resolves its anchor against that project's root.
+  if (!isInsideRoot(resolvedPath, root)) throw new CliError(`--anchor must name a file inside this project (${root}), got '${file}'`)
+  healStaleIndex(resolvedPath)
+  const match = requireSymbolMatch(resolvedPath, file, symbol)
+  let rel = path.relative(root, resolvedPath)
+  // The root is canonical and the cwd-resolved path may not be (a macOS temp dir is /var through a link to /private/var); isInsideRoot already followed the links, so the real paths agree.
+  if (rel.startsWith('..') || path.isAbsolute(rel)) rel = path.relative(fs.realpathSync(root), fs.realpathSync(resolvedPath))
+  const anchor: NoteAnchor = { file: rel.split(path.sep).join('/'), symbol, sha: fingerprintContent(match.body) }
+  if (anchorLine(anchor) === null) throw new CliError(`Cannot anchor to '${spec}': the symbol name holds a character the notes file cannot store (':', '@' or whitespace)`)
+  return anchor
+}
+
+// A `file::symbol` reference written into a note's own text: a path with an extension, then a dotted identifier that stops short of a sentence's closing period.
+const NOTE_SYMBOL_REF_RE = /([\w./-]+\.[A-Za-z0-9]+)::([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g
+const NOTE_SYMBOL_REF_TRIES = 3
+
+/** The anchor for the first `file::symbol` in a note's text that names an indexed symbol in this project, resolved against the project root; null when none does. Never throws: a note whose text merely mentions code is still set, unanchored. */
+export function autoNoteAnchor(value: string, root: string): NoteAnchor | null {
+  let tries = 0
+  for (const m of value.matchAll(NOTE_SYMBOL_REF_RE)) {
+    if (++tries > NOTE_SYMBOL_REF_TRIES) break
+    try {
+      return resolveNoteAnchor(`${m[1]}::${m[2]}`, root, root)
+    } catch {
+      // Not an indexed symbol in this project; try the next reference.
+    }
+  }
+  return null
+}
+
 export function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: string; contentB64?: string }): void {
   if (!file || !file.trim()) {
     throw new CliError('file path cannot be empty')
@@ -232,15 +285,7 @@ export function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: 
   let symbol = WHOLE_FILE_NOTE_SYMBOL
   let fingerprint: string
   if (opts.symbol !== undefined) {
-    const match = resolveSymbolMatch(resolvedPath, opts.symbol)
-    if (match === null) {
-      const messages = [`No symbol named '${opts.symbol}' is indexed in '${file}'`]
-      const allNames = symbolNamesInFile(resolvedPath)
-      const available = rankSimilarNames(allNames, opts.symbol)
-      if (available.length > 0) messages.push(...didYouMeanLines(available))
-      else if (allNames.length > 0) messages.push(`Try: token-goat outline ${file}`)
-      throw new CliError(messages)
-    }
+    const match = requireSymbolMatch(resolvedPath, file, opts.symbol)
     symbol = opts.symbol
     fingerprint = fingerprintContent(match.body)
   } else {
