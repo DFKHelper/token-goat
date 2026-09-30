@@ -331,6 +331,38 @@ describe('cmdConfig layer attribution', () => {
     })
   })
 
+  // HAND-DERIVED: which keys are locked is read off PROJECT_LOCKED_SECTIONS and PROJECT_LOCKED_KEYS in src/config_project.ts, and each default (mcp.confine_reads_to_project_root false, hints.fold_code_bodies true) off src/config_defaults.ts. loadConfig strips a locked key before merging, so whatever the project file says, the effective value is the global one. Dogfooded before the fix: `[mcp] confine_reads_to_project_root = false` printed `false  # from .token-goat.toml`, crediting the value to a file whose value was thrown away.
+  it('state global: a locked key the project file sets to the effective value is not credited to the project file', () => {
+    inProjectDir('[mcp]\nconfine_reads_to_project_root = false\n', () => {
+      const text = bothText('mcp.confine_reads_to_project_root')
+      expect(text.get).toBe('false')
+      expect(text.listLine).toBe('mcp.confine_reads_to_project_root = false')
+      const json = bothJson('mcp.confine_reads_to_project_root')
+      expect(json.get['source']).toBe('global')
+      expect(json.listSource).toBeUndefined()
+    })
+  })
+
+  it('state global: the same holds for a locked key inside an unlocked section', () => {
+    inProjectDir('[hints]\nfold_code_bodies = true\n', () => {
+      expect(bothText('hints.fold_code_bodies').get).toBe('true')
+      expect(bothJson('hints.fold_code_bodies').get['source']).toBe('global')
+    })
+  })
+
+  it('state project-invalid: a locked key the project file sets to another value says why it was ignored', () => {
+    inProjectDir('[mcp]\nconfine_reads_to_project_root = true\n', () => {
+      const text = bothText('mcp.confine_reads_to_project_root')
+      expect(text.get).toBe('false  # .token-goat.toml sets true (a security setting, which only the global config or the environment may set), not in effect; using false')
+      const json = bothJson('mcp.confine_reads_to_project_root')
+      expect(json.get['source']).toBe('project_invalid')
+      expect(json.get['reason']).toBe('a security setting, which only the global config or the environment may set')
+    })
+    inProjectDir('[hints]\nfold_code_bodies = false\n', () => {
+      expect(bothJson('hints.fold_code_bodies').get['reason']).toBe('a security setting, which only the global config or the environment may set')
+    })
+  })
+
   it('state env: a SET env var outranks a valid project value, and is reported as env rather than as a rejected project value', () => {
     expect(process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT']).toBeUndefined()
     process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT'] = '42'

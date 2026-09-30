@@ -58,6 +58,8 @@ import {
   mergeRawConfig,
   resolveConfigProjectRoot,
   isAutoTriggerMultiplierExplicit,
+  PROJECT_LOCKED_SECTIONS,
+  PROJECT_LOCKED_KEYS,
 } from './config_project.js'
 
 // --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
@@ -446,6 +448,11 @@ export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg:
   if (projectInfo.parseError !== null) return { layer: 'project-unparsed', path: projectInfo.path, parseError: projectInfo.parseError }
   if (!Object.prototype.hasOwnProperty.call(projectInfo.values, key)) return { layer: 'global' }
   const rawValue = projectInfo.values[key]
+  // loadConfig strips a locked key from the project file before merging (stripLockedProjectKeys), so its value never comes from there. A project value that happens to equal the effective one is a coincidence, not the source: crediting it would tell a reader the repository controls a security setting.
+  if (PROJECT_LOCKED_SECTIONS.includes(key.split('.')[0] ?? '') || PROJECT_LOCKED_KEYS.includes(key)) {
+    if (rawValueEquals(rawValue, effectiveValue)) return { layer: 'global' }
+    return { layer: 'project-invalid', path: projectInfo.path, rawValue, effectiveValue, reason: 'a security setting, which only the global config or the environment may set' }
+  }
   if (rawValueEquals(rawValue, effectiveValue)) return { layer: 'project', path: projectInfo.path }
   return { layer: 'project-invalid', path: projectInfo.path, rawValue, effectiveValue, reason: rejectionReason(key, rawValue, effectiveValue, cfg) }
 }
