@@ -2,7 +2,7 @@
 //
 // Pytest output is highly structured, so this filter does NOT fit the Node test-runner family in `families.ts`: it strips pytest-xdist `[gwN]` worker prefixes, collapses pytest-cov coverage tables to their TOTAL line, trims the `slowest N durations` section to the first five entries, and deduplicates the warnings-summary section — none of which the jest/vitest family models.
 //
-// Compression model (verbatim from the Python docstring): * Keep — FAILURES / ERRORS blocks, short-test-summary, warnings summary, the final `= N failed, M passed in Xs =` tally, and the `collected N items` line (first three). * Drop — the dots/percent progress line, constant banner lines (platform/cachedir/rootdir/plugins/configfile/bringing-up/ cacheprovider), `collecting …` preamble, the constant `= test session starts =` header, and every PASSED line (kept as a count, in both default and verbose mode). * xdist — strip the `[gw0]` worker prefix from every line. * cov — collapse per-file coverage rows to a single TOTAL line. * slow — keep the section header + first five entries; collapse the rest. * warn — dedupe repeated warning messages; drop `-- Docs:` footers.
+// Compression model (verbatim from the Python docstring): * Keep — FAILURES / ERRORS blocks, short-test-summary, warnings summary, the final `= N failed, M passed in Xs =` tally, and the `collected N items` line (first three). * Drop — the dots/percent progress line, constant banner lines (platform/cachedir/rootdir/plugins/configfile/bringing-up/ cacheprovider, and the pytest-asyncio and hypothesis report headers), `collecting …` preamble, the constant `= test session starts =` header, and every PASSED line (kept as a count, in both default and verbose mode). * xdist — strip the `[gw0]` worker prefix from every line. * cov — collapse per-file coverage rows to a single TOTAL line. * slow — keep the section header + first five entries; collapse the rest. * warn — dedupe repeated warning messages; drop `-- Docs:` footers.
 
 import { ToolFilter } from './base.js'
 import { trimRepeatedPrefix } from './helpers.js'
@@ -13,9 +13,9 @@ const XDIST_PREFIX_RE = /^\[gw\d+\]\s*(?:\[\s*\d+%\]\s*)?/
 const DOTS_RE = /^[.FxXEsS]+\s*(\[\s*\d+%\])?\s*$/
 // Default (non-verbose, non-xdist) progress line: pytest leads each file's result run with its path, `tests/test_foo.py ..F.s    [ 50%]`, and only a wrapped continuation is bare dots. The percent column is required here because a bare `path dots` shape would also match captured text such as `assert F`.
 const FILE_DOTS_RE = /^\S+\s+[.FxXEsS]+\s+\[\s*\d+%\]\s*$/
-// Constant banner lines (also xdist "bringing up nodes" + cacheprovider).
+// Constant banner lines (also xdist "bringing up nodes" + cacheprovider), plus the two plugin header lines pytest prints through pytest_report_header when pytest-asyncio (`asyncio: mode=…`, every run) and hypothesis (`hypothesis profile 'default'`, under -v) are installed. Plugins that report a seed, such as pytest-randomly, are left alone: the seed is what reproduces an order-dependent failure.
 const BANNER_RE =
-  /^(?:platform\s|cachedir:\s|rootdir:\s|plugins:\s|configfile:\s|bringing up\s|cacheprovider-)/
+  /^(?:platform\s|cachedir:\s|rootdir:\s|plugins:\s|configfile:\s|bringing up\s|cacheprovider-|asyncio: mode=|hypothesis profile\s)/
 // `collecting …` preamble before the session header.
 const PREAMBLE_RE = /^collecting\s/
 // Section headers (`= FAILURES =`, `= short test summary info =`, final tally …).

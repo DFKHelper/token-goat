@@ -82,6 +82,22 @@ describe('pytest filter', () => {
     expect(result.text).toContain('1 failed, 4 passed')
   })
 
+  it('strips the pytest-asyncio and hypothesis report headers but keeps the pytest-randomly seed', () => {
+    // FORMAT-DERIVED: pytest_asyncio/plugin.py:260 (1.3.0) returns "asyncio: " + mode, debug and the two loop scopes; hypothesis _hypothesis_pytestplugin.py:134 returns f"hypothesis profile {name!r}{settings_str}"; pytest-randomly __init__.py pytest_report_header returns f"Using --randomly-seed={seed}".
+    const text =
+      'asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function\n' +
+      "hypothesis profile 'default' -> max_examples=10\n" +
+      'Using --randomly-seed=12345\n' +
+      'collected 5 items\n' +
+      'FAILED tests/test_x.py::test_one\n' +
+      '= 1 failed, 4 passed in 0.5s =\n'
+    const result = pytestFilter.apply(text, '', 1, ['pytest'])
+    expect(result.text).not.toContain('asyncio: mode=')
+    expect(result.text).not.toContain('hypothesis profile')
+    expect(result.text).toContain('Using --randomly-seed=12345')
+    expect(result.text).toContain('FAILED tests/test_x.py::test_one')
+  })
+
   it('strips pytest-xdist [gwN] worker prefixes, collapses PASSED, keeps FAILED', () => {
     const text =
       '[gw0] [ 25%] PASSED tests/test_a.py::test_one\n' +

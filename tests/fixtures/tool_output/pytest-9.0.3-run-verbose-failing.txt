@@ -1,0 +1,105 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.1, pytest-9.0.3, pluggy-1.6.0 -- C:\Python313\python.exe
+hypothesis profile 'default'
+rootdir: C:\work\py-cap
+plugins: anyio-4.13.0, http-snapshot-0.1.9, inline-snapshot-0.32.7, asyncio-1.3.0, cov-7.1.0, rerunfailures-16.3, timeout-2.4.0, xdist-3.8.0, respx-0.23.1, hypothesis-6.155.7
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 45 items
+
+test_calc.py::test_add[0] PASSED                                         [  2%]
+test_calc.py::test_add[1] PASSED                                         [  4%]
+test_calc.py::test_add[2] PASSED                                         [  6%]
+test_calc.py::test_add[3] PASSED                                         [  8%]
+test_calc.py::test_add[4] PASSED                                         [ 11%]
+test_calc.py::test_add[5] PASSED                                         [ 13%]
+test_calc.py::test_add[6] PASSED                                         [ 15%]
+test_calc.py::test_add[7] PASSED                                         [ 17%]
+test_calc.py::test_add[8] PASSED                                         [ 20%]
+test_calc.py::test_add[9] PASSED                                         [ 22%]
+test_calc.py::test_add[10] PASSED                                        [ 24%]
+test_calc.py::test_add[11] PASSED                                        [ 26%]
+test_calc.py::test_add[12] PASSED                                        [ 28%]
+test_calc.py::test_add[13] PASSED                                        [ 31%]
+test_calc.py::test_add[14] PASSED                                        [ 33%]
+test_calc.py::test_add[15] PASSED                                        [ 35%]
+test_calc.py::test_add[16] PASSED                                        [ 37%]
+test_calc.py::test_add[17] PASSED                                        [ 40%]
+test_calc.py::test_add[18] PASSED                                        [ 42%]
+test_calc.py::test_add[19] PASSED                                        [ 44%]
+test_calc.py::test_add[20] PASSED                                        [ 46%]
+test_calc.py::test_add[21] PASSED                                        [ 48%]
+test_calc.py::test_add[22] PASSED                                        [ 51%]
+test_calc.py::test_add[23] PASSED                                        [ 53%]
+test_calc.py::test_add[24] PASSED                                        [ 55%]
+test_calc.py::test_add[25] PASSED                                        [ 57%]
+test_calc.py::test_add[26] PASSED                                        [ 60%]
+test_calc.py::test_add[27] PASSED                                        [ 62%]
+test_calc.py::test_add[28] PASSED                                        [ 64%]
+test_calc.py::test_add[29] PASSED                                        [ 66%]
+test_calc.py::test_add[30] PASSED                                        [ 68%]
+test_calc.py::test_add[31] PASSED                                        [ 71%]
+test_calc.py::test_add[32] PASSED                                        [ 73%]
+test_calc.py::test_add[33] PASSED                                        [ 75%]
+test_calc.py::test_add[34] PASSED                                        [ 77%]
+test_calc.py::test_add[35] PASSED                                        [ 80%]
+test_calc.py::test_add[36] PASSED                                        [ 82%]
+test_calc.py::test_add[37] PASSED                                        [ 84%]
+test_calc.py::test_add[38] PASSED                                        [ 86%]
+test_calc.py::test_add[39] PASSED                                        [ 88%]
+test_calc.py::test_div_by_zero_is_inf FAILED                             [ 91%]
+test_calc.py::test_add_strings FAILED                                    [ 93%]
+test_calc.py::test_fetch SKIPPED (needs network)                         [ 95%]
+test_io.py::test_load_missing FAILED                                     [ 97%]
+test_io.py::test_many PASSED                                             [100%]
+
+================================== FAILURES ===================================
+___________________________ test_div_by_zero_is_inf ___________________________
+
+    def test_div_by_zero_is_inf():
+>       assert div(1, 0) == float("inf")
+               ^^^^^^^^^
+
+test_calc.py:11: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+a = 1, b = 0
+
+    def div(a, b):
+>       return a / b
+               ^^^^^
+E       ZeroDivisionError: division by zero
+
+calc.py:6: ZeroDivisionError
+______________________________ test_add_strings _______________________________
+
+    def test_add_strings():
+>       assert add("a", "b") == "a b"
+E       AssertionError: assert 'ab' == 'a b'
+E         
+E         - a b
+E         ?  -
+E         + ab
+
+test_calc.py:15: AssertionError
+______________________________ test_load_missing ______________________________
+
+    def test_load_missing():
+>       assert load("missing.txt") == ""
+               ^^^^^^^^^^^^^^^^^^^
+
+test_io.py:5: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = 'missing.txt'
+
+    def load(path):
+>       with open(path) as fh:
+             ^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'missing.txt'
+
+calc.py:10: FileNotFoundError
+=========================== short test summary info ===========================
+FAILED test_calc.py::test_div_by_zero_is_inf - ZeroDivisionError: division by...
+FAILED test_calc.py::test_add_strings - AssertionError: assert 'ab' == 'a b'
+FAILED test_io.py::test_load_missing - FileNotFoundError: [Errno 2] No such f...
+=================== 3 failed, 41 passed, 1 skipped in 0.30s ===================

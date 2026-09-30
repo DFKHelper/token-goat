@@ -1,0 +1,101 @@
+
+ RUN  v5.0.1 C:/work/vt-cap
+
+ ✓ other.test.js > sums row 0 1ms
+ ✓ other.test.js > sums row 1 0ms
+ ✓ other.test.js > sums row 2 0ms
+ ✓ other.test.js > sums row 3 0ms
+ ✓ other.test.js > sums row 4 0ms
+ ✓ other.test.js > sums row 5 0ms
+ ✓ other.test.js > sums row 6 0ms
+ ✓ other.test.js > sums row 7 0ms
+ ✓ other.test.js > sums row 8 0ms
+ ✓ other.test.js > sums row 9 0ms
+ ✓ other.test.js > sums row 10 0ms
+ ✓ other.test.js > sums row 11 0ms
+ ✓ other.test.js > sums row 12 0ms
+ ✓ other.test.js > sums row 13 0ms
+ ✓ other.test.js > sums row 14 0ms
+ ✓ other.test.js > sums row 15 0ms
+ ✓ other.test.js > sums row 16 0ms
+ ✓ other.test.js > sums row 17 0ms
+ ✓ other.test.js > sums row 18 0ms
+ ✓ other.test.js > sums row 19 0ms
+ ✓ math.test.js > add > adds 0 and 0 1ms
+ ✓ math.test.js > add > adds 1 and 1 0ms
+ ✓ math.test.js > add > adds 2 and 2 0ms
+ ✓ math.test.js > add > adds 3 and 3 0ms
+ ✓ math.test.js > add > adds 4 and 4 0ms
+ ✓ math.test.js > add > adds 5 and 5 0ms
+ ✓ math.test.js > add > adds 6 and 6 0ms
+ ✓ math.test.js > add > adds 7 and 7 0ms
+ ✓ math.test.js > add > adds 8 and 8 0ms
+ ✓ math.test.js > add > adds 9 and 9 0ms
+ ✓ math.test.js > add > adds 10 and 10 0ms
+ ✓ math.test.js > add > adds 11 and 11 0ms
+ × math.test.js > mul > multiplies 3 by 4 4ms
+   → expected 13 to be 12 // Object.is equality
+ × math.test.js > mul > multiplies 0 by 9 0ms
+   → expected 1 to be +0 // Object.is equality
+ ✓ math.test.js > parse > parses an object 0ms
+ × math.test.js > parse > rejects empty input 0ms
+   → empty input
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  math.test.js > mul > multiplies 3 by 4
+AssertionError: expected 13 to be 12 // Object.is equality
+
+- Expected
++ Received
+
+- 12
++ 13
+
+ ❯ math.test.js:7:51
+      5| })
+      6| describe('mul', () => {
+      7|   it('multiplies 3 by 4', () => expect(mul(3, 4)).toBe(12))
+       |                                                   ^
+      8|   it('multiplies 0 by 9', () => expect(mul(0, 9)).toBe(0))
+      9| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  math.test.js > mul > multiplies 0 by 9
+AssertionError: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ math.test.js:8:51
+      6| describe('mul', () => {
+      7|   it('multiplies 3 by 4', () => expect(mul(3, 4)).toBe(12))
+      8|   it('multiplies 0 by 9', () => expect(mul(0, 9)).toBe(0))
+       |                                                   ^
+      9| })
+     10| describe('parse', () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  math.test.js > parse > rejects empty input
+Error: empty input
+ ❯ parse math.js:3:42
+      1| export const add = (a, b) => a + b
+      2| export const mul = (a, b) => a * b + 1
+      3| export function parse(s) { if (!s) throw new Error('empty input'); ret…
+       |                                          ^
+      4|
+ ❯ math.test.js:12:42
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  3 failed | 33 passed (36)
+   Start at  15:46:24
+   Duration  147ms (transform 49%, import 28%, tests 14%, worker 9%)
+
