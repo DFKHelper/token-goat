@@ -230,6 +230,24 @@ export function isTestRunnerCommand(cmd: string): boolean {
   return TEST_RUNNER_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }
 
+/** Dev servers and bundlers (Next, Vite, Nuxt, Remix, Astro), the part of MONITORING_COMMAND_PATTERNS whose output depends on the whole working tree. Their saved runs are recalled until a fingerprint moves, and isBuildCommand, which would give them one, admits only some spellings (not `npx vite`, bare `vite`, `vite optimize`, `remix dev` or `astro dev`), so {@link isDevServerCommand} gives computeBashFingerprints its own gate rather than widening that predicate, which also routes CI segments and gates caching. */
+const DEV_SERVER_COMMAND_PATTERNS: ReadonlyArray<{ pattern: RegExp; recallHint: string }> = [
+  { pattern: /^(?:npx\s+)?next dev/, recallHint: '--tail 30 --grep "error|warn|ready|compiled"' },
+  { pattern: /^(?:npx\s+)?next build/, recallHint: '--grep "error|warn|Failed|✓"' },
+  // vite ends at whitespace or the end of the command, not at a word boundary, which a hyphen satisfies: vite-node is another tool, so it is neither recalled nor fingerprinted as a dev server.
+  { pattern: /^(?:npx\s+)?vite(?:\s|$)/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+  // nuxt dev ends the same way: `nuxt devtools enable` is another nuxt command.
+  { pattern: /^(?:npx\s+)?nuxt dev(?:\s|$)/, recallHint: '--tail 30 --grep "error|warn|ready"' },
+  { pattern: /^(?:npx\s+)?remix dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+  { pattern: /^(?:npx\s+)?astro dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+]
+
+/** True when `cmd` runs a dev server or bundler the monitoring list recalls (see DEV_SERVER_COMMAND_PATTERNS), so its saved output must carry a git fingerprint to go stale by. */
+export function isDevServerCommand(cmd: string): boolean {
+  const trimmed = cmd.trim()
+  return DEV_SERVER_COMMAND_PATTERNS.some(({ pattern }) => pattern.test(trimmed))
+}
+
 /** Monitoring command patterns — long-running or repeatedly-run commands whose output is always worth recalling from cache rather than re-running. Each entry carries a `recallHint` string with --grep / --tail flags to pass to `token-goat bash-output` for surgical inspection. */
 export const MONITORING_COMMAND_PATTERNS: Array<{
   pattern: RegExp
@@ -244,15 +262,7 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^gh issue view/, recallHint: '--grep "state|title|label|OPEN|CLOSED"' },
   { pattern: /^gh workflow (?:run|list|view)/, recallHint: '--grep "completed|failed|in_progress"' },
 
-  // Dev servers (Next, Vite, Nuxt, Remix, Astro)
-  { pattern: /^(?:npx\s+)?next dev/, recallHint: '--tail 30 --grep "error|warn|ready|compiled"' },
-  { pattern: /^(?:npx\s+)?next build/, recallHint: '--grep "error|warn|Failed|✓"' },
-  // vite ends at whitespace or the end of the command, not at a word boundary, which a hyphen satisfies: vite-node is another tool, one isBuildCommand never fingerprints, so its saved output would be offered as fresh forever.
-  { pattern: /^(?:npx\s+)?vite(?:\s|$)/, recallHint: '--tail 20 --grep "error|warn|ready"' },
-  // nuxt dev ends the same way: `nuxt devtools enable` is another nuxt command, and isBuildCommand gives it no fingerprint either.
-  { pattern: /^(?:npx\s+)?nuxt dev(?:\s|$)/, recallHint: '--tail 30 --grep "error|warn|ready"' },
-  { pattern: /^(?:npx\s+)?remix dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
-  { pattern: /^(?:npx\s+)?astro dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+  ...DEV_SERVER_COMMAND_PATTERNS,
 
   // Test watchers. jest and vitest must be followed by whitespace or the end of the command, as in TEST_RUNNER_COMMAND_PATTERNS, not merely by a word boundary: a cached run goes stale only through the git fingerprint isTestRunnerCommand grants, and a longer name (jest-codemods, vitest-preview) is another tool that predicate rejects.
   { pattern: /^(?:npx\s+)?vitest(?:\s|$)/, recallHint: '--grep "FAIL|PASS|Error|✓|✗"' },

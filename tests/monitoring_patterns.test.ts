@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   getMonitoringRecallHint,
   isBuildCommand,
+  isDevServerCommand,
   isTestRunnerCommand,
   MONITORING_COMMAND_PATTERNS,
 } from '../src/hints/lang_patterns.js'
@@ -29,8 +30,8 @@ describe('monitoring recall and the test-runner fingerprint agree on jest and vi
   })
 })
 
-describe('monitoring recall and the build fingerprint agree on vite, nuxt and clippy', () => {
-  // A vite, nuxt or clippy run gets its git fingerprint only through isBuildCommand, so a longer command name the monitoring list admits and that predicate rejects is recalled as fresh forever.
+describe('monitoring recall and the build or dev-server fingerprint agree on vite, nuxt and clippy', () => {
+  // A clippy run gets its git fingerprint only through isBuildCommand, and a vite or nuxt run through isBuildCommand or isDevServerCommand, so a longer command name the monitoring list admits and both predicates reject is recalled as fresh forever.
   it.each([
     // PROVENANCE: FORMAT-DERIVED, the `vite build` command in vitejs/vite docs/guide/cli.md and the `cargo clippy` usage in rust-lang/rust-clippy's README.
     'vite build',
@@ -43,7 +44,7 @@ describe('monitoring recall and the build fingerprint agree on vite, nuxt and cl
     'nuxt dev',
     'nuxt devtools enable',
   ])('%s', (cmd) => {
-    expect(getMonitoringRecallHint(cmd) !== null).toBe(isBuildCommand(cmd))
+    expect(getMonitoringRecallHint(cmd) !== null).toBe(isBuildCommand(cmd) || isDevServerCommand(cmd))
   })
 })
 

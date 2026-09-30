@@ -27,7 +27,7 @@ import {
   summarizeOutputDelta,
   type BashOutputEntry,
 } from '../src/bash_output_cache.js'
-import { isTestRunnerCommand } from '../src/hints/lang_patterns.js'
+import { getMonitoringRecallHint, isDevServerCommand, isTestRunnerCommand } from '../src/hints/lang_patterns.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from '../src/disk_cache.js'
 import { likeSearchForTesting } from '../src/recall_index.js'
@@ -635,6 +635,50 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
 
     expect(isCatCommand('cat file.txt')).toBe(true)
     expect(isCatCommand('catalog')).toBe(false)
+  })
+})
+
+describe('a monitored dev-server run goes stale once the code changes (BE-17)', () => {
+  // getMonitoringRecallHint offers a saved run of any command MONITORING_COMMAND_PATTERNS admits, and isBashEntryStale retires one only by a fingerprint computeBashFingerprints recorded, so a monitored command with no fingerprint is offered as fresh however much the code has changed since it ran.
+  it.each([
+    // PROVENANCE: FORMAT-DERIVED, vitejs/vite docs/guide/cli.md: `vite` (alias `vite dev`, `vite serve`), `vite build` and `vite optimize`, and the npx spelling the CAPTURE note in tests/monitoring_patterns.test.ts records for every jest/vitest run on this machine.
+    'vite',
+    'npx vite',
+    'npx vite build',
+    'vite optimize',
+    'vite serve',
+    // PROVENANCE: FORMAT-DERIVED, vercel/next.js docs/01-app/03-api-reference/06-cli/next.mdx (`next dev`, `next build`), nuxt/cli packages/nuxt-cli/src/commands/dev.ts, the Remix v2 CLI reference (`remix dev`) and withastro/astro packages/astro/src/cli/index.ts (`astro dev`).
+    'npx next dev',
+    'npx next build',
+    'npx nuxt dev',
+    'remix dev',
+    'astro dev',
+    // PROVENANCE: HAND-DERIVED, getMonitoringRecallHint trims before matching but storeBashOutputSync hands computeBashFingerprints the command as typed, so a space-led run is monitored and would reach the fingerprint gate untrimmed.
+    '  npx vite',
+  ])('%s is monitored and carries a git fingerprint that moves when a tracked file is edited', async (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+    const tmpDir = initGitRepoWithFile('tg-fp-devserver-')
+    try {
+      const id = await storeBashOutput(cmd, 'ready in 312 ms', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.git).toBeDefined()
+      expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(false)
+
+      fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'two\n')
+
+      expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    // PROVENANCE: FORMAT-DERIVED, `npm view vite-node bin` (a separate package from vite) and nuxt/cli packages/nuxt-cli/src/commands/devtools.ts: other tools whose names begin with a dev server's, which neither the monitoring list nor the fingerprint admits.
+    'npx vite-node src/main.ts',
+    'nuxt devtools enable',
+  ])('%s is neither monitored nor fingerprinted as a dev server', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+    expect(isDevServerCommand(cmd)).toBe(false)
   })
 })
 

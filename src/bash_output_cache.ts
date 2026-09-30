@@ -7,7 +7,7 @@ import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
-import { isBuildCommand, isTestRunnerCommand } from './hints/lang_patterns.js'
+import { isBuildCommand, isDevServerCommand, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { indexRecallEntry } from './recall_index.js'
 import { redactSecrets } from './secret_redact.js'
 
@@ -261,7 +261,7 @@ export function bashOutputIdSync(command: string, output: string, cwd: string | 
   return shortFingerprint(`${commandHashSync(command, cwd)}\x00${output}`)
 }
 
-/** Compute current git/dir/lockfile/file state fingerprints for `command` run in `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`) and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached entry whose underlying source state has since changed is not served as if it were still fresh. - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and any command whose output depends on the whole working tree -- test runners (the {@link isTestRunnerCommand} the failing-test advisory in hooks_bash_post.ts stores a run under, bare `npm test`/`yarn test`/`pnpm test` included), linters (eslint/ruff), and `npm run <script>` -- since {@link gitStateFingerprintSync} already captures staged/unstaged/untracked changes anywhere in the tree. - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing. - `lockfile`: dependency-list/install/audit/outdated commands, scoped to the resolved lockfile's content. - `file`: `cat <file>`, scoped to that one file's mtime + size. */
+/** Compute current git/dir/lockfile/file state fingerprints for `command` run in `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`) and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached entry whose underlying source state has since changed is not served as if it were still fresh. - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and any command whose output depends on the whole working tree -- test runners (the {@link isTestRunnerCommand} the failing-test advisory in hooks_bash_post.ts stores a run under, bare `npm test`/`yarn test`/`pnpm test` included), linters (eslint/ruff), the dev servers and bundlers the monitoring list recalls ({@link isDevServerCommand}), and `npm run <script>` -- since {@link gitStateFingerprintSync} already captures staged/unstaged/untracked changes anywhere in the tree. - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing. - `lockfile`: dependency-list/install/audit/outdated commands, scoped to the resolved lockfile's content. - `file`: `cat <file>`, scoped to that one file's mtime + size. */
 export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
   const fingerprints: { git?: string; dir?: string; lockfile?: string; file?: string } = {}
 
@@ -272,6 +272,7 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
       isTestRunnerCommand(command) ||
       isLintCommand(command) ||
       isBuildCommand(command) ||
+      isDevServerCommand(command) ||
       isNpmRunScriptCommand(command))
   ) {
     const fp = gitStateFingerprintSync(cwd)
