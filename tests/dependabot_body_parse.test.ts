@@ -39,6 +39,41 @@ describe('dependabot pull request body', () => {
   })
 })
 
+// CAPTURE: the body of DFKHelper/token-goat#40, taken with `gh pr view 40 --json body --jq .body` on 2026-09-29. A grouped batch of two, which Dependabot writes with no summary table: `npm run deps:refresh` stopped on it with `#40 lists no package rows; pass --packages`.
+const tablelessBody = fs.readFileSync(path.join(repoRoot, 'tests', 'fixtures', 'dependabot', 'grouped-npm-pr-body-no-table.md'), 'utf8')
+
+describe('a grouped batch too small for a summary table', () => {
+  it('reads the packages from the top-level Updates lines', () => {
+    expect(packageNamesFromBody(tablelessBody)).toEqual(['smol-toml', 'typescript-eslint'])
+  })
+
+  it('confirms the real body has no table, so the case above is the fallback and not the table parse', () => {
+    expect(tablelessBody.split('\n').filter((line) => line.trim().startsWith('|'))).toEqual([])
+  })
+
+  // HAND-DERIVED: the captured body's own shape, with an Updates line smuggled into a release note's code block. Dependabot keeps `<pre><code>` lines verbatim (see the table case below), so upstream text can carry this line.
+  const smuggledUpdate = [
+    'Bumps the npm-dependencies group with 1 update in the / directory: [zod](https://github.com/colinhacks/zod).',
+    '',
+    'Updates `zod` from 1.0.0 to 1.0.1',
+    '<details>',
+    '<summary>Release notes</summary>',
+    '<pre><code>How to upgrade:',
+    'Updates `evil-package` from 1.0.0 to 9.9.9',
+    '</code></pre>',
+    '</details>',
+  ].join('\n')
+
+  it('ignores an Updates line inside a details block', () => {
+    expect(packageNamesFromBody(smuggledUpdate)).toEqual(['zod'])
+  })
+
+  it('refuses a body whose Updates lines do not match the count it declares', () => {
+    expect(packageNamesFromBody(smuggledUpdate.replace('with 1 update', 'with 2 updates'))).toEqual([])
+    expect(packageNamesFromBody(smuggledUpdate.replace('Bumps the npm-dependencies group with 1 update', 'Bumps zod'))).toEqual([])
+  })
+})
+
 describe('rows the body carries but Dependabot did not propose', () => {
   // HAND-DERIVED: a summary table naming one package, then a release note carrying a fenced code block whose lines are table-shaped. Written from Dependabot's rendering behaviour, which is CAPTURE-confirmed by the real body: `grep -c '|' ` over everything below the summary table of tests/fixtures/dependabot/grouped-npm-pr-body.md returns 0, because Dependabot converts embedded upstream markdown to HTML -- an upstream table becomes <table>. A <pre><code> block is the exception: its lines survive verbatim, pipes and all.
   const smuggled = [

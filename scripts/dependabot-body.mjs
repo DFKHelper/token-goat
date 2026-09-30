@@ -17,7 +17,23 @@ export function packageNamesFromBody(body) {
     if (match) names.push(match[1].trim())
     else if (names.length > 0) break
   }
-  return names
+  return names.length > 0 ? names : packageNamesFromUpdateLines(body)
+}
+
+/** A grouped batch of only a few packages carries no summary table at all: DFKHelper/token-goat#40, two packages, opens with `Bumps the npm-dependencies group with 2 updates` and then gives each package an `Updates \`name\` from A to B` line followed by its release notes, changelog and commits, each in its own `<details>` block. Only lines outside every `<details>` block are read, for the reason the table parse stops at its first gap: everything inside one is upstream text, and a `<pre><code>` block there keeps its lines verbatim, so a release note could carry an `Updates` line of its own. The count in the opening sentence is then required to match, so a body that says two and yields three, or one, is refused rather than resolved. */
+function packageNamesFromUpdateLines(body) {
+  const text = String(body ?? '')
+  const declared = /^Bumps the \S+ group with (\d+) updates?\b/.exec(text)
+  if (!declared) return []
+  const names = []
+  let depth = 0
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    const match = depth === 0 ? /^Updates `([^`]+)` from \S+ to \S+$/.exec(trimmed) : null
+    if (match) names.push(match[1])
+    depth += (trimmed.match(/<details>/g) ?? []).length - (trimmed.match(/<\/details>/g) ?? []).length
+  }
+  return names.length === Number(declared[1]) ? names : []
 }
 
 /** Turns a failed guard run into a message, and never into an empty one. The caller treats a falsy return as the guard having passed, so every path out of here has to be truthy. The first draft returned only the assertion lines, which is fine when vitest ran and reported: when it did not run at all -- a config error, a missing binary, an out-of-memory kill -- nothing matched, it returned the empty string, and the script announced that the disclosure guard accepted the lock file. A guard that could not run is not a guard that passed. */
